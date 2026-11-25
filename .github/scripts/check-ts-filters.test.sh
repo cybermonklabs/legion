@@ -37,6 +37,23 @@ trap 'rm -rf "$work"' EXIT
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
 
+# The interpreter python3 names, asked once in this harness's own environment. Each fixture's bin
+# directory, first on the PATH a case runs the script under, holds a link to it as python3, so the
+# script's `python3` is this interpreter and the bunx and bun its Python runs are the stand-ins
+# beside that link. The first python3 on the caller's PATH can be a version manager's shim that
+# starts the interpreter with a PATH of its own: mise 2026.10.11's python3 shim, in a
+# mise-activated environment, put that environment's PATH in front of the entries the caller had
+# put first, so the script's Python ran that environment's bunx and not the stand-in.
+# disk_watch.test.sh links its interpreter the same way.
+if ! python=$(python3 -I -c 'import sys; print(sys.executable)'); then
+  echo "could not resolve the python3 interpreter" >&2
+  exit 1
+fi
+if [[ "$python" != /* || ! -x "$python" ]]; then
+  echo "python3 did not report an absolute executable path: $python" >&2
+  exit 1
+fi
+
 # fixture <name>: a tree that passes. The app job is gated on the filter app, which names its own
 # package and, through the shared anchor, the library it compiles; pkg/app/listed is what the
 # stand-in bunx answers for that project, and it holds a file of each kind the script must drop
@@ -52,6 +69,7 @@ fixture() {
   for linked in check-ts-filters.sh ci_filter_coverage.py workflow_paths.py go_build_tags.py; do
     ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
   done
+  ln -s "$python" "$root/bin/python3"
   echo '{}' > "$root/pkg/app/tsconfig.json"
   printf 'export const app = 1;\n' > "$root/pkg/app/src/main.ts"
   printf 'export const lib = 1;\n' > "$root/pkg/lib/lib.ts"
@@ -625,5 +643,35 @@ status=$?
 set -e
 check "fails" "$(is "$status" 1)"
 check "names both modes" "$(contains "$out" 'takes one optional mode: `check` (the default)')"
+
+echo "case: a python3 after the stand-ins that starts the interpreter with a PATH of its own"
+# A stricter form of what mise's shim did (the comment on $python above): this python3 starts the
+# interpreter with the PATH this harness had and leaves the fixture's bin directory out, where mise
+# put it behind its environment's own entries. So a script whose `python3` were this one would list
+# the program with this harness's own bunx, or with none, and never with the stand-in, whether or
+# not this harness's PATH holds a bunx. The fixture's link comes first, so the script never meets
+# it. The two checks before the case show the resetting python3 does what the row needs, so the
+# row can fail.
+resetting=$work/resetting-python
+mkdir -p "$resetting/probe"
+printf '%s' "$PATH" > "$resetting/path"
+cat > "$resetting/python3" <<EOF
+#!/bin/sh
+PATH=\$(cat '$resetting/path') exec '$python' "\$@"
+EOF
+printf '#!/bin/sh\nexit 0\n' > "$resetting/probe/bunx"
+chmod +x "$resetting/python3" "$resetting/probe/bunx"
+check "without a link of its own, a PATH's python3 is the resetting one" \
+  "$(is "$(PATH="$resetting/probe:$resetting:$PATH" command -v python3)" "$resetting/python3")"
+check "  and the interpreter it starts does not find the bunx before it" \
+  "$(is "$(PATH="$resetting/probe:$resetting:$PATH" python3 -c 'import shutil; print(shutil.which("bunx"))')" \
+    "$(command -v bunx || echo None)")"
+root=$(fixture after-a-resetting-python3)
+set +e
+out=$(PATH="$root/bin:$resetting:$PATH" "$root/.github/scripts/check-ts-filters.sh" 2>&1)
+status=$?
+set -e
+check "exits 0" "$(is "$status" 0)"
+check "counts the three files the stand-in bunx listed" "$(contains "$out" '^pkg/app: 3 files, 0 uncovered (filter app)$')"
 
 summary "check-ts-filters.sh holds each Bun gate's filter to every file its tsc programs compile and its bundles load"

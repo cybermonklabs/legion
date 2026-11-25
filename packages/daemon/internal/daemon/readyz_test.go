@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -40,6 +41,7 @@ import (
 // On this change's base the same read answers 404 with the catch-all body that names no route
 // (`{"error":"no route"}`): the mux has no /readyz at all.
 func TestReadyzIsFalseUntilTheDaemonServes(t *testing.T) {
+	t.Parallel()
 	// A database of this test's own and a pool of its own on it: the lock below and the reads of
 	// pg_stat_activity go over a connection the daemon neither owns nor can wait for.
 	pool := isolatedOutboxPool(t)
@@ -72,7 +74,7 @@ func TestReadyzIsFalseUntilTheDaemonServes(t *testing.T) {
 	// The daemon's one connection is made busy and held there, before the latch is released: the
 	// lock is taken first, then the state request, which the lock stops inside the route's own
 	// transaction.
-	tx, err := pool.Begin(held)
+	tx, err := pool.BeginTx(held, pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("begin the locking transaction: %v", err)
 	}

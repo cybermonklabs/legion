@@ -48,6 +48,7 @@ func claimFiles(token claim.Token) []string {
 // neither its own files, nor a file of a secret whose name holds no "_" (`…-code-checker-token`),
 // which no rule about how secrets are named could tell from a file of `…-code`'s.
 func TestTheEndOfAClaimLeavesTheFilesOfAClaimWhoseTokenItsOwnBegins(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	project, _ := claim.ProjectToken("omp")
 	code, err := claim.AgentToken(project, "LEGION-1", "code")
@@ -99,6 +100,7 @@ func secretEntries(t *testing.T, stateDir string) []string {
 // stay. The provider-env directory is the one subdirectory that is nobody's claim's, and a prune
 // must never take it.
 func TestTheClaimPruneTakesTheGhDirectoryOfAClaimWrittenWithNoProcess(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	project, _ := claim.ProjectToken("omp")
 	ended, _ := claim.NewToken(project, "LEGION-1", claim.RoleTester)
@@ -157,6 +159,7 @@ func (s releaseStore) ReleaseHolds(context.Context, supervise.Claim, []supervise
 // embedded store's is promoted and the prune is skipped: the files are still there after a
 // release the store took.
 func TestAReleaseOfAClaimWithNoProcessPrunesItsSecretFiles(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	project, _ := claim.ProjectToken("omp")
 	ended, _ := claim.NewToken(project, "LEGION-1", claim.RoleTester)
@@ -185,6 +188,7 @@ func TestAReleaseOfAClaimWithNoProcessPrunesItsSecretFiles(t *testing.T) {
 // killed between clearing a locator and removing its files left — and keeps a live claim's, the
 // Dispatch token file, and the provider-env directory.
 func TestBootsPruneTakesTheGhDirectoriesOfClaimsWithNoProcess(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	project, _ := claim.ProjectToken("omp")
 	crashed, _ := claim.NewToken(project, "LEGION-1", claim.RoleTester)
@@ -231,6 +235,7 @@ func TestBootsPruneTakesTheGhDirectoriesOfClaimsWithNoProcess(t *testing.T) {
 // directory's resolution, the second row's removal is refused ("… is a symlink"), and its gh
 // directory keeps every file in it.
 func TestThePruneTakesAGhDirectoryWithoutFollowingALinkInIt(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("as root a 0555 directory does not stop the unlink, so the removal never opens the link")
 	}

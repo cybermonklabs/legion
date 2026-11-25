@@ -78,6 +78,7 @@ type rolesLive struct {
 // `implementer prober`, whose role names no model, and the third is given `implementer checker`
 // once the daemon has restarted with checker taken out of the settings.
 func TestRolesLive(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (Live).
 	fixtureenv.Live(t)
 	proof := newLiveProof(t, "scripts/e2e/roles.sh")
 	root := liveCLICheckout(t)

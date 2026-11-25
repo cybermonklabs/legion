@@ -116,29 +116,16 @@ func (check *Check) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// Suite is the last-known state of one GitHub check suite for a commit.
+// Suite is the last-known state of one GitHub check suite for a commit. A record written before
+// the listener stopped taking a suite before it completes (contracts.GithubCIObservations) may
+// hold a run_count field of its suites, which this release no longer reads and the next write of
+// the record drops.
 type Suite struct {
 	ID         string `json:"id"`
 	AppID      string `json:"app_id"`
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
 	ObservedAt string `json:"observed_at"`
-	// RunCount is display only: the latest_check_runs_count GitHub's check_suite event gave
-	// (contracts.CIObservation.CheckRunCount), kept only while the suite is not completed
-	// (recordSuite), so a count of 0 is written as 0 and a count never given is absent. The line
-	// that names a head the listener holds names it (logHeldLocked); Hash and settlementReady do
-	// not read it, and a completed suite's record bytes are what they were before the field. A
-	// listener or a Dispatch writer of an earlier release drops it at its next write of the record,
-	// as State.Schema says of a field it does not know.
-	RunCount *int `json:"run_count,omitempty"`
-}
-
-// sameAs reports whether s and other hold the same suite state, the run count compared by value:
-// == would compare the two counts' pointers, which two observations of one count never share.
-func (s Suite) sameAs(other Suite) bool {
-	count, otherCount := s.RunCount, other.RunCount
-	s.RunCount, other.RunCount = nil, nil
-	return s == other && (count == otherCount || count != nil && otherCount != nil && *count == *otherCount)
 }
 
 // Status is the newest terminal commit status of one context on a commit (recordStatus). A status
@@ -159,10 +146,15 @@ type Status struct {
 
 // SettlementClaim is the durable right to publish one settlement snapshot.
 // Claims prevent replicas from publishing the same episode concurrently.
+// Verify says the claim waits for a GitHub read before it publishes (verify.go),
+// which gives it a longer life before another replica may reclaim it
+// (claimWindow). A listener of an earlier release ignores the field and drops
+// it at its next write of the claim.
 type SettlementClaim struct {
 	Hash       string `json:"hash"`
 	Generation uint64 `json:"generation"`
 	ClaimedAt  int64  `json:"claimed_at"`
+	Verify     bool   `json:"verify,omitempty"`
 }
 
 // State is the aggregated set of checks, suites and commit statuses for one (owner, repo, PR
@@ -197,6 +189,30 @@ type State struct {
 	// reconcile writes them back only once GitHub's answer for the head changes, since a pass
 	// writes nothing while the head's fingerprint holds.
 	Schema int `json:"schema,omitempty"`
+	// VerifiedRev is the newest revision of this head's verify request (verifyKey) that Dispatch's
+	// CI reconcile answered: it read the request at that revision, then read the head from GitHub
+	// whole, wrote what it read into this record, and then wrote VerifiedRev (Writer.MarkVerified).
+	// VerifiedStream is the identity of the bucket's stream that revision is of (streamIdentity),
+	// since a bucket deleted and created again numbers its revisions from 1 again. Within one
+	// stream VerifiedRev only grows. A listener that asked with ENVOY_CI_VERIFY on publishes only
+	// once both answer its own request in the stream the bucket is held in (ClaimStillHeld). Hash
+	// takes neither: an answer moves no snapshot. A listener of an earlier release drops both at
+	// its next write of the record, as it drops Schema, which costs at most one more verify read.
+	VerifiedRev    uint64 `json:"verified_rev,omitempty"`
+	VerifiedStream int64  `json:"verified_stream,omitempty"`
+	// VerifyStopped is the snapshot (Hash) of the last settlement episode the summary loop gave up
+	// after verifyMaxAsks requests Dispatch did not answer (giveUp), VerifyStops how many episodes
+	// of that snapshot it gave up in a row, and VerifyRetryAt the millisecond from which a listener
+	// claims the head again: the give-up's backoff, verifyBackoff doubled at each give-up of the
+	// snapshot after its first, up to verifyBackoffMax (verifyBackoffAfter). VerifyRetryAt is zero
+	// for a give-up made once the head's last observation was the bucket's TTL old: that head is
+	// given up for good, and its record expires as an unanswered head's did before the backoff. While
+	// the record still hashes to VerifyStopped and VerifyRetryAt has not come, no listener claims the
+	// head (verifyStopped); a new observation, which moves the snapshot, ends the stop at once. A
+	// listener of an earlier release drops all three at its next write.
+	VerifyStopped string `json:"verify_stopped,omitempty"`
+	VerifyStops   int    `json:"verify_stops,omitempty"`
+	VerifyRetryAt int64  `json:"verify_retry_at,omitempty"`
 }
 
 // recordSchema stamps every record this listener writes.
@@ -234,10 +250,12 @@ func legacyBacklog(st State, now int64, debounce time.Duration) bool {
 	return st.Schema == 0 && now-st.LastEventAt >= (debounce+handoverGrace).Milliseconds()
 }
 
-// due reports whether st is waiting to settle at now: unsettled, ready (settlementReady), quiet for
-// debounce since its last event, and not a head-gated listener's leftover (legacyBacklog).
+// due reports whether st is waiting to settle at now: unsettled, not given up at now
+// (verifyStopped), ready (settlementReady), quiet for debounce since its last event, and not a
+// head-gated listener's leftover (legacyBacklog).
 func due(st State, now int64, debounce time.Duration) bool {
 	return !st.SettledEmitted &&
+		!verifyStopped(st, now) &&
 		settlementReady(st) &&
 		now-st.LastEventAt >= debounce.Milliseconds() &&
 		!legacyBacklog(st, now, debounce)
@@ -375,11 +393,29 @@ type Store struct {
 
 	// logger writes the store's JSON lines, which an alarm can count (write).
 	logger *logging.Logger
+
+	// verify says the summary loop asks Dispatch's CI reconcile for a GitHub read of a head
+	// before it publishes the head's settlement (WithVerify, verify.go). Off, it publishes as
+	// soon as it holds the claim, as every listener before ENVOY_CI_VERIFY did.
+	verify bool
+	// ttl is the expiry the store opened the bucket with (WithTTL): a head given up once its last
+	// observation is this old is given up for good (stopVerify). Zero, in a writer's store, which
+	// gives nothing up.
+	ttl time.Duration
+	// now is the clock a claim is stamped by (ClaimSettlement, refreshClaim); nil is time.Now. A
+	// test sets it to drive the summary loop, which is passed the same clock's time, through the
+	// verify timeouts and backoffs without waiting them out.
+	now func() time.Time
+	// casHook, when set, runs in each write attempt after the attempt read the record and before
+	// its compare-and-swap (write): a test makes another write land there, so the attempt loses
+	// its compare-and-swap and retries. Nil in every store but a test's.
+	casHook func(key string)
 }
 
 type openOpts struct {
 	replicas int
 	ttl      time.Duration
+	verify   bool
 }
 
 // Option configures Open.
@@ -403,6 +439,15 @@ func WithTTL(d time.Duration) Option {
 		if d > 0 {
 			o.ttl = d
 		}
+	}
+}
+
+// WithVerify turns on the listener's verify-before-announce (ENVOY_CI_VERIFY=on): the summary
+// loop publishes a head's settlement only after Dispatch's CI reconcile has read the head from
+// GitHub after the loop asked (verify.go).
+func WithVerify(on bool) Option {
+	return func(o *openOpts) {
+		o.verify = on
 	}
 }
 
@@ -433,6 +478,8 @@ func Open(ctx context.Context, nc *nats.Conn, logger *logging.Logger, opts ...Op
 		rewatched:   make(chan struct{}),
 		changedWake: make(chan struct{}, 1),
 		logger:      logger,
+		verify:      o.verify,
+		ttl:         o.ttl,
 	}
 	s.cache = newCICopy(s)
 	s.watcher = kvwatch.New("cistore", kv, ciCache{s}, kvwatch.WithLogger(logger.Slog()))
@@ -445,12 +492,12 @@ func Open(ctx context.Context, nc *nats.Conn, logger *logging.Logger, opts ...Op
 	return s, nil
 }
 
-// Writer is the CI record bucket as a process that only writes it holds it: exactly Record,
-// RecordSuite, RecordStatus and HasRecord, and no way to reach the store behind it. Everything
-// else on Store belongs to the listener's store and would panic here: the cache, the summary loop,
-// Ping, Rewatch, StopWatch, EndWatch, WaitForCacheReady and the settlement transitions all go
-// through the watcher a writer has not got, so the type a caller is given offers none of them
-// rather than a comment telling it which to leave alone.
+// Writer is the CI record bucket as a process that only writes it holds it: exactly RecordRuns,
+// RecordSuite, RecordStatus, HasRecord, VerifyRequests, MarkVerified and DoneVerifying, and no way
+// to reach the store behind it. Everything else on Store belongs to the listener's store and would
+// panic here: the cache, the summary loop, Ping, Rewatch, StopWatch, EndWatch, WaitForCacheReady
+// and the settlement transitions all go through the watcher a writer has not got, so the type a
+// caller is given offers none of them rather than a comment telling it which to leave alone.
 type Writer struct {
 	store *Store
 }
@@ -491,21 +538,23 @@ func OpenWriter(conn *nats.Conn, js nats.JetStreamContext, logger *logging.Logge
 	return &Writer{store: s}, nil
 }
 
-// Record folds one check observation into the head's record and reports whether that changed it:
-// an observation the record already holds, or one its own rules refuse as older, changes nothing
-// and is no news for a caller counting what a pass did.
-func (w *Writer) Record(ctx context.Context, observation contracts.CIObservation) (bool, error) {
-	return w.store.record(ctx, observation)
+// RecordRuns folds every check run of one head into the head's record in one compare-and-swap
+// (recordRuns), and reports whether that changed it: runs the record already holds, or ones its own
+// rules refuse as older, change nothing and are no news for a caller counting what a pass did.
+// The runs land together or none of them does, so a write that fails never leaves the record
+// holding some of a head's finished runs without the rest.
+func (w *Writer) RecordRuns(ctx context.Context, observations []contracts.CIObservation) (bool, error) {
+	return w.store.recordRuns(ctx, observations)
 }
 
 // RecordSuite folds one check_suite observation into the head's record and reports whether that
-// changed it, as Record does.
+// changed it, as RecordRuns does.
 func (w *Writer) RecordSuite(ctx context.Context, observation contracts.CIObservation) (bool, error) {
 	return w.store.recordSuite(ctx, observation)
 }
 
 // RecordStatus folds one commit status into the head's record and reports whether that changed
-// it, as Record does (recordStatus). A status the record already holds, an older one than the
+// it, as RecordRuns does (recordStatus). A status the record already holds, an older one than the
 // record keeps for its context, and one the record's bounds refuse (write) change nothing. It
 // refuses, with an error, a status with no context or in a state other than success, failure and
 // error (contracts.TerminalStatusState): contracts.GithubStatusObservation maps no other, so a
@@ -578,8 +627,12 @@ func (c ciCache) BeginRead(read kvwatch.Read) {
 
 // Apply takes one record the read delivered (kvwatch.Copy.Delivered), and logs a value it could not
 // decode, which evicted the record. A record that moves the copy on and that the copy keeps is a
-// change for the summary loop (markStoredLocked); a removal reports itself (removedLocked).
+// change for the summary loop (markStoredLocked); a removal reports itself (removedLocked). A
+// verify request (verifyKey) is Dispatch's to read, and the copy keeps no entry of it.
 func (c ciCache) Apply(entry kvwatch.Entry, read kvwatch.Read) {
+	if isVerifyKey(entry.Key) {
+		return
+	}
 	s := c.s
 	s.mu.Lock()
 	moved := s.movedLocked(read.Epoch, entry.Key, entry.Revision)
@@ -770,43 +823,73 @@ func (s *Store) WaitForCacheReady(ctx context.Context) error {
 
 // Record folds one check observation into the per-commit state via CAS, waiting for it no longer
 // than ctx allows (update). It answers the error alone, which is the shape webhook.CIRecorder
-// takes and all the webhook handler has a use for; a writer's Record also answers whether the
-// observation changed the record.
+// takes and all the webhook handler has a use for.
 func (s *Store) Record(ctx context.Context, observation contracts.CIObservation) error {
-	_, err := s.record(ctx, observation)
+	_, err := s.update(ctx, observation.Owner, observation.Repo, observation.Number, observation.SHA, "", func(st *State) bool {
+		return applyCheckRun(st, observation)
+	})
 	return err
 }
 
-// record is the one body both forms of Record share, and reports whether the observation changed
-// the head's record.
-func (s *Store) record(ctx context.Context, observation contracts.CIObservation) (bool, error) {
-	return s.update(ctx, observation.Owner, observation.Repo, observation.Number, observation.SHA, "", func(st *State) bool {
-		if st.Checks == nil {
-			st.Checks = map[string]Check{}
+// recordRuns folds every check run of observations, all of one head, into that head's record as
+// one mutation, so one compare-and-swap writes them all or none (update, write), and reports
+// whether any of them changed the record. Each run goes through the record's own rules
+// (applyCheckRun), in the order given, exactly as it would written alone. A write past the
+// record's bounds is refused whole, as one webhook's observation past them is: the record is
+// written as it was, marked Overflowed, so it never settles on part of the head (write, atBounds).
+// Runs of more than one head are refused before anything is read, and no run is no write.
+func (s *Store) recordRuns(ctx context.Context, observations []contracts.CIObservation) (bool, error) {
+	if len(observations) == 0 {
+		return false, nil
+	}
+	head := observations[0]
+	for _, observation := range observations[1:] {
+		if observation.Owner != head.Owner || observation.Repo != head.Repo || observation.Number != head.Number || observation.SHA != head.SHA {
+			return false, fmt.Errorf("cistore: check runs of %s/%s#%s@%s and %s/%s#%s@%s in one write; a write carries the runs of one head",
+				head.Owner, head.Repo, head.Number, head.SHA, observation.Owner, observation.Repo, observation.Number, observation.SHA)
 		}
-		key := observation.CheckName
-		if current, ok := st.Checks[key]; ok {
-			if checkRunIDIsOlder(observation.CheckRunID, uint64(current.CheckRunID)) ||
-				(observation.CheckRunID == uint64(current.CheckRunID) && !observationMayReplace(observation.ObservedAt, current.ObservedAt, observation.Status, current.Status)) {
-				return false
+	}
+	return s.update(ctx, head.Owner, head.Repo, head.Number, head.SHA, "", func(st *State) bool {
+		changed := false
+		for _, observation := range observations {
+			if applyCheckRun(st, observation) {
+				changed = true
 			}
 		}
-		next := Check{
-			Name:       observation.CheckName,
-			CheckRunID: checkRunID(observation.CheckRunID),
-			URL:        observation.URL,
-			Status:     observation.Status,
-			Conclusion: observation.Conclusion,
-			ObservedAt: observation.ObservedAt,
-		}
-		if current, ok := st.Checks[key]; ok && current == next {
+		return changed
+	})
+}
+
+// applyCheckRun folds one check run into st and reports whether that changed it. A run older than
+// the one st holds of its name (checkRunIDIsOlder), and an observation of the same run that may
+// not replace the held one (observationMayReplace, which ranks a finished run over a running or
+// queued one), change nothing, and neither does one st already holds.
+func applyCheckRun(st *State, observation contracts.CIObservation) bool {
+	if st.Checks == nil {
+		st.Checks = map[string]Check{}
+	}
+	key := observation.CheckName
+	if current, ok := st.Checks[key]; ok {
+		if checkRunIDIsOlder(observation.CheckRunID, uint64(current.CheckRunID)) ||
+			(observation.CheckRunID == uint64(current.CheckRunID) && !observationMayReplace(observation.ObservedAt, current.ObservedAt, observation.Status, current.Status)) {
 			return false
 		}
-		st.Checks[key] = next
-		rearm(st)
-		st.LastEventAt = time.Now().UnixMilli()
-		return true
-	})
+	}
+	next := Check{
+		Name:       observation.CheckName,
+		CheckRunID: checkRunID(observation.CheckRunID),
+		URL:        observation.URL,
+		Status:     observation.Status,
+		Conclusion: observation.Conclusion,
+		ObservedAt: observation.ObservedAt,
+	}
+	if current, ok := st.Checks[key]; ok && current == next {
+		return false
+	}
+	st.Checks[key] = next
+	rearm(st)
+	st.LastEventAt = time.Now().UnixMilli()
+	return true
 }
 
 // RecordSuite folds a check_suite observation into the per-commit state, waiting for it no longer
@@ -817,9 +900,8 @@ func (s *Store) RecordSuite(ctx context.Context, observation contracts.CIObserva
 }
 
 // recordSuite is the one body both forms of RecordSuite share, and reports whether the
-// observation changed the head's record. It keeps the observation's run count only for a suite
-// that is not completed (Suite.RunCount), so a completed suite is written as it was before the
-// count, and an observation that repeats the stored suite, its count included, changes nothing.
+// observation changed the head's record: an observation that repeats the stored suite changes
+// nothing.
 func (s *Store) recordSuite(ctx context.Context, observation contracts.CIObservation) (bool, error) {
 	return s.update(ctx, observation.Owner, observation.Repo, observation.Number, observation.SHA, "", func(st *State) bool {
 		if st.Suites == nil {
@@ -832,11 +914,8 @@ func (s *Store) recordSuite(ctx context.Context, observation contracts.CIObserva
 			Conclusion: observation.Conclusion,
 			ObservedAt: observation.ObservedAt,
 		}
-		if observation.Status != "completed" {
-			next.RunCount = observation.CheckRunCount
-		}
 		if current, ok := st.Suites[observation.SuiteID]; ok {
-			if !observationMayReplace(observation.ObservedAt, current.ObservedAt, observation.Status, current.Status) || current.sameAs(next) {
+			if !observationMayReplace(observation.ObservedAt, current.ObservedAt, observation.Status, current.Status) || current == next {
 				return false
 			}
 		}
@@ -1015,7 +1094,9 @@ func (s *Store) casState(key string, apply func(st *State) (ok bool, err error))
 
 // ClaimSettlement atomically acquires the right to publish a ready state
 // generation without changing that generation, after re-reading the durable
-// state. It applies due to the durable record, not the cache snapshot.
+// state. It applies due to the durable record, not the cache snapshot. A store
+// with verify on marks the claim Verify, so every replica gives it the longer
+// life a claim waiting for a GitHub read needs (claimWindow).
 func (s *Store) ClaimSettlement(key, expectedHash string, expectedGeneration uint64, now int64, debounce time.Duration) (State, bool, error) {
 	state, claimed, err := s.casState(key, func(state *State) (bool, error) {
 		if state.Claim != nil ||
@@ -1027,7 +1108,8 @@ func (s *Store) ClaimSettlement(key, expectedHash string, expectedGeneration uin
 		state.Claim = &SettlementClaim{
 			Hash:       expectedHash,
 			Generation: expectedGeneration,
-			ClaimedAt:  time.Now().UnixMilli(),
+			ClaimedAt:  s.clock().UnixMilli(),
+			Verify:     s.verify,
 		}
 		return true, nil
 	})
@@ -1037,9 +1119,28 @@ func (s *Store) ClaimSettlement(key, expectedHash string, expectedGeneration uin
 	return state, true, nil
 }
 
-// ClaimStillHeld verifies from durable KV that this exact snapshot retains the
-// settlement right immediately before an external publication.
-func (s *Store) ClaimStillHeld(key string, generation uint64, hash string) (bool, error) {
+// ClaimStillHeld is the authorization point of a settlement: the last check before the summary
+// loop publishes one (publish), and the one it makes on a fresh read of the durable record rather
+// than on the cache. It answers whether this exact snapshot still holds the settlement right: the
+// claim of generation is on the record with the snapshot hash, the record still hashes to it, and
+// no settlement of it has been marked.
+//
+// requested is the revision of the verify request the claim's holder wrote for this claim
+// (verify.go), and zero where it wrote none, which is a listener with ENVOY_CI_VERIFY off: that
+// check is the one every listener before verify made, and now and debounce are not read. A
+// request also needs the claim live at now, with more than claimMargin of its life left
+// (claimLive), so an answer for a claim that has run out authorizes nothing whether or not a
+// replica has reclaimed it yet.
+// It also needs the record's VerifiedRev at or past requested and its VerifiedStream the identity
+// of the stream the bucket is held in now (read fresh, streamIdentity), so Dispatch read the head
+// from GitHub after the request, in the stream the request is of; VerifiedRev below the record's
+// own revision, which holds of every answer of the record's stream, since the answer's write lands
+// after the request it answers; and the record still ready to settle (settlementReady) on what
+// that read merged into it. A webhook the listener fails to write after this read, and a run
+// GitHub creates after it, come after the settlement, as a run created after a settlement always
+// did: their observation re-arms the record when it lands, and the head settles again,
+// superseding this one.
+func (s *Store) ClaimStillHeld(key string, generation uint64, hash string, requested uint64, now int64, debounce time.Duration) (bool, error) {
 	kv := s.kv()
 	entry, err := kv.Get(key)
 	if err != nil {
@@ -1049,16 +1150,30 @@ func (s *Store) ClaimStillHeld(key string, generation uint64, hash string) (bool
 	if err := json.Unmarshal(entry.Value(), &state); err != nil {
 		return false, err
 	}
-	return !state.SettledEmitted &&
+	held := !state.SettledEmitted &&
 		state.Generation == generation &&
 		state.Claim != nil &&
 		state.Claim.Generation == generation &&
 		state.Claim.Hash == hash &&
-		state.Hash() == hash, nil
+		state.Hash() == hash
+	if requested == 0 {
+		return held, nil
+	}
+	if !held || !claimLive(state.Claim, now, debounce) || state.VerifiedRev < requested || state.VerifiedRev >= entry.Revision() || !settlementReady(state) {
+		return false, nil
+	}
+	read, cancel := context.WithTimeout(context.Background(), recordWait)
+	defer cancel()
+	stream, err := streamIdentity(read, kv)
+	if err != nil {
+		return false, err
+	}
+	return state.VerifiedStream == stream, nil
 }
 
 // ReclaimSettlement releases a claim from a replica that died before publish.
-// The caller determines the stale threshold from its configured debounce.
+// The caller determines the stale threshold from its configured debounce and
+// the claim's kind (claimWindow).
 func (s *Store) ReclaimSettlement(key string, generation uint64, staleBefore int64) (bool, error) {
 	_, reclaimed, err := s.casState(key, func(state *State) (bool, error) {
 		if state.Claim == nil ||
@@ -1117,9 +1232,18 @@ func (s *Store) markOverflowed(key string) error {
 	return err
 }
 
-// settlementReady reports whether st can settle: every check and suite it holds is terminal, one
-// check has a run id, and the record holds every check of its commit, which an overflowed one does
-// not.
+// githubActionsAppID is the id of the GitHub App GitHub Actions runs as (15368), the same on every
+// repository. An Actions suite that is not completed holds the head, run or none (suiteHolds). No
+// path records such a suite, before or after this change: a repository or organization webhook
+// receives only completed check suites, a check_run delivery records its run and not its suite,
+// and Dispatch's CI reconcile skips every suite that is not completed. So the rule guards only a
+// record written before this change, should one hold such a suite. Keeping a head from settling
+// before its workflow's first run is a separate change.
+const githubActionsAppID = "15368"
+
+// settlementReady reports whether st can settle: every check it holds is terminal, one check has
+// a run id, no suite holds it (suiteHolds), and the record holds every check of its commit, which
+// an overflowed one does not.
 func settlementReady(st State) bool {
 	if st.Overflowed || !terminal(st) {
 		return false
@@ -1128,11 +1252,32 @@ func settlementReady(st State) bool {
 		return false
 	}
 	for _, suite := range st.Suites {
-		if suite.Status != "completed" {
+		if suiteHolds(suite) {
 			return false
 		}
 	}
 	return true
+}
+
+// suiteHolds reports whether suite holds its head from settling: it is not completed, and it is
+// GitHub Actions' (githubActionsAppID) or the record names no App for it, which fails safe, since
+// such a suite may be Actions'; no writer records one today. Every recorded run holds the head
+// until it finishes, whatever its suite (terminal). Another App's suite that is not completed
+// holds nothing: GitHub creates a suite for each App that may write checks, on every push,
+// whether or not the App ever adds a run, and a suite completes only through its runs, so the
+// suite of an App that adds none stays queued for ever.
+//
+// No new suite that is not completed enters a record: the webhook route takes no requested or
+// rerequested check_suite delivery (contracts.GithubCIObservations), which is the only delivery
+// that carries one, and Dispatch's CI reconcile records only completed suites. So this rule
+// governs the records written before that, for their seven-day life (WithTTL). A head such a
+// suite held settles at the first summary pass that finds its record in the store's copy
+// (attachSummary, StartSummaryLoop), with no new webhook.
+func suiteHolds(suite Suite) bool {
+	if suite.Status == "completed" {
+		return false
+	}
+	return suite.AppID == "" || suite.AppID == githubActionsAppID
 }
 
 // hasCheckRunID reports whether one of st's checks has a run id; a record whose checks have none

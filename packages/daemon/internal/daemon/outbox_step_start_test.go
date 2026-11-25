@@ -28,7 +28,7 @@ const stepStartLinter claim.Role = "linter"
 func seedStepStartPlan(t *testing.T, pool *store.Pool, records record.Store, at int) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		v := record.PlanVersion{Issue: stepStartKey, Generation: 2, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
 			GivenBy: mustClaimToken(t, stepStartKey, claim.RoleArchitect), GivenAt: time.Now().UTC()}
 		task := record.PlanTask{Issue: stepStartKey, Generation: 2, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
@@ -65,6 +65,7 @@ func seedStepStartPlan(t *testing.T, pool *store.Pool, records record.Store, at 
 // reaches it. The control is the same row with the task at the linter's own step 3, which starts
 // the linter.
 func TestAStartOfAnotherStepsRoleFinishesWithoutActing(t *testing.T) {
+	t.Parallel()
 	const lintTask = "Lint it. Issue: LEGION-208. Phase: step."
 	for _, tc := range []struct {
 		name   string
@@ -135,6 +136,7 @@ func TestAStartOfAnotherStepsRoleFinishesWithoutActing(t *testing.T) {
 // as every role whose step has ended does. The control is the same start with the task left at
 // step 3, which starts the linter and hands it its task.
 func TestALateStartWhoseStepTheTaskLeftSpawnsNoProcess(t *testing.T) {
+	t.Parallel()
 	const lintTask = "Lint it. Issue: LEGION-208. Phase: step."
 	for _, tc := range []struct {
 		name   string
@@ -164,7 +166,7 @@ func TestALateStartWhoseStepTheTaskLeftSpawnsNoProcess(t *testing.T) {
 				// spawn: the move of the task lands here.
 				provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
 					if tc.moves {
-						if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+						if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 							return records.MoveTask(ctx, tx, stepStartKey, 2, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning)
 						}); err != nil {
 							t.Errorf("move the task back to step 2: %v", err)
@@ -218,6 +220,7 @@ func TestALateStartWhoseStepTheTaskLeftSpawnsNoProcess(t *testing.T) {
 // its own step 3; the checker's task is held at step 2. The rest of the rule is
 // TestPhaseHoldsAnswersFromTheIssuesCurrentPhase's.
 func TestPhaseHoldsAnswersFromTheRoleOfTheRunningStep(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		at   int

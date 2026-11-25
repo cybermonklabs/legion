@@ -73,6 +73,7 @@ func startRun(t *testing.T, handler http.Handler, project, issue, task, role str
 // handler that reads the needs from the document (its read fails), and a reader that answers [] for
 // a node with none (the default task's needs are not null).
 func TestTheStepsOfAnIssueListThePlansTasks(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	owner := createTestIssue(t, handler, "LEG", "A run of steps")
 	defaults := createAdvancingIssue(t, handler, map[string]any{"project": "LEG", "title": "Another run of steps"}, "alice").Key
@@ -135,6 +136,7 @@ func TestTheStepsOfAnIssueListThePlansTasks(t *testing.T) {
 // run; the control is the state taken from the runs of every generation, under which the reviewer
 // of generation 2 reads passed.
 func TestAPlannedStepStandsWhereTheRunsOfItsOwnGenerationStand(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSessionOf("LEG")
@@ -185,6 +187,7 @@ func TestAPlannedStepStandsWhereTheRunsOfItsOwnGenerationStand(t *testing.T) {
 // The fault is a run of another step at the same place read as the step's; the control is the same
 // sequence with that run's role the tester's, under which the tester reads stopped.
 func TestAPlannedStepReadsOnlyItsOwnRunsAfterAVersionChangesItsSteps(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	daemon := daemonSessionOf("LEG")
 	planned := func(issue, stoppedRole string) []string {
@@ -227,6 +230,7 @@ func TestAPlannedStepReadsOnlyItsOwnRunsAfterAVersionChangesItsSteps(t *testing.
 // fault is a step matched by the whole word the plan writes, `acceptance:owner`, which no run's
 // role is, so the step reads not started after it passed.
 func TestAPlannedKeyedStepReadsTheRunsOfItsRole(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	daemon := daemonSessionOf("LEG")
 	issue := createTestIssue(t, handler, "LEG", "A plan whose owner accepts the work")
@@ -253,6 +257,7 @@ func TestAPlannedKeyedStepReadsTheRunsOfItsRole(t *testing.T) {
 // is written. The fault is a node that holds a need no task of it answers to; the control is a
 // write that stores the needs it is given unread.
 func TestAPlanWriteRecordsEachTasksNeeds(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSessionOf("LEG")

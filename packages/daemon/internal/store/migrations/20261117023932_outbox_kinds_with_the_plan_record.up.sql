@@ -1,6 +1,5 @@
 -- 20261117023932_outbox_kinds_with_the_plan_record.up.sql — the outbox kind that writes the plan one
--- run of an issue carries out onto Dispatch (plan_record), when the run's work starts and again at
--- each later version of the owner's plan that Legion takes.
+-- run of an issue carries out onto Dispatch (plan_record), when the run's work starts.
 --
 -- The row rides the record lane (internal/record's LaneRecord) beside the step records, so a
 -- Dispatch that is slow to take a plan, or that backs one off until it has the route, holds no

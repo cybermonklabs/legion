@@ -40,7 +40,7 @@ func heldPlanTasks(t *testing.T, tx pgx.Tx) {
 func refusedEach(t *testing.T, st *store.Store, writes []refusedWrite) {
 	t.Helper()
 	for _, write := range writes {
-		err := st.Tx(context.Background(), write.write)
+		err := store.Transact(context.Background(), st.Pool(), func(ctx context.Context, tx pgx.Tx) error { return write.write(tx) })
 		var pgErr *pgconn.PgError
 		switch {
 		case err == nil:

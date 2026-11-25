@@ -54,6 +54,7 @@ func podWaitHeldNotices(t *testing.T, r *idleRig) []string {
 // controller is told once for each streak of that hold, with what holds the pod, and told again
 // only when a later streak begins.
 func TestAnOperatorsSuspensionThatHoldsAWaitingPodIsToldOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	t.Run("a start waits for the pod", func(t *testing.T) {
 		rig := newIdleRig(t)

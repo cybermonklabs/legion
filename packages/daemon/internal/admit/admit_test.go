@@ -721,13 +721,12 @@ func TestTheBootListingOfATitleHoldingNULWritesNothingTheRecordAlreadyHolds(t *t
 	before := written()
 
 	listed := []intake.DispatchIssue{intake.ListedIssue(dispatch.IssueSummary{Key: "LEGION-3", Title: title, Status: "todo", Rank: "C", HandedOver: handed, LastSeq: 2, ResolvedRepo: "acme/widgets"})}
-	scoped, committed := intake.WithCommitHooks(ctx)
-	if err := pgx.BeginFunc(scoped, facts, func(tx pgx.Tx) error {
-		return admission.Reconcile(scoped, tx, listed, 2, intake.DispatchConsumerPosition{AckFloorStream: 2, Idle: true})
+	if err := store.Transact(ctx, facts, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := admission.Reconcile(ctx, tx, listed, 2, intake.DispatchConsumerPosition{AckFloorStream: 2, Idle: true})
+		return err
 	}); err != nil {
 		t.Fatalf("reconcile the boot listing: %v", err)
 	}
-	committed()
 	if after := written(); after != before {
 		t.Fatalf("the boot listing of the title the record holds wrote the record again (xmin %s, then %s), want no write", before, after)
 	}
@@ -1004,6 +1003,11 @@ func TestReadmissionClearsTheGenerationOfEveryIssueOfTheTree(t *testing.T) {
 		if err := records.PutGate(context.Background(), tx, record.DesignGate{Issue: "LEGION-CHILD", ArtifactID: "artifact-child", LatestVersion: 2}); err != nil {
 			t.Fatalf("seed the child's gate: %v", err)
 		}
+		// What the child's holders took of the old generation's gate goes with that gate.
+		if err := records.RaiseTold(context.Background(), tx, "LEGION-CHILD", record.AudienceHolder,
+			[]record.NewsItem{{Step: record.DesignStepSpec, To: 2}}, fixedNow); err != nil {
+			t.Fatalf("seed what the child's holder took: %v", err)
+		}
 		if err := records.PutPhase(context.Background(), tx, record.PhaseRow{Issue: "LEGION-CHILD", Role: claim.RoleImplementer, Claim: "implementer-claim", HandoffCommit: "abc123", Rounds: 2, Verdict: "pass"}); err != nil {
 			t.Fatalf("seed the child's handoff: %v", err)
 		}
@@ -1028,6 +1032,13 @@ func TestReadmissionClearsTheGenerationOfEveryIssueOfTheTree(t *testing.T) {
 		}
 		if len(gates) != 0 {
 			t.Errorf("the child kept the last generation's design gate: %#v", gates)
+		}
+		told, err := records.TreeTold(context.Background(), tx, "LEGION-LINGER")
+		if err != nil {
+			t.Fatalf("read what the tree's holders took: %v", err)
+		}
+		if len(told) != 0 {
+			t.Errorf("the child kept what its holder took of the last generation's gate: %#v", told)
 		}
 		phases, err := records.Phases(context.Background(), tx, "LEGION-CHILD")
 		if err != nil {

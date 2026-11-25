@@ -37,6 +37,7 @@ const taskCopiesMigration = "_task_copies.up.sql"
 // hand: record.PlanTask.BranchOf answering legion/<KEY>.default for a row that holds none; the
 // reviewer's task then names that branch, and the check of its working copy line fails.
 func TestAnIssueThatRunsAtTheReleaseKeepsItsWorkingCopy(t *testing.T) {
+	t.Parallel()
 	r := newCopiesUpgradeRig(t)
 	ctx := context.Background()
 	r.work(claim.RoleTester, "test", testCompletion, phase.Reviewing)
@@ -104,7 +105,7 @@ func newCopiesUpgradeRig(t *testing.T) *sliceFourRig {
 	}
 	r.cfg.DispatchURL = r.dispatch.base
 	r.person(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Task copies"}, http.StatusCreated, nil)
-	r.person(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
+	r.person(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
 	const title = "Task copies issue continues"
 	var created struct {
 		Key     string `json:"key"`

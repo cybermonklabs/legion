@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -500,20 +501,19 @@ func (s *server) workerToken(ctx context.Context, issue string, role claim.Role)
 	if s.pool == nil || s.records == nil {
 		return record.WorkerClaim(s.project, issue, role, nil)
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	var token claim.Token
+	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := s.records.Phases(ctx, tx, issue)
+		if err != nil {
+			return err
+		}
+		token, err = record.WorkerClaim(s.project, issue, role, rows)
+		return err
+	})
 	if err != nil {
 		return "", err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	rows, err := s.records.Phases(ctx, tx, issue)
-	if err != nil {
-		return "", err
-	}
-	token, err := record.WorkerClaim(s.project, issue, role, rows)
-	if err != nil {
-		return "", err
-	}
-	return token, tx.Commit(ctx)
+	return token, nil
 }
 
 // worksStep is the standing of a request on token, the claim the route read as the worker on
@@ -878,16 +878,16 @@ func (s *server) worksPhase(ctx context.Context, recorded *record.Issue, role cl
 	if !record.HeldFor(*recorded, record.HoldTaskStopped) {
 		return false, nil
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	var works bool
+	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		stopped, ok, err := s.records.StoppedStep(ctx, tx, *recorded)
+		works = ok && stopped.Role == role
+		return err
+	})
 	if err != nil {
 		return false, err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	stopped, ok, err := s.records.StoppedStep(ctx, tx, *recorded)
-	if err != nil {
-		return false, err
-	}
-	return ok && stopped.Role == role, tx.Commit(ctx)
+	return works, nil
 }
 
 // machineRetry is the retry an architect or a phase worker that runs nothing gets from its own

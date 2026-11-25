@@ -392,7 +392,7 @@ var heldSentences = map[record.HeldReason]heldSentence{
 	}},
 	record.HeldAcceptedAncestor: {states: []api.WhyState{api.WhyUnlisted}, sentence: func(heldBy string) string {
 		return "The daemon has accepted the head of " + heldBy + " that the last step of its task passed, and " + heldBy + " stands above it, " +
-			"so nothing of its own work starts before that issue closes."
+			"so nothing of its own work starts while that issue stands in retro or merging."
 	}},
 	record.HeldChildrenBeforeRetro: {states: []api.WhyState{api.WhyUnlisted}, sentence: func(heldBy string) string {
 		return "It passed the last step of its task, and its plan has no acceptance step, so the daemon holds it before its retro " +

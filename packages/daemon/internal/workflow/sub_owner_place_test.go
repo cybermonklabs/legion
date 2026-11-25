@@ -68,8 +68,7 @@ func partsVersion(t *testing.T, key string, generation uint64, kind versionKind,
 func startsAtItsParts(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
 	t.Helper()
 	onStored(t, pool, engine, key, func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-		_, err := engine.startReady(ctx, tx, issue)
-		return err
+		return engine.startReadyNow(ctx, tx, issue.Key)
 	})
 	assertWaits(t, tasksOf(t, pool, engine, key), "f", atParts, record.StepWaitJoin)
 	joinEnds(t, pool, engine, key, "f")
@@ -177,8 +176,7 @@ func TestASubOwnersVersionDependsOnWhereItsTaskStands(t *testing.T) {
 				if err := engine.store.MoveTask(ctx, tx, issue.Key, issue.Generation, "a", atStep(1), record.TaskDone); err != nil {
 					return err
 				}
-				_, err := engine.startReady(ctx, tx, issue)
-				return err
+				return engine.startReadyNow(ctx, tx, issue.Key)
 			})
 			assertWaits(t, tasksOf(t, pool, engine, root.Key), "f", atParts, record.StepWaitJoin)
 			joinEnds(t, pool, engine, root.Key, "f")
@@ -307,8 +305,7 @@ func TestAReleasedTaskStartsItsWaitingPart(t *testing.T) {
 	seedSlot(t, pool, record.Slot{Issue: root.Key, Index: 0})
 	seedOwnedVersion(t, pool, root.Key, root.Generation, subOwned("f"), part("f1", "f"), part("f2", "f").at(record.TaskDone, atStep(1)))
 	onStored(t, pool, engine, root.Key, func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-		_, err := engine.startReady(ctx, tx, issue)
-		return err
+		return engine.startReadyNow(ctx, tx, issue.Key)
 	})
 	joinEnds(t, pool, engine, root.Key, "f")
 	assertTask(t, tasksOf(t, pool, engine, root.Key), "f1", record.TaskRunning, atStep(1))
@@ -354,8 +351,7 @@ func TestAPartStartsWhereItsTasksJoinEndsAtAnyEntry(t *testing.T) {
 	seedOwnedVersion(t, pool, root.Key, root.Generation, stepped("a", "implementer").at(record.TaskDone, atStep(1)), subOwned("f", "a"), part("f1", "f"))
 	seedTaskBranch(t, pool, root.Key, "a", "legion/"+root.Key)
 	onStored(t, pool, engine, root.Key, func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-		_, err := engine.startReady(ctx, tx, issue)
-		return err
+		return engine.startReadyNow(ctx, tx, issue.Key)
 	})
 	assertWaits(t, tasksOf(t, pool, engine, root.Key), "f", atParts, record.StepWaitJoin)
 	if rows := taskBranchRowsOf(t, pool, root.Key); !slices.Equal(rows, []string{"f"}) {

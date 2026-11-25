@@ -15,24 +15,27 @@ import (
 )
 
 // Standing is the part of a start's task that names where the started worker's work stands, as
-// standingPart writes it, in two parts a task places apart. Its lines are the daemon's: the
+// standingPart writes it, in three parts a task places apart. Its lines are the daemon's: the
 // working copy line for every start, and for an issue with plan rows the task, the worker's step
 // in it, the task's steps and the report of each earlier step, which a task places right after
-// its continue line. Its owners part is a step worker's alone: the text of the task's block, which
-// the owner of the issue wrote in a version of the plan document and which a task places last of
-// what it composes, after every line of the daemon's, inside a fence (ownersText), so a line of
-// that text shaped like one of the daemon's labels is never read as the daemon's; the queue adds
-// the two sentences of a reviewer's round after the fence (namingTheReviewRound, queuedRow). It has
-// a type of its own, so a caller of task passes the one writer's part and no other string in its
-// place. A package outside this one gets a value of it from WorkingCopy alone.
+// its continue line. Its pull request part is the daemon's too: the pull request of the worker's
+// task (pullRequestPart), which a start places after the report of the step before it (task) and a
+// resume right after the lines (resumeText). Its owners part is a step worker's alone: the text of
+// the task's block, which the owner of the issue wrote in a version of the plan document and which
+// a task places last of what it composes, after every line of the daemon's, inside a fence
+// (ownersText), so a line of that text shaped like one of the daemon's labels is never read as the
+// daemon's; the queue adds the two sentences of a reviewer's round after the fence
+// (namingTheReviewRound, queuedRow). It has a type of its own, so a caller of task passes the one
+// writer's part and no other string in its place. A package outside this one gets a value of it
+// from WorkingCopy alone.
 type Standing struct {
-	lines, owners string
+	lines, pull, owners string
 }
 
-// String is the standing as one text, its lines then its owners part: a task places the two
-// apart (task, resumeText), so this is for a reader that holds a standing alone, such as a
-// test of WorkingCopy.
-func (s Standing) String() string { return s.lines + s.owners }
+// String is the standing as one text, its lines, its pull request part, then its owners part: a
+// task places the three apart (task, resumeText), so this is for a reader that holds a standing
+// alone, such as a test of WorkingCopy.
+func (s Standing) String() string { return s.lines + s.pull + s.owners }
 
 // WorkingCopy is the standing of a start of an issue with no plan rows, its working copy line
 // alone: ` Working copy: branch legion/<KEY>, directory <dir>.`, with the directory dir gives the
@@ -98,12 +101,21 @@ func ownersText(text string) string {
 // review step, and each reads the runs of the steps and their reports from Dispatch
 // (`dispatch steps`), which keeps every run, the failed ones too.
 //
+// Every start, and every resume, names the pull request of s's task (pullRequestPart): a task of a
+// plan its own row, and an issue with no plan rows the row of its merge (taskPullRequest). A worker
+// resumed in a fresh session has no earlier task to read the number from, and with none it would
+// read the pull request on legion/<KEY>, which is another task's wherever that task holds the
+// issue's own branch. pull is that row as the start's handler has it (taskPull): the row it read to
+// judge its move, which the standing names with no read of its own, so the transaction reads the
+// row once; or none read, which is read here.
+//
 // The phase the worker starts in is the phase of s's copy, which each caller has put there before
 // it composes the task, and s's walk is the walk of its task as the caller read it, after any move
-// of its task (moveTask). A run with plan rows whose line holds no place in that phase is
-// refused: no start of such a run names one, and a task that named none would read as an issue
-// with no plan rows.
-func (e *Engine) standingPart(ctx context.Context, tx pgx.Tx, s TaskScope) (Standing, error) {
+// of its task (moveTask). What the plan tells the step is read on s's plan, which the caller read
+// in its transaction, or the start read again once it gave the task its branch (startTaskCopy). A
+// run with plan rows whose line holds no place in that phase is refused: no start of such a run
+// names one, and a task that named none would read as an issue with no plan rows.
+func (e *Engine) standingPart(ctx context.Context, tx pgx.Tx, s TaskScope, pull taskPull) (Standing, error) {
 	issue, w := s.issue, s.walk
 	var rows []record.PhaseRow
 	var told planTold
@@ -112,16 +124,34 @@ func (e *Engine) standingPart(ctx context.Context, tx pgx.Tx, s TaskScope) (Stan
 		if rows, err = e.store.Phases(ctx, tx, issue.Key); err != nil {
 			return Standing{}, err
 		}
-		stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
-		if err != nil {
-			return Standing{}, err
-		}
-		if told, err = planToldOf(issue, stored, w.Task); err != nil {
+		if told, err = planToldOf(issue, s.plan, w.Task); err != nil {
 			return Standing{}, err
 		}
 	}
-	return standingText(issue, e.cfg.WorkspaceDir, w, rows, told)
+	pr := pull.row
+	if !pull.read {
+		var err error
+		if pr, err = e.taskPullRequest(ctx, tx, s); err != nil {
+			return Standing{}, err
+		}
+	}
+	return standingText(issue, e.cfg.WorkspaceDir, w, rows, told, pr)
 }
+
+// taskPull is the pull request of a started step's task as the start has it. A handler that read
+// that row in its transaction to judge its move (a transition: whether the move needs a pull
+// request, the review round, whether GitHub merged it; the retry of a held phase: its review
+// round; a ready task's first start, startReady: the merge forward after it) hands its read on
+// (readPull), and the start's task names that row (standingPart) with no read of its own. Every
+// other start has read none (the zero taskPull), and its standing reads it.
+type taskPull struct {
+	row  *record.PullRequest
+	read bool
+}
+
+// readPull is the pull request of a step's task as its handler read it, nil where the task has
+// none (taskPull).
+func readPull(row *record.PullRequest) taskPull { return taskPull{row: row, read: true} }
 
 // planTold is what a step's task is told from its issue's plan beside the walk of its task
 // (standingPart reads it): base, the base of the task's pull request where the plan gives one other
@@ -180,10 +210,13 @@ func planToldOf(issue record.Issue, stored *record.StoredPlan, task string) (pla
 
 // standingText is standingPart's text for the worker of issue's phase, from the walk w of its
 // run, the directory dir gives each working copy, its phases rows and what its plan tells its
-// step, which only a step's text reads.
-func standingText(issue record.Issue, dir func(record.Issue, string) string, w Walk, rows []record.PhaseRow, told planTold) (Standing, error) {
+// step, which only a step's text reads, and pr, the pull request of its task, nil for none.
+func standingText(issue record.Issue, dir func(record.Issue, string) string, w Walk, rows []record.PhaseRow, told planTold, pr *record.PullRequest) (Standing, error) {
+	pull := pullRequestPart(issue, pr)
 	if !w.Stored {
-		return WorkingCopy(issue, dir), nil
+		at := WorkingCopy(issue, dir)
+		at.pull = pull
+		return at, nil
 	}
 	at := taskWorkingCopy(issue, w.Branch, dir)
 	place, ok := w.placeIn(issue.Phase)
@@ -195,7 +228,7 @@ func standingText(issue record.Issue, dir func(record.Issue, string) string, w W
 	// The task merges where its line ends with the retro and the merge after its steps (Walk.steps).
 	merges := len(w.steps()) < len(w.Line)
 	if place.Kind != record.PlaceStep {
-		return Standing{lines: lines + stepsLine(words, merges)}, nil
+		return Standing{lines: lines + stepsLine(words, merges), pull: pull}, nil
 	}
 	lines += fmt.Sprintf(" Step %d of %d: %s.", place.Position, len(w.Steps), words[place.Position-1])
 	lines += stepsLine(words, merges)
@@ -210,7 +243,31 @@ func standingText(issue record.Issue, dir func(record.Issue, string) string, w W
 		lines += pullRequestBase(told.base)
 	}
 	lines += reportsBefore(rows, w, words, place.Position)
-	return Standing{lines: lines, owners: ownersText(strings.TrimSpace(w.Text))}, nil
+	return Standing{lines: lines, pull: pull, owners: ownersText(strings.TrimSpace(w.Text))}, nil
+}
+
+// pullRequestPart is what the worker of issue's phase is told of pr, the pull request of its task
+// (Standing.pull): ` Pull request: #<n>.`, nothing where its task has none. A merger in merging at
+// the head a merge forward landed past the review, while the review that landing asked of the
+// reviewer stands for that head (mergeForwardReviewOwed), is told after it to merge that head only
+// once the reviewer's approval of it is on the pull request: the daemon records no decision outside
+// reviewing, so the approval is the merger's to read on GitHub. A merger resumed in a fresh
+// session is told the same as one started at retro's completion, the one move into merging, or at
+// the retry of a held merging (retryPhase): each composes its task from the row its own
+// transaction reads (standingPart), so the part says what the record holds.
+func pullRequestPart(issue record.Issue, pr *record.PullRequest) string {
+	if pr == nil {
+		return ""
+	}
+	var text string
+	if pr.Number != 0 {
+		text = fmt.Sprintf(" %s: #%d.", pullRequestLabel, pr.Number)
+	}
+	if issue.Phase == phase.Merging && mergeForwardReviewOwed(*pr) {
+		text += fmt.Sprintf(" Head %s is the merge of %s forward that landed after the review, and the reviewer is asked to read it: merge head %s only once the reviewer's approval of it is on the pull request.",
+			pr.HeadSHA, pr.MergeForward.Base, pr.HeadSHA)
+	}
+	return text
 }
 
 // stepsLine is ` Steps: 1 <role>, 2 <role>, ….`: each step of a task by its place, words, the steps

@@ -342,8 +342,10 @@ test(
 
 // A Ctrl-C reaches the run's whole process group: the container stops at once, and the stand-in
 // stack - a job the script started in the background, which a non-interactive shell starts with
-// SIGINT ignored - does not, so the script's own INT trap must stop it. (The real harness keeps a
-// SIGINT listener of its own; this row holds the script's trap, not the harness's.) The run goes
+// SIGINT ignored - does not, so the script's own INT trap must stop it. (The real harness arms no
+// SIGINT listener when it is started with SIGINT ignored, as it is here, where it can read that
+// from its `SigIgn` mask; where it cannot, it arms one, as on main (`armsStopListener` in
+// e2e/signal-ignores.ts). Either way the script's trap stops it; this row holds that trap.) The run goes
 // in a session of its own (`setsid`), so the signal reaches the run's group, read from the
 // container's pid, and not this test's; it waits for the container to start. The group is
 // signalled with `/usr/bin/kill -s INT -- -PGID`. The second run names an `--output` that starts

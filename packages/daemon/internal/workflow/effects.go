@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -237,6 +238,31 @@ func queuedRow(ctx context.Context, tx pgx.Tx, store record.Store, issue string,
 	return record.NewOutboxRow(issue, start, at)
 }
 
+// ReviewerTask is task as the reviewer of issue is given it now: task followed by the daemon's two
+// sentences of its review round (namingTheReviewRound), read from the phase the issue stands in and
+// the reviewer's phases row as tx holds them. The daemon's start executor names a start of the
+// reviewer queued for news alone through it, which carries no task for the queue to name and is
+// composed only when it runs (the daemon's newsForStart). The queue names each reviewer's start
+// it queues the same way, over the reads it makes for the start's branch too (queuedRow).
+func ReviewerTask(ctx context.Context, tx pgx.Tx, store record.Store, issue, task string) (string, error) {
+	standing, err := store.Issue(ctx, tx, issue)
+	if err != nil {
+		return "", err
+	}
+	// An issue the record does not hold stands in no phase and holds no row, so its reviewer's
+	// task names neither a commit nor an entry.
+	var standsIn phase.Phase
+	var row record.PhaseRow
+	if standing != nil {
+		rows, err := store.Phases(ctx, tx, issue)
+		if err != nil {
+			return "", err
+		}
+		standsIn, row = standing.Phase, record.PhaseRowOf(rows, claim.RoleReviewer)
+	}
+	return namingTheReviewRound(task, claim.RoleReviewer, standsIn, row), nil
+}
+
 // status queues the Dispatch write for a status the workflow has just given issue. reason is the
 // text the write posts on the issue before the status lands (record.StatusWrite.Reason), which
 // transition gives only for a move nothing else on Dispatch explains (moveReason), and is empty
@@ -333,16 +359,16 @@ func (e *Engine) noticeWithController(ctx context.Context, tx pgx.Tx, issue stri
 	return e.enqueue(ctx, tx, issue, record.ControllerNotice(notice))
 }
 
-// logOnCommit writes one Info line once the fact's transaction commits (intake.OnCommit), so a
+// logOnCommit writes one Info line once the fact's transaction commits (store.OnCommit), so a
 // fact rolled back writes nothing and one retried after a failed commit writes it once.
 func (e *Engine) logOnCommit(ctx context.Context, msg string, args ...any) {
-	intake.OnCommit(ctx, func() { e.log.Info(msg, args...) })
+	store.OnCommit(ctx, func() { e.log.Info(msg, args...) })
 }
 
 // warnOnCommit is logOnCommit at Warn, for a committed fact that stalls a round and tells nobody
 // else: a log monitor keys on it where an Info line would drown.
 func (e *Engine) warnOnCommit(ctx context.Context, msg string, args ...any) {
-	intake.OnCommit(ctx, func() { e.log.Warn(msg, args...) })
+	store.OnCommit(ctx, func() { e.log.Warn(msg, args...) })
 }
 
 // refused is a committed 409: the fact changed nothing, and the caller is told why.
@@ -445,7 +471,9 @@ const testerVerdictLabel = "Tester's verdict"
 // for a worker it starts: a phase that starts nobody is told no task, and done, which holds no
 // place in the line of an issue's plan, has no standing to name. s is the scope of the started
 // task as its caller read it, after any move of its task (moveTask), which the standing and the
-// entry read in place of a read of their own: a transition reads its walk once.
+// entry read in place of a read of their own: a transition reads its walk once. pull is the pull
+// request of s's task as the caller read it (readPull), or none read (taskPull), which the
+// standing names and reads only where none was read.
 //
 // Every start of a run with plan rows names the claim of its step's agent (startRequest), which
 // the entry writes on the role's phases row, whatever the plan's count of tasks: two tasks' steps
@@ -461,7 +489,7 @@ const testerVerdictLabel = "Tester's verdict"
 // agent instead (waitForAgent), and nothing of it starts: no entry is raised, no start is counted
 // and no start is queued. The settle hands the agent on when it is free (handOnAgents), through
 // this function again. A run with no plan rows passes no agent's check: its walk names no agent.
-func (e *Engine) start(ctx context.Context, tx pgx.Tx, s TaskScope, role claim.Role, told func(Standing) string, movedBack bool) error {
+func (e *Engine) start(ctx context.Context, tx pgx.Tx, s TaskScope, role claim.Role, pull taskPull, told func(Standing) string, movedBack bool) error {
 	if waits, err := e.mergeWaitsForBase(ctx, tx, &s); err != nil || waits {
 		return err
 	}
@@ -484,7 +512,7 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, s TaskScope, role claim.R
 	if err != nil || waits {
 		return err
 	}
-	at, err := e.standingPart(ctx, tx, s)
+	at, err := e.standingPart(ctx, tx, s, pull)
 	if err != nil {
 		return err
 	}
@@ -641,7 +669,7 @@ func (e *Engine) retroFollowsItsStep(ctx context.Context, tx pgx.Tx, s TaskScope
 // with it.
 func (e *Engine) joinNeeds(ctx context.Context, tx pgx.Tx, s *TaskScope, role claim.Role) (bool, error) {
 	issue, w := s.issue, &s.walk
-	queued, err := e.startTaskCopy(ctx, tx, *s)
+	queued, err := e.startTaskCopy(ctx, tx, s)
 	if err != nil {
 		return false, err
 	}
@@ -762,17 +790,17 @@ func childArchitectStart(issue record.Issue) record.SuperviseRequest {
 // whose turn then ended holds that entry as its given one and no pending delivery, so the entry
 // test alone would decline the retry's task and relaunch the worker with no prompt
 // (supervise.Machine.queue). Its task is told as start's is, from the standing it reads only for
-// a worker it starts.
+// a worker it starts, with pull, the pull request of s's task as the retry read it (readPull).
 //
 // It starts no sub-owner (claim.RoleSubOwner), the role of a task held at its parts: Engine.start
 // starts no role at a task's parts (Walk.RoleAt), so no start of this release names the claim of a
 // sub-owner, and its retry releases the task alone, whose parts that wait then start at the door of
 // the retry (startReadyNow).
-func (e *Engine) restart(ctx context.Context, tx pgx.Tx, s TaskScope, role claim.Role, told func(Standing) string, freshSession bool) error {
+func (e *Engine) restart(ctx context.Context, tx pgx.Tx, s TaskScope, role claim.Role, pull taskPull, told func(Standing) string, freshSession bool) error {
 	if role == "" || role == claim.RoleArchitect || role == claim.RoleSubOwner {
 		return nil
 	}
-	at, err := e.standingPart(ctx, tx, s)
+	at, err := e.standingPart(ctx, tx, s, pull)
 	if err != nil {
 		return err
 	}
@@ -1206,6 +1234,24 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // written (record.PhaseRow.EntryVerbatim), which only the resume of an answered root says. Every
 // raise writes it, so a raise that does not say it clears the mark an earlier entry's resume left.
 //
+// It also takes the baseline of what the issue's holder knows of the approved design: an issue
+// with no holder row (record.DesignTold) is starting its first working phase of its generation —
+// the row goes with the generation (record.Store.ClearGeneration), and the upgrade's seed aside,
+// this is where it is first written — so its row is written at the versions its tree's gate stands
+// approved at now (record.Store.BaselineTold). Its work starts from those versions, so nothing of
+// them is news to it, and a member released after an approval is owed nothing of it. A row
+// already there is left as it stands: a later entry's holder inherits what the issue's earlier
+// holders took, and is owed what was approved since (record.OwedNews).
+//
+// A root architect's entry (EnterArchitect) takes no such baseline. It is no working phase of its
+// root: the root's holder is the worker of its first phase past admitted, which the news holds to
+// that phase's role (record.OwedNews owes a member at admitted nothing), and the architect's own
+// row of the design is taken at the tree's first opening (workflow's putGateTold). The
+// architect's entry comes at the root's admission, before any version is approved, so a holder
+// row written there would hold no version, and the root's first phase worker, whose start would
+// then leave that row as it stands, would be owed as news every version approved before its work
+// began.
+//
 // For an issue with plan rows, a phase worker's raise also writes the step the entry is a run of
 // (record.PhaseRow.StepTask, StepPlace): the walk's task and the place of the step the issue stands
 // in (placeOnWalk), from 1 for a step and 0 for the retro on the implementer's row and the merge on
@@ -1260,12 +1306,16 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, s *TaskScope, role claim.
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return 0, "", err
 	}
-	// Every entry a phase worker is handed is the start of a run of its step: a transition's start
-	// and the promotion's start of a mid-phase member (StartPromotedWorker), under the claim of the
-	// step's agent written on the row above. The architect's own entry is no step of the issue's task.
 	if !worker {
 		return row.Entry, row.EntryTask, nil
 	}
+	if err := e.store.BaselineTold(ctx, tx, issue.Key, record.AudienceHolder, issue.Tree, e.now()); err != nil {
+		return 0, "", err
+	}
+	// Every entry a phase worker is handed is the start of a run of its step: a transition's start
+	// and the promotion's start of a mid-phase member (StartPromotedWorker), under the claim of the
+	// step's agent written on the row above. The architect's own entry, which answered above, is no
+	// step of the issue's task.
 	if step, ok := standingStep(s.walk, issue); ok {
 		if err := e.startStep(ctx, tx, issue, step, agent); err != nil {
 			return 0, "", err
@@ -1319,8 +1369,9 @@ const (
 // task is what a started worker is told. It names the phase the worker starts, which the issue
 // record already holds: one role runs several phases (the implementer runs implementing and
 // retro), and a resumed session cannot otherwise tell a new phase from its last. at is where the
-// worker's work stands (standingPart): its lines are placed right after that line, and the text
-// of its task's block, which the owner of the issue wrote, last of all (Standing.owners).
+// worker's work stands (standingPart): its lines are placed right after that line, its pull request
+// part (pullRequestPart) after the report of the step before, and the text of its task's block,
+// which the owner of the issue wrote, last of all (Standing.owners).
 // The handoff a phase ended with is a Dispatch handoff record on the issue, which the line names by
 // its phase word and version with the command that reads that version, the record the daemon
 // accepted, whatever was written to the phase since; a commit is named, as `Handoff commit:`,
@@ -1336,23 +1387,8 @@ const (
 // handoffReport composes that report. A move back of a task with plan rows passes no row: the
 // report of the step that sent the work back stands in reason, before the move's own, and so after
 // the `Pull request:` line (moveBackReason).
-//
-// A merger started in merging at the head a merge forward landed past the review, while the
-// review that landing asked of the reviewer stands for that head (mergeForwardReviewOwed), is told
-// to merge that head only once the reviewer's approval of it is on the pull request: the daemon
-// records no decision outside reviewing, so the approval is the merger's to read on GitHub. The
-// merger's task is built at retro's completion, the one move into merging, and at the retry of a
-// held merging (retryPhase); each reads the pull request in its own transaction, so pr says what
-// the record holds.
-func task(issue record.Issue, at Standing, handoff record.PhaseRow, pr *record.PullRequest, reason string) string {
-	text := continueLine(issue) + at.lines + handoffReport(issue, handoff)
-	if pr != nil && pr.Number != 0 {
-		text += fmt.Sprintf(" %s: #%d.", pullRequestLabel, pr.Number)
-	}
-	if issue.Phase == phase.Merging && pr != nil && mergeForwardReviewOwed(*pr) {
-		text += fmt.Sprintf(" Head %s is the merge of %s forward that landed after the review, and the reviewer is asked to read it: merge head %s only once the reviewer's approval of it is on the pull request.",
-			pr.HeadSHA, pr.MergeForward.Base, pr.HeadSHA)
-	}
+func task(issue record.Issue, at Standing, handoff record.PhaseRow, reason string) string {
+	text := continueLine(issue) + at.lines + handoffReport(issue, handoff) + at.pull
 	if reason != "" {
 		text += " " + reasonLabel + ": " + sentence(reason)
 	}
@@ -1431,11 +1467,11 @@ func handoffWord(role claim.Role) string {
 // resumeText is what a worker started for a phase already under way is told, at the standing at.
 // No handoff begins that phase — the run that did is over — so the task names the phase and says
 // to carry the work on, which is what a resumed session needs to tell this phase from its last.
-// The standing's lines stand right after the continue line and the text of its task's block
-// last, as a start's task places them (task): a worker resumed in a fresh session has no earlier
-// task to read them from.
+// The standing's lines stand right after the continue line, its pull request part
+// (pullRequestPart) right after them, and the text of its task's block last, as a start's task
+// places them (task): a worker resumed in a fresh session has no earlier task to read them from.
 func resumeText(issue record.Issue, at Standing) string {
-	return continueLine(issue) + at.lines + " Resume the existing phase work." + at.owners
+	return continueLine(issue) + at.lines + at.pull + " Resume the existing phase work." + at.owners
 }
 
 // ResumeTask is the resume task of the worker of s's step, standing where the record holds its
@@ -1450,7 +1486,7 @@ func resumeText(issue record.Issue, at Standing) string {
 // StartOrOwe is for the rows they queue, so that what those cases expect is the text production
 // composes. Production code outside this package adds no caller.
 func (e *Engine) ResumeTask(ctx context.Context, tx pgx.Tx, s TaskScope) (string, error) {
-	at, err := e.standingPart(ctx, tx, s)
+	at, err := e.standingPart(ctx, tx, s, taskPull{})
 	if err != nil {
 		return "", err
 	}
@@ -1472,7 +1508,7 @@ func HeldNotice(ctx context.Context, s record.Store, tx pgx.Tx, issue record.Iss
 		notice.Role = held[0].Role
 		return notice, nil
 	}
-	stopped, ok, err := s.StoppedStep(ctx, tx, issue)
+	stopped, ok, err := copyStoppedStep(ctx, s, tx, issue)
 	if ok {
 		notice.Role = stopped.Role
 	}

@@ -175,7 +175,7 @@ func TestATaskWithNoStepsRunsTheDefaultSteps(t *testing.T) {
 		if r := Supported(p, Deployment{Roles: BuiltinRoles()}); len(r) != 0 {
 			t.Fatalf("Supported(%v) = %+v, want none", attributes, r)
 		}
-		if r := Validate(p, Deployment{Roles: BuiltinRoles()}); len(r) != 0 {
+		if r := validated(t, p, Deployment{Roles: BuiltinRoles()}); len(r) != 0 {
 			t.Fatalf("Validate(%v) = %+v, want none", attributes, r)
 		}
 		if got := StepsOf(p.Tasks[0], defaults); !reflect.DeepEqual(got, defaults) {

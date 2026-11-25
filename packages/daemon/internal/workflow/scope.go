@@ -532,27 +532,24 @@ func (e *Engine) PromotedScope(ctx context.Context, tx pgx.Tx, issue record.Issu
 
 // putScope writes the issue s's copy was read from where its tasks put it, and answers the issue
 // as written. A run with no plan rows is written as given. A run with plan rows stands where its
-// tasks put it (issuePhaseOfTasks, over the plan read again in tx, which holds every write of s's
-// task the caller made before), with the Dispatch status of that phase where it has one and the
-// issue shows another, whatever the plan's count of tasks; a root that waits on a person before its
-// first step stands in awaiting_person over the admitted its tasks derive, and a hold the release
-// before wrote on the issue alone beside s's running task stands (heldBefore). Every writer that
-// holds or stops s's task sets that state on s's walk before it calls, so no other hold of the copy
-// outlives the derivation. s's copy keeps standing where its task stands, takes the status and the
-// run's mark (record.Issue.TakenBack) the write gave the issue, and its plan is the one read.
+// tasks put it (issuePhaseOfTasks over s's plan with s's walk in place of its task's row,
+// planWithWalk), with the Dispatch status of that phase where it has one and the issue shows
+// another, whatever the plan's count of tasks; a root that waits on a person before its first step
+// stands in awaiting_person over the admitted its tasks derive, and a hold the release before wrote
+// on the issue alone beside s's running task stands (heldBefore). It reads no plan: every writer of
+// s's task sets what it wrote on s's walk before it calls, and every reader that writes several
+// tasks in one transaction reads each next scope on the plan the write before left (startReady) or
+// again from the store (releaseHeldRoot, afterVersion, stopLostRoles), so s's plan holds every write
+// of the transaction. s's copy keeps standing where its task stands, takes the status and the run's
+// mark (record.Issue.TakenBack) the write gave the issue, and its plan takes its task's row as
+// written.
 func (e *Engine) putScope(ctx context.Context, tx pgx.Tx, s *TaskScope) (record.Issue, error) {
 	written := s.issue
 	written.ViewTask = ""
 	if s.plan == nil {
 		return written, e.store.PutIssue(ctx, tx, written)
 	}
-	stored, err := e.store.Plan(ctx, tx, written.Key, written.Generation)
-	if err != nil {
-		return record.Issue{}, err
-	}
-	if stored == nil {
-		return record.Issue{}, fmt.Errorf("put %s at generation %d: its plan rows are gone", written.Key, written.Generation)
-	}
+	stored := planWithWalk(s.plan, s.walk)
 	written.Phase, written.Hold = derivedStanding(s.issue, walksOf(written.Key, stored), heldBefore(*s))
 	if status := PhaseStatus(written.Phase); status != "" && status != written.Status {
 		if err := e.status(ctx, tx, written, status, ""); err != nil {
@@ -568,6 +565,31 @@ func (e *Engine) putScope(ctx context.Context, tx pgx.Tx, s *TaskScope) (record.
 	}
 	s.issue.Status, s.issue.TakenBack, s.plan = written.Status, written.TakenBack, stored
 	return written, nil
+}
+
+// planWithWalk is stored with the row of w's task standing where w stands: its state, its place,
+// its stop's and its hold's reasons (each kept only in the state it belongs to), the wait of its
+// step and the reason that step started, the fields the writers of a task write
+// (record.Store.MoveTask, HoldTask, ReleaseTask, StopTask, SetStepWait, SetStartReason). The plan
+// is a copy: stored is left as it was.
+func planWithWalk(stored *record.StoredPlan, w Walk) *record.StoredPlan {
+	next := *stored
+	next.Tasks = slices.Clone(stored.Tasks)
+	for i := range next.Tasks {
+		row := &next.Tasks[i]
+		if row.Task != w.Task {
+			continue
+		}
+		row.State, row.Place, row.StepWait, row.StepWaitSince, row.StartReason = w.State, w.Place, w.Wait, w.WaitSince, w.StartReason
+		row.StoppedReason, row.HoldReason = "", ""
+		if w.State == record.TaskStopped {
+			row.StoppedReason = w.StoppedReason
+		}
+		if w.State == record.TaskHeld {
+			row.HoldReason = w.HoldReason
+		}
+	}
+	return &next
 }
 
 // derivedStanding is where an issue standing as issue stands for its tasks, the walk of each
@@ -667,4 +689,15 @@ func scopeOrNoPlan(issue record.Issue, stored *record.StoredPlan, task string) (
 		return noPlanScope(issue), true
 	}
 	return scopeOn(issue, stored, task)
+}
+
+// copyStoppedStep is the step the stop of issue's task ended (record.Store.StoppedStep): for a copy
+// of the issue read for one task (scopeOn), that task's own (record.Store.StoppedStepOf), and for
+// the issue itself the first stopped task's. It is the one reader of the task a copy is read for
+// outside the readers of this file.
+func copyStoppedStep(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) (record.RunningStep, bool, error) {
+	if issue.ViewTask != "" {
+		return store.StoppedStepOf(ctx, tx, issue, issue.ViewTask)
+	}
+	return store.StoppedStep(ctx, tx, issue)
 }

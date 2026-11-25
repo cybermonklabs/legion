@@ -35,8 +35,9 @@ const (
 	// (Issue.AwaitingPerson, answered or not): the daemon starts no issue of that tree before
 	// that root resumes.
 	HeldRootAwaitingPerson HeldReason = "root_awaiting_person"
-	// HeldDesignGate is an issue of a tree whose design gate stands shut at a step the
-	// deployment gates (TreeGate.Open).
+	// HeldDesignGate is an issue of a tree whose design gate stands shut at a step that holds the
+	// tree (TreeGate.Open over TreeSteps): a step the deployment gates, or a criteria step the root
+	// registered beside a deployment that gates spec and not criteria.
 	HeldDesignGate HeldReason = "design_gate"
 	// HeldDispatchBlocker is an issue an unfinished Dispatch issue holds where it stands
 	// (blockers.Holds, which fills LineFacts.Held).
@@ -45,7 +46,7 @@ const (
 	// work starts while they stand open (LineFacts.ChildWaits).
 	HeldChildrenFirst HeldReason = "children_first"
 	// HeldAcceptedAncestor is an issue beneath an ancestor the daemon has already accepted:
-	// nothing of it starts before that ancestor closes (HeldUnderAccepted).
+	// nothing of it starts while that ancestor stands in retro or merging (HeldUnderAccepted).
 	HeldAcceptedAncestor HeldReason = "accepted_ancestor"
 	// HeldChildrenBeforeRetro is a parent whose plan has no acceptance step, held before its retro
 	// while issues beneath it are still in the workflow (HoldForChildren, HeldForChildren). heldBy

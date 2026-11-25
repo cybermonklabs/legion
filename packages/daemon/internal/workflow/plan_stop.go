@@ -114,7 +114,7 @@ func (e *Engine) stopTask(ctx context.Context, tx pgx.Tx, s TaskScope, why, said
 // (startAtFirstStep), and every other start of that role while the hold stands finishes without
 // acting where every start of a role is run (the daemon outbox's start).
 func StoppedStepRole(ctx context.Context, s record.Store, tx pgx.Tx, issue record.Issue) (claim.Role, error) {
-	stopped, ok, err := s.StoppedStep(ctx, tx, issue)
+	stopped, ok, err := copyStoppedStep(ctx, s, tx, issue)
 	if err != nil || !ok || stopped.Role == claim.RoleArchitect {
 		return "", err
 	}
@@ -135,7 +135,7 @@ func rolesAt(ctx context.Context, s record.Store, tx pgx.Tx, issue record.Issue,
 	if record.StandsAt(issue) != p {
 		return roles, nil
 	}
-	stopped, ok, err := s.StoppedStep(ctx, tx, issue)
+	stopped, ok, err := copyStoppedStep(ctx, s, tx, issue)
 	if err != nil || !ok {
 		return roles, err
 	}
@@ -322,8 +322,11 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 // move back, since it asks for the work again from the first step; at the parts no step's role
 // works the task, so the start only joins its needs. A task started again at its parts with no wait
 // lets its parts that wait start: each caller, the door of its fact, runs startReadyNow once after
-// every task it starts again (afterSeveral, releaseHeldRoot), so no door starts waiting tasks twice.
-// The step the task stood in ended when it stopped (stopTask), so none is ended here. The act is
+// every task it starts again (afterVersion, releaseHeldRoot), so no door starts waiting tasks twice.
+// The step the task stood in ended when it stopped (stopTask), so none is ended here. After the
+// start, the restart does what a move does after its start (releasedIntoPhase): it queues the
+// reconcile of the tree's news, which the hold owed the issue nothing of, and acts on the pull
+// request's merge forward as a move into the phase of the place it started at does. The act is
 // task_restarted, which the log line names: no row of the table moves a held issue.
 //
 // Its callers hand it a stopped task, or the new task of a later version, waiting: a task held
@@ -396,14 +399,19 @@ func (e *Engine) startAtFirstStep(ctx context.Context, tx pgx.Tx, s TaskScope, r
 	if err := e.clearHandoff(ctx, tx, s.issue.Key, role); err != nil {
 		return err
 	}
+	// The pull request of the task, read once: the start's task names it (readPull), and the merge
+	// forward of the release acts on it (releasedIntoPhase).
 	pr, err := e.taskPullRequest(ctx, tx, s)
 	if err != nil {
 		return err
 	}
 	issue := s.issue
-	return e.start(ctx, tx, s, role, func(at Standing) string {
-		return task(issue, at, record.PhaseRow{}, pr, reason)
-	}, true)
+	if err := e.start(ctx, tx, s, role, readPull(pr), func(at Standing) string {
+		return task(issue, at, record.PhaseRow{}, reason)
+	}, true); err != nil {
+		return err
+	}
+	return e.releasedIntoPhase(ctx, tx, s, from, pr)
 }
 
 // scopeWalks is the walk of each task of s's plan, in task id order, with s's own walk in place of

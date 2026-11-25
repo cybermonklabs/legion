@@ -1,11 +1,11 @@
 // A role claim's grant: every grant writes an id of its own into the claim it makes
 // (RoleClaim.GrantID), drawn at random and from no clock, which the holder's renewals, the adoption
 // of a claim that names no process and the hand-back's mark carry over untouched. A hand-back
-// whose mark lost its write reads the claim again and marks it only while that id is the one it
-// read, so a grant made since, in any millisecond, keeps the role it was just given. A claim the
-// release before grant ids stored carries none, and it still renews, releases and is marked; a
-// claim this release stored, which the release before rewrites without the field, is still marked
-// by the hand-back that read it.
+// whose mark lost its write, and a release whose delete lost its write, read the claim again and
+// write again only while that id is the one they read, so a grant made since, in any millisecond,
+// keeps the role it was just given. A claim the release before grant ids stored carries none, and
+// it still renews, releases and is marked; a claim this release stored, which the release before
+// rewrites without the field, is still marked and freed by the release that read it.
 
 package store
 
@@ -339,4 +339,77 @@ func TestAHandBackMarksAClaimTheEarlierReleaseRenewed(t *testing.T) {
 			t.Fatalf("the claim after the hand-back is %+v, want the earlier release's grant %+v standing and unmarked", stood, granted)
 		}
 	})
+}
+
+// The delete's side of the same race: a claim this release granted, which the release before
+// grant ids renews between a release's read of the claim and its conditional delete, dropping the
+// grant id. The delete loses its condition and reads the claim again, and the record it finds
+// carries no grant id, so its moment and its process are what say it is the claim the release
+// read (RoleClaim.sameGrant, asked of the record read again): the release sends its delete again
+// and frees the claim, under the holder's own release and the administrator's force alike.
+// Control: a grant the earlier release made in a later millisecond is left standing.
+func TestAReleaseFreesAClaimTheEarlierReleaseRenewedUnderItsDelete(t *testing.T) {
+	const (
+		role   = "legion-controller"
+		holder = "ses_released_under_an_earlier_release_renewal"
+		beat   = 20 * time.Second
+	)
+	lane := contracts.RoleTopicPrefix + role
+	for name, authority := range map[string]RoleReleaseAuthority{
+		"the holder's own process":  releasedByItsProcess,
+		"the administrator's force": {Force: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Run("the earlier release's renewal under the delete is freed", func(t *testing.T) {
+				reg, advance := grantClock(t, holder, role)
+				claimRoleAs(t, reg, holder, "example-host", role, roleClaimInstance)
+				read := storedRoleClaim(t, reg, role)
+				advance(beat)
+				var renewed RoleClaim
+				racing := raceReleaseWith(t, reg, role, 1, func() {
+					writeAsTheEarlierRelease(t, reg, role, func(claim *earlierReleaseRoleClaim) {
+						claim.RenewedAt = noProcessClaimed.Add(beat).UnixMilli()
+					})
+					renewed = storedRoleClaim(t, reg, role)
+				})
+
+				if _, err := reg.Remove(context.Background(), holder, []string{lane}, authority); err != nil {
+					t.Fatalf("the release: %v", err)
+				}
+
+				if read.GrantID == "" || renewed.GrantID != "" || renewed.ClaimedAt != read.ClaimedAt {
+					t.Fatalf("the claim the release read is %+v and the earlier release's renewal %+v, want a grant id and then none, at the same moment", read, renewed)
+				}
+				if racing.deletes != 2 {
+					t.Fatalf("the release sent %d conditional deletes, want two: the one the earlier release's renewal beat and the one at the revision it left", racing.deletes)
+				}
+				assertClaimFreed(t, reg, role)
+			})
+
+			t.Run("control: the earlier release's grant in a later millisecond is left standing", func(t *testing.T) {
+				reg, advance := grantClock(t, holder, role)
+				claimRoleAs(t, reg, holder, "example-host", role, roleClaimInstance)
+				var granted RoleClaim
+				racing := raceReleaseWith(t, reg, role, 1, func() {
+					advance(time.Hour)
+					writeAsTheEarlierRelease(t, reg, role, func(claim *earlierReleaseRoleClaim) {
+						later := noProcessClaimed.Add(time.Hour).UnixMilli()
+						*claim = earlierReleaseRoleClaim{HolderSessionID: holder, ClaimedAt: later, ClientInstanceID: roleClaimInstance, RenewedAt: later}
+					})
+					granted = storedRoleClaim(t, reg, role)
+				})
+
+				if _, err := reg.Remove(context.Background(), holder, []string{lane}, authority); err != nil {
+					t.Fatalf("the release: %v", err)
+				}
+
+				if racing.deletes != 1 {
+					t.Fatalf("the release sent %d conditional deletes, want one: a claim granted since the read is never deleted", racing.deletes)
+				}
+				if stood := storedRoleClaim(t, reg, role); stood != granted {
+					t.Fatalf("the claim after the release is %+v, want the earlier release's grant %+v untouched", stood, granted)
+				}
+			})
+		})
+	}
 }

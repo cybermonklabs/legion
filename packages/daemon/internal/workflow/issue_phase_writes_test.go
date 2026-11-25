@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // tryInTx runs write in a transaction of its own, as a fact of engine's applies it, with the commit
@@ -20,23 +21,20 @@ import (
 // not is settled and committed.
 func tryInTx(t *testing.T, pool *pgxpool.Pool, engine *Engine, write func(ctx context.Context, tx pgx.Tx) error) error {
 	t.Helper()
-	tx, err := pool.Begin(t.Context())
+	var written error
+	err := store.Transact(t.Context(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		ctx = engine.OpenFact(ctx)
+		if written = write(ctx, tx); written != nil {
+			return written
+		}
+		return engine.SettleFact(ctx, tx)
+	})
+	if written != nil {
+		return written
+	}
 	if err != nil {
-		t.Fatalf("begin: %v", err)
+		t.Fatalf("settle and commit: %v", err)
 	}
-	defer tx.Rollback(t.Context())
-	ctx, committed := intake.WithCommitHooks(t.Context())
-	ctx = engine.OpenFact(ctx)
-	if err := write(ctx, tx); err != nil {
-		return err
-	}
-	if err := engine.SettleFact(ctx, tx); err != nil {
-		t.Fatalf("settle: %v", err)
-	}
-	if err := tx.Commit(t.Context()); err != nil {
-		t.Fatalf("commit: %v", err)
-	}
-	committed()
 	return nil
 }
 

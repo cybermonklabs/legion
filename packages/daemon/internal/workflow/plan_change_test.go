@@ -184,7 +184,7 @@ func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
 		if !got.GivenAt.Equal(want.GivenAt) {
 			t.Fatalf("version 1 was given at %s, want the engine's clock %s", got.GivenAt, want.GivenAt)
 		}
-		if got.GivenAt = want.GivenAt; got != want {
+		if got.GivenAt = want.GivenAt; !reflect.DeepEqual(got, want) {
 			t.Fatalf("the version in force = %+v, want %+v", got, want)
 		}
 		task := record.PlanTask{Issue: root.Key, Generation: root.Generation, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
@@ -339,6 +339,67 @@ func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
 		assertPlanRefusal(t, pool, engine, member.Key, member.Generation, id, result, &intake.Refusal{Status: 409, Code: "TREE_LINGERING",
 			Message: "the tree LEGION-208 is lingering after it left the workflow, so version 1 of the owner's plan of LEGION-209 changed nothing"}, before)
 	})
+}
+
+// The apply of a plan answers the tasks its version adds over the version in force it read
+// (intake.Result.Added), in the plan's order, for an issue the daemon has not recorded too, whose
+// plan waits at generation 0: every task of the generation's first version, then the one task a
+// later version adds and no task it keeps.
+//
+// The fault it catches is an apply that answers nothing for such an issue, whose write returns
+// before the work a version starts on a recorded issue (its control: planGiven answering the added
+// tasks only after afterVersion, under which version 1 answers none).
+func TestAPlansApplyAnswersTheTasksItsVersionAdds(t *testing.T) {
+	const child = "LEGION-500"
+	pool := migratedPool(t)
+	engine := returnEngine()
+	a := givenTask(t, "Build the widget.", "implementer:i", "reviewer:r")
+	b := givenTask(t, "Test the widget.", "implementer:i", "reviewer:r")
+	b.ID, b.Needs = "b", []string{"a"}
+	for _, tc := range []struct {
+		version int
+		tasks   []plan.Task
+		want    []string
+	}{
+		{1, []plan.Task{a}, []string{"a"}},
+		{2, []plan.Task{a, b}, []string{"b"}},
+	} {
+		what := fmt.Sprintf("version %d", tc.version)
+		result := applyFacts(t, pool, engine)(planID(child, 0, tc.version), ownersPlan(t, child, 0, tc.version, tc.tasks...))
+		mustTake(t, what, result)
+		if result.Added == nil || !slices.Equal(result.Added, tc.want) {
+			t.Fatalf("%s of unrecorded %s answers added %#v, want %q", what, child, result.Added, tc.want)
+		}
+	}
+}
+
+// A give of a version the store holds applies nothing, whatever its id: under the id the release
+// before named it by (`plan:<issue>:<generation>:<document>:<version>`, api's registerPlan), which
+// the store marked when it took the version, and under an id the store never marked, one that
+// also names the giver, as a route that named a registration so would give it. Each is answered as
+// a duplicate, with the tasks the version added when it was taken, and the store stands as it
+// stood: so a give the release before sent, given again after the upgrade, stores nothing.
+//
+// The fault it catches is a give judged by its id alone (its control: intake.ApplyFact reading the
+// record only for an id it marked, under which the give under an id never marked reaches the
+// apply and is refused 409 PLAN_VERSION_OLD).
+func TestAGiveOfAVersionTheStoreHoldsAppliesNothingWhateverItsID(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	recordedAt(t, pool, "LEGION-208", "LEGION-208")
+	given := ownersPlan(t, "LEGION-208", 1, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))
+	mustTake(t, "version 1", applyFacts(t, pool, engine)(planID("LEGION-208", 1, 1), given))
+	before := planStandingOf(t, pool, engine, "LEGION-208", 1)
+
+	for _, id := range []string{planID("LEGION-208", 1, 1), planID("LEGION-208", 1, 1) + ":" + string(given.GivenBy)} {
+		result := applyFacts(t, pool, engine)(id, given)
+		if want := (intake.Result{Duplicate: true, Added: []string{"a"}}); !reflect.DeepEqual(result, want) {
+			t.Errorf("version 1 given again as %s = %+v, want %+v: the store holds the version", id, result, want)
+		}
+		if after := planStandingOf(t, pool, engine, "LEGION-208", 1); !reflect.DeepEqual(after, before) {
+			t.Errorf("version 1 given again as %s changed LEGION-208:\n before %+v\n after  %+v", id, before, after)
+		}
+	}
 }
 
 // running is the refusal of a version that changes or removes task a while it runs.

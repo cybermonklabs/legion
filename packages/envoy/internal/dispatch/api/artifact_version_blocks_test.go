@@ -27,6 +27,7 @@ type versionBlocksAnswer struct {
 // byte range of its rendering in the markdown the same answer carries. Two versions of a plan
 // task therefore compare by the id of its block, the comparison a plan's later version rests on.
 func TestAVersionReadCarriesThatVersionsBlocks(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 
@@ -86,6 +87,7 @@ func TestAVersionReadCarriesThatVersionsBlocks(t *testing.T) {
 // from, and the digest and size of that text, so a reader slicing the markdown at a block's range
 // reads that block.
 func TestAVersionsBlocksIndexTheMarkdownItsAnswerCarries(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createArtifactIssue(t, handler)
 	plan := createIssueDocument(t, handler, issue.Key, "plan.md", "Intro.\n\n:::plan_task{#a steps=\"implementer\"}\nBody.\n:::\n")

@@ -11,7 +11,7 @@ Read your own issue (`read_record`), its criteria, its children and their handof
 
 Release a child a person created at once and as it is: `legion({ op: "release_children", issues: ["LEGION-41", "LEGION-42"] })`.
 The answer names `released`, `started` and `held`, each held child with what it waits on.
-A refused release writes nothing: release the rest again without the child it names.
+A release refused with one of the codes below writes nothing: release the rest again without the child it names.
 
 - `CHILD_NOT_ADOPTABLE`: it runs or ran as a tree of its own.
   Leave it, or ask the controller.
@@ -21,7 +21,7 @@ A refused release writes nothing: release the rest again without the child it na
 - `ISSUE_NOT_OWNED`: the issue is another architect's; send the move to the architect above you.
 
 - `CHILD_UNDER_ACCEPTED_PARENT`: an ancestor is already accepted.
-  Take it back with `request_backward_move`, or release once it has closed.
+  Release again once it has closed, where it is not the tree's root.
 
 ## Creating children
 

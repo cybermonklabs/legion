@@ -108,6 +108,7 @@ type taskCopiesLive struct {
 // time and each task in its own working copy, and the second is given a plan whose needs conflict,
 // walked until the first step of the task that needs them has repaired their join.
 func TestTaskCopiesLive(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newTaskCopiesLive).
 	l := newTaskCopiesLive(t)
 	example, conflict := l.issues[0].key, l.issues[1].key
 	l.note("Dispatch %s (database of its own), project %s mapped to %s, issues %s and %s; daemon at dispatch_url %s, state directory %s",

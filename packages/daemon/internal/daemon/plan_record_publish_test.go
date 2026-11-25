@@ -51,6 +51,7 @@ func ratingRecordOf() record.StepRecord {
 // what Dispatch receives. A row the release before wrote carries no needs, and its write carries
 // none either, which Dispatch reads as needs not recorded.
 func TestAPlanRecordIsWrittenUnderItsIssueAndItsID(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		plan record.PlanRecord
@@ -90,6 +91,7 @@ func TestAPlanRecordIsWrittenUnderItsIssueAndItsID(t *testing.T) {
 // record's rating route (dispatch.Client.PutStepRating), carrying the run's identity, the rating
 // and its reason.
 func TestTheRetrosRatingReachesDispatch(t *testing.T) {
+	t.Parallel()
 	rig := newStepRecordRigOf(t, ratingRecordOf(), nil)
 	rig.run()
 	if left := rig.left(); left != 0 {
@@ -114,6 +116,7 @@ func TestTheRetrosRatingReachesDispatch(t *testing.T) {
 // TestAStepRecordThatDispatchRefusesEndsWithAWarning for the step record a rating is), and so does
 // a 400 STEP_INPUT naming the rating (TestARatingOnARecordOfAnotherKindEndsWithAWarning).
 func TestAPlanAndARatingWaitForADispatchThatHasNoRouteForThem(t *testing.T) {
+	t.Parallel()
 	notFound := &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no route for PUT /api/v1/issues/LEGION-1/…"}
 	for _, route := range []struct {
 		name    string
@@ -152,6 +155,7 @@ func TestAPlanAndARatingWaitForADispatchThatHasNoRouteForThem(t *testing.T) {
 // record lane behind it (record.LaneRecord). The one Warn line names the issue, the record's id and
 // Dispatch's code, and the row's failure is not logged as a failed attempt besides.
 func TestARatingOnARecordOfAnotherKindEndsWithAWarning(t *testing.T) {
+	t.Parallel()
 	refusal := &dispatch.Error{Status: http.StatusBadRequest, Code: steprecord.CodeInput,
 		Message: "rating is the rating a retro gives its plan, and step " + retroRecordID + " is a run of kind step"}
 	rig := newStepRecordRigOf(t, ratingRecordOf(), answersInTurn(refusal))
@@ -170,6 +174,7 @@ func TestARatingOnARecordOfAnotherKindEndsWithAWarning(t *testing.T) {
 // issue Dispatch does not have, a plan Dispatch will never take, a writer the route refuses, and an
 // id of another issue's plan. The row's failure is not logged as a failed attempt besides.
 func TestAPlanRecordThatDispatchRefusesEndsWithAWarning(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		err  *dispatch.Error

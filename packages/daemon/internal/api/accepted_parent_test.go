@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // acceptPhase moves the root of the status harness's tree into at, the phase that makes it an
@@ -136,7 +137,7 @@ func TestTheRefusalUnderAnAcceptedAncestorNamesTheHeadItsLastStepPassed(t *testi
 	message := refused(t, h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{"grantId": architect.grant(t), "issue": statusChild}, nil),
 		http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT")
 	want := statusChild + " is beneath " + statusRoot + ", whose head the last step of its task passed and the daemon has already accepted, and work entering the workflow beneath " +
-		statusRoot + " now would let it merge a head that does not carry that work; run it again once " + statusRoot + " has closed, or take " + statusRoot + " back with a backward move first"
+		statusRoot + " now would let it merge a head that does not carry that work; run it again once " + statusRoot + " has closed, where " + statusRoot + " is not the tree's root"
 	if message != want {
 		t.Fatalf("the refusal = %q, want %q", message, want)
 	}
@@ -188,7 +189,7 @@ func TestTheAcceptedAncestorIsFoundByWalkingThePartlyDoneChain(t *testing.T) {
 		Generation: 1, Status: "todo", DispatchStatus: "todo", Rank: "C", LastDispatchSeq: 7})
 
 	var ancestor string
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		ancestor, err = record.AcceptedAncestorOf(context.Background(), record.NewStore(), tx, statusRoot, "LEGION-300", "")
 		return err

@@ -196,7 +196,7 @@ run_reconcile success
 check "exits 0 rather than failing the job" "$(is "$status" 0)"
 check "writes nothing" "$(is "$(calls)" 0)"
 check "warns, naming this job's verdict" \
-  "$(contains "$out" "::warning::GitHub refused this head's ci-ok check runs three times")"
+  "$(contains "$out" "::warning::GitHub refused this head's ci-ok check runs at every attempt gh-read.sh made")"
 
 echo "case: GitHub refuses a PATCH"
 check_runs "900=in_progress/null" "100=completed/failure"
@@ -205,7 +205,7 @@ run_reconcile success
 check "exits 0 rather than failing the job" "$(is "$status" 0)"
 check "tried three times" "$(is "$(calls)" 3)"
 check "warns, naming the check run and both verdicts" \
-  "$(contains "$out" '::warning::GitHub refused the PATCH of ci-ok check run 100 three times, so it stands at failure while this attempt.s verdict is success')"
+  "$(contains "$out" '::warning::GitHub refused the PATCH of ci-ok check run 100 at every attempt gh-read.sh made, so it stands at failure while this attempt.s verdict is success')"
 
 echo "case: a conclusion that is no job.status"
 check_runs "900=in_progress/null" "100=completed/failure"

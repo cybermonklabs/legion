@@ -32,7 +32,7 @@ var todaysDefaultSteps = []string{"planner", "implementer", "tester", "reviewer"
 // answer.
 func TestARunWithNoPlanRowsWalksTodaysDefaultSteps(t *testing.T) {
 	issue := record.Issue{Key: "LEGION-208", Generation: 1}
-	if node := planNode(issue, walksOf(issue.Key, nil)); len(node.Tasks) != 1 || node.Tasks[0].ID != "default" || !slices.Equal(node.Tasks[0].Steps, todaysDefaultSteps) ||
+	if node := planNode(issue, nil); len(node.Tasks) != 1 || node.Tasks[0].ID != "default" || !slices.Equal(node.Tasks[0].Steps, todaysDefaultSteps) ||
 		node.Source != record.PlanSourceDefault || node.PlanDocument != nil {
 		t.Fatalf("the plan node of a run with no plan rows = %+v, want the task default of %q from the source default", node, todaysDefaultSteps)
 	}

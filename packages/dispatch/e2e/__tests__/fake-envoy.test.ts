@@ -18,13 +18,16 @@ import { withoutHarnessPort } from "../harness-ports";
 // loads no preload and registers no DOM, so nothing puts happy-dom's `fetch` on globalThis.
 const fakeEnvoyModule = fileURLToPath(new URL("../fake-envoy.ts", import.meta.url));
 
-/** A fake Envoy of the test's own, listening, and the way to stop it. */
+/** A fake Envoy of the test's own, listening, and the way to stop it. It is started with no bus,
+ *  whatever the shell running the tests exported, so no claim a test asks for reaches a NATS
+ *  server another stack's Dispatch reads. */
 async function startFakeEnvoy(): Promise<{
   origin: string;
   port: number;
   stop: () => Promise<void>;
 }> {
   const env = withoutHarnessPort("fakeEnvoy");
+  delete env.DISPATCH_E2E_NATS_URLS;
   const fake = spawn("bun", [fakeEnvoyModule], { env, stdio: ["ignore", "pipe", "inherit"] });
   const exited = once(fake, "exit");
   const stop = async () => {
@@ -339,6 +342,41 @@ test("a stopped session is read only with stopped in include=, and a send to it 
     const sent = await send(origin, "stopped", "key-5", true);
     expect(sent.status).toBe(200);
     expect(await sent.json()).toMatchObject({ recipient_state: "live", state: "connected" });
+  } finally {
+    await stop();
+  }
+});
+
+test("a role claim on the bus names the live holder the role lookup answers, and a listener with no bus writes none", async () => {
+  const { origin, stop } = await startFakeEnvoy();
+  try {
+    const sessions: FakeSession[] = [
+      { capabilities: ["steer"], roles: ["shared"], session_id: "first", title: "First" },
+      { capabilities: ["steer"], roles: ["shared"], session_id: "second", title: "Second" },
+    ];
+    expect((await putFixture(origin, "/__fixture/sessions", sessions)).status).toBe(200);
+    const claim = (role: string, method: "PUT" | "DELETE" = "PUT") =>
+      Bun.fetch(`${origin}/__fixture/role-claims/${role}`, { method });
+    const lookup = async () => (await Bun.fetch(`${origin}/v1/roles/shared`)).json();
+
+    // A role no running session holds has no holder to claim it for, bus or none.
+    const unheld = await claim("nobody-holds");
+    expect(unheld.status).toBe(404);
+    expect(await unheld.json()).toEqual({ error: "no live holder for role nobody-holds" });
+    // A held role is refused without a bus, writing nothing, and the lookup answers as before.
+    const noBus = { error: "this listener has no bus: DISPATCH_E2E_NATS_URLS is unset" };
+    const refused = await claim("shared");
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual(noBus);
+    expect(await lookup()).toMatchObject({ holder: "first" });
+    // The holder a claim names is the one the lookup answers, which moves once the first stops.
+    expect(
+      (await putFixture(origin, "/__fixture/sessions/first", { live: false }, "PATCH")).status
+    ).toBe(200);
+    expect(await lookup()).toMatchObject({ holder: "second" });
+    const release = await claim("shared", "DELETE");
+    expect(release.status).toBe(409);
+    expect(await release.json()).toEqual(noBus);
   } finally {
     await stop();
   }

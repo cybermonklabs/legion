@@ -28,8 +28,10 @@ import (
 // and needs none queues nothing: the issue_branch row its first step queues makes that branch
 // (gateOpened). Its one caller is the start of every step (Engine.start), at each start of a task,
 // the first and a start again, and the join again at a new generation (joinAgain). A task the plan
-// does not hold is refused, naming it.
-func (e *Engine) startTaskCopy(ctx context.Context, tx pgx.Tx, s TaskScope) (bool, error) {
+// does not hold is refused, naming it. The plan it reads after the give, with the base it wrote, is
+// s's plan from then on, so the start's text reads the task's branch and the base of its pull
+// request from it (standingPart) and reads no plan again.
+func (e *Engine) startTaskCopy(ctx context.Context, tx pgx.Tx, s *TaskScope) (bool, error) {
 	issue, task := s.issue, s.walk.Task
 	branch, err := e.store.AssignTaskBranch(ctx, tx, issue.Key, issue.Generation, task)
 	if err != nil {
@@ -53,6 +55,14 @@ func (e *Engine) startTaskCopy(ctx context.Context, tx pgx.Tx, s TaskScope) (boo
 	if err := e.store.SetTaskBase(ctx, tx, issue.Key, issue.Generation, task, base); err != nil {
 		return false, err
 	}
+	// The plan read above holds the base of the task's last start; s's plan holds the one just
+	// written, which the start's text reads (standingPart, BaseOf).
+	for i := range stored.Tasks {
+		if stored.Tasks[i].Task == task {
+			stored.Tasks[i].Base = base
+		}
+	}
+	s.plan = stored
 	if branch == claim.IssueBranch(issue.Key) && len(row.Needs) == 0 {
 		return false, nil
 	}

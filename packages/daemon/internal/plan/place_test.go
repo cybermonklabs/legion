@@ -230,7 +230,7 @@ func TestAnElementIsNoTaskOfThePlan(t *testing.T) {
 	if got := held.Tasks[1].PartOf; got != "f" {
 		t.Fatalf("PartOf(f1) = %q, want f", got)
 	}
-	if r := Validate(held, builtin); len(r) != 0 {
+	if r := validated(t, held, builtin); len(r) != 0 {
 		t.Fatalf("Validate = %+v, want none: the element names nothing only a task carries out", r)
 	}
 	next := planOf(t, 2, owned, under("f1", "f", ""), under("a", "", ""), element("How a starts, said again."))

@@ -146,13 +146,13 @@ func (w waits) waitPath(from, to waitNode, cut map[waitEdge]bool) ([]string, boo
 }
 
 // needReasons is the reason of each need that the rules of parts refuse, keyed by the task and the
-// need, at most one for each need. found is the plan's cycles of needs (cycles), whose needs
-// Validate names in the reason of their cycle, so they get none here and are left out of every wait
-// below. Then each need of a part of another task (partOfAnother), in task id order and each task's
-// needs in its block's order, gets that reason and is left out too. Then each need of a task that
-// is done only after that task itself starts, so the task never starts and the tasks above it are
-// never done. The need that causes the wait is named, not each need the wait then holds back, in
-// two passes over the needs, each in task id order and each task's needs in its block's order:
+// need, at most one for each need. onCycle is each need on a cycle of needs (cycleNeeds), which
+// Validate names in the reason of its set's cycle, so they get none here and are left out of every
+// wait below. Then each need of a part of another task (partOfAnother), in task id order and each
+// task's needs in its block's order, gets that reason and is left out too. Then each need of a task
+// that is done only after that task itself starts, so the task never starts and the tasks above it
+// are never done. The need that causes the wait is named, not each need the wait then holds back,
+// in two passes over the needs, each in task id order and each task's needs in its block's order:
 //  1. A part's need of a task it is a part of, directly or through its tasks; a part's need of a
 //     task outside a task above it whose end waits for that task's end; and a task's need of a part
 //     of its own, which starts only once the task has started.
@@ -161,13 +161,8 @@ func (w waits) waitPath(from, to waitNode, cut map[waitEdge]bool) ([]string, boo
 //
 // A need of a task it is a part of takes the reason of S3: the task is done only after each of its
 // parts. Each other reason of a wait names the need and the waits from its end to the task's start.
-func (w waits) needReasons(found [][]string) map[waitEdge]string {
-	cut := map[waitEdge]bool{}
-	for _, cycle := range found {
-		for i, id := range cycle {
-			cut[waitEdge{id, cycle[(i+1)%len(cycle)]}] = true
-		}
-	}
+func (w waits) needReasons(onCycle map[waitEdge]bool) map[waitEdge]string {
+	cut := maps.Clone(onCycle)
 	reasons := map[waitEdge]string{}
 	for _, id := range w.ids {
 		for _, need := range w.task[id].Needs {

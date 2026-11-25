@@ -60,6 +60,7 @@ func podWaitRunner(t *testing.T, lacks map[claim.Role]string) (*outbox, *supervi
 // into it would replace it with the issue's disk (ruling 18). Where the pod holds the role, the
 // same row creates the claim and spawns it.
 func TestAStartOfARoleThePodLacksWaitsAndMakesNoClaim(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		lacks map[claim.Role]string
@@ -107,6 +108,7 @@ func TestAStartOfARoleThePodLacksWaitsAndMakesNoClaim(t *testing.T) {
 // start waits on its row where the pod lacks either, its text naming the one it lacks, and asks
 // the runtime for nothing: a launch refused for the role would be charged as a launch failure.
 func TestAKeyedAgentsStartWaitsWhereThePodLacksItsSlotOrTheRoleOfItsStep(t *testing.T) {
+	t.Parallel()
 	implementer, err := claim.NewToken("legion", "LEGION-208", claim.RoleImplementer)
 	if err != nil {
 		t.Fatal(err)
@@ -184,6 +186,7 @@ func outboxPodWaitHeld(t *testing.T, runner *outbox, issue string) []string {
 // Where a claim records a process there, the round asks each role to push and replaces the pod,
 // and the controller is told nothing; where the idle release is on, main's rule ends the wait.
 func TestAWaitUnderADeploymentWithNoIdleReleaseIsToldOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	implementer, err := claim.NewToken("legion", "LEGION-208", claim.RoleImplementer)
 	if err != nil {

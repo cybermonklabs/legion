@@ -962,9 +962,14 @@ describe("credential redaction", () => {
     for (const { credential } of redaction.branches) expect(wire).not.toContain(credential);
 
     const sent = { rows: report.rows };
+    const written = `${JSON.stringify(sent, null, 2)}\n`;
     if (process.env.UPDATE_FIXTURES === "1") {
-      writeFileSync(PLUGIN_REPORT, `${JSON.stringify(sent, null, 2)}\n`);
+      writeFileSync(PLUGIN_REPORT, written);
     }
-    expect(JSON.parse(readFileSync(PLUGIN_REPORT, "utf8"))).toEqual(sent);
+    const committed = readFileSync(PLUGIN_REPORT, "utf8");
+    expect(JSON.parse(committed)).toEqual(sent);
+    // The file is what UPDATE_FIXTURES=1 writes, byte for byte: biome.json's formatter excludes it,
+    // as it does the other generated JSON, so neither a formatter nor a hand edit moves it.
+    expect(committed).toBe(written);
   });
 });

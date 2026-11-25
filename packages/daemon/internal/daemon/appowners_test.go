@@ -67,6 +67,7 @@ type roleOwners struct{ implementer, reviewer, controller []string }
 // then from its last bundle; until either has read every App the container's directories come
 // from, there is no read to report and the answer is none.
 func TestAppOwnersAreTheInstalledOwnersTheRolesContainerHoldsADirectoryFor(t *testing.T) {
+	t.Parallel()
 	moved := ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
 	for _, tc := range []struct {
 		name    string

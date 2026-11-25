@@ -35,8 +35,7 @@ func dNeedsAC(t *testing.T, withE bool) (*pgxpool.Pool, *Engine, record.Issue, f
 	seedTaskBranch(t, pool, root.Key, "a", "legion/"+root.Key+".a")
 	seedTaskBranch(t, pool, root.Key, "c", "legion/"+root.Key+".c")
 	onStored(t, pool, engine, root.Key, func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-		_, err := engine.startReady(ctx, tx, issue)
-		return err
+		return engine.startReadyNow(ctx, tx, issue.Key)
 	})
 	joinsEnd(t, pool, engine, root.Key)
 	seedTaskPR(t, pool, engine, root.Key, "d", 45)

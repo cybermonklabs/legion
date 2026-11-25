@@ -110,9 +110,9 @@ func TestAPullRequestOnABranchNoTaskWasGivenIsNotTheIssues(t *testing.T) {
 // again by its open delivered again or by its reopen, since no task of the issue holds its branch,
 // legion/LEGION-208. A run started again closed #1, the earlier run's pull request there: design
 // took legion/LEGION-208.design, and impl, which waits, was given no branch. A version removed a,
-// which held legion/LEGION-208 with #42, and left z alone, which waits: a plan of one, whose task
-// takes the issue's branch at its first start only where no task of its generation was given it,
-// and so takes legion/LEGION-208.z.
+// which held legion/LEGION-208 with #42, and left z alone, whose needs are then done: it starts in
+// the version's transaction (startReady), and takes legion/LEGION-208.z, since its generation gave
+// the issue's branch to a.
 //
 // The faults: #1 is recorded as the pull request of impl, the one task with no branch, and #42 as
 // z's and as the issue's merge, so a fact of either moves a task of the run. The controls: the
@@ -163,13 +163,13 @@ func TestAPullRequestTheRecordLetGoIsNotRecordedAgain(t *testing.T) {
 		if rows := pullRequestRows(t, pool, 42); rows != 0 {
 			t.Fatalf("the record holds %d rows of a's pull request #42 after version 2 removed a, want none", rows)
 		}
-		if z := tasksOf(t, pool, engine, root.Key)["z"]; z.State != record.TaskWaiting || z.Branch != "" {
-			t.Fatalf("z after version 2 = %s on %q, want waiting with no branch", z.State, z.Branch)
+		if z := tasksOf(t, pool, engine, root.Key)["z"]; z.State != record.TaskRunning || z.Branch != "legion/LEGION-208.z" {
+			t.Fatalf("z after version 2 = %s on %q, want running on legion/LEGION-208.z: its needs are done, and the issue's branch was given to a", z.State, z.Branch)
 		}
 
 		mustSpend(t, "the reopen of #42", apply("reopened-42", openedOn(42, "legion/LEGION-208", time.Date(2026, 11, 23, 10, 0, 0, 0, time.UTC), true)))
 		if rows := pullRequestRows(t, pool, 42); rows != 0 {
-			t.Fatalf("the record holds %d rows of #42 after its reopen, want none: z was given no branch, and takes legion/LEGION-208.z", rows)
+			t.Fatalf("the record holds %d rows of #42 after its reopen, want none: z holds legion/LEGION-208.z", rows)
 		}
 		gaveBranches(t, pool, root.Key, root.Generation, []string{"z"}, map[string]string{"z": "legion/LEGION-208.z"})
 	})

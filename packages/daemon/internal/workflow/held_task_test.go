@@ -170,3 +170,67 @@ func TestAnIssueHeldAtTheReleaseIsRetriedAsBefore(t *testing.T) {
 		})
 	}
 }
+
+// A failed claim of the one task of a plan of one holds that task, as it holds one task of
+// several, and its issue with it, since no other task runs: task a, `implementer reviewer`, at its
+// review. The claim of its reviewer fails: a is held at its review for the failed claim, and the
+// issue stands held from reviewing. The owner's held notice names no task, since the plan holds no
+// choice of them (heldSummary): its summary is empty, as a run with no plan rows says. The owner's
+// retry that names a releases it at its review and starts its reviewer's agent again, told the
+// issue's pull request #42; after a second failure an escalation that names a holds it for that
+// reason, and its held notice names no task either; and a retry that names no task releases the
+// one held task.
+//
+// The fault it catches is a held notice of a plan of one task that names the task, which a plan of
+// one never did (its control: textNamesTask true for every plan with rows, so each summary reads
+// `task a, step 2`).
+func TestAFailedClaimOfThePlansOneTaskHoldsItsTaskAndNamesNone(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := stepRoot(t, pool, phase.Reviewing)
+	seedTasks(t, pool, root.Key, root.Generation,
+		planTask{id: "a", steps: []string{"implementer", "reviewer"}, agents: []claim.Agent{"implementer", "reviewer"}, state: record.TaskRunning, place: atStep(2)})
+	apply := applyFacts(t, pool, engine)
+
+	mustSpend(t, "the failure of a's reviewer", apply("reviewer-failed", failedClaimOf(t, root.Key, claim.RoleReviewer, "reviewer")))
+
+	assertHeld(t, tasksOf(t, pool, engine, root.Key), "a", atStep(2), "")
+	if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Held || issue.Hold == nil || *issue.Hold != (record.Hold{From: phase.Reviewing}) {
+		t.Fatalf("%s after a's reviewer failed stands in %s (hold %+v), want held from reviewing: no task runs", root.Key, issue.Phase, issue.Hold)
+	}
+	held := noticesOfKind(t, pool, root.Key, "held")
+	if len(held) != 1 || held[0].Role != claim.RoleReviewer || held[0].Phase != phase.Reviewing || held[0].Summary != "" || held[0].Reason != "" {
+		t.Fatalf("the held notices of %s = %+v, want one of the reviewer's hold from reviewing with no summary and no reason", root.Key, held)
+	}
+
+	mustSpend(t, "the retry of a", apply("retry-a", intake.RetryOrEscalate{Issue: root.Key, Decision: intake.RetryDecision, Task: "a", Reason: "try a again"}))
+	tasks := tasksOf(t, pool, engine, root.Key)
+	assertTask(t, tasks, "a", record.TaskRunning, atStep(2))
+	if got := tasks["a"].HoldReason; got != "" {
+		t.Fatalf("task a released holds the reason %q, want none", got)
+	}
+	if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Reviewing || issue.Hold != nil {
+		t.Fatalf("%s after the retry of a stands in %s (hold %+v), want reviewing with no hold", root.Key, issue.Phase, issue.Hold)
+	}
+	retries := startsIn(t, pool, root.Key, claim.RoleReviewer, phase.Reviewing)
+	if !slices.ContainsFunc(retries, func(start record.SuperviseRequest) bool {
+		return start.Claim == agentClaim(t, root.Key, "reviewer") && start.ResendEntry && strings.Contains(start.Task, " Pull request: #42.")
+	}) {
+		t.Fatalf("the reviewer's starts of %s in reviewing = %+v, want the retry's of a's agent reviewer, naming the pull request #42", root.Key, retries)
+	}
+
+	mustSpend(t, "the second failure of a's reviewer", apply("reviewer-failed-again", failedClaimOf(t, root.Key, claim.RoleReviewer, "reviewer")))
+	mustSpend(t, "the escalation of a", apply("escalate-a", intake.RetryOrEscalate{Issue: root.Key, Decision: intake.EscalateDecision, Task: "a", Reason: "a keeps failing"}))
+	assertHeld(t, tasksOf(t, pool, engine, root.Key), "a", atStep(2), record.HoldEscalated)
+	held = noticesOfKind(t, pool, root.Key, "held")
+	if last := held[len(held)-1]; len(held) != 3 || last.Phase != phase.Reviewing || last.Reason != string(record.HoldEscalated) || last.Escalation != "a keeps failing" ||
+		last.Summary != "" || held[1].Summary != "" {
+		t.Fatalf("the held notices of %s = %+v, want three, the last the escalation from reviewing for %q, and no summary in any", root.Key, held, "a keeps failing")
+	}
+
+	mustSpend(t, "the retry of the one held task", apply("retry-the-held", intake.RetryOrEscalate{Issue: root.Key, Decision: intake.RetryDecision}))
+	assertTask(t, tasksOf(t, pool, engine, root.Key), "a", record.TaskRunning, atStep(2))
+	if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Reviewing || issue.Hold != nil {
+		t.Fatalf("%s after the retry of the one held task stands in %s (hold %+v), want reviewing with no hold", root.Key, issue.Phase, issue.Hold)
+	}
+}

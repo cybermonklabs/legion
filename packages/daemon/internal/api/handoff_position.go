@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // completionPosition is where issue key stands as the completion route reads it, in one repeatable-read
@@ -58,63 +59,65 @@ type completionPosition struct {
 // caller working no look, or a look started before start rows named their check); an issue the
 // workflow does not record is a position with no issue and no error.
 func (s *server) handoffPosition(ctx context.Context, key string, role claim.Role, completing claim.Token, checkOpenedAt time.Time) (completionPosition, error) {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead})
-	if err != nil {
-		return completionPosition{}, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	issue, err := s.records.Issue(ctx, tx, key)
-	if err != nil || issue == nil {
-		return completionPosition{}, err
-	}
-	root := issue
-	if !claim.IsTreeRoot(issue.Key, issue.Tree) {
-		if root, err = s.records.Issue(ctx, tx, issue.Tree); err != nil {
-			return completionPosition{}, err
+	var position completionPosition
+	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead}, func(ctx context.Context, tx pgx.Tx) error {
+		issue, err := s.records.Issue(ctx, tx, key)
+		if err != nil || issue == nil {
+			return err
 		}
-		if root == nil {
-			return completionPosition{}, fmt.Errorf("the tree root %s of %s is not recorded", issue.Tree, issue.Key)
-		}
-	}
-	rows, err := s.records.Phases(ctx, tx, key)
-	if err != nil {
-		return completionPosition{}, err
-	}
-	row := record.PhaseRowOf(rows, role)
-	stored, err := s.records.Plan(ctx, tx, key, issue.Generation)
-	if err != nil {
-		return completionPosition{}, err
-	}
-	position := completionPosition{issue: issue, treeGeneration: root.Generation, lingers: root.Lingers(), branch: claim.IssueBranch(key),
-		lastHandoff: record.PhaseRowOf(rows, claim.RoleImplementer).LastHandoff, entry: row.Entry, entryMovedBack: row.EntryMovedBack}
-	counts := record.ImplementerCounts(rows)
-	if stored != nil {
-		task, act, ok, err := s.completingTask(ctx, tx, *issue, stored, rows, completing)
-		switch {
-		case err != nil:
-			return completionPosition{}, err
-		case !ok:
-			position.noStep = true
-		default:
-			standing := *issue
-			standing.Phase, standing.Hold = standingOfTask(*issue, task, act)
-			position.issue, position.task, position.ofTask, position.branch = &standing, task.Task, task.Task, task.BranchOf(key)
-			if position.base, _, err = stored.BaseOf(*issue, task.Task); err != nil {
-				return completionPosition{}, err
+		root := issue
+		if !claim.IsTreeRoot(issue.Key, issue.Tree) {
+			if root, err = s.records.Issue(ctx, tx, issue.Tree); err != nil {
+				return err
 			}
-			counts = task.Counts
+			if root == nil {
+				return fmt.Errorf("the tree root %s of %s is not recorded", issue.Tree, issue.Key)
+			}
 		}
-	}
-	position.pass = counts.Pass
-	if !position.noStep {
-		if position.pullRequest, err = s.records.PullRequestOfTask(ctx, tx, key, position.task); err != nil {
-			return completionPosition{}, err
+		rows, err := s.records.Phases(ctx, tx, key)
+		if err != nil {
+			return err
 		}
-	}
-	if position.check, err = s.records.ProductionCheckOf(ctx, tx, key, checkOpenedAt); err != nil {
+		row := record.PhaseRowOf(rows, role)
+		stored, err := s.records.Plan(ctx, tx, key, issue.Generation)
+		if err != nil {
+			return err
+		}
+		position = completionPosition{issue: issue, treeGeneration: root.Generation, lingers: root.Lingers(), branch: claim.IssueBranch(key),
+			lastHandoff: record.PhaseRowOf(rows, claim.RoleImplementer).LastHandoff, entry: row.Entry, entryMovedBack: row.EntryMovedBack}
+		counts := record.ImplementerCounts(rows)
+		if stored != nil {
+			task, act, ok, err := s.completingTask(ctx, tx, *issue, stored, rows, completing)
+			switch {
+			case err != nil:
+				return err
+			case !ok:
+				position.noStep = true
+			default:
+				standing := *issue
+				standing.Phase, standing.Hold = standingOfTask(*issue, task, act)
+				position.issue, position.task, position.ofTask, position.branch = &standing, task.Task, task.Task, task.BranchOf(key)
+				if position.base, _, err = stored.BaseOf(*issue, task.Task); err != nil {
+					return err
+				}
+				counts = task.Counts
+			}
+		}
+		position.pass = counts.Pass
+		if !position.noStep {
+			if position.pullRequest, err = s.records.PullRequestOfTask(ctx, tx, key, position.task); err != nil {
+				return err
+			}
+		}
+		if position.check, err = s.records.ProductionCheckOf(ctx, tx, key, checkOpenedAt); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
 		return completionPosition{}, err
 	}
-	return position, tx.Commit(ctx)
+	return position, nil
 }
 
 // completingTask is the task of stored, the plan of issue's run, whose step the claim completing

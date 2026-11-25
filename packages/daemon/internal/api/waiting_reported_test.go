@@ -79,7 +79,7 @@ func waitingStore(t *testing.T) (*store.Store, record.Store, []record.DesignStep
 func seedWaitIssue(t *testing.T, st *store.Store, records record.Store, issue record.Issue, lifecycle bool) {
 	t.Helper()
 	ctx := context.Background()
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, issue); err != nil {
 			return err
 		}
@@ -101,7 +101,7 @@ func seedWaitIssue(t *testing.T, st *store.Store, records record.Store, issue re
 func seedWaitSlot(t *testing.T, st *store.Store, records record.Store, key string, index int) {
 	t.Helper()
 	ctx := context.Background()
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutSlot(ctx, tx, record.Slot{Issue: key, Index: index, AdmittedAt: waitNow})
 	}); err != nil {
 		t.Fatalf("seed the slot of %s: %v", key, err)
@@ -113,7 +113,7 @@ func seedWaitSlot(t *testing.T, st *store.Store, records record.Store, key strin
 func seedWaitMirror(t *testing.T, st *store.Store, records record.Store, key, status, parent string, waits ...string) {
 	t.Helper()
 	ctx := context.Background()
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: key, Project: waitProject, Seq: 1,
 			Status: record.Carry(status), Parent: record.Carry(parent), Blockers: record.Carry(waits)})
 	}); err != nil {
@@ -207,7 +207,7 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 	}
 	// The design gate of the started root, opened: its architect has handed the work on, so its
 	// own first phase is what the open child holds.
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		approved := 1
 		return records.PutGate(ctx, tx, record.DesignGate{Issue: startedChild, ArtifactID: "artifact-211",
 			LatestVersion: 1, ApprovedVersion: &approved, EverOpened: true})
@@ -234,8 +234,9 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 		t.Fatalf("run an admission pass: %v", err)
 	}
 
+	// The state route answers from the store's pool, as the daemon's server does.
 	server := api.NewServer("127.0.0.1", 8437, api.Options{
-		Steps: steps, State: projectedSource{records: records, steps: steps}, StateTransactions: st,
+		Steps: steps, State: projectedSource{records: records, steps: steps}, Pool: st.Pool(), StateTransactions: st.Pool(),
 	})
 	request := httptest.NewRequest(http.MethodGet, "/legion/v1/state", nil)
 	recorder := httptest.NewRecorder()

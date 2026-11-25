@@ -235,6 +235,7 @@ var comeBacks = map[string]func(*readyWorkerRig){
 // that follows. Before, nothing was sent at all — the start row that moved the issue into testing
 // had run long before the restart — and the issue waited for as long as the worker did.
 func TestEveryComeBackToReadyGivesAPhaseHolderItsTaskWithinTwoMinutes(t *testing.T) {
+	t.Parallel()
 	for name, comeBack := range comeBacks {
 		t.Run(name, func(t *testing.T) {
 			rig := newReadyWorkerRig(t)
@@ -267,6 +268,7 @@ func TestEveryComeBackToReadyGivesAPhaseHolderItsTaskWithinTwoMinutes(t *testing
 // one it holds is sent again on the same delivery, which is the relaunch's own resend, not a task
 // of its own.
 func TestAComeBackWithATaskStillPendingGivesNoSecondCopy(t *testing.T) {
+	t.Parallel()
 	for name, comeBack := range comeBacks {
 		t.Run(name, func(t *testing.T) {
 			rig := newReadyWorkerRig(t)

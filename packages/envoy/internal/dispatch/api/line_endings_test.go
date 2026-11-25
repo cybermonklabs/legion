@@ -19,6 +19,7 @@ import (
 // written with line feeds stores, so the browser editor, which reads both line endings as a line
 // feed, reads it the same way.
 func TestWrittenTextReachesTheDocumentWithLineFeeds(t *testing.T) {
+	t.Parallel()
 	handler, _ := blockAskHandler(t)
 	projects := 0
 	issue := func(t *testing.T, spec string) (key, artifactID string) {
@@ -164,6 +165,7 @@ var answeredAt = regexp.MustCompile(`answered_at="[^"]*"`)
 // what it stores (pmdoc.LineFeeds in validateCreateMessage and createCommentFor) and every
 // reader of one body is shown one text.
 func TestAMessageAndACommentBodyAreStoredWithLineFeeds(t *testing.T) {
+	t.Parallel()
 	handler, _ := blockAskHandler(t)
 	projects := 0
 	issueKey := func(t *testing.T) string {

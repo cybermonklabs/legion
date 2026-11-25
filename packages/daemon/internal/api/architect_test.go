@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -120,9 +121,11 @@ type statusRecorder struct {
 	readFails map[string]error
 	listFails error
 	// plans is each version of a plan document this fake knows, by planVersion(id, version), and
-	// planErr, when set, every such read's answer instead.
-	plans   map[string]dispatch.DocumentVersion
-	planErr error
+	// planErr, when set, every such read's answer instead. onPlanRead, when set, runs at each such
+	// read, as Dispatch answers it.
+	plans      map[string]dispatch.DocumentVersion
+	planErr    error
+	onPlanRead func()
 	// reads is every issue and document read, in order: `issue:<key>`, `approval:<id>` and
 	// `plan:<id>@<version>`.
 	reads []string
@@ -137,6 +140,9 @@ func planVersion(artifactID string, version int) string {
 // the case gave, or Dispatch's 404 for one it did not.
 func (r *statusRecorder) PlanDocument(_ context.Context, artifactID string, version int) (dispatch.DocumentVersion, error) {
 	r.reads = append(r.reads, "plan:"+planVersion(artifactID, version))
+	if r.onPlanRead != nil {
+		r.onPlanRead()
+	}
 	if r.planErr != nil {
 		return dispatch.DocumentVersion{}, r.planErr
 	}
@@ -262,6 +268,12 @@ func (r *statusRecorder) Handoff(_ context.Context, id string) (dispatch.Handoff
 func (r *statusRecorder) WebhookAppInstalled(context.Context, string) (bool, error) {
 	return true, nil
 }
+func (r *statusRecorder) ArtifactChanges(context.Context, string, int, int) (dispatch.ArtifactChanges, error) {
+	return dispatch.ArtifactChanges{}, nil
+}
+func (r *statusRecorder) ApprovedVersionBefore(context.Context, string, int) (int, error) {
+	return 0, nil
+}
 
 func (r *statusRecorder) PutGatedSteps(context.Context, string, []string) error {
 	return nil
@@ -330,7 +342,7 @@ func newArchitectHarnessGating(t *testing.T, steps []record.DesignStep, grants *
 func seedTree(t *testing.T, h *harness, root string, children ...string) {
 	t.Helper()
 	records := record.NewStore()
-	err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(context.Background(), tx, record.Issue{
 			Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: root, Phase: phase.Planning, Status: "in_progress",
 		}); err != nil {
@@ -441,7 +453,7 @@ func (c liveClaim) grant(t *testing.T) string {
 func assertProcessedEvent(t *testing.T, h *harness, eventID string) {
 	t.Helper()
 	var count int
-	err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return tx.QueryRow(context.Background(),
 			"select count(*) from processed_events where source = 'api' and event_id = $1", eventID,
 		).Scan(&count)
@@ -664,7 +676,7 @@ func TestABrokenParentChainIsTheTreeRootArchitects(t *testing.T) {
 	seedTree(t, h, "LEGION-208", "LEGION-209")
 	unrecorded := "LEGION-999"
 	records := record.NewStore()
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, child := range []record.Issue{
 			{Key: "LEGION-211", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: testProject, Title: "no parent", Phase: phase.Accepting, Status: "needs_review"},
 			{Key: "LEGION-212", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: testProject, Title: "unrecorded parent", Parent: &unrecorded, Phase: phase.Accepting, Status: "needs_review"},
@@ -927,7 +939,7 @@ func TestRerunMovesAChildOfTheTreeByItsDispatchStatus(t *testing.T) {
 // setIssue rewrites one recorded issue in place.
 func setIssue(t *testing.T, h *harness, key string, change func(*record.Issue)) {
 	t.Helper()
-	err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		issue, err := records.Issue(context.Background(), tx, key)
 		if err != nil {
@@ -1001,7 +1013,7 @@ func TestGateRegistrationIsItsOwnFactInEachGeneration(t *testing.T) {
 		}
 	}
 	register()
-	err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		root, err := records.Issue(context.Background(), tx, "LEGION-208")
 		if err != nil {

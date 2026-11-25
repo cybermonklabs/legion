@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // eachHeldSubscription stands in for the runtime's subscription update (workflowRuntime's
@@ -48,6 +49,7 @@ func hearsNothing(context.Context, []ghrepo.Repository) error { return nil }
 // Control: with the call moved into the records' read-only transaction, the first check finds that
 // transaction idle in it.
 func TestPublishingTheHeardSetAgainHoldsNoTransactionAcrossItsStreamCall(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	held := &eachHeldSubscription{calls: make(chan chan struct{})}
 	w, _, _, _ := repositoryRigWith(t, &installations{}, held.install)
@@ -77,7 +79,7 @@ func TestPublishingTheHeardSetAgainHoldsNoTransactionAcrossItsStreamCall(t *test
 		}
 		serialized := make(chan error, 1)
 		go func() {
-			serialized <- pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error { return intake.SerializeFacts(ctx, tx) })
+			serialized <- store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error { return intake.SerializeFacts(ctx, tx) })
 		}()
 		select {
 		case err := <-serialized:

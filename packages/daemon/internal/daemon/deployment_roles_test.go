@@ -80,6 +80,7 @@ const (
 // rows are deleted before its gate opens starts a planner, and the walk's assertion fails on it;
 // (3) with checker taken out of the settings, register_plan of B's plan is refused naming checker.
 func TestEachIssueWalksItsOwnStepsWithADeploymentRole(t *testing.T) {
+	t.Parallel()
 	roles := deploymentRoles(t)
 	r := newDeploymentRolesRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), roles,
 		[]string{"Default walk lands its change", "Checker verifies widget output", "Reviewer precedes tester ordering",
@@ -233,6 +234,7 @@ func (r *deploymentRolesRig) walkImplementerChecker() error {
 // place of plan_tasks.position, as a store that lost slice 4's place would answer; the tester's pass
 // then moves nothing, and the assertion of step 3 fails.
 func TestAnIssueOfSliceFourGoesOnUnderThisRelease(t *testing.T) {
+	t.Parallel()
 	r := newSliceFourRig(t)
 	r.work(claim.RoleTester, "test", testCompletion, phase.Reviewing)
 	if kind, position := r.taskPlace(); kind != "step" || position != 3 {
@@ -318,7 +320,7 @@ func newDeploymentRolesRig(t *testing.T, proof liveProof, dispatch *scratchDispa
 	}
 	r.cfg.DispatchURL = r.dispatch.base
 	r.person(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Deployment roles"}, http.StatusCreated, nil)
-	r.person(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
+	r.person(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
 	for place, title := range titles {
 		var created struct {
 			Key               string `json:"key"`
@@ -356,7 +358,7 @@ func (r *deploymentRolesRig) seedAdmitted(title, rank string, seq int64) {
 	t := r.t
 	t.Helper()
 	ctx := context.Background()
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutIssue(ctx, tx, record.Issue{
 			Key: r.key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: r.key, Project: r.cfg.Project,
 			Title: title, Phase: phase.Admitted, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",
@@ -630,7 +632,7 @@ func newSliceFourRig(t *testing.T) *sliceFourRig {
 	}
 	r.cfg.DispatchURL = r.dispatch.base
 	r.person(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Slice four"}, http.StatusCreated, nil)
-	r.person(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
+	r.person(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
 	const title = "Slice four issue continues"
 	var created struct {
 		Key     string `json:"key"`
@@ -858,13 +860,19 @@ func wayBackOf(t *testing.T, suffix string) string {
 
 // runSQL runs sql on a connection of its own to dsn, as psql runs it under ON_ERROR_STOP: a
 // statement that fails ends the run with its error, and the transaction it stood in is rolled
-// back.
+// back. dsn is a URL a pgx pool reads (testdb.Database), which holds pgxpool's keys, and
+// pgx.Connect would send them to the server as settings it does not know, so the connection is
+// made to the same database by the URL with those keys taken out (testdb.DatabaseURL).
 func runSQL(t *testing.T, dsn, sql string) error {
 	t.Helper()
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, dsn)
+	plain, err := testdb.DatabaseURL(dsn, "")
 	if err != nil {
-		t.Fatalf("connect to %s: %v", dsn, err)
+		t.Fatal(err)
+	}
+	conn, err := pgx.Connect(ctx, plain)
+	if err != nil {
+		t.Fatalf("connect to %s: %v", plain, err)
 	}
 	defer conn.Close(ctx)
 	if _, err := conn.Exec(ctx, sql); err != nil {

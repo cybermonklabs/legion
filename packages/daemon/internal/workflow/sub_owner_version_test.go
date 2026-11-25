@@ -97,7 +97,7 @@ func (s startReadyRuns) Plan(ctx context.Context, tx pgx.Tx, issue string, gener
 }
 
 // The start of each task that waits runs once for a fact, at its door: a version that starts a
-// stopped task with a sub-owner again at its parts runs startReady once (afterSeveral), and not once
+// stopped task with a sub-owner again at its parts runs startReady once (afterVersion), and not once
 // more inside the start again. With a running, f (owner=architect) stopped at its parts, its part
 // f1 waiting and h needing f, the owner's version that changes f reads the plan from startReady
 // once, since no task startReady starts stands at its parts.

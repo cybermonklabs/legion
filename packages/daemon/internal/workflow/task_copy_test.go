@@ -100,7 +100,7 @@ func TestASecondTaskQueuesItsBranchRow(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					queued, err := engine.startTaskCopy(ctx, tx, s)
+					queued, err := engine.startTaskCopy(ctx, tx, &s)
 					if err != nil {
 						return err
 					}

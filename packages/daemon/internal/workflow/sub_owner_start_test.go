@@ -84,7 +84,7 @@ func seedOwnedVersion(t *testing.T, pool *pgxpool.Pool, key string, generation u
 }
 
 // partsGiven takes version of the plan of key, holding tasks, given by the sub-owner of task of, as
-// a later version is taken once the work has started (afterSeveral), in one transaction: the
+// a later version is taken once the work has started (afterVersion), in one transaction: the
 // version's rows (putOwnedVersion), the plan node (WritePlan), then each task that can start
 // (startReady).
 func partsGiven(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, of string, version int, tasks ...ownedTask) {
@@ -97,8 +97,7 @@ func partsGiven(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, of string
 		if err := engine.WritePlan(ctx, tx, issue); err != nil {
 			return err
 		}
-		_, err := engine.startReady(ctx, tx, issue)
-		return err
+		return engine.startReadyNow(ctx, tx, issue.Key)
 	})
 }
 
@@ -220,8 +219,7 @@ func TestAPartStartsOnlyAfterItsTasksJoin(t *testing.T) {
 	seedTaskBranch(t, pool, root.Key, "a", "legion/"+root.Key)
 
 	onStored(t, pool, engine, root.Key, func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-		_, err := engine.startReady(ctx, tx, issue)
-		return err
+		return engine.startReadyNow(ctx, tx, issue.Key)
 	})
 
 	assertWaits(t, tasksOf(t, pool, engine, root.Key), "f", atParts, record.StepWaitJoin)

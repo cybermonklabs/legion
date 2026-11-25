@@ -23,6 +23,7 @@ const joinBranchOfD = "legion/LEGION-208.d.join"
 // The fault it catches is d's pull request against a's branch, which shows c's work as d's (its
 // control: record.StoredPlan.BaseOf answering the first need's branch, so no join branch is made).
 func TestATaskWithSeveralNeedsStartsFromItsJoinBranch(t *testing.T) {
+	t.Parallel()
 	rig := newTaskBranchRig(t, joinBranchPlan...)
 	a := rig.github.Commit(t, rig.branch(t, "a"), map[string]string{"a.txt": "a\n"}, "a")
 	c := rig.github.Commit(t, rig.branch(t, "c"), map[string]string{"c.txt": "c\n"}, "c")
@@ -71,6 +72,7 @@ func TestATaskWithSeveralNeedsStartsFromItsJoinBranch(t *testing.T) {
 // GitHub's 409 is recorded as a join conflict of that need, the join branch stands on the needs that
 // joined, and the task's branch starts there.
 func TestAJoinBranchThatConflictsStandsOnTheNeedsThatJoined(t *testing.T) {
+	t.Parallel()
 	rig := newTaskBranchRig(t, joinBranchPlan...)
 	a := rig.github.Commit(t, rig.branch(t, "a"), map[string]string{"x.txt": "from a\n"}, "a")
 	rig.github.Commit(t, rig.branch(t, "c"), map[string]string{"x.txt": "from c\n"}, "c")

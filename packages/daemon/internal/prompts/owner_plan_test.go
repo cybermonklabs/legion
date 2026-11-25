@@ -116,48 +116,6 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 	}
 }
 
-// Legion sets the base of each task's pull request, and a plan names no other
-// (record.StoredPlan.BaseOf): the pull request of each task whose work merges by itself, and of
-// each task with no needs, is against the repository's default branch, so a plan of one task, the
-// project's default steps included, has its pull request there; among the other tasks, a task with
-// one need has its pull request against that need's branch, and a task with several against its
-// join branch. The implementer's completion on a pull request against any other base is refused
-// HANDOFF_PULL_REQUEST_BASE (api's implementationPullRequest), so the owner who writes the plan
-// reads the rule in its own prompt, and what it does where work must build on unmerged work: a task
-// that needs the task doing it, or, for another issue's, an issue that waits on it by its
-// blocked_by list. Each rule is held by the terms of the clause that states it, in their order, and
-// the refusal's code once in the composed prompt. Both architect compositions share that part, so
-// both are read. This shows the text is loaded, never that an owner follows it.
-func TestTheOwnersPromptNamesTheBaseOfEachTasksPullRequest(t *testing.T) {
-	composer, err := New(t.TempDir())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	for _, tc := range []struct {
-		name   string
-		isRoot bool
-	}{{"root architect", true}, {"sub-architect", false}} {
-		t.Run(tc.name, func(t *testing.T) {
-			composed := composedText(t, composer, claim.RoleArchitect, tc.isRoot)
-			for _, terms := range [][]string{
-				{"Legion sets the base of each task's pull request", "a plan names no other"},
-				{"a plan of one task", "the project's default steps included", "default branch"},
-				{"task with one need", "that need's branch", "a task with several", "its join branch"},
-				{"refused `HANDOFF_PULL_REQUEST_BASE`", "any other base", "never ask for another base in a task's text"},
-				{"unmerged work of the same issue", "a task that `needs` the task"},
-				{"another issue's unmerged branch", "`blocked_by`", "once that issue is `done`"},
-			} {
-				if !clauseHolds(composed, terms...) {
-					t.Errorf("no clause of the composed %s prompt holds %q, in that order", tc.name, terms)
-				}
-			}
-			if got := strings.Count(composed, "HANDOFF_PULL_REQUEST_BASE"); got != 1 {
-				t.Errorf("the composed %s prompt names HANDOFF_PULL_REQUEST_BASE %d times, want once", tc.name, got)
-			}
-		})
-	}
-}
-
 // An owner's plan can leave out the tester or the reviewer, so the merger verifies the steps its
 // task's `Steps:` line names rather than a tester's and a reviewer's cycles. A task with no review
 // step on a base whose rules require an approving review leaves a merge only a person or the owner
@@ -179,6 +137,55 @@ func TestTheMergerWaitsForAMissingReview(t *testing.T) {
 	}
 	if retired := "Verify tester and reviewer cycles completed"; strings.Contains(text, retired) {
 		t.Errorf("the composed merger prompt still says %q", retired)
+	}
+}
+
+// A merge of the base forward reaches the merge only once the reviewer approved the new head, and
+// only where the merger's task has a reviewer step: a task with none stands on no review, so the
+// daemon asks no reviewer (workflow's mergeForwardLanded) and the merger goes on at the new head.
+// One composed prompt serves the merger of a task with a reviewer step and of one with none, so
+// each block of it - a paragraph, or an item of a list - that has the reviewer read the merge or
+// approve the new head names the reviewer step it holds for, and the prompt tells the merger of a
+// task with none to go on at the new head. This shows the text is loaded, never that a merger
+// follows it.
+func TestTheMergerWaitsForTheApprovalOfAMergeOnlyOnATaskWithAReviewerStep(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	composed := composedText(t, composer, claim.RoleMerger, false)
+	var blocks []string
+	for _, paragraph := range strings.Split(composed, "\n\n") {
+		block := ""
+		for _, line := range strings.Split(paragraph, "\n") {
+			if item := strings.TrimLeft(line, " "); block != "" && (strings.HasPrefix(item, "- ") || len(item) > 2 && item[0] >= '1' && item[0] <= '9' && strings.HasPrefix(item[1:], ". ")) {
+				blocks, block = append(blocks, foldWhitespace(block)), ""
+			}
+			block += line + "\n"
+		}
+		blocks = append(blocks, foldWhitespace(block))
+	}
+	approving := 0
+	for _, block := range blocks {
+		if !strings.Contains(block, "approve the new head") && !strings.Contains(block, "reviewer's approval of it") &&
+			!strings.Contains(block, "reads the merge's resolution") {
+			continue
+		}
+		approving++
+		if !strings.Contains(block, "reviewer step") {
+			t.Errorf("the composed merger prompt has the reviewer read the merge or approve the new head with no reviewer step named: %q", block)
+		}
+	}
+	if approving == 0 {
+		t.Fatal("no block of the composed merger prompt has the reviewer approve the new head: the needles match nothing")
+	}
+	for _, phrase := range []string{
+		"Where it has none, no approval holds the new head",
+		"where it has none, go on at the new head",
+	} {
+		if !strings.Contains(foldWhitespace(composed), phrase) {
+			t.Errorf("the composed merger prompt omits %q", phrase)
+		}
 	}
 }
 
@@ -228,21 +235,21 @@ func TestTheImplementerAnswersTheBotThreadsOnATaskWithNoReviewer(t *testing.T) {
 }
 
 // A catch-up that names an issue waiting in `accepting` leaves the root architect its acceptance.
-// The daemon part states what to do, in two sentences: sign off or send back, and the head a
-// parent's sign-off needs; the role part points to it rather than saying it again, so the composed
-// root prompt holds the parent's head rule once. This shows the text is loaded, never that an
-// architect follows it.
+// The daemon part states what to do, in one sentence: sign off a parent only after its last round,
+// on the head a parent's sign-off needs, or send it back; the role part points to it rather than
+// saying it again, so the composed root prompt holds the parent's head rule once. This shows the
+// text is loaded, never that an architect follows it.
 func TestTheRootsCatchUpStatesItsAcceptanceOnce(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	text := foldWhitespace(composedText(t, composer, claim.RoleArchitect, true))
-	stated := "No worker runs there and the notice that moved it there may never have reached you, so read each one's evidence, then `sign_off` it or send it back with `request_backward_move`. Sign off a parent only on a head that the step before your acceptance passed and that carries the merges of every child its criteria need; otherwise run its last round (`skill://legion-architect/references/acceptance.md`, \"The last round\")."
+	stated := "No worker runs there and the notice that moved it there may never have reached you, so read each one's evidence, then `sign_off` a parent only after its last round, on a head that the step before your acceptance passed and at which its checks pass (`skill://legion-architect/references/acceptance.md`, \"The last round\"), or send it back with `request_backward_move`."
 	if !strings.Contains(text, stated) {
 		t.Errorf("the composed root architect prompt omits %q", stated)
 	}
-	if n := strings.Count(text, "carries the merges of every child its criteria need"); n != 1 {
+	if n := strings.Count(text, "on a head that the step before your acceptance passed and at which its checks pass"); n != 1 {
 		t.Errorf("the composed root architect prompt says the head a parent's sign-off needs %d times, want 1", n)
 	}
 }
@@ -338,7 +345,7 @@ func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 		"in the order of the steps of",
 		"holds your step `acceptance:owner`",
 		"A task with no `acceptance:owner` step has no `accepting`",
-		"the phase of an earlier step of the task: `implementing`, or `testing` where the task has a tester step",
+		"the phase of an earlier step of the task: `planning` where the task has a planner step, `implementing`, or `testing` where the task has a tester step",
 		"is a gap that a tester step and a reviewer step name and neither refuses",
 		"goes back to the implementer, or to the earlier step its completion names",
 	}

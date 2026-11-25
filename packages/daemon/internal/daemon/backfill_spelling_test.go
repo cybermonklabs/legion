@@ -31,6 +31,7 @@ import (
 // Kubernetes, whose pods provision their own, the record takes GitHub's spelling. The default
 // branch is GitHub's either way.
 func TestTheBackfillKeepsTheSpellingOfAnExistingClone(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		clone bool
@@ -65,7 +66,7 @@ func TestTheBackfillKeepsTheSpellingOfAnExistingClone(t *testing.T) {
 			github := newNamedGitHub(t, map[string]string{"acme/widgets": "Acme/Widgets@release/v7.1"})
 			w := &workflowRuntime{pool: pool, records: records, defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now)}
 			client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-301", ResolvedRepo: "acme/widgets"}}}
-			if _, _, err := backfillRepositories(ctx, pool, records, client, "LEGION", state, w.defaultBranches, ghrepo.Renames{}, quietLogger()); err != nil {
+			if _, err := backfillRepositories(ctx, pool, records, client, "LEGION", state, w.defaultBranches, ghrepo.Renames{}, quietLogger()); err != nil {
 				t.Fatal(err)
 			}
 			repo, branch, err := w.issueRepository(ctx, "LEGION-301")
@@ -101,7 +102,7 @@ func leftAs(key, repo, cause string) string {
 func backfillLogged(t *testing.T, pool *store.Pool, records record.Store, client dispatch.Client, state string, named *defaultBranches, renames ghrepo.Renames) (bool, string) {
 	t.Helper()
 	var logs bytes.Buffer
-	_, left, err := backfillRepositories(context.Background(), pool, records, client, "LEGION", state, named, renames, slog.New(slog.NewTextHandler(&logs, nil)))
+	left, err := backfillRepositories(context.Background(), pool, records, client, "LEGION", state, named, renames, slog.New(slog.NewTextHandler(&logs, nil)))
 	if err != nil {
 		t.Fatalf("backfill = %v, want no error: one record's repository never stops the boot", err)
 	}
@@ -112,6 +113,7 @@ func backfillLogged(t *testing.T, pool *store.Pool, records record.Store, client
 // so it leaves the record as it is and says why, naming both, rather than move an issue's
 // workspace onto either by guess; the boot goes on (INFRA-4401 D11).
 func TestTheBackfillLeavesARecordTwoClonesOfOneRepositorySpell(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	if _, err := pool.Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
@@ -151,6 +153,7 @@ func TestTheBackfillLeavesARecordTwoClonesOfOneRepositorySpell(t *testing.T) {
 // repository would create branches there and disarm a stranger's pull request; the boot goes on
 // (INFRA-4401 D11).
 func TestTheBackfillLeavesARecordWhosePullRequestIsOnAnotherRepository(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	github := newNamedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main", "zeta/tools": "zeta/tools@main"})
 	client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-1", ResolvedRepo: "acme/widgets"}}}
@@ -165,7 +168,7 @@ func TestTheBackfillLeavesARecordWhosePullRequestIsOnAnotherRepository(t *testin
 				t.Fatal(err)
 			}
 			records := record.NewStore()
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				return records.PutPullRequest(ctx, tx, record.PullRequest{Issue: "LEGION-1", Repo: tc.prRepo, Number: 7, Branch: "legion/LEGION-1",
 					HeadSHA: "head", State: record.PullRequestOpen})
 			}); err != nil {
@@ -343,6 +346,7 @@ func TestTheBackfillFillsARecordWhoseEveryTaskPullRequestIsOnTheResolvedReposito
 // work; a workspace under the resolved repository, in any case, fills. The boot goes on
 // (INFRA-4401 D11).
 func TestTheBackfillLeavesARecordWhoseWorkspaceIsInAnotherRepository(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	github := newNamedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main", "zeta/tools": "zeta/tools@main"})
 	client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-1", ResolvedRepo: "acme/widgets"}}}
@@ -392,6 +396,7 @@ func TestTheBackfillLeavesARecordWhoseWorkspaceIsInAnotherRepository(t *testing.
 // spelling, which no later boot can rename, is left as it is, the log naming why. Neither stops
 // the boot (INFRA-4401 D11).
 func TestTheBackfillOfARepositoryGitHubRenamedNamesTheFix(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	github := newNamedGitHub(t, map[string]string{"acme/old": "301 acme/new", "acme/new": "acme/new@main"})
 	client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-1", ResolvedRepo: "acme/old"}}}
@@ -485,6 +490,7 @@ func (t servedOwnerTokens) Token(ctx context.Context, role appauth.AppRole, owne
 // with no GitHub spelling. The repository is then heard under both names, so the events GitHub
 // publishes under the name it moved to reach the record all the same.
 func TestTheBackfillOfAConfiguredRenameFillsTheRecordsOwnName(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	github := newNamedGitHub(t, map[string]string{"sjawhar/legion": "301 cybermonklabs/legion", "cybermonklabs/legion": "cybermonklabs/legion@main"})
 	client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-1", ResolvedRepo: "sjawhar/legion"}}}
@@ -504,7 +510,7 @@ func TestTheBackfillOfAConfiguredRenameFillsTheRecordsOwnName(t *testing.T) {
 			defaultBranches: newDefaultBranches(servedOwnerTokens{owner: "cybermonklabs"}, repos, github.url, defaultBranchTTL, time.Now)}, t.TempDir()
 	}
 	backfill := func(w *workflowRuntime, state string) error {
-		_, _, err := backfillRepositories(ctx, w.pool, w.records, client, "LEGION", state, w.defaultBranches, transferredLegion, quietLogger())
+		_, err := backfillRepositories(ctx, w.pool, w.records, client, "LEGION", state, w.defaultBranches, transferredLegion, quietLogger())
 		return err
 	}
 

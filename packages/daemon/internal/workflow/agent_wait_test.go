@@ -560,3 +560,56 @@ func TestAMoveBackWhoseAgentIsBusyKeepsItsMarkThroughTheWait(t *testing.T) {
 		})
 	}
 }
+
+// A step of the one task of a plan of one starts at once for its agent, which no other task holds,
+// the outcome a step of several tasks reaches once its agent is free: task x is `implementer
+// tester:k`, and its implementer's pass starts its tester's step for k in that transaction, under
+// k's claim, with nothing of it waiting; task w is `implementer:k reviewer` at its review, and the
+// owner's move back to its first step starts that step for k at once.
+//
+// It is the twin of TestATransitionToTheNextStepOfABusyAgentWaits on a plan of one task.
+func TestAStepOfThePlansOneTaskStartsForItsAgentAtOnce(t *testing.T) {
+	t.Run("the next step", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine, _ := tickingEngine()
+		root := stepRoot(t, pool, phase.Admitted)
+		seedSlot(t, pool, record.Slot{Issue: root.Key, Index: 0})
+		seedTasks(t, pool, root.Key, root.Generation,
+			planTask{id: "x", steps: []string{"implementer", "tester:k"}, agents: []claim.Agent{"implementer", "k"}, state: record.TaskWaiting})
+
+		firstStepOf(t, pool, engine, root.Key)
+		assertWaits(t, tasksOf(t, pool, engine, root.Key), "x", atStep(1), record.StepWaitNone)
+
+		taskMoves(t, pool, engine, root.Key, "x", TriggerImplementationReady, "")
+
+		assertWaits(t, tasksOf(t, pool, engine, root.Key), "x", atStep(2), record.StepWaitNone)
+		if claims := startClaims(t, pool, root.Key, claim.RoleTester); len(claims) != 1 || claims[0] != agentClaim(t, root.Key, "k") {
+			t.Fatalf("the tester's starts of %s name %v, want the one of x's agent k", root.Key, claims)
+		}
+	})
+
+	t.Run("the owner's move back", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine, _ := tickingEngine()
+		root := stepRoot(t, pool, phase.Reviewing)
+		seedTasks(t, pool, root.Key, root.Generation,
+			planTask{id: "w", steps: []string{"implementer:k", "reviewer"}, agents: []claim.Agent{"k", "reviewer"}, state: record.TaskRunning, place: atStep(2)})
+
+		onTask(t, pool, engine, root.Key, "w", func(ctx context.Context, tx pgx.Tx, s TaskScope) error {
+			pr, err := engine.taskPullRequest(ctx, tx, s)
+			if err != nil {
+				return err
+			}
+			row, err := engine.phaseRow(ctx, tx, root.Key, claim.RoleArchitect)
+			if err != nil {
+				return err
+			}
+			return engine.transition(ctx, tx, s, TriggerBackward, atStep(1), row, pr, "the owner sends the work back")
+		})
+
+		assertWaits(t, tasksOf(t, pool, engine, root.Key), "w", atStep(1), record.StepWaitNone)
+		if claims := startClaims(t, pool, root.Key, claim.RoleImplementer); len(claims) != 1 || claims[0] != agentClaim(t, root.Key, "k") {
+			t.Fatalf("the implementer's starts of %s after the move back name %v, want the one of w's agent k", root.Key, claims)
+		}
+	})
+}

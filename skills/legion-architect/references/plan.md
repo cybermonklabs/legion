@@ -103,6 +103,7 @@ The reasons a version gets for where its task stands are in `skill://legion-arch
 - **A child:** before `release_children` releases it.
   The daemon has not recorded the child yet, so Legion keeps the plan until the release;
   the answer, as for any plan it takes, is the plan's `version` and each task with its `steps` and its `needs`.
+  Its `added` names each task the version added over the plan in force, every task of a first version, and is `[]` for a version that adds none.
   A child the daemon has not recorded is refused once its Dispatch status is none of `triage`, `backlog`, `icebox` and `todo` (`ISSUE_ALREADY_RELEASED`).
   The child's first step can start in the same admission pass as its release, so a plan given after it comes too late.
 

@@ -50,6 +50,7 @@ func (r credentialWaitRuntime) SlotWaitsForCredential(_ string, slot claim.Role)
 // is resumed. A start that re-roles nothing — the implementer's own entry — is not held by the
 // launcher that makes no wait.
 func TestAReroleInAPodBuiltBeforeTheCredentialWaitWaitsForTheRound(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		waits    bool

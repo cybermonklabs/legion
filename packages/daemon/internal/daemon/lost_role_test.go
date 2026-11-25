@@ -40,6 +40,7 @@ import (
 // without its call of stopLostRoles (workflow/resume.go, after sweepMerged). At the restart A's
 // task is then not stopped and holds no task-stopped hold, and the assertion of A's stop fails.
 func TestARestartWithoutARoleStopsItsTasksAndBoots(t *testing.T) {
+	t.Parallel()
 	roles := deploymentRoles(t)
 	r := newDeploymentRolesRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), roles,
 		[]string{"Running checker loses its role", "Implementer waits before dropped verifier", "Default walk finishes after restart"})

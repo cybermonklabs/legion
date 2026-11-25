@@ -37,6 +37,7 @@ import (
 // second. The control deletes the failed review's record from Dispatch's store, its node and its
 // tuples, and the same assertion must then fail on the first issue's failed steps.
 func TestTheReadOfAProjectHoldsEachRetrosRating(t *testing.T) {
+	t.Parallel()
 	r := newStepRecordsRig(t, 3)
 	want := r.walkThreeRated()
 	r.waitPlans("the three finished issues, each rated", want)
@@ -76,6 +77,7 @@ func TestTheReadOfAProjectHoldsEachRetrosRating(t *testing.T) {
 // refused PLAN_RATING_REQUIRED, so the contract the claim records is what decides, and the
 // daemon's own view of the claim after the boot must read the old contract.
 func TestAnOldPluginsRetroCompletesWithNoRatingAcrossTheDeploy(t *testing.T) {
+	t.Parallel()
 	r := newStepRecordsRig(t, 1)
 	r.walkToRetro()
 	implementer := r.worker(claim.RoleImplementer)

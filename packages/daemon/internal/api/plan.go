@@ -26,14 +26,22 @@ type PlanRegisterRequest struct {
 	Version    int    `json:"version"`
 }
 
-// PlanRegisterResponse is the plan register_plan took: the version given and each of its tasks.
+// PlanRegisterResponse is the plan register_plan took: the version given, the tasks it added and
+// each of its tasks.
 type PlanRegisterResponse struct {
 	Plan RegisteredPlan `json:"plan"`
 }
 
-// RegisteredPlan is one version of a plan as register_plan read it.
+// RegisteredPlan is one version of a plan as register_plan read it. Added is the ids of the tasks
+// the version adds over the version in force, in the plan's order, as the workflow's apply of the
+// plan answered them (intake.Result.Added): every task of a generation's first version, none for a
+// version that changes or keeps each task it gives, [] and never null; a task it removes is in no
+// list of the answer. A registration of a version the store holds already is answered what its
+// apply answered, which the store recorded on the version (intake.ApplyFact). A caller below
+// tasksContract, which added the field, is served none (shaping.go's withoutNeedsOrAdded).
 type RegisteredPlan struct {
 	Version int              `json:"version"`
+	Added   *[]string        `json:"added,omitempty"`
 	Tasks   []RegisteredTask `json:"tasks"`
 }
 
@@ -43,7 +51,7 @@ type RegisteredPlan struct {
 // here, never null: it runs the project's default steps, which the workflow reads when the task's
 // work starts, so the answer names none rather than guessing what the project will run then. A
 // task that needs none has [] here, never null; the answer to a caller below tasksContract, which
-// added the field, carries none (shaping.go's withoutNeeds).
+// added the field, carries none (shaping.go's withoutNeedsOrAdded).
 type RegisteredTask struct {
 	ID    string    `json:"id"`
 	Steps []string  `json:"steps"`
@@ -108,11 +116,13 @@ func (s *server) writeRefusal(w http.ResponseWriter, r *http.Request, refusal *i
 // plan.FromBlocks), and refuses with one reason for each cause of a plan this release does not
 // carry out (plan.Supported) or no release can (plan.Validate); each of those answers records
 // nothing. A plan both take is recorded as intake.PlanGiven, its needs as task ids, whose rules of
-// a later version are the workflow's.
+// a later version are the workflow's, and is answered with the tasks the workflow's apply says the
+// version added (registeredPlan).
 //
-// The fact's id is the issue, the generation the plan is given at, the document and the version:
-// a retry of a registration taken is that fact, answered the same, and the same version given at
-// a later generation of the issue is a new one.
+// The fact's id is the issue, the generation the plan is given at, the document and the version.
+// Whether the registration is one already taken is the record's to say (intake.ApplyFact): a
+// version the store holds is answered as taken, the same as its first registration, and one that
+// the issue's first step passed over since applies when it is given again, whoever gives it.
 func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	var req PlanRegisterRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r,
@@ -157,15 +167,25 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	// and the plan recorded and answered holds task ids, which every reader of a need reads. Both
 	// checks run, so a plan with two causes gets two reasons: what this release does not carry out
 	// yet, then what no release can. Each judges the plan against the deployment the daemon's
-	// settings define (Options.Deployment), so a role of `roles` is a role a step names.
-	refusals := append(plan.Supported(given, s.deployment), plan.Validate(given, s.deployment)...)
+	// settings define (Options.Deployment), so a role of `roles` is a role a step names. Validate
+	// checks a plan its owner wrote, before the fact lock, so it runs on the request's context and
+	// stops when the request ends, recording nothing.
+	invalid, err := plan.Validate(r.Context(), given, s.deployment)
+	if err != nil {
+		s.logRequestFailure(r, err, "api: the check of a plan stopped", "issue", req.Issue, "artifact", artifactID, "version", req.Version)
+		s.refuse(w, r, http.StatusServiceUnavailable, "register_plan stopped before it finished checking the plan, because its request ended; nothing was recorded")
+		return
+	}
+	refusals := append(plan.Supported(given, s.deployment), invalid...)
 	if len(refusals) > 0 {
 		s.writeRefusal(w, r, intake.PlanRefused(refusals))
 		return
 	}
 	s.applyFactAnswering(w, r, fmt.Sprintf("plan:%s:%d:%s:%d", req.Issue, generation, artifactID, req.Version),
 		intake.PlanGiven{Issue: req.Issue, Generation: generation, Plan: given, GivenBy: grant.Claim},
-		AnswerPlanRegister, PlanRegisterResponse{Plan: registeredPlan(given)})
+		AnswerPlanRegister, func(result intake.Result) any {
+			return PlanRegisterResponse{Plan: registeredPlan(given, result.Added)}
+		})
 }
 
 // planOwner authorizes register_plan for an architect of the issue's tree, or for the sub-owner of
@@ -335,12 +355,14 @@ func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID, refe
 	return given, true
 }
 
-// registeredPlan is given as register_plan answers it.
-func registeredPlan(given plan.Plan) RegisteredPlan {
+// registeredPlan is given as register_plan answers it, with added, the tasks its version added
+// ([] for nil).
+func registeredPlan(given plan.Plan, added []string) RegisteredPlan {
 	tasks := make([]RegisteredTask, len(given.Tasks))
 	for i, task := range given.Tasks {
 		needs := append([]string{}, task.Needs...)
 		tasks[i] = RegisteredTask{ID: task.ID, Steps: plan.Words(task.Steps), Needs: &needs}
 	}
-	return RegisteredPlan{Version: given.Version, Tasks: tasks}
+	answered := append([]string{}, added...)
+	return RegisteredPlan{Version: given.Version, Added: &answered, Tasks: tasks}
 }

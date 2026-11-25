@@ -26,11 +26,11 @@
 -- and so does the workflow where it records a pull request on the issue's own branch
 -- (BranchGiven); it names no task, so a task's branch has one place, plan_tasks.branch.
 --
--- The outbox check is one list, so this migration names every kind, as 20261119003157 did: its
--- twenty-nine kinds and task_branch. Its version stands above 20261119003157 on purpose, and above
+-- The outbox check is one list, so this migration names every kind, as 20261119203047 did: its
+-- thirty kinds and task_branch. Its version stands above 20261119203047 on purpose, and above
 -- every other migration that writes the list again: Migrate applies every unrecorded migration in
 -- version order, so the list with the higher version is the last word on any database, a database
--- that already took 20261119003157 among them.
+-- that already took 20261119203047 among them.
 --
 -- There is no down file. This directory keeps none, so the way back is the transaction below, run
 -- with the daemon stopped, before the earlier image is pinned. It deletes each task_branch row
@@ -49,7 +49,7 @@
 --     'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
 --     'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
 --     'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
---     'conflict_confirm', 'merge_forward'));
+--     'conflict_confirm', 'merge_forward', 'design_changes'));
 --   alter table plan_tasks drop column if exists branch, drop column if exists join_conflicts,
 --     drop column if exists join_unmerged, drop column if exists start_reason;
 --   drop table if exists plan_branches;
@@ -90,4 +90,4 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
-  'conflict_confirm', 'merge_forward', 'task_branch'));
+  'conflict_confirm', 'merge_forward', 'design_changes', 'task_branch'));

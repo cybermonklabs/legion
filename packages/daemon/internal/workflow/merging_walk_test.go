@@ -142,8 +142,7 @@ func TestAVersionThatAddsANeedOnATaskAtAStepIsTaken(t *testing.T) {
 	})
 	seedTaskBranch(t, pool, root.Key, "c", "legion/"+root.Key+".c")
 	onStored(t, pool, engine, root.Key, func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-		_, err := engine.startReady(ctx, tx, issue)
-		return err
+		return engine.startReadyNow(ctx, tx, issue.Key)
 	})
 	joinsEnd(t, pool, engine, root.Key)
 	assertWaits(t, tasksOf(t, pool, engine, root.Key), "d", atStep(1), record.StepWaitNone)

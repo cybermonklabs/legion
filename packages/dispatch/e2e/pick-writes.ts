@@ -25,11 +25,17 @@ import { settledState } from "./settled";
 export const PICK_HOLD_MS = 3_000;
 
 /** One save (`PATCH /issues/<KEY>`) as the route held it: what it carried, when it reached the
- *  route, and when the route was done with it - passed on to the server, or dropped because the
- *  page gave it up (`Date.now()` in the runner). `endedAt` is unset while it is held. */
+ *  route, whether the route holds it still, and when the route was done with it - passed on to the
+ *  server, or dropped because the page gave it up (`Date.now()` in the runner). `endedAt` is unset
+ *  while it is held. */
 export interface HeldPatch {
   readonly arrivedAt: number;
   readonly body: unknown;
+  /** True from the moment the save reaches the route until the route lets it go, just before it
+   *  passes the save on. A row reads it at a step of its own (`savesAtRoute`) to know the save was
+   *  still out then, with no clock: a hold measured with `Date.now()` can read a millisecond short
+   *  of the `PICK_HOLD_MS` timer that held it. */
+  held: boolean;
   endedAt?: number;
 }
 
@@ -65,17 +71,19 @@ export async function holdIssuePatches(page: Page, issueKey: string): Promise<He
     const request = route.request();
     if (request.method() !== "PATCH") return route.fallback();
     holding += 1;
-    const patch: HeldPatch = { arrivedAt: Date.now(), body: request.postDataJSON() };
+    const patch: HeldPatch = { arrivedAt: Date.now(), body: request.postDataJSON(), held: true };
     sent.push(patch);
     try {
       // The hold is the row's whole point: the save stays out at least this long, and until the
       // row lets it go, so the next pick, reload or read happens while it is out.
       await Promise.all([sleep(PICK_HOLD_MS), released.promise]);
+      patch.held = false;
       await route.fallback();
       forwarded.push(patch.body);
     } catch {
       // The page closed with the save held: it never left.
     } finally {
+      patch.held = false;
       patch.endedAt = Date.now();
       holding -= 1;
     }
@@ -89,6 +97,13 @@ export async function savesEnded(page: Page, held: HeldPatches): Promise<void> {
   await expect
     .poll(async () => held.holding() === 0 && (await keptWrites(page)) === 0, { timeout: 30_000 })
     .toBe(true);
+}
+
+/** Each save of `held` that has reached the route, in order, with whether the route holds it
+ *  still. A save the route holds once a row has seen a step land, and that reached the route
+ *  before the step began, was held through the step: the route lets each save go once. */
+export function savesAtRoute(held: HeldPatches): { body: unknown; held: boolean }[] {
+  return held.sent.map((patch) => ({ body: patch.body, held: patch.held }));
 }
 
 /** The saves of one issue a page makes while `refuseIssuePatches` answers them. */

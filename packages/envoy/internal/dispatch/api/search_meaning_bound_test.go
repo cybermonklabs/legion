@@ -95,6 +95,7 @@ func holdMeaningStatements(t *testing.T, database *store.Store) (release func())
 //
 // The bound is local to the transaction, so the connection goes back to the pool without it.
 func TestMeaningScanAppliesTheServersBoundToItsTransaction(t *testing.T) {
+	t.Parallel()
 	_, database, deps := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	tx, err := directServer(deps).beginMeaningScan(ctx)

@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -74,7 +75,7 @@ func TestAStopOfATaskWhoseRootWaitsOnAPersonIsRefused(t *testing.T) {
 func planTaskStates(t *testing.T, h *harness, key string) map[string]record.TaskState {
 	t.Helper()
 	states := map[string]record.TaskState{}
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		stored, err := record.NewStore().Plan(context.Background(), tx, key, 1)
 		if err != nil || stored == nil {
 			return err

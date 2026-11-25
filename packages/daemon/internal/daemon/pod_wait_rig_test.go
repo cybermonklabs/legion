@@ -173,6 +173,7 @@ func (r *idleWakeRig) awaitUnownedReleasedThenStarted(issue idleRigIssue, role c
 //  2. After the idle period, main's rule releases the pod, and the checker starts in a new pod.
 //  3. An operator's suspension keeps the pod past the idle period and is told once.
 func TestAPodBuiltBeforeARoleIsKeptUntilMainsRuleOrItsRoundEndsIt(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newIdleWakeRig).
 	waiting := func(t *testing.T, rig *idleWakeRig, issue idleRigIssue) {
 		t.Helper()
 		idleRigEventually(t, idleRigRecordWait, "the served issue "+issue.key+" naming the checker's start as waiting for its pod", func() bool {

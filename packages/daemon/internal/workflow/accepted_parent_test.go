@@ -36,8 +36,8 @@ func signOffNow(t *testing.T, pool *pgxpool.Pool, id, key string) intake.Result 
 
 // A6. A parent is accepted after its children: sign_off is refused while any issue beneath the
 // one being accepted is still in the workflow, naming each of them, and is taken once the last
-// of them leaves. A parent's head proves its children's merged work, so accepting it first would
-// send a head to the merge queue that does not carry that work.
+// of them leaves, since a parent is accepted only once no issue beneath it is still in the
+// workflow.
 func TestSignOffIsRefusedWhileAnIssueBeneathIsInTheWorkflow(t *testing.T) {
 	pool := migratedPool(t)
 	seedAccepting(t, pool)
@@ -82,7 +82,7 @@ func leave(t *testing.T, pool *pgxpool.Pool, key string, at phase.Phase, status 
 
 // A6, the recorded departure. A child the daemon itself holds at admitted beneath an ancestor it
 // has already accepted does not refuse that ancestor's sign-off. Without the exclusion the rules
-// deadlock: the child is pinned at admitted until the ancestor closes, and the ancestor cannot
+// deadlock: the child is pinned at admitted while the ancestor is accepted, and the ancestor cannot
 // be accepted or closed while the child is in the workflow. Decided by this tree's architect on
 // dispatch://INFRA-980/comment/d642164a-31d2-4d6c-ae5e-4da5dd0b9104.
 func TestAChildHeldUnderAnAcceptedAncestorDoesNotRefuseThatAncestorsSignOff(t *testing.T) {
@@ -203,8 +203,7 @@ func TestAPersonsTodoUnderAnAcceptedAncestorIsHeldAtAdmitted(t *testing.T) {
 // the plan `implementer tester`, which has no reviewer step, in the other; the text is one.
 func TestTheNoticeOfATodoUnderAnAcceptedAncestorNamesTheHeadItsLastStepPassed(t *testing.T) {
 	const want = "LEGION-300 is beneath LEGION-208, whose head the last step of its task passed and the daemon has already accepted, " +
-		"so LEGION-300 is recorded at admitted and nothing starts it until LEGION-208 closes. " +
-		"Take LEGION-208 back with a backward move to run LEGION-300 under it now, or leave LEGION-300 where it is and it starts once LEGION-208 has closed."
+		"so LEGION-300 is recorded at admitted and nothing starts it while LEGION-208 stands in retro or merging."
 	for _, tc := range []struct {
 		name  string
 		steps []string

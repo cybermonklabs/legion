@@ -12,22 +12,28 @@
 # run's queue branch and id, which merge-group-cancels.sh reads beside the RUNS this script
 # exports. That job checks out with `sparse-checkout: .github`, so this script and the one it runs
 # are both in the checkout when the step runs.
-# The runner sets $GITHUB_REPOSITORY, which both `gh` calls name, for every step.
+# The runner sets $GITHUB_REPOSITORY, which both `gh` calls name, for every step. Both calls go
+# through gh-read.sh's gh_wait_reset, which waits out a spent API budget within the step's
+# JOB_TIMEOUT_MINUTES and fails by name past it: a refused list fails the step as it did, and a
+# refused cancel warns as it did.
 #
 # Run from the repository root, with those three and $GITHUB_REPOSITORY set:
 #   .github/scripts/cancel-started-act.sh
 # CI runs it in ci.yaml's cancel-started job, at its second step, after the checkout.
 set -euo pipefail
+# shellcheck source=.github/scripts/gh-read.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-read.sh"
 
-# The `--limit` is 100 because the queue builds up to 20 groups at once and this pull
-# request's own groups are among them: gh's default of 20 runs could leave an older
+# The `--limit` is 100, well above the number of groups main's merge queue builds at once, and
+# this pull request's own groups are among those: gh's default of 20 runs could leave an older
 # group of it out of the list, and so out of the act.
-RUNS=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yaml --event merge_group \
-  --limit 100 --json databaseId,headBranch,status,createdAt)
+RUNS=$(gh_wait_reset gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yaml \
+  --event merge_group --limit 100 --json databaseId,headBranch,status,createdAt)
 export RUNS
 acts=$(.github/scripts/merge-group-cancels.sh)
 while read -r act id; do
   [ "$act" = cancel ] || continue
-  gh api --silent --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/force-cancel" ||
+  gh_wait_reset gh api --silent --method POST \
+    "repos/$GITHUB_REPOSITORY/actions/runs/$id/force-cancel" ||
     echo "::warning::force-cancel of run $id failed; it may have completed already"
 done <<<"$acts"

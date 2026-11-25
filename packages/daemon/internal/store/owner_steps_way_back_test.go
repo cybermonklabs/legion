@@ -266,7 +266,7 @@ func TestTheOwnerStepsWayBackClearsItsProjectsTwoNewHoldReasons(t *testing.T) {
 				project := strings.SplitN(h.key, "-", 2)[0]
 				issue := record.Issue{Key: h.key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: h.key, Project: project,
 					Title: h.key, Phase: phase.Held, Hold: &hold, Generation: 1, Status: "testing", Rank: "U"}
-				if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error { return record.NewStore().PutIssue(ctx, tx, issue) }); err != nil {
+				if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error { return record.NewStore().PutIssue(ctx, tx, issue) }); err != nil {
 					t.Fatalf("seed %s: %v", h.key, err)
 				}
 			}

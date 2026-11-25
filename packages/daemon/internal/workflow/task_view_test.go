@@ -220,3 +220,42 @@ func TestAWriteOfAViewWritesTheIssuesDerivedPhase(t *testing.T) {
 		t.Fatalf("the status writes of %s = %+v, want the one of in_progress and no needs_review: b still implements", root.Key, writes)
 	}
 }
+
+// A move of the one task of a plan of one writes the issue in the phase its task puts it in, with
+// that phase's Dispatch status, as a move of one task of several does: with task a, `implementer
+// reviewer`, at its review with the issue's pull request #42, a's review that requests changes
+// takes a back to its implementer and writes the issue in implementing with the status in_progress,
+// over the needs_review it showed, in one row; and a's implementation that passes takes a to its
+// review and writes the issue in reviewing with needs_review, in one row more.
+//
+// It is the twin of TestAWriteOfAViewWritesTheIssuesDerivedPhase on a plan of one task: the same
+// move, the same derived phase and one status row for each move.
+func TestAMoveOfThePlansOneTaskWritesTheIssueInItsTasksPhase(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := stepRoot(t, pool, phase.Reviewing)
+	root.Status = "needs_review"
+	seedIssue(t, pool, root)
+	seedTasks(t, pool, root.Key, root.Generation,
+		planTask{id: "a", steps: []string{"implementer", "reviewer"}, agents: []claim.Agent{"implementer", "reviewer"}, state: record.TaskRunning, place: atStep(2)})
+
+	taskMoves(t, pool, engine, root.Key, "a", TriggerReviewRejected, changesBody)
+
+	assertTask(t, tasksOf(t, pool, engine, root.Key), "a", record.TaskRunning, atStep(1))
+	if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Implementing || issue.Hold != nil || issue.Status != "in_progress" {
+		t.Fatalf("%s after a's review requested changes stands in %s (hold %+v) with status %q, want implementing with in_progress", root.Key, issue.Phase, issue.Hold, issue.Status)
+	}
+	if writes := statusWrites(t, pool, root.Key); len(writes) != 1 || writes[0].Status != "in_progress" {
+		t.Fatalf("the status writes of %s = %+v, want the one of in_progress", root.Key, writes)
+	}
+
+	taskMoves(t, pool, engine, root.Key, "a", TriggerImplementationReady, "")
+
+	assertTask(t, tasksOf(t, pool, engine, root.Key), "a", record.TaskRunning, atStep(2))
+	if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Reviewing || issue.Hold != nil || issue.Status != "needs_review" {
+		t.Fatalf("%s after a's implementation passed stands in %s (hold %+v) with status %q, want reviewing with needs_review", root.Key, issue.Phase, issue.Hold, issue.Status)
+	}
+	if writes := statusWrites(t, pool, root.Key); len(writes) != 2 || writes[1].Status != "needs_review" {
+		t.Fatalf("the status writes of %s = %+v, want in_progress and then needs_review", root.Key, writes)
+	}
+}

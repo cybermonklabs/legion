@@ -77,8 +77,7 @@ func TestAStoppedPartStartsAgainOnlyWhereItsTaskStandsAtItsParts(t *testing.T) {
 		seedOwnedVersion(t, pool, root.Key, root.Generation, a, subOwned("f", "a"), part("f1", "f").at(record.TaskRunning, atStep(1)))
 		seedTaskBranch(t, pool, root.Key, "a", "legion/"+root.Key)
 		onStored(t, pool, engine, root.Key, func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-			_, err := engine.startReady(ctx, tx, issue)
-			return err
+			return engine.startReadyNow(ctx, tx, issue.Key)
 		})
 		assertWaits(t, tasksOf(t, pool, engine, root.Key), "f", atParts, record.StepWaitJoin)
 		stopTasks(t, pool, root.Key, root.Generation, "f1")

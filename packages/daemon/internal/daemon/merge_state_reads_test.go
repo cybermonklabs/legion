@@ -122,6 +122,7 @@ func (rig *readRig) endedWithNoRead(t *testing.T) {
 // and starts a climb at once. The waits are cut only through the runtime's own seam
 // (mergeStateRetry), so the waits the lines name are the production ones in a smaller unit.
 func TestTheMergeStateFollowsGitHubAfterTheLadderEndsOnUnknown(t *testing.T) {
+	t.Parallel()
 	const retry = readRigWait
 	forever := func(int32) pullAnswer { return unknownPull }
 
@@ -236,6 +237,7 @@ func TestTheMergeStateFollowsGitHubAfterTheLadderEndsOnUnknown(t *testing.T) {
 // on it. Without the follow nothing would read the head again until its next event, and the
 // record would read whatever the last attempt left.
 func TestTheMergeStateFollowsGitHubAfterASecondReadEndsOnUnknown(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		answer pullAnswer
@@ -339,6 +341,7 @@ func TestTheMergeStateFollowsGitHubAfterASecondReadEndsOnUnknown(t *testing.T) {
 // stands in testing, where none of the facts these reads apply owes a read
 // (classify.MergeStateReadOwed), so a ladder here is the start read's alone.
 func TestTheMergeStateFollowsGitHubAcrossARestart(t *testing.T) {
+	t.Parallel()
 	const pull = `{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},`
 	clean := pullAnswer{body: pull + `"mergeable":true,"mergeable_state":"clean"}`}
 	for _, tc := range []struct {
@@ -394,6 +397,7 @@ func TestTheMergeStateFollowsGitHubAcrossARestart(t *testing.T) {
 // clean, the daemon applies it as the fact a webhook would have carried, and the round the
 // approval left waiting ends in accepting. One answer is enough, so the ladder reads once.
 func TestTheMergeStateReadMovesAnApprovedIssueToAccepting(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	approvedCapture(t, pool)
 	var reads atomic.Int32
@@ -418,6 +422,7 @@ func TestTheMergeStateReadMovesAnApprovedIssueToAccepting(t *testing.T) {
 // Nothing is read for an issue no merge state would move: the reviewer has decided nothing, so the
 // same settlement leaves the daemon owing GitHub no read at all.
 func TestNoMergeStateIsReadWithoutAnApprovalStanding(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Reviewing, "needs_review",
 		record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleReviewer, Claim: "review-claim"})
@@ -443,6 +448,7 @@ func TestNoMergeStateIsReadWithoutAnApprovalStanding(t *testing.T) {
 // it is here, where its first answer is one it ends on. The running ladder climbs again for the
 // request instead, and that climb is the read that moves the issue.
 func TestAMergeStateRequestArrivingWhileTheLadderReadsIsNotLost(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	approvedCapture(t, pool)
 	var reads atomic.Int32

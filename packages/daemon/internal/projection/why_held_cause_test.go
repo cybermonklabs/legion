@@ -190,7 +190,7 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 			"The design gate of its tree stands shut: LEGION-100 waits for a person's approval of each gated step's document at its current version, and the daemon starts no issue of that tree until it opens."},
 		{record.HeldAcceptedAncestor, api.WhyUnlisted}: {acceptedAncestor,
 			api.HeldIssue{Issue: "LEGION-102", Reason: record.HeldAcceptedAncestor, HeldBy: []string{"LEGION-101"}},
-			"The daemon has accepted the head of LEGION-101 that the last step of its task passed, and LEGION-101 stands above it, so nothing of its own work starts before that issue closes."},
+			"The daemon has accepted the head of LEGION-101 that the last step of its task passed, and LEGION-101 stands above it, so nothing of its own work starts while that issue stands in retro or merging."},
 		{record.HeldChildrenBeforeRetro, api.WhyUnlisted}: {childrenBeforeRetro,
 			api.HeldIssue{Issue: "LEGION-100", Reason: record.HeldChildrenBeforeRetro, HeldBy: []string{"LEGION-101"}},
 			"It passed the last step of its task, and its plan has no acceptance step, so the daemon holds it before its retro while these issues beneath it are still in the workflow: LEGION-101. Its retro does not start while one of them is."},

@@ -24,7 +24,11 @@ import (
 // the fact unspent, so the same registration, whose id names the issue, the generation, the
 // document and the version (api's registerPlan), applies when it is given again: a version refused
 // while its task ran is taken after stop_task, and the owner's plan given again at the generation
-// the record holds meets the rules of a later version there.
+// the record holds meets the rules of a later version there. A version taken answers the tasks it
+// adds over the version in force that versionRefusal read (intake.Result.Added,
+// record.PlanVersion.Added), which the route answers, and which the write records on the version,
+// since a give of a version the store holds never reaches this apply (intake.ApplyFact) and is
+// answered that, not what the version would add over the version in force then.
 //
 // Apply judged an architect's plan already on the record as the fact reads it, since the route
 // read the record, or Dispatch, before the fact lock (requestRefusal): a giver that owns the issue
@@ -36,13 +40,13 @@ func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven
 		return intake.Result{Refusal: refusal, Unspent: refusal != nil}, err
 	}
 	written, err := e.writeVersion(ctx, tx, fact, given)
-	if err != nil || !given.recorded {
-		return intake.Result{}, err
+	if err == nil && given.recorded {
+		err = e.afterVersion(ctx, tx, fact, given, written)
 	}
-	if err := e.afterVersion(ctx, tx, fact, given, written); err != nil {
-		return intake.Result{}, err
+	if err == nil && given.recorded {
+		err = e.leaveWhereDone(ctx, tx, fact.Issue)
 	}
-	return intake.Result{}, e.leaveWhereDone(ctx, tx, fact.Issue)
+	return intake.Result{Added: given.version.Added}, err
 }
 
 // leaveWhereDone ends the run of the issue keyed key where the version just taken left each of its
@@ -412,73 +416,36 @@ func (e *Engine) removeTaskCopies(ctx context.Context, tx pgx.Tx, fact intake.Pl
 	return nil
 }
 
-// afterVersion is what a version written on a recorded issue starts. Where it changes the stopped
-// task of an issue held for that task, the stop ends: where the work of the stopped task ran, which
-// the place it stood at says (record.TaskPlace.Started), the task the plan now holds starts again
-// at its first step (startAtFirstStep), and its worker is told which version did it; a task stopped
-// before its first step went out waits for that step again, as a task never stopped does
-// (waitForFirstStep). A version taken after the work started writes the run's plan node again,
-// whole (planNode): the start wrote it at the version then in force, and the node names the plan
-// the run walks now. A version taken before the work starts writes none, since the start writes
-// the version in force. A plan of several tasks is afterSeveral's.
+// afterVersion is what a version written on a recorded issue starts, whatever the plan's count of
+// tasks. A version taken after the work started writes the run's plan node again, whole, with each
+// task the version holds (WritePlan), before any task of it starts: the start wrote it at the
+// version then in force, and the node names the plan the run walks now. A version taken before the
+// work starts writes none, since the start writes the version in force. Each stop the version ends
+// (stopsEnded) ends on the task read for it: where the work started, which the place of a task of
+// the version before says (record.TaskPlace.Started), the task starts again at its first step where
+// its needs are done, or waits for them (startAtFirstStep), and its worker is told which version
+// did it and who gave it (stoppedReason); before the work starts it waits for its first step, as a
+// task never stopped does (waitForFirstStep). Then, once the work started, each task that may start
+// starts (startReadyNow, once for the version), a task the version adds among them. Before the work
+// starts nothing starts: the gate's opening writes the node and starts each task whose needs are
+// done (gateOpened).
 func (e *Engine) afterVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, given givenVersion, written writtenVersion) error {
 	issue := *given.issue
-	if len(fact.Plan.Tasks) > 1 || given.stored != nil && len(given.stored.Tasks) > 1 {
-		return e.afterSeveral(ctx, tx, fact, given.giver, issue, written)
-	}
-	ends := len(written.stopped) > 0 && given.stored != nil && record.HeldFor(issue, record.HoldTaskStopped)
-	if !written.started && !ends {
-		return nil
-	}
-	// The plan's one task, on its scope (scopes).
-	scopes, err := e.scopes(ctx, tx, issue)
-	if err != nil {
-		return err
-	}
-	s := scopes[0]
-	if written.started && recordsSteps(issue) {
-		if err := e.enqueue(ctx, tx, issue.Key, planNode(issue, []Walk{s.walk})); err != nil {
-			return err
-		}
-	}
-	if !ends {
-		return nil
-	}
-	reason := stoppedReason(given.giver, fact.Plan.Version, written.stopped...)
-	if !written.started {
-		return e.waitForFirstStep(ctx, tx, s, reason)
-	}
-	return e.startAtFirstStep(ctx, tx, s, reason)
-}
-
-// afterSeveral is afterVersion of a plan of several tasks, given by giver. A version taken after
-// the work started writes the run's plan node again, whole, with each task the version holds
-// (WritePlan), before any task of it starts. Each stopped task the version changes ends its stop:
-// once the work started it starts again where it may start (startAtFirstStep on the issue read for
-// it), or waits, and then each task that may start starts (startReady), a task the version adds
-// among them. Before the work starts each such task waits for its first step (waitForFirstStep),
-// and nothing starts and no node is written: the gate's opening writes the node and starts each
-// task whose needs are done (gateOpened).
-func (e *Engine) afterSeveral(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, giver plan.Giver, issue record.Issue, written writtenVersion) error {
 	if written.started {
 		if err := e.WritePlan(ctx, tx, issue); err != nil {
 			return err
 		}
 	}
-	for _, task := range written.stopped {
-		// A stopped task the version removes is deleted (writeVersion), and starts nothing.
-		if !slices.ContainsFunc(fact.Plan.Tasks, func(next plan.Task) bool { return next.ID == task }) {
-			continue
-		}
+	for _, ended := range stopsEnded(fact, given, written) {
 		now, err := e.store.Issue(ctx, tx, issue.Key)
 		if err != nil {
 			return err
 		}
-		s, err := e.ScopeOf(ctx, tx, *now, task)
+		s, err := e.ScopeOf(ctx, tx, *now, ended.task)
 		if err != nil {
 			return err
 		}
-		reason := stoppedReason(giver, fact.Plan.Version, task)
+		reason := stoppedReason(given.giver, fact.Plan.Version, ended.stopped...)
 		if !written.started {
 			err = e.waitForFirstStep(ctx, tx, s, reason)
 		} else {
@@ -503,6 +470,42 @@ func stoppedReason(giver plan.Giver, version int, tasks ...string) string {
 		by = "the sub-owner of task " + string(giver)
 	}
 	return fmt.Sprintf("%s gave version %d of the plan while task %s was stopped", by, version, strings.Join(tasks, ", "))
+}
+
+// endedStop is a stop a version ends: the task of the version it ends on, and the stopped tasks of
+// the version before that it ends, which the task's worker is told.
+type endedStop struct {
+	task    string
+	stopped []string
+}
+
+// stopsEnded is each stop fact's version ends, in task id order, whatever the plan's count of
+// tasks: a stopped task the version changes and keeps ends its own stop; and a version that keeps
+// no task of the version before replaces the plan whole, so each task it gives ends the stop of
+// every stopped task it removes and starts as that one would have, told the version (the task
+// default that a person's plan replaces among them). A version that keeps a task gives its new
+// tasks no stop to end: each starts when its needs are done (startReady). A stopped task the
+// version removes is deleted (writeVersion) and starts nothing itself.
+func stopsEnded(fact intake.PlanGiven, given givenVersion, written writtenVersion) []endedStop {
+	holds := func(id string) bool {
+		return slices.ContainsFunc(fact.Plan.Tasks, func(next plan.Task) bool { return next.ID == id })
+	}
+	var ended []endedStop
+	var removed []string
+	for _, task := range written.stopped {
+		if holds(task) {
+			ended = append(ended, endedStop{task: task, stopped: []string{task}})
+		} else {
+			removed = append(removed, task)
+		}
+	}
+	if len(removed) > 0 && !slices.ContainsFunc(given.stored.Tasks, func(row record.PlanTask) bool { return holds(row.Task) }) {
+		for _, next := range fact.Plan.Tasks {
+			ended = append(ended, endedStop{task: next.ID, stopped: removed})
+		}
+	}
+	slices.SortFunc(ended, func(a, b endedStop) int { return strings.Compare(a.task, b.task) })
+	return ended
 }
 
 // waitsAtZero says whether a plan given at generation 0 for issue, which the daemon recorded after
@@ -664,15 +667,16 @@ func heldPlan(stored *record.StoredPlan) plan.Plan {
 }
 
 // givenRows is the rows of fact's version, given at now over stored, the plan in force (nil for
-// none), of which changed are the tasks it changes, adds or removes. Each task takes the
-// version's block, and a task new to the generation waits at no act (PutPlan keeps where a task
-// the generation holds stands). A task the version leaves as it was keeps its stored steps; any
-// other task takes the steps its block names (StepsOf), or, for a block that names none, defaults,
-// the project's default steps (Config.DefaultSteps), each with the type its role has in d, the
-// engine's deployment (planSteps).
+// none), of which changed are the tasks it changes, adds or removes. The version records the tasks
+// it adds (addedTasks). Each task takes the version's block, and a task new to the generation
+// waits at no act (PutPlan keeps where a task the generation holds stands). A task the version
+// leaves as it was keeps its stored steps; any other task takes the steps its block names
+// (StepsOf), or, for a block that names none, defaults, the project's default steps
+// (Config.DefaultSteps), each with the type its role has in d, the engine's deployment
+// (planSteps).
 func givenRows(fact intake.PlanGiven, stored *record.StoredPlan, changed []string, defaults []plan.Step, d plan.Deployment, now time.Time) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
 	version := record.PlanVersion{Issue: fact.Issue, Generation: fact.Generation, Version: fact.Plan.Version, ArtifactID: fact.Plan.ArtifactID,
-		Source: record.PlanSourceOwner, GivenBy: fact.GivenBy, GivenAt: now}
+		Source: record.PlanSourceOwner, GivenBy: fact.GivenBy, GivenAt: now, Added: addedTasks(stored, fact.Plan)}
 	var tasks []record.PlanTask
 	var steps []record.PlanStep
 	for _, given := range fact.Plan.Tasks {
@@ -686,4 +690,22 @@ func givenRows(fact intake.PlanGiven, stored *record.StoredPlan, changed []strin
 		steps = append(steps, planSteps(d, fact.Issue, fact.Generation, given.ID, plan.StepsOf(given, defaults))...)
 	}
 	return version, tasks, steps
+}
+
+// addedTasks is the id of each task of next that stored, the plan in force, does not hold, in
+// next's order: every task of next where stored is nil, a generation's first version, and [] for a
+// version that adds none, never nil. A task next changes or keeps is not added, and a task it
+// removes is in no list.
+func addedTasks(stored *record.StoredPlan, next plan.Plan) []string {
+	added := []string{}
+	for _, task := range next.Tasks {
+		if stored == nil {
+			added = append(added, task.ID)
+			continue
+		}
+		if _, held := stored.TaskOf(task.ID); !held {
+			added = append(added, task.ID)
+		}
+	}
+	return added
 }
