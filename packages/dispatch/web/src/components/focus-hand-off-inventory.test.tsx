@@ -797,7 +797,9 @@ async function duplicateEpicList(user: UserEvent): Promise<HTMLElement> {
     }),
     spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1"))
   );
-  drawList([issue("CORE-1")]);
+  // On the backlog: main's parent-status rule (bcc5d7e66d) needs no epic in work for it, so the
+  // create is the action's first write, with no question before it.
+  drawList([issue("CORE-1", { status: "backlog" })]);
   await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
   await user.click(screen.getByRole("button", { name: "New epic from these" }));
   const dialog = await screen.findByRole("dialog", { name: /epic/i });

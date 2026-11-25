@@ -15,6 +15,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock, tick } from "../../../__tests__/fake-clock";
+import { pick, pickNamed } from "../../../__tests__/list-picks";
 import { answerRequests } from "../../../__tests__/network";
 import { decisionsAndReadMarkHandlers } from "../../../__tests__/proof-document";
 import { answerIssuePatches } from "../../../__tests__/send-answers";
@@ -374,11 +375,15 @@ describe("every status writer of the page asks", () => {
     const user = userEvent.setup();
     const cleanup = renderHeader(issue);
     try {
-      // An open issue's select offers no Done, so the move is to Backlog, which a parent with a
-      // child in work cannot take either.
-      await user.selectOptions(await screen.findByRole("combobox", { name: "Status" }), "backlog");
+      // An open issue's Status offers no Done, so the move is to Backlog, which a parent with a
+      // child in work cannot take either. The Status is the shared single pick (INFRA-3135's R3),
+      // whose trigger shows the status the question is checking.
+      await screen.findByRole("button", { name: pickNamed("Status") });
+      await pick(user, "Status", "Backlog");
       await expectDryRunFirst(writes, "CORE-1", "backlog");
-      expect(screen.getByRole("combobox", { name: "Status" })).toHaveValue("backlog");
+      expect(screen.getByRole("button", { name: pickNamed("Status") }).textContent).toContain(
+        "Backlog"
+      );
     } finally {
       cleanup();
     }
@@ -598,7 +603,9 @@ describe("every status writer of the page asks", () => {
     ]);
     try {
       await user.click(await screen.findByRole("checkbox", { name: "Select CORE-3" }));
-      await user.selectOptions(screen.getByRole("combobox", { name: "Move to epic" }), "CORE-9");
+      // The selection bar's Move to epic is the shared single pick, which names each epic by its
+      // title, and Move commits the pick (INFRA-3135's R3).
+      await pick(user, "Move to epic", "Platform");
       await user.click(screen.getByRole("button", { name: "Move" }));
       await expectDryRunFirst(writes, "CORE-9", "in_progress", { include_parent: true });
     } finally {
@@ -621,10 +628,8 @@ describe("every status writer of the page asks", () => {
       const heading = (await screen.findByRole("link", { name: "CORE-1 · Source" })).closest("tr");
       if (heading === null) throw new Error("The source epic has no heading row");
       await user.click(within(heading).getByRole("button", { name: "Epic actions ▾" }));
-      await user.selectOptions(
-        screen.getByRole("combobox", { name: "Merge into another epic" }),
-        "CORE-2"
-      );
+      // The shared single pick, which names each epic by its title (INFRA-3135's R3).
+      await pick(user, "Merge into another epic", "Target");
       await user.click(screen.getByRole("button", { name: "Merge…" }));
       await expectDryRunFirst(writes, "CORE-2", "in_progress", { include_parent: true });
     } finally {
