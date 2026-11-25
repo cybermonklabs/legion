@@ -116,9 +116,13 @@
 # script runs (`bun <file>`) through the package scripts its `legion: runs - ` lines name, and a
 # shell script of the repository the step runs by its path (from the step's directory, or from the
 # root through `$GITHUB_WORKSPACE`) through that script's own commands, with the variables it
-# exports. A `playwright test` runs every spec under its `--config`'s directory that its file
-# filters keep: its `--project`s and `--grep` choose among those specs and are not read, so a spec
-# counts as run by every Playwright step of its config.
+# exports. A command these read is read past the words that only start it: the variables set
+# before it, `env`, `exec`, and coreutils `timeout` with its options and duration
+# (dispatch-unit-repeat.yaml's lane step runs `exec timeout … bun run test:repeat …`). A
+# `playwright test` runs every spec under its `--config`'s directory that its file filters keep:
+# its `--project`s and `--grep` choose among those specs and are not read, so a spec counts as run
+# by every Playwright step of its config. The Go reader (go_test_steps.py) refuses a line that
+# starts a `go` through such a word by name, rather than reading it as no command.
 #
 # How it reads a gate. A Go file of a test (a `_test.go` file, or one that imports `testing`) is
 # read token by token: each function's reads of os.Getenv and os.LookupEnv, the names that hold a
@@ -2253,6 +2257,35 @@ def repository_script(cwd: str, words: list[str]) -> str | None:
     return path if path.endswith((".sh", ".bash")) and (ROOT / path).is_file() else None
 
 
+# coreutils timeout's options whose value is the next word (`-s TERM`, `-k 60`). Each other option
+# of it is one word: --foreground, --preserve-status, -v, and the `--signal=TERM` and
+# `--kill-after=60` forms.
+TIMEOUT_VALUE_OPTIONS = {"-s", "--signal", "-k", "--kill-after"}
+
+
+def unwrapped(words: list[str], env: set[str]) -> list[str]:
+    """The command a command's words run, after the words that only start it: the variables set
+    before it (`NAME=value`, each name added to env), `env`, `exec`, and coreutils `timeout` with
+    its options and its duration, in any order. dispatch-unit-repeat.yaml's lane step runs
+    `exec timeout --foreground --signal=TERM --kill-after=60 <seconds> bun run test:repeat …`, so
+    a reader that reads only words that start with `bun` reads that step as no test command."""
+    while words:
+        assignment = INLINE.match(words[0])
+        if assignment:
+            env.add(assignment.group(1))
+            words = words[1:]
+        elif words[0] in ("env", "exec"):
+            words = words[1:]
+        elif words[0] == "timeout":
+            index = 1
+            while index < len(words) and words[index].startswith("-"):
+                index += 2 if words[index] in TIMEOUT_VALUE_OPTIONS else 1
+            words = words[index + 1:]
+        else:
+            break
+    return words
+
+
 class BunReader:
     def __init__(self, files: list[str]):
         self.files = files
@@ -2285,14 +2318,7 @@ class BunReader:
 
     def command(self, step: RunStep, cwd: str, words: list[str], inline: frozenset, seen: set) -> list[BunRun]:
         env = set(inline)
-        while words and INLINE.match(words[0]):
-            env.add(INLINE.match(words[0]).group(1))
-            words = words[1:]
-        if words[:1] == ["env"]:
-            words = words[1:]
-            while words and INLINE.match(words[0]):
-                env.add(INLINE.match(words[0]).group(1))
-                words = words[1:]
+        words = unwrapped(words, env)
         environment = frozenset(step.env | step.exported | env)
         if words[:2] == ["bun", "test"]:
             files, preloads = self.bun_test(cwd, words[2:])
@@ -2752,8 +2778,7 @@ def marker_findings(candidates: list[str]) -> list[Finding]:
 def package_script_texts(reader: BunReader, cwd: str, words: list[str], seen: set) -> list[str]:
     """The text of the package script a `bun run <script>` command runs, and of each package
     script it runs in turn, a tool's runs lines' scripts among them."""
-    while words and INLINE.match(words[0]):
-        words = words[1:]
+    words = unwrapped(words, set())
     tool = reader.tool_at(cwd, words)
     if tool is not None and ("tool", tool) not in seen:
         texts = []
@@ -2780,7 +2805,9 @@ RELEASE_WORKFLOW = re.compile(rf"^{re.escape(WORKFLOWS)}/release[^/]*\.ya?ml$")
 def is_test_command(reader: BunReader, cwd: str, line: str) -> bool:
     if TEST_COMMAND.search(line):
         return True
-    for command in re.split(r"&&|\|\||;|\|", line):
+    # A `${{ }}` left in the line (a timeout's duration among them) is one word, as BunReader
+    # reads it (commands).
+    for command in re.split(r"&&|\|\||;|\|", GH_EXPRESSION.sub("GHEXPR", line)):
         if any(TEST_COMMAND.search(text) for text in package_script_texts(reader, cwd, words_of(command.strip()), set())):
             return True
     return False

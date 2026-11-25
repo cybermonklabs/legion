@@ -13,8 +13,8 @@
 # workflow_dispatch-only, a called workflow) with a test, a preload or a repeat count; release
 # steps listed, unlisted, and reading nothing their job built; race-impossible tests, a module or
 # an excluded package no step runs, and constraints and file names no test step's platform meets;
-# a tool's runs lines and a script its source names; and the not-a-test line on a harness, a
-# proof and a script that cancels runs.
+# a tool's runs lines, reached through a step's `exec timeout …` too, and a script its source
+# names; and the not-a-test line on a harness, a proof and a script that cancels runs.
 #
 # Each case builds a miniature repository under a temporary directory and symlinks the real
 # script, the step reader it imports (go_test_steps.py) and the modules that one imports into it,
@@ -1385,6 +1385,50 @@ run_check "$root"
 check "tool-runs-preload: fails" "$(is "$status" 1)"
 check "tool-runs-preload: names the step and the preload the tool's runs line comes to" \
   "$(contains "$out" '^check-test-reach: outside: .github/workflows/web-repeat.yaml:[0-9]*: The cold lane through the tool: its workflow carries the tool line, and it runs packages/web/flag.test.ts with --preload packages/web/hold.ts')"
+
+# dispatch-unit-repeat.yaml's lane step starts its tool through `exec timeout`, so the reader reads
+# past those words to the `bun run` they start, and on through the tool's runs lines.
+echo "case: a tool a step starts through exec and timeout, whose runs line has a preload no required job passes"
+root=$(fixture tool-runs-timeout)
+printf '%s\n' '{ "name": "web", "scripts": { "test": "bun test", "test:cold": "bun test --preload ./hold.ts", "repeat": "bun tools/repeat.ts" } }' \
+  > "$root/packages/web/package.json"
+printf 'export {};\n' > "$root/packages/web/hold.ts"
+mkdir -p "$root/packages/web/tools"
+cat > "$root/packages/web/tools/repeat.ts" <<'TS'
+// legion: tool - repeats a lane of the web tests, for a person who chases a row that fails only sometimes.
+// legion: runs - test:cold
+
+console.log("repeating the cold lane");
+TS
+cat > "$root/.github/workflows/web-repeat.yaml" <<'YAML'
+name: Web repeated by the tool under a deadline
+# legion: tool - repeats the web tests' cold lane through the repeat tool, for a person who chases a row.
+on:
+  schedule:
+    - cron: "5 6 * * 2"
+jobs:
+  repeat:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+          - {lane: cold, deadline_seconds: 600}
+    steps:
+      - name: The cold lane through the tool, under a deadline
+        run: >-
+          exec timeout --foreground --signal=TERM --kill-after=60 ${{ matrix.deadline_seconds }}
+          bun run repeat --lane ${{ matrix.lane }}
+        working-directory: packages/web
+YAML
+run_check "$root"
+check "tool-runs-timeout: fails" "$(is "$status" 1)"
+check "tool-runs-timeout: names the step and the preload the tool's runs line comes to" \
+  "$(contains "$out" '^check-test-reach: schedule: .github/workflows/web-repeat.yaml:[0-9]*: The cold lane through the tool, under a deadline: its workflow carries the tool line, and it runs packages/web/flag.test.ts with --preload packages/web/hold.ts')"
+sed -i 's|exec timeout --foreground --signal=TERM --kill-after=60|exec timeout -s TERM -k 60 --preserve-status -v|' \
+  "$root/.github/workflows/web-repeat.yaml"
+run_check "$root"
+check "tool-runs-timeout: and with timeout's short options, whose values are words of their own" \
+  "$(contains "$out" '^check-test-reach: schedule: .github/workflows/web-repeat.yaml:[0-9]*: The cold lane through the tool, under a deadline: its workflow carries the tool line, and it runs packages/web/flag.test.ts with --preload packages/web/hold.ts')"
 
 echo "case: a step that uses a local action whose step runs that test"
 root=$(fixture action-runs-preload)
