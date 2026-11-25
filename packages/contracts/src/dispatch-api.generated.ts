@@ -425,7 +425,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Apply quote-anchored edit ops with an optional optimistic-concurrency precondition. A batch that is not a person's own (one whose credential does not hold the person scope: an agent's session, a pod's service account, the deployment's shared token) whose result drops the block of an answered ask, or retypes it, is 409 ANSWERED_ASK_KEPT, quoting each such ask's question and naming its node and its block's address, and writes nothing; a person's own, at a browser or through a token of theirs that holds the person scope, is taken. An edit of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; one of an issue's decisions document once it is retired is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. */
+    /** @description Apply quote-anchored edit ops with an optional optimistic-concurrency precondition. A batch that is not a person's own (one whose credential does not hold the person scope: an agent's session, a pod's service account, the deployment's shared token) whose result drops the block of an answered ask, or retypes it, is 409 ANSWERED_ASK_KEPT, quoting each such ask's question and naming its node and its block's address, and writes nothing; a person's own, at a browser or through a token of theirs that holds the person scope, is taken. An edit of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; one of an issue's decisions document once it is retired is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. On an issue Legion runs, an edit of its spec or Verification document by a session that is no person and no architect of the issue or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT. */
     post: operations["postApiV1ArtifactsByIdEdits"];
     delete?: never;
     options?: never;
@@ -579,7 +579,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Name the current document version. A retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes no version; an issue's decisions document once it is retired is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. */
+    /** @description Name the current document version. A retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes no version; an issue's decisions document once it is retired is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. On an issue Legion runs, a named version of its spec or Verification document by a session that is no person and no architect of the issue or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT. */
     post: operations["postApiV1ArtifactsByIdVersions"];
     delete?: never;
     options?: never;
@@ -652,7 +652,7 @@ export interface paths {
     delete?: never;
     options?: never;
     head?: never;
-    /** @description Reword an open ask (its author, or a credential holding the person scope); a block ask's `:::ask` block is rewritten with it. A block ask whose block is in a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; in an issue's decisions document once it is retired it is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. */
+    /** @description Reword an open ask (its author, or a credential holding the person scope); a block ask's `:::ask` block is rewritten with it. A block ask whose block is in a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; in an issue's decisions document once it is retired it is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. On an issue Legion runs, a reword of a block ask in its spec or Verification document by a session that is no person and no architect of the issue or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT. */
     patch: operations["patchApiV1AsksById"];
     trace?: never;
   };
@@ -751,7 +751,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Retract or resolve an ask without answering it (kind retracted or resolved; withdrawn is written only by an issue's close, and an ask on a closed issue is 409 ISSUE_CLOSED); a block ask's block records it too. A person who will not answer declines instead, on a route of their own, POST /api/v1/asks/{id}/decline. */
+    /** @description Retract or resolve an ask without answering it (kind retracted or resolved; withdrawn is written only by an issue's close, and an ask on a closed issue is 409 ISSUE_CLOSED); a block ask's block records it too. On an issue Legion runs, a retraction or a resolution of a block ask whose block, or a copy of it, is in its spec or Verification document, by a session that is no person and no architect of the issue or of an issue above it, is 403 DOCUMENT_WRITER_NOT_ARCHITECT. A person who will not answer declines instead, on a route of their own, POST /api/v1/asks/{id}/decline. */
     post: operations["postApiV1AsksByIdResolve"];
     delete?: never;
     options?: never;
@@ -1297,7 +1297,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The catalogue of operations an agent may propose on Dispatch's graph: 24 of the 42 tool specs agents operate Dispatch with, every one that writes but dispatch_review, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. It leaves dispatch_review out on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. The catalogue is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
+    /** @description The catalogue of operations an agent may propose on Dispatch's graph: 24 of the 43 tool specs agents operate Dispatch with, every one that writes but dispatch_review and dispatch_project_update, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. It leaves the two out on purpose: a review records an approval or a changes request in a person's name, dispatch_project_update turns a check of a project on or off, and the loop that proposes operations must never propose either. The catalogue is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
     get: operations["getApiV1GoingCatalogue"];
     put?: never;
     post?: never;
@@ -1385,7 +1385,7 @@ export interface paths {
     /** @description List issues; filters project, status (repeatable: the issues standing in any of those statuses; a blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no issue: alone it answers none, and beside another status it adds nothing), parent, label, priority (repeatable: 0-3, or none for unset), advances (repeatable: a priority id, none for the work that advances no live priority or any for the work that advances one, own or inherited; several are a union), own (true keeps, of the issues the advances values answer, those whose own row names a priority a value matches and no issue above them carries it, so a child that only inherits a priority or restates one an issue above it carries is left out and none keeps nothing; without an advances value it filters nothing; advances=any&own=true over backlog and icebox is the second fault of GET /api/v1/priorities), open, updated_since, closed_since and closed_before (RFC3339; the issues closed at or after closed_since and before closed_before, so an open issue matches neither), route_status (live, no_holder or unknown; open issues only); ?pinned=true needs the person scope, since the pins are one person's. A malformed updated_since, closed_since or closed_before is 400 INVALID_UPDATED_SINCE, INVALID_CLOSED_SINCE or INVALID_CLOSED_BEFORE, and a closed_before at or before closed_since 400 INVALID_CLOSED_WINDOW. Each issue carries closed_at, when it was closed or null while it is open, and progress: {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none. ?moved=true adds moved_at and moved_by to each issue standing in backlog or icebox: when it was moved there and who moved it, read from its newest issue.updated event that set one of the two statuses, as the second fault of GET /api/v1/priorities reads them; an issue standing elsewhere, or whose events do not reach back to the move, carries neither, and a listing without moved=true carries neither on any issue. Pages with limit (1-250) and offset (0 or more; alone it pages 50): a paged answer is {issues, total, limit, offset}, total counting every issue the filters match; without either it is every matching issue as an array. cursor is 400 INVALID_QUERY. */
     get: operations["getApiV1Issues"];
     put?: never;
-    /** @description Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee when the parent is of the issue's own project, or the project's default assignee. Every create names its project, a create from a ref included: external with no project, or an empty one, is 400 INVALID_ISSUE. A title over 1000 characters is 400 CAP_EXCEEDED. advances is the priorities the new issue advances, a list of priority ids: more than 20 of them, counted before duplicates are removed, an id no priority carries, and one whose priority is gone are each 400 ADVANCES_INPUT, and the create writes nothing; a create carries no advances_revision and is never refused for one, since the new issue holds no relation yet. With DISPATCH_PARENT_STATUS_RULE on, a parent that the new issue would leave out of line with its children (a done parent) is 409 PARENT_STATUS_CONFLICT {code, error, issues: [{key, title, status, relation}]}, issues naming each issue that holds the rule. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate). */
+    /** @description Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee when the parent is of the issue's own project, or the project's default assignee. Every create names its project, a create from a ref included: external with no project, or an empty one, is 400 INVALID_ISSUE. A title over 1000 characters is 400 CAP_EXCEEDED. advances is the priorities the new issue advances, a list of priority ids: more than 20 of them, counted before duplicates are removed, an id no priority carries, and one whose priority is gone are each 400 ADVANCES_INPUT, and the create writes nothing; a create carries no advances_revision and is never refused for one, since the new issue holds no relation yet. With DISPATCH_PARENT_STATUS_RULE on, a parent that the new issue would leave out of line with its children (a done parent) is 409 PARENT_STATUS_CONFLICT {code, error, issues: [{key, title, status, relation}]}, issues naming each issue that holds the rule. When Legion runs the new issue, because it or an issue of its own project above it carries the label legion, a create under a parent by a session that is no person and no architect of the parent or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT. A create under a parent of another project is judged as a root of the new issue's own project, which this check does not judge. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate). */
     post: operations["postApiV1Issues"];
     delete?: never;
     options?: never;
@@ -1424,7 +1424,7 @@ export interface paths {
     delete?: never;
     options?: never;
     head?: never;
-    /** @description Update title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, rank, assignee (the email of a person who has signed in, or null; anyone may reassign), advances, or components ({mode: inherit|explicit|none, ids, reason}; allowed on a closed issue). advances is the issue's whole list of its own priorities, which replaces the list it holds ([] clears it; an inherited entry is no relation of the issue and no write states or retracts one): more than 20 ids, counted before duplicates are removed, an id no priority carries, and one whose priority is gone are each 400 ADVANCES_INPUT. advances_revision is the advances_revision of the issue read the write answers: a write whose advances_revision is not the revision the issue holds is 409 ADVANCES_REVISION naming the one it holds, and a write that names no revision may assert or retract one relation, so one that would change two or more is 409 ADVANCES_REVISION too, naming the revision held. A closed issue refuses advances (409 ISSUE_CLOSED). Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. With DISPATCH_PARENT_STATUS_RULE on, a status or a parent that would leave a parent out of line with its children is 409 PARENT_STATUS_CONFLICT {code, error, issues: [{key, title, status, relation}]}, relation parent or child, issues naming each issue that holds the rule. */
+    /** @description Update title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, rank, assignee (the email of a person who has signed in, or null; anyone may reassign), advances, or components ({mode: inherit|explicit|none, ids, reason}; allowed on a closed issue). advances is the issue's whole list of its own priorities, which replaces the list it holds ([] clears it; an inherited entry is no relation of the issue and no write states or retracts one): more than 20 ids, counted before duplicates are removed, an id no priority carries, and one whose priority is gone are each 400 ADVANCES_INPUT. advances_revision is the advances_revision of the issue read the write answers: a write whose advances_revision is not the revision the issue holds is 409 ADVANCES_REVISION naming the one it holds, and a write that names no revision may assert or retract one relation, so one that would change two or more is 409 ADVANCES_REVISION too, naming the revision held. A closed issue refuses advances (409 ISSUE_CLOSED). Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. With DISPATCH_PARENT_STATUS_RULE on, a status or a parent that would leave a parent out of line with its children is 409 PARENT_STATUS_CONFLICT {code, error, issues: [{key, title, status, relation}]}, relation parent or child, issues naming each issue that holds the rule. On an issue Legion runs, a close, a reopen and a labels or parent write that takes the issue out of Legion are 403 DOCUMENT_WRITER_NOT_ARCHITECT from a session that is no person, no architect of the issue or of an issue above it, and not the session of the project's Legion daemon. A move under a parent, after which Legion runs the issue, is 403 DOCUMENT_WRITER_NOT_ARCHITECT from a session that is no person and no architect of the new parent or of an issue above it. A move under a parent of another project is judged as a root of the issue's own project, which this check does not judge. When Legion runs the issue, or an issue under it, before the move, the move is 403 DOCUMENT_WRITER_NOT_ARCHITECT too, wherever the new parent is, from a session that is no person and no architect of each such issue or of an issue above it where it stands: the issue itself when Legion runs it, and else each issue under it with the label legion that it reaches through parents of its own project. An issue's chain ends at the first parent of another project, as at a root. Neither check of a move passes the session of the project's Legion daemon. */
     patch: operations["patchApiV1IssuesByKey"];
     trace?: never;
   };
@@ -1438,7 +1438,7 @@ export interface paths {
     /** @description List an issue's documents and files. */
     get: operations["getApiV1IssuesByKeyArtifacts"];
     put?: never;
-    /** @description Upload an issue document or file (JSON or multipart). A text/markdown upload is a document; any other is an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are whatever was declared, and otherwise a file under its declared type. A name no artifact has yet is 400 INVALID_ARTIFACT when it, or the reference key <owner>/<slug> it gives the new artifact, is over 2692 bytes; an upload under an existing artifact's name is never refused for its length. A new version that is not a person's own and leaves out or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it, and writes no version. An upload under the name or slug of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. A new document whose name gives the slug of a decisions document is 409 DECISIONS_ARE_NODES, and so is an upload of that name once the issue's decisions document is retired, rather than DOCUMENT_RETIRED: a decision is a `decision` block in the spec. An upload of that name while the issue's decisions document an earlier release stored still stands is that document's next version. */
+    /** @description Upload an issue document or file (JSON or multipart). A text/markdown upload is a document; any other is an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are whatever was declared, and otherwise a file under its declared type. A name no artifact has yet is 400 INVALID_ARTIFACT when it, or the reference key <owner>/<slug> it gives the new artifact, is over 2692 bytes; an upload under an existing artifact's name is never refused for its length. A new version that is not a person's own and leaves out or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it, and writes no version. An upload under the name or slug of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. A new document whose name gives the slug of a decisions document is 409 DECISIONS_ARE_NODES, and so is an upload of that name once the issue's decisions document is retired, rather than DOCUMENT_RETIRED: a decision is a `decision` block in the spec. An upload of that name while the issue's decisions document an earlier release stored still stands is that document's next version. On an issue Legion runs, an upload of its spec or Verification document, a file under the name verification.md among them, by a session that is no person and no architect of the issue or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT. */
     post: operations["postApiV1IssuesByKeyArtifacts"];
     delete?: never;
     options?: never;
@@ -1489,7 +1489,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Apply edit ops with an optional optimistic-concurrency precondition to an issue document, by slug or unambiguous filename. A batch that is not a person's own and drops or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, an edit of a retired document, which only its slug finds, 409 DOCUMENT_RETIRED, and one of the issue's decisions document once it is retired 409 DECISIONS_ARE_NODES, as POST /api/v1/artifacts/{id}/edits answers them. */
+    /** @description Apply edit ops with an optional optimistic-concurrency precondition to an issue document, by slug or unambiguous filename. A batch that is not a person's own and drops or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, an edit of a retired document, which only its slug finds, 409 DOCUMENT_RETIRED, and one of the issue's decisions document once it is retired 409 DECISIONS_ARE_NODES, as POST /api/v1/artifacts/{id}/edits answers them. On an issue Legion runs, an edit of its spec or Verification document by a session that is no person and no architect of the issue or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT. */
     post: operations["postApiV1IssuesByKeyArtifactsBySlugEdits"];
     delete?: never;
     options?: never;
@@ -1523,7 +1523,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Name the current version of an issue document, by slug or unambiguous filename. A retired document, which only its slug finds, is 409 DOCUMENT_RETIRED, and the issue's decisions document once it is retired 409 DECISIONS_ARE_NODES, as POST /api/v1/artifacts/{id}/versions answers them. */
+    /** @description Name the current version of an issue document, by slug or unambiguous filename. A retired document, which only its slug finds, is 409 DOCUMENT_RETIRED, and the issue's decisions document once it is retired 409 DECISIONS_ARE_NODES, as POST /api/v1/artifacts/{id}/versions answers them. On an issue Legion runs, a named version of its spec or Verification document by a session that is no person and no architect of the issue or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT. */
     post: operations["postApiV1IssuesByKeyArtifactsBySlugVersions"];
     delete?: never;
     options?: never;
@@ -1868,7 +1868,7 @@ export interface paths {
     };
     /** @description The session that holds each Legion role of this issue, as the Legion daemon last published it: {issue, holders}, each {role, session, recorded_at} in workflow order, [] when no session holds a role. A closed issue's read too. An issue Dispatch does not know is 404 ISSUE_NOT_FOUND. */
     get: operations["getApiV1IssuesByKeyRoleHolders"];
-    /** @description Publish the session that holds each Legion role of this issue {holders}: each entry {role, session}, role one of architect, planner, implementer, tester, reviewer and merger and session a session id of at most 256 bytes, or [] for an issue where no session holds a role. The actor must be session legion-daemon:<project>, the key up to its first -, the session the Legion daemon of the issue's project writes as; any other actor is 403 ROLE_HOLDER_FORBIDDEN. Before the airlock a bearer caller names its own session, so any caller whose credential proves no session can name that one. The body is the issue's whole set and replaces the stored set under the issue's owner lock, so a session that it does not name holds no role of the issue, two writes at once store the set of the one that finishes last, and a pair that did not change keeps its recorded_at. The write appends no issue event, notifies nobody and takes a closed issue. Answers 200 {issue, holders} with the set this write stored, in workflow order, each {role, session, recorded_at}. A body without holders, a role that is not one of the six, a session that is not a session id or is over 256 bytes, a role or a session named twice and an empty session are each 400 INVALID_ROLE_HOLDER, and nothing is stored; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND. The session of an ended claim keeps its role until the daemon's next publication lands, and its process can still run in that window. */
+    /** @description Publish the session that holds each Legion role of this issue {holders}: each entry {role, session}, role one of architect, planner, implementer, tester, reviewer and merger and session a session id of at most 256 bytes, or [] for an issue where no session holds a role. The actor must be session legion-daemon:<project>, the key up to its first -, the session the Legion daemon of the issue's project writes as; any other actor is 403 ROLE_HOLDER_FORBIDDEN. Dispatch takes the session a bearer caller names as the caller names it, so any caller whose credential proves no session of its own can name that one: the deployment's shared token, and a person's own agent token whatever its scopes. While the project's proven_sessions is on (PUT /api/v1/projects/{key}/proven-sessions), the route takes a write only on a credential that proves that session, a broker token of it, and any other is 403 ROLE_HOLDER_NOT_PROVEN, after the 400 and 404 refusals below. The body is the issue's whole set and replaces the stored set under the issue's owner lock, so a session that it does not name holds no role of the issue, two writes at once store the set of the one that finishes last, and a pair that did not change keeps its recorded_at. The write appends no issue event, notifies nobody and takes a closed issue. Each write the route takes marks the issue's project, and from then on a write of the spec or the Verification document of an issue of the project that Legion runs needs a person or an architect of the issue or of an issue above it (403 DOCUMENT_WRITER_NOT_ARCHITECT). Answers 200 {issue, holders} with the set this write stored, in workflow order, each {role, session, recorded_at}. A body without holders, a role that is not one of the six, a session that is not a session id or is over 256 bytes, a role or a session named twice and an empty session are each 400 INVALID_ROLE_HOLDER, and nothing is stored; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND. The session of an ended claim keeps its role until the daemon's next publication lands, and its process can still run in that window. */
     put: operations["putApiV1IssuesByKeyRoleHolders"];
     post?: never;
     delete?: never;
@@ -1886,7 +1886,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Write the status of an issue, and with an option what happens to the issues under it or above it, so that each parent's status stays in line with its children's: a parent is done only when each child is done, and while a child is in work its parent is in work. The body is {status, include_children?, unlink_children?, include_parent?, dry_run?, expected_sequence?, actor?}, and expected_sequence and actor are read as PATCH /api/v1/issues/{key} reads them. include_children writes the status on each open issue under the issue, at any depth, that is not in the status's group (not started, in work or done). unlink_children removes each open child from the issue, so that each one becomes a root. include_parent moves each ancestor that is not in work to in_progress. Each issue that an option changes gets a comment from Dispatch that names the call. When the options changed at least one issue, the issue the call names gets one comment from Dispatch too, after the last write, that names the call and lists each of those changes. The call writes one issue at a time, each in a transaction of its own, in an order where each write keeps the rule, and it checks its whole plan before the first write. The answer is 200 {issue, changed}: issue is the issue as the PATCH answers it, and changed has one entry {key, status, parent, previous_last_seq, issue} for each issue whose status or parent the call changed, the issue itself included, in the order of the writes. status and parent are what the call left, previous_last_seq is the issue's last_seq as its own write read it under its lock, and issue is that issue as its write answered it. The answer's issue is read at the issue's own write, so later events of the same call can follow it on the stored issue: a child.status for each direct child that include_children moves after it, for a status in work, and the comment.created of the comment on the issue the call names. So the stored last_seq can be past the answer's, and a client that sends the answer's last_seq as expected_sequence can get 409 ISSUE_CHANGED: it reads the issue again before a write that the sequence fences. With dry_run the call writes nothing and answers the same shape: each entry has the status and the parent that the call would leave and the issue's last_seq now, and no issue. 409 ISSUE_CHANGED: expected_sequence is not the issue's last event. This is decided first, also for a dry run, and again at each write, where an event on the issue that the call did not write stops the call. 409 PARENT_STATUS_CONFLICT {code, error, issues: [{key, title, status, relation}], changed}, relation parent or child: the call breaks the rule, with DISPATCH_PARENT_STATUS_RULE on, and for a dry run whatever the setting. 403 BROWSER_SIGN_IN_REQUIRED: include_children with done from a request that presents a token. 403 PROJECT_SCOPE: the request's credential may write one project, and a write of the call is of an issue of another project (a parent may be one), refused before any write, also for a dry run. 400 INVALID_STATUS: the status is not in the lifecycle. 400 STATUS_CHANGE_INPUT: no status, or include_children with unlink_children. 409 PARENT_CONTENDED: the issues of the call moved at each attempt to lock them, and nothing was applied. 409 ISSUE_CLOSED: done on an issue that is closed. 404 NOT_FOUND: no such issue. Each refusal above carries changed: the entries of the writes that committed before it, [] when none did. A repeat under the same Idempotency-Key while the first call runs is 409 KEY_IN_FLIGHT, whose changed is the entries of the writes the first call has committed so far. */
+    /** @description Write the status of an issue, and with an option what happens to the issues under it or above it, so that each parent's status stays in line with its children's: a parent is done only when each child is done, and while a child is in work its parent is in work. The body is {status, include_children?, unlink_children?, include_parent?, dry_run?, expected_sequence?, actor?}, and expected_sequence and actor are read as PATCH /api/v1/issues/{key} reads them. include_children writes the status on each open issue under the issue, at any depth, that is not in the status's group (not started, in work or done). unlink_children removes each open child from the issue, so that each one becomes a root. include_parent moves each ancestor that is not in work to in_progress. Each issue that an option changes gets a comment from Dispatch that names the call. When the options changed at least one issue, the issue the call names gets one comment from Dispatch too, after the last write, that names the call and lists each of those changes. The call writes one issue at a time, each in a transaction of its own, in an order where each write keeps the rule, and it checks its whole plan before the first write. The answer is 200 {issue, changed}: issue is the issue as the PATCH answers it, and changed has one entry {key, status, parent, previous_last_seq, issue} for each issue whose status or parent the call changed, the issue itself included, in the order of the writes. status and parent are what the call left, previous_last_seq is the issue's last_seq as its own write read it under its lock, and issue is that issue as its write answered it. The answer's issue is read at the issue's own write, so later events of the same call can follow it on the stored issue: a child.status for each direct child that include_children moves after it, for a status in work, and the comment.created of the comment on the issue the call names. So the stored last_seq can be past the answer's, and a client that sends the answer's last_seq as expected_sequence can get 409 ISSUE_CHANGED: it reads the issue again before a write that the sequence fences. With dry_run the call writes nothing and answers the same shape: each entry has the status and the parent that the call would leave and the issue's last_seq now, and no issue. 409 ISSUE_CHANGED: expected_sequence is not the issue's last event. This is decided first, also for a dry run, and again at each write, where an event on the issue that the call did not write stops the call. 409 PARENT_STATUS_CONFLICT {code, error, issues: [{key, title, status, relation}], changed}, relation parent or child: the call breaks the rule, with DISPATCH_PARENT_STATUS_RULE on, and for a dry run whatever the setting. 403 BROWSER_SIGN_IN_REQUIRED: include_children with done from a request that presents a token. 403 PROJECT_SCOPE: the request's credential may write one project, and a write of the call is of an issue of another project (a parent may be one), refused before any write, also for a dry run. 403 DOCUMENT_WRITER_NOT_ARCHITECT: a write of the call closes, reopens or takes out of Legion an issue Legion runs, and the session is no person, no architect of that issue or of an issue above it, and not the session of the project's Legion daemon. 400 INVALID_STATUS: the status is not in the lifecycle. 400 STATUS_CHANGE_INPUT: no status, or include_children with unlink_children. 409 PARENT_CONTENDED: the issues of the call moved at each attempt to lock them, and nothing was applied. 409 ISSUE_CLOSED: done on an issue that is closed. 404 NOT_FOUND: no such issue. Each refusal above carries changed: the entries of the writes that committed before it, [] when none did. A repeat under the same Idempotency-Key while the first call runs is 409 KEY_IN_FLIGHT, whose changed is the entries of the writes the first call has committed so far. */
     post: operations["postApiV1IssuesByKeyStatusChange"];
     delete?: never;
     options?: never;
@@ -2572,7 +2572,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List projects. A project with a default repository carries it as default_repo, and a project with none carries no default_repo. A project's default assignee is not listed here: GET /api/v1/settings/project-default-assignees reads it, with the person scope. */
+    /** @description List projects. A project with a default repository carries it as default_repo, and a project with none carries no default_repo. Each project carries proven_sessions, true while its proven-sessions setting is on (PUT and DELETE /api/v1/projects/{key}/proven-sessions). A project's default assignee is not listed here: GET /api/v1/settings/project-default-assignees reads it, with the person scope. */
     get: operations["getApiV1Projects"];
     put?: never;
     /** @description Create a project {key, name, default_assignee}: any signed-in person or agent session; a bearer names its session in actor. Every project names the person its unowned work lands on, the last step of the chain that decides who a question reaches: default_assignee is the email of a person who has signed in, and a call that names none takes the person creating the project, else the person its credential acts for. A credential that acts for nobody and names no default_assignee is 400 INVALID_PROJECT; a login nobody has signed in with, the one the call names or the one its credential acts for, is 400 ASSIGNEE_NOT_ALLOWED. A key that is not a project key, an empty name, a name holding a control character or a bidi embedding, override or isolate, or a name with no visible character (a letter, number, punctuation or symbol other than the blank fillers U+115F, U+1160, U+3164, U+FFA0 and U+2800, or a code point Go's Unicode tables leave unassigned, such as an emoji newer than them, other than a noncharacter (U+FDD0-U+FDEF and each code point ending in FFFE or FFFF) or a reserved default-ignorable (U+2065, U+FFF0-U+FFF8, U+E0000-U+E0FFF); combining marks, format characters, private-use characters and whitespace don't count) is 400 INVALID_PROJECT; a name over 80 characters is 400 CAP_EXCEEDED; a key that already exists is 409 PROJECT_EXISTS. The answer is the project with the default_assignee the create stored. */
@@ -2939,6 +2939,24 @@ export interface paths {
     put?: never;
     post?: never;
     delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{key}/proven-sessions": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** @description Turn on the project's proven-sessions setting. With it on, an architect's write of an issue's spec or Verification document passes only on a credential that proves the architect's session. A role-holder publication then passes only on a credential that proves legion-daemon:<project>. Any credential that may write the project's issues may turn it on, and the route declares no OAuth scope. A bearer names its session in actor. A token scoped to another project is 403 PROJECT_SCOPE. An unknown project is 404 PROJECT_NOT_FOUND. A PUT on a project that has the setting on changes nothing and appends no event. A change appends project.updated, which names its writer. The answer is the project as GET /api/v1/projects lists it. Only the project's roll-out issue turns it on, once the project's daemon and pods write with their own tokens. Before that, it stops every architect write and every role-holder publication on the shared token until a person turns it off. */
+    put: operations["putApiV1ProjectsByKeyProvenSessions"];
+    post?: never;
+    /** @description Turn off the project's proven-sessions setting. This weakens a check, so the route needs the person scope. A credential the deployment configured, the shared token or a pod's, holds none and is 403 OAUTH_SCOPE_REQUIRED. A token scoped to another project is 403 PROJECT_SCOPE. An unknown project is 404 PROJECT_NOT_FOUND. A DELETE on a project that has the setting off changes nothing and appends no event. A change appends project.updated, which names the person as its writer. The answer is the project as GET /api/v1/projects lists it. */
+    delete: operations["deleteApiV1ProjectsByKeyProvenSessions"];
     options?: never;
     head?: never;
     patch?: never;
@@ -4542,6 +4560,7 @@ export interface components {
       key: string;
       name: string;
       open_asks: number;
+      proven_sessions: boolean;
     };
     CredentialCapabilities: {
       machine_code_page: boolean;
@@ -6557,6 +6576,7 @@ export interface components {
       key: string;
       name: string;
       open_asks: number;
+      proven_sessions: boolean;
     };
     ProjectDefaultAssignee: {
       assignee: string;
@@ -14998,6 +15018,78 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["ProjectPlans"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  putApiV1ProjectsByKeyProvenSessions: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["ActorInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Project"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  deleteApiV1ProjectsByKeyProvenSessions: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Project"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
