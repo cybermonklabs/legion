@@ -5,7 +5,15 @@ import { focusThePage } from "./issue-page-g";
 import { onBody, openIssue } from "./keyboard-issue";
 import { keptWrites } from "./keyed-writes";
 import { navigateInApp } from "./sends";
-import { chunkFile, entryScriptPath, holdAsset, holdAssetUntilReleased, ranChunk } from "./shell";
+import {
+  chunkFile,
+  entryScriptPath,
+  holdAsset,
+  holdAssetUntilReleased,
+  ranChunk,
+  recordTabReloads,
+  tabReloads,
+} from "./shell";
 import { expect, type Page, type Request, test } from "./test";
 import { asUser } from "./users";
 
@@ -1034,6 +1042,67 @@ test.describe("keys typed straight after a key that opens a surface", () => {
       await lateOpenWindow(page);
       await expect(page.getByRole("dialog", { name: "Create issue" })).toHaveCount(0);
       await expect(status).toBeFocused();
+    } finally {
+      await context.close();
+    }
+  });
+
+  // A create dialog whose chunk fails to download online draws the alert "Could not open Create
+  // issue." in the box's place, and the alert holds the focus and the keys (`CouldNotOpen` in
+  // `web/src/features/shell/asked-surface.tsx`). The tab's recovery reloads are spent, so no
+  // reload follows (`web/src/features/shell/DeploymentResilience.tsx`): an open that closed with no
+  // word would give the keys back to the page, and the next digit would write the issue's
+  // priority. The alert's Close gives the focus back to the page the press came from, and the
+  // next `c` asks for the chunk again. The row records the reloads as spent before the issue page
+  // loads, so no failure of the chunk on that page finds a reload to spend. Every download of the
+  // chunk fails, the page's own prefetch among them; the row waits for that prefetch first, so the
+  // count after the second `c` is that press's alone.
+  test("c whose chunk fails online with the tab's reloads spent draws an alert that holds the keys, so 1 writes no priority", async ({
+    browser,
+  }) => {
+    await createProject({ key: "CORE", name: "Core" });
+    const issue = await createIssue({ project: "CORE", title: "Keys after a failed c" });
+    const context = await asUser(browser, "alice");
+    try {
+      const page = await context.newPage();
+      await page.setViewportSize({ width: 1280, height: 900 });
+      await page.goto("/");
+      await expect(page.getByText("Signed in as alice")).toBeVisible();
+      const spent = await recordTabReloads(page, [3, 2, 1]);
+      let asked = 0;
+      await page.route(chunkFile("CreateIssueDialog"), (route) => {
+        asked += 1;
+        return route.abort();
+      });
+      const patched = await patchesOf(page, issue.key);
+      await openIssue(page, issue.key, "Keys after a failed c");
+      await expect
+        .poll(() => asked, "the page's own prefetch of the chunk went out")
+        .toBeGreaterThan(0);
+
+      await page.keyboard.press("c");
+      const alert = page.getByRole("alertdialog", { name: "Could not open Create issue." });
+      await expect(alert, "the failed download drew no alert").toBeVisible();
+      const close = alert.getByRole("button", { name: "Close" });
+      await expect(close, "the alert took no focus").toBeFocused();
+      await page.keyboard.type("1");
+      await afterAnyWrite(page);
+      expect(patched(), "a digit typed after the failure reached the page").toBe(0);
+      expect(await keptWrites(page)).toBe(0);
+      expect(await getIssue(issue.key)).toMatchObject({ priority: null });
+      await expect(close).toBeFocused();
+      expect(await tabReloads(page), "the failure spent a reload").toEqual(spent);
+
+      await close.click();
+      await expect(alert).toHaveCount(0);
+      // The press came from the page itself (`openIssue`), so that is where the focus goes back.
+      await expect
+        .poll(() => onBody(page), "the alert gave the focus back to no opener")
+        .toBe(true);
+      const before = asked;
+      await page.keyboard.press("c");
+      await expect.poll(() => asked, "the next c asked for no chunk").toBeGreaterThan(before);
+      await expect(alert).toBeVisible();
     } finally {
       await context.close();
     }

@@ -19,9 +19,9 @@ import { useCloseOnNavigation, useDialog } from "./useDialog";
 /** What a surface drawn through `askedSurface` takes, beside its own props. */
 export interface AskedSurfaceProps {
   /** Closes the surface: what its host does when the reader closes it, and what this does when
-   *  the reader cancels the open before the surface's chunk is in, when the chunk cannot load,
-   *  and when the reader closes the alert that stands in the surface's place after a render
-   *  under it threw (`CouldNotOpen`). */
+   *  the reader cancels the open before the surface's chunk is in, and when the reader closes
+   *  the alert that stands in the surface's place (`CouldNotOpen`) after its chunk could not
+   *  load or a render under it threw. */
   readonly onClose: () => void;
   /** Whether the reader has the surface open. A host that draws its surface only while it is
    *  open - the Create issue dialog, the shortcut sheet - leaves it unset, and the surface is
@@ -70,12 +70,18 @@ export interface AskedSurfaceProps {
  * WHEN THE CHUNK IS ASKED FOR. On every open while it is not in, under `renderChunk` and
  * `importWhenOnline`: the reader is waiting on it, so a download that fails online spends one of
  * the tab's recovery reloads (`DeploymentResilience.tsx`), and one that fails offline is asked
- * for again once the network is back. A download that fails online closes the open, so the next
- * press asks again (`keptUntilRejected` keeps no failure) rather than finding the surface open
- * and drawing nothing for good. An open the reader called off leaves its download to finish as a
- * prefetch (`prefetchChunk`): nobody waits on it any more, so its failure - after an outage the
- * reader called the open off in, say - reloads nothing under them. A host that wants its chunk in
- * before the press, as most of these do, starts it itself with `prefetchChunk`.
+ * for again once the network is back. A download that fails online draws the alert in the box's
+ * place, "Could not open <name>." with Close and Reload (`CouldNotOpen`). The alert takes the
+ * focus and the keys from the box in the same commit, so no key reaches the page between the two.
+ * The open stands until the reader closes the alert. Closed with no word, the open would give the
+ * keys back to the page, and where no reload follows - the tab's reloads spent, say - the
+ * reader's next key would reach the page's shortcuts: on an issue page a digit would write the
+ * issue's priority. The alert's Close, Escape and a move to another address close the surface,
+ * and the next press asks for the chunk again (`keptUntilRejected` keeps no failure). An open the
+ * reader called off leaves its download to finish as a prefetch (`prefetchChunk`): nobody waits
+ * on it any more, so its failure - after an outage the reader called the open off in, say -
+ * reloads nothing under them. A host that wants its chunk in before the press, as most of these
+ * do, starts it itself with `prefetchChunk`.
  *
  * Each surface draws under a `ChunkBoundary`, since every one of these hosts sits outside the
  * page's error boundary (`app.tsx`). A render that throws under it - a chunk the surface draws
@@ -86,8 +92,8 @@ export interface AskedSurfaceProps {
  * than reaching the app's top boundary (`main.tsx`). A render error is never silent: a surface
  * that closed with no word would look like a key that did nothing, and the reader would press it
  * again into the same fault. The surface's own chunk failing to download is no throw in a
- * render: it rejects the download above, which closes the open, as "WHEN THE CHUNK IS ASKED FOR"
- * says.
+ * render: it rejects the download above, and the same alert takes the box's place, as "WHEN THE
+ * CHUNK IS ASKED FOR" says.
  *
  * `name` is the name the surface's own element carries - "Create issue", "Keyboard shortcuts",
  * "Search", "Inbox" - and names the box and the alert that stand in its place.
@@ -106,11 +112,15 @@ export function askedSurface<P extends AskedSurfaceProps>(
     // open starts empty.
     const held = useRef<Held>({ opener: null, text: "" }).current;
     if (!open) held.text = "";
-    // How many times the reader has closed the alert that stood in the surface's place: the key
-    // of the surface's boundary, so each close mounts a boundary that has not failed, and the
-    // next open draws the surface afresh.
+    // Whether this open's download failed online: the alert then stands in the box's place, and
+    // holds the focus and the keys until the reader closes it. A closed surface keeps no failure,
+    // so the next open asks for the chunk again, also when the host closed it.
+    const [downloadFailed, setDownloadFailed] = useState(false);
+    if (!open && downloadFailed) setDownloadFailed(false);
+    // How many times the reader has closed the alert that stood in the surface's place: the
+    // boundary's `reset`, so each close draws the boundary's children again with no failure kept,
+    // and the next open draws the surface afresh.
     const [closes, closed] = useState(0);
-    // biome-ignore lint/correctness/useExhaustiveDependencies: `onClose` is a new function at every render of the host and closes the same surface; with it here every render would start another wait on the one download.
     useEffect(() => {
       if (!open || Component !== undefined) {
         return;
@@ -140,30 +150,38 @@ export function askedSurface<P extends AskedSurfaceProps>(
           flushSync(() => landed({}));
         },
         () => {
-          // The recovery has the tab's reload; if none follows, the open is over.
-          if (live) onClose();
+          // The alert takes the box's place. The box gives the focus back to the opener as it
+          // goes, and the alert takes it in the same commit and records the opener as what the
+          // focus goes back to when it closes (`useDialog`). The recovery asks for the tab's
+          // reload; when none follows, the alert holds the keys until the reader closes it.
+          if (live) setDownloadFailed(true);
         }
       );
       return () => {
         live = false;
         off.resolve();
       };
-    }, [open, Component]);
+    }, [open, Component, held]);
     const alert = (
       <CouldNotOpen
         name={name}
         onClose={() => {
           closed(closes + 1);
+          setDownloadFailed(false);
           onClose();
         }}
       />
     );
     return (
-      <ChunkBoundary fallback={alert} key={closes} notLoaded={alert}>
+      <ChunkBoundary fallback={alert} notLoaded={alert} reset={closes}>
         {Component !== undefined ? (
           <Component {...props} typed={held.text} />
         ) : open ? (
-          <Placeholder held={held} name={name} onCancel={onClose} />
+          downloadFailed ? (
+            alert
+          ) : (
+            <Placeholder held={held} name={name} onCancel={onClose} />
+          )
         ) : null}
       </ChunkBoundary>
     );
@@ -176,16 +194,20 @@ const FLOATING =
   "fixed top-20 left-1/2 z-50 w-72 max-w-[calc(100vw-2rem)] -translate-x-1/2 shadow-2xl";
 
 /**
- * What stands in a surface's place once a render under it has thrown: the reader is told that
- * the surface could not open, and can close this or reload the tab. It looks as a region that
- * stopped rendering looks (`ErrorView`), over the page. It is a dialog, as the surface was
- * (`useDialog`): it takes the focus and the keys, so a key typed after the throw reaches no
- * shortcut of the page under it. Close and Escape close the surface, and the focus goes back to
- * where the open found it: the surface's opener, which a surface that was open hands to this as
- * it goes (`handOverFocus` in `useDialog.ts`).
+ * What stands in a surface's place once its chunk could not download online, or once a render
+ * under it has thrown: the reader is told that the surface could not open, and can close this or
+ * reload the tab. It looks as a region that stopped rendering looks (`ErrorView`), over the page.
+ * It is a dialog, as the surface was (`useDialog`): it takes the focus and the keys, so a key
+ * typed after the failure reaches no shortcut of the page under it. Close and Escape close the
+ * surface. A move to another address closes it too, as it closes the box and the surfaces
+ * (`useCloseOnNavigation`): left open, its `dialog` scope would mask the shortcuts of the page
+ * the reader moved to. The focus then goes back to where the open found it: the surface's
+ * opener, which the box gives back as it goes (`Placeholder`), and which a surface that was open
+ * hands to this as it goes (`handOverFocus` in `useDialog.ts`).
  */
 function CouldNotOpen({ name, onClose }: { name: string; onClose: () => void }): ReactNode {
   const { containerRef } = useDialog<HTMLElement>({ onClose, open: true });
+  useCloseOnNavigation(true, onClose);
   const heading = `Could not open ${name}.`;
   return (
     <ErrorView
@@ -236,7 +258,9 @@ interface Held {
  *
  * Called off while it holds the focus - an Escape, a move to another address - it gives the focus
  * back to where the press found it as it goes, as a closing dialog does (`useDialog`), and the
- * page does not scroll to it. That runs in the commit that removes the box, and React fires no
+ * page does not scroll to it. So does a box the alert takes the place of after its chunk failed,
+ * and the alert, drawn in the same commit, takes the focus from there and gives it back there when
+ * it closes (`CouldNotOpen`). That runs in the commit that removes the box, and React fires no
  * `onBlur` for a focus moved in a commit, so that move cancels nothing more. A box the focus has
  * already left gives nothing back: the reader is where they went.
  */

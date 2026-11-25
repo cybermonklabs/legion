@@ -3,7 +3,7 @@ import { expect, spyOn, test } from "bun:test";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useEffect, useState } from "react";
-import { MemoryRouter } from "react-router-dom";
+import { Link, MemoryRouter } from "react-router-dom";
 
 import { quietConsoleError } from "../../__tests__/act-warnings";
 import { COMPOSITION_MARKS } from "../../__tests__/composition-marks";
@@ -11,6 +11,8 @@ import { failingChunkComponent } from "../../__tests__/failing-chunk";
 import { type AskedSurfaceProps, askedSurface } from "./asked-surface";
 import { type Chunk, chunk } from "./chunk-component";
 import { chunkLoadsOut, onlyPrefetchesOut } from "./chunk-loads";
+import { KeymapProvider } from "./KeymapProvider";
+import { useKeymap, useKeymapScope } from "./keymap";
 
 /** A surface as the bar and the peek are: mounted while closed, drawing nothing then. */
 function Surface({ open, typed = "" }: AskedSurfaceProps): ReactNode {
@@ -20,8 +22,15 @@ function Surface({ open, typed = "" }: AskedSurfaceProps): ReactNode {
 /** The name the box and the alert take from the surface they stand for. */
 const LOADING = "Example (loading)";
 
-/** The shell's part: an opener, and the surface it opens. */
-function Shell({ source }: { source: Chunk<AskedSurfaceProps> }): ReactNode {
+/** The shell's part: an opener, and the surface it opens, beside what else a row draws on the
+ *  page (`children`). */
+function Shell({
+  children,
+  source,
+}: {
+  children?: ReactNode;
+  source: Chunk<AskedSurfaceProps>;
+}): ReactNode {
   const [Asked] = useState(() => askedSurface(source, "Example"));
   const [open, setOpen] = useState(false);
   return (
@@ -29,9 +38,30 @@ function Shell({ source }: { source: Chunk<AskedSurfaceProps> }): ReactNode {
       <button onClick={() => setOpen(true)} type="button">
         Open
       </button>
+      {children}
       <Asked onClose={() => setOpen(false)} open={open} />
     </MemoryRouter>
   );
+}
+
+/** A shortcut of the page under the surface, as an issue page's `1` writes the issue's priority.
+ *  It runs while no dialog is open over the page (`keymap.ts`). */
+function PageKey({ onOne }: { onOne: () => void }): ReactNode {
+  useKeymapScope("issue");
+  useKeymap("issue", [{ id: "priority-1", keys: "1", label: "Priority 1", run: onOne }]);
+  return null;
+}
+
+/** A chunk whose first download fails online, as a chunk a deploy took away does, and whose next
+ *  download lands. `imports` reads how many downloads it started. */
+function failingFirstDownload(): { imports: () => number; source: Chunk<AskedSurfaceProps> } {
+  let imports = 0;
+  const source = chunk(async () => {
+    imports += 1;
+    if (imports === 1) throw new TypeError("Failed to fetch dynamically imported module");
+    return Surface;
+  });
+  return { imports: () => imports, source };
 }
 
 // A surface whose chunk is in opens in the commit of the press that asked for it, so the next key
@@ -196,26 +226,70 @@ test("the focus leaving the box calls the open off", async () => {
   }
 });
 
-// A download that fails online closes the open, so the next press asks for the chunk again
-// rather than finding the surface open with nothing drawn. It draws no alert: it is no fault of
-// the surface's render.
-test("a chunk that fails to download closes the open, and the next press asks for it again", async () => {
+// A download that fails online draws the alert in the box's place, with the focus in it, so a key
+// typed after the failure reaches no shortcut of the page. Closed with no word, the open would
+// give the keys back to the page, and where no reload follows, a digit would write the issue's
+// priority. The alert's Close gives the focus back to the opener, and the next press asks for the
+// chunk again rather than finding the surface open with nothing drawn.
+test("a chunk that fails to download draws the alert in the box's place, which holds the keys, and the next press asks for it again", async () => {
   const user = userEvent.setup();
-  let imports = 0;
-  const source = chunk(async () => {
-    imports += 1;
-    if (imports === 1) throw new TypeError("Failed to fetch dynamically imported module");
-    return Surface;
-  });
-  const view = render(<Shell source={source} />);
+  const { imports, source } = failingFirstDownload();
+  let ones = 0;
+  const view = render(
+    <KeymapProvider>
+      <PageKey onOne={() => (ones += 1)} />
+      <Shell source={source} />
+    </KeymapProvider>
+  );
+  try {
+    const opener = screen.getByRole("button", { name: "Open" });
+    await user.click(opener);
+    await act(async () => undefined);
+    const alert = screen.getByRole("alertdialog", { name: "Could not open Example." });
+    expect(screen.queryByRole("textbox", { name: LOADING })).not.toBeInTheDocument();
+    expect(alert.contains(document.activeElement), "the alert took no focus").toBe(true);
+    await user.keyboard("1");
+    expect(ones, "a key typed after the failure reached the page's shortcut").toBe(0);
+    await user.click(within(alert).getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(opener).toHaveFocus();
+    // From the page the same key runs, which makes the count above a guard.
+    await user.keyboard("1");
+    expect(ones).toBe(1);
+    await user.click(opener);
+    expect(await screen.findByText('Surface with ""')).toBeDefined();
+    expect(imports()).toBe(2);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A move to another address closes the alert, as it closes the box and the surfaces: a link the
+// reader follows under the alert does not leave its `dialog` scope over the page they moved to,
+// masking that page's shortcuts.
+test("a move to another address closes the alert that stands in the box's place", async () => {
+  const user = userEvent.setup();
+  const { source } = failingFirstDownload();
+  let ones = 0;
+  const view = render(
+    <KeymapProvider>
+      <PageKey onOne={() => (ones += 1)} />
+      <Shell source={source}>
+        <Link to="/elsewhere">Elsewhere</Link>
+      </Shell>
+    </KeymapProvider>
+  );
   try {
     await user.click(screen.getByRole("button", { name: "Open" }));
     await act(async () => undefined);
-    expect(screen.queryByRole("textbox", { name: LOADING })).not.toBeInTheDocument();
-    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Open" }));
-    expect(await screen.findByText('Surface with ""')).toBeDefined();
-    expect(imports).toBe(2);
+    expect(screen.getByRole("alertdialog", { name: "Could not open Example." })).toBeDefined();
+    await user.click(screen.getByRole("link", { name: "Elsewhere" }));
+    expect(
+      screen.queryByRole("alertdialog"),
+      "a move to another address left the alert open"
+    ).not.toBeInTheDocument();
+    await user.keyboard("1");
+    expect(ones, "the alert's dialog scope outlived the move").toBe(1);
   } finally {
     view.unmount();
   }
