@@ -22,9 +22,11 @@ import {
   causedByReader,
   focusedOutOfSight,
   focusLost,
+  focusNoScroll,
   focusOwnStop,
   inSightNow,
   isRowMark,
+  landWhole,
   type MovedUp,
   outOfSight,
   pressHolds,
@@ -49,12 +51,13 @@ export interface SelectionBarProps {
   /** What takes the keyboard focus when the bar goes while it holds it, or when the control in it
    *  that holds the focus goes from a bar that stays, asked once the commit that took it away is
    *  in the page. It is never the body. The first that applies takes the focus: the checkbox of
-   *  the row the reader marked last while the list holds it and no press is taking it away, which
-   *  the page names and the bar focuses and brings into view; else a row the reader can see,
-   *  which the page's hand-off focuses with no scroll (`useLastMarkedPlace`), after a press that
-   *  took the row marked last away or with no row marked; else the list's own stop, with no
-   *  scroll (`focusListStop`). Null moves nothing here: the page has put the focus where it goes
-   *  itself, or a table row the window has not drawn yet takes the focus as it lands
+   *  the row the reader marked last while the list holds it and no press is taking it away, out
+   *  of sight or not; else a row the reader can see, after a press that took the row marked last
+   *  away or with no row marked; else the list's own stop, with no scroll (`focusListStop`). The
+   *  page's hand-off focuses a row's checkbox itself and shows it whole at its nearest edge
+   *  (`useLastMarkedPlace`), and the bar lands an element the page names here the same way
+   *  (`landWhole`). Null moves nothing here: the page has put the focus where it goes itself, or
+   *  a table row the window has not drawn yet takes the focus as it lands
    *  (`DataTableModel.focusRow`). */
   readonly returnFocus?: () => HTMLElement | null;
   /** How much room the bar's own box takes (`ControlSize`): its padding. The actions in it are
@@ -66,8 +69,7 @@ export interface SelectionBarProps {
   readonly state?: ReactNode;
 }
 
-/** A list the selection bar stands over, as the bar's hand-off reads it where the row the reader
- *  marked last cannot take the focus (`useLastMarkedPlace`). */
+/** A list the selection bar stands over, as the bar's hand-off reads it (`useLastMarkedPlace`). */
 export interface MarkedList {
   /** The ids of the rows the list holds now, in its order. A table that draws only a window of
    *  its rows names the rows it has not drawn too. */
@@ -89,31 +91,35 @@ export interface MarkedList {
 }
 
 /**
- * The hand-off of the selection bar's focus where the row the reader marked last cannot take it:
- * a press took that row away, or no row is marked. The hook reads, after each commit that draws
- * the bar, the order of the list's rows while the row marked last is in it. It answers the
- * function a page's `returnFocus` calls first.
+ * The hand-off of the selection bar's focus to a row of the list it stands over. The hook reads,
+ * after each commit that draws the bar, the order of the list's rows while the row marked last is
+ * in it. It answers the function a page's `returnFocus` calls first.
  *
- * Where the row marked last is still listed and no press is taking it away, the function moves
- * nothing and answers false: the page names that row's checkbox, which takes the focus and is
- * brought into view. Where a press took that row away, or is taking it away (`leaving`), the
- * function puts the focus, with no scroll, on the mark of the row that now stands at that row's
- * place when the reader can see it (`inSightNow`). That row is the first row after it, in the
- * order last read, that the list still holds. Else the focus goes to the mark of the nearest row
- * before that place that the reader can see. With no reading of where the row stood, the focus
- * goes to the list's own stop. Where no row is marked, the function puts the focus, with no
- * scroll, on the mark of the first row the reader can see below whatever the page draws over the
- * list (`markShown`), a row a press is taking away passed over. Where no row can take the focus,
- * in either case, it goes to the list's own stop, which is given `tabindex="-1"` where it has
- * none. The function then answers true. Nothing scrolls, so a reader deep in a long list keeps
- * their place, and the focus goes neither to the list's first row nor to the page's body.
+ * Where the row marked last is still listed and no press is taking it away, the function puts the
+ * focus on that row's mark, out of sight or not. Where the list lists that row without drawing
+ * it, as a table's window can, the function moves nothing and answers false, and the page brings
+ * the row in itself. Where a press took that row away, or is taking it away (`leaving`), the
+ * function puts the focus on the mark of the row that now stands at that row's place when the
+ * reader can see it (`inSightNow`). That row is the first row after it, in the order last read,
+ * that the list still holds. Else the focus goes to the mark of the nearest row before that place
+ * that the reader can see. With no reading of where the row stood, the focus goes to the list's
+ * own stop. Where no row is marked, the function puts the focus on the mark of the first row the
+ * reader can see below whatever the page draws over the list (`markShown`), a row a press is
+ * taking away passed over. A mark takes the focus with no scroll of the engine's own, which
+ * centres a control it scrolls to, and is shown whole at its nearest edge, the least scroll
+ * (`landMark`). Where no row can take the focus, in either case, it goes to the list's own stop,
+ * with no scroll, which is given `tabindex="-1"` where it has none. The function then answers
+ * true. So a reader deep in a long list keeps their place, and the focus goes neither to the
+ * list's first row nor to the page's body.
  *
  * Rows a press is still taking away are drawn until the write's optimistic apply lands, and the
  * rows after them move up by the space they take only then (`onceGone`). So each row is judged
  * where it will stand once they have gone: its top less the space of the rows a press is taking
  * away above it. Where that moves the row at the place wholly above the view, which happens when
  * the rows taken away stood above the view, the focus goes to the mark of the nearest row after
- * that place that the reader will see, and only else to a row before it.
+ * that place that the reader will see, and only else to a row before it. A mark that will move up
+ * into the reader's sight takes the focus with no scroll, and the list's anchor shows it whole
+ * once those rows have gone (`ViewportAnchor`).
  */
 export function useLastMarkedPlace(list: MarkedList): () => boolean {
   // The ids of the list's rows, in order, as the last commit that drew the bar with the row
@@ -131,16 +137,19 @@ export function useLastMarkedPlace(list: MarkedList): () => boolean {
     const last = list.lastMarked();
     const order = list.order();
     const kept = order.filter((id) => list.leaving?.(id) !== true);
-    if (last !== null && kept.includes(last)) return false;
+    const listed = last !== null && kept.includes(last);
     const landing = onceGone(order, list);
-    const mark =
-      last === null
+    const id = listed
+      ? last
+      : last === null
         ? firstMarkShown(kept, list.control, landing)
         : markAtPlace(kept, before.current, last, list.control, landing);
-    if (mark !== null) {
-      mark.focus({ preventScroll: true });
+    const mark = id === null ? null : list.control(id);
+    if (id !== null && mark !== null) {
+      landMark(mark, landing.moves.get(id));
       return true;
     }
+    if (listed) return false;
     focusListStop(list.list());
     return true;
   };
@@ -214,9 +223,9 @@ function groupGoes(
   return true;
 }
 
-/** The mark the focus takes after the row `last` left the list: the mark of the row now at its
- *  place in `kept`, the rows the list still holds, when the reader can see that place with
- *  nothing drawn over it (`markShown`), else the mark of the nearest row before it they can see
+/** The row whose mark the focus takes after the row `last` left the list: the row now at its
+ *  place in `kept`, the rows the list still holds, when the reader can see its mark there with
+ *  nothing drawn over it (`markShown`), else the nearest row before it whose mark they can see
  *  so, else null. The place is the place of the first row after `last` in `before`, the order
  *  last read with it, that `kept` holds; past the last row where none is; none where `before`
  *  does not hold `last`. Each row is read where it will stand once the rows a press is still
@@ -234,7 +243,7 @@ function markAtPlace(
   last: string,
   control: (id: string) => HTMLElement | null,
   landing: Landing
-): HTMLElement | null {
+): string | null {
   const from = before.indexOf(last);
   if (from === -1) return null;
   const places = new Map(kept.map((id, index) => [id, index]));
@@ -260,34 +269,48 @@ function markAtPlace(
       const mark = control(kept[index]);
       if (mark === null) break;
       const moved = landing.moves.get(kept[index]);
-      if (markShown(mark, clips, moved, landing.listed)) return mark;
+      if (markShown(mark, clips, moved, landing.listed)) return kept[index];
       if (!aboveSightNow(mark, clips, moved)) break;
     }
   }
   for (let index = Math.min(place, kept.length - 1); index >= 0; index -= 1) {
     const mark = control(kept[index]);
     if (mark !== null && markShown(mark, clips, landing.moves.get(kept[index]), landing.listed)) {
-      return mark;
+      return kept[index];
     }
   }
   return null;
 }
 
-/** The mark the focus takes when no row is marked: the mark of the first row in `kept`, the rows
- *  the list holds, that the reader can see below whatever the page draws over the list
+/** The row whose mark the focus takes when no row is marked: the first row in `kept`, the rows
+ *  the list holds, whose mark the reader can see below whatever the page draws over the list
  *  (`markShown`), each read where it will stand once the rows a press is still taking away have
  *  gone (`landing`), else null. */
 function firstMarkShown(
   kept: readonly string[],
   control: (id: string) => HTMLElement | null,
   landing: Landing
-): HTMLElement | null {
+): string | null {
   const clips = new Map<Element, boolean>();
   for (const id of kept) {
     const mark = control(id);
-    if (mark !== null && markShown(mark, clips, landing.moves.get(id), landing.listed)) return mark;
+    if (mark !== null && markShown(mark, clips, landing.moves.get(id), landing.listed)) return id;
   }
   return null;
+}
+
+/** Lands `mark`, the row mark the bar's hand-off chose, with no scroll of the engine's own, and
+ *  shows it whole at its nearest edge, the least scroll, wherever it stands (`landWhole`). A mark
+ *  whose row will move up into the reader's sight once the rows a press is still taking away have
+ *  gone (`moved`) takes the focus with no scroll instead: shown now, it would be shown where it
+ *  stands before they go, and the list's anchor shows it whole once they have gone
+ *  (`ViewportAnchor`). */
+function landMark(mark: HTMLElement, moved: MovedUp | undefined): void {
+  if (moved !== undefined && inSightNow(mark, new Map(), moved)) {
+    focusNoScroll(mark);
+  } else {
+    landWhole(mark);
+  }
 }
 
 /** Whether the reader can see the row mark `mark` with nothing drawn over it, now or, with
@@ -350,15 +373,17 @@ function markShown(
  * control goes as well: Take out of epic's writes hold every row's Start next, and a click on a
  * marked row's one moves the focus there and leaves the press the cause (`pressHolds`). So does a
  * bar that stays while the control holding the focus goes from it: **Select all**, which the bar
- * stops offering once it has run. The focus goes to the first of these that applies. The
- * checkbox of the row the reader marked last, while the list
- * holds it and no press is taking it away: the page names it, and the bar focuses it and brings it
- * into view. Else a row the reader can see, which the page's own hand-off focuses with no scroll
- * (`useLastMarkedPlace`): after a press that took that row away, the row at its place or the
- * nearest before it, each judged where it will stand once the rows the press is taking away have
- * gone, and the nearest row after that place where their going leaves the row at it wholly above
- * the view; with no row marked, the first row in sight below whatever the page draws over the
- * list. Else the list's own stop, with no scroll. A bar that goes while the focus is
+ * stops offering once it has run. The focus goes to the first of these that applies, which the
+ * page's own hand-off focuses (`useLastMarkedPlace`). The checkbox of the row the reader marked
+ * last, while the list holds it and no press is taking it away, out of sight or not. Else a row
+ * the reader can see: after a press that took that row away, the row at its place or the nearest
+ * before it, each judged where it will stand once the rows the press is taking away have gone,
+ * and the nearest row after that place where their going leaves the row at it wholly above the
+ * view; with no row marked, the first row in sight below whatever the page draws over the list.
+ * A row's checkbox is shown whole at its nearest edge, the least scroll, never centred as the
+ * engine's own scroll of a focus would; one that will move up into sight once those rows have
+ * gone is left to the list's anchor (`ViewportAnchor`). Else the list's own stop, with no
+ * scroll. The bar lands what the page names the same way. A bar that goes while the focus is
  * elsewhere moves nothing, and neither does one whose going left the focus somewhere other than
  * the body, since the reader put it there, nor the later going of a control the reader had moved
  * the focus off, nor the going of one they had scrolled out of their sight - the bar's line of
@@ -386,7 +411,8 @@ export function SelectionBar({ returnFocus, ...bar }: SelectionBarProps): ReactN
     if (held === null) return;
     wentHolding.current = null;
     if (focusOnDocument() && !outOfSight(held) && (causedByReader(held) || pressOnRowMark())) {
-      returnFocus?.()?.focus();
+      const named = returnFocus?.() ?? null;
+      if (named !== null) landWhole(named);
     }
   });
   if (bar.count === 0 && bar.state === undefined) return null;

@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { act, render, screen } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { createRef, type ReactNode, useRef, useState } from "react";
@@ -10,7 +10,7 @@ import { drawAt, drawOver, layRowsOut, watchMoves } from "../__tests__/laid-out-
 import type { ControlSize } from "./control-names";
 import { ARM_ON_PRESS, holdHandOff } from "./focus-place";
 import { ROW_MARKER } from "./row-marker";
-import { SelectionBar, useLastMarkedPlace } from "./SelectionBar";
+import { focusListStop, SelectionBar, useLastMarkedPlace } from "./SelectionBar";
 
 /**
  * Tailwind's own definition of the utility the bar is placed by. happy-dom applies a stylesheet it
@@ -709,8 +709,8 @@ const PLACED_KEYS = Array.from({ length: 20 }, (_, index) => `CORE-${index + 1}`
  *  press is taking away, `headings` the rows a group's heading is drawn right before, and `last`
  *  the row marked last, null where no row is marked. With `cards`, each row draws a card of its
  *  own after its mark, an `<article>` and so a row nested in it, as an Inbox row draws an ask
- *  card. Its `returnFocus` names the mark of the row marked last while the list holds it, as the
- *  Inbox's does; the hand-off moves the focus itself otherwise. */
+ *  card. Its `returnFocus` ends at the list's own stop where the hand-off moves nothing, as the
+ *  Inbox's does. */
 function PlacedList({
   cards = false,
   count,
@@ -758,7 +758,7 @@ function PlacedList({
       <SelectionBar
         count={count}
         label="Selected rows"
-        returnFocus={() => (landAtPlace() || last === null ? null : markOf(last))}
+        returnFocus={() => (landAtPlace() ? null : focusListStop(list.current))}
       >
         <button type="button">Dismiss</button>
       </SelectionBar>
@@ -829,7 +829,8 @@ test("a press that takes away the row marked last, with the row now at its place
 
 // The row marked last was below the window when the press took it away, so the row that moves
 // up into its place is below it too. The focus goes to the nearest row before that place that
-// the reader can see, the window's last row, with no scroll.
+// the reader can see, the window's last row, which the window's bottom edge cuts: it is shown
+// whole at that edge.
 test("a press that takes away the row marked last, with the row now at its place out of sight, hands the focus to the nearest row before it in sight", () => {
   const laidOut = layRowsOut("[data-row]", 9);
   const view = render(<PlacedList count={1} last="CORE-19" listed={PLACED_KEYS} />);
@@ -841,7 +842,7 @@ test("a press that takes away the row marked last, with the row now at its place
     const landing = rowBox("CORE-17");
     expect(landing).toHaveFocus();
     expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: landing });
-    expect(moves.scrolled).toEqual([]);
+    expect(moves.scrolled).toEqual([landing]);
   } finally {
     moves.restore();
     view.unmount();
@@ -982,19 +983,23 @@ test("a press that takes away the row marked last, with no row in sight at its p
 });
 
 // A press that leaves the row marked last in the list, out of sight above the window, is no
-// case of the place's: the row's mark takes the focus as the page names it, and the bar brings
-// it into view, as it always has.
-test("the row marked last still listed takes the focus as the page names it, out of sight or not", () => {
+// case of the place's: the row's mark takes the focus all the same. The engine's own scroll of a
+// focus would centre it; it is shown whole at its nearest edge instead, the least scroll.
+test("the row marked last still listed takes the focus out of sight too, shown whole at its nearest edge", () => {
   const laidOut = layRowsOut("[data-row]", 9);
   const view = render(<PlacedList count={1} last="CORE-3" listed={PLACED_KEYS} />);
   const moves = watchMoves();
+  const mark = rowBox("CORE-3");
+  const shown = spyOn(mark, "scrollIntoView");
   try {
     pressInBar("Dismiss");
     view.rerender(<PlacedList count={0} last="CORE-3" listed={PLACED_KEYS} />);
-    const mark = rowBox("CORE-3");
     expect(mark).toHaveFocus();
-    expect(moves.focused.at(-1)).toEqual({ options: undefined, target: mark });
+    expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: mark });
+    expect(moves.scrolled).toEqual([mark]);
+    expect(shown.mock.calls).toEqual([[{ block: "nearest", inline: "nearest" }]]);
   } finally {
+    shown.mockRestore();
     moves.restore();
     view.unmount();
     laidOut();
