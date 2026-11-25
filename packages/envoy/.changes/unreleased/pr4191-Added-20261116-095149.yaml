@@ -4,8 +4,8 @@ body: |-
   of each statement (not built, met, not met or unknown) and of each check (true, false or unknown,
   with its reason), whether each wait on a statement ends at the head of main, and the cycle of
   waits; `--json` prints the states as JSON. A run of a check counts only at the commit that it
-  read, and a failing example that the check's test caught also at a commit where no file of the
-  check's tie changed. The command reads each file of the scenario strictly and refuses, with exit
+  read, and a failing example, caught or missed, also at a commit where no file of the check's
+  tie changed. The command reads each file of the scenario strictly and refuses, with exit
   2 and a line that names the file, a member it does not know, a value of the wrong form, or spec
   files that `spec-check tree` refuses.
 time: 2026-11-16T09:51:49.296448907Z

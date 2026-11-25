@@ -58,11 +58,15 @@ func subjectFault(p Point, now time.Time) string {
 // counts only at its own commit, and a failing example also at another commit, by the ties and the
 // history (the rule that replaces The Spec's R8: "A result counts only at the commit that it read";
 // "A failing example that a check's test caught (The Spec R9) counts at another commit only while
-// no file that the test reads changed"). With no tie, or no history, no failing example counts at
-// another commit, so a caught fault at another commit then says nothing about this one. So a caller
-// that gives no Ties or no History is refused too, and one that states that it has none gives
-// CommitTies{} or FixtureHistory{Commits: []FixtureCommit{}}, the empty values that are not nil.
-// The command gives the ties and the history of its scenario.
+// no file that the test reads changed"). The derivation reads that rule for each failing example,
+// one whose test missed its fault as one whose test caught it: a missed one counts at another
+// commit by the same ties and history, and there, as the newest, it keeps the check from true
+// (deriveChecks, step 7), so it moves a state away from true and never toward it. With no tie, or
+// no history, no failing example counts at another commit, so a failing example at another commit,
+// caught or missed, then says nothing about this one. So a caller that gives no Ties or no History
+// is refused too, and one that states that it has none gives CommitTies{} or
+// FixtureHistory{Commits: []FixtureCommit{}}, the empty values that are not nil. The command gives
+// the ties and the history of its scenario.
 type Input struct {
 	Files    Tree                         `input:"zero: no spec file, so each statement reads not built"`
 	Approved Approved                     `input:"zero: no approved node, so no state is derived"`
@@ -229,7 +233,10 @@ const (
 //     says nothing of the code where its fault was planted. For a query or an agent of the code, one
 //     that counts at S from its commit by the same rule; for a program check of production or the
 //     graph, one whose TestCommit counts at S.Commit by the same rule (R9: "its test, as it is
-//     now"); for a query or an agent of production or the graph, the newest.
+//     now"); for a query or an agent of production or the graph, the newest. The rule on files
+//     counts a failing example whose test missed its fault as one whose test caught it, which it
+//     names: a missed one that counts keeps C from true as the newest (failing_example_missed), so
+//     it moves a state away from true and never toward it (countingFaults).
 //     None: unknown, no_failing_example; it did not fail: unknown, failing_example_missed; for a
 //     program check, its record does not show that an agent that did not write the test wrote the
 //     fault (R9): it names no author of the fault, no author of the test, or the author of the
