@@ -515,9 +515,9 @@ test("the header counts a Change under the decision whose block of the spec hold
 // thread, under `["asks", key, "thread"]` (decision 447). The header observes that read and sends
 // none of its own. Once alice answered the question it is no open ask of the issue, so only that
 // read names the block it is written as. Its ask's node is overtaken, so the block is closed, and
-// the open question the tree read hangs under the block waits on nobody: the count counts the
-// other open question alone. A header that observed the asks under another key would read no
-// answer there, pair the block with no ask, and count both.
+// the open question the tree read hangs under the block does not wait on the reader: the count
+// counts the other open question alone. A header that observed the asks under another key would
+// read no answer there, pair the block with no ask, and count both.
 test("the header counts a waiting question from the outline's asks read and sends no request", async () => {
   const spec = { artifact_id: issue.primary_artifact_id, slug: "spec" };
   const answered: Ask = {
