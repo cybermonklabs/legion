@@ -19,7 +19,7 @@ const bothStopWays = "Put a space after the stop, or put the name in code font"
 // checkStatement is the findings of Check for one statement of body.
 func checkStatement(body string) (Text, []Finding) {
 	text := statement(body)
-	return text, Check(planted(), Input{Texts: []Text{text}})
+	return text, check(planted(), Input{Texts: []Text{text}})
 }
 
 // TestAClosingQuoteOrBracketAfterAStopBelongsToItsSentence holds the rules of the form to a
@@ -113,7 +113,7 @@ func TestTheWordRuleReadsEachSentenceAfterTheWriterPutsTheSpaceIn(t *testing.T) 
 		// The stop joins the last word of w25 and the first of the second sentence into one word.
 		words := 24 + len(strings.Fields(test.second))
 		joined := statement(w25 + test.second)
-		if got, want := Check(planted(), Input{Texts: []Text{joined}}), cut(
+		if got, want := check(planted(), Input{Texts: []Text{joined}}), cut(
 			findingWays(joined, "stop-no-space", stopNoSpace("project.Dispatch"), test.ways),
 			finding(joined, "sentence-words", fmt.Sprintf(`a sentence has %d words, and a sentence has at most 25: "Dispatch shows the person each question of each"`, words)),
 			finding(joined, "ste100-long-sentence", fmt.Sprintf(`ASD-STE100 does not permit a sentence of more than 25 words: "%d words"`, words)),
@@ -122,7 +122,7 @@ func TestTheWordRuleReadsEachSentenceAfterTheWriterPutsTheSpaceIn(t *testing.T) 
 		}
 	}
 	spaced := statement(w25 + " " + w26)
-	if got, want := Check(planted(), Input{Texts: []Text{spaced}}), cut(
+	if got, want := check(planted(), Input{Texts: []Text{spaced}}), cut(
 		finding(spaced, "sentence-words", `a sentence has 26 words, and a sentence has at most 25: "Dispatch shows the person each open approval request"`),
 		finding(spaced, "ste100-long-sentence", `ASD-STE100 does not permit a sentence of more than 25 words: "26 words"`),
 	); !sameFindings(got, want) {

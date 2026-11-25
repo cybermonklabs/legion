@@ -207,14 +207,14 @@ func workTable() []workRow {
 	checked := func(kind Kind, before, unit, after string) workJudgment {
 		return func(_ *testing.T, n int) func() []Finding {
 			in := Input{Texts: []Text{{Node: "n", Kind: kind, Body: before + strings.Repeat(unit, n) + after, Where: where}}}
-			return func() []Finding { return Check(context, in) }
+			return func() []Finding { return check(context, in) }
 		}
 	}
 	// built judges one text of kind whose words body writes for n units.
 	built := func(kind Kind, body func(n int) string) workJudgment {
 		return func(_ *testing.T, n int) func() []Finding {
 			in := Input{Texts: []Text{{Node: "n", Kind: kind, Body: body(n), Where: where}}}
-			return func() []Finding { return Check(context, in) }
+			return func() []Finding { return check(context, in) }
 		}
 	}
 	// extracted reads the document that markdown writes for n units, and judges it.
@@ -226,7 +226,7 @@ func workTable() []workRow {
 				if err != nil {
 					t.Fatalf("read %d units: %v", n, err)
 				}
-				return Check(context, Input{Texts: read.Texts, Proposed: read.Terms})
+				return check(context, Input{Texts: read.Texts, Proposed: read.Terms})
 			}
 		}
 	}
@@ -296,7 +296,7 @@ func workTable() []workRow {
 			notes[index] = &Footnote{Label: fmt.Sprint(index + 1), Body: "It."}
 		}
 		in := Input{Texts: []Text{{Node: "s", Kind: KindStatement, Body: "Dispatch keeps it.", Where: where, Notes: notes}}}
-		return func() []Finding { return Check(context, in) }
+		return func() []Finding { return check(context, in) }
 	}
 	// procedureCheck is one check block whose procedure (its `run`) is run.
 	procedureCheck := func(run string) string {

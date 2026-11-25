@@ -15,7 +15,7 @@ func TestAHostAddressBeforeAnyPathOfACommandNamesNoPerson(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return Check(Context{}, Input{Texts: extracted.Texts, Proposed: extracted.Terms})
+		return check(Context{}, Input{Texts: extracted.Texts, Proposed: extracted.Terms})
 	}
 	person := func(findings []Finding) bool {
 		for _, finding := range findings {

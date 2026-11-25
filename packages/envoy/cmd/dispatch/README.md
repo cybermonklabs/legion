@@ -5967,8 +5967,11 @@ Each item below names a path with its method and identity, then its purpose.
       It reads each sentence at most 104 times in one judgment through that count: 52 times for the findings that stand in it, which the bounds above hold, and 52 times for the findings that stand elsewhere, such as a sentence that holds in code font the names that many other sentences end with.
       It also keeps the words of each finding and of its ways out, which for a finding of two instructions are its whole sentence, and it reads those words a fixed number of times for each finding; and it keeps the detail of each finding that a reading gives, as that reading gives it, which for a finding of a dangling conjunction quotes the last line of its list item.
       Beside the sentences that a way out changes, the way out reads, through their counts, only the sentences that a piece of ste-lint runs through between them and the next place of a verb whose first place it changes; it walks no long sentence of the rest of the text and no footnote, as it reads the verbs of the footnotes as one set for each group of verbs for one action.
-      So the work of a judgment stays in proportion to the text.
+      So the work of a judgment stays in proportion to the text, and so does its reading of code font, which finds the run of backticks that closes each run in one pass over the text.
       A finding whose way out would read a sentence past that is still refused and named, and says that Dispatch reads one sentence at most 52 times for the ways out of findings that stand elsewhere, so it offers none for this one, though one can exist.
+      The judges of the ways out of the texts of one document also read at most 1 MiB of text together, in the order of the texts, each reading counting its bytes and 64 more, so the work of a judgment has a bound that no document passes.
+      A document of 1 MB whose 7,246 statements each give eight findings with ways out, of stops with no space after them, took 25 s of CPU and 5.6 GB of allocation for one judgment before that bound, and takes 2.7 s and 0.84 GB with it, 1.4 and 1.7 times the judgment of as many clean statements (`TestTheReadRouteJudgesADocumentOfOneMebibyteInBoundedWork`).
+      A finding whose way out would read past that is still refused and named, and says that Dispatch reads at most 1 MiB of a document for ways out, so it offers none for this one, though one can exist.
 
     - How the refusal of two instructions gives its ways out: each instruction in a sentence of its own and, after a condition at the start, the condition as a sentence of its own, each as the sentence it makes, and `that` before the clause after a listed verb that is no verb there; a test applies each and holds the result to every rule.
       It writes the instructions as sentences of their own only where that keeps what the sentence means, in one pass over the sentence.
@@ -6075,8 +6078,9 @@ Each item below names a path with its method and identity, then its purpose.
       These are `POST /api/v1/artifacts/{id}/reviews`, `POST /api/v1/artifacts/{id}/versions/{number}/reviews` and `POST /api/v1/asks/{id}/answer`.
       That refusal also carries `changes_reason`, the text that a request for changes sends to the author.
       A request for changes is never refused.
-      When the document that a request names is covered, the answer carries `spec_form`, `{root, texts, terms, unread}`.
+      When the document that a request names is covered, the answer carries `spec_form`, `{root, texts, unread}`.
       `texts` counts each kind of text that Dispatch read in the documents it judged, and `unread` is `{document, artifact_id, issue, version, line}`.
+      It counts no terms: Dispatch reads no list of terms until form slice 2 reads it.
       A refusal writes each `unread` line in `refusal`, after the findings.
 
     A reopen and the repair pass judge a withdrawn request at the versions that it names when they end (`PATCH /api/v1/issues/{key}`, above).
@@ -6100,6 +6104,8 @@ Each item below names a path with its method and identity, then its purpose.
   `not_spec` is a document under a root that is not the spec or the Verification document.
   `plays` is `spec`, `verification` or empty, and `root` is the nearest named root above the document, or `null`.
   The findings of a document out of scope are listed too, and `refuses_approval` is true only for a document in scope with a finding.
+  `findings` holds at most 500 of them, as a refusal's body does, and `findings_total` counts them all.
+  The route judges a document whatever the setting names, so its judgment holds the bound of the ways out above, and it stops when the caller hangs up.
   `terms` is empty: Dispatch does not read the list of terms yet.
   A version that the document does not have is `404 VERSION_NOT_FOUND`.
   A `version` that is not a whole number of 1 or more is `400 INVALID_QUERY`.

@@ -329,7 +329,7 @@ func TestEachWayOutOfARefusalPasses(t *testing.T) {
 		texts := row.read(t)
 		count := func(texts []Text) map[findingKey]int {
 			found := map[findingKey]int{}
-			for _, each := range Check(c, Input{Texts: texts}) {
+			for _, each := range check(c, Input{Texts: texts}) {
 				found[findingKey{each.Rule, each.Detail}]++
 			}
 			return found
@@ -558,7 +558,7 @@ func TestTheWordsWithNoCodeFontAreTheWordsThatThePageShows(t *testing.T) {
 // a statement whose words differ, with no "file.Name", gives "file.Size" the space too.
 func TestTheWaysOutOfAFindingStayWhateverSpaceFollowsTheStopOfAnother(t *testing.T) {
 	offered := func(body, word string) (string, int) {
-		for _, each := range Check(planted(), Input{Texts: []Text{statement(body)}}) {
+		for _, each := range check(planted(), Input{Texts: []Text{statement(body)}}) {
 			if each.Rule == ruleStopNoSpace && strings.Contains(each.Detail, fmt.Sprintf("%q", word)) {
 				ways := 0
 				for _, way := range []string{"put a space after the stop", "put the name in code font"} {
@@ -607,7 +607,7 @@ func TestAFindingPastTheEighthOfASentenceIsRefusedWithNoWayOutOffered(t *testing
 			func(name string) string { return personBreak(name, offer{}).detail }},
 	} {
 		var details, ways []string
-		for _, each := range Check(planted(), Input{Texts: []Text{statement(test.body)}}) {
+		for _, each := range check(planted(), Input{Texts: []Text{statement(test.body)}}) {
 			if each.Rule == test.rule {
 				details, ways = append(details, each.Detail), append(ways, each.Ways)
 			}
@@ -640,7 +640,7 @@ func TestAFindingPastTheEighthOfATextReadWholeIsRefusedWithNoWayOutOffered(t *te
 	}
 	body := strings.Join(lines, "\u2028")
 	var details, ways []string
-	for _, each := range Check(planted(), Input{Texts: []Text{claimOf(body)}}) {
+	for _, each := range check(planted(), Input{Texts: []Text{claimOf(body)}}) {
 		if each.Rule == ruleStopNoSpace {
 			details, ways = append(details, each.Detail), append(ways, each.Ways)
 		}
@@ -683,7 +683,7 @@ func TestAFindingWhoseWayOutWouldReadASentencePastItsChargeIsRefusedWithNoWayOut
 	}
 	ways := func(body string) []string {
 		var said []string
-		for _, each := range Check(planted(), Input{Texts: []Text{claimOf(body)}}) {
+		for _, each := range check(planted(), Input{Texts: []Text{claimOf(body)}}) {
 			if each.Rule == ruleStopNoSpace {
 				said = append(said, each.Ways)
 			}
@@ -721,7 +721,7 @@ func TestAFindingWhoseWayOutWouldReadASentencePastItsChargeIsRefusedWithNoWayOut
 	for index := 1; index <= 20; index++ {
 		body += fmt.Sprintf(" Step %d logs Web.Config.", index)
 	}
-	for _, each := range Check(planted(), Input{Texts: []Text{claimOf(body)}}) {
+	for _, each := range check(planted(), Input{Texts: []Text{claimOf(body)}}) {
 		if each.Rule == ruleStopNoSpace && each.Detail == stopNoSpace("Web.Config") && (each.Ways == "" || strings.Contains(each.Ways, "Dispatch")) {
 			t.Errorf("the control, a name that ends 20 other sentences: the finding of Web.Config gives the ways out %q, want its ways out and no note", each.Ways)
 		}
@@ -748,7 +748,7 @@ func TestAWayOutReadsNoSentenceBetweenItsPlacesThatNoPieceJoins(t *testing.T) {
 	}
 	ways := func(body string) (offered, refused int) {
 		t.Helper()
-		for _, each := range Check(planted(), Input{Texts: []Text{claimOf(body)}}) {
+		for _, each := range check(planted(), Input{Texts: []Text{claimOf(body)}}) {
 			switch {
 			case each.Rule != ruleStopNoSpace:
 			case each.Ways == space:

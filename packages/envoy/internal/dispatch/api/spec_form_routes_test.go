@@ -508,7 +508,8 @@ func TestSpecFormReadNamesEachFinding(t *testing.T) {
 	}
 }
 
-// The refusal lists 20 findings and counts the rest, with the command that lists them all.
+// The refusal lists 20 findings and counts the rest, with the command that lists them all at the
+// version that the refusal judged: the second version of the spec, whose first version is clean.
 func TestTheRefusalListsTwentyAndCountsTheRest(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	var spec strings.Builder
@@ -516,7 +517,8 @@ func TestTheRefusalListsTwentyAndCountsTheRest(t *testing.T) {
 	for index := 1; index <= 23; index++ {
 		fmt.Fprintf(&spec, "\n:::requirement{#s%d}\n%s\n:::\n", index, formFaults[0].broken)
 	}
-	issue := createFormIssue(t, tree.handler, tree.root, "Twenty-three broken statements", spec.String())
+	issue := createFormIssue(t, tree.handler, tree.root, "Twenty-three broken statements", formFaults[0].document(formFaults[0].clean))
+	uploadFormDocument(t, tree.handler, issue.Key, "spec.md", spec.String())
 	response := requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, nil)
 	if response.Code != http.StatusConflict {
 		t.Fatalf("request: status=%d body=%s, want 409", response.Code, response.Body.String())
@@ -525,8 +527,8 @@ func TestTheRefusalListsTwentyAndCountsTheRest(t *testing.T) {
 	lines := strings.Split(body.Error, "\n")
 	if body.FindingsTotal != 23 || len(body.Findings) != 23 || len(lines) != 23 ||
 		lines[0] != "Dispatch refused this approval request, because 23 texts break the form of The Spec." ||
-		lines[20] != "- statement s20 in spec.md version 1: it has 3 sentences, and a statement has one or two." ||
-		lines[21] != "And 3 more: dispatch spec-form --issue "+issue.Key+" --artifact spec.md lists them all." {
+		lines[20] != "- statement s20 in spec.md version 2: it has 3 sentences, and a statement has one or two." ||
+		lines[21] != "And 3 more: dispatch spec-form --issue "+issue.Key+" --artifact spec.md --version 2 lists them all." {
 		t.Fatalf("refusal = total %d, %d findings, error\n%s", body.FindingsTotal, len(body.Findings), body.Error)
 	}
 }

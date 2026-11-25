@@ -32,7 +32,7 @@ func init() { loudReads = true }
 // where it is not. Control: another sentence's readings are its own.
 func TestTheChargeOfASentenceRefusesAReadingPastItAndStopsAnOwnOneLoudly(t *testing.T) {
 	const sentence = "Dispatch reads Web.Config at boot."
-	texts := newTexts()
+	texts := newTexts(nil)
 	unit, other := texts.Name(sentence, false, false), texts.Name("It logs it.", false, false)
 	if again := texts.Name(sentence, false, false); again != unit {
 		t.Errorf("two sentences of the same words are the units %v and %v, want one", unit, again)
@@ -501,7 +501,7 @@ func TestEachRefusedReadingRefusesTheWayOutThatAskedIt(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		return Check(context, Input{Texts: read.Texts, Proposed: read.Terms}), nil
+		return check(context, Input{Texts: read.Texts, Proposed: read.Terms}), nil
 	}
 	defer func() { refuseReading = nil }()
 	passed := map[string]bool{}

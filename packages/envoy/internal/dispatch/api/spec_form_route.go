@@ -17,8 +17,10 @@ type specFormQuery struct {
 //
 // The form of The Spec of one version of a document, with no side effect: where the document
 // stands (its scope, its root and the part it plays), the count of each kind of text it holds,
-// and every finding, which it lists for a document out of scope too. refuses_approval says
-// whether the form gate refuses an approval request or an approval of that version.
+// and its findings, which it lists for a document out of scope too: at most specFormFindingsHeld
+// of them, as a refusal's body holds, and the count of all of them. refuses_approval says whether
+// the form gate refuses an approval request or an approval of that version. The judgment runs on
+// the request's context, so a caller that hangs up stops it.
 func (s *server) getArtifactSpecForm(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -70,7 +72,7 @@ func (s *server) getArtifactSpecForm(w http.ResponseWriter, r *http.Request) {
 		Plays:           plays,
 		Root:            document.root,
 		Texts:           document.texts,
-		Findings:        document.findings,
+		Findings:        document.findings[:min(len(document.findings), specFormFindingsHeld)],
 		FindingsTotal:   len(document.findings),
 		Terms:           []specFormTerm{},
 		Unread:          document.unread,

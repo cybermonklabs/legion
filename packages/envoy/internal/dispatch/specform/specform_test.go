@@ -86,7 +86,7 @@ func TestCheckRefusesEachFormFault(t *testing.T) {
 		{planted("ada.lovelace@example.com"), claim,
 			"person", `it names a person: "Ada Lovelace"`, ""},
 	} {
-		got := Check(test.context, Input{Texts: []Text{test.text}})
+		got := check(test.context, Input{Texts: []Text{test.text}})
 		want := []Finding{finding(test.text, test.rule, test.detail)}
 		if test.steLong != "" {
 			want = append(want, finding(test.text, "ste100-long-sentence", test.steLong))
@@ -101,7 +101,7 @@ func TestCheckRefusesEachFormFault(t *testing.T) {
 // of 25 words each, which ste-lint passes, break no rule.
 func TestCheckTakesTwoSentencesOfTwentyFiveWords(t *testing.T) {
 	text := statement("Dispatch shows the person each question of each issue that the person follows, with the time of the question and the name of its project. Dispatch shows the person each approval request that waits on the person, with the document, its version and the short summary that its agent wrote.")
-	if got := Check(planted("ada.lovelace@example.com"), Input{Texts: []Text{text}}); len(got) != 0 {
+	if got := check(planted("ada.lovelace@example.com"), Input{Texts: []Text{text}}); len(got) != 0 {
 		t.Fatalf("Check of two sentences of 25 words = %#v, want none", got)
 	}
 }
@@ -128,7 +128,7 @@ func TestAPieceWithNoLetterIsNoSentence(t *testing.T) {
 		if test.detail != "" {
 			want = []Finding{finding(text, "sentences", test.detail)}
 		}
-		if got := Check(planted(), Input{Texts: []Text{text}}); !sameFindings(got, want) {
+		if got := check(planted(), Input{Texts: []Text{text}}); !sameFindings(got, want) {
 			t.Errorf("Check(%q) = %#v, want %#v", test.body, got, want)
 		}
 	}
@@ -138,7 +138,7 @@ func TestAPieceWithNoLetterIsNoSentence(t *testing.T) {
 // "incident" with none.
 func TestCheckLetsTheWordIncidentStand(t *testing.T) {
 	text := statement("The role prompts and skills that Legion and Envoy ship name no deployment, project, private repository or person, and quote no measurement or incident.")
-	if got := Check(planted(), Input{Texts: []Text{text}}); len(got) != 0 {
+	if got := check(planted(), Input{Texts: []Text{text}}); len(got) != 0 {
 		t.Fatalf("Check = %#v, want none", got)
 	}
 }
@@ -190,11 +190,11 @@ func TestACountAfterPullRequestOrIncidentNamesNoRecord(t *testing.T) {
 func TestFailingExampleAndNameTakeOnlyReferenceRules(t *testing.T) {
 	example := Text{Node: "v-one", Kind: KindFailingExample, Where: where,
 		Body: strings.Repeat("word ", 39) + "and; more."}
-	if got := Check(planted(), Input{Texts: []Text{example}}); len(got) != 0 {
+	if got := check(planted(), Input{Texts: []Text{example}}); len(got) != 0 {
 		t.Errorf("a failing example of 40 words with a semicolon: Check = %#v, want none", got)
 	}
 	name := Text{Node: "queue", Kind: KindName, Body: "PR #12 queue", Where: where}
-	if got, want := Check(planted(), Input{Texts: []Text{name}}), []Finding{finding(name, "pull-request", pullRequestNamed("PR #12"))}; !sameFindings(got, want) {
+	if got, want := check(planted(), Input{Texts: []Text{name}}), []Finding{finding(name, "pull-request", pullRequestNamed("PR #12"))}; !sameFindings(got, want) {
 		t.Errorf("the name %q: Check = %#v, want %#v", name.Body, got, want)
 	}
 }
@@ -208,7 +208,7 @@ func TestReferenceRuleReadsInsideCodeSpans(t *testing.T) {
 	} {
 		text := statement(test.body)
 		want := []Finding{finding(text, "dispatch-link", fmt.Sprintf("it links to a record of Dispatch: %q", test.reference))}
-		if got := Check(planted(), Input{Texts: []Text{text}}); !sameFindings(got, want) {
+		if got := check(planted(), Input{Texts: []Text{text}}); !sameFindings(got, want) {
 			t.Errorf("Check(%q) = %#v, want %#v", test.body, got, want)
 		}
 	}
@@ -236,7 +236,7 @@ func TestCheckFindsEachLinkToARecordOfDispatch(t *testing.T) {
 		if test.detail != "" {
 			want = []Finding{finding(text, "dispatch-link", test.detail)}
 		}
-		if got := Check(planted(), Input{Texts: []Text{text}}); !sameFindings(got, want) {
+		if got := check(planted(), Input{Texts: []Text{text}}); !sameFindings(got, want) {
 			t.Errorf("Check(%q) = %#v, want %#v", test.body, got, want)
 		}
 	}
@@ -250,7 +250,7 @@ func TestCheckFindsAnAddressAndAHandle(t *testing.T) {
 	} {
 		text := statement(test.body)
 		want := []Finding{brokenFinding(text, personBreak(test.name, offer{ways: personWays(test.name)}))}
-		if got := Check(planted(), Input{Texts: []Text{text}}); !sameFindings(got, want) {
+		if got := check(planted(), Input{Texts: []Text{text}}); !sameFindings(got, want) {
 			t.Errorf("Check(%q) = %#v, want %#v", test.body, got, want)
 		}
 	}
@@ -262,7 +262,7 @@ func TestCheckJudgesEachProposedDefinition(t *testing.T) {
 	term := Term{Name: "session", Definition: "One conversation of an agent; it holds the work.", Where: "terms.md version 3"}
 	text := Text{Node: "session", Kind: KindDefinition, Body: term.Definition, Where: term.Where}
 	want := []Finding{finding(text, "ste100-semicolon", `ASD-STE100 does not permit a semicolon: ";"`)}
-	if got := Check(planted(), Input{Proposed: []Term{term}}); !sameFindings(got, want) {
+	if got := check(planted(), Input{Proposed: []Term{term}}); !sameFindings(got, want) {
 		t.Fatalf("Check = %#v, want %#v", got, want)
 	}
 }
@@ -272,12 +272,12 @@ func TestCheckJudgesEachProposedDefinition(t *testing.T) {
 func TestCheckJoinsTheLinesOfAText(t *testing.T) {
 	text := statement("Legion lands a change\r\nat the head it read; it lands no other head; it waits.\n")
 	want := []Finding{finding(text, "ste100-semicolon", `ASD-STE100 does not permit a semicolon: ";"`)}
-	if got := Check(planted(), Input{Texts: []Text{text}}); !sameFindings(got, want) {
+	if got := check(planted(), Input{Texts: []Text{text}}); !sameFindings(got, want) {
 		t.Fatalf("Check = %#v, want %#v", got, want)
 	}
 	empty := statement("  ")
 	want = []Finding{finding(empty, "sentences", "it has 0 sentences, and a statement has one or two")}
-	if got := Check(planted(), Input{Texts: []Text{empty}}); !sameFindings(got, want) {
+	if got := check(planted(), Input{Texts: []Text{empty}}); !sameFindings(got, want) {
 		t.Fatalf("Check of an empty statement = %#v, want %#v", got, want)
 	}
 }
@@ -285,7 +285,7 @@ func TestCheckJoinsTheLinesOfAText(t *testing.T) {
 // TestCheckCutsTheExcerpt holds the excerpt to the first 160 characters of the text.
 func TestCheckCutsTheExcerpt(t *testing.T) {
 	text := statement(strings.Repeat("é", 150) + "; " + strings.Repeat("x", 40))
-	got := Check(planted(), Input{Texts: []Text{text}})
+	got := check(planted(), Input{Texts: []Text{text}})
 	if len(got) != 1 || got[0].Excerpt != string([]rune(text.Body)[:160]) {
 		t.Fatalf("Check = %#v, want one finding whose excerpt is the first 160 characters", got)
 	}
@@ -372,12 +372,12 @@ func TestMessageIsTheRefusalOfThePlan(t *testing.T) {
 // each fault. Control: a second text with its own faults makes the head say 2.
 func TestTheRefusalHeadCountsTheTextsThatBreak(t *testing.T) {
 	text := statement("Dispatch spins up a seamless lease; it starts. It ends.")
-	findings := Check(planted(), Input{Texts: []Text{text}})
+	findings := check(planted(), Input{Texts: []Text{text}})
 	if len(findings) < 3 {
 		t.Fatalf("setup: Check = %#v, want at least three findings of the one text", findings)
 	}
 	other := Text{Node: "second", Kind: KindStatement, Body: "Legion spins up each lease; it waits.", Where: where}
-	both := append(slices.Clone(findings), Check(planted(), Input{Texts: []Text{other}})...)
+	both := append(slices.Clone(findings), check(planted(), Input{Texts: []Text{other}})...)
 	for _, test := range []struct {
 		name, text, head string
 		lines            int
@@ -405,7 +405,7 @@ func TestADefinitionLineInAnotherFormIsNotPassedInSilence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := Check(planted(), Input{Texts: control.Texts, Proposed: control.Terms}); len(got) == 0 {
+	if got := check(planted(), Input{Texts: control.Texts, Proposed: control.Terms}); len(got) == 0 {
 		t.Fatalf("control: the same definition in the form of a term line gives no finding")
 	}
 	extracted, err := ExtractDocument("terms.md", 1, "# Terms\n\n- **lease**: The time for which a session holds an issue.\n"+
@@ -414,7 +414,7 @@ func TestADefinitionLineInAnotherFormIsNotPassedInSilence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := Check(planted(), Input{Texts: extracted.Texts, Proposed: extracted.Terms})
+	got := check(planted(), Input{Texts: extracted.Texts, Proposed: extracted.Terms})
 	for _, name := range []string{"beacon", "drift"} {
 		if !slices.ContainsFunc(got, func(finding Finding) bool { return strings.Contains(finding.Node, name) }) {
 			t.Errorf("%s: no finding names its line, and the extractor read terms %#v: a definition that breaks the form passes in silence", name, extracted.Terms)

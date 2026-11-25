@@ -6,8 +6,10 @@
 package specform
 
 import (
+	"context"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/dispatch/specform/charge"
 	"github.com/sjawhar/envoy/internal/dispatch/specform/ste"
 )
 
@@ -140,6 +142,9 @@ type Context struct {
 	// each page reads an address with no scheme against itself. It is empty for texts of no one
 	// document of the server, such as the files of a tree.
 	Pages []string
+	// wayBytes is the budget of the readings of the ways out of one Check (maxWayBytes), which
+	// Check sets and each judge of the ways out of its texts shares (newWayJudge).
+	wayBytes *charge.Budget
 }
 
 // Input is the texts to judge, the definitions a request proposes, and the approved list.
@@ -178,8 +183,11 @@ const excerptRunes = 160
 // of Kind term, and its definition, of Kind definition. It judges them by the rules of R49, in the
 // order of the texts. It judges each footnote that the texts refer to once (footnoteJudge), so its
 // work is in proportion to the texts and their footnotes, whatever the count of texts that share
-// one footnote.
-func Check(c Context, in Input) []Finding {
+// one footnote. The judges of the ways out of all its texts read at most maxWayBytes together, in
+// the order of the texts, so the work of one Check has a bound that no document passes. Once ctx
+// ends it judges no other text and answers ctx's error, so a caller that stops waiting stops the
+// judgment within the work of one text.
+func Check(ctx context.Context, c Context, in Input) ([]Finding, error) {
 	texts := make([]Text, 0, len(in.Texts)+2*len(in.Proposed))
 	texts = append(texts, in.Texts...)
 	for _, term := range in.Proposed {
@@ -188,9 +196,13 @@ func Check(c Context, in Input) []Finding {
 			Text{Node: term.Name, Kind: KindDefinition, Body: term.Definition, Where: term.Where, Held: term.DefinitionHeld, Notes: term.DefinitionNotes})
 	}
 	people := peopleNames(c, in)
+	c.wayBytes = charge.NewBudget(maxWayBytes)
 	notes := newFootnoteJudge(c, people, texts)
 	var findings []Finding
 	for _, text := range texts {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		for _, broken := range breaks(c, people, text, notes) {
 			findings = append(findings, Finding{
 				Node: text.Node, Kind: text.Kind, Where: text.Where,
@@ -198,7 +210,7 @@ func Check(c Context, in Input) []Finding {
 			})
 		}
 	}
-	return findings
+	return findings, nil
 }
 
 // oneLine is a text as ste-lint reads one line: its lines trimmed and joined by one space.

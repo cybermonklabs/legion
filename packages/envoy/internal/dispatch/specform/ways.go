@@ -37,7 +37,8 @@ var wholeNote = fmt.Sprintf("Dispatch offers ways out for the first %d findings 
 // out that the judge did not read (note): pastNote for a finding past the first
 // maxJudgedInSentence findings of its sentence, wholeNote for one past those of a text that the
 // judge reads whole, elsewhereNote for one whose way out would read a sentence past its charge
-// (charge.Texts.Read), or nothing.
+// (charge.Texts.Read), documentNote for one whose way out would read past the budget of its
+// document (maxWayBytes), or nothing.
 type offer struct {
 	ways [maxWays]wayOut
 	note string
@@ -153,9 +154,10 @@ type wayKey struct {
 }
 
 // newWayJudge is the judge of the ways out of the findings of a text of kind, whose words the
-// reference rules read as the page shows them where shown (Held.Shown).
+// reference rules read as the page shows them where shown (Held.Shown). Its readings take their
+// bytes from the budget of the Check that c is of (Context.wayBytes).
 func newWayJudge(c Context, people [][]string, kind Kind, shown bool) *wayJudge {
-	return &wayJudge{c: c, people: people, kind: kind, shown: shown, texts: newTexts()}
+	return &wayJudge{c: c, people: people, kind: kind, shown: shown, texts: newTexts(c.wayBytes)}
 }
 
 // sentence is the unit of the sentence index of the text that the judge was told (told), as
@@ -227,8 +229,9 @@ func (j *wayJudge) survey(find func()) {
 // whole text that it writes at each place refuses (wholeText.passes). A finding
 // past maxJudgedInSentence of the findings of a unit that holds it gives none, and its offer says
 // so (pastNote), as does one past maxJudgedInSentence of the findings of a text that the judge
-// reads whole (wholeNote), and one whose way out would read a sentence past its charge
-// (elsewhereNote); so does one whose sentence is not known at some place (a unit that names no
+// reads whole (wholeNote), one whose way out would read a sentence past its charge
+// (elsewhereNote), and one that asks once the budget of its document is spent (documentNote); so
+// does one whose sentence is not known at some place (a unit that names no
 // text), with no word of it, and one that survey did not see. A nil judge offers ways as they are,
 // and so does each judge a finding that gives none.
 func (j *wayJudge) offered(unit charge.Unit, rule Rule, from string, ways [maxWays]wayOut) offer {
@@ -242,6 +245,9 @@ func (j *wayJudge) offered(unit charge.Unit, rule Rule, from string, ways [maxWa
 	}
 	if given, ok := j.given[key]; ok {
 		return given
+	}
+	if j.texts.Spent() {
+		return offer{note: documentNote}
 	}
 	given := offer{ways: ways}
 	places := j.places[key]
@@ -273,7 +279,7 @@ func (j *wayJudge) offered(unit charge.Unit, rule Rule, from string, ways [maxWa
 	if given.ways != ([maxWays]wayOut{}) {
 		var charged charge.Answer
 		if also, charged = j.alsoAt(from, places); !charged {
-			refuse(elsewhereNote)
+			refuse(refusedNote(j.texts))
 		}
 	}
 	for at, holds := range j.eachPlace(places, also) {
@@ -291,7 +297,7 @@ func (j *wayJudge) offered(unit charge.Unit, rule Rule, from string, ways [maxWa
 			}
 		}
 		if !charged {
-			refuse(elsewhereNote)
+			refuse(refusedNote(j.texts))
 		}
 	}
 	if j.whole != nil {

@@ -87,7 +87,7 @@ func TestTheWholeTextReadsAsSteLintReadsTheLine(t *testing.T) {
 	read, joined, several := 0, 0, 0
 	for _, text := range lines {
 		line := oneLine(text)
-		whole := newWholeText(line, nil, nil, newTexts())
+		whole := newWholeText(line, nil, nil, newTexts(nil))
 		if len(whole.units) == 0 {
 			continue
 		}
@@ -209,7 +209,7 @@ func TestTheWholeTextReadsAChangeOfASentenceAsSteLintReadsTheTextItWrites(t *tes
 					// The judge keeps its reading of a way out by its finding and the way out, so the
 					// finding names the sentence: the same change in two sentences is two readings.
 					finding := wayKey{rule: Rule(fmt.Sprintf("probe of sentence %d", index)), from: way.from}
-					judgment := newTexts()
+					judgment := newTexts(nil)
 					judged := newWholeText(line, nil, nil, judgment)
 					passed, note := judged.passes(finding, way, []charge.Unit{judgment.Name(place, false, false)}, nil)
 					if note != "" {

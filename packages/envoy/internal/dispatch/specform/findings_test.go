@@ -35,7 +35,7 @@ func TestEachHardFindingOfSteLintIsAFindingOfTheForm(t *testing.T) {
 		for _, each := range test.want {
 			want = append(want, finding(text, each.Rule, each.Detail))
 		}
-		if got := Check(planted(), Input{Texts: []Text{text}}); !sameFindings(got, want) {
+		if got := check(planted(), Input{Texts: []Text{text}}); !sameFindings(got, want) {
 			t.Errorf("Check(%q) =\n%#v\nwant\n%#v", test.body, got, want)
 		}
 	}
@@ -52,7 +52,7 @@ func TestEachHardRuleOfSteLintIsARuleOfTheForm(t *testing.T) {
 		{"Check the config file. Then verify the output.", "ste100-synonym-rotation"},
 		{"- Dispatch keeps the record and", "ste100-dangling-conjunction"},
 	} {
-		got := Check(planted(), Input{Texts: []Text{statement(test.body)}})
+		got := check(planted(), Input{Texts: []Text{statement(test.body)}})
 		if !slices.ContainsFunc(got, func(finding Finding) bool { return string(finding.Rule) == test.rule }) {
 			t.Errorf("Check(%q) = %#v, want a finding of %s", test.body, got, test.rule)
 		}
@@ -94,11 +94,11 @@ func TestAFenceMarkerHidesNoSentenceFromTheRules(t *testing.T) {
 	} {
 		fenced := Text{Node: "fence", Kind: test.kind, Body: test.fenced, Where: where}
 		plain := Text{Node: "fence", Kind: test.kind, Body: test.plain, Where: where}
-		want := said(Check(planted(), Input{Texts: []Text{plain}}))
+		want := said(check(planted(), Input{Texts: []Text{plain}}))
 		if len(want) == 0 {
 			t.Fatalf("%s: the text without the marker gives no finding, so the row cannot fail", test.name)
 		}
-		if got := said(Check(planted(), Input{Texts: []Text{fenced}})); !slices.Equal(got, want) {
+		if got := said(check(planted(), Input{Texts: []Text{fenced}})); !slices.Equal(got, want) {
 			t.Errorf("%s: Check(%q) =\n%q\nwant the findings of the text without the marker\n%q", test.name, test.fenced, got, want)
 		}
 	}
@@ -119,7 +119,7 @@ func TestAFenceMarkerHidesNoSentenceFromTheRules(t *testing.T) {
 		}},
 		{twentyFive + " ``` a``b ```", nil},
 	} {
-		if got := said(Check(planted(), Input{Texts: []Text{{Node: "fence", Kind: KindClaim, Body: test.body, Where: where}}})); !slices.Equal(got, test.want) {
+		if got := said(check(planted(), Input{Texts: []Text{{Node: "fence", Kind: KindClaim, Body: test.body, Where: where}}})); !slices.Equal(got, test.want) {
 			t.Errorf("Check(%q) =\n%q\nwant\n%q", test.body, got, test.want)
 		}
 	}
@@ -159,7 +159,7 @@ func TestAPersonsNameIsTheNameOfOnePerson(t *testing.T) {
 		if test.want != "" {
 			want = []Finding{brokenFinding(test.text, personBreak(test.want, offer{ways: personWays(test.want)}))}
 		}
-		if got := Check(planted(test.people...), Input{Texts: []Text{test.text}}); !sameFindings(got, want) {
+		if got := check(planted(test.people...), Input{Texts: []Text{test.text}}); !sameFindings(got, want) {
 			t.Errorf("%s: Check(%q) =\n%#v\nwant\n%#v", test.name, test.text.Body, got, want)
 		}
 	}
@@ -181,7 +181,7 @@ func TestTheReferenceRulesJudgeTheNameOfATerm(t *testing.T) {
 		if test.rule != "" {
 			want = []Finding{{Node: test.term.Name, Kind: Kind("term"), Where: where, Rule: Rule(test.rule), Detail: test.name, Excerpt: test.term.Name}}
 		}
-		if got := Check(planted("ada.lovelace@example.com"), Input{Proposed: []Term{test.term}}); !sameFindings(got, want) {
+		if got := check(planted("ada.lovelace@example.com"), Input{Proposed: []Term{test.term}}); !sameFindings(got, want) {
 			t.Errorf("the term %q: Check =\n%#v\nwant\n%#v", test.term.Name, got, want)
 		}
 	}
@@ -194,19 +194,19 @@ func TestOnlyAnApprovedNameIsANounOfTheSystem(t *testing.T) {
 	text := statement("Each issue reaches Dispatch Admin before its owner starts work.")
 	context := planted("dispatch.admin@example.com")
 	person := []Finding{finding(text, "person", `it names a person: "Dispatch Admin"`)}
-	if got := Check(context, Input{Texts: []Text{text}}); !sameFindings(got, person) {
+	if got := check(context, Input{Texts: []Text{text}}); !sameFindings(got, person) {
 		t.Errorf("with no system name: Check = %#v, want %#v", got, person)
 	}
 	component := Text{Node: "dispatch", Kind: KindName, Body: "Dispatch", Where: where}
-	if got := Check(context, Input{Texts: []Text{text, component}}); !sameFindings(got, person) {
+	if got := check(context, Input{Texts: []Text{text, component}}); !sameFindings(got, person) {
 		t.Errorf("with a component Dispatch in the same document: Check = %#v, want %#v", got, person)
 	}
 	term := Term{Name: "dispatch", Definition: "The server of the work.", Where: where}
-	if got := Check(context, Input{Texts: []Text{text}, Proposed: []Term{term}}); !sameFindings(got, person) {
+	if got := check(context, Input{Texts: []Text{text}, Proposed: []Term{term}}); !sameFindings(got, person) {
 		t.Errorf("with a term dispatch in the same document: Check = %#v, want %#v", got, person)
 	}
 	context.SystemNames = []string{"Dispatch"}
-	if got := Check(context, Input{Texts: []Text{text}}); len(got) != 0 {
+	if got := check(context, Input{Texts: []Text{text}}); len(got) != 0 {
 		t.Errorf("with the approved system name Dispatch: Check = %#v, want none", got)
 	}
 }
@@ -226,7 +226,7 @@ func TestTheStatedLimitsOfTheForm(t *testing.T) {
 		{"a bare number after incident is a count", "Envoy starts again within 10 seconds, as incident 4471 showed.", nil},
 		{"an initialism of single letters ends no sentence", "Dispatch stores records in the U.S. Dispatch indexes each record. Dispatch shows each record.", nil},
 	} {
-		if got := findingNames(Check(planted(), Input{Texts: []Text{statement(test.body)}})); !slices.Equal(got, test.want) {
+		if got := findingNames(check(planted(), Input{Texts: []Text{statement(test.body)}})); !slices.Equal(got, test.want) {
 			t.Errorf("%s: Check(%q) = %q, want %q", test.name, test.body, got, test.want)
 		}
 	}

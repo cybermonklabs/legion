@@ -45,6 +45,33 @@ const maxReadsOfSentence = 2 * ownReads
 var elsewhereNote = fmt.Sprintf("Dispatch reads one sentence at most %d times for the ways out of findings that stand elsewhere, and a way out of this one would read a sentence past that, so it offers none for this one, though one can exist",
 	ownReads)
 
+// maxWayBytes is how many bytes the judgments of the ways out of the findings of one Check read
+// together (charge.Budget), each reading the bytes of its text and charge.ReadingCost more. The
+// bounds of each sentence keep that work in proportion to the text, at up to maxReadsOfSentence
+// readings of each sentence; this keeps it within a bound that no document passes. A document of
+// 1 MB of 7,527 statements, each with eight findings with ways out, of stops that no space follows,
+// read 20.7 MB in 218,283 readings for their ways out, 23 s of CPU, where the rest of its judgment
+// took 2.2 s. Under this budget its judgment takes 3 s, and its first 1,818 findings, more than the
+// 500 that the refusal and the read route list, give their ways out (the api package's
+// TestTheReadRouteJudgesADocumentOfOneMebibyteInBoundedWork).
+const maxWayBytes = 1 << 20
+
+// documentNote is what the detail of a finding says whose way out would read past the budget of
+// its document (maxWayBytes), so the writer knows that Dispatch offers no way out of it, not that
+// none exists.
+var documentNote = fmt.Sprintf("Dispatch reads at most %d MiB of a document for ways out, so it offers none for this one, though one can exist",
+	maxWayBytes>>20)
+
+// refusedNote is what the detail of a finding says whose way out read a sentence that texts
+// refused: documentNote where the budget of the document is spent (charge.Texts.Spent), and
+// elsewhereNote where the charge of the sentence refused it.
+func refusedNote(texts *charge.Texts[sentenceAt]) string {
+	if texts.Spent() {
+		return documentNote
+	}
+	return elsewhereNote
+}
+
 // loudReads is whether the charge stops the program at a reading of a sentence, for the findings
 // that stand in it, that would pass ownReads: the bound of a sentence's findings holds those
 // readings, so such a reading is a walk that breaks it. The tests of this package set it
@@ -60,9 +87,11 @@ var refuseReading func() bool
 
 // newTexts is the texts of one judgment of the ways out, each sentence's readings charged within
 // ownReads for the findings that stand in it and as many for the others (charge.Texts), with what
-// the whole text keeps of each place of a sentence (sentenceAt).
-func newTexts() *charge.Texts[sentenceAt] {
+// the whole text keeps of each place of a sentence (sentenceAt), and each reading's bytes taken
+// from budget, the budget of the document that the text is part of (nil for none).
+func newTexts(budget *charge.Budget) *charge.Texts[sentenceAt] {
 	texts := charge.New[sentenceAt](ownReads, loudReads)
 	texts.Refuse(refuseReading)
+	texts.Share(budget)
 	return texts
 }
