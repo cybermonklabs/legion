@@ -42,12 +42,12 @@ func TestEachStepRecordNamesTheVariantOfItsIssue(t *testing.T) {
 		{name: "the planner's start and end, and the implementer's start", from: phase.Admitted, writes: 3, walk: func(t *testing.T, pool *pgxpool.Pool) {
 			engine := stepEngine(nil)
 			firstStep(t, pool, engine, "LEGION-208")
-			move(t, pool, engine, "LEGION-208", TriggerPlannerCompleted, "", record.PhaseRow{})
+			move(t, pool, engine, "LEGION-208", TriggerPlannerCompleted, record.TaskPlace{}, record.PhaseRow{})
 		}},
 		{name: "the acceptance's end, the retro's start, end and rating, and the merge's start", from: phase.Accepting, writes: 5, marked: "rating", walk: func(t *testing.T, pool *pgxpool.Pool) {
 			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
 			engine := stepEngine(nil)
-			move(t, pool, engine, "LEGION-208", TriggerSignOff, "", record.PhaseRow{})
+			move(t, pool, engine, "LEGION-208", TriggerSignOff, record.TaskPlace{}, record.PhaseRow{})
 			applyRefusingNothing(t, pool, engine, intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleImplementer,
 				Claim: "implement-claim", Summary: "retro done", Commit: "head",
 				PlanRating: &record.PlanRating{Rating: 4, Reason: "The plan fit the work."}})

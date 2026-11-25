@@ -330,7 +330,7 @@ func TestALateReportOfTheRetroOrTheMergeAfterAStopIsNotCurrent(t *testing.T) {
 				t.Fatalf("the implementer's completion of implementing was refused: %+v", result.Refusal)
 			}
 			for _, trigger := range tc.after {
-				move(t, pool, engine, root.Key, trigger, "", record.PhaseRow{})
+				move(t, pool, engine, root.Key, trigger, record.TaskPlace{}, record.PhaseRow{})
 			}
 			assertWalksAt(t, pool, engine, root.Key, tc.at, tc.place)
 			worker := seedPhaseWorker(t, pool, root.Key, tc.role, "")

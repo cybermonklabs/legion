@@ -449,6 +449,19 @@ func (a *issueSandboxAPI) notifyLocked(resource string, event kubeEvent) {
 	}
 }
 
+// podUID is the uid the API stamped on the pod of name, "" while it holds no such pod: a pod the
+// runtime makes again has a new one, which is how the pod-wait rig tells a new pod from the old.
+func (a *issueSandboxAPI) podUID(name string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	object, ok := a.objects["pods"][name]
+	if !ok {
+		return ""
+	}
+	uid, _ := object["metadata"].(map[string]any)["uid"].(string)
+	return uid
+}
+
 // sandbox is the Sandbox named name as the API holds it, or nil.
 func (a *issueSandboxAPI) sandbox(name string) map[string]any {
 	a.mu.Lock()
