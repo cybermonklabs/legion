@@ -5146,8 +5146,7 @@ references_lane() {
   mkdir -p "$1/web/e2e"
   echo 'one' > "$1/web/e2e/one.e2e.ts"
   echo 'two' > "$1/web/e2e/two.e2e.ts"
-  replace "$1/.github/workflows/ci.yaml" '      site: ${{ steps.filter.outputs.site }}' \
-    $'      site: ${{ steps.filter.outputs.site }}\n      dispatch_references: ${{ steps.filter.outputs.dispatch_references }}'
+  replace "$1/.github/workflows/ci.yaml" "$(every_job_output site)" "$(every_job_output site)"$'\n'"$(every_job_output dispatch_references)"
   cat > "$1/.github/ci-gates/dispatch-references.py" <<'PY'
 EXCLUDED = excluded("dispatch_references", "a preview of the reference rows", ["web/e2e/one.e2e.ts", "web/e2e/two.e2e.ts"])
 PY
@@ -5227,8 +5226,8 @@ root=$(fixture references-lane-no-filter)
 references_lane "$root"
 rm "$root/.github/ci-gates/dispatch-references.py"
 replace "$root/.github/workflows/ci.yaml" \
-  $'      site: ${{ steps.filter.outputs.site }}\n      dispatch_references: ${{ steps.filter.outputs.dispatch_references }}' \
-  '      site: ${{ steps.filter.outputs.site }}'
+  "$(every_job_output site)"$'\n'"$(every_job_output dispatch_references)" \
+  "$(every_job_output site)"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "naming the filter and where it is declared" \
