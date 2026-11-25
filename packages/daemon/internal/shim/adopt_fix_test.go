@@ -529,9 +529,16 @@ func TestAFixInAFreshPodTakesItsCommitsFromItsBranch(t *testing.T) {
 		t.Fatalf("jj is required: %v", err)
 	}
 	const key = "ACME-42"
-	fixBranch := claim.BesideBranch(key, 1, "a", 1, claim.RoleImplementer)
-	testerBranch := claim.BesideBranch(key, 1, "a", 1, claim.RoleTester)
-	prefix := claim.BesideFixPrefix(key, 1, "a", 1)
+	named := func(name string, err error) string {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return name
+	}
+	fixBranch := named(claim.BesideBranch(key, 1, "a", 1, claim.RoleImplementer))
+	testerBranch := named(claim.BesideBranch(key, 1, "a", 1, claim.RoleTester))
+	prefix := named(claim.BesideFixPrefix(key, 1, "a", 1))
 	taskBranch := claim.IssueBranch(key)
 	origin := newOrigin(t, key)
 	// exits0 runs command in dir of the pod r and holds its exit status to 0, logging what it printed.
