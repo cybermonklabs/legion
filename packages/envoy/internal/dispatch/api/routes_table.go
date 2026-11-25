@@ -662,7 +662,7 @@ func goingCatalogueDescription() string {
 }
 
 // replyQuoteDescription is what each of the six rows that write a reply to a block says of the
-// words of that block the reply quotes (replyQuoteRefusal, replyQuoteOccurrence): field is the
+// words of that block the reply quotes (replyQuoteRefusal, namedBlock.setQuote): field is the
 // row's block field and code the code its route gives a bad one. It is one definition, as
 // searchDescription is, so that the six rows state one rule.
 func replyQuoteDescription(field, code string) string {
