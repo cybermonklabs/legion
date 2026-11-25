@@ -27,6 +27,7 @@ import {
   temporaryDirectories,
   temporaryDirectory,
 } from "@legion/test-fixtures/temporary-directories";
+import type { SpawnOptions, SyncSubprocess } from "bun";
 import { z } from "zod";
 import { argMaxForceHolds } from "../../../../scripts/e2e/lib/arg-max-force";
 import { ownGroup, untilRunning } from "../../../../scripts/e2e/lib/own-group";
@@ -59,7 +60,7 @@ import {
   bundled,
   scriptDefinition,
   sourcesCommit,
-  spawnChecked,
+  spawnChecked as spawnCheckedAnywhere,
   writeGhSelectors,
 } from "./test-programs";
 import { WORLD_REPO, WORLD_SPEC } from "./world-issue";
@@ -152,9 +153,11 @@ function quotedAssignment(name: string): string {
 /** What rig.sh's namespace_probe prints and its status, under `env`: the probe every run's start
  * makes (require_namespace), in the same form launch.sh starts the agent in, beside the reader of
  * its caller git's system configuration (system_gitconfig), so a probe that read that file would
- * read it here as rig.sh's does. */
+ * read it here as rig.sh's does. It runs once as this file loads, before childCwd exists, so it
+ * starts through the programs' own spawnChecked, where the file's own (below) would start it in
+ * childCwd. */
 function namespaceProbe(env: Record<string, string>) {
-  const result = spawnChecked(
+  const result = spawnCheckedAnywhere(
     [
       "bash",
       "-c",
@@ -190,12 +193,14 @@ const WORLD_APPS = [
 ];
 /**
  * The directory this file's work directory goes in: memoryRoot, so /dev/shm where the machine has
- * a tmpfs there, unless its real path holds a character other than letters, digits and `/._-`, and
- * then /tmp. A plain path, because the model route installers and judge-omp write the path of each
+ * a tmpfs there, unless its real path holds a character other than letters, digits and `/._-`, or
+ * is in the developer's home, and then /tmp. A plain path, because the model route installers and judge-omp write the path of each
  * key command, and of the key file, into a profile as one plain `!command` word, and refuse any
  * other character in it (install-model-gateway.sh and install-key-file-model-route.sh at `--dest`,
  * rig.sh's judge_keys at the key file): under a TMPDIR with a space or a quote in its name, every
- * row that installs a route failed on that refusal. A tmpfs, because the file's afterAll removes
+ * row that installs a route failed on that refusal. Not in the developer's home, because childCwd
+ * is in this directory (memoryRoot gives TMPDIR where /dev/shm does not suit, and a TMPDIR can be
+ * in the home). A tmpfs, because the file's afterAll removes
  * the whole directory under the file's 60 s: on the disk TMPDIR names, that removal of about 1,600
  * entries took 70 to 90 s at a five-minute load of about 2,200, and failed the file with "a
  * beforeEach/afterEach hook timed out" after every row had passed. `need` is twice what this file
@@ -207,25 +212,46 @@ const WORLD_APPS = [
  * Where no tmpfs has that room, the directory is the disk's.
  */
 const memory = memoryRoot({ need: 2 * 147_079 * 1024 });
-const workRoot = /^[A-Za-z0-9/._-]+$/.test(realpathSync(memory)) ? memory : "/tmp";
+const memoryPath = realpathSync(memory);
+// A HOME that does not exist holds no config, and realpathSync would throw on it.
+const developerHome = existsSync(homedir()) ? realpathSync(homedir()) : path.resolve(homedir());
+/** Whether DIR, a real path, is the developer's home or a directory in it. Every path is in a
+ * home of `/`. */
+function inDeveloperHome(dir: string): boolean {
+  const relative = path.relative(developerHome, dir);
+  return !(relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative));
+}
+const workRoot =
+  /^[A-Za-z0-9/._-]+$/.test(memoryPath) && !inDeveloperHome(memoryPath) ? memory : "/tmp";
 if (workRoot !== memory) {
   console.error(
-    `rig.test.ts: ${memory} holds a character a plain \`!command\` word cannot, so the work directory is under /tmp`
+    `rig.test.ts: ${memory} holds a character a plain \`!command\` word cannot, or is in ${developerHome}, so the work directory is under /tmp`
   );
 }
 // A name of no measurement: every path a run's agent reads is built on it, and rig.sh's launch
 // starts no agent whose world names the rig (run-names.ts's guard).
 const work = temporaryDirectory("suite", { root: workRoot });
 const operatorHome = path.join(work, "operator-home");
+/** The cwd of each child process that spawnChecked starts here. The test runner's own cwd is in
+ * the checkout, and every checkout on a devbox is in the developer's home. mise reads a config
+ * file in the cwd and in each directory above it. Under a HOME that is not the developer's, it
+ * reads the developer's ~/.config/mise/config.toml found there as the config of a project, not as
+ * its global config. That file holds [settings], [env] and [tool_alias], and mise loads each of
+ * them only from a trusted file. Under that HOME no record marks the file trusted, so every mise
+ * shim exits 1 there, python3 included ("Config files in /home/<user>/.config/mise/config.toml
+ * are not trusted", in services_up's row). The work directory is not in the developer's home
+ * (workRoot), so no directory above this one is. */
+const childCwd = path.join(work, "child-cwd");
 // The home the probes must not reach, with the one thing they look for in it: a judge that could
-// read it would list this directory. It is staged in a hook, below the one the reservation
-// registered: a run that selects no row of this file makes neither. Each level is made on its
-// own, never with `recursive`, so this hook makes nothing above the reserved root and a root the
-// fixture did not make is an error here rather than a directory nothing removes.
+// read it would list this directory. It and childCwd are staged in a hook, below the one the
+// reservation registered: a run that selects no row of this file makes none of them. Each level
+// is made on its own, never with `recursive`, so this hook makes nothing above the reserved root
+// and a root the fixture did not make is an error here rather than a directory nothing removes.
 beforeAll(() => {
   mkdirSync(operatorHome);
   mkdirSync(path.join(operatorHome, ".ssh"));
   writeFileSync(path.join(operatorHome, ".ssh", "id_ed25519"), "not a key\n", { mode: 0o600 });
+  mkdirSync(childCwd);
 });
 /** The variables every child process of this file gets: the caller's PATH, a HOME of the test's
  * own, and the caller's mise data and config directories and PUBLIC_LEAK_CHECK when the caller
@@ -256,6 +282,22 @@ const childEnv = {
   // rule; the "childEnv" rows below hold it to that.
   ...leakCheckEnv(),
 };
+/** `spawnChecked` for this file: a child that gets the test's HOME (`operatorHome`, which every
+ * `childEnv` carries) starts in childCwd, outside the developer's home, unless its row names a
+ * `cwd` of its own. It is the one place this file names that cwd. A child that gets another
+ * HOME, or none, runs under the caller's own (the key command and the libpq probe pass no
+ * `childEnv`), where mise reads the caller's config as its global config, so it starts where it
+ * is told. */
+function spawnChecked<
+  const In extends SpawnOptions.Writable = "ignore",
+  const Out extends SpawnOptions.Readable = "pipe",
+  const Err extends SpawnOptions.Readable = "pipe",
+>(cmds: string[], options?: SpawnOptions.SpawnSyncOptions<In, Out, Err>): SyncSubprocess<Out, Err> {
+  return spawnCheckedAnywhere(
+    cmds,
+    options?.env?.HOME === operatorHome ? { cwd: childCwd, ...options } : options
+  );
+}
 
 let profiles = 0;
 /** A label's profile directory with an empty Oh My Pi home, as make_omp_home leaves it. */
@@ -1100,6 +1142,18 @@ function namedRun(runs: string, name: string): string | undefined {
       return path.join(runs, file.slice(0, -".json".length));
   return undefined;
 }
+
+// Catches: a child of this file that starts in the test runner's cwd, or a work directory in the
+// developer's home. Either way the developer's home is above the child's cwd, where a mise shim
+// run under the test's HOME exits 1 (childCwd). Every child that gets the test's HOME starts
+// through spawnChecked, and bash() is one of them, so this row holds each one. CI's PATH holds no
+// mise shim, so services_up's row passes in CI either way. Without childCwd this row fails in CI
+// too, because a runner's checkout is in the runner's home.
+test("a child of this file starts in childCwd, outside the developer's home", () => {
+  const cwd = realpathSync(childCwd);
+  expect(bash("pwd -P")).toEqual({ code: 0, stdout: `${cwd}\n`, stderr: "" });
+  expect({ cwd, inDeveloperHome: inDeveloperHome(cwd) }).toEqual({ cwd, inDeveloperHome: false });
+});
 
 // cmd_profile records the label's commit in built-from with checkout_commit. A git worktree holds
 // no .jj, and jj alone printed an empty commit line for it.
