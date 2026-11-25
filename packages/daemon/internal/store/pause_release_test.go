@@ -55,6 +55,7 @@ func endPause(t *testing.T, st *Store, pause int64, at time.Time) {
 // pod a pause holds reads as held in the same view. Once the pause ends, the same decision marks
 // the release.
 func TestAReleaseIsMarkedNothingWhileTheProjectIsPaused(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	openRunningTree(t, st)
@@ -99,6 +100,7 @@ func TestAReleaseIsMarkedNothingWhileTheProjectIsPaused(t *testing.T) {
 // pause acts, and the release's role stop after the pause still acts, since only the check reads
 // the pause.
 func TestAReleaseCheckIsCancelledWhileTheProjectIsPaused(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	openRunningTree(t, st)
@@ -137,6 +139,7 @@ const otherFirst, otherBoundary = 18, 20
 // release reads the pause of the project whose release it is, never the pause of the issue key's
 // project, so it is cancelled while LEGION is paused.
 func TestACheckOfAReleaseOfAnotherProjectsIssueIsCancelledWhileThisProjectIsPaused(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	markReleaseOf(t, st, otherIssue, otherFirst, otherBoundary, 22, 0)
@@ -152,6 +155,7 @@ func TestACheckOfAReleaseOfAnotherProjectsIssueIsCancelledWhileThisProjectIsPaus
 // The inversion of the test above: a pause of the issue key's project is not this project's, so
 // the check of the same release acts while only OTHER is paused and LEGION runs.
 func TestACheckOfAReleaseOfAnotherProjectsIssueActsWhileOnlyThatProjectIsPaused(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	markReleaseOf(t, st, otherIssue, otherFirst, otherBoundary, 22, 0)
@@ -170,6 +174,7 @@ func TestACheckOfAReleaseOfAnotherProjectsIssueActsWhileOnlyThatProjectIsPaused(
 // generation, as the stop transaction does while its pause stands; the architect gets none. A role
 // a wake already owes a launch keeps that wake, owes the launch in its stop, and gets no backstop.
 func TestACancelWhileThePausedProjectHoldsItRecordsTheStopsAndQueuesNoResume(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		woken    bool
@@ -257,6 +262,7 @@ func TestACancelWhileThePausedProjectHoldsItRecordsTheStopsAndQueuesNoResume(t *
 // (resumeStanding), so the test seeds the record that OTHER's daemon keeps of the issue on the
 // same database.
 func TestACancelOfAReleaseOfAnotherProjectsIssueReadsThisProjectsPause(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	if _, err := st.Pool().Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
@@ -308,6 +314,7 @@ func TestACancelOfAReleaseOfAnotherProjectsIssueReadsThisProjectsPause(t *testin
 // project is paused is read inside the cancel's own transaction, so a cancel with no moment is
 // refused, naming the field, before it reads anything, and the release stays marked.
 func TestAReleaseCancelWithNoMomentIsRefused(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	openRunningTree(t, st)
 	servingReleasedClaim(t, st, claim.RoleImplementer)
@@ -343,6 +350,7 @@ func heldOpenResume(t *testing.T, st *Store, role claim.Role) (int64, bool) {
 // queue stopped, however long ago its wake was, until the end of that wait or the next daemon's
 // boot starts the clock.
 func TestTheStuckAndStrandedReadsMeasureTheStuckClockAndPassOverAPausedProject(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	woke := pausedAt.Add(-2 * time.Hour)
@@ -437,6 +445,7 @@ func TestTheStuckAndStrandedReadsMeasureTheStuckClockAndPassOverAPausedProject(t
 // pod of this project's there: the hold of this daemon's own spawn of that issue, in a tree of its
 // own, stands.
 func TestATreesCleanupEndsThePauseHoldsOfItsPods(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	openLingeringTree(t, st)
@@ -502,6 +511,7 @@ func TestATreesCleanupEndsThePauseHoldsOfItsPods(t *testing.T) {
 // The pod of a claim of another project's issue, held under this project's pause, ends the same
 // way: the hold is read by its project, not by its issue key's prefix.
 func TestAPodHoldEndsAtAReadyOnlyWhereARoleIsLive(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	openRunningTree(t, st)
@@ -544,6 +554,7 @@ func TestAPodHoldEndsAtAReadyOnlyWhereARoleIsLive(t *testing.T) {
 // yet is queued with none: the hold stays. A launch whose process is recorded is coming up in the
 // pod, and the resume ends the hold for it.
 func TestTheResumeEndsNoPodHoldForAClaimWithNoProcessYet(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	openRunningTree(t, st)
@@ -597,6 +608,7 @@ func TestTheResumeEndsNoPodHoldForAClaimWithNoProcessYet(t *testing.T) {
 // own now, and a round's bound counts the hold on to it. Only an open resume waits: a clock left
 // stopped on a resume whose launch took its first turn says nothing.
 func TestTheSweepsReadOfTheHoldsCarriesTheLatestLetOutOfTheirPause(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	pause, _ := pauseLegion(t, st, pausedAt)
@@ -731,6 +743,7 @@ func TestALaunchWaitingInThePacingReadsAsLetOutAtTheReadersNow(t *testing.T) {
 // whatever its open, ready resume. The latest let-out still counts every resume of the pause
 // (PausePodHold.LetOut).
 func TestTheSweepsReadOfTheHoldsNamesEachRoleItsPauseStillOwesALaunch(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	pause, _ := pauseLegion(t, st, pausedAt)

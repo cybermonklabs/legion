@@ -41,6 +41,7 @@ const volumeTrimOwnHoldEnv = "LEGION_LAUNCHER_VOLUME_TRIM_OWN_HOLD"
 // directory`; with followingRemoval (Root.RemoveAll) called in place of removeEntryAt, the first
 // trial raced and deleted every bait.
 func TestTheDeletersRemovalFollowsNoLinkWithNoContainment(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	bait := t.TempDir() // a sibling of the entry's directory, which no removal of it may reach
 	at := time.Now().Add(-2 * time.Hour)
@@ -91,6 +92,7 @@ func TestTheDeletersRemovalFollowsNoLinkWithNoContainment(t *testing.T) {
 // O_NOFOLLOW in openElementAt's place), which emptied the bait and answered the last unlinkat's
 // ENOTDIR.
 func TestARemovalUnlinksWhatWasSwappedInBetweenItsUnlinkAndItsOpen(t *testing.T) {
+	// Not parallel: it writes the package variable betweenUnlinkAndOpen, which parallel tests read.
 	for _, swap := range []struct {
 		name string
 		put  func(t *testing.T, path, bait string)
@@ -159,6 +161,8 @@ func TestARemovalUnlinksWhatWasSwappedInBetweenItsUnlinkAndItsOpen(t *testing.T)
 // with no bound on its passes never answers while the writer runs, which the helper fails on.
 // On 2026-11-15 one run of the package in this pod met that nil once (round 23's surface run).
 func TestARemovalOfADirectoryStillBeingWrittenInEnds(t *testing.T) {
+	// Not parallel: it writes the package variable betweenUnlinkAndOpen (removeWhileFilling), which
+	// parallel tests read.
 	const filledTries = 20
 	dir := t.TempDir()
 	held, err := os.Open(dir)
@@ -189,6 +193,7 @@ func TestARemovalOfADirectoryStillBeingWrittenInEnds(t *testing.T) {
 // beside it there, so every pass meets one new name, and the passes are counted by the
 // subdirectories it reached. Two is written out rather than read off the constant.
 func TestARemovalMakesTwoPassesOverADirectoryWhoseNamesKeepAppearing(t *testing.T) {
+	// Not parallel: it writes the package variable betweenUnlinkAndOpen, which parallel tests read.
 	const passes = 2
 	dir := t.TempDir()
 	held, err := os.Open(dir)
@@ -228,6 +233,8 @@ func TestARemovalMakesTwoPassesOverADirectoryWhoseNamesKeepAppearing(t *testing.
 // control is empty answering errStillFilling at its bound whatever its passes' names had failed
 // with.
 func TestARemovalOfADirectoryStillBeingWrittenInNamesTheErrorItMet(t *testing.T) {
+	// Not parallel: it writes the package variable betweenUnlinkAndOpen (removeWhileFilling), which
+	// parallel tests read.
 	if os.Geteuid() == 0 {
 		t.Skip("root unlinks in a directory whatever its mode, so a directory made 0500 is no failure that lasts for it")
 	}
@@ -266,6 +273,8 @@ func TestARemovalOfADirectoryStillBeingWrittenInNamesTheErrorItMet(t *testing.T)
 // filling subdirectory listed first, empty keeping the first error its pass met answers
 // errStillFilling, and with it listed last, empty keeping the last error it met does.
 func TestARemovalNamesASiblingsErrorBeforeASubdirectoryStillFilling(t *testing.T) {
+	// Not parallel: it writes the package variable betweenUnlinkAndOpen (removeWhileFilling), which
+	// parallel tests read.
 	if os.Geteuid() == 0 {
 		t.Skip("root unlinks in a directory whatever its mode, so a directory made 0500 is no failure that lasts for it")
 	}
@@ -490,6 +499,7 @@ func isFillingName(name string) bool {
 // with EACCES. The negative control is under renaming the error to its whole path on the way
 // back up, which answered an error as long as the path of more than 100 KB.
 func TestARemovalThatFailsDeepInATreeAnswersABoundedError(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("root unlinks in a directory whatever its mode, so a directory made 0500 is no failure that lasts for it")
 	}
@@ -560,6 +570,7 @@ func TestARemovalThatFailsDeepInATreeAnswersABoundedError(t *testing.T) {
 // removalFailure writing the names as they are, which put the newline in the error, and for the
 // entry itself removeEntryAt answering the fs.PathError of its own removal, which does the same.
 func TestARemovalErrorQuotesTheNamesARoleChose(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("root unlinks in a directory whatever its mode, so a directory made 0500 is no failure that lasts for it")
 	}
@@ -654,6 +665,7 @@ const ownHoldEntries = 2000
 // the child's deadline. refreshMidway forces the used-path refresh independently of the
 // filesystem's speed.
 func TestASweepsOwnDeleterIsNoHoldOnTheRootsItDeletesFrom(t *testing.T) {
+	t.Parallel()
 	requireRoleNamespaces(t)
 	self, err := os.Executable()
 	if err != nil {
@@ -694,6 +706,7 @@ const ownHoldSwept = "the sweep ran as PID"
 // TestASweepsOwnDeleterIsNoHoldHelper is one sweep of that case, as PID 1 of the namespaces it
 // was cloned into.
 func TestASweepsOwnDeleterIsNoHoldHelper(t *testing.T) {
+	// Not parallel: a helper child, run in a process of its own; here it returns at once.
 	sweep := os.Getenv(volumeTrimOwnHoldEnv)
 	if sweep == "" {
 		return
@@ -828,6 +841,8 @@ func holdOpen(t *testing.T, dir string) {
 // deleter has exited and before the remover's close waits on it leaves the exit to that wait,
 // which reads the deleter's own exit status, and the guard forgets the pid once it has.
 func TestTheReaperLeavesTheSweepsDeleterToItsOwnWait(t *testing.T) {
+	// Not parallel: it writes the package variable trimDeleteLaunch (useContainedDeleter), which
+	// parallel tests read.
 	requireRoleNamespaces(t)
 	useContainedDeleter(t)
 	guard := &pidGuard{}
@@ -874,6 +889,8 @@ func TestTheReaperLeavesTheSweepsDeleterToItsOwnWait(t *testing.T) {
 // each a link to the process's own directory in the machine's /proc, as
 // TestMemoryGuardOnRealRoleNamespaces reads its role's processes.
 func TestTheMemoryGuardSparesTheSweepsRunningDeleter(t *testing.T) {
+	// Not parallel: it writes the package variable trimDeleteLaunch (useContainedDeleter), which
+	// parallel tests read.
 	requireRoleNamespaces(t)
 	useContainedDeleter(t)
 	guard := &pidGuard{}
@@ -908,6 +925,8 @@ func TestTheMemoryGuardSparesTheSweepsRunningDeleter(t *testing.T) {
 // the child answering `removed` for a removal that failed, which every deleter case before this
 // one left green.
 func TestTheDeleterAnswersARemovalItCannotMakeAsARefusal(t *testing.T) {
+	// Not parallel: it writes the package variable trimDeleteLaunch (useContainedDeleter), which
+	// parallel tests read.
 	requireRoleNamespaces(t)
 	useContainedDeleter(t)
 	dir := t.TempDir()
@@ -955,6 +974,7 @@ func TestTheDeleterAnswersARemovalItCannotMakeAsARefusal(t *testing.T) {
 // A refusal at -1 is no reach into the deleter's own standard error, the third descriptor, which
 // the number would otherwise name.
 func TestARequestNamingADescriptorBelowTheFirstPassedIsRefused(t *testing.T) {
+	t.Parallel()
 	err := removeOneRequest(map[int]*os.File{}, `-1 "entry"`, make([]byte, volumeRemovalNamesBytes))
 	if err == nil || !strings.Contains(err.Error(), "names the descriptor -1, which the trimmer passed none at") {
 		t.Errorf("the request for descriptor -1 was answered %v, want it refused as naming no descriptor the trimmer passed", err)
@@ -971,6 +991,7 @@ func TestARequestNamingADescriptorBelowTheFirstPassedIsRefused(t *testing.T) {
 // fails on it and on the signal too, once the sleep's own 300 s are up, or at the hang guard the
 // wait for the close runs under, if that ends sooner.
 func TestADeleterThatIgnoresTheEndOfItsRequestsIsKilledAtTheGrace(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command("sleep", "300")
 	requests, err := cmd.StdinPipe()
 	if err != nil {

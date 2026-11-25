@@ -428,6 +428,7 @@ func (k memberKind) woken() memberKind {
 // P's disk, at every end. named is the role and the state each row's message and line name, ""
 // for none.
 func TestPodUpdateNamesWhatTheRoundsPodTookAtEachEndOfEachMember(t *testing.T) {
+	t.Parallel()
 	const launching, ready, suspended = "implementer (launching)", "implementer (ready)", "implementer (suspended)"
 	for _, row := range []struct {
 		end   roundPodEnd

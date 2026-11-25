@@ -114,6 +114,7 @@ func refusedBeforeOwnerSteps(t *testing.T, row record.OutboxRow) string {
 // And the same block with its project predicate taken off deletes OTHER's rows of the new kinds too:
 // that predicate, and nothing else, is what keeps them.
 func TestTheOwnerStepsWayBackDeletesOnlyItsProjectsRowsTheReleaseBeforeCannotRead(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	queuedAt := time.Date(2026, 11, 17, 3, 0, 0, 0, time.UTC)
 	rowsOf := func(project string) []struct {
@@ -231,6 +232,7 @@ func TestTheOwnerStepsWayBackDeletesOnlyItsProjectsRowsTheReleaseBeforeCannotRea
 // An escalated hold keeps its reason, and another project's hold of either reason stands. The
 // control: the update with its project predicate taken off clears the other project's too.
 func TestTheOwnerStepsWayBackClearsItsProjectsTwoNewHoldReasons(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	const issuePredicate = " and split_part(key, '-', 1) = '<PROJECT>'"
 	scoped := ownerStepsWayBack(t)
