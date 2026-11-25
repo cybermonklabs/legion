@@ -16,6 +16,7 @@ package accesslog
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"errors"
 	"io"
@@ -26,6 +27,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 )
 
@@ -162,13 +164,22 @@ func (rec *recorder) Unwrap() http.ResponseWriter { return rec.ResponseWriter }
 // (`/api/v1/issues/{key}`), mounted once, so the line groups a route's requests together whatever
 // ids their paths carry. A handler that panics (an artifact download whose store fails mid-stream
 // aborts with http.ErrAbortHandler) still writes its line, marked aborted=true, as the panic
-// passes on to net/http.
+// passes on to net/http. The time the line records is read on the real clock (HandlerOn).
 func Handler(route string, next http.Handler) http.Handler {
+	return HandlerOn(route, next, nil)
+}
+
+// HandlerOn is Handler timing each request on clk, nil being clock.Real(): a server that times
+// work of its own inside the request on a clock a test drives (api's Deps.Clock, which the answers
+// read's sessionanswers.Latency shares in a test) times the request's line on that clock too, so
+// the line and that work read one clock.
+func HandlerOn(route string, next http.Handler, clk clock.Clock) http.Handler {
+	clk = cmp.Or[clock.Clock](clk, clock.Real())
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
+		start := clk.Now()
 		rec := &recorder{ResponseWriter: w, kind: KindAnonymous, request: r.Context()}
 		completed := false
-		defer func() { rec.write(route, r, time.Since(start), !completed) }()
+		defer func() { rec.write(route, r, clk.Now().Sub(start), !completed) }()
 		next.ServeHTTP(rec, r.WithContext(context.WithValue(r.Context(), callerKey{}, rec)))
 		completed = true
 	})
@@ -176,7 +187,12 @@ func Handler(route string, next http.Handler) http.Handler {
 
 // HandlerFunc is Handler for a handler function, which is how every Dispatch route is written.
 func HandlerFunc(route string, next http.HandlerFunc) http.HandlerFunc {
-	handler := Handler(route, next)
+	return HandlerFuncOn(route, next, nil)
+}
+
+// HandlerFuncOn is HandlerOn for a handler function.
+func HandlerFuncOn(route string, next http.HandlerFunc, clk clock.Clock) http.HandlerFunc {
+	handler := HandlerOn(route, next, clk)
 	return handler.ServeHTTP
 }
 

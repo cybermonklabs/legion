@@ -316,7 +316,8 @@ func meaningStatementAsSearchPicksIt(t *testing.T, database *store.Store, projec
 		t.Fatalf("begin a transaction to read the fill's progress in: %v", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	statement, _ := meaningStatementFor(project, embeddingProjectKeysFilled(ctx, tx), false)
+	// The statements of a search naming no kind, which is what this helper's callers run.
+	statement, _ := meaningStatementFor(searchKinds(0).statements(), project, embeddingProjectKeysFilled(ctx, tx), false)
 	return statement
 }
 

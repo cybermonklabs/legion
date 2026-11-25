@@ -126,8 +126,9 @@ type IndexedVersion struct {
 // VersionBlocks is the version a block-index pass indexes (PlanBlocks), the inputs that travel
 // together from the writer that wrote or read the version into the plan: the document
 // (ArtifactID), what the version's own row says of its index (Record), the version's number and
-// its time, its markdown, its rendered blocks (Blocks), the Mentions of its text (Located) and its
-// `block[]` values (Pointers).
+// its time, its markdown, its rendered blocks (Blocks), the Mentions of its text (Located), its
+// `block[]` values (Pointers), and the deployment its text was read against (ServerURL), whose
+// dashboard URLs are references and which each block's excerpt is cut around (BlockExcerpt).
 type VersionBlocks struct {
 	ArtifactID string
 	Record     IndexedVersion
@@ -137,6 +138,7 @@ type VersionBlocks struct {
 	Blocks     []model.ArtifactBlock
 	Located    []text.Located
 	Pointers   []Pointer
+	ServerURL  string
 }
 
 // BlockIndexing is one version's block index, planned against what the index holds
@@ -202,7 +204,8 @@ type BlockIndexing struct {
 //
 // A block whose text (markdown[From:To]) is unchanged keeps the version its text last changed in;
 // a new, changed or restored block takes this version, dated version.At, and its excerpt is its
-// text cut to BlockExcerptRunes, the excerpt a document's mention has shown since migration 0092.
+// text as BlockExcerpt cuts it, the excerpt a document's mention has shown since migration 0092,
+// around the dashboard URLs of version.ServerURL.
 // A block the version no longer holds is deleted, its node's state stated gone, and the edges at
 // it stop resolving until a version holds its id again. A block the version holds keeps the state
 // and the visibility its node has, unless it was gone, when it comes back live (blockNode
@@ -274,7 +277,7 @@ func PlanBlocks(ctx context.Context, q Queryer, index BlockIndex, rule int, now 
 	indexing.won, indexing.namesSurvivingRows = true, index.stand.owed || stale
 	writer := version.Record.Writer
 	nodes, fits := indexing.indexedNodes(version.Blocks)
-	texts := indexing.planBlockTexts(index, version.Markdown, nodes, fits, now)
+	texts := indexing.planBlockTexts(index, version.Markdown, version.ServerURL, nodes, fits, now)
 	statement, err := indexing.planBlockNodes(ctx, q, stale, nodes, texts, version, now)
 	if err != nil {
 		return BlockIndexing{}, err
@@ -315,10 +318,10 @@ func (b *BlockIndexing) indexedNodes(blocks []model.ArtifactBlock) ([]model.Arti
 // planBlockTexts is the step of a pass that compares each of the version's blocks (nodes, with
 // fits whether each one's address fits the store's key) with the row the index holds of it,
 // reading its text out of markdown: it records on the indexing the blocks whose text this
-// version changed, with their types, sums, excerpts and texts, and the blocks it deleted, and
-// answers what the later steps read of them (blockTexts). now is the transaction's now(), the
-// time a row the pass inserts is dated by.
-func (b *BlockIndexing) planBlockTexts(index BlockIndex, markdown string, nodes []model.ArtifactBlock, fits []bool, now time.Time) blockTexts {
+// version changed, with their types, sums, excerpts (BlockExcerpt, around serverURL's dashboard
+// URLs) and texts, and the blocks it deleted, and answers what the later steps read of them
+// (blockTexts). now is the transaction's now(), the time a row the pass inserts is dated by.
+func (b *BlockIndexing) planBlockTexts(index BlockIndex, markdown, serverURL string, nodes []model.ArtifactBlock, fits []bool, now time.Time) blockTexts {
 	stored := maps.Clone(index.blocks)
 	b.firstIndexing = len(stored) == 0
 	// The blocks whose text this version changed (new, changed or restored), and those it
@@ -357,7 +360,7 @@ func (b *BlockIndexing) planBlockTexts(index BlockIndex, markdown string, nodes 
 		}
 		held[block.ID] = storedBlock{sum: hexSum, joined: joined, named: fits[position]}
 		b.ids, b.types, b.sums = append(b.ids, block.ID), append(b.types, block.Type), append(b.sums, hexSum)
-		b.excerpts = append(b.excerpts, text.HeadRunes(body, BlockExcerptRunes))
+		b.excerpts = append(b.excerpts, BlockExcerpt(body, serverURL))
 		b.textIDs, b.texts = append(b.textIDs, block.ID), append(b.texts, &body)
 		written = append(written, writtenBlock{fits: fits[position], inserted: !kept})
 	}
@@ -537,7 +540,8 @@ func (b BlockIndexing) Queue(batch *store.WriteBatch) {
 // the seed, and a test that indexes a version itself, each at this build's marking rule
 // (BlockIndexMarkingRule). It answers the targets the indexing moves, the cited blocks among them,
 // whether it won the revision fence, and what it states in the node and tuple store, for the
-// caller to append under its cause (graphstore.Caused).
+// caller to append under its cause (graphstore.Caused). serverURL is the deployment whose
+// dashboard URLs each block's excerpt is cut around (BlockExcerpt).
 func IndexBlocks(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -548,6 +552,7 @@ func IndexBlocks(
 	blocks []model.ArtifactBlock,
 	located []text.Located,
 	pointers []Pointer,
+	serverURL string,
 ) ([]Target, bool, graphstore.Uncaused, error) {
 	index, err := ReadBlockIndex(ctx, tx, artifactID)
 	if err != nil {
@@ -563,7 +568,7 @@ func IndexBlocks(
 	}
 	indexing, err := PlanBlocks(ctx, tx, index, BlockIndexMarkingRule, now, VersionBlocks{
 		ArtifactID: artifactID, Record: record, Number: version, At: versionAt,
-		Markdown: markdown, Blocks: blocks, Located: located, Pointers: pointers,
+		Markdown: markdown, Blocks: blocks, Located: located, Pointers: pointers, ServerURL: serverURL,
 	})
 	if err != nil {
 		return nil, false, graphstore.Uncaused{}, err

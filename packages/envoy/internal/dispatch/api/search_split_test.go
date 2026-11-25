@@ -328,7 +328,7 @@ func TestSearchReadSplitScript(t *testing.T) {
 	prepared := map[string]string{}
 	for _, word := range subjects.words() {
 		for _, form := range subjects.forms() {
-			_, shapes[searchSplitMeaning] = meaningStatementFor(form.project, subjects.Filled, false)
+			_, shapes[searchSplitMeaning] = meaningStatementFor(searchKinds(0).statements(), form.project, subjects.Filled, false)
 			keyword := searchQueryArguments(searchParameters{text: word.lexeme, project: form.project, limit: searchDefaultLimit})
 			arguments := map[string][]any{
 				searchSplitKeyword: keyword,
