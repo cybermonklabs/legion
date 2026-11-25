@@ -44,11 +44,12 @@ test("the project board's columns stay inside the screen @phone @phone-only", as
   }
 });
 
-// It is no stubbed row: the Agents page folds a session unseen for ten minutes under `Inactive`
-// (`partitionAgents`, `web/src/features/agents/AgentsPage.tsx`), read from `Date.now()` against
-// the `last_seen` the registry reported. A recording freezes that timestamp, so this session
-// would be folded away in every replay taken more than ten minutes after the recording and the
-// heading below would not be on the page at all.
+// It is no stubbed row: the Agents page puts a session in its group from `Date.now()` against
+// the `last_seen` the registry reported (`agentGroup`, `web/src/features/agents/agent-groups.ts`),
+// and a session unseen for ten minutes (`QUIET_AFTER_MS`) is `quiet`. A recording freezes that
+// timestamp, so every replay taken more than ten minutes after the recording would read this
+// session as silent for ten minutes, where the fake Envoy stamps a session seeded with no
+// `last_seen` with the time of each read (`e2e/fake-envoy.ts`).
 test("an untitled session reads the same on the Agents page, the ask card, its followers, and the Conversation", async ({
   browser,
 }) => {

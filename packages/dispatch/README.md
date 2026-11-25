@@ -446,12 +446,15 @@ chooses each, so two instances never collide; set, the port is used as given, an
 fails with `address already in use`. psql runs without `PGHOSTADDR` (`e2e/psql.ts`), and a Ctrl-C
 ends a psql in flight too.
 
-A spec runs against the instance with the printed command, which sets
-`DISPATCH_E2E_REUSE_SERVERS=1`, the five ports and the same `DATABASE_URL`; the run empties the
-database before its first row and the fakes before every row, so restart the command to reseed
-it. `bun run build:web` while it runs refreshes the
-SPA, which the server reads from `web/dist` on each request. `docker rm -f -v dispatch-pg` removes
-the container, its anonymous data volume and every database in it.
+A spec runs against the instance with the printed command, from this package, which sets
+`DISPATCH_E2E_REUSE_SERVERS=1`, the harness's ports and the same `DATABASE_URL`; the run empties
+the database before its first row and the fakes before every row, so restart the command to
+reseed it. The command starts Playwright itself, so on a fresh checkout run
+`bun run build:contracts` here once before it: Playwright reads `@legion/contracts` from its
+built `dist/`, which `bun install` does not make (the end-to-end section above says why).
+`bun run build:web` while it runs refreshes the SPA, which the server reads from `web/dist` on
+each request. `docker rm -f -v dispatch-pg` removes the container, its anonymous data volume and
+every database in it.
 
 ## Acceptance drivers
 
