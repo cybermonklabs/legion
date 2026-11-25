@@ -494,7 +494,7 @@ func TestOwnersNewestPlanTakesASubOwnersVersion(t *testing.T) {
 	inTx(t, st, func(tx pgx.Tx) {
 		got, err := NewStore().OwnersNewestPlan(context.Background(), tx, issue)
 		must(t, err)
-		if got == nil || got.Version != owners {
+		if got == nil || !reflect.DeepEqual(got.Version, owners) {
 			t.Fatalf("the newest plan an owner of %s gave = %+v, want generation 1's, in force at version 3: %+v", issue.Key, got, owners)
 		}
 	})

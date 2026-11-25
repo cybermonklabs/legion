@@ -1237,7 +1237,7 @@ test("the state golden carries a done issue's open production check", () => {
   expect(LegionStateResponse.safeParse(state).success).toBeFalse();
 });
 
-// Contract 237: an issue whose tasks merged one after another holds an open production check of
+// Contract 267: an issue whose tasks merged one after another holds an open production check of
 // each merge, served oldest first under `checks`, with the newest also under `check`. The state
 // golden's LEGION-207 holds its one open check under both. A served issue with two checks parses
 // and keeps each check's own `openedAt`, and a check under `checks` is held to the same schema as
@@ -2887,7 +2887,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // 221 reads them (`belowDeploymentRoles`), the stranded claims' token's (contract 222), which
   // serves each claim nothing will wake without its `token` (`withoutStrandedTokens`), the issues'
   // tasks' (contract 224), which serves each issue without its `tasks` (`withoutTasks`), and the
-  // issues' checks' (contract 237), which serves each issue without its `checks` (`withoutChecks`).
+  // issues' checks' (contract 267), which serves each issue without its `checks` (`withoutChecks`).
   // One value strip stands above 199 as well: `caches`, the source of the repository-cache-room
   // row, arrived at contract 213, so that row is served here without its `source`, every other
   // field of it and every other row as the state golden holds them. So the narrowing changes this

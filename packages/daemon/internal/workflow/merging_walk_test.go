@@ -40,14 +40,17 @@ func markMerges(t *testing.T, pool *pgxpool.Pool, key, task string) {
 	}
 }
 
-// walksNow is the walk of each task of key's run as the engine reads it now (Engine.walks), by id.
+// walksNow is the walk of each task of key's run as the engine reads it now (walksOf), by id.
 func walksNow(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) map[string]Walk {
 	t.Helper()
 	var walks []Walk
 	onStored(t, pool, engine, key, func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-		var err error
-		walks, err = engine.walks(ctx, tx, issue)
-		return err
+		stored, err := engine.store.Plan(ctx, tx, issue.Key, issue.Generation)
+		if err != nil {
+			return err
+		}
+		walks = walksOf(issue.Key, stored)
+		return nil
 	})
 	byTask := make(map[string]Walk, len(walks))
 	for _, w := range walks {

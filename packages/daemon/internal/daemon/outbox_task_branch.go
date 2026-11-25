@@ -147,7 +147,7 @@ func (r *outbox) taskBranch(ctx context.Context, row record.OutboxRow, payload r
 // tries again on its backoff, and the merge waits for it.
 func (r *outbox) mergeBase(ctx context.Context, row record.OutboxRow, issue record.Issue, task record.PlanTask, branch string, generation uint64) error {
 	var pr *record.PullRequest
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		pr, err = r.records.PullRequestOfTask(ctx, tx, issue.Key, task.Task)
 		return err

@@ -366,7 +366,7 @@ func TestTheBoundRowOfTheFirstOfTwoChecksStartsItsLastLook(t *testing.T) {
 	}
 	var checks []record.ProductionCheck
 	var starts []record.SuperviseRequest
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		if checks, err = records.ProductionChecksOf(ctx, tx, root.Key); err != nil {
 			return err

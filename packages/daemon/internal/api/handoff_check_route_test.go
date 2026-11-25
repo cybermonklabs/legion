@@ -375,9 +375,9 @@ func TestAReportOfTheFirstOfTwoOpenChecksClosesTheFirst(t *testing.T) {
 		Clock: func() time.Time { return checkOpenedAt.Add(2 * time.Hour) }})
 	seedIssueAt(t, h, "LEGION-208", phase.Done)
 	first, second := checkOpenedAt, checkOpenedAt.Add(time.Hour)
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for i, opened := range []time.Time{first, second} {
-			if err := record.NewStore().PutProductionCheck(context.Background(), tx, record.ProductionCheck{
+			if err := record.NewStore().PutProductionCheck(ctx, tx, record.ProductionCheck{
 				Issue: "LEGION-208", Project: testProject, Tree: "LEGION-208", Repo: "acme/widgets", Number: 42 + i, Role: claim.RoleImplementer,
 				OpenedAt: opened, BoundAt: opened.Add(336 * time.Hour), Looks: 1, LookOpen: true, LookWakeAt: &opened,
 			}); err != nil {
@@ -393,9 +393,9 @@ func TestAReportOfTheFirstOfTwoOpenChecksClosesTheFirst(t *testing.T) {
 
 	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "driven in production", Verdict: "pass"}))
 	var checks []record.ProductionCheck
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		checks, err = record.NewStore().ProductionChecksOf(context.Background(), tx, "LEGION-208")
+		checks, err = record.NewStore().ProductionChecksOf(ctx, tx, "LEGION-208")
 		return err
 	}); err != nil {
 		t.Fatalf("read the checks of LEGION-208: %v", err)

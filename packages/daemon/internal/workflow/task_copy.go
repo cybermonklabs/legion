@@ -60,6 +60,7 @@ func (e *Engine) startTaskCopy(ctx context.Context, tx pgx.Tx, s *TaskScope) (bo
 	for i := range stored.Tasks {
 		if stored.Tasks[i].Task == task {
 			stored.Tasks[i].Base = base
+			break
 		}
 	}
 	s.plan = stored

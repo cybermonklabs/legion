@@ -55,9 +55,8 @@ type completionPosition struct {
 
 // handoffPosition reads key's position (completionPosition) for the completing role and the claim
 // that completes, whose phases row names the entry it was last raised to, and the check opened at
-// checkOpenedAt, the check of the caller's live look (the issue's newest for the zero time: a
-// caller working no look, or a look started before start rows named their check); an issue the
-// workflow does not record is a position with no issue and no error.
+// checkOpenedAt, the check of the caller's live look (the issue's newest for the zero time).
+// An issue the workflow does not record is a position with no issue and no error.
 func (s *server) handoffPosition(ctx context.Context, key string, role claim.Role, completing claim.Token, checkOpenedAt time.Time) (completionPosition, error) {
 	var position completionPosition
 	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead}, func(ctx context.Context, tx pgx.Tx) error {

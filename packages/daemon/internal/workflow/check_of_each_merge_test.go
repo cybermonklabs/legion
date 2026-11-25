@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // twoChecks is a closed root LEGION-208 holding two open production checks, of two merges, each at
@@ -151,10 +152,11 @@ func TestEachRowOfACheckActsOnTheCheckItNames(t *testing.T) {
 // (openCheck), at the rig's clock.
 func openMerge(t *testing.T, rig checkRig, issue record.Issue, number int, sha string) {
 	t.Helper()
-	seedRecord(t, rig.pool, func(tx pgx.Tx) error {
-		ctx, _ := intake.WithCommitHooks(context.Background())
+	if err := store.Transact(t.Context(), rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return rig.engine.openCheck(ctx, tx, issue, record.PullRequest{Issue: issue.Key, Repo: "sjawhar/legion", Number: number, MergeSHA: sha}, false)
-	})
+	}); err != nil {
+		t.Fatalf("open the production check of merge #%d: %v", number, err)
+	}
 }
 
 // checksOfIssue is every check of issue, newest opened first, as recorded.

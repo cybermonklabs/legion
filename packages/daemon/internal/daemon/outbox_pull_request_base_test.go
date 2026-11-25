@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // pullBaseGitHub is GitHub's pull request #4 of acme/widgets as the row of a merge's start reads
@@ -79,7 +80,7 @@ func TestTheBranchRowSetsTheBaseOnlyWhereItDiffers(t *testing.T) {
 			handler := &outboxFactHandler{}
 			rig.runner.handlers = []intake.Handler{handler}
 			ctx := context.Background()
-			if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 				if err := rig.records.MoveTask(ctx, tx, taskBranchIssue.Key, taskBranchIssue.Generation, "a", record.TaskPlace{Kind: record.PlaceMerge}, record.TaskRunning); err != nil {
 					return err
 				}

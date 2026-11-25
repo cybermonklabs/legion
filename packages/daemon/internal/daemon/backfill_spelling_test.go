@@ -219,7 +219,7 @@ func seedTaskPullRequests(t *testing.T, pool *store.Pool, records *record.Postgr
 		steps = append(steps, record.PlanStep{Issue: "LEGION-1", Generation: 1, Task: task.Task, Position: 1, Role: "implementer",
 			Type: "implementation", Agent: claim.Agent("implementer-" + task.Task)})
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutPlan(ctx, tx, v, rows, steps); err != nil {
 			return err
 		}

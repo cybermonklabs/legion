@@ -3491,12 +3491,12 @@ package api
 // request that carries this entry reads `const DaemonAPIVersion` at each open pull request's head
 // when it opens, and takes its number then.)
 //
-// 237: an issue whose plan merges the work of several tasks merges more than once in one run, and
+// 267: an issue whose plan merges the work of several tasks merges more than once in one run, and
 // each merge opens a production check of its own, so an issue can hold several open checks at
 // once. Each issue of `GET /legion/v1/state` and of `GET /legion/v1/issues/{key}/record` gains
 // `checks`: each open check (`api.CheckView`), oldest first, absent while none is open. `check`
 // stays, the newest open check, so a reader of one check reads what it read before. A plugin below
-// 237 is served each issue with no `checks` and with its `check` (shaping.go's band,
+// 267 is served each issue with no `checks` and with its `check` (shaping.go's band,
 // `withoutChecks`); a check's own fields and values are those `check` carries, so no value strip
 // is owed.
 // The same change adds the notice kind `pull-request-close-refused`, to the issue's architect, for
@@ -3505,15 +3505,8 @@ package api
 // earlier release decodes such a row, as the `task-join-failed` entry above says of its own kind;
 // the way back of this change's migration (`store/migrations/20261123221142_task_base.up.sql`)
 // deletes those rows before a rollback. No shape of `GET /legion/v1/state` moves with it.
-// (This entry took 218 at first, above the 211 of the change it stood on: a reading of
-// `const DaemonAPIVersion` at the head of each of the 414 open pull requests and of each branch
-// that stood on 211 with no pull request yet, made between 2026-11-21T18:50:24Z and 18:53:02Z,
-// read all 476 and found nothing at 218. Its merge onto the change of 224 moved it to 237, the
-// lowest number above 224 and above every number another head declares: a reading of
-// `const DaemonAPIVersion` at the head of each of the 502 open pull requests, made between
-// 2026-11-23T15:30:32Z and 15:31:41Z, read all 502 and found 235 the highest number declared, by
-// #5204, and a reading of each branch of this work with no new pull request head yet, made at
-// 2026-11-23T15:33:08Z, found 236 the highest. Read the base's own number and every open pull
-// request again at the next merge rather than from this line. From this entry the last number of
-// answers.go's SupportedContracts is `api.checksContract`.)
-const DaemonAPIVersion = 237
+// The entry's allocated number is 267, above main's released contract 256. Earlier released
+// records keep their shapes without `checks`; checksContract and SupportedContracts name this
+// entry's arrival, not the daemon's next version. Read the base's number and every open pull
+// request's declared number again before pushing a renumber.
+const DaemonAPIVersion = 267

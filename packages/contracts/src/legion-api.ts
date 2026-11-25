@@ -879,8 +879,8 @@ const legionIssue = z.object({
   waitingOn: legionWaitingOn.optional(),
   check: legionCheckView.optional(),
   /** Each open production check of the issue, oldest first, the last of them the one `check` shows
-   * (contract 237): an issue whose tasks merged one after another holds a check of each merge.
-   * Absent while none is open, and a daemon below contract 237 serves none at all
+   * (contract 267): an issue whose tasks merged one after another holds a check of each merge.
+   * Absent while none is open, and a daemon below contract 267 serves none at all
    * (`api.withoutChecks`), which is why a reader takes it as optional. No plugin code reads a field
    * of it (LEGION_ANSWER_READS), so each field is optional, as `check`'s unread ones are. */
   checks: z.array(legionCheckView.partial()).optional(),

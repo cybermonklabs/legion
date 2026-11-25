@@ -8,9 +8,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // Two checks opened in one transaction at one reading of the clock both stand: a leave at done
@@ -33,8 +33,7 @@ func TestTwoChecksOpenedInOneTransactionBothStand(t *testing.T) {
 	if len(first) != 1 || !first[0].OpenedAt.Equal(checkOpened) {
 		t.Fatalf("premise: the checks of %s after #1's merge = %+v, want #1's alone, opened at the rig's clock %s", issue.Key, first, checkOpened)
 	}
-	seedRecord(t, rig.pool, func(tx pgx.Tx) error {
-		ctx, _ := intake.WithCommitHooks(context.Background())
+	if err := store.Transact(t.Context(), rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, number := range []int{2, 3} {
 			pr := record.PullRequest{Issue: issue.Key, Repo: "sjawhar/legion", Number: number, MergeSHA: fmt.Sprintf("merge-%d", number)}
 			if err := rig.engine.openCheck(ctx, tx, issue, pr, false); err != nil {
@@ -42,7 +41,9 @@ func TestTwoChecksOpenedInOneTransactionBothStand(t *testing.T) {
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		t.Fatalf("open both production checks in one transaction: %v", err)
+	}
 	checks := checksOfIssue(t, rig, issue.Key)
 	numbers := map[int]time.Time{}
 	for _, check := range checks {

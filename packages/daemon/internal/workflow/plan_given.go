@@ -43,7 +43,10 @@ func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven
 	if err == nil && given.recorded {
 		err = e.afterVersion(ctx, tx, fact, given, written)
 	}
-	if err == nil && given.recorded {
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if given.recorded {
 		err = e.leaveWhereDone(ctx, tx, fact.Issue)
 	}
 	return intake.Result{Added: given.version.Added}, err

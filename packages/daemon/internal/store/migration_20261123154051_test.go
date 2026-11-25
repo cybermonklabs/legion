@@ -52,7 +52,7 @@ func TestTheCheckOfTheReleaseBeforeReadsWithGenerationZeroAndNoTask(t *testing.T
 		t.Fatalf("migrate through the check of each merge: %v", err)
 	}
 	var check *record.ProductionCheck
-	if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		check, err = record.NewStore().ProductionCheckOf(ctx, tx, "LEGION-208", time.Time{})
 		return err
@@ -82,7 +82,7 @@ func TestTheWayBackOfTheCheckOfEachMergeRestoresTheKeyByIssue(t *testing.T) {
 	opened := time.Date(2026, 11, 17, 8, 0, 0, 0, time.UTC)
 	closed := opened.Add(30 * time.Minute)
 	twice, once := "LEGION-401", "LEGION-402"
-	if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		for _, key := range []string{twice, once} {
 			if err := records.PutIssue(ctx, tx, record.Issue{Key: key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: key,
