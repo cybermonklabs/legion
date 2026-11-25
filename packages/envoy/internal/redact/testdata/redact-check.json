@@ -7247,8 +7247,8 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
       "test": "TestANextPageGitHubNamesPrintsNoTokenItEchoes/refused",
-      "production": "githubrest Client.call and GetPages: GitHub's answer to a later page names the page by its number after the read's name (Answer.Path, ShownPath of the call's shown name), never the path GitHub's Link header wrote",
-      "function": "(github.com/sjawhar/legion/daemon/internal/githubrest.Client).call",
+      "production": "githubrest Client.exchange (call) and GetPages: GitHub's answer to a later page names the page by its number after the read's name (Answer.Path, ShownPath of the call's shown name), never the path GitHub's Link header wrote",
+      "function": "(github.com/sjawhar/legion/daemon/internal/githubrest.Client).exchange",
       "capture": "githubrest.answer-words/next-page-refused",
       "mutation": {
         "file": "packages/daemon/internal/githubrest/githubrest.go",
@@ -7261,8 +7261,8 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
       "test": "TestANextPageGitHubNamesPrintsNoTokenItEchoes/unanswered",
-      "production": "githubrest Client.call and GetPages: a later page's read that got no answer names the page by its number after the read's name (oauth2call.Unanswered), never the URL GitHub's Link header wrote",
-      "function": "(github.com/sjawhar/legion/daemon/internal/githubrest.Client).call",
+      "production": "githubrest Client.exchange (call) and GetPages: a later page's read that got no answer names the page by its number after the read's name (oauth2call.Unanswered), never the URL GitHub's Link header wrote",
+      "function": "(github.com/sjawhar/legion/daemon/internal/githubrest.Client).exchange",
       "capture": "githubrest.answer-words/next-page-unanswered",
       "mutation": {
         "file": "packages/daemon/internal/githubrest/githubrest.go",
@@ -10593,8 +10593,8 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
       "test": "TestARedirectIsGitHubsAnswerAndNoLocationReachesTheError/unparsed",
-      "production": "githubrest Client.call: a redirect whose Location does not parse, which net/http's error quotes whatever the client's redirect policy, names the read shown and the failure by its class (oauth2call.Unanswered)",
-      "function": "(github.com/sjawhar/legion/daemon/internal/githubrest.Client).call",
+      "production": "githubrest Client.exchange (call): a redirect whose Location does not parse, which net/http's error quotes whatever the client's redirect policy, names the read shown and the failure by its class (oauth2call.Unanswered)",
+      "function": "(github.com/sjawhar/legion/daemon/internal/githubrest.Client).exchange",
       "capture": "githubrest.redirect/unparsed",
       "mutation": {
         "file": "packages/daemon/internal/githubrest/githubrest.go",
