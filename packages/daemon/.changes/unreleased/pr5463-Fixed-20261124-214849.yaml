@@ -3,8 +3,9 @@ body: |-
     A production check's look report names its check with checkOpenedAt; without that field,
     a call completes a step. The daemon reads no state to choose between the two. A served
     look survives phase work until the next look. A late step completion needs its run's
-    started task and a fresh handoff. Contract 283 pairs the daemon with both plugins. The
-    Kubernetes guide gives the kept-look reset for rollback.
+    started task and a fresh handoff. The daemon API contract entry 20261125181543
+    (look-names-its-check) pairs the daemon with both plugins. The Kubernetes guide gives
+    the kept-look reset for rollback.
 time: 2026-11-24T21:48:49Z
 custom:
     Issue: pr5463
