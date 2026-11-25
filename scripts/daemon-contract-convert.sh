@@ -78,11 +78,14 @@
 #                 run this with --base naming it. A branch stacked on a base branch that main then
 #                 took as a squash, which GitHub retargets to main, still carries that branch's
 #                 entries, and main holds them as entry files: an entry whose text opens an entry
-#                 file of the ref, or whose constant an entry file of the ref declares (a text edited
-#                 after the conversion keeps that name), is refused, naming that file; run this with
-#                 --base naming the base branch's last commit before the squash, then merge main. An
-#                 entry whose text changed after its conversion and that declares no constant, or
-#                 whose constant was renamed too, is not caught. A branch with more than one merge
+#                 file of the ref is refused, naming that file; run this with --base naming the base
+#                 branch's last commit before the squash, then merge main. An entry whose constant
+#                 an entry file of the ref declares (a text edited after the conversion keeps that
+#                 name) is refused too, since two declarations of it do not compile, naming both
+#                 causes: either it is such an entry, or another change took that name, and then
+#                 the author renames the entry's constant in the branch. An entry whose text changed
+#                 after its conversion and that declares no constant, or whose constant was renamed
+#                 too, is not caught. A branch with more than one merge
 #                 base with a ref that holds the cutover, which merged a commit of the ref's history
 #                 apart from the ref, is refused, naming them: which entries are the branch's own
 #                 would hang on the one git picks. Merge into the branch the ref as it was before it
@@ -881,11 +884,24 @@ def analyze(mode, head, main, main_name, state_path, requests_path="", requests_
     for number, (path, _) in sorted(held.items()):
         print(f"onmain {number} {path}")
     if held and mode == "convert":
-        die("; ".join(f"entry {n} of this branch declares {const}, which {path} of {main_name} declares too" if const
-                      else f"entry {n} of this branch is {path} of {main_name}" for n, (path, const) in sorted(held.items())) +
-            f": the branch carries the entries of a base branch that {main_name} took as a squash after the "
-            "cutover, and would convert them again under other ids. Run this with --base naming the base "
-            f"branch's last commit before the squash, then merge {main_name}")
+        squash = f"with --base naming the base branch's last commit before the squash, then merge {main_name}"
+        by_text = [f"entry {n} of this branch is {path} of {main_name}"
+                   for n, (path, const) in sorted(held.items()) if not const]
+        # A constant the ref declares is either a base branch's entry taken as a squash, or another
+        # change's that took the same name; two declarations of it do not compile either way.
+        by_const = [f"entry {n} of this branch declares {const}, which {path} of {main_name} declares too"
+                    for n, (path, const) in sorted(held.items()) if const]
+        refusals = []
+        if by_text:
+            refusals.append("; ".join(by_text) + f": the branch carries the entries of a base branch that "
+                            f"{main_name} took as a squash after the cutover, and would convert them again under "
+                            f"other ids. Run this {squash}")
+        if by_const:
+            refusals.append("; ".join(by_const) + ": two declarations of one constant in package api do not "
+                            f"compile. Either {main_name} took that entry from a base branch as a squash after the "
+                            f"cutover: run this {squash}. Or another change took that name: rename the entry's "
+                            "constant in the branch, its declaration and each line that names it, then run this again")
+        die(". ".join(refusals))
     entries = [e for e in entries if e["number"] not in stale and e["number"] not in held]
     if not entries:
         print(f"{head[:10]} adds no numbered entry of its own to {VERSION_GO}: nothing to convert")
