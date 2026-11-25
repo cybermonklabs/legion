@@ -2167,9 +2167,36 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     written: "login.subject",
   },
   {
+    file: `${FEATURES}/delivery/JudgedFigure.tsx`,
+    holds:
+      "a figure's digits as the page writes them, with the word for its verdict (`judgeFigure`)",
+    written: "text",
+  },
+  {
+    file: `${FEATURES}/delivery/MeasuresPanel.tsx`,
+    holds: "a day's figure as the page writes it, with the word for its verdict (`judgeFigure`)",
+    written: "text",
+  },
+  {
     file: `${FEATURES}/delivery/SourceFreshness.tsx`,
     holds: "the page's own line on how fresh a source is",
     written: "row.text",
+  },
+  {
+    file: `${FEATURES}/delivery/Sparkbars.tsx`,
+    holds: "a day's figure as the page writes it, or the page's own words for a day with no runs",
+    written: "text",
+  },
+  {
+    file: `${FEATURES}/delivery/SpreadBars.tsx`,
+    holds: "a day's median as the page writes it, with the word for its verdict (`judgeFigure`)",
+    written: "median.text",
+  },
+  {
+    file: `${FEATURES}/delivery/SpreadBars.tsx`,
+    holds:
+      "a day's 90th percentile as the page writes it, with the word for its verdict (`judgeFigure`)",
+    written: "p90.text",
   },
   {
     file: `${FEATURES}/delivery/lib/freshness.ts`,
