@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  The Dispatch schemas describe `PUT /api/v1/issues/{key}/steps/{id}/experiment` and the two
+  fields `experiment` and `variant`, null where there is none, on each record of the read of an
+  issue's steps and on each finished issue of the read of a project's plans. The descriptions of
+  `dispatch steps` and `dispatch plans` name the text each prints for the variant.
+time: 2026-11-22T15:08:57Z
+custom:
+    Issue: pr5014

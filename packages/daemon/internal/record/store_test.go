@@ -2379,7 +2379,7 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 		"issue_plans":       {"issue", "generation", "version", "source", "artifact_id", "given_by", "given_at"},
 		"plan_tasks":        {"issue", "generation", "task", "plan_version", "block_text", "needs", "part_of", "owner_role", "merges", "steps_by_default", "state", "stopped_reason", "running_kind", "position", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told"},
 		"plan_steps":        {"issue", "generation", "task", "position", "role", "type", "agent_key"},
-		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "last", "closed_at", "outcome", "relook_seq", "generation"},
+		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "last", "closed_at", "outcome", "failed_looks", "relook_seq", "generation"},
 		"defects": {"id", "issue", "generation", "kind", "text", "role", "head", "check_block", "result_id", "reported_at", "carried_by", "merged_at",
 			"withdrawn_at", "withdraw_reason"},
 		"close_reads":  {"issue", "generation", "read_at", "failure", "answer", "recorded_at"},
