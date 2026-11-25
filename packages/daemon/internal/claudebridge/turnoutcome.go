@@ -67,11 +67,10 @@ type turnReports struct {
 // authenticate, and so is a LEGION_DAEMON_URL that does not parse or names no host, said once in
 // the bridge's own words: url.Parse's error quotes the URL whole, its user information and query
 // included. The report's URL is the daemon's with the route joined onto its path (urljoin.Join),
-// its query kept and its fragment, which no request sends, dropped: the route appended to the
-// URL's text would sit inside a query or a fragment, and the report would go to the wrong path. Its
-// client follows no redirect (redirects.Refused): every report carries the boot token in its body,
-// which a followed 307 or 308 would send to the host the Location names, and the daemon's
-// turn-outcome route answers none. A 3xx is the daemon's answer, refused by its status (post).
+// its query kept and its fragment, which no request sends, dropped. Its client follows no redirect
+// (redirects.Refused): every report carries the boot token in its body, which a followed 307 or
+// 308 would send to the host the Location names, and the daemon's turn-outcome route answers none.
+// A 3xx is the daemon's answer, refused by its status (post).
 func startTurnReports(cfg Config, logger *log.Logger) *turnReports {
 	if cfg.DaemonURL == "" || cfg.BootTokenFile == "" || cfg.Generation == 0 {
 		logger.Printf("reporting no turn outcomes: this pane names %s", missingReportInputs(cfg))

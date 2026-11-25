@@ -771,14 +771,13 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 // answer sends one request to Dispatch with the daemon's bearer, body as its JSON where body is not
 // nil, bounded by the client's timeout, and answers Dispatch's 2xx answer, read whole
 // (oauth2call.ReadAnswer). The request goes to path joined onto the base URL's path
-// (urljoin.Join), the base URL's query kept ahead of path's own, where path appended to the URL's
-// text would sit inside its query or its fragment and Dispatch would be asked another path. A base
-// URL that does not parse or names no host is refused in fixed words: url.Parse's error quotes the
-// URL whole, user information and query included. A request that could not be made, or that got no
-// answer, names its failure through oauth2call.Unanswered, which still unwraps to it, so
-// TransportRefusal reads the failure's type. One that got no answer, or whose answer could not be
-// read, is its transport's failure (transportFailure), and an answer that is not a 2xx is
-// Dispatch's refusal (dispatchError), its status named by its code and the standard phrase.
+// (urljoin.Join), the base URL's query kept ahead of path's own. A base URL that does not parse or
+// names no host is refused in fixed words: url.Parse's error quotes the URL whole, user information
+// and query included. A request that could not be made, or that got no answer, names its failure
+// through oauth2call.Unanswered, which still unwraps to it, so TransportRefusal reads the failure's
+// type. One that got no answer, or whose answer could not be read, is its transport's failure
+// (transportFailure), and an answer that is not a 2xx is Dispatch's refusal (dispatchError), its
+// status named by its code and the standard phrase.
 func (c *HTTPClient) answer(ctx context.Context, method, path string, body any) (oauth2call.Answer, error) {
 	bounded, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()

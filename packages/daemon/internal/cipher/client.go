@@ -924,11 +924,10 @@ const answerBytes = 1 << 16
 // do sends one broker call and reads its answer through oauth2call.ReadAnswer: its first limit
 // bytes, and whether the bound cut it, which a caller that must tell a whole answer from one cut
 // short reads (Carried), and so does refusal, which quotes a body that is not the contract's shape.
-// The call goes to path joined onto URL's path (urljoin.Join), URL's query kept, where path
-// appended to URL's text would sit inside its query or its fragment and the broker would be asked
-// another path; a URL that does not parse or names no host is refused in fixed words, since
-// url.Parse's error quotes it whole. mutate, where not nil, sets what the call carries beyond its
-// body (a bearer, a proof) on the request before it is sent, and its error ends the call unsent.
+// The call goes to path joined onto URL's path (urljoin.Join), URL's query kept; a URL that does
+// not parse or names no host is refused in fixed words, since url.Parse's error quotes it whole.
+// mutate, where not nil, sets what the call carries beyond its body (a bearer, a proof) on the
+// request before it is sent, and its error ends the call unsent.
 // The answer comes back whole, which its caller decodes as its contract's shape or not
 // (Answer.Decode): the decode's error names the member that did not decode and quotes no value,
 // since the broker's answer, or a stand-in's, can echo the call's token into a field the decoder

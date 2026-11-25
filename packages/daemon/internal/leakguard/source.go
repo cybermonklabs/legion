@@ -166,9 +166,8 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 	//
 	// The tarball's path is joined onto the repository's REST base (urljoin.Join), so an API
 	// address configured with a path and a query asks that path with the tarball's under it and
-	// keeps the query: appended to the base's text, the tarball's path would sit inside the
-	// query's last value and the read would ask the base's own path. A base that cannot be read
-	// as an absolute URL with a host is refused in the join's fixed words, which print no URL.
+	// keeps the query. A base that cannot be read as an absolute URL with a host is refused in the
+	// join's fixed words, which print no URL.
 	target, err := urljoin.Join(githubrest.RepositoryAPI(s.API, s.Repository), "/tarball/"+tag)
 	if err != nil {
 		return Served{}, errors.New(Cause(fmt.Sprintf("the daemon could not ask GitHub for %s at %s", s.Repository, tag), err))

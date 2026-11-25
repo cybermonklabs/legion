@@ -702,9 +702,7 @@ func cacheNotReady(ctx context.Context, request FetchRequest, timeout time.Durat
 // askedCache is the URL askCache asks for path as every line about that ask names it: the joined
 // URL as Unanswered names the URL a request asked (oauth2call.AskedURL: its scheme, host and path,
 // never its user information, query or fragment), so a line names the route asked and no
-// credential the cache URL carries. The cache URL's text with the route written after it named
-// neither: where the URL has a query, the route sits inside it, and the URL rule, which removes a
-// query, removes the route with it. A cache URL the join refuses is never asked (askCache).
+// credential the cache URL carries. A cache URL the join refuses is never asked (askCache).
 func askedCache(request FetchRequest, path string) string {
 	joined, err := urljoin.Join(request.CacheURL, path)
 	if err != nil {
@@ -714,17 +712,16 @@ func askedCache(request FetchRequest, path string) string {
 }
 
 // askCache is GET <cache><path>: the cache's URL with path joined onto its path (urljoin.Join), its
-// query kept and its fragment, which no request sends, dropped, where path appended to the URL's
-// text would sit inside a query or a fragment and the cache would be asked another path. It
-// carries the cache's bearer token when withToken is set. It answers (nil, the transport's failure)
-// when the cache could not be reached, which is worth another ask, and (nil, a refusal in its own
-// words) for a cache URL that does not parse or names no host, or whose joined URL does not parse
-// again (url.URL.String can write text url.Parse refuses, such as an IPv6 zone escape): url.Parse's
-// error, which http.NewRequest's carries, quotes the URL whole, user information and query
-// included. An answer that refuses the token (401) to a request that carried it, a redirect (3xx),
-// or one whose CacheRepositoryHeader is not the request's repository, comes back with the refusal
-// as its error: the caller closes the body and takes nothing it carries. Its lines name the URL it
-// asked as askedCache does.
+// query kept and its fragment, which no request sends, dropped. It carries the cache's bearer token
+// when withToken is set. It answers (nil, the transport's failure) when the cache could not be
+// reached, which is worth another ask, and (nil, a refusal in its own words) for a cache URL that
+// does not parse or names no host, or whose joined URL does not parse again (url.URL.String can
+// write text url.Parse refuses, such as an IPv6 zone escape): url.Parse's error, which
+// http.NewRequest's carries, quotes the URL whole, user information and query included. An answer
+// that refuses the token (401) to a request that carried it, a redirect (3xx), or one whose
+// CacheRepositoryHeader is not the request's repository, comes back with the refusal as its error:
+// the caller closes the body and takes nothing it carries. Its lines name the URL it asked as
+// askedCache does.
 func askCache(ctx context.Context, request FetchRequest, path string, withToken bool) (*http.Response, error) {
 	joined, err := urljoin.Join(request.CacheURL, path)
 	if err != nil {

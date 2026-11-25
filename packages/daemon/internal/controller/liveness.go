@@ -62,13 +62,11 @@ type Prober struct {
 }
 
 // NewProber is a Prober over opts. Its lookup goes to the controller token's role route joined
-// onto the Envoy URL's path (urljoin.Join), the URL's query kept, where the route appended to the
-// URL's text would sit inside its query or its fragment and the listener would be asked another
-// path; an Envoy URL that does not parse or names no host leaves it no lookup, and each probe then
-// answers Unknown in fixed words, since url.Parse's error quotes the URL whole. The lookup follows
-// no redirect (redirects.Refused): it carries the listener's bearer, which a followed redirect
-// would hand the host the Location names, and a 3xx is the listener's refusal, which the probe
-// reads as Unknown.
+// onto the Envoy URL's path (urljoin.Join), the URL's query kept; an Envoy URL that does not parse
+// or names no host leaves it no lookup, and each probe then answers Unknown in fixed words, since
+// url.Parse's error quotes the URL whole. The lookup follows no redirect (redirects.Refused): it
+// carries the listener's bearer, which a followed redirect would hand the host the Location names,
+// and a 3xx is the listener's refusal, which the probe reads as Unknown.
 func NewProber(opts ProberOptions) *Prober {
 	p := &Prober{
 		token:  opts.EnvoyToken,

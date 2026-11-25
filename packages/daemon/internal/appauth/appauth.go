@@ -128,9 +128,7 @@ func (m *Manager) transient(request *http.Request, response *http.Response, read
 // newRequest is one request of the Manager to path, a path of GitHub's API with its own query
 // where it has one, under the base URL the daemon is configured with (Options.BaseURL): path is
 // joined onto the base's own path, and the base's query is kept ahead of path's own
-// (urljoin.Join). path appended to the base's text would sit inside the base's query where it
-// has one, so the request would go to the base's own path with the call's path written into that
-// query value, and GitHub would be asked something else entirely.
+// (urljoin.Join).
 //
 // A base that cannot be read as an absolute URL with a host is the join's one failure here, and
 // it is refused naming the setting alone: neither the base nor the path prints, since url.Parse's
