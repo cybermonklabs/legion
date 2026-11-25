@@ -49,6 +49,27 @@ type StoreRig struct {
 	OffKey bool
 	// Unfilled is whether Put can hold an Unfilled secret; false: no listing may be Unfilled.
 	Unfilled bool
+	// ReadLag is how long the store documents its Read may answer another writer's earlier state
+	// of a secret (secretstore.Store, beside ListLag): zero for a store whose Read asks its service
+	// each time. The cases that read a secret another writer changed or removed wait it out with
+	// Pass before they wait for the read to show the change.
+	ReadLag time.Duration
+	// Pass lets d go by on the store's clock: a fake's clock moves, and a live rig sleeps. A rig
+	// with a ReadLag must set it.
+	Pass func(t *testing.T, d time.Duration)
+}
+
+// pass waits out r's ReadLag after another writer's change (Pass), so the reads after it settle
+// within settleBound; a rig with no ReadLag waits nothing.
+func pass(t *testing.T, r StoreRig) {
+	t.Helper()
+	if r.ReadLag <= 0 {
+		return
+	}
+	if r.Pass == nil {
+		t.Fatalf("the rig has a ReadLag of %s and no Pass to wait it out", r.ReadLag)
+	}
+	r.Pass(t, r.ReadLag)
 }
 
 // mintPrefix opens a type secret's source in the policy (policy.TypeSource); no store's source may
@@ -238,6 +259,7 @@ var storeCases = []storeCase{
 		r.Put(t, fixture("removed-key", "v"))
 		source := listed(t, r, secretstore.ReadOptions{}, "removed-key")[r.Prefix+"removed-key"].Source
 		r.Remove(t, "removed-key")
+		pass(t, r)
 		settle(t, "Read("+source+") to answer ErrNotFound once it is removed", func() (error, bool) {
 			_, err := r.Store.Read(context.Background(), source)
 			return err, errors.Is(err, secretstore.ErrNotFound)
@@ -249,6 +271,7 @@ var storeCases = []storeCase{
 		id := r.Prefix + "deel-api-key"
 		first := listed(t, r, secretstore.ReadOptions{}, "deel-api-key")[id]
 		r.Put(t, fixture("deel-api-key", "second-value"))
+		pass(t, r)
 		settle(t, "Read("+first.Source+") to answer the new value", func() (int, bool) {
 			value, err := r.Store.Read(ctx, first.Source)
 			return len(value), err == nil && value == "second-value"

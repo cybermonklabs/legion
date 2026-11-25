@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"maps"
+	"os"
+	"os/exec"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -27,17 +30,29 @@ func owned() map[string]string {
 	return map[string]string{"owner": "ada@example.com", "tier": "agent"}
 }
 
+// readTrustMutant names, in the variable of that name, the contract's mutant of the 1Password
+// store: one whose value reads trust their kept items a minute longer than ReadLag documents.
+const readTrustMutant = "ONEPASSWORD_READ_TRUST_MUTANT"
+
 // TestOnePasswordRunsTheStoreContract runs the store contract on the 1Password store over the fake
 // vault: each fixture is an API Credential item another writer made, its value the credential
 // and its tags the cipher section's fields, an archived item for one scheduled for deletion. Every
 // item of the vault is on the vault's own encryption, and no create leaves an item waiting for its
-// value, so the rig holds neither an off-key nor an Unfilled secret.
+// value, so the rig holds neither an off-key nor an Unfilled secret. The store's reads answer the
+// items it keeps for its ReadLag, which the rig's Pass lets go by on the clock the vault and the
+// store share.
 func TestOnePasswordRunsTheStoreContract(t *testing.T) {
 	secretstoretest.StoreContract(t, "onepassword", func(t *testing.T) secretstoretest.StoreRig {
-		fake := &onepasswordtest.Fake{}
+		at := &clock{now: time.Date(2026, 11, 23, 9, 0, 0, 0, time.UTC)}
+		fake := &onepasswordtest.Fake{Now: at.Now}
+		store := onepassword.New(fake, testVault, onepassword.Unlimited, at.Now)
+		if os.Getenv(readTrustMutant) != "" {
+			onepassword.SetReadLag(store, onepassword.ReadLag+time.Minute)
+		}
 		ids := map[string]string{}
 		return secretstoretest.StoreRig{
-			Store: onepassword.New(fake, testVault, onepassword.Unlimited, nil), Prefix: testPrefix,
+			Store: store, Prefix: testPrefix, ReadLag: onepassword.ReadLag,
+			Pass: func(_ *testing.T, d time.Duration) { at.Add(d) },
 			Put: func(_ *testing.T, f secretstoretest.Fixture) {
 				title := testPrefix + f.Slug
 				if f.Outside {
@@ -52,6 +67,22 @@ func TestOnePasswordRunsTheStoreContract(t *testing.T) {
 			Remove: func(_ *testing.T, slug string) { fake.Remove(ids[slug]) },
 		}
 	})
+}
+
+// TestTheContractRefusesAReadTrustLongerThanReadLag: the contract's mutant 1Password store, whose
+// value reads trust their kept items a minute past ReadLag, fails "Read of a source the store no
+// longer holds is ErrNotFound", run in a child whose deadline cuts the case's wait to seconds.
+func TestTheContractRefusesAReadTrustLongerThanReadLag(t *testing.T) {
+	const failing = "TestOnePasswordRunsTheStoreContract/onepassword/Read_of_a_source_the_store_no_longer_holds_is_ErrNotFound"
+	cmd := exec.Command(os.Args[0], "-test.run", "^TestOnePasswordRunsTheStoreContract$", "-test.count=1", "-test.timeout=40s")
+	cmd.Env = append(os.Environ(), readTrustMutant+"=1")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("the contract passed a store whose reads trust their kept items past ReadLag; want it to fail %s\n%s", failing, out)
+	}
+	if !strings.Contains(string(out), "--- FAIL: "+failing) {
+		t.Fatalf("the mutant's run does not fail %s\n%s", failing, out)
+	}
 }
 
 // recordingClient is a Client that records the ids of each Get it passes on.

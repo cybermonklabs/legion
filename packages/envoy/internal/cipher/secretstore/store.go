@@ -109,6 +109,14 @@ type Store interface {
 	// ListLag is how long the store documents its metadata reads may answer a write's previous
 	// state: the policy keeps what a single-name read settled, and re-describes it on every
 	// reload, for that long.
+	//
+	// A store's Read may also answer another writer's earlier state of a secret, its value before
+	// a change or a value after it was removed, for as long as the store documents
+	// (secretstoretest.StoreRig.ReadLag): none for the AWS, GCP and memory stores, whose reads ask
+	// their service, and for the 1Password store, which spends a daily request budget, one policy
+	// reload and a minute (onepassword.ReadLag), since a value read there answers the item it keeps
+	// while that is current. Revocation is bounded by one reload either way: the policy's reload
+	// reads the change and drops or refreshes the grant of a secret whose item changed or went.
 	ListLag() time.Duration
 }
 

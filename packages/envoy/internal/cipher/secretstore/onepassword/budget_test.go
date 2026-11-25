@@ -241,8 +241,9 @@ func TestAHeldListWithNoEarlierResultSpendsFromTheReserve(t *testing.T) {
 }
 
 // TestValueReadsPastTheReserveAreCountedAndLogged (Review focus 5): with the whole budget spent,
-// value reads still call 1Password and answer, the count passes the budget by their requests
-// alone, and the pass is logged once an hour.
+// value reads still call 1Password and answer, each made past ReadLag after the last List so it
+// lists the vault again, the count passes the budget by their requests alone, and the pass is
+// logged once an hour.
 func TestValueReadsPastTheReserveAreCountedAndLogged(t *testing.T) {
 	r := newBudgetRig(t, 300)
 	ctx := context.Background()
@@ -254,7 +255,7 @@ func TestValueReadsPastTheReserveAreCountedAndLogged(t *testing.T) {
 	r.setCount(t, 300)
 	calls := r.fake.Requests()
 	for i := range 3 {
-		r.clock.Add(time.Minute)
+		r.clock.Add(onepassword.ReadLag)
 		if value, err := replica.Read(ctx, listings[i].Source); err != nil || value == "" {
 			t.Fatalf("a value read past the budget = %q, %v; want its value", value, err)
 		}

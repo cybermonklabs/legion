@@ -27,12 +27,15 @@ func Source(vault, item string) string { return sourcePrefix + vault + "/" + ite
 // maxNameLength is the longest title the store serves a secret under.
 const maxNameLength = 255
 
-// readHeldFor is how long a value read trusts the store's last List of the vault: within it, a
-// read answers the item the store keeps, with no call, while its UpdatedAt is the one that List
-// answered; after it, the read lists the vault again, and reads the item in full only when its
-// UpdatedAt moved. So a burst of releases costs one List, and an item archived or deleted for good
-// stops being released at most this long after the store's last List, or a reread, shows it.
-const readHeldFor = 10 * time.Second
+// ReadLag is how long a value read trusts the store's last List of the vault, the store's read lag
+// (secretstore.Store, beside ListLag): one policy reload, the five minutes cmd/cipherd reloads the
+// policy in (its policyRefresh), and a minute. Within it a read answers the item the store keeps,
+// with no call, while its UpdatedAt is the one that List answered; after it, the read lists the
+// vault again, and reads the item in full only when its UpdatedAt moved. A broker reloads within
+// it, so its value reads make no call of the daily budget; and an item that changes, or is
+// archived or deleted for good, is released as it was until that reload, which also drops or
+// refreshes the grant: revocation is bounded by one reload, as on a store that reads each value.
+const ReadLag = 5*time.Minute + time.Minute
 
 // Store is the 1Password store: the agent secrets are the items of one vault. Each List of the
 // vault answers every item's title, state and UpdatedAt and no field (Client.List), so the store
@@ -43,6 +46,8 @@ type Store struct {
 	vault  string
 	budget Budget
 	now    func() time.Time
+	// readLag is ReadLag, which only the contract's mutant (export_test.go) lengthens.
+	readLag time.Duration
 
 	// refreshing is held across each List of the vault and the Get that follows it, and across a
 	// Describe's Get, so the kept items and the last List move together.
@@ -63,7 +68,7 @@ func New(client Client, vault string, budget Budget, now func() time.Time) *Stor
 	if now == nil {
 		now = time.Now
 	}
-	return &Store{client: client, vault: vault, budget: budget, now: now, kept: map[string]Item{}, listed: map[string]Overview{}}
+	return &Store{client: client, vault: vault, budget: budget, now: now, readLag: ReadLag, kept: map[string]Item{}, listed: map[string]Overview{}}
 }
 
 // ListLag is none: a Describe merges what it reads into what the next List answers, and the
@@ -335,7 +340,7 @@ func (s *Store) Describe(ctx context.Context, id string, opts secretstore.ReadOp
 	return listings[0], nil
 }
 
-// Read answers the credential of the item source names. Within readHeldFor of the store's last
+// Read answers the credential of the item source names. Within ReadLag of the store's last
 // List it answers the kept item, with no call, while its UpdatedAt is the one that List answered;
 // otherwise it lists the vault, and reads the item in full only where its UpdatedAt moved. It is
 // never held: its calls spend past the budget where they must. ErrNotFound for a source of another
@@ -366,13 +371,13 @@ func (s *Store) Read(ctx context.Context, source string) (string, error) {
 }
 
 // held answers the credential of item id from what the store keeps, and whether it could: with
-// fresh, only within readHeldFor of the last List and while the kept item's UpdatedAt is that
+// fresh, only within ReadLag of the last List and while the kept item's UpdatedAt is that
 // List's; without, from the kept item whatever its age, after a List that read it. ErrNotFound for
 // an item that List did not answer, one archived, and one with no credential.
 func (s *Store) held(id string, fresh bool) (string, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if fresh && (s.listedAt.IsZero() || s.now().Sub(s.listedAt) >= readHeldFor) {
+	if fresh && (s.listedAt.IsZero() || s.now().Sub(s.listedAt) >= s.readLag) {
 		return "", false, nil
 	}
 	o, listed := s.listed[id]
