@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -22,12 +23,12 @@ func TestNATSURLWithoutUserinfo(t *testing.T) {
 		{"nats://token@127.0.0.1:4223", "nats://127.0.0.1:4223"},
 		{"u:secret@127.0.0.1:4224", "nats://127.0.0.1:4224"},
 		{" nats://127.0.0.1:4222 ", "nats://127.0.0.1:4222"},
-		{"127.0.0.1:4222", "127.0.0.1:4222"},
-		{"nats://user:secret@host:4222/%zz", "host:4222/%zz"},
-		{"nats://user:secret@host:4222/a@b", "b"},
+		{"127.0.0.1:4222", "nats://127.0.0.1:4222"},
+		{"nats://user:secret@host:4222/%zz", redact.NotPrinted},
+		{"nats://user:secret@host:4222/a@b", redact.NotPrinted},
 	} {
-		if got := natsURLWithoutUserinfo(tc.raw); got != tc.want {
-			t.Errorf("natsURLWithoutUserinfo(%q) = %q, want %q", tc.raw, got, tc.want)
+		if got := natsServerName(tc.raw); got != tc.want {
+			t.Errorf("natsServerName(%q) = %q, want %q", tc.raw, got, tc.want)
 		}
 	}
 }

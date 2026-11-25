@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/url"
 	"strings"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // AllowRemoteEnvVar names the variable a run sets to "1" to reach a NATS server that is not this
@@ -45,7 +47,7 @@ func refuseRemoteNATS(urls []string, lookup func(string) (string, bool)) error {
 		if LocalNATSURL(raw) {
 			continue
 		}
-		return fmt.Errorf("%w: %s (set %s=1 to reach it)", ErrRemoteNATS, natsURLWithoutUserinfo(raw), AllowRemoteEnvVar)
+		return fmt.Errorf("%w: %s (set %s=1 to reach it)", ErrRemoteNATS, natsServerName(raw), AllowRemoteEnvVar)
 	}
 	return nil
 }
@@ -72,28 +74,30 @@ func LocalNATSURL(raw string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// natsURLWithoutUserinfo renders raw, a configured NATS server URL, for a log line or an error
-// that is logged, with no userinfo at all. nats.go authenticates with the URL's userinfo
-// (connectProto, nats.go v1.55.0 nats.go:3133-3143): a user name alone is a token and
-// user:password a password, so both parts are the credential, and url.URL.Redacted, which keeps
-// the user name, would log a token whole. raw is read as LocalNATSURL reads it. A URL with no "@"
-// carries no userinfo and comes back as written. Any other comes back as nothing that preceded an
-// "@" in it: parsed and rendered without its userinfo when that leaves no "@", and otherwise -
-// a URL that does not parse, or one with an "@" past its authority - as what follows its last "@".
-func natsURLWithoutUserinfo(raw string) string {
+// natsServerName names raw, a configured NATS server URL, for a log line or an error that is
+// logged: by its scheme and host (url.URL.Host) alone, as nats://host:port, and as
+// redact.NotPrinted when it cannot. Nothing else of the URL prints. nats.go authenticates with the
+// URL's userinfo (connectProto, nats.go v1.55.0 nats.go:3133-3143): a user name alone is a token
+// and user:password a password, so both parts are the credential, and url.URL.Redacted, which
+// keeps the user name, would log a token whole. Its path, query and fragment name no server, and
+// they are the configured text as written, which can carry a credential too. raw is read as
+// LocalNATSURL reads it, so a URL with no scheme is named as nats://. A URL that does not parse,
+// names no host, or holds an "@" past its authority is named as redact.NotPrinted: a "/", "?" or
+// "#" written into a userinfo ends the authority there, so the host url.Parse reads is a piece of
+// the credential, and nothing tells that URL from one whose path or query holds an "@". An empty
+// raw is "".
+func natsServerName(raw string) string {
 	trimmed := strings.TrimSpace(raw)
-	if !strings.Contains(trimmed, "@") {
-		return trimmed
+	if trimmed == "" {
+		return ""
 	}
 	withScheme := trimmed
 	if !strings.Contains(withScheme, "://") {
 		withScheme = "nats://" + withScheme
 	}
-	if parsed, err := url.Parse(withScheme); err == nil {
-		parsed.User = nil
-		if rendered := parsed.String(); !strings.Contains(rendered, "@") {
-			return rendered
-		}
+	parsed, err := url.Parse(withScheme)
+	if err != nil || parsed.Host == "" || strings.Contains(parsed.Path+parsed.RawQuery+parsed.Fragment, "@") {
+		return redact.NotPrinted
 	}
-	return trimmed[strings.LastIndex(trimmed, "@")+1:]
+	return parsed.Scheme + "://" + parsed.Host
 }

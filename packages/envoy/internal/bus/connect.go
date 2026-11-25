@@ -9,11 +9,13 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // reconnectErrEvery is how often one connection reports a failed reconnect attempt. nats.go
@@ -150,7 +152,7 @@ func connectInBackground(name string, urls []string, refusals *reconnectErrThrot
 				<-*gate
 			}
 			refusals.reset()
-			slog.Info("envoy nats connected", slog.String("name", name), slog.String("url", natsURLWithoutUserinfo(nc.ConnectedUrl())))
+			slog.Info("envoy nats connected", slog.String("name", name), slog.String("url", natsServerName(nc.ConnectedUrl())))
 			if connectedCB != nil {
 				connectedCB(nc)
 			}
@@ -265,12 +267,12 @@ func handshakeReadFailed(err error) bool {
 	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.As(err, &readErr)
 }
 
-// serverList is urls as a log line names them: comma-separated, each without its userinfo
-// (natsURLWithoutUserinfo).
+// serverList is urls as a log line names them: comma-separated, each by its scheme and host alone
+// (natsServerName).
 func serverList(urls []string) string {
 	servers := make([]string, len(urls))
 	for i, raw := range urls {
-		servers[i] = natsURLWithoutUserinfo(raw)
+		servers[i] = natsServerName(raw)
 	}
 	return strings.Join(servers, ",")
 }
@@ -322,7 +324,7 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 	// empty while reconnecting. The line goes through the package-level slog, like every other bus
 	// line, because a listener process test fails if a bus line stops being Go's text format
 	// (cmd/listener/startup_test.go:598-612 names the deployed metric filters). Each server is
-	// written without its userinfo (natsURLWithoutUserinfo), because nats.go authenticates with a
+	// written by its scheme and host alone (natsServerName), because nats.go authenticates with a
 	// URL's userinfo, a token or a user and password, when the URL carries one. The NATS credential
 	// never reaches a line: options never sees it, since credential is applied to the options
 	// value afterwards (connect.go, connectWithContext) and holds a public key and a signer, or a
@@ -345,10 +347,10 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 		// Each outage reports its own first failed attempt at once, rather than staying silent for
 		// what is left of the previous outage's minute.
 		throttle.reset()
-		// ConnectedUrl is the server's URL.String(), userinfo and all, and a server nats.go
-		// discovered inherits the configured URL's (nats.go v1.55.0 ConnectedUrl);
-		// ConnectedUrlRedacted keeps a token, which is a user name alone.
-		slog.Info("envoy nats reconnected", slog.String("name", name), slog.String("url", natsURLWithoutUserinfo(nc.ConnectedUrl())))
+		// ConnectedUrl is the server's URL.String(), userinfo and query and all, and a server
+		// nats.go discovered inherits the configured URL's userinfo (nats.go v1.55.0
+		// ConnectedUrl); ConnectedUrlRedacted keeps a token, which is a user name alone.
+		slog.Info("envoy nats reconnected", slog.String("name", name), slog.String("url", natsServerName(nc.ConnectedUrl())))
 		if reconnectCB != nil {
 			reconnectCB(nc)
 		}
@@ -424,6 +426,11 @@ func connect(name string, urls []string, settings nats.Option, dialer *socks5Dia
 // nats.go's ErrNoServers alone, which names neither, so the proxy's own dial error stands in for
 // it. The address carries no credentials: CheckSOCKS5Proxy admits only an IP address with no zone
 // or a DNS name.
+//
+// A server URL nats.go cannot read fails every attempt with url.Parse's *url.Error
+// (parseServerURL, nats.go v1.55.0 nats.go:2246-2252), which quotes the URL whole, its userinfo
+// (the credential) and query among it, so that failure comes back by its class alone
+// (redact.Class), with or without a proxy: a caller logs the error a connect returns.
 func connectWithContext(ctx context.Context, name string, urls []string, settings nats.Option, dialer *socks5Dialer, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(), asyncErrCB func(*nats.Conn, error), now func() time.Time) (_ *nats.Conn, err error) {
 	if dialer != nil {
 		defer func() {
@@ -504,6 +511,10 @@ func connectWithContext(ctx context.Context, name string, urls []string, setting
 	}
 	if dialer != nil && errors.Is(lastErr, nats.ErrNoServers) {
 		lastErr = cmp.Or(dialer.LastError(), lastErr)
+	}
+	var unparsed *url.Error
+	if errors.As(lastErr, &unparsed) {
+		lastErr = fmt.Errorf("bus: a NATS server URL: %w", redact.Class(lastErr))
 	}
 	return nil, lastErr
 }
