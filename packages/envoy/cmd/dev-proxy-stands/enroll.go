@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -96,15 +97,10 @@ func runEnrollPod(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		fmt.Fprintf(stderr, "dev-airlock-stands enroll-pod: %v\n", err)
 		return 1
 	}
-	// The enrolment's launcher proof signs TargetURI of that same join (brokerTarget): the broker
-	// refuses a proof whose htu is not its own address followed by the path the proof was sent to,
-	// which holds none of the query or user information --url may carry.
+	// The enrolment's launcher proof signs TargetURI of this same join: the broker refuses a proof
+	// whose htu is not its own address followed by the path the proof was sent to, which holds none
+	// of the query or user information --url may carry.
 	enrollURL, err := brokerRoute(base, "/v1/enrollments")
-	if err != nil {
-		fmt.Fprintf(stderr, "dev-airlock-stands enroll-pod: %v\n", err)
-		return 1
-	}
-	enrollTarget, err := brokerTarget(base, "/v1/enrollments")
 	if err != nil {
 		fmt.Fprintf(stderr, "dev-airlock-stands enroll-pod: %v\n", err)
 		return 1
@@ -145,7 +141,7 @@ func runEnrollPod(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	var login struct {
 		CredentialID string `json:"credential_id"`
 	}
-	if err := call(ctx, http.MethodPost, loginURL, nil,
+	if err := call(ctx, http.MethodPost, loginURL.String(), nil,
 		map[string]string{"token": registrarToken, "request": request}, &login); err != nil {
 		fmt.Fprintf(stderr, "dev-airlock-stands enroll-pod: the service login: %v\n", err)
 		return 1
@@ -164,7 +160,7 @@ func runEnrollPod(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	if *session != "" {
 		body["session_id"] = *session
 	}
-	signed, err := proof.SignLauncher(key, login.CredentialID, http.MethodPost, enrollTarget, time.Now())
+	signed, err := proof.SignLauncher(key, login.CredentialID, http.MethodPost, proof.TargetURI(enrollURL), time.Now())
 	if err != nil {
 		fmt.Fprintf(stderr, "dev-airlock-stands enroll-pod: sign the launcher proof: %v\n", err)
 		return 1
@@ -173,7 +169,7 @@ func runEnrollPod(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		EnrollmentID   string    `json:"enrollment_id"`
 		LeaseExpiresAt time.Time `json:"lease_expires_at"`
 	}
-	if err := call(ctx, http.MethodPost, enrollURL, map[string]string{"Proof": signed}, body, &enrolled); err != nil {
+	if err := call(ctx, http.MethodPost, enrollURL.String(), map[string]string{"Proof": signed}, body, &enrolled); err != nil {
 		fmt.Fprintf(stderr, "dev-airlock-stands enroll-pod: the enrolment: %v\n", err)
 		return 1
 	}
@@ -210,22 +206,12 @@ func readToken(path string) (string, error) {
 // appended to base's text would sit inside a query or a fragment and the broker would be asked
 // another path. A base that does not parse or names no host is refused by --url and the class
 // alone: url.Parse's error quotes it whole, user information and query included.
-func brokerRoute(base, route string) (string, error) {
+func brokerRoute(base, route string) (*url.URL, error) {
 	joined, err := urljoin.Join(base, route)
 	if err != nil {
-		return "", fmt.Errorf("--url %q: %s", redact.NotPrinted, redact.ClassNotAURL)
+		return nil, fmt.Errorf("--url %q: %s", redact.NotPrinted, redact.ClassNotAURL)
 	}
-	return joined.String(), nil
-}
-
-// brokerTarget is the htu a proof of a call to route at base signs: proof.TargetURI of the URL
-// brokerRoute joins, which holds none of the query, fragment or user information base may carry.
-func brokerTarget(base, route string) (string, error) {
-	joined, err := urljoin.Join(base, route)
-	if err != nil {
-		return "", fmt.Errorf("--url %q: %s", redact.NotPrinted, redact.ClassNotAURL)
-	}
-	return proof.TargetURI(joined), nil
+	return joined, nil
 }
 
 // call makes one JSON call and reads its answer into out. A refusal is an error naming the call by
