@@ -90,15 +90,15 @@ var ErrCarryUnanswered = errors.New("the secrets broker did not answer which of 
 var ErrCarryRefused = errors.New("the secrets broker refused the question of which of the names it still carries")
 
 // ErrReleaseUnanswered is a release the secrets broker did not answer that it released the claim's
-// session names (Registrar.ReleasePodSessions) at any attempt: no answer, a 5xx, a 429, or a 404 or
-// 405 from a broker of a build before the release route, which may be one replica of several while
-// the broker rolls. The release frees nothing, since a registration of this daemon's may still
-// admit its pod's trade under a name it frees. A run again can change it.
+// session names (Registrar.ReleasePodSessions) at any attempt: no answer, a 5xx, a 408, a 429, or a
+// 404 or 405 from a broker of a build before the release route, which may be one replica of several
+// while the broker rolls. The release frees nothing, since a registration of this daemon's may
+// still admit its pod's trade under a name it frees. A run again can change it.
 var ErrReleaseUnanswered = errors.New("the secrets broker did not answer that it released the claim's session names")
 
 // ErrReleaseRefused is a release whose session names the secrets broker refused for good to
-// release (a PermanentError that is no RouteUnservedError: any 4xx but a 404, a 405 and a 429):
-// the release frees nothing, and a run again answers the same until the refusal is fixed.
+// release (a PermanentError that is no RouteUnservedError: any 4xx but a 404, a 405, a 408 and a
+// 429): the release frees nothing, and a run again answers the same until the refusal is fixed.
 var ErrReleaseRefused = errors.New("the secrets broker refused to release the claim's session names")
 
 // RouteUnservedError is a broker answer that it serves no such route (cipher's
