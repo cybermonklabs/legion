@@ -2196,14 +2196,16 @@ test("the default shapes keep main's class strings", async () => {
       "absolute -top-2 left-3 rounded px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase bg-white dark:bg-slate-900 text-rose-800 dark:text-rose-300",
     // The ask body's row (dispatch://INFRA-5702/spec#b-r-ask-body, root R34): the question's
     // words, the bullet, the first line that holds them, the kind at its right end with the
-    // asker and the time, and the turn on its own line under the words.
+    // asker and the time, and the turn on its own line under the words. On a phone the first
+    // line's end stands under the words and wraps.
     "AskCard question":
-      "min-w-0 flex-1 text-[15px] leading-relaxed font-medium text-slate-900 dark:text-slate-100",
+      "min-w-0 flex-1 text-[15px] leading-relaxed font-medium max-[761px]:basis-full text-slate-900 dark:text-slate-100",
     "AskCard bullet": "block size-[7px] rounded-full bg-page-question",
-    "AskCard first line": "flex items-start justify-end gap-x-3",
+    "AskCard first line":
+      "flex items-start justify-end gap-x-3 max-[761px]:flex-wrap max-[761px]:justify-start",
     "AskCard kind": "shrink-0 font-semibold text-page-question",
     "AskCard first line's end":
-      "flex min-w-0 max-w-[75%] items-center justify-end gap-x-1.5 text-xs leading-6 shrink-0 whitespace-nowrap text-slate-500 dark:text-slate-400",
+      "flex min-w-0 max-w-[75%] items-center justify-end gap-x-1.5 text-xs leading-6 max-[761px]:max-w-full max-[761px]:basis-full max-[761px]:flex-wrap max-[761px]:justify-start shrink-0 whitespace-nowrap text-slate-500 dark:text-slate-400",
     "AskCard turn line": "mt-1.5 flex min-w-0 text-xs whitespace-nowrap",
     "AskCard turn": "shrink-0 font-semibold text-slate-700 dark:text-slate-300",
     // The turn an agent holds.

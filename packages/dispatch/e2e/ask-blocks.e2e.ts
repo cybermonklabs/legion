@@ -519,7 +519,7 @@ test("decision blocks read as urgency-accented cards in the document and its ver
     const storageCard = hostedCard(storage);
     await expect(storageCard.getByRole("radio")).toHaveCount(3);
     await expect(storageCard.getByText("Reuse the existing cluster")).toBeVisible();
-    await expect(storageCard.getByRole("button", { exact: true, name: "Answer" })).toHaveCount(0);
+    await expect(storageCard.getByRole("button", { exact: true, name: "Answer" })).toBeDisabled();
     await pickOption(storageCard, "Postgres Reuse the existing cluster");
     await expect(storageCard.getByRole("button", { exact: true, name: "Answer" })).toBeEnabled();
 

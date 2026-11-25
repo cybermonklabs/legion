@@ -570,10 +570,14 @@ export function AskBody({
   // `NodeRow.tsx`'s `RowMargin`), then who asked and when. In a document's ask block the block's
   // frame draws the kind, so the line holds who asked and when alone. Outside `NoTooltips` it is
   // one line, and the asker's name is what gives up width, cut with its tooltip; inside it no
-  // title gives back what an ellipsis cut, and a name and an instant are values, which wrap.
+  // title gives back what an ellipsis cut, and a name and an instant are values, which wrap. On a
+  // phone, a window 760 px wide or narrower as the new page's rows take it (`NODE_ROW_LAYOUT`),
+  // the line stands under the words, in the same order from the left, and each of its parts
+  // moves to a line of its own before it gives up width: beside the words there the asker's name
+  // kept a few letters, and the words a column too narrow for two short links on two lines.
   const firstLineEnd = (
     <div
-      className={`flex min-w-0 max-w-[75%] items-center justify-end gap-x-1.5 text-xs leading-6 ${tooltips ? `shrink-0 whitespace-nowrap ${textMutedOnSurface}` : `flex-wrap ${ON_PAGE.quiet}`}`}
+      className={`flex min-w-0 max-w-[75%] items-center justify-end gap-x-1.5 text-xs leading-6 max-[761px]:max-w-full max-[761px]:basis-full max-[761px]:flex-wrap max-[761px]:justify-start ${tooltips ? `shrink-0 whitespace-nowrap ${textMutedOnSurface}` : `flex-wrap ${ON_PAGE.quiet}`}`}
     >
       {inBlock ? null : (
         <>
@@ -602,10 +606,10 @@ export function AskBody({
   );
   const rest = (
     <>
-      <div className="flex items-start justify-end gap-x-3">
+      <div className="flex items-start justify-end gap-x-3 max-[761px]:flex-wrap max-[761px]:justify-start">
         {inBlock ? null : (
           <div
-            className={`min-w-0 flex-1 text-[15px] leading-relaxed font-medium ${tooltips ? textPrimaryOnSurface : ON_PAGE.ink}`}
+            className={`min-w-0 flex-1 text-[15px] leading-relaxed font-medium max-[761px]:basis-full ${tooltips ? textPrimaryOnSurface : ON_PAGE.ink}`}
           >
             {renderText({
               markdown: displayedAsk.question,
