@@ -1085,9 +1085,11 @@ function headerActor(actor: DispatchEvent["actor"]): Readonly<Record<string, unk
  *  `bound`, is shown by its owner, its type, its actor (`headerActor`) and the reason. A card that
  *  cannot hold that either drops the card's other fields (they repeat the issue key, and its reply
  *  command quotes the key for a shell) and keeps the owner, the type, the actor and the reason.
- *  One that cannot hold even those has an owner read from the topic the host names, which the
- *  frame does not bound, and keeps the type, the actor and the reason: they are bytes of the
- *  frame, and `bound` is at least twice the frame. The reason alone is the last answer. */
+ *  One that cannot hold even those drops the owner (a document's owner is read from a topic: the
+ *  one the host names, or the frame's own) and keeps the type, the actor and the reason: the type
+ *  and the actor are bytes of the frame, the reason is short (the bound's sentence or an encoder
+ *  error's message), and `bound` is at least twice the frame. The reason alone is the last
+ *  answer. */
 function dispatchCardAsText(
   rendered: Readonly<Record<string, unknown>>,
   event: DispatchCardEvent,

@@ -46,9 +46,11 @@ text still passes the bound, shows its owner, its type, its actor's `kind` and `
 `ActorActSchema` does not read) and a session's `service`, the verified service token that made
 the write (`service: "not shown"` when it is no string), no other key of the actor, and the
 reason, held to the bound too. When even that passes it, the card drops its other fields (they
-repeat the issue key) and keeps the owner, the type, the actor and the reason; when those pass it
-(an owner read from the topic the host names), it keeps the type, the actor and the reason, which
-are bytes of the frame; and the reason alone is the last answer. Each is held to the bound. The
+repeat the issue key) and keeps the owner, the type, the actor and the reason; when those pass it,
+it drops the owner (a document's owner is read from a topic: the one the host names, or the
+frame's own) and keeps the type, the actor and the reason - the type and the actor are bytes of
+the frame, the reason is short, and the bound is at least twice the frame; and the reason alone is
+the last answer. Each is held to the bound. The
 bound is
 `INBOUND_CARD_MAX_BYTES` (1 MiB, the hub's largest frame), or twice the text the card lays out
 (its frame and a body read whole) when that is more, so a comment Dispatch's API gives whole
@@ -60,7 +62,8 @@ Malformed input is safe: a non-JSON frame becomes a TOON block naming its topic 
 `unrecognised` parse failure. The renderer never emits raw frame bytes. Dispatch envelopes
 (`source: "dispatch"`) render through the same TOON path as every other source, nesting the
 parsed event under `dispatch: { owner, type, actor, payload }` - `owner` the issue key, else
-`PROJECT / slug` from a document topic, else the artifact id; with `relation` where the card says
+`PROJECT / slug` from a document topic, else the artifact id, else `unknown`; with `relation`
+where the card says
 why it reached the session,
 and in place of `payload` a compact record where the card has one (an ask's `question`, `reply`
 and `state`, a human edit's `edit`) - with `payload` typed per event type; a payload whose shape

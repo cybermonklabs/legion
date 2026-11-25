@@ -2097,8 +2097,8 @@ describe("renderInbound non-dispatch envelopes", () => {
     // The card's other fields repeat the event's issue key, and its reply command quotes the key
     // for a shell (each `'` written `'\''`, whose backslash the card escapes again), so a key of
     // quotes lays out in several times the frame's bytes, header and all. Such a card drops those
-    // fields and keeps the owner, the type, the actor and the reason, within the bound
-    // `payloadShownAsText` names: the actor is bytes of the frame, as the owner is.
+    // fields and keeps the owner (here the issue key), the type, the actor and the reason, within
+    // the bound `payloadShownAsText` names.
     test("a Dispatch card whose header the bound cannot hold keeps its owner, type, actor and reason within the bound", () => {
       const key = "'".repeat(1_000_000);
       const raw = JSON.stringify(
@@ -2132,9 +2132,10 @@ describe("renderInbound non-dispatch envelopes", () => {
       });
     });
 
-    // The owner of a document's event is read from the topic the host names, which the frame's
-    // bytes do not bound, so a card may not hold even the owner; it then keeps the type, the actor
-    // and the reason, which the frame's bytes do bound.
+    // The owner of a document's event is read from a topic - here the one the host names, which
+    // the frame does not bound - so a card may not hold even the owner; it then keeps the type, the
+    // actor and the reason: the type and the actor are bytes of the frame, the reason is short, and
+    // the bound is at least twice the frame.
     test("a Dispatch card that cannot hold even its owner keeps its type, actor and reason within the bound", () => {
       const slug = "s".repeat(2 * INBOUND_CARD_MAX_BYTES);
       const rendered = renderInbound(
