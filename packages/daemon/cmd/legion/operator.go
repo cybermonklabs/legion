@@ -211,6 +211,16 @@ func (op operator) shown(route string) string {
 	return redact.URLCredentials(asked.String())
 }
 
+// shownRoot is the API root as a line names it, as shown names a request's URL: through the URL
+// rule (redact.URLCredentials), and by what it is when it does not parse, since then the rule,
+// which reads a URL from its "://", may find none to read and would leave the root as written.
+func (op operator) shownRoot() string {
+	if _, err := op.urlOf("/"); err != nil {
+		return "the daemon's URL (it does not parse, and is not printed)"
+	}
+	return redact.URLCredentials(op.base)
+}
+
 // daemonClient is the client every request of the CLI to a daemon's API is made on (do, get):
 // http.DefaultClient's, following no redirect (redirects.Refused). An operator request carries the
 // operator bearer, which a followed redirect would hand the host the Location names, and the
