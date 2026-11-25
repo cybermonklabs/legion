@@ -1624,8 +1624,10 @@ ENV_ALLOWED = frozenset({
     "AIRLOCK_MODEL",
     "BROKER_TEST_DATABASE_URL", "CI_OK_ALWAYS_RUN", "CI_OK_EXEMPT", "CI_OK_PULL_REQUEST_ONLY", "CI_OK_SELECTED_BY",
     # The file of the filters this run's changes job computed, which the lint job hands
-    # check-image-trigger-paths.sh and check-ts-filters.sh; around_job reads the env of every step
-    # of the job that runs go-release-notices.sh, as GH_TOKEN's note below says. go reads it nowhere.
+    # check-image-trigger-paths.sh and check-ts-filters.sh. around_job reads the env of every step
+    # of the job that runs go-release-notices.sh, so without this name here every go command of
+    # that script would count as unreduced and go_notices would have to match every Go file of the
+    # repository again. go reads it nowhere.
     "CI_FILTERS_FILE",
     "DATABASE_URL",
     "DISPATCH_E2E_FILE_STORE_BUCKET", "DISPATCH_E2E_FILE_STORE_ENDPOINT", "DISPATCH_FIRST_ROLLOUT_BUILD",
@@ -1636,11 +1638,6 @@ ENV_ALLOWED = frozenset({
     "DISPATCH_XID_REQUIRE_GAP_JUDGMENT",
     "ENVOY_INFRA_DOCKER_PLUGIN", "ENVOY_SMOKE_HELD_PORT_IMAGE",
     "ENVOY_SMOKE_IMAGE", "FIRST_ROLLOUT_COMMIT",
-    # The token gh reads. A step of the lint job sets it for the daemon API contract check, and
-    # around_job reads the env of every step of the job that runs go-release-notices.sh, so
-    # without this name here every go command of that script would count as unreduced and
-    # go_notices would have to match every Go file of the repository again. go reads it nowhere.
-    "GH_TOKEN",
     # Where go keeps what it compiled and the test results it caches, both found by a hash of
     # their inputs, so go compiles the same files and runs the same tests whatever directory it
     # names. envoy-go-build's darwin vet sets it in its step's env, so that vet's darwin objects

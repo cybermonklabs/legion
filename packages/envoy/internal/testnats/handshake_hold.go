@@ -396,10 +396,10 @@ func AnswersWithin(t testing.TB, within time.Duration, what string, calls ...fun
 	return got
 }
 
-// AwaitLockFree waits until nats.go lets conn's connection lock go, failing the test after 30 s.
-// With every reconnect's handshake held (HoldReconnect), that is the end of an attempt, when nats.go
-// reads the connection as reconnecting and waits between attempts (ReconnectWait, 1 s for a bus
-// client) with its lock free.
+// AwaitLockFree waits until nats.go lets conn's connection lock go, failing the test when it has not
+// by the test's deadline (testDeadline). With every reconnect's handshake held (HoldReconnect), that
+// is the end of an attempt, when nats.go reads the connection as reconnecting and waits between
+// attempts (ReconnectWait, 1 s for a bus client) with its lock free.
 func AwaitLockFree(t testing.TB, conn *natsgo.Conn) {
 	t.Helper()
 	read := make(chan struct{})
@@ -407,10 +407,8 @@ func AwaitLockFree(t testing.TB, conn *natsgo.Conn) {
 		conn.Status()
 		close(read)
 	}()
-	select {
-	case <-read:
-	case <-time.After(30 * time.Second):
-		t.Fatal("nats.go still held its connection lock 30 s on: no attempt's handshake ended")
+	if bound := boundOf(t); !awaitSignal(bound, read) {
+		t.Fatalf("nats.go still held its connection lock at %s, short of the test's deadline: no attempt's handshake ended", bound)
 	}
 }
 
