@@ -1072,8 +1072,6 @@ func refuseHTTPEdgeURLsInProduction(edgeURL, machineLoginURL, fakeSecretsFile st
 		if u, err := url.Parse(setting.value); err == nil && strings.EqualFold(u.Scheme, "https") {
 			continue
 		}
-		// The refusal names the setting alone: redact.URL prints a plain path as written, and
-		// BROKER_EDGE_MACHINE_LOGIN_URL is a page whose path is where a credential would be.
 		return fmt.Errorf("%s must be https in production, since %s (BROKER_FAKE_SECRETS_FILE is unset); only a local run may use http", setting.name, setting.what)
 	}
 	return nil

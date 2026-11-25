@@ -668,11 +668,6 @@ func (c *Client) Role(ctx context.Context, role string) (Session, error) {
 // between the two reads is the same answer, so a role is never resolved to a session the
 // listener no longer holds.
 func (c *Client) lapsedRoleHolder(ctx context.Context, response *http.Response) (Session, error) {
-	// The holder's session id is sent back to the listener by the session read below
-	// (RemoteText.SendBack): only where the rule prints it as it came, with every credential the
-	// lookup carried redacted first (decodeAnswer), so the route that read names, and any error
-	// that names the route, holds no more of the listener's words than a print of them shows, and
-	// never the bearer an answer in the listener's place echoed as a holder.
 	var refusal listenerwire.RoleRefusalAs[redact.RemoteText, redact.RemoteText, holderState]
 	if err := decodeAnswer(response, &refusal); err != nil {
 		return Session{}, listenerRefusal(response, redact.RemoteText{})

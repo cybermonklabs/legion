@@ -104,8 +104,6 @@ func checkSignInSettings(boot bootConfig, identityMode string) error {
 		}
 	}
 	if boot.SignInDomain != "" {
-		// The refusal names DISPATCH_SIGNIN_ISSUER and never its value: the issuer as written is
-		// where a credential would be.
 		if boot.SignInIssuer != googleIssuer {
 			return fmt.Errorf("DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER to be %s, since only Google's tokens carry hd", googleIssuer)
 		}
