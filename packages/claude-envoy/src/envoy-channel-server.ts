@@ -36,7 +36,7 @@ import {
   failureNoticeFields,
 } from "@legion/envoy-client/delivery-ledger"
 import { activeDispatchSettings } from "@legion/envoy-client/dispatch-config"
-import { DispatchClient } from "@legion/envoy-client/dispatch-http"
+import { DispatchClient, DispatchWriteLandedError } from "@legion/envoy-client/dispatch-http"
 import { sessionDirectory as dispatchSessionDirectory } from "@legion/envoy-client/dispatch-session-directory"
 import { writeSessionTitle } from "@legion/envoy-client/dispatch-session-state"
 import {
@@ -513,10 +513,12 @@ export async function postDispatchReply(
   delivery: DispatchDelivery,
   result: { readonly body?: string; readonly error?: string; readonly followUp?: boolean },
 ): Promise<void> {
-  const config = sessionDispatchSettings(configFile, process.env, {
-    cwd: identity.directory,
-    session: () => identity.id,
-  }).dispatch
+  const config = (
+    await sessionDispatchSettings(configFile, process.env, {
+      cwd: identity.directory,
+      session: () => identity.id,
+    })
+  ).dispatch
   if (!config.enabled) throw new Error(config.error ?? config.notice)
   await postDeliveryReply(config, identity.id, delivery, result)
 }
@@ -573,6 +575,13 @@ export function createChannelDelivery(input: {
     if (envelope === undefined) return
     const eventId = envelope.event_id
     if (eventId !== undefined && inbox.some((entry) => entry.event_id === eventId)) return
+    // A payload the card could not lay out is shown as the text its sender sent: said here, for
+    // the message the inbox lists the first time, so a copy Envoy sends again says nothing new.
+    if (rendered.payloadShownAsText !== undefined) {
+      process.stderr.write(
+        `envoy-channel: message ${eventId ?? "unknown"}'s payload is shown as its text; the card could not lay it out (${rendered.payloadShownAsText})\n`,
+      )
+    }
     inbox.unshift({
       event_id: eventId ?? "unknown",
       at: inboundTimestamp(envelope.issued_at),
@@ -606,7 +615,9 @@ export function createChannelDelivery(input: {
       if (rendered.skip) return tail.then(() => false)
       // A targeted Dispatch delivery the shared renderer could not validate is
       // never shown to the model: it is answered on Dispatch when it names a
-      // message, and dropped with a log line when it does not.
+      // message, and dropped with a log line when it does not. A report Dispatch
+      // made and gave no copy of its answer for (`DispatchWriteLandedError`)
+      // answered the attempt, and its line says it landed.
       if (rendered.rejectedDelivery !== undefined) {
         const rejected = rendered.rejectedDelivery
         process.stderr.write(
@@ -618,7 +629,9 @@ export function createChannelDelivery(input: {
           () => false,
           (error: unknown) => {
             process.stderr.write(
-              `envoy-channel: could not report the rejected delivery to Dispatch — ${messageFor(error)}\n`,
+              error instanceof DispatchWriteLandedError
+                ? `envoy-channel: the report of the rejected delivery landed on Dispatch, which gave no copy of its answer — ${error.message}\n`
+                : `envoy-channel: could not report the rejected delivery to Dispatch — ${messageFor(error)}\n`,
             )
             return false
           },
@@ -1701,6 +1714,16 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * old one leaves the topic list before the first registration under it. Runs
    * only inside `serialized`.
    *
+   * A `/clear` waits while the connection is closed for good and not yet replaced and set up
+   * (`connectionLost`, which the replacement's own step in the chain clears, `reopenFor`): until
+   * then the new id's relay can be neither moved to its credential nor subscribed, so the new id's
+   * registration would be refused after the identity had already moved, and the handoff would end
+   * there, half done and never reported. A heartbeat queued in the chain can run after the
+   * replacement has connected and before that set-up. The check follows the read of the handoff
+   * file: the connection can close for good, and its replacement connect, while that read is
+   * awaited, and only a check after it sees the loss. The next heartbeat after the set-up adopts
+   * the `/clear`.
+   *
    * The deregistration of the old id carries this process's client instance id, so the listener
    * removes that entry only while it is still this instance's: a later process that resumed the
    * old session id and registered it keeps its registration, and this handoff takes nothing
@@ -1710,6 +1733,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     if (handoffFile === undefined) return
     const next = await readSessionHandoff(handoffFile)
     if (next === undefined || next === identity.id) return
+    if (connectionLost !== undefined) return
     const previous = identity.id
     const previousSubject = directSubject
     const nextSubject = legacyAgentSubject(next)
@@ -2456,7 +2480,7 @@ function pluginStateDirectory(): string {
  * notifications (`./legion-inbox`). */
 export async function runEnvoyChannelServer(): Promise<void> {
   const directory = projectDirectory()
-  const pane = legionPane(process.env)
+  const pane = await legionPane(process.env)
   // The session's envoy.json, by Claude Code's rule (`$CLAUDE_CONFIG_DIR/envoy.json` when that is
   // set), worked out once as the server starts; Dispatch's URL and token are re-read from it on each
   // use, so a file that moved its server takes effect without a restart.
@@ -2464,7 +2488,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
   // The session this server drives, read at every broker trade: Claude Code mints a new id on
   // /clear and `identity` is set to it, so a token this session presents names this session.
   const currentSessionId = (): string => identity.id
-  const { dispatch, envoy, notice } = sessionSettings(configFile, process.env, {
+  const { dispatch, envoy, notice } = await sessionSettings(configFile, process.env, {
     cwd: directory,
     session: currentSessionId,
   })
@@ -2774,9 +2798,9 @@ export async function runEnvoyChannelServer(): Promise<void> {
    */
   const router = (state: UserTurnState): UserTurnRouter => {
     const options: UserTurnRouterOptions = {
-      dispatch: (ms) => {
+      dispatch: async (ms) => {
         const active = activeDispatchSettings(
-          sessionDispatchSettings(configFile, process.env, { cwd: directory }).dispatch,
+          (await sessionDispatchSettings(configFile, process.env, { cwd: directory })).dispatch,
         )
         return active === null
           ? undefined

@@ -516,6 +516,35 @@ func (r *workHoldRig) issue() record.Issue {
 	return *got
 }
 
+// resumeTask is the resume task the engine sends the worker of the root's phase, as the record
+// holds the root now (workflow.Engine.ResumeTask, the one place every resume is composed), read in a
+// transaction that writes nothing.
+func (r *workHoldRig) resumeTask() string {
+	r.t.Helper()
+	issue := r.issue()
+	var task string
+	r.inTx(func(tx pgx.Tx) error {
+		var err error
+		task, err = r.engine.ResumeTask(r.ctx, tx, issue)
+		return err
+	})
+	return task
+}
+
+// bootRelaunch is the boot's relaunch of role's unfinished launch, as launchUnfinished makes it:
+// the release of the uncertain launch (releaseUnfinishedClaim), which leaves the claim queued at
+// its generation, and then the spawn of the released claim, with no fence holding it.
+func (r *workHoldRig) bootRelaunch(role claim.Role) {
+	r.t.Helper()
+	boot, m, token := &supervision{log: quietLogger(), supervisor: r.sup}, r.machine(role), r.token(role)
+	if released := boot.releaseUnfinishedClaim(r.ctx, token, m); released != releaseQueued {
+		r.t.Fatalf("the boot's release of the unfinished launch of the %s ended %v, want it queued for its relaunch", role, released)
+	}
+	if err := m.Handle(r.ctx, supervise.RequestSpawn{Claim: token}); err != nil {
+		r.t.Fatalf("the boot's relaunch of the %s: %v", role, err)
+	}
+}
+
 // inTx runs write in one transaction of the rig's pool.
 func (r *workHoldRig) inTx(write func(tx pgx.Tx) error) {
 	r.t.Helper()
@@ -1007,12 +1036,12 @@ func TestWorkHoldIsNotEndedByAPauseResume(t *testing.T) {
 	r.approve(4, 12)
 	r.drain()
 	opening := r.opening(4, 4)
-	r.wantStarted(claim.RoleImplementer, 1, opening+"\n\n"+workflow.ResumePhaseTask(r.issue()))
+	r.wantStarted(claim.RoleImplementer, 1, opening+"\n\n"+r.resumeTask())
 	r.wantStarted(claim.RoleTester, 0, opening+"\n\n"+"The issue's other roles may ask you questions.")
 }
 
 // H14, check a3d61f8e: a released phase worker that is not a merger is not woken at the close; the
-// hold takes it over its release at once, its bundle and its pending task kept. A CI settlement's
+// hold takes it over its release at once, its session and its pending task kept. A CI settlement's
 // task, the release backstop's wake and a hook prompt during the hold start none of it, and the
 // opening starts it with one task that starts with the close message's sentences and carries the
 // task it kept.
@@ -1024,10 +1053,6 @@ func TestWorkHoldKeepsAReleasedWorkerStoppedUntilTheOpening(t *testing.T) {
 	})
 	r.releasedWithATask(claim.RoleImplementer, keptTask, 1)
 	launched := r.launches(claim.RoleImplementer)
-	if err := r.trees.PutWorkspaceBundle(r.ctx, r.tree.key, 1, runtime.WorkspaceBundle{Bundle: []byte("unpushed work"), Head: "abc123",
-		PodUID: "pod-of-the-release", At: r.clock.Now()}); err != nil {
-		t.Fatalf("save the release's bundle: %v", err)
-	}
 
 	r.close(4)
 	if got := r.rows(record.OutboxKindRoleMessage, "", ""); got != 0 {
@@ -1049,9 +1074,6 @@ func TestWorkHoldKeepsAReleasedWorkerStoppedUntilTheOpening(t *testing.T) {
 	r.wantHeld(claim.RoleImplementer, launched, "after a settlement, a backstop and a hook prompt")
 	if c := r.machine(claim.RoleImplementer).Claim(); c.Pending == nil || c.Pending.Task != keptTask || !c.Pending.ConfirmedAt.IsZero() {
 		t.Fatalf("the held implementer holds %+v, want the task it kept, unconfirmed", c.Pending)
-	}
-	if _, kept, _, err := r.trees.WorkspaceBundleSize(r.ctx, r.tree.key); err != nil || !kept {
-		t.Fatalf("the release's bundle is kept %v, %v; want it kept through the hold", kept, err)
 	}
 	if got := r.rows(record.OutboxKindHookPrompt, "", ""); got != 1 {
 		t.Fatalf("the hook prompt ran with the role held (%d rows left), want it waiting for the opening", got)
@@ -1661,7 +1683,7 @@ func TestWorkHoldStartsAStopMadeWithoutTheLockAfterTheOpening(t *testing.T) {
 		t.Fatalf("the stop's row logged %v, want one line naming the implementer and version 4", made)
 	}
 	r.drain()
-	r.wantStarted(claim.RoleImplementer, launched, r.opening(4, 4)+"\n\n"+workflow.ResumePhaseTask(r.issue()))
+	r.wantStarted(claim.RoleImplementer, launched, r.opening(4, 4)+"\n\n"+r.resumeTask())
 	if stops := r.holdStops(claim.RoleImplementer); len(stops) != 0 {
 		t.Fatalf("after the drain the implementer's stops are %+v, want the row finished", stops)
 	}
@@ -1829,7 +1851,7 @@ func TestWorkHoldStartsAStopMadeWhileTheOpeningCommits(t *testing.T) {
 		t.Fatalf("the daemon logged %v, want one line naming %s, the implementer and version 4", ended, r.tree.key)
 	}
 	r.drain()
-	r.wantStarted(claim.RoleImplementer, launched, r.opening(4, 4)+"\n\n"+workflow.ResumePhaseTask(r.issue()))
+	r.wantStarted(claim.RoleImplementer, launched, r.opening(4, 4)+"\n\n"+r.resumeTask())
 	if stops := r.holdStops(claim.RoleImplementer); len(stops) != 0 {
 		t.Fatalf("after the drain the implementer's stops are %+v, want the row finished", stops)
 	}
@@ -1887,7 +1909,7 @@ func TestWorkHoldStartsAStopMadeWhileTheOpeningCommitsWithTheOpeningsTask(t *tes
 		t.Fatalf("drain the outbox: %v", err)
 	}
 	r.drain()
-	r.wantStarted(claim.RoleImplementer, launched, r.opening(4, 4)+"\n\n"+workflow.ResumePhaseTask(r.issue()))
+	r.wantStarted(claim.RoleImplementer, launched, r.opening(4, 4)+"\n\n"+r.resumeTask())
 }
 
 // Spec step 4, H22 to H24, check a3d61f8e: with the tester stopped by the hold and the implementer
@@ -2071,7 +2093,7 @@ func TestWorkHoldOpeningStartsEachHeldClaimAndNoOther(t *testing.T) {
 			}
 			r.drain()
 			sentences := r.opening(45, 46)
-			r.wantStarted(claim.RoleImplementer, 1, sentences+"\n\n"+workflow.ResumePhaseTask(r.issue()))
+			r.wantStarted(claim.RoleImplementer, 1, sentences+"\n\n"+r.resumeTask())
 			r.wantStarted(claim.RoleTester, 0, sentences+"\n\n"+"The issue's other roles may ask you questions.")
 			if got := r.launches(claim.RoleArchitect); got != architect {
 				t.Fatalf("the opening started the live architect %d times, want none", got-architect)
@@ -2431,7 +2453,7 @@ func TestWorkHoldOpeningStartQueuedAcrossAnotherCloseGivesTheNewestOpening(t *te
 	}
 	r.drain()
 	opening := r.opening(5, 5)
-	r.wantStarted(claim.RoleImplementer, 1, opening+"\n\n"+workflow.ResumePhaseTask(r.issue()))
+	r.wantStarted(claim.RoleImplementer, 1, opening+"\n\n"+r.resumeTask())
 	r.wantStarted(claim.RoleTester, 0, opening+"\n\n"+"The issue's other roles may ask you questions.")
 }
 
@@ -2707,7 +2729,7 @@ func TestMergeHoldWaitsForNoMergerWhoseStartIsOnlyQueuedAfterTheClose(t *testing
 // The work hold's stop of a claim that runs nothing yet and is not gone. A queued claim and a
 // claim whose launch is uncertain after a restart can still launch: a start that passed the fence
 // before the close spawns a queued claim, and the boot's relaunch releases an uncertain launch to
-// queued and spawns it with no fence (launchUnfinishedClaim). So the stop waits for the launch on
+// queued and spawns it with no fence (launchUnfinished). So the stop waits for the launch on
 // its row's backoff. That wait is routine: the row logs no error, and no warning however long the
 // hold stands, where a wait that is not routine is a warning from its seventh attempt
 // (waitWarnAttempts). The claim's own start waits at the hold's fence meanwhile. Once the gate
@@ -2886,7 +2908,7 @@ func TestWorkHoldOpeningOverAnEarlierOpeningsTaskGivesTheNewestSentencesOnce(t *
 
 	r.approve(4, 12)
 	r.runOnce()
-	work := workflow.ResumePhaseTask(r.issue())
+	work := r.resumeTask()
 	if c := r.machine(claim.RoleImplementer).Claim(); c.State == supervise.StateSuspended || c.Pending == nil ||
 		c.Pending.Task != r.opening(4, 4)+"\n\n"+work+"\n\n"+r.heldNews(phase.Implementing, 3, 4) {
 		t.Fatalf("after the first opening the implementer is %s by %q holding %+v, want it launching with the first opening's task",
@@ -3109,7 +3131,7 @@ func (r *workHoldRig) launchingWithATask() *supervise.Machine {
 // holds the launch until the agent's ready. The daemon then restarts: the hold at the ready lived
 // in memory, and the claim is restored launch_uncertain. The stop's next attempt runs before the
 // boot's relaunch and is refused there, so it waits on its row's backoff. The relaunch releases
-// the claim and spawns it with nothing holding it (launchUnfinishedClaim), and the implementer
+// the claim and spawns it with nothing holding it (launchUnfinished), and the implementer
 // reaches its ready, is sent its task and starts its turn. The stop's next attempt, at most a
 // backoff of 64 seconds later, meets that turn and cuts it at the deadline the row stores, 2
 // minutes after the message, or at once where the deadline has passed. A first attempt after the
@@ -3158,7 +3180,7 @@ func TestWorkHoldStopsTheRelaunchOfAnUncertainLaunchWithinTheBackoffOfItsReady(t
 				t.Fatalf("the stop that met the uncertain launch left %+v, want it waiting for the relaunch", stops)
 			}
 
-			(&supervision{log: quietLogger(), supervisor: r.sup}).launchUnfinishedClaim(r.ctx, token, r.machine(claim.RoleImplementer))
+			r.bootRelaunch(claim.RoleImplementer)
 			if c := r.machine(claim.RoleImplementer).Claim(); c.State != supervise.StateLaunching || c.WorkHeld() {
 				t.Fatalf("after the boot's relaunch the implementer is %s, held %v; want it launching with nothing held", c.State, c.WorkHeld())
 			}
@@ -3191,7 +3213,7 @@ func TestWorkHoldStopsTheRelaunchOfAnUncertainLaunchWithinTheBackoffOfItsReady(t
 }
 
 // The work hold's stop that lands between the two calls of the boot's relaunch of
-// an uncertain launch (launchUnfinishedClaim): the release, which leaves the claim queued at the
+// an uncertain launch (launchUnfinished): the release, which leaves the claim queued at the
 // generation it had (supervise.Claim.ReleasedLaunch), and the spawn. A start spawned the
 // implementer with its task, the close message met no session that holds the role and queued its
 // stop, and the daemon restarted before the stop's first attempt, so the claim is restored
@@ -3256,7 +3278,7 @@ func TestWorkHoldStopsTheBootsReleasedLaunchAtItsReady(t *testing.T) {
 				if stops := r.holdStops(claim.RoleImplementer); len(stops) != 1 {
 					t.Fatalf("the stop that met the uncertain launch left %+v, want it waiting for the relaunch", stops)
 				}
-				(&supervision{log: quietLogger(), supervisor: r.sup}).launchUnfinishedClaim(r.ctx, token, r.machine(claim.RoleImplementer))
+				r.bootRelaunch(claim.RoleImplementer)
 			} else {
 				// The relaunch's second call: the spawn, with nothing holding the claim.
 				r.handle(claim.RoleImplementer, supervise.RequestSpawn{Claim: token})
@@ -3759,7 +3781,7 @@ func TestWorkHoldOpeningGivesTheOperatorsTaskFirstAndItsOwnTaskAfter(t *testing.
 				r.restart()
 			}
 
-			r.wantPrompts("after the operator's turn", heldOperatorTask, r.opening(4, 4)+"\n\n"+workflow.ResumePhaseTask(r.issue()))
+			r.wantPrompts("after the operator's turn", heldOperatorTask, r.opening(4, 4)+"\n\n"+r.resumeTask())
 			if got := r.startsSince(claim.RoleImplementer, 0); got != 0 {
 				t.Fatalf("the outbox still holds %d starts of the implementer, want the opening's start finished", got)
 			}

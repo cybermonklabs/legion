@@ -212,6 +212,7 @@ func outOfTheLine(t *testing.T, d *daemon, issue, when string) {
 // with nobody in it, until a start of the workflow's own — the held phase's retry, the tree's
 // re-admission — or a person moves it. TestAStopEndsTheOwedStartOfAWaitingIssue drives that retry.
 func TestAnOperatorsStopOfASlottedWorkerHolds(t *testing.T) {
+	t.Parallel()
 	pool, cfg, o, rt := stoppedWorkerDaemon(t)
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
@@ -369,6 +370,7 @@ func seedWaitingTester(t *testing.T, cfg config.Config, project, root, key, rank
 // line, takes the free slot, and its tester is launched — so what the stop ended is one start, not
 // the issue's ability to run again.
 func TestAStopEndsTheOwedStartOfAWaitingIssue(t *testing.T) {
+	t.Parallel()
 	pool, cfg, o, rt := stoppedWorkerDaemon(t)
 	cfg.AdmissionCap = 2
 	project, err := claim.ProjectToken(cfg.Project)
@@ -451,6 +453,7 @@ func TestAStopEndsTheOwedStartOfAWaitingIssue(t *testing.T) {
 // take it once the test lets it go is the pass this test is about: one pass, with the retired
 // claim and the free slot both in front of it.
 func TestAFreedSlotGoesPastTheStoppedIssueToTheNextInLine(t *testing.T) {
+	t.Parallel()
 	pool, cfg, o, rt := stoppedWorkerDaemon(t)
 	cfg.AdmissionCap = 2
 	project, err := claim.ProjectToken(cfg.Project)

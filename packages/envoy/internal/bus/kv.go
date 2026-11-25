@@ -19,10 +19,11 @@ import (
 // refusal of a key outside its alphabet is named the ErrInvalidKey it is (invalidKey), so every
 // key a call refuses however often it is named is an ErrRefused. A write (Put, PutString, Create,
 // Update) is held to the longest subject any call on its key builds, a watcher's create request, so
-// a key written through it stays readable, watchable and deletable. Any other call is held only to
-// the subject it builds itself, so a key an earlier build stored past the write bound still lists
-// and deletes, and still reads while its get fits: a store serves it or skips it, and a reaper
-// removes it.
+// a key written through it stays readable, watchable and deletable, and a value the bus refuses for
+// its size, past the server's max payload or the bucket's largest value, is ErrTooLarge naming the
+// size and the bound (tooLarge). Any other call is held only to the subject it builds itself, so
+// a key an earlier build stored past the write bound still lists and deletes, and still reads
+// while its get fits: a store serves it or skips it, and a reaper removes it.
 //
 // Every read and write goes through the bucket's legacy nats.KeyValue, except what nats.go runs as
 // a watcher and the reads beside them: a watch of the bucket (WatchKeys), a key's history
@@ -452,6 +453,48 @@ func invalidKey(key any, err error) error {
 	return err
 }
 
+// jsStreamMessageExceedsMaximum is nats-server's code for a message larger than its stream takes
+// (JSStreamMessageExceedsMaximumErr): for a bucket, a value past the bucket's largest value
+// (nats.KeyValueConfig.MaxValueSize). nats.go names no constant for it.
+const jsStreamMessageExceedsMaximum = 10054
+
+// MaxPayload is the largest message, headers and value together, that the server this handle's
+// connection is on takes now (nats.Conn.MaxPayload, from the server's INFO, which a reconnect to
+// another server renews). A caller that lays a value out to fit one message reads it at each
+// write, so a server that raises or lowers its max payload changes the layout with no new build.
+func (kv KeyValue) MaxPayload() int {
+	return int(kv.streams.Conn().MaxPayload())
+}
+
+// tooLarge names the bus's refusal of a write of value bytes under key for the value's size as the
+// ErrTooLarge it is, naming the size and the bound: nats.go's refusal of a message past the
+// server's max payload, which it makes before sending anything (nats.ErrMaxPayload), and the
+// stream's refusal of a value past the bucket's largest value (jsStreamMessageExceedsMaximum). The
+// same write is refused at every retry, so its caller answers it as the caller's own input, a 413,
+// rather than as a bus that did not answer. The bucket's bound is read from its stream only here,
+// on the refusal, and a read of it that fails leaves it out of the error. Any other error is
+// returned as it is.
+func (kv KeyValue) tooLarge(key string, value int, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, nats.ErrMaxPayload) {
+		return fmt.Errorf("%w: a value of %d bytes for key %q against the server's max payload of %d bytes: %w", ErrTooLarge, value, key, kv.MaxPayload(), err)
+	}
+	var apiErr *nats.APIError
+	if !errors.As(err, &apiErr) || apiErr.ErrorCode != jsStreamMessageExceedsMaximum {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
+	defer cancel()
+	stream, streamErr := kv.streams.Stream(ctx, "KV_"+kv.Bucket())
+	if streamErr != nil {
+		return fmt.Errorf("%w: a value of %d bytes for key %q past the largest value of bucket %s: %w", ErrTooLarge, value, key, kv.Bucket(), err)
+	}
+	return fmt.Errorf("%w: a value of %d bytes for key %q past the largest value of bucket %s, %d bytes with its headers: %w",
+		ErrTooLarge, value, key, kv.Bucket(), stream.CachedInfo().Config.MaxMsgSize, err)
+}
+
 // Get reads key's latest value from the bucket.
 //
 // The read is a direct get, as every read of this build's buckets is but an edge listener's, which
@@ -569,7 +612,7 @@ func (kv KeyValue) Put(key string, value []byte) (uint64, error) {
 		return 0, err
 	}
 	revision, err := refusedAfterOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Put(key, value) })
-	return revision, invalidKey(key, err)
+	return revision, kv.tooLarge(key, len(value), invalidKey(key, err))
 }
 
 func (kv KeyValue) PutString(key string, value string) (uint64, error) {
@@ -577,7 +620,7 @@ func (kv KeyValue) PutString(key string, value string) (uint64, error) {
 		return 0, err
 	}
 	revision, err := refusedAfterOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.PutString(key, value) })
-	return revision, invalidKey(key, err)
+	return revision, kv.tooLarge(key, len(value), invalidKey(key, err))
 }
 
 func (kv KeyValue) Create(key string, value []byte) (uint64, error) {
@@ -585,7 +628,7 @@ func (kv KeyValue) Create(key string, value []byte) (uint64, error) {
 		return 0, err
 	}
 	revision, err := refusedAfterOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Create(key, value) })
-	return revision, invalidKey(key, err)
+	return revision, kv.tooLarge(key, len(value), invalidKey(key, err))
 }
 
 func (kv KeyValue) Update(key string, value []byte, last uint64) (uint64, error) {
@@ -593,16 +636,30 @@ func (kv KeyValue) Update(key string, value []byte, last uint64) (uint64, error)
 		return 0, err
 	}
 	revision, err := refusedAfterOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Update(key, value, last) })
-	return revision, invalidKey(key, err)
+	return revision, kv.tooLarge(key, len(value), invalidKey(key, err))
 }
 
-// IsCASConflict reports whether err is a compare-and-swap revision conflict
-// (as opposed to a real transport/storage error). Create returns ErrKeyExists
-// when the key already exists; Update returns a "wrong last sequence" API error
-// when the revision moved.
+// IsCASConflict reports whether err is JetStream's refusal of a conditional write over a record
+// another write moved, as opposed to a transport or storage failure: a Create of a key that is
+// there, an Update, Delete or Purge at a revision that is no longer the key's last
+// (nats.LastRevision), or a publish whose expected last sequence for its subject did not match
+// (PublishCursorAt). JetStream answers each with wrong last sequence, error 10071; the leader of a
+// stream of more than one copy answers 10164 instead to a write that meets another write of the
+// same subject still being replicated (nats-server's checkMsgHeadersPreClusteredProposal), which
+// is how a loser of a race on a replicated bucket is answered when it reaches the leader before the
+// winner has landed. nats.go v1.55.0 names a Create's conflict nats.ErrKeyExists and an Update's,
+// Delete's or Purge's nats.ErrKeyRevisionMismatch, under either code, but nats.ErrKeyExists itself
+// matches an error by its code, 10071 alone: a lost Update, Delete or Purge on a replicated bucket
+// is not nats.ErrKeyExists. A conflict is therefore asked of this and never of nats.ErrKeyExists. A
+// publish's 10164 nats.go names nothing, so it is matched by its code.
 func IsCASConflict(err error) bool {
-	return errors.Is(err, nats.ErrKeyExists) || strings.Contains(err.Error(), "wrong last sequence")
+	return errors.Is(err, nats.ErrKeyExists) || errors.Is(err, nats.ErrKeyRevisionMismatch) || errors.Is(err, wrongLastSequenceReplicated)
 }
+
+// wrongLastSequenceReplicated is JetStream's wrong last sequence as the leader of a replicated
+// stream answers a write that met another write of its subject still being replicated: error
+// 10164, which nats.APIError's Is matches by code.
+var wrongLastSequenceReplicated = &nats.APIError{Code: 400, ErrorCode: nats.JSErrCodeStreamWrongLastSequenceConstant}
 
 func (kv KeyValue) Delete(key string, opts ...nats.DeleteOpt) error {
 	if err := kv.check(key, putOverhead(kv.Bucket())); err != nil {
@@ -628,43 +685,60 @@ func (kv KeyValue) ReadStored(ctx context.Context, key string, readable func(val
 	return kv.GetFromLeader(ctx, key)
 }
 
-// DeleteAtRead deletes key at the revision it reads (ReadStored, with readable), so a write that
-// lands in between is kept, and returns that revision, 0 when there was none to read. A value
-// readable refuses is deleted at the revision the stream's leader reports for it, the one it is
-// stored at. A delete the bucket refuses at the revision a direct get reported is followed by one
-// read of the key from the stream's leader: a record the server wrote (ReadFromLeader, LeaderServerWritten), which a
-// direct get can report at another stream's sequence however its value reads, is deleted at the
-// sequence it is stored at, and any other answer leaves the refusal standing, a write that
-// landed in between being kept.
+// DeleteAtRead deletes key at the revision the stream's leader reports for it (ReadFromLeader), so
+// a write that lands in between is kept, and answers what it deleted as the leader classified it
+// (LeaderEntry): a writer's put (LeaderPut) with the revision the delete was fenced on and the value,
+// which a caller reads to remove what that value named (store's interest record chunks); a put the
+// server wrote (LeaderServerWritten) with the sequence it was deleted at and no value, since a
+// message no writer stored names nothing a caller removes; and the zero LeaderEntry when it deleted
+// nothing it read. The read is the leader's and never a direct get: on a replicated bucket a direct
+// get is answered by any copy near enough to current (Get), and a copy that has not applied the
+// registration made a moment ago answers that the key is absent, so the delete a session's stop asks
+// for would be dropped and its record kept until it expires. The leader holds every write the bucket
+// took. It reports a record the server wrote, which a direct get can report at another stream's
+// sequence, at the sequence it is stored at, so it is deleted there like any other record. A delete
+// the bucket refuses at that revision is a write that landed between the read and the delete, and
+// the refusal stands, that writer's record kept (DeleteAt), unless DeleteAt's own leader read finds
+// a record the server wrote since, which it deletes and this answers as LeaderServerWritten. A
+// writer's put the leader answers can still be no record of key - a writer of the bucket can store
+// a copy of another key's value under it, another session's manifest among them - so a caller acts
+// on the value only behind a guard of its own (store's deleteInterest deletes chunks only for a
+// cached row of the same generation; session's Delete reads only the revision).
 //
-// A key the read finds missing is deleted at no revision at all, which fences nothing: nats.go
-// sends no expected-last-subject-sequence header for revision 0, so that delete would take
-// whatever the bucket holds, and a write that landed between the read and it - a registration
-// storing the row this delete read none of - would be deleted whole. So no delete is made for it:
-// the key is reported absent, at revision 0, and there is nothing there to remove.
+// A key the read finds missing, or holding a delete or purge marker, is deleted at no revision at
+// all, which fences nothing: nats.go sends no expected-last-subject-sequence header for revision
+// 0, so that delete would take whatever the bucket holds, and a write that landed between the read
+// and it - a registration storing the row this delete read none of - would be deleted whole. So no
+// delete is made for it: the answer is the zero LeaderEntry, and there is nothing there to remove.
 //
 // A key it may not read (ErrRefused) it may not write either, since a write is held to the longest
 // bound and nats.go refuses a key outside its alphabet everywhere, so nothing can land in between:
-// that key is deleted at no revision, which removes a key an earlier build stored past the write
-// bound, and a key outside the alphabet is refused by the delete too.
-func (kv KeyValue) DeleteAtRead(ctx context.Context, key string, readable func(value []byte) bool) (uint64, error) {
-	entry, err := kv.ReadStored(ctx, key, readable)
+// that key is deleted at no revision, answered as the zero LeaderEntry, which removes a key an
+// earlier build stored past the write bound, and a key outside the alphabet is refused by the delete
+// too.
+func (kv KeyValue) DeleteAtRead(ctx context.Context, key string) (LeaderEntry, error) {
+	leader, err := kv.ReadFromLeader(ctx, key)
 	switch {
-	case err == nil:
-		return kv.DeleteAt(ctx, key, entry.Revision())
-	case errors.Is(err, nats.ErrKeyNotFound):
-		return 0, nil
 	case errors.Is(err, ErrRefused):
-		return 0, kv.Delete(key)
-	default:
-		return 0, err
+		return LeaderEntry{}, kv.Delete(key)
+	case err != nil:
+		return LeaderEntry{}, err
+	case leader.Kind == LeaderAbsent || leader.Kind == LeaderMarker:
+		return LeaderEntry{}, nil
 	}
+	revision, err := kv.DeleteAt(ctx, key, leader.Revision)
+	if revision != leader.Revision {
+		// DeleteAt's fallback took a record the server wrote since the read, at its own sequence:
+		// the record read is gone, and what was deleted names nothing a caller removes.
+		leader = LeaderEntry{Kind: LeaderServerWritten, Revision: revision}
+	}
+	return leader, err
 }
 
 // DeleteAt deletes key fenced on revision, the revision a read of the key reported, and returns the
 // revision the delete landed at. A delete the bucket refuses as a compare-and-swap conflict
-// (IsCASConflict - a wrong last sequence, reported as ErrKeyExists for a key holding a value and as
-// a wrong-last-sequence error otherwise) is followed by one read of the key from the stream's
+// (IsCASConflict: wrong last sequence, 10071, or 10164 from a replicated bucket whose winning write
+// is still being replicated) is followed by one read of the key from the stream's
 // leader: a record the server wrote (ReadFromLeader, LeaderServerWritten), which a direct get reports at another
 // stream's sequence however its value reads, is deleted at the sequence it is stored at and that
 // sequence returned; any other compare-and-swap refusal is returned as its error with revision, a

@@ -347,10 +347,11 @@ func legionRecord(version int) record.WorkHold {
 }
 
 // phaseOpening is the opening start of the claim of issue's role that holds its phase: the one
-// task, the opening's sentences and then the phase work as the boot builds it (ResumePhaseTask),
-// with the opening sentences carried apart for supervise's EndHold.
+// task, the opening's sentences and then the phase work as the boot builds it (ResumeTask, for an
+// issue with no plan rows and the rigs' working copy of no directory), with the opening sentences
+// carried apart for supervise's EndHold.
 func phaseOpening(issue record.Issue, role claim.Role, opening string) record.SuperviseRequest {
-	return record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: opening + "\n\n" + ResumePhaseTask(issue),
+	return record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: opening + "\n\n" + resumeText(issue, WorkingCopy(issue, nil)),
 		Generation: issue.Generation, Phase: issue.Phase, ResumeTask: true, NeedsSlot: record.PhaseKeepsSlot(issue.Phase), Opening: opening}
 }
 
@@ -1473,11 +1474,11 @@ func TestWorkHoldShowsWhyInTheState(t *testing.T) {
 	}
 }
 
-// beforeTheWorkHold is the contract before api's workHoldContract (223), the contract whose entry
+// beforeTheWorkHold is the contract before api's workHoldContract (290), the contract whose entry
 // added `why: held`. It is pinned rather than read from api.DaemonAPIVersion, as api's own test of
 // the strip pins it, so the next contract does not make this row read a contract that is served
 // the word.
-const beforeTheWorkHold = 222
+const beforeTheWorkHold = 289
 
 // H36: a caller whose plugin is below the contract that added `why: held` reads the state without
 // it, through the state route's own narrowing, while a caller at the contract is served it. The

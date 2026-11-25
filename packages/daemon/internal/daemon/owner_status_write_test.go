@@ -368,6 +368,7 @@ func (r *ownerMoveRig) restored(after int64) {
 // narrow meaning: only a status change after the set-back's write cancels it, so a worker's own
 // writes are still set back.
 func TestTheOwningArchitectsDoneStandsOverAStatusWriteTheDaemonQueuedOrHasInFlight(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name string
 		run  func(r *ownerMoveRig)

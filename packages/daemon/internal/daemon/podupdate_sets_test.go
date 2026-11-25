@@ -71,6 +71,7 @@ type roundShape struct {
 // The last check walks supervise.States() and supervise.SuspendSources(). A state or a source
 // added to supervise without a row here fails it.
 func TestEveryClaimShapeIsInBothRoundSetsOrNeither(t *testing.T) {
+	t.Parallel()
 	const round = podUpdateRound
 	opened := podUpdateStart
 	// now is the round read a minute after it opened, long before its bound.
@@ -300,6 +301,7 @@ type owedLaunchState struct {
 // The last check walks supervise.States() and supervise.SuspendSources(). A state or a source
 // added to supervise without a row here fails it.
 func TestEveryClaimShapeOfARoleThePauseOwesALaunchIsReadByOneRule(t *testing.T) {
+	t.Parallel()
 	const round = podUpdateRound
 	opened := podUpdateStart
 	// now is the round read a minute after it opened, long before its bound.

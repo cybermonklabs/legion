@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // An approval request reads the document's approval twice inside its own transaction, once
@@ -25,6 +26,7 @@ import (
 // request answers in sequence - 201 for the first, 200 for a repeat - is reviews_test.go's
 // (TestApprovalRequestOpensAnAskWhoseAnswerPinsAReviewToTheDocumentVersion).
 func TestApprovalRequestsSentAtOnceReadTheirApprovalInTheirTransaction(t *testing.T) {
+	t.Parallel()
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documents := docs.New(docs.Deps{Store: database, Settle: time.Hour})
 		t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
@@ -48,7 +50,7 @@ func TestApprovalRequestsSentAtOnceReadTheirApprovalInTheirTransaction(t *testin
 			map[string]any{"actor": sessionActor()}).Code
 	}
 	// atOnce sends each of targets' requests at the same moment and answers their statuses, or
-	// fails when one has not answered within a bound no healthy transaction reaches.
+	// fails when one never answers: its one bound is the test binary's deadline (testwait.Receive).
 	atOnce := func(targets []string) []int {
 		t.Helper()
 		statuses := make([]int, len(targets))
@@ -65,11 +67,7 @@ func TestApprovalRequestsSentAtOnceReadTheirApprovalInTheirTransaction(t *testin
 		done := make(chan struct{})
 		go func() { finished.Wait(); close(done) }()
 		started.Done()
-		select {
-		case <-done:
-		case <-time.After(90 * time.Second):
-			t.Fatalf("approval requests sent at once did not all answer within 90 s")
-		}
+		testwait.Receive(t, "every approval request sent at once to answer", done)
 		return statuses
 	}
 
@@ -189,6 +187,7 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 // around it. The one-phase route sent thirty-seven, its write statements each a round trip of
 // its own between the reads.
 func TestApprovalRequestsCostAtMostTwentyFourRoundTrips(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	counter := &roundTrips{}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}

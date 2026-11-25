@@ -23,6 +23,7 @@ import (
 // member is owed news whose change set is not recorded yet; once the pair is recorded the same row
 // runs, and the merger's task carries the news.
 func TestTheMergersStartWaitsWhileItsMembersChangeSetIsUnrecorded(t *testing.T) {
+	t.Parallel()
 	r := newNewsReconcileRig(t)
 	r.member(reconcileRoot, "", phase.Merging)
 	r.told(reconcileRoot, record.AudienceHolder, 4)
@@ -180,6 +181,7 @@ func TestWorkHoldOpeningStartOfAMergerANewerStartStartedLeavesTheOpeningOwed(t *
 // the item with no earlier version. Once Dispatch answers, the next reconcile reads the history
 // again, fills the told row with the version it gives and clears what it recorded unread.
 func TestThreeFailedHistoryReadsRecordTheHistoryUnreadWithNoVersionAndReleaseTheMerger(t *testing.T) {
+	t.Parallel()
 	r := newNewsReconcileRig(t)
 	r.member(reconcileRoot, "", phase.Merging)
 	r.told(reconcileRoot, record.AudienceHolder, -1)
@@ -295,6 +297,7 @@ func (r *newsReconcileRig) reconcilesQueued() int {
 // the old failure; and when that reconcile has run, Dispatch answering now, the merger is released
 // with the version the history gives, and never told the failure its confirmation would have kept.
 func TestAPendingReconcileHoldsTheMergerOffAnUnreadHistoryUntilItReadsItAgain(t *testing.T) {
+	t.Parallel()
 	r := newNewsReconcileRig(t)
 	root := r.member(reconcileRoot, "", phase.Merging)
 	r.told(reconcileRoot, record.AudienceHolder, -1)
@@ -382,6 +385,7 @@ func TestAPendingReconcileHoldsTheMergerOffAnUnreadHistoryUntilItReadsItAgain(t 
 // send tells the unread history the start attached, with its reason, and the delivery keeps it.
 // The merger's task never goes as its bare text, with none of the news it was held for.
 func TestAMergerReleasedOnAnUnreadHistoryIsSentWhatItsStartAttached(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// answers says whether Dispatch answers the review history once the merger is released.
@@ -483,6 +487,7 @@ func TestAMergerReleasedOnAnUnreadHistoryIsSentWhatItsStartAttached(t *testing.T
 // records it while another of the tree is still to run settles nothing on it, since that one reads
 // the history again.
 func TestTheReconcileThatRecordsAnUnreadHistorySettlesOnItUnlessAnotherIsPending(t *testing.T) {
+	t.Parallel()
 	r := newNewsReconcileRig(t)
 	r.member(reconcileRoot, "", phase.Reviewing)
 	r.told(reconcileRoot, record.AudienceHolder, -1)

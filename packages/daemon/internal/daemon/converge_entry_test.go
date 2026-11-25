@@ -70,6 +70,7 @@ func sweptStarts(t *testing.T, pool *store.Pool, issue string) []sweptStart {
 // holds: the start carries that entry, so the role is owed nothing (workflow.OwedEntry), the
 // gate reads that and the later sweeps write no row and apply no fact of their own.
 func TestTheEntrySweepTickConvergesARoleBehindItsEntry(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	log := quietLogger()
@@ -172,6 +173,7 @@ func TestTheEntrySweepTickConvergesARoleBehindItsEntry(t *testing.T) {
 // it, rather than the constant behind it; and with an override, which is how every other test
 // and the live proof reach the sweep at all.
 func TestTheEntrySweepConvergesAtLeastEveryMinuteWithNoOverride(t *testing.T) {
+	t.Parallel()
 	if got := entrySweepPeriod(0); got <= 0 || got > time.Minute {
 		t.Fatalf("the entry sweep's period with no override = %s, want more than zero and at most %s: a role behind its entry would wait longer than a minute for its work",
 			got, time.Minute)
@@ -192,6 +194,7 @@ func TestTheEntrySweepConvergesAtLeastEveryMinuteWithNoOverride(t *testing.T) {
 // What is driven is the one call each tick of tickEntrySweep makes (applyEntrySweep), so the
 // count below is of sweeps, not of elapsed periods.
 func TestTheEntrySweepAppliesNoFactWhileNoRoleIsBehindItsEntry(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	log := quietLogger()
@@ -297,6 +300,7 @@ func TestTheEntrySweepAppliesNoFactWhileNoRoleIsBehindItsEntry(t *testing.T) {
 // pass after pass. The moment that role goes behind, the same sweep applies its fact and sends
 // its work.
 func TestTheEntrySweepAppliesNoFactForARolePastThePhaseItsIssueStandsIn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	log := quietLogger()

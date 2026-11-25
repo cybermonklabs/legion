@@ -26,6 +26,7 @@ type uploadRefusal struct {
 // token is taken, as it was before #3000, until every deployed client sends one (INFRA-4980).
 // Each case drives its refusal, and then the remedy the refusal names, to its answer.
 func TestUploadRefusalsNameOnlyARemedyTheRouteTakes(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 	route := "/api/v1/issues/" + issue.Key + "/artifacts"

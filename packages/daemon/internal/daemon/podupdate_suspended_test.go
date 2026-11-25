@@ -16,13 +16,11 @@ package daemon
 // the store and restored as a boot restores them (newPodUpdateRig's sup.restore).
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -32,7 +30,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
-	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -76,7 +73,7 @@ func suspendedRole(role claim.Role, by supervise.SuspendSource) podUpdateRole {
 //     holds nothing back;
 //   - neither suspended claim is asked (no update-ask row, no publish to its topic), woken or
 //     resumed (no Resume call), and each is still suspended once the round is over;
-//   - no bundle of the workspace is saved.
+//   - no idle release declines the pod: the round's read writes no decline row.
 func replacedOverPassedOverClaims(t *testing.T, script func(*podUpdateRig)) (*podUpdateRig, map[string]any) {
 	t.Helper()
 	rig := newPodUpdateRig(t,
@@ -103,7 +100,7 @@ func replacedOverPassedOverClaims(t *testing.T, script func(*podUpdateRig)) (*po
 	}
 	// Nothing is deciding when the sweep reads the claims, so the first sweep after the answers
 	// is the one that replaces the pod, and the read cannot be followed by a refusal that a
-	// machine mid-decision would cause (roundGroup's mask).
+	// machine mid-decision would cause (masked).
 	rig.settleAll()
 	replaced := rig.awaitReplacement(1, "once both workers answered")
 
@@ -153,12 +150,12 @@ func replacedOverPassedOverClaims(t *testing.T, script func(*podUpdateRig)) (*po
 	if resumes := rig.rt.CallsOf("Resume"); len(resumes) != 0 {
 		t.Errorf("the round resumed %d processes, want none", len(resumes))
 	}
-	var bundles int
-	if err := rig.pool.QueryRow(rig.ctx, "select count(*) from workspace_bundles").Scan(&bundles); err != nil {
-		t.Fatalf("read the workspace bundles: %v", err)
+	var declines int
+	if err := rig.pool.QueryRow(rig.ctx, "select count(*) from idle_release_declines").Scan(&declines); err != nil {
+		t.Fatalf("read the idle release declines: %v", err)
 	}
-	if bundles != 0 {
-		t.Errorf("the round saved %d workspace bundles, want none: the read keeps nothing", bundles)
+	if declines != 0 {
+		t.Errorf("the round recorded %d idle release declines, want none: its read is the round's, which declines no release", declines)
 	}
 
 	lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
@@ -186,6 +183,7 @@ func replacedOverPassedOverClaims(t *testing.T, script func(*podUpdateRig)) (*po
 // The negative control is main at fd1f52f1, BET-1182's pod on 2026-11-16: the round waited for
 // every claim with a session, asked only a ready one, and held the pod to its bound.
 func TestAnUpdateRoundDoesNotWaitForAClaimTheDaemonSuspended(t *testing.T) {
+	t.Parallel()
 	rig, line := replacedOverPassedOverClaims(t, func(rig *podUpdateRig) {
 		rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead})
 	})
@@ -316,95 +314,23 @@ func TestWorkHoldAnUpdateRoundPassesOverAClaimTheHoldStopped(t *testing.T) {
 	}
 }
 
-// workspaceUnsavedLine is the line of a replacement that a save of the issue workspace held back
-// (workspaceNotSaved).
-const workspaceUnsavedLine = "supervise: the issue workspace could not be saved as a bundle before this update round's replacement; nothing was replaced and the round stays open"
+// heldWorkKeepsLine is the line of a replacement that a claim the work hold stopped holds back
+// while the issue workspace can hold its unpushed work (heldWorkKeepsPod).
+const heldWorkKeepsLine = "supervise: the work hold stopped a claim of this update round, and the issue workspace can hold its unpushed work; nothing was replaced and the round stays open"
 
-// bundlingRuntime is the pod-update rig's runtime with the workspace bundle that a role's shim
-// builds (runtime.WorkspaceBundler). It asks the role's agent connection, as the Sandbox runtime
-// does, and that fake connection answers the bundle a test set (fake.Conn.SetWorkspaceBundle) or
-// the error a test set. At each replacement of the pod it reads which save the store holds for
-// the issue before the replacement goes on, so a test sees what the store held when the pod went.
-type bundlingRuntime struct {
-	*fake.Runtime
-	rig *podUpdateRig
-	mu  sync.Mutex
-	// savedAtReplace is, for each replacement, the id of the save of the issue's workspace bundle
-	// the store held then, 0 for none.
-	savedAtReplace []int64
-	// failNext is the error the next replacement fails with before it reaches the runtime, nil for
-	// none (failNextReplacement).
-	failNext error
-}
-
-func (b *bundlingRuntime) BundleWorkspace(ctx context.Context, issue string, role claim.Role) (runtime.WorkspaceBundle, error) {
-	conn, ok := b.rig.workers[role]
-	if !ok {
-		return runtime.WorkspaceBundle{}, fmt.Errorf("no process of the %s runs to bundle the workspace", role)
-	}
-	return conn.BundleWorkspace(ctx, issue, time.Minute)
-}
-
-func (b *bundlingRuntime) ReplacePod(ctx context.Context, k runtime.Known, due func(context.Context) error) error {
-	var release int64
-	if err := b.rig.pool.QueryRow(ctx, `select coalesce(max(release_id), 0) from workspace_bundles where issue = $1`, podUpdateIssue).Scan(&release); err != nil {
-		return err
-	}
-	b.mu.Lock()
-	b.savedAtReplace = append(b.savedAtReplace, release)
-	fail := b.failNext
-	b.failNext = nil
-	b.mu.Unlock()
-	if fail != nil {
-		return fail
-	}
-	return b.Runtime.ReplacePod(ctx, k, due)
-}
-
-// replacedWith is the save of the issue's workspace bundle the store held at each replacement.
-func (b *bundlingRuntime) replacedWith() []int64 {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return slices.Clone(b.savedAtReplace)
-}
-
-// failNextReplacement makes the next replacement fail with err before it reaches the runtime: a
-// ReplacePod that fails in another way than the last word's refusal, as an API call that does not
-// reach the cluster fails. It asks no last word, so nothing deletes the save made for it.
-func (b *bundlingRuntime) failNextReplacement(err error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.failNext = err
-}
-
-// Spec step 6 under `work`: the daemon keeps the pod of a claim the work hold stopped, so that the
-// worker's unpushed work stays, and a pod update round that replaces that pod keeps the work as
-// the idle release keeps it. The round still passes the held claim over: it does not ask it or
-// wait for it. Before it replaces the pod, the shim of the role it replaces the pod through
-// bundles the issue workspace, and the daemon saves the bundle in the store the idle release saves
-// through (store.PutRoundWorkspaceBundle). The next pod of the issue takes that bundle for its one
-// restore (savedWorkspaceBundle, store.TakeWorkspaceBundleForRestore), and the pod the work came
-// off is sent nothing. The replacement's line names the save, and the message on the issue says
-// that the next pod restores the work rather than that the work is lost.
-//
-// A save that fails holds the replacement: nothing is replaced, a line names the issue and the
-// error, and the round stays open. The next sweep saves again and replaces the pod.
-func TestWorkHoldAnUpdateRoundSavesTheWorkOfAClaimTheHoldStopped(t *testing.T) {
+// A round that passed over a claim the work hold stopped, whose worker cannot push and whose work
+// the daemon keeps no copy of. The round reads the issue workspace through the role the pod is
+// replaced through, as an idle release's check does, and where the read finds work that origin
+// does not hold it does not replace the pod: a line names the issue, the held claim and what the
+// read found, and the round stays open. The next sweep reads again, and once a read finds nothing
+// unpushed the pod is replaced.
+func TestWorkHoldAnUpdateRoundKeepsThePodWhileTheWorkspaceHoldsTheHeldWork(t *testing.T) {
 	const held = claim.RolePlanner
 	workers := []claim.Role{claim.RoleImplementer, claim.RoleTester}
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester),
 		suspendedRole(held, supervise.SuspendedByHold),
 	)
-	bundler := &bundlingRuntime{Runtime: rig.rt, rig: rig}
-	rig.s.runtime = bundler
-	saved := runtime.WorkspaceBundle{Bundle: []byte("PACK the planner's unpushed work"), Head: passedOverHead,
-		Tips: []string{passedOverCommit}, At: podUpdateStart, PodUID: podUpdatePod}
-	refused := errors.New("the shim refused bundle-workspace: jj git bundle: the working copy is stale")
-	for _, role := range workers {
-		rig.workers[role].SetWorkspaceBundle(saved)
-		rig.workers[role].FailBundleWorkspace(refused)
-	}
 	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
 	rig.drifts(podUpdateDrift)
 
@@ -418,109 +344,62 @@ func TestWorkHoldAnUpdateRoundSavesTheWorkOfAClaimTheHoldStopped(t *testing.T) {
 	}
 	rig.settleAll()
 
-	testwait.Eventually(t, "a sweep to reach the replacement and fail to save the held claim's work", func() bool {
+	testwait.Eventually(t, "a sweep to reach the replacement and keep the pod for the held claim's work", func() bool {
 		rig.tick()
-		return len(loggedLines(t, rig.logs.String(), workspaceUnsavedLine)) > 0
+		return len(loggedLines(t, rig.logs.String(), heldWorkKeepsLine)) > 0
 	})
 	if calls := rig.replacements(); len(calls) != 0 {
-		t.Fatalf("the pod was replaced %d times though the save of the held claim's work failed, want none", len(calls))
+		t.Fatalf("the pod was replaced %d times though the workspace holds the held claim's work, want none", len(calls))
 	}
-	unsaved := loggedLines(t, rig.logs.String(), workspaceUnsavedLine)[0]
-	if unsaved["issue"] != podUpdateIssue || !strings.Contains(fmt.Sprint(unsaved["error"]), refused.Error()) {
-		t.Fatalf("the failed save logged %+v, want a line naming %s and the error %q", unsaved, podUpdateIssue, refused)
+	kept := loggedLines(t, rig.logs.String(), heldWorkKeepsLine)[0]
+	if kept["issue"] != podUpdateIssue || kept["workspaceRead"] != "found work" {
+		t.Fatalf("the kept replacement logged %+v, want a line naming %s and the read that found work", kept, podUpdateIssue)
 	}
-	wantField(t, unsaved, "held", held)
+	wantField(t, kept, "held", held)
 	if c := rig.claimOf(held); c.UpdateRound != podUpdateRound {
-		t.Fatalf("after the failed save the %s is in round %q, want the round still open", held, c.UpdateRound)
+		t.Fatalf("after the kept replacement the %s is in round %q, want the round still open", held, c.UpdateRound)
 	}
 
-	for _, role := range workers {
-		rig.workers[role].FailBundleWorkspace(nil)
-	}
-	replaced := rig.awaitReplacement(1, "once the held claim's work was saved")
-
+	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead})
+	replaced := rig.awaitReplacement(1, "once a read found the held claim's work pushed")
 	through, _ := replaced[0].Pod.Claim.Role()
 	if !slices.Contains(workers, through) {
 		t.Fatalf("the pod was replaced through %+v, want a worker's process", replaced[0].Pod)
 	}
-	if asked := rig.workers[through].Bundlings(); len(asked) == 0 || asked[len(asked)-1].Issue != podUpdateIssue {
-		t.Fatalf("the %s's shim was asked to bundle %+v, want the workspace of %s bundled through the role the pod is replaced through", through, asked, podUpdateIssue)
-	}
-	at := bundler.replacedWith()
-	if len(at) != 1 || at[0] <= 0 {
-		t.Fatalf("when the pod was replaced the store held the saves %v, want the round's save before the replacement", at)
-	}
-	release := at[0]
-
-	take := savedWorkspaceBundle(rig.st, podUpdateProject)
-	if _, how, err := take(rig.ctx, podUpdateIssue, podUpdatePod, podUpdateStart.Add(time.Minute)); err != nil || how != runtime.WorkspaceBundleNone {
-		t.Fatalf("the pod the work came off asked for the bundle and was answered %v, %v; want nothing", how, err)
-	}
-	restored, how, err := take(rig.ctx, podUpdateIssue, podUpdateReplacementPod, podUpdateStart.Add(time.Minute))
-	if err != nil || how != runtime.WorkspaceBundleSend {
-		t.Fatalf("the next pod asked for the bundle and was answered %v, %v; want the bundle sent", how, err)
-	}
-	if !bytes.Equal(restored.Bundle, saved.Bundle) || restored.Head != saved.Head || !slices.Equal(restored.Tips, saved.Tips) || restored.Release != release {
-		t.Fatalf("the next pod's restore received %q at %s, tips %v, save %d; want %q at %s, tips %v, save %d",
-			restored.Bundle, restored.Head, restored.Tips, restored.Release, saved.Bundle, saved.Head, saved.Tips, release)
-	}
-
-	c := rig.awaitClaim(held, "its round to end with the replacement", func(c supervise.Claim) bool { return c.UpdateRound == "" })
-	if c.State != supervise.StateSuspended || c.SuspendedBy != supervise.SuspendedByHold {
-		t.Errorf("the %s is %s, suspended by %q, after the round; want it still held by the work hold", held, c.State, c.SuspendedBy)
-	}
-	if n := rig.askedOf(held); n != 0 {
-		t.Errorf("the round wrote %d update-ask rows for the %s, want none: the work hold stopped it", n, held)
-	}
 	lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
-	if len(lines) != 1 {
-		t.Fatalf("the replacement was logged %d times, want once: %+v", len(lines), lines)
+	if len(lines) != 1 || lines[0]["workspaceRead"] != "found no work" {
+		t.Fatalf("the replacement was logged %+v, want one line naming a read that found no work", lines)
 	}
-	wantField(t, lines[0], "notWaitedFor", held)
-	if lines[0]["workspaceBundleSave"] != float64(release) || lines[0]["workspaceBundleBytes"] != float64(len(saved.Bundle)) {
-		t.Errorf("the replacement's line names the save %v of %v bytes, want save %d of %d bytes", lines[0]["workspaceBundleSave"],
-			lines[0]["workspaceBundleBytes"], release, len(saved.Bundle))
-	}
-	messages := rig.messages()
-	if len(messages) != 1 {
-		t.Fatalf("the issue was written %q, want one message naming the work the read found", messages)
-	}
-	if !strings.Contains(messages[0], "Before the replacement, the daemon saved the work that is not on a branch at origin as a bundle. The next pod of this issue restores the bundle before any role starts.") ||
-		strings.Contains(messages[0], "is lost") {
-		t.Errorf("the issue was told %q, want the work saved for the next pod and not lost", messages[0])
+	if c := rig.claimOf(held); c.State != supervise.StateSuspended || c.SuspendedBy != supervise.SuspendedByHold {
+		t.Fatalf("the %s is %s, suspended by %q, after the round; want it still held by the work hold", held, c.State, c.SuspendedBy)
 	}
 }
 
-// heldWorkNoProcessError is what the line of a held replacement names where no role process runs
-// in the round's pod to build the bundle (saveRoundWorkspace's rule for such a pod).
-const heldWorkNoProcessError = "no role process runs in the pod"
-
 // A round whose pod no role process runs in, where the work hold stopped a claim of the round.
-// Only a shim can build the bundle, so the round does not replace that pod, as the idle release
-// keeps a pod whose bundle cannot be built: nothing is replaced by issue and no launch replaces
-// the pod. The round holds the replacement as a failed save holds it: a line names the issue, the
-// held claim and the error, and once the round's bound has come the operator's side is told once,
-// naming the held work. The round still asks the held claim nothing. Once a role runs in the pod
-// again — here the tester, which the operator resumes into the round's own pod, kept for the held
-// work — the round replaces the pod through that role's process and saves the bundle before it
-// does.
-func TestWorkHoldAnUpdateRoundKeepsAPodWithNoProcessToSaveTheHeldWork(t *testing.T) {
+// Only a role's shim can read the workspace, so the round does not replace that pod, as the idle
+// release takes no pod whose workspace it cannot read: nothing is replaced by issue and no launch
+// replaces the pod. A line names the issue, the held claim and why no read was made, and once the
+// round's bound has come the operator's side is told once, naming the held work. The round still
+// asks the held claim nothing. Once a role runs in the pod again — here the tester, which the
+// operator resumes into the round's own pod, kept for the held work — the round reads the
+// workspace through that role's process and replaces the pod where the read finds nothing
+// unpushed.
+func TestWorkHoldAnUpdateRoundKeepsAPodWithNoProcessToReadTheHeldWork(t *testing.T) {
 	const held, worker = claim.RolePlanner, claim.RoleTester
 	rig := newPodUpdateRig(t,
 		podlessMember(held, supervise.StateSuspended, supervise.SuspendedByHold, false),
 		answeredThenSuspended(worker),
 	)
-	bundler := &bundlingRuntime{Runtime: rig.rt, rig: rig}
-	rig.s.runtime = bundler
+	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead})
 	rig.drifts(podUpdateDrift)
 	rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
 
-	rig.wantPodKept("a role process runs in the pod to save the held claim's work")
-	unsaved := loggedLines(t, rig.logs.String(), workspaceUnsavedLine)
-	if len(unsaved) == 0 || unsaved[0]["issue"] != podUpdateIssue || !strings.Contains(fmt.Sprint(unsaved[0]["error"]), heldWorkNoProcessError) {
-		t.Fatalf("the held replacement logged %+v, want a line naming %s and that %s", unsaved, podUpdateIssue, heldWorkNoProcessError)
+	rig.wantPodKept("a role process runs in the pod to read the workspace for the held claim's work")
+	kept := loggedLines(t, rig.logs.String(), heldWorkKeepsLine)
+	if len(kept) == 0 || kept[0]["issue"] != podUpdateIssue || kept[0]["workspaceNotReadBecause"] != noProcessRead {
+		t.Fatalf("the kept replacement logged %+v, want a line naming %s and that %s", kept, podUpdateIssue, noProcessRead)
 	}
-	wantField(t, unsaved[0], "held", held)
+	wantField(t, kept[0], "held", held)
 	if n := rig.askedOf(held); n != 0 {
 		t.Fatalf("the round wrote %d update-ask rows for the %s, want none: the work hold stopped it", n, held)
 	}
@@ -530,13 +409,11 @@ func TestWorkHoldAnUpdateRoundKeepsAPodWithNoProcessToSaveTheHeldWork(t *testing
 
 	rig.clockAt(podUpdateBound)
 	rig.wantPodKept("a role process runs in the pod, whatever the round's bound")
-	if notices := rig.notices(); len(notices) != 1 || !strings.Contains(notices[0].Reason, "a claim that the work hold stopped") {
+	if notices := rig.notices(); len(notices) != 1 || !strings.Contains(notices[0].Reason, "The work hold stopped") {
 		t.Fatalf("past the bound the operator's side was told %+v, want one notice naming the held work", notices)
 	}
 
 	rig.intoRoundPod(worker)
-	saved := runtime.WorkspaceBundle{Bundle: []byte("PACK the planner's unpushed work"), Head: passedOverHead, At: podUpdateStart, PodUID: podUpdatePod}
-	rig.workers[worker].SetWorkspaceBundle(saved)
 	rig.handle(worker, supervise.RequestResume{Claim: rig.tokens[worker]})
 	rig.registerInto(worker, podUpdatePod)
 	if replaced := rig.rt.CallsOf("ReplaceRoundPodAtLaunch"); len(replaced) != 0 {
@@ -545,9 +422,9 @@ func TestWorkHoldAnUpdateRoundKeepsAPodWithNoProcessToSaveTheHeldWork(t *testing
 	rig.signal(worker, "a1b2c3d")
 	rig.settleAll()
 
-	rig.awaitReplacement(1, "once a role process runs in the pod to save the held work")
-	if at := bundler.replacedWith(); len(at) != 1 || at[0] <= 0 {
-		t.Fatalf("when the pod was replaced the store held the saves %v, want the round's save before the replacement", at)
+	rig.awaitReplacement(1, "once a role process runs in the pod to read the held work")
+	if reads := rig.rt.CallsOf("WorkspaceWork"); len(reads) == 0 || reads[len(reads)-1].Role != worker {
+		t.Fatalf("the workspace was read %+v, want a read through the %s before the replacement", reads, worker)
 	}
 	if asked := rig.byIssueAsks(); len(asked) != 0 {
 		t.Fatalf("the runtime was asked to replace the pod by issue %+v, want none", asked)
@@ -557,162 +434,19 @@ func TestWorkHoldAnUpdateRoundKeepsAPodWithNoProcessToSaveTheHeldWork(t *testing
 	}
 }
 
-var (
-	// heldWorkSave is the bundle of the planner's unpushed work that a role's shim builds in the
-	// rows below.
-	heldWorkSave = runtime.WorkspaceBundle{Bundle: []byte("PACK the planner's unpushed work"), Head: passedOverHead,
-		Tips: []string{passedOverCommit}, At: podUpdateStart, PodUID: podUpdatePod}
-	// nothingUnpushed is the bundle of a workspace with no unpushed work: it carries no bytes.
-	nothingUnpushed = runtime.WorkspaceBundle{Head: passedOverHead, At: podUpdateStart.Add(time.Minute), PodUID: podUpdatePod}
-)
-
-// bundling makes the rig's runtime a bundlingRuntime, and scripts the read of the issue's
-// workspace to find one unpushed commit. A rig that a restart made needs its own.
-func (r *podUpdateRig) bundling() *bundlingRuntime {
-	bundler := &bundlingRuntime{Runtime: r.rt, rig: r}
-	r.s.runtime = bundler
-	r.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
-	return bundler
-}
-
-// bundlesTo makes the shim of every role that has a process connection bundle b from now on.
-func (r *podUpdateRig) bundlesTo(b runtime.WorkspaceBundle) {
-	for _, conn := range r.workers {
-		conn.SetWorkspaceBundle(b)
-	}
-}
-
-// nextPodTakes is what the issue's next pod is answered when it asks for the saved bundle: a pod
-// created an hour after the round opened, after every save of these rows. The ask spends the
-// bundle's one restore attempt.
-func (r *podUpdateRig) nextPodTakes() (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake) {
-	r.t.Helper()
-	restored, how, err := savedWorkspaceBundle(r.st, podUpdateProject)(r.ctx, podUpdateIssue, podUpdateReplacementPod, podUpdateStart.Add(time.Hour))
-	if err != nil {
-		r.t.Fatalf("the next pod asked for the saved bundle: %v", err)
-	}
-	return restored, how
-}
-
-// heldWorkRound carries the round of TestWorkHoldAnUpdateRoundSavesTheWorkOfAClaimTheHoldStopped
-// to its replacement: two ready workers and the planner, which the work hold stopped. Each shim
-// bundles the planner's work (heldWorkSave). The round asks both workers, and both answer.
-func heldWorkRound(t *testing.T) (*podUpdateRig, *bundlingRuntime) {
-	t.Helper()
-	rig := newPodUpdateRig(t,
-		readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester),
-		suspendedRole(claim.RolePlanner, supervise.SuspendedByHold),
-	)
-	bundler := rig.bundling()
-	rig.bundlesTo(heldWorkSave)
-	rig.drifts(podUpdateDrift)
-	rig.tick()
-	for _, role := range passedOverWorkers {
-		rig.awaitAsked(role, podUpdateRound)
-	}
-	rig.awaitRound(claim.RolePlanner, podUpdateRound)
-	for _, role := range passedOverWorkers {
-		rig.signal(role, "a1b2c3d")
-	}
-	rig.settleAll()
-	return rig, bundler
-}
-
-// refuseBundleDeletes makes the store refuse each delete of a workspace bundle, as a database
-// that fails the statement does, until allow runs.
-func refuseBundleDeletes(t *testing.T, rig *podUpdateRig) (allow func()) {
-	t.Helper()
-	for _, statement := range []string{
-		`create function refuse_bundle_delete() returns trigger language plpgsql as $$
-			begin raise exception 'the test refuses the delete of the bundle of %', old.issue; end $$`,
-		`create trigger refuse_bundle_delete before delete on workspace_bundles for each row execute function refuse_bundle_delete()`,
-	} {
-		if _, err := rig.pool.Exec(rig.ctx, statement); err != nil {
-			t.Fatalf("make the store refuse the delete of a bundle: %v", err)
-		}
-	}
-	return func() {
-		t.Helper()
-		if _, err := rig.pool.Exec(rig.ctx, `drop trigger refuse_bundle_delete on workspace_bundles`); err != nil {
-			t.Fatalf("let the store delete bundles again: %v", err)
-		}
-	}
-}
-
-// dropFailedLine is the line of a refused replacement whose delete of its own save failed
-// (dropRoundSave).
-const dropFailedLine = "supervise: the bundle saved for an update round's replacement that was not made could not be deleted"
-
-// A replacement that the last word refuses deletes its save (dropRoundSave). Where that delete
-// fails, the save stays in the store. The next replacement finds a workspace with nothing
-// unpushed, because the work was pushed since. Its save is empty, and an empty save deletes the
-// bundle that no pod has had its restore attempt of, as an idle release's empty save does. So the
-// next pod restores nothing over the workspace that moved on. A daemon restart between the failed
-// delete and the empty save changes nothing, since the store alone holds the bundle.
-func TestWorkHoldAnEmptySaveDeletesTheBundleARefusedReplacementLeft(t *testing.T) {
-	for _, restart := range []bool{false, true} {
-		name := "at the next sweep"
-		if restart {
-			name = "after a daemon restart"
-		}
-		t.Run(name, func(t *testing.T) {
-			rig, bundler := heldWorkRound(t)
-			// A turn of the implementer starts while the runtime waits for the pod's launch turn,
-			// so the last word refuses the replacement. The store refuses the delete of the save.
-			token := rig.tokens[claim.RoleImplementer]
-			allow := refuseBundleDeletes(t, rig)
-			rig.rt.HoldReplacePod(func() {
-				rig.rt.HoldReplacePod(nil)
-				rig.handle(claim.RoleImplementer, supervise.StreamTurnStart{Claim: token})
-			})
-			testwait.Eventually(t, "a sweep to reach the replacement and the last word to refuse it", func() bool {
-				rig.tick()
-				return len(rig.notDue()) > 0
-			})
-			stale := bundler.replacedWith()
-			if len(stale) != 1 || stale[0] <= 0 || len(rig.replacements()) != 0 {
-				t.Fatalf("the store held the saves %v at the refused replacement, and the pod was replaced %d times; want one save and no replacement",
-					stale, len(rig.replacements()))
-			}
-			if lines := loggedLines(t, rig.logs.String(), dropFailedLine); len(lines) != 1 {
-				t.Fatalf("the failed delete of the save was logged %d times, want once", len(lines))
-			}
-			allow()
-			rig.handle(claim.RoleImplementer, supervise.StreamTurnEnd{Claim: token})
-			rig.reportsNothingRunning(claim.RoleImplementer)
-			if restart {
-				rig = rig.restart()
-				rig.drifts(podUpdateDrift)
-				bundler = rig.bundling()
-			}
-			rig.bundlesTo(nothingUnpushed)
-
-			rig.awaitReplacement(1, "once the turn ended")
-			if at := bundler.replacedWith(); at[len(at)-1] != 0 {
-				t.Errorf("when the pod was replaced the store held the save %d, want none: the empty save deletes the save that the refused replacement left",
-					at[len(at)-1])
-			}
-			if restored, how := rig.nextPodTakes(); how != runtime.WorkspaceBundleNone {
-				t.Fatalf("the next pod was answered %v with the bundle at %s, want nothing: that work was pushed since, and a restore moves the issue's bookmarks back over it",
-					how, restored.Head)
-			}
-		})
-	}
-}
-
 // A hold stop can land between the sweep's reading and the last word. The sweep read no claim
-// that the hold stopped, so the replacement saved nothing, and the claim that the stop lands on
-// leaves its unpushed work on the pod's disk. The last word reads the held claims again under the
-// pod's launch turn and refuses the replacement (replacementDue). The next sweep saves the work of
-// that claim and replaces the pod, and the next pod restores the work.
+// that the hold stopped, so its read of the workspace was made for no held claim, and the claim
+// that the stop lands on can leave unpushed work on the pod's disk that the read did not see. The
+// last word reads the held claims again under the pod's launch turn and refuses the replacement
+// (replacementDue). The next sweep reads the workspace again with that claim held, and replaces the
+// pod only once that read finds nothing unpushed.
 //
 // Here the tester has not answered when the round's bound comes, so the bound lets the
 // replacement through, and the hold stops the tester while the runtime waits for the launch turn.
-func TestWorkHoldAnUpdateRoundSavesTheWorkOfAClaimTheHoldStopsBeforeTheLastWord(t *testing.T) {
+func TestWorkHoldAnUpdateRoundReadsAgainForAClaimTheHoldStopsBeforeTheLastWord(t *testing.T) {
 	const stopped = claim.RoleTester
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(stopped))
-	bundler := rig.bundling()
-	rig.bundlesTo(heldWorkSave)
+	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead})
 	// The tree's record of the hold, as the close writes it (workflow's workHoldClose). The hold's
 	// stop reads it, and a stop that finds no record makes no stop (supervise's readHoldForStop).
 	if err := store.Transact(rig.ctx, rig.pool, func(_ context.Context, tx pgx.Tx) error {
@@ -740,137 +474,17 @@ func TestWorkHoldAnUpdateRoundSavesTheWorkOfAClaimTheHoldStopsBeforeTheLastWord(
 		return len(rig.notDue())+len(rig.replacements()) > 0
 	})
 	if calls := rig.replacements(); len(calls) != 0 {
-		t.Fatalf("the pod was replaced %d times with the work of the %s unsaved: the hold stopped it after the sweep's save", len(calls), stopped)
+		t.Fatalf("the pod was replaced %d times with no read made for the %s, which the hold stopped after the sweep's read", len(calls), stopped)
 	}
 	if c := rig.claimOf(stopped); c.State != supervise.StateSuspended || !c.WorkHeld() {
 		t.Fatalf("the %s is %s, suspended by %q; want it stopped by the work hold", stopped, c.State, c.SuspendedBy)
 	}
+	readsBefore := len(rig.rt.CallsOf("WorkspaceWork"))
 
-	rig.awaitReplacement(1, "once the stopped claim's work was saved")
-	at := bundler.replacedWith()
-	if len(at) != 2 || at[0] != 0 || at[1] <= 0 {
-		t.Fatalf("at the two replacements the store held the saves %v, want none at the refused one and the round's save at the one made", at)
-	}
-	restored, how := rig.nextPodTakes()
-	if how != runtime.WorkspaceBundleSend || !bytes.Equal(restored.Bundle, heldWorkSave.Bundle) || restored.Release != at[1] {
-		t.Fatalf("the next pod was answered %v with %q of save %d, want %q of save %d", how, restored.Bundle, restored.Release, heldWorkSave.Bundle, at[1])
-	}
-}
-
-// A daemon restart, or a ReplacePod that fails in another way than the last word's refusal, after
-// the round saved the planner's work leaves that save in the store: only a refusal of the last
-// word deletes it (dropRoundSave). The hold then ends, and the planner runs in the pod again and
-// answers the round. So the next sweep holds no claim that the hold stopped, and the earlier save
-// still stands. The replacement saves again (saveRoundWorkspace): a workspace with nothing unpushed
-// deletes the earlier save, and a workspace with work replaces it with the workspace as it is now.
-// Either way the next pod restores no earlier work over the work done since.
-func TestWorkHoldAnUpdateRoundLeavesNoEarlierSaveForTheNextPod(t *testing.T) {
-	newer := runtime.WorkspaceBundle{Bundle: []byte("PACK the work done since the first save"), Head: passedOverCommit,
-		At: podUpdateStart.Add(time.Minute), PodUID: podUpdatePod}
-	for _, tc := range []struct {
-		name    string
-		restart bool
-		// now is the bundle of the workspace at the replacement after the hold ended.
-		now runtime.WorkspaceBundle
-	}{
-		{name: "a daemon restart, then nothing unpushed", restart: true, now: nothingUnpushed},
-		{name: "a ReplacePod that failed, then new work", now: newer},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			const held = claim.RolePlanner
-			rig, bundler := heldWorkRound(t)
-			bundler.failNextReplacement(errors.New("the Kubernetes API did not answer"))
-			testwait.Eventually(t, "a sweep to save the planner's work and reach the replacement", func() bool {
-				rig.tick()
-				return len(bundler.replacedWith()) > 0
-			})
-			earlier := bundler.replacedWith()
-			if len(earlier) != 1 || earlier[0] <= 0 || len(rig.replacements()) != 0 {
-				t.Fatalf("the store held the saves %v at the failed replacement, and the pod was replaced %d times; want one save and no replacement",
-					earlier, len(rig.replacements()))
-			}
-			if tc.restart {
-				rig = rig.restart()
-				rig.drifts(podUpdateDrift)
-				bundler = rig.bundling()
-			}
-
-			// The hold ends: the planner starts again in the round's own pod, and the round asks it.
-			rig.intoRoundPod(held)
-			m, ok := rig.sup.Machine(rig.tokens[held])
-			if !ok {
-				t.Fatalf("the %s is not supervised", held)
-			}
-			if started, err := m.EndHold(rig.ctx, nil); err != nil || !started {
-				t.Fatalf("the end of the hold started the %s: %t, %v; want it started", held, started, err)
-			}
-			rig.registerInto(held, podUpdatePod)
-			rig.bundlesTo(tc.now)
-			rig.awaitAsked(held, podUpdateRound)
-			rig.signal(held, "a1b2c3d")
-			rig.settleAll()
-
-			rig.awaitReplacement(1, "once the planner answered")
-			at := bundler.replacedWith()
-			last := at[len(at)-1]
-			restored, how := rig.nextPodTakes()
-			if tc.now.Size() == 0 {
-				if last != 0 || how != runtime.WorkspaceBundleNone {
-					t.Fatalf("the store held the save %d at the replacement and the next pod was answered %v, want no save and nothing: the earlier save %d is older than the workspace",
-						last, how, earlier[0])
-				}
-				return
-			}
-			if last <= earlier[0] || how != runtime.WorkspaceBundleSend || !bytes.Equal(restored.Bundle, tc.now.Bundle) || restored.Release != last {
-				t.Fatalf("the store held the save %d at the replacement and the next pod was answered %v with %q of save %d; want %q of a save after %d",
-					last, how, restored.Bundle, restored.Release, tc.now.Bundle, earlier[0])
-			}
-		})
-	}
-}
-
-// A bundle whose one restore attempt is spent is never sent to a pod again, so no earlier work can
-// come of it, and it stays for a person to recover. A round that passed over no claim the hold
-// stopped replaces the pod over such a bundle as it replaces a pod with no bundle, though the
-// workspace holds unpushed work. The store's read of the bundle says that its attempt is spent
-// (store.WorkspaceBundleSize), and a round's save never replaces such a bundle
-// (store.ErrWorkspaceBundleSpent). So the round asks no shim to bundle the workspace: the bundle
-// would run to tens of megabytes, and the store would refuse it.
-func TestWorkHoldAnUpdateRoundReplacesThePodOverASpentBundle(t *testing.T) {
-	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
-	rig.bundling()
-	rig.bundlesTo(heldWorkSave)
-	spent := runtime.WorkspaceBundle{Bundle: []byte("PACK the work of an earlier release"), Head: passedOverCommit,
-		At: podUpdateStart.Add(-time.Hour), PodUID: "pod-of-an-earlier-release"}
-	if err := rig.st.PutWorkspaceBundle(rig.ctx, podUpdateIssue, 7, spent); err != nil {
-		t.Fatalf("save the earlier release's bundle: %v", err)
-	}
-	// The round's pod took that bundle for its one restore, and no report of the restore came.
-	take := savedWorkspaceBundle(rig.st, podUpdateProject)
-	if _, how, err := take(rig.ctx, podUpdateIssue, podUpdatePod, podUpdateStart.Add(-30*time.Minute)); err != nil || how != runtime.WorkspaceBundleSend {
-		t.Fatalf("the round's pod asked for the earlier bundle and was answered %v, %v; want it sent", how, err)
-	}
-	rig.drifts(podUpdateDrift)
-
-	rig.tick()
-	for _, role := range passedOverWorkers {
-		rig.awaitAsked(role, podUpdateRound)
-	}
-	for _, role := range passedOverWorkers {
-		rig.signal(role, "a1b2c3d")
-	}
-	rig.settleAll()
-	replaced := rig.awaitReplacement(1, "over the spent bundle")
-
-	through, _ := replaced[0].Pod.Claim.Role()
-	if asked := rig.workers[through].Bundlings(); len(asked) != 0 {
-		t.Errorf("the %s's shim was asked to bundle the workspace %d times, want none: a round that holds no claim builds no bundle over a spent one", through, len(asked))
-	}
-	if size, held, attempted, err := rig.st.WorkspaceBundleSize(rig.ctx, podUpdateIssue); err != nil || !held || !attempted || size != len(spent.Bundle) {
-		t.Errorf("after the replacement the store holds %d bytes (held=%t, spent=%t, %v), want the %d of the spent bundle kept", size, held, attempted, err, len(spent.Bundle))
-	}
-	if lines := loggedLines(t, rig.logs.String(), workspaceUnsavedLine); len(lines) != 0 {
-		t.Errorf("the round logged %d failed saves, want none: a spent bundle holds nothing", len(lines))
+	rig.awaitReplacement(1, "once a read made with the stopped claim held found nothing unpushed")
+	if reads := len(rig.rt.CallsOf("WorkspaceWork")); reads <= readsBefore {
+		t.Fatalf("the workspace was read %d times by the replacement, %d before the refusal; want a read made after the hold stopped the %s",
+			reads, readsBefore, stopped)
 	}
 }
 
@@ -889,6 +503,7 @@ func TestWorkHoldAnUpdateRoundReplacesThePodOverASpentBundle(t *testing.T) {
 // the work is lost, whatever the read found. A message that calls lost work safe tells a role not
 // to do that work again.
 func TestAnUpdateRoundNamesTheWorkItsSuspendedClaimsLeft(t *testing.T) {
+	t.Parallel()
 	// commitRead scripts a read that finds one unpushed commit, and foundCommit holds the
 	// replacement's line to that read, whatever the disk.
 	commitRead := func(rig *podUpdateRig) {
@@ -994,6 +609,7 @@ func TestAnUpdateRoundNamesTheWorkItsSuspendedClaimsLeft(t *testing.T) {
 // Once the operator resumes the claim and it answers, the pod is replaced, and nobody is told
 // again.
 func TestAnUpdateRoundStillWaitsPastItsBoundForAnOperatorSuspension(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), suspendedRole(claim.RoleTester, supervise.SuspendedByOperator))
 	rig.drifts(podUpdateDrift)
 
@@ -1031,6 +647,7 @@ func TestAnUpdateRoundStillWaitsPastItsBoundForAnOperatorSuspension(t *testing.T
 // the round passed over a claim that has not answered, through the role whose process the pod is
 // replaced through, and once every claim the round asks has answered and no turn runs.
 func TestAnUpdateRoundReadsTheWorkspaceOncePerRound(t *testing.T) {
+	t.Parallel()
 	// No claim is passed over: two workers that answer, and a failed claim the round does not
 	// wait for either. The line names the failed claim, and nothing is read: no role the round
 	// passed over left work that no role was asked to push.

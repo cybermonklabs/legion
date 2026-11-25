@@ -18,11 +18,17 @@ import {
   LegionHandoffCompleteResponse,
   type LegionHealth,
   LegionHealthResponse,
+  LegionIntakeDiscardRequest,
+  LegionIntakeDiscardResponse,
+  LegionIntakeReplayRequest,
+  LegionIntakeReplayResponse,
   type LegionIssue,
   LegionIssueRecordResponse,
   LegionIssueStatusRequest,
   LegionPhaseBackwardRequest,
   LegionPhaseRetryRequest,
+  LegionPlanRegisterRequest,
+  LegionPlanRegisterResponse,
   LegionProjectPauseRequest,
   LegionProjectPauseResponse,
   LegionProjectResumeRequest,
@@ -37,6 +43,7 @@ import {
   LegionSignOffRequest,
   type LegionState,
   LegionStateResponse,
+  LegionTaskStopRequest,
   LegionTurnOutcomeRequest,
   LegionTurnOutcomeResponse,
   LegionWaveReleaseRequest,
@@ -131,7 +138,8 @@ export interface LegionDaemonClient {
   readonly exit: (input: ExitInput) => Promise<void>;
   /** `claim.TurnOutcomeRequest`: how one of the claim's turns ended, under the sequence the
    * reporting plugin counted itself (`packages/pi-legion/src/turn-outcome.ts`). The answer is the
-   * trailing run of refused turns the daemon derived and whether this report failed the claim. */
+   * trailing run of refused turns the daemon derived (`LegionTurnOutcomeResponse` says what its
+   * `failed` holds). */
   readonly turnOutcome: (
     input: z.input<typeof LegionTurnOutcomeRequest>
   ) => Promise<z.output<typeof LegionTurnOutcomeResponse>>;
@@ -145,7 +153,7 @@ export interface LegionDaemonClient {
   readonly releaseRecords: (
     input: z.input<typeof LegionReleaseRecordsRequest>
   ) => Promise<z.output<typeof LegionReleaseRecordsResponse>>;
-  /** Whether a person's approval of a spec stands for the claim (contract 223): the document, the
+  /** Whether a person's approval of a spec stands for the claim (contract 290): the document, the
    * version approved and the approval message the plugin places as it is, or `approval: null`. It
    * is authenticated by the claim, as `activity` is. `signal` aborts the request, its answer's
    * body included: pi-legion reads it before a model call under a deadline of its own, and a
@@ -200,6 +208,21 @@ export interface LegionDaemonClient {
   readonly projectResume: (
     input: z.input<typeof LegionProjectResumeRequest>
   ) => Promise<z.output<typeof LegionProjectResumeResponse>>;
+  /** The controller's `replay_give_up`: the daemon applies again the messages its intake gave up
+   * on that the selection names, `giveUp`, one record by its id, or `consumer` with `throughSeq`,
+   * every open record of that consumer at or below that stream sequence, through the handling a
+   * live delivery takes, the effect `legion intake replay` runs for an operator. The answer is
+   * each record it took with how its replay ended, and how many open records of the selection
+   * are left. */
+  readonly intakeReplay: (
+    input: z.input<typeof LegionIntakeReplayRequest>
+  ) => Promise<z.output<typeof LegionIntakeReplayResponse>>;
+  /** The controller's `discard_give_up`: the daemon closes the give-ups the selection names, for
+   * `reason`, and applies nothing, the effect `legion intake discard` runs for an operator. The
+   * answer is the id of each record it closed. */
+  readonly intakeDiscard: (
+    input: z.input<typeof LegionIntakeDiscardRequest>
+  ) => Promise<z.output<typeof LegionIntakeDiscardResponse>>;
   readonly waveRelease: (
     input: z.input<typeof LegionWaveReleaseRequest>
   ) => Promise<z.output<typeof LegionWaveReleaseResponse>>;
@@ -217,6 +240,19 @@ export interface LegionDaemonClient {
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
   readonly childRerun: (
     input: z.input<typeof LegionChildRequest>
+  ) => Promise<z.output<typeof LegionEmptyResponse>>;
+  /** The owner's `register_plan` (contract 219): the plan in one version of a document of the
+   * issue, which the daemon reads from Dispatch at that version. The answer is the plan it took;
+   * a plan whose content it does not take is refused `PLAN_REFUSED`, every reason in the sentence,
+   * and a plan of an issue whose experiment's group takes no plan from its owner `PLAN_NOT_TAKEN`. */
+  readonly planRegister: (
+    input: z.input<typeof LegionPlanRegisterRequest>
+  ) => Promise<z.output<typeof LegionPlanRegisterResponse>>;
+  /** The owner's `stop_task` (contract 219): one task of the plan Legion runs for the issue stops,
+   * and the issue is held `task-stopped` until a later version of the plan changes that task or,
+   * on a root, a person sets the root `todo`. */
+  readonly taskStop: (
+    input: z.input<typeof LegionTaskStopRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
 }
 
@@ -389,8 +425,10 @@ export function daemonUnreachable(error: unknown): "refused" | "dropped" | undef
  * longer the role's phase), `sign_off` (a repeat finds the issue out of accepting and changes
  * nothing), `register_gate` (its fact is keyed by the gate's issue, generation, document,
  * version and Dispatch sequence; a repeat after the sequence moved is a new fact, which the gate
- * takes as a re-registration of the same document and tells no one again) and
- * `claims/turn-outcome` (one outcome per claim, generation and sequence, so a repeat writes the
+ * takes as a re-registration of the same document and tells no one again), `register_plan` (its
+ * fact is keyed by the issue, the generation, the document and the version, so a repeat is the
+ * same fact, answered the same), `stop_task` (a repeat finds the task stopped and changes nothing)
+ * and `claims/turn-outcome` (one outcome per claim, generation and sequence, so a repeat writes the
  * cell its first attempt wrote). `call` is the whole
  * operation, grant mint included, since grants live in the daemon's memory and do not survive
  * its restart. `onRetrying` is told once. A daemon refusal after a dropped attempt is told that
@@ -716,6 +754,20 @@ export function createLegionDaemonClient(
         LegionProjectResumeResponse,
         input
       ),
+    intakeReplay: (input) =>
+      post(
+        "/legion/v1/intake/replay",
+        LegionIntakeReplayRequest,
+        LegionIntakeReplayResponse,
+        input
+      ),
+    intakeDiscard: (input) =>
+      post(
+        "/legion/v1/intake/discard",
+        LegionIntakeDiscardRequest,
+        LegionIntakeDiscardResponse,
+        input
+      ),
     gateRegister: (input) =>
       post("/legion/v1/gates/register", LegionGateRegisterRequest, LegionEmptyResponse, input),
     waveRelease: (input) =>
@@ -730,5 +782,14 @@ export function createLegionDaemonClient(
       post("/legion/v1/roots/close", LegionRootCloseRequest, LegionEmptyResponse, input),
     childRerun: (input) =>
       post("/legion/v1/children/rerun", LegionChildRequest, LegionEmptyResponse, input),
+    planRegister: (input) =>
+      post(
+        "/legion/v1/plans/register",
+        LegionPlanRegisterRequest,
+        LegionPlanRegisterResponse,
+        input
+      ),
+    taskStop: (input) =>
+      post("/legion/v1/tasks/stop", LegionTaskStopRequest, LegionEmptyResponse, input),
   };
 }

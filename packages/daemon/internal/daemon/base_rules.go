@@ -82,8 +82,13 @@ type githubBranch struct {
 // it bounds the per-issue read's - is a read whose rules the daemon does not know: Unread says why,
 // R0 acts on it at once (record.ConflictRulesUnread), and nothing else fails. Each call logs one
 // line with what it read.
+//
+// Both reads are conditional, every page of the rulesets too (githubrest.Client.ETags, the
+// runtime's etags): a base's rules change seldom and every conflicting read of every pull request
+// on it reads them, so GitHub's 304, which costs the installation's rate limit nothing, answers
+// most of them with the rules read before.
 func (w *workflowRuntime) readBaseRules(ctx context.Context, github githubrest.Client, pr record.PullRequest, base string) record.BaseRules {
-	rules := baseRules(ctx, github, base)
+	rules := baseRules(ctx, github.WithETags(w.etags), base)
 	attributes := []any{"repo", pr.Repo, "pullRequest", pr.Number, "base", base,
 		"required", rules.Required, "strict", rules.Strict, "unread", rules.Unread}
 	if rules.Unread != "" {

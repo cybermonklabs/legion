@@ -20,14 +20,15 @@ body: |-
   architects go on. The stop
   is a suspension source of its own, `hold`: no rule starts the claim, the daemon keeps its pod, and
   `legion claims list` shows it as `suspended:hold`. A pod update round passes over such a claim as
-  it passes over a role the daemon suspended: it does not ask it or wait for it. Where a role
-  process runs in the pod, the round reads the issue workspace through that process before it
-  replaces the pod, and it saves the workspace as a bundle, as the idle release does. The next pod
-  restores the bundle before any role starts. A save that fails holds the replacement, and the next
-  sweep saves again. Where no role process runs in the pod, nothing can build the bundle, so the
-  round does not replace the pod until a role runs in it again or the hold ends. An issue at a
+  it passes over a role the daemon suspended: it does not ask it or wait for it. The daemon keeps
+  no copy of a workspace and the stopped worker cannot push, so where a role process runs in the
+  pod, the round reads the issue workspace through that process at each attempt and replaces the
+  pod only where the read finds nothing that origin does not hold, as the idle release takes a pod
+  only then. A read that finds such work, fails or cannot be made holds the replacement, and the
+  next sweep reads again. Where no role process runs in the pod, nothing can read the workspace, so
+  the round does not replace the pod until a role runs in it again or the hold ends. An issue at a
   phase worker's phase of a held tree reads `why.state` `held`, with
-  the version that closed the gate, and a caller below contract 223 is served such an issue with no
+  the version that closed the gate, and a caller below contract 290 is served such an issue with no
   `why`. When the gate opens again, the daemon starts each
   claim it stopped with one task, which names the version that closed the gate and tells the worker
   to check what its turn already did. The daemon builds that task when the start runs, so a start

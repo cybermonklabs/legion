@@ -205,7 +205,7 @@ type heldMessage struct {
 // (notify.ErrPublishDenied).
 func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMessage) error {
 	held := r.supervisedClaim(m.token)
-	if held.State == supervise.StateFailed || held.State == supervise.StateRetired {
+	if supervise.FailedOrRetired(held.State) {
 		r.log.Info(m.claimEnded, append(m.attributes, "state", held.State)...)
 		return nil
 	}

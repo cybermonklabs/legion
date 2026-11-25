@@ -94,6 +94,7 @@
     "routes": [
       "POST /legion/v1/issues/status",
       "POST /legion/v1/gates/register",
+      "POST /legion/v1/tasks/stop",
       "POST /legion/v1/phase/backward",
       "POST /legion/v1/phase/retry",
       "POST /legion/v1/signoff",
@@ -158,11 +159,35 @@
     "noBody": false
   },
   {
+    "id": "plan-register",
+    "routes": [
+      "POST /legion/v1/plans/register"
+    ],
+    "since": 219,
+    "noBody": false
+  },
+  {
+    "id": "intake-replay",
+    "routes": [
+      "POST /legion/v1/intake/replay"
+    ],
+    "since": 228,
+    "noBody": false
+  },
+  {
+    "id": "intake-discard",
+    "routes": [
+      "POST /legion/v1/intake/discard"
+    ],
+    "since": 228,
+    "noBody": false
+  },
+  {
     "id": "claim-approval",
     "routes": [
       "POST /legion/v1/claims/approval"
     ],
-    "since": 223,
+    "since": 290,
     "noBody": false
   }
 ]

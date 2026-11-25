@@ -14,6 +14,7 @@ import (
 // hands them to the engine. A drift between them costs a hook the loader accepts and the engine
 // never fires — an operator's prompt that is live in `legion.yaml` and silent on every move back.
 func TestHookEventWorkBackIsOneWordInConfigAndWorkflow(t *testing.T) {
+	t.Parallel()
 	if workflow.HookEventWorkBack != config.HookEventWorkBack {
 		t.Fatalf("workflow.HookEventWorkBack = %q, config.HookEventWorkBack = %q: a hook the loader accepts the engine would never fire",
 			workflow.HookEventWorkBack, config.HookEventWorkBack)

@@ -1043,7 +1043,7 @@
       },
       {
         "value": "held",
-        "since": 223
+        "since": 290
       },
       {
         "value": "unlisted",
@@ -1090,6 +1090,10 @@
         "since": 98
       },
       {
+        "value": "children_before_retro",
+        "since": 219
+      },
+      {
         "value": "children_first",
         "since": 98
       },
@@ -1110,6 +1114,10 @@
         "since": 98
       },
       {
+        "value": "task_stopped",
+        "since": 219
+      },
+      {
         "value": "tree_closed",
         "since": 98
       },
@@ -1120,6 +1128,50 @@
       {
         "value": "unclassified",
         "since": 98
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "issues.*.holdReason",
+    "values": [
+      {
+        "value": "children",
+        "since": 219
+      },
+      {
+        "value": "escalated",
+        "since": 46
+      },
+      {
+        "value": "task-stopped",
+        "since": 219
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "intakeGiveUps.newest.*.reason",
+    "values": [
+      {
+        "value": "bound",
+        "since": 228
+      },
+      {
+        "value": "consumer moved past",
+        "since": 228
+      },
+      {
+        "value": "did not end",
+        "since": 228
+      },
+      {
+        "value": "retention",
+        "since": 228
+      },
+      {
+        "value": "undecodable",
+        "since": 228
       }
     ]
   },
@@ -1923,7 +1975,7 @@
       },
       {
         "value": "held",
-        "since": 223
+        "since": 290
       },
       {
         "value": "unlisted",
@@ -1954,6 +2006,24 @@
     ]
   },
   {
+    "answer": "issue-record",
+    "keyPath": "holdReason",
+    "values": [
+      {
+        "value": "children",
+        "since": 219
+      },
+      {
+        "value": "escalated",
+        "since": 46
+      },
+      {
+        "value": "task-stopped",
+        "since": 219
+      }
+    ]
+  },
+  {
     "answer": "register",
     "keyPath": "role",
     "values": [
@@ -1980,6 +2050,28 @@
       {
         "value": "tester",
         "since": 46
+      }
+    ]
+  },
+  {
+    "answer": "intake-replay",
+    "keyPath": "replayed.*.outcome",
+    "values": [
+      {
+        "value": "already applied",
+        "since": 228
+      },
+      {
+        "value": "applied",
+        "since": 228
+      },
+      {
+        "value": "failed",
+        "since": 228
+      },
+      {
+        "value": "no fact",
+        "since": 228
       }
     ]
   }

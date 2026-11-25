@@ -28,6 +28,7 @@ import (
 // the record keeps GitHub's spelling beside its own, so the boot subscribes from the database, not
 // from a read a restart forgets. The workspace keeps the clone's spelling.
 func TestARestartStillHearsARecordsRepositoryInGitHubsSpelling(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := projectRecords{Store: record.NewStore(), project: "LEGION"}
@@ -53,7 +54,7 @@ func TestARestartStillHearsARecordsRepositoryInGitHubsSpelling(t *testing.T) {
 	// The upgrade's boot fills the record from Dispatch and GitHub.
 	client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-301", ResolvedRepo: "acme/widgets"}}}
 	if _, err := backfillRepositories(ctx, pool, records, client, "LEGION", state,
-		newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), ghrepo.Renames{}, quietLogger()); err != nil {
+		newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), ghrepo.Renames{}, productionRepositoryReads(), quietLogger()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -106,6 +107,7 @@ func TestARestartStillHearsARecordsRepositoryInGitHubsSpelling(t *testing.T) {
 // boot goes on hearing nothing for it, rather than subscribing in a spelling its events are not
 // published under (INFRA-4401 D11).
 func TestTheBootNamesARecordWithNoGitHubSpellingBeforeSubscribing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	seed := func(t *testing.T) (*workflowRuntime, projectRecords) {
 		t.Helper()
@@ -127,7 +129,7 @@ func TestTheBootNamesARecordWithNoGitHubSpellingBeforeSubscribing(t *testing.T) 
 		w, records := seed(t)
 		github := newNamedGitHub(t, map[string]string{"acme/widgets": "Acme/Widgets@main"})
 		w.defaultBranches = newDefaultBranches(roleTokens{}, w.repositories, github.url, defaultBranchTTL, time.Now)
-		if _, err := backfillRepositories(ctx, w.pool, records, &listingDispatch{}, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, quietLogger()); err != nil {
+		if _, err := backfillRepositories(ctx, w.pool, records, &listingDispatch{}, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, productionRepositoryReads(), quietLogger()); err != nil {
 			t.Fatal(err)
 		}
 		got := recordedIssue(t, w, "LEGION-301")
@@ -148,7 +150,7 @@ func TestTheBootNamesARecordWithNoGitHubSpellingBeforeSubscribing(t *testing.T) 
 		github := newNamedGitHub(t, map[string]string{})
 		w.defaultBranches = newDefaultBranches(roleTokens{}, w.repositories, github.url, defaultBranchTTL, time.Now)
 		var logs strings.Builder
-		left, err := backfillRepositories(ctx, w.pool, records, &listingDispatch{}, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, slog.New(slog.NewTextHandler(&logs, nil)))
+		left, err := backfillRepositories(ctx, w.pool, records, &listingDispatch{}, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, productionRepositoryReads(), slog.New(slog.NewTextHandler(&logs, nil)))
 		if err != nil || !left || !strings.Contains(logs.String(), "issue=LEGION-301 repo=acme/widgets cause=\"the read of acme/widgets from GitHub failed: ") {
 			t.Fatalf("backfill = left %t, %v, logging:\n%s\nwant LEGION-301 left, logged with the failed read, and no error", left, err, logs.String())
 		}

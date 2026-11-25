@@ -262,7 +262,7 @@ func (e *Engine) treeClaims(ctx context.Context, tx pgx.Tx, root record.Issue) (
 //     deliverRoleMessage, closeWaitsForAMerger, postHoldStop);
 //   - a released worker that is not a merger nothing: a wake would bring its pod back only to stop
 //     it, so its stop is written at once, with the deadline HoldStopGrace after this close and no
-//     turn, and the hold takes its `released` source over with its bundle and its pending task
+//     turn, and the hold takes its `released` source over with its session and its pending task
 //     kept. A wake that passed the fence before this close may launch the claim after it: the
 //     stop then holds the launch until its ready, and cuts a turn at the deadline where a restart
 //     or a failed attempt of the stop lets the ready come first;
@@ -624,7 +624,11 @@ func (e *Engine) startHeldPhase(ctx context.Context, tx pgx.Tx, c treeClaim, ope
 	if GivenEntry(c.run) < row.Entry {
 		return e.sendOwedEntry(ctx, tx, c.issue, c.role, row, startMarks{opening: opening})
 	}
-	return e.started(ctx, tx, c.issue, c.role, ResumePhaseTask(c.issue), 0, startMarks{resumeTask: true, reasserts: true, opening: opening})
+	resume, err := e.ResumeTask(ctx, tx, c.issue)
+	if err != nil {
+		return err
+	}
+	return e.started(ctx, tx, c.issue, c.role, resume, 0, startMarks{resumeTask: true, reasserts: true, opening: opening})
 }
 
 // workHoldBooted is the boot's reconcile of the work hold over the project's running trees

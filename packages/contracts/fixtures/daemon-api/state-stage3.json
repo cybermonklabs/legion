@@ -120,5 +120,9 @@
       }
     ]
   },
-  "consumers": []
+  "consumers": [],
+  "intakeGiveUps": {
+    "consumers": [],
+    "newest": []
+  }
 }

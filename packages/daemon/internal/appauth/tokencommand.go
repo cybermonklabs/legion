@@ -215,7 +215,7 @@ func (m *Manager) runTokenCommand(ctx context.Context, app config.GitHubApp, req
 
 // finishedRunKeep is how long a finished token_command run's result waits for a caller whose own
 // deadline ended before the run did: longer than the boot's longest wait between attempts
-// (appMintRetry.Max, 30 s), far shorter than a released token's life.
+// (the production App-call retry's Max, 30 s; internal/daemon's productionAppCalls), far shorter than a released token's life.
 var finishedRunKeep = 2 * time.Minute
 
 // forgetRun drops run from the shared runs if it is still key's run.
@@ -508,6 +508,7 @@ func (m *Manager) mintFromCommand(ctx context.Context, app config.GitHubApp, req
 // read runs before the key proof (internal/daemon's openWorkflow) and passes only once it has
 // taken a run's release for each role, so the key proof never takes a release the logins read
 // was answered with: its first read of each role joins a run in flight or runs the command again.
+// The installation AppLogin took stays its own (loginRelease), never the shared run's.
 func (m *Manager) anyInstallation(ctx context.Context, role AppRole, app config.GitHubApp) (releasedInstallation, error) {
 	installations, err := m.runTokenCommand(ctx, app, mintRequest{role: role})
 	if err != nil {
@@ -522,6 +523,40 @@ func (m *Manager) anyInstallation(ctx context.Context, role AppRole, app config.
 	}
 	slices.Sort(owners)
 	return installations[owners[0]], nil
+}
+
+// loginRelease is the installation role's AppLogin reads the App's login under in token mode:
+// the one an earlier AppLogin of the role took and kept (loginReleases), while more than
+// refreshWindow of it is left, as a lease is served; else one of a release the command gives now
+// (anyInstallation), which it keeps. Each run of the command asks the secrets broker for a
+// release, which may wait on a person's approval of a grant, so a login read that failed after
+// it took its release (GitHub's trouble on the viewer read, its attempt's bound) reads again
+// under the same token rather than run the command a second time. A kept installation that has
+// come within refreshWindow of its expiry, as one can across the start's waits for GitHub's rate
+// limit, is replaced by a new release: the command runs again.
+func (m *Manager) loginRelease(ctx context.Context, role AppRole, app config.GitHubApp) (releasedInstallation, error) {
+	m.mu.Lock()
+	kept, ok := m.loginReleases[role]
+	m.mu.Unlock()
+	if ok && kept.expiresAt.Sub(m.now()) > refreshWindow {
+		return kept, nil
+	}
+	installation, err := m.anyInstallation(ctx, role, app)
+	if err != nil {
+		return releasedInstallation{}, err
+	}
+	m.mu.Lock()
+	m.loginReleases[role] = installation
+	m.mu.Unlock()
+	return installation, nil
+}
+
+// forgetLoginRelease drops the installation role's AppLogin kept, once the App's login is read
+// under it.
+func (m *Manager) forgetLoginRelease(role AppRole) {
+	m.mu.Lock()
+	delete(m.loginReleases, role)
+	m.mu.Unlock()
 }
 
 // tokenIdentity is the bot identity of the App whose installation token token is, with no JWT:

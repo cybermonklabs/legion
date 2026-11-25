@@ -337,7 +337,7 @@ REACH = (
     "packages/envoy/internal/testnats/nats.go",
     "packages/envoy/internal/testpg/testpg.go",
     "packages/envoy/internal/tests3/seaweedfs.go",
-    "packages/envoy-client/src/__tests__/nats-server.ts",
+    "packages/envoy-client/test/nats-server.ts",
     "scripts/e2e/lib/nats-stream.test.ts",
     ".github/scripts/dispatch-browser-visual-suite.sh",
     "packages/dispatch/e2e/visual-run.sh",

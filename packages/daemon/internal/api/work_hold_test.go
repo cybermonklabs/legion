@@ -37,7 +37,7 @@ func workHeldState(t *testing.T) State {
 
 // whyBeforeTheWorkHold is every word `why.state` takes at the contracts before the work hold's:
 // one word more and that reader refuses the whole state (packages/contracts/src/legion-api.ts's
-// legionWhyView before contract 223).
+// legionWhyView before contract 290).
 var whyBeforeTheWorkHold = []WhyState{WhyClaimStopped, WhyWaiting, WhyBlocked, WhyUnlisted}
 
 // H36, decision 16: a caller whose plugin is below the contract that added `why: held` reads the
@@ -57,8 +57,8 @@ var whyBeforeTheWorkHold = []WhyState{WhyClaimStopped, WhyWaiting, WhyBlocked, W
 // (TestPodUpdateContractIsTheContractThatIntroducedTheOp): a renumber of version.go's entry that
 // left workHoldContract behind would serve the word to the readers of the contracts between.
 func TestWorkHoldStateKeepsOlderCallersReading(t *testing.T) {
-	if workHoldContract != 223 || workHoldContract > DaemonAPIVersion {
-		t.Fatalf("workHoldContract = %d, want 223, the contract whose entry in version.go added `why: held`, at or below DaemonAPIVersion %d",
+	if workHoldContract != 290 || workHoldContract > DaemonAPIVersion {
+		t.Fatalf("workHoldContract = %d, want 290, the contract whose entry in version.go added `why: held`, at or below DaemonAPIVersion %d",
 			workHoldContract, DaemonAPIVersion)
 	}
 	full := issueViews(t, stateFrom(t, workHeldState(t), "192.0.2.1:41000", podClaims(shapedAnswersContract-1)))

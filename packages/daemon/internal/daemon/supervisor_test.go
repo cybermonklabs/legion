@@ -44,6 +44,7 @@ func (s fixedClaimStore) ClaimByBootTokenHash(context.Context, []byte) (supervis
 // would let a garbage token pin a goroutine and a file descriptor for the whole boot wait, with no
 // cap on how many a client could open.
 func TestHelloResolverRejectsAnUnknownTokenAtOnceDuringTheBootWait(t *testing.T) {
+	t.Parallel()
 	sup := newSupervisor(context.Background(), nil, "PROJECT", "", quietLogger())
 	const resolveTimeout = 20 * time.Millisecond
 	resolve := sup.helloResolver(api.NewBootTokens(fixedClaimStore{found: false}), resolveTimeout)
@@ -69,6 +70,7 @@ func TestHelloResolverRejectsAnUnknownTokenAtOnceDuringTheBootWait(t *testing.T)
 // stored claim has its machine, the boot orphan reconciliation has run and the terminal replay has
 // applied what no daemon applied).
 func TestHelloResolverHoldsAKnownTokenUntilRestoredRatherThanRejectingItAfterTheTimeout(t *testing.T) {
+	t.Parallel()
 	sup := newSupervisor(context.Background(), nil, "PROJECT", "", quietLogger())
 	const resolveTimeout = 20 * time.Millisecond
 	store := fixedClaimStore{found: true, claim: supervise.Claim{Token: claim.Token("a-claim"), Generation: 1}}
@@ -101,6 +103,7 @@ func TestHelloResolverHoldsAKnownTokenUntilRestoredRatherThanRejectingItAfterThe
 // (daemon.go's run), so every held hello returns rather than leaking the goroutine and the
 // connection it would otherwise pin forever.
 func TestHelloResolverReleasesAKnownTokenWhenTheBootGivesUpRatherThanBecomingReady(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	sup := newSupervisor(ctx, nil, "PROJECT", "", quietLogger())
 	const resolveTimeout = 20 * time.Millisecond
@@ -151,6 +154,7 @@ func (s *flakyClaimStore) ClaimByBootTokenHash(context.Context, []byte) (supervi
 // and the shim's redial, which follows any hello it gets no ack for, is accepted once the store
 // answers. The listener and the resolver are the daemon's own; the two dials are the shim's.
 func TestAHelloWhoseClaimReadFailsOnceIsAcceptedOnTheRedialWithNoRefusal(t *testing.T) {
+	t.Parallel()
 	const token = claim.Token("legion-test-legion-1-implementer")
 	const bootToken = "the-pane-boot-token"
 	sup := newSupervisor(context.Background(), nil, "PROJECT", "", quietLogger())
@@ -279,6 +283,7 @@ func (s *relaunchingStore) PutClaimStep(_ context.Context, token claim.Token, st
 // BootTokens though it never minted it, so the second resolve comes back Stale, refused as "stale
 // worker generation", and generation 2's own, freshly minted hello is accepted.
 func TestHelloResolverResolvesAgainAfterRestorationSoARelaunchDuringTheHoldIsNotMissed(t *testing.T) {
+	t.Parallel()
 	type result struct {
 		stale bool
 		known bool
@@ -380,6 +385,7 @@ func TestHelloResolverResolvesAgainAfterRestorationSoARelaunchDuringTheHoldIsNot
 // instead would store the claim registered with no process, which restore keeps as it is, arming
 // a registration deadline that has no process to probe or retire.
 func TestARegistrationInFlightWhenTheStopCutsItsLaunchShortIsRestoredAsAnUnfinishedLaunch(t *testing.T) {
+	t.Parallel()
 	project, _ := claim.ProjectToken("legion")
 	token, _ := claim.NewToken(project, "LEGION-1", claim.RoleImplementer)
 	store := &outboxClaimStore{}
@@ -458,6 +464,7 @@ func TestARegistrationInFlightWhenTheStopCutsItsLaunchShortIsRestoredAsAnUnfinis
 // read, logs it with the state it was stored in, and the boot relaunches its session once its
 // orphan reconciliation has run.
 func TestALiveClaimStoredWithNoProcessIsRestoredAsAnUnfinishedLaunchAndRelaunched(t *testing.T) {
+	t.Parallel()
 	project, _ := claim.ProjectToken("legion")
 	token, _ := claim.NewToken(project, "LEGION-1", claim.RoleImplementer)
 	for _, state := range []supervise.ClaimState{supervise.StateShimConnected, supervise.StateRegistered, supervise.StateReady,
@@ -514,7 +521,7 @@ func TestALiveClaimStoredWithNoProcessIsRestoredAsAnUnfinishedLaunchAndRelaunche
 			}
 
 			s := &supervision{log: quietLogger(), supervisor: sup, refreshGate: supervise.NewRefreshGate(0)}
-			if refused := s.launchUnfinished(context.Background(), unfinished); len(refused) != 0 {
+			if refused := s.launchUnfinished(context.Background(), waitingLaunches(unfinished)); len(refused) != 0 {
 				t.Fatalf("the relaunch refused %v", refused)
 			}
 
@@ -653,6 +660,7 @@ func (g *gatedPrompt) Prompt(ctx context.Context, deliveryID, message string) er
 // of that turn is posted to the issue's other claims once the implementer's own machine has
 // recorded it (wakeIssue), and the waiting task is adopted and sent then.
 func TestAPhaseTaskWaitsForTheTurnOfAnotherClaimOfItsIssue(t *testing.T) {
+	t.Parallel()
 	rig := newIssueRig(t)
 	implementer, writing := rig.ready(claim.RoleImplementer, fake.NewConn())
 	testerConn := fake.NewConn()
@@ -711,6 +719,7 @@ func TestAPhaseTaskWaitsForTheTurnOfAnotherClaimOfItsIssue(t *testing.T) {
 // copy they share at the same time (dispatch://INFRA-314). The held task goes at the end of the
 // turn that send started, as it does for a turn already running.
 func TestAPhaseTaskWaitsForASendInFlightOnAnotherClaimOfItsIssue(t *testing.T) {
+	t.Parallel()
 	rig := newIssueRig(t)
 	gated := newGatedPrompt()
 	implementer, writing := rig.ready(claim.RoleImplementer, gated)

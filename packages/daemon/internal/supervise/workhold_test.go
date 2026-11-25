@@ -32,7 +32,7 @@ const (
 	laterTask = "Implement the review's changes."
 	// holdOpening is the opening's sentences, which the one task the opening gives starts with;
 	// resumeTask is the phase task the boot builds for a phase holder that kept no task of its own
-	// (workflow's ResumePhaseTask).
+	// (workflow's Engine.ResumeTask, as it reads for an issue with no plan rows).
 	holdOpening = "The work hold stopped your turn. Version 4 of the spec document of LEGION-208 closed the design gate. " +
 		"The design gate of LEGION-208 opened. Check what your turn already did: a tool call may not have finished."
 	resumeTask = "Continue Implement LEGION-209. Issue: LEGION-209. Phase: implementing. Resume the existing phase work."

@@ -150,14 +150,15 @@ func TestAReadyWorkerWithOnlyANewsOnlyStartQueuedIsGivenItsPhaseTask(t *testing.
 	seedOutboxRow(t, pool, "LEGION-209", record.SuperviseRequest{Op: "start", Tree: "LEGION-209", Role: claim.RoleTester,
 		Generation: 1, Phase: phase.Testing, News: true})
 
+	engine := testEngine(config.DesignGateRootIssues, nil)
 	if _, err := intake.ApplyFact(t.Context(), pool, "supervise", "supervise:tester:2:ready",
 		intake.ClaimReady{Issue: "LEGION-209", Role: claim.RoleTester, Launch: 2},
-		testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+		engine, admissionStub{}); err != nil {
 		t.Fatalf("apply the ready: %v", err)
 	}
 
 	starts := superviseRowsOf(t, pool, "LEGION-209", "start")
-	if len(starts) != 2 || !starts[0].News || starts[1].News || !starts[1].ResumeTask || starts[1].Task != ResumePhaseTask(issue) {
+	if len(starts) != 2 || !starts[0].News || starts[1].News || !starts[1].ResumeTask || starts[1].Task != phaseResumeTask(t, pool, engine, issue.Key) {
 		t.Fatalf("the starts after the ready = %+v, want the news-only start and, beside it, the phase's resume task: a start of news alone carries no task of the phase", starts)
 	}
 }

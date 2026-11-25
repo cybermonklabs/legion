@@ -104,6 +104,7 @@ func theReopeningIsToldByTheTaskSentAgain(t *testing.T, r *newsPathRig, machine 
 // is X's, with no opening; the daemon then records nothing of the opening for it. X's turn and its
 // result leave the reviewer owed the opening, and the task the agent does take is told it.
 func TestARestartsResendTheShimAnswersFromItsRecordRecordsNoNewsTheAgentNeverRead(t *testing.T) {
+	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
 	r.told(pathRoot, record.AudienceHolder, 3)
 	r.told(pathRoot, record.AudienceArchitect, 4)
@@ -142,6 +143,7 @@ func TestARestartsResendTheShimAnswersFromItsRecordRecordsNoNewsTheAgentNeverRea
 // daemon then records nothing of the opening for it. X's turn and its result leave the reviewer owed
 // the opening, and the task the agent does take is told it.
 func TestAResendAfterALostAnswerTheShimAnswersFromItsRecordRecordsNoNewsTheAgentNeverRead(t *testing.T) {
+	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
 	r.told(pathRoot, record.AudienceHolder, 3)
 	r.told(pathRoot, record.AudienceArchitect, 4)

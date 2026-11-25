@@ -9,6 +9,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 )
 
+func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
+
 func buildMockBinary(t *testing.T) string {
 	t.Helper()
 	return cmdtest.BuildCommand(t, cmdtest.Command{Name: "mock_mcp_server", Target: writeMockServer(t.TempDir())})

@@ -20,7 +20,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
-	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // testLeakCheckTag is the pin a fake launcher's hello names when a test gives it one.
@@ -59,32 +58,10 @@ func (f *fakeLeakCheck) reads() []string {
 }
 
 // servedLeakCheck is a reader whose packed check is more than one
-// shimwire.LauncherBundlePayloadBytes, so the push is a sequence of slices and not one frame.
+// shimwire.LauncherSlicePayloadBytes, so the push is a sequence of slices and not one frame.
 func servedLeakCheck() *fakeLeakCheck {
-	return &fakeLeakCheck{body: bytes.Repeat([]byte("leak-check\x00"), shimwire.LauncherBundlePayloadBytes/11+4096),
+	return &fakeLeakCheck{body: bytes.Repeat([]byte("leak-check\x00"), shimwire.LauncherSlicePayloadBytes/11+4096),
 		manifest: testLeakCheck.ManifestSHA256}
-}
-
-// leakCheckStore is a store holding the issue's saved workspace bundle, as a released issue's
-// does when its next pod starts: the bundle's one restore attempt is what a refused start must
-// not spend.
-func leakCheckStore(t *testing.T) (*store.Store, runtime.WorkspaceBundle) {
-	t.Helper()
-	st := bundleStore(t)
-	saved := savedWorkspaceBundle()
-	if err := st.PutWorkspaceBundle(context.Background(), testTree, saved.Release, saved); err != nil {
-		t.Fatalf("save the released workspace's bundle: %v", err)
-	}
-	return st, saved
-}
-
-// withLeakCheckAndStore hands the runtime source as its reader of the leak check and st's saved
-// workspace bundles.
-func withLeakCheckAndStore(source LeakCheckReader, st *store.Store) rigOption {
-	return withOptions(func(o *Options) {
-		o.LeakCheck = source
-		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = takeBundle(st), st.DeleteRestoredWorkspaceBundle
-	})
 }
 
 // countOf is how many of frames are of the frame type of want.
@@ -98,27 +75,33 @@ func countOf(frames []shimwire.Frame, want string) int {
 	return n
 }
 
+// frameTypes names what a launcher was sent, for a failure an operator reads.
+func frameTypes(frames []shimwire.Frame) []string {
+	types := make([]string, 0, len(frames))
+	for _, frame := range frames {
+		types = append(types, frame.FrameType())
+	}
+	return types
+}
+
 // A launcher whose hello names its pin is sent the check the daemon read at that pin before
-// anything else of the start: every slice of it, in order, before the first slice of the saved
-// workspace bundle and before the role's start, since the launcher installs the check once for
-// the pod and every role's shim refuses to start its agent without that install.
-func TestALauncherNamingItsPinIsSentTheLeakCheckBeforeTheBundleAndTheStart(t *testing.T) {
-	st, saved := leakCheckStore(t)
+// anything else of the start: every slice of it, in order, before the role's start, since the
+// launcher installs the check once for the pod and every role's shim refuses to start its agent
+// without that install.
+func TestALauncherNamingItsPinIsSentTheLeakCheckBeforeTheStart(t *testing.T) {
 	source := servedLeakCheck()
-	g := newRig(t, nil, withLeakCheckHello(testLeakCheckTag, false), withLeakCheckAndStore(source, st))
+	g := newRig(t, nil, withLeakCheckHello(testLeakCheckTag, false), withOptions(func(o *Options) { o.LeakCheck = source }))
 	spec := workerSpec(t)
 	g.spawn(spec)
 
 	frames := g.sent(spec.Claim)
 	start := slices.IndexFunc(frames, func(f shimwire.Frame) bool { _, ok := f.(shimwire.LauncherStart); return ok })
-	firstBundle := slices.IndexFunc(frames, func(f shimwire.Frame) bool { _, ok := f.(shimwire.LauncherBundle); return ok })
-	if start < 0 || firstBundle < 0 {
-		t.Fatalf("the launcher was sent %v, want the check's slices, the bundle's slices and then the role's start", frameTypes(frames))
+	if start < 0 {
+		t.Fatalf("the launcher was sent %v, want the check's slices and then the role's start", frameTypes(frames))
 	}
 	var body []byte
 	var sequence string
-	slicesSent := 0
-	for i, frame := range frames[:firstBundle] {
+	for i, frame := range frames[:start] {
 		slice, ok := frame.(shimwire.LauncherLeakCheck)
 		if !ok {
 			t.Fatalf("the launcher was sent %v, want the check's slices before anything else", frameTypes(frames))
@@ -126,32 +109,23 @@ func TestALauncherNamingItsPinIsSentTheLeakCheckBeforeTheBundleAndTheStart(t *te
 		if i == 0 {
 			sequence = slice.ID
 		}
-		if slice.ID != sequence || slice.Index != i || slice.Count != firstBundle || slice.Tag != testLeakCheckTag {
-			t.Fatalf("slice %d of %d of %s under %q arrived at position %d of the %d sent before the bundle",
-				slice.Index, slice.Count, slice.Tag, slice.ID, i, firstBundle)
+		if slice.ID != sequence || slice.Index != i || slice.Count != start || slice.Tag != testLeakCheckTag {
+			t.Fatalf("slice %d of %d of %s under %q arrived at position %d of the %d sent before the start",
+				slice.Index, slice.Count, slice.Tag, slice.ID, i, start)
 		}
 		body = append(body, slice.Payload...)
-		slicesSent++
 	}
-	if slicesSent < 2 {
-		t.Fatalf("the check crossed in %d slice(s), want the sequence of the %d bytes read", slicesSent, len(source.body))
+	if start < 2 {
+		t.Fatalf("the check crossed in %d slice(s), want the sequence of the %d bytes read", start, len(source.body))
 	}
 	if !bytes.Equal(body, source.body) {
 		t.Fatalf("the check crossed as %d bytes, want the %d the daemon read", len(body), len(source.body))
 	}
-	if got := countOf(frames, shimwire.TypeLauncherLeakCheck); got != slicesSent {
-		t.Fatalf("the launcher was sent %v: a slice of the check crossed after the bundle began", frameTypes(frames))
-	}
-	if firstBundle > start {
-		t.Fatalf("the launcher was sent %v, want the bundle's slices before the role's start", frameTypes(frames))
+	if got := countOf(frames, shimwire.TypeLauncherLeakCheck); got != start {
+		t.Fatalf("the launcher was sent %v: a slice of the check crossed after the role's start", frameTypes(frames))
 	}
 	if reads := source.reads(); !slices.Equal(reads, []string{testLeakCheckTag}) {
 		t.Fatalf("the daemon read the check at %v, want once at the launcher's pin %s", reads, testLeakCheckTag)
-	}
-	// The bundle went over as it does with no check at all, and the launcher's report of its
-	// restore dropped it.
-	if _, held, _, err := st.WorkspaceBundleSize(g.ctx, testTree); err != nil || held {
-		t.Fatalf("after the launcher reported its restore the store holds the bundle = %t (%v), want it deleted (%d bytes saved)", held, err, len(saved.Bundle))
 	}
 }
 
@@ -520,11 +494,10 @@ func TestALauncherHoldingItsPinInstalledIsSentNothingAndStarts(t *testing.T) {
 }
 
 // A check that could not be put in place refuses the role's start before anything of the start
-// reaches the launcher: no start frame, so no stop of one either, and no slice of the saved
-// workspace bundle, which stays in the store for the start that follows (the bundle's one restore
-// attempt is not spent on a pod no role ran in). The error carries the cause sentence, which the
-// claim reads (runtime.LeakCheckCause), wrapped as every start error of the launch is.
-func TestARefusedLeakCheckStartsNothingAndLeavesTheSavedBundle(t *testing.T) {
+// reaches the launcher: no start frame, so no stop of one either. The error carries the cause
+// sentence, which the claim reads (runtime.LeakCheckCause), wrapped as every start error of the
+// launch is.
+func TestARefusedLeakCheckStartsNothing(t *testing.T) {
 	podsLauncher := leakguard.Cause("the pod's launcher could not unpack the check the daemon served", errors.New("gzip: invalid header"))
 	for name, tc := range map[string]struct {
 		source  LeakCheckReader
@@ -565,8 +538,7 @@ func TestARefusedLeakCheckStartsNothingAndLeavesTheSavedBundle(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			st, saved := leakCheckStore(t)
-			options := append([]rigOption{withLeakCheckHello(testLeakCheckTag, false), withLeakCheckAndStore(tc.source, st)}, tc.options...)
+			options := append([]rigOption{withLeakCheckHello(testLeakCheckTag, false), withOptions(func(o *Options) { o.LeakCheck = tc.source })}, tc.options...)
 			g := newRig(t, nil, options...)
 			spec := workerSpec(t)
 			g.launcher(spec.Claim)
@@ -582,22 +554,10 @@ func TestARefusedLeakCheckStartsNothingAndLeavesTheSavedBundle(t *testing.T) {
 				t.Fatalf("the launch failed with %q, want %q", err, want)
 			}
 			frames := g.sent(spec.Claim)
-			for _, sent := range []string{shimwire.TypeLauncherStart, shimwire.TypeLauncherStop, shimwire.TypeLauncherBundle} {
+			for _, sent := range []string{shimwire.TypeLauncherStart, shimwire.TypeLauncherStop} {
 				if countOf(frames, sent) != 0 {
 					t.Fatalf("the launcher was sent %v, want no %s after the refusal", frameTypes(frames), sent)
 				}
-			}
-			pod := g.pod(SandboxName(spec.Claim))
-			if pod == nil {
-				t.Fatal("the refused launch left no pod")
-			}
-			bundle, take, err := st.TakeWorkspaceBundleForRestore(g.ctx, testProject, testTree, string(pod.UID), pod.CreationTimestamp.Time)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if take != runtime.WorkspaceBundleSend || !bytes.Equal(bundle.Bundle, saved.Bundle) {
-				t.Fatalf("after the refusal the store answers the pod %d bytes (take %v), want the %d saved still to send",
-					len(bundle.Bundle), take, len(saved.Bundle))
 			}
 		})
 	}

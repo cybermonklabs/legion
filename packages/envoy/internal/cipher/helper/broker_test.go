@@ -661,17 +661,22 @@ func loggedInBroker(t *testing.T, f *fakeBroker, operator string) *Broker {
 	return b
 }
 
-// waitFor polls cond until it is true or 5s pass, whichever comes first, failing the test on
-// timeout. A login's first token poll comes a second after its device authorization (the
-// interval the fake names).
+// waitFor polls cond every 5 ms until it is true, failing the test when it never is. Its one bound
+// is testwait's margin before the test binary's deadline (testwait.UntilPolling), so a host too
+// loaded to reach cond within a fixed span is not a failure: with a span of 5 s, a test process
+// frozen 12 s at a time failed TestASecondLapseWaitsAgainAndRevokesBothLapsedIDs here, though the
+// helper did what the test waited for. A login's first token poll comes a second after its device
+// authorization (the interval the fake names).
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
-	if !testwait.Holds(5*time.Second, 5*time.Millisecond, cond) {
-		t.Fatal("condition never became true")
-	}
+	testwait.UntilPolling(t, 5*time.Millisecond, "the condition waitFor asks for", func() (bool, bool) {
+		held := cond()
+		return held, held
+	})
 }
 
 func TestLoginHoldsTheKeyAndEnrollSignsLauncherProofs(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t) // records the login request object; issues on the first poll
 	b := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 	t.Cleanup(b.Close)
@@ -704,6 +709,7 @@ func TestLoginHoldsTheKeyAndEnrollSignsLauncherProofs(t *testing.T) {
 // well, and the next start's refresh settles whether the login still stands; nothing else is
 // written under HOME.
 func TestNoCredentialAndExpiredCredentialBothNameTheLoginCommand(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv).
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	f := newFakeBroker(t)
@@ -763,6 +769,7 @@ func TestNoCredentialAndExpiredCredentialBothNameTheLoginCommand(t *testing.T) {
 // gets the broker's refusal rather than errNoCredential, since the helper holds a credential and
 // its retry can use it.
 func TestALateRejectionOfAnOldCredentialLeavesTheNewLoginAlone(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	b := loggedInBroker(t, f, "ada@example.com")
 	old := b.cred.Load()
@@ -795,6 +802,7 @@ func TestALateRejectionOfAnOldCredentialLeavesTheNewLoginAlone(t *testing.T) {
 // clear and the record; it waits up to 200 ms for that read, which returns at once unless the lock
 // holds it back until the refusal is recorded.
 func TestLoginStatusReadsARefusalWithTheClearThatCausedIt(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	b := loggedInBroker(t, f, "ada@example.com")
 	held := b.cred.Load()
@@ -829,6 +837,7 @@ func TestLoginStatusReadsARefusalWithTheClearThatCausedIt(t *testing.T) {
 // denied and no longer refused: its outcome is newer than the refusal, and `machine login`, which
 // reads the same answer, must tell the operator it was denied.
 func TestALoginPendingWhenTheCredentialIsRefusedReportsItsOwnOutcome(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	b := loggedInBroker(t, f, "ada@example.com")
 	held := b.cred.Load()
@@ -861,6 +870,7 @@ func TestALoginPendingWhenTheCredentialIsRefusedReportsItsOwnOutcome(t *testing.
 // outcomes and confirms a later Login, once the prior one is no longer pending, starts completely
 // fresh rather than reusing the denied/expired attempt's key.
 func TestDeniedAndExpiredLoginsSurfaceTheirState(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	b := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 	t.Cleanup(b.Close)
@@ -901,6 +911,7 @@ func TestDeniedAndExpiredLoginsSurfaceTheirState(t *testing.T) {
 }
 
 func TestEnrollSendsKindSessionAndAcceptsBothStatuses(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	b := loggedInBroker(t, f, "ada@example.com")
 	sess, _ := newSession(1234, 77, "example-host-devbox:1234:77", "", nil, nil)
@@ -922,6 +933,7 @@ func TestEnrollSendsKindSessionAndAcceptsBothStatuses(t *testing.T) {
 }
 
 func TestRenewSignsWithTheSessionKeyAndRevokeIsIdempotent(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	b := loggedInBroker(t, f, "ada@example.com")
 	sess, _ := newSession(1, 1, "h:1:1", "", nil, nil)
@@ -950,6 +962,7 @@ func TestRenewSignsWithTheSessionKeyAndRevokeIsIdempotent(t *testing.T) {
 }
 
 func TestMissingCredentialNamesTheLoginCommand(t *testing.T) {
+	t.Parallel()
 	b := &Broker{URL: cipheraddr.New("http://127.0.0.1:1"), OperatorFile: filepath.Join(t.TempDir(), "none"), HTTP: http.DefaultClient}
 	sess, _ := newSession(1, 1, "h:1:1", "", nil, nil)
 	_, _, err := b.EnrollIdentity(context.Background(), sess.identity())
@@ -964,6 +977,7 @@ func TestMissingCredentialNamesTheLoginCommand(t *testing.T) {
 // LAUNCHER_INVALID" prefix; each shape with an empty part drops that part, so a front door's 502
 // with no JSON body does not read "broker 502 : ".
 func TestABrokerErrorNamesOnlyTheFieldsItHas(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		err  BrokerError
 		want string
@@ -984,6 +998,7 @@ func TestABrokerErrorNamesOnlyTheFieldsItHas(t *testing.T) {
 // writes into its directory, so the caller that closed the broker can remove that directory
 // while a refresh or an approved login is still finishing.
 func TestASaveAfterTheBrokerClosesWritesNothing(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	b := &Broker{MachineFile: filepath.Join(dir, "machine.json")}
 	b.Close()

@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -471,7 +472,7 @@ func (a *Admission) workingTrees(ctx context.Context, tx pgx.Tx, issues []record
 // dispatch_blocker or children_first wait read on an issue already started, which
 // lineHolds.waitsByDesign answers from the entry (lineHolds.waitsOnWorkOutsideItsTree says when
 // it holds whatever the line does).
-// An issue past its review is never such an issue (blockers.waitsOf says why).
+// An issue in accepting, retro or merging is never such an issue (blockers.waitsOf says why).
 //
 // Two directions decide the rest, and they are different questions. The word for an issue no
 // other word is true of (unclassified) does not silence, and neither does a word this table
@@ -488,26 +489,38 @@ func (a *Admission) workingTrees(ctx context.Context, tx pgx.Tx, issues []record
 // parked waits for a re-admission (tree_closed, tree_parked), a root whose label is off waits
 // for a person to hand it over (label_off), a root a live tree has not released waits for its
 // architect (ancestry), an issue under an accepted ancestor waits while that ancestor stands
-// in retro or merging (accepted_ancestor), and an issue past its review is at work on no slot, whose stillness is
+// in retro or merging (accepted_ancestor), and an issue in accepting, retro or merging is at
+// work on no slot, whose stillness is
 // the stall itself (at_work). None of them is the daemon holding work it means to start, which
 // is what a wait by design is.
+//
+// The two holds an owner's plan makes do not silence either: a parent held before its retro for
+// the issues beneath it (children_before_retro) and a task that was stopped (task_stopped). Each
+// stands on an issue that has had its start and stands in held, which lineHolds.waitsByDesign
+// reads as stopped before it reads any word, so their rows here are never what decides, and
+// false says the same as that rule. A held parent is then judged as a parent
+// that waits in accepting for its children is judged, and each issue beneath it by its own word;
+// a stopped task waits for its owner's next version of the plan or for a person, the tree's own
+// work or a person's (TestAHoldOfAPlanIsNoWaitByDesign).
 //
 // A word with no row here fails admit's TestTheMeasureAnswersEveryHeldReason, which reads the
 // words from the record package's own source: a word added to the vocabulary and left out of
 // this table would otherwise be ignored quietly, which is the fault rather than a new place to
 // hide it.
 var silencedTree = map[record.HeldReason]bool{
-	record.HeldTreeClosed:         false,
-	record.HeldTreeParked:         false,
-	record.HeldLabelOff:           false,
-	record.HeldAncestry:           false,
-	record.HeldRootAwaitingPerson: true,
-	record.HeldDesignGate:         true,
-	record.HeldDispatchBlocker:    true,
-	record.HeldChildrenFirst:      true,
-	record.HeldAcceptedAncestor:   false,
-	record.HeldAtWork:             false,
-	record.HeldUnclassified:       false,
+	record.HeldTreeClosed:          false,
+	record.HeldTreeParked:          false,
+	record.HeldLabelOff:            false,
+	record.HeldAncestry:            false,
+	record.HeldRootAwaitingPerson:  true,
+	record.HeldDesignGate:          true,
+	record.HeldDispatchBlocker:     true,
+	record.HeldChildrenFirst:       true,
+	record.HeldAcceptedAncestor:    false,
+	record.HeldChildrenBeforeRetro: false,
+	record.HeldTaskStopped:         false,
+	record.HeldAtWork:              false,
+	record.HeldUnclassified:        false,
 }
 
 // silences says whether an issue the line left behind for word is waiting by design, from the
@@ -534,9 +547,11 @@ type lineHolds struct {
 	// ladder's word over one set of facts, so the first row is the one kept, as record.HeldList
 	// keeps it.
 	words map[string]record.HeldReason
-	// gates is the pass's design gates, by root key, which tell a root waiting for its tree to be
-	// opened (record.QueuedRoot) from one the daemon has already started.
-	gates map[string]record.TreeGate
+	// gates and lifecycles are the pass's design gates and tree lifecycles, by root key, which
+	// tell a root waiting for its tree to be opened (record.QueuedRoot) from one the daemon has
+	// already started.
+	gates      map[string]record.TreeGate
+	lifecycles map[string]treelifecycle.Lifecycle
 	// childWaits is the pass's children-first judgement, by parent key
 	// (record.LineFacts.ChildWaits): the open Dispatch children each parent's own first phase
 	// waits for, each with whether the daemon has released it (record.OpenChild.Released), which
@@ -553,7 +568,7 @@ func lineHoldsOf(facts record.LineFacts, slots []record.Slot, line []record.Line
 ) lineHolds {
 	holds := lineHolds{line: make(map[string]record.LineEntry, len(line)),
 		holders: make(map[string]struct{}, len(slots)),
-		words:   make(map[string]record.HeldReason, len(dropped)), gates: facts.Gates,
+		words:   make(map[string]record.HeldReason, len(dropped)), gates: facts.Gates, lifecycles: facts.Lifecycles,
 		childWaits: facts.ChildWaits}
 	for _, entry := range line {
 		holds.line[entry.Issue.Key] = entry
@@ -591,7 +606,7 @@ func lineHoldsOf(facts record.LineFacts, slots []record.Slot, line []record.Line
 //     root at admitted may hold one while its design gate is closed, since a closed gate is no
 //     wait on another issue and a gate that has never opened is its architect at work
 //     (blockers.waitsOf keeps that row), and it waits for that gate all the same;
-//  4. every other issue does not: a slot holder at work in its phase, an issue past its review
+//  4. every other issue does not: a slot holder at work in its phase, an issue in accepting, retro or merging
 //     on no slot, a root waiting for its tree to be opened, an issue out of the workflow, and an
 //     issue already started that the line left behind. The holds the ladder names for that last
 //     one — its root's wait on a person, its tree's gate — hold a start, and such an issue has
@@ -604,7 +619,7 @@ func (h lineHolds) waitsByDesign(issue record.Issue) bool {
 	if entry, waits := h.line[issue.Key]; waits {
 		return !entry.Holds
 	}
-	if issue.Phase != phase.Admitted || !record.InWorkflow(issue) || record.QueuedRoot(issue, h.gates[issue.Key]) {
+	if issue.Phase != phase.Admitted || !record.InWorkflow(issue) || record.QueuedRoot(issue, h.lifecycles[issue.Key], h.gates[issue.Key]) {
 		return false
 	}
 	return silences(h.words[issue.Key])
@@ -641,7 +656,7 @@ func (h lineHolds) waitsByDesign(issue record.Issue) bool {
 //     `waiting_on_issue`, in `admission.blocked`, and in the `blocked` list of the controller's
 //     tick notice, which the daily report reads.
 //
-// An issue standing in held — held from a phase up to its review, which gave its slot back
+// An issue standing in held — held from a phase that keeps a slot, which gave its slot back
 // because it waits on work outside its tree as above — waits on that work like the three above,
 // and is answered true. What its tree can do (the architect's retry_or_escalate) ends the hold,
 // but the issue still waits on its blocker and still holds no slot, so a stall notice would name
@@ -711,9 +726,10 @@ func (h lineHolds) waitsOnWorkOutsideItsTree(issue record.Issue) bool {
 //  3. the free-slot term: some entry of the line waits on no other issue (blockers.LineWaitsOn,
 //     the rule the promotion itself reads per kind) and the promotion starts it under the cap
 //     (capLets, the cap's half the promotion reads too): it takes a row the
-//     project holds fewer than the cap of, or it takes none at all, as a queued root past its
-//     review takes none and opens its tree whatever the cap says. The promotion this same pass
-//     runs after the measure starts that entry's work. A slot comes free without a worker
+//     project holds fewer than the cap of, or it takes none at all, as a queued root in
+//     accepting, retro or merging takes none and opens its tree whatever the cap says. The
+//     promotion this same pass runs after the measure starts that entry's work. A slot comes
+//     free without a worker
 //     where a started issue gives its row back to wait on another issue (releaseSlotsForWaits),
 //     which runs on this pass before the measure, so the two terms above can both fail on a
 //     project whose line is about to move; without this term such a project read as a deadlock
@@ -798,7 +814,7 @@ func (a *Admission) lineCanMove(issues []record.Issue, holds lineHolds, working 
 // stall, save where it gave its slot back to wait on another issue (waitsOnWorkOutsideItsTree
 // says which of those waits leave a tree unnamed). An issue whose merge is still to land stands
 // in `merging`, where the merger works, and is read the same way: it holds no slot and stands in
-// no line, past its review (at_work), silences nothing, and its tree is named once every claim of
+// no line, in merging (at_work), silences nothing, and its tree is named once every claim of
 // the tree is at rest and nothing of it has moved inside the bound. A merger at work is what
 // keeps such a tree unnamed, and that is read from the claim and never from the phase
 // (record.TreeQuiet.AtWork, which the caller asks before this walk).

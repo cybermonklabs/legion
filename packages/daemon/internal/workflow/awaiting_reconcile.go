@@ -208,7 +208,7 @@ func (e *Engine) leaveGateOff(ctx context.Context, tx pgx.Tx, root record.Issue,
 		e.logOnCommit(ctx, "workflow: the deployment gates no step, so a root's wait on its gate moves to what is still with the person",
 			"issue", root.Key, "version", root.Awaiting.GateVersion, "next_ask", next.Ask)
 		root.Awaiting.Ask, root.Awaiting.GateVersion, root.Awaiting.Artifact = next.Ask, next.GateVersion, next.Artifact
-		return e.store.PutIssue(ctx, tx, root)
+		return e.WriteIssue(ctx, tx, root)
 	}
 	e.logOnCommit(ctx, "workflow: the deployment gates no step, which answers a root's wait on its gate", "issue", root.Key,
 		"version", root.Awaiting.GateVersion)
@@ -287,7 +287,7 @@ type awaitDecision struct {
 //
 // Rule 0 is the spec's own condition (dispatch://INFRA-980, "Which issue needs a slot"): a root
 // enters awaiting_person only while it holds a slot, which now says the daemon has started it
-// and its work is not yet past its review (record.KeepsSlot); a root at admitted whose gate has
+// and it stands in a phase that keeps a slot (record.KeepsSlot); a root at admitted whose gate has
 // never opened keeps that slot through a wait on another issue (blockers.waitsOf). It is read as
 // the root's own slot row
 // (awaitView.Slotted). A root still waiting in line for
@@ -517,8 +517,10 @@ func answerOfAct(ask record.RootAsk, seq int64, otherwise record.Answer) record.
 // waits on another issue as well (blockers.waitsOf leaves it out). The architect stays live to
 // read the person's answer, and the controller is told.
 func (e *Engine) enterAwaiting(ctx context.Context, tx pgx.Tx, root record.Issue, waiting record.Awaiting, reason string) error {
+	// The root's task keeps its place (moveTask): the wait comes before its first step, so the task
+	// has not started, and awaiting_person, like admitted, is a phase of the architect before it.
 	root.Phase, root.Awaiting = phase.AwaitingPerson, &waiting
-	if err := e.store.PutIssue(ctx, tx, root); err != nil {
+	if err := e.WriteIssue(ctx, tx, root); err != nil {
 		return err
 	}
 	// The root moves from admitted into awaiting_person here, which is a phase change and so a

@@ -172,7 +172,7 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 	if !deadline.IsZero() && (m.held.Deadline.IsZero() || deadline.Before(m.held.Deadline)) {
 		m.held.Deadline = deadline
 		if a, ok := m.timers[TimerSuspend]; !ok || deadline.Before(a.due) {
-			m.arm(TimerSuspend, max(0, deadline.Sub(m.deps.Clock.Now())), "")
+			m.armAt(TimerSuspend, deadline, "")
 			m.log.Info("supervise: the held suspension stops the agent at its deadline if its turn has not ended", "deadline", deadline, "by", m.held.By)
 		}
 	}
@@ -213,6 +213,13 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 // TimerWake), and no token is handed back, since the limiter charges on the reserve: every wake
 // behind it keeps the turn it already holds, exactly as a wake dropped for a request that does not
 // wait leaves them (dropWakeFor, reparkWake).
+//
+// A claim whose launch waits for its issue pod's start does not wait either (askPod, wake.park):
+// the launch has let its process go and parked on the machine with no process started, waiting
+// only for another role's session load, and a suspension, a release or a deletion of the pod
+// never waits (dispatch://INFRA-5297). It is decided where it arrives by the same branch, and the
+// suspension takes its start out of the pod's gate as a suspension at the end of its decision
+// (suspended, endPodPark), where the launch writes that it was cut short.
 //
 // A claim whose process still runs is untouched by any of this. The gate left such a claim exactly
 // as it stood (parkWake), so its suspend is decided by the row of the state it still holds — and a
@@ -256,8 +263,10 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 			Reason: "the claim's launch has not registered, and this suspension is not one that is held for it"}
 	}
 	if m.wake != nil && m.claim.Locator == nil {
-		m.log.Info("supervise: a suspension reached a claim whose paced wake waits over no process; deciding it here",
-			"reason", request.Reason, "by", request.By, "kind", m.wake.kind, "due", m.wake.at)
+		if m.wake.park == nil {
+			m.log.Info("supervise: a suspension reached a claim whose paced wake waits over no process; deciding it here",
+				"reason", request.Reason, "by", request.By, "kind", m.wake.kind, "due", m.wake.at)
+		}
 		return m.suspendedFor(ctx, request, true)
 	}
 	if m.wake != nil && request.Pause != 0 {
@@ -286,7 +295,7 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 // suspend of a claim whose idle pod was released, or that the work hold stopped, so the linger,
 // park, close or hand-over that asked for it owns the claim and neither a wake nor the hold's end
 // acts on it; and the work hold's stop of a released claim, a pause's stop among them, so no wake
-// resumes it while the hold stands and it keeps its bundle and its pending task. Anything else
+// resumes it while the hold stands and it keeps its session and its pending task. Anything else
 // changes nothing, and an operator's suspension is never taken over. Once the work hold's
 // takeover is written, the tree's work hold row is read again (holdReadAfterStop). The hold's stop
 // asked again of a claim the hold already stopped changes nothing here, by the rank, and so writes
@@ -417,14 +426,24 @@ func suspendRequest(m *Machine, ev Event) (RequestSuspend, error) {
 // that a replacement or a wake's turn ends stops through endHeld and letProcessGoFor, and a
 // root's exit stops through exit. It sends the clean stop of the process's Envoy session once the
 // runtime's stop has returned, and none for a stop the runtime refused (stopForSuspension).
-// launch is whether the stop meets a launch its caller knows of (suspendedFor); a launch still
-// waiting on the machine is read here, before the stop lets it go (launchMet).
+// launch is whether the stop meets a launch its caller knows of (suspendedFor); the launch the
+// claim itself owes is read here, before the stop lets its process go (stopOwesLaunch).
 func (m *Machine) suspendNow(ctx context.Context, request RequestSuspend, launch bool) error {
-	launch = launch || m.launchMet()
+	launch = launch || m.stopOwesLaunch()
 	if err := m.stopForSuspension(ctx, request.By, stopOwed); err != nil {
 		return fmt.Errorf("suspend %s: %w", m.claim.Token, err)
 	}
 	return m.suspendedFor(ctx, request, launch)
+}
+
+// stopOwesLaunch is whether a stop of the claim's process owes the role a launch, which a project
+// pause's stop records for the resume (suspendedFor, PauseStop.LaunchOwed): a launch still waiting
+// on the machine (launchMet), or the relaunch of the death the claim's record charges
+// (Claim.DeathCharged). A restart forgets the wake that death parked, and the boot's stop of a
+// paused project can reach the claim before the boot replays the death (RecordedDeath), so the
+// record is what says the launch is owed.
+func (m *Machine) stopOwesLaunch() bool {
+	return m.launchMet() || m.claim.DeathCharged
 }
 
 // stopForSuspension asks the runtime to stop the claim's process for a suspension by by, and
@@ -476,6 +495,10 @@ func (m *Machine) suspendedFor(ctx context.Context, request RequestSuspend, laun
 // A process still recorded here is one whose stop the runtime refused and the suspension let go
 // all the same (endHeld, exit): what it ended is recorded as a suspension by by, as the stop that
 // did land records it (endSuspended, letGo), and the record goes to the store with this write.
+//
+// A launch its issue pod's gate holds leaves the gate as this suspension's at the end of the
+// decision, so the start the gate grants next names a suspension as what ended its wait
+// (endPodPark, podSuspension).
 func (m *Machine) suspended(ctx context.Context, by SuspendSource, stop *PauseStop) error {
 	m.letGo(ctx, endSuspended(by))
 	m.claim.State, m.claim.SuspendedBy = StateSuspended, by
@@ -599,10 +622,10 @@ const (
 // toward the deaths limit for a death the daemon is being asked to recover from. A suspension is
 // no launch failure of its own either.
 func (m *Machine) suspendOverADeadProcess(ctx context.Context, request RequestSuspend) error {
-	cause := m.claim.LastDeathCause
-	m.claim.LastDeathCause = m.goneCause
+	cause, at := m.claim.LastDeathCause, m.claim.LastDeathAt
+	m.claim.LastDeathCause, m.claim.LastDeathAt = m.goneCause, m.deps.Clock.Now()
 	if err := m.interrupted(ctx, "the process the task's turn ran on is gone", m.goneOutOfMemory); err != nil {
-		m.claim.LastDeathCause = cause
+		m.claim.LastDeathCause, m.claim.LastDeathAt = cause, at
 		return err
 	}
 	m.recordEnd(ctx, endDied(m.goneCause))
@@ -622,10 +645,10 @@ func (m *Machine) suspendOverADeadProcess(ctx context.Context, request RequestSu
 //
 // Between the two it sends the clean stop of the process's Envoy session once the runtime's stop
 // has returned, unless cleanStopSent says this decision sent it already (stopForSuspension).
-// launch is suspendNow's: a launch the caller knows the stop meets, beside the one waiting on the
-// machine, read before the stop lets it go (launchMet).
+// launch is suspendNow's: a launch the caller knows the stop meets, beside the launch the claim
+// itself owes, read before the stop lets the process go (stopOwesLaunch).
 func (m *Machine) letProcessGoFor(ctx context.Context, request RequestSuspend, launch, cleanStopSent bool) error {
-	launch = launch || m.launchMet()
+	launch = launch || m.stopOwesLaunch()
 	incarnation := m.claim.Locator.Incarnation
 	if err := m.stopForSuspension(ctx, request.By, cleanStopSent); err != nil {
 		m.stopUnconfirmed = true

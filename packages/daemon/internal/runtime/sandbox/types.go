@@ -407,21 +407,6 @@ type Options struct {
 	// which is one no live record and no launch since the last read names, once that cache's
 	// retention passes. Required for supervision.
 	CacheRepositories func() []ghrepo.Repository
-	// SavedWorkspaceBundle is the bundle an issue's last release saved, and WorkspaceBundleRestored
-	// the confirmation that drops it once the issue's new pod holds it. The pair carries the work a
-	// release took off the released pod's disk back into the pod that replaces it: the runtime
-	// sends it to that pod's launcher before any role of the pod starts (launchers.restoreWorkspace),
-	// and confirms it on the launcher's Held. The daemon fills them from its store; a runtime given
-	// neither restores nothing, which is what a pod whose issue was never released does anyway.
-	SavedWorkspaceBundle    runtime.SavedWorkspaceBundle
-	WorkspaceBundleRestored runtime.WorkspaceBundleRestored
-	// HeldWorkspaceBundle drops the bundle an issue's last release saved where the pod's own kept
-	// volume holds that work already (runtime.HeldWorkspaceBundleDrop): the pod's Sandbox owns the
-	// issue's kept volume and was created before the save. At each role start the runtime asks it
-	// before the take, and only for a pod of such a Sandbox (launchers.restoreWorkspace). When it
-	// drops the bundle, the runtime sends that pod nothing. A runtime given none takes the bundle
-	// for every pod as SavedWorkspaceBundle answers it.
-	HeldWorkspaceBundle runtime.HeldWorkspaceBundleDrop
 	// MemoryGuardKilled takes one process an issue pod's memory guard ended, as that pod's
 	// launcher reported it on the connection of the role whose process it was
 	// (runtime.MemoryGuardKilled): the daemon turns it into the note that tells that role why its

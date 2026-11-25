@@ -353,6 +353,7 @@ var noticeClasses = map[record.NoticeKind]noticeClass{
 	"child-closed": {}, "child-status": {}, "children-first": {}, "child-release-stalled": {}, "child-not-recorded": {},
 	"checks-red": {}, "review-stuck": {}, "status-reasserted": {}, record.VolumeNearFullNotice: {},
 	"session-lost": {}, "session-forgotten": {}, "session-store-fault": {},
+	"task-stopped": {}, "plan-not-taken": {}, "retro-held": {},
 }
 
 // Every notice kind the daemon tells an architect is classified as telling an approval or not, so

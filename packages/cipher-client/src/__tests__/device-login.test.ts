@@ -6,7 +6,9 @@
 // checks: the request object `machine.Service.verifyPersonLogin` verifies, the poll and every later
 // request proved with the login's own key, the login kept in a 0600 file, a refresh under the
 // login's lock that keeps the rotated refresh token, and the trade of the login's access token
-// with no actor. The two-process row lives in envoy-client's device-login.test.ts.
+// with no actor. The two-process row lives in envoy-client's device-login.test.ts, and the least
+// life a kept access token must have left for a trade to spend it in
+// device-login-least-life.test.ts.
 
 import { afterEach, expect, test } from "bun:test";
 import { createPrivateKey, createPublicKey } from "node:crypto";
@@ -17,6 +19,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { calculateJwkThumbprint, compactVerify, EmbeddedJWK, type JWK } from "jose";
 import {
+  STAND_IN_ACCESS_SECONDS,
   STAND_IN_CREDENTIAL,
   STAND_IN_UNKNOWN_CODE,
   STAND_IN_USER_CODE,
@@ -150,6 +153,7 @@ test("the poll proves the login's key, waits out a pending code and keeps the lo
   expect(Object.keys(file).sort()).toEqual(
     [
       "access_expires_at",
+      "access_life_seconds",
       "access_token",
       "broker",
       "credential_id",
@@ -161,6 +165,7 @@ test("the poll proves the login's key, waits out a pending code and keeps the lo
   expect(file.broker).toBe(stub.url);
   expect(file.credential_id).toBe(STAND_IN_CREDENTIAL);
   expect(file.access_token).toBe(stub.loginTokens[0] as string);
+  expect(file.access_life_seconds).toBe(STAND_IN_ACCESS_SECONDS);
   // The key is the PKCS#8 DER, base64, of the key whose thumbprint the login is bound to.
   const key = createPrivateKey({
     key: Buffer.from(file.key as string, "base64"),
@@ -310,6 +315,7 @@ test("a code and an access token are taken to live an hour at most, whatever the
   const ended = Date.now();
   expect(login.accessExpiresAt?.getTime() ?? 0).toBeGreaterThanOrEqual(polled + hour);
   expect(login.accessExpiresAt?.getTime() ?? 0).toBeLessThanOrEqual(ended + hour);
+  expect(login.accessLifeSeconds).toBe(hour / 1000);
 });
 
 test("a complete page the broker sends is checked as the page is", async () => {

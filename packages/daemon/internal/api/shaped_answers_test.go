@@ -471,9 +471,11 @@ func valueStripCases() map[string]valueStripCase {
 				}
 				served := waitingLineFieldsServed(t, mixed)
 				for key, member := range waitingLineFieldsServed(t, whole) {
-					want := member
+					// The band of priorityContract follows the pod's highest contract too, and
+					// 133 is below it, so no member is served the priority that placed it.
+					want := maps.Clone(member)
+					delete(want, "priority")
 					if member["kind"] == waitingOnIssue {
-						want = maps.Clone(member)
 						delete(want, "kind")
 					}
 					if !reflect.DeepEqual(served[key], want) {
@@ -526,6 +528,76 @@ func valueStripCases() map[string]valueStripCase {
 				Detail: "a cache ran out of room", Source: undeclaredValue,
 			}}},
 		},
+		// A pod recording the contract before shapedAnswersContract is served every issue held for
+		// `task-stopped` or `children` without its `holdReason`: the two arrived at
+		// OwnerPlanContract, and the pod's process reads the key with `z.literal("escalated")`.
+		// The hold's `heldFrom` stays, and so does every escalated hold. No pod's reckoning holds
+		// a claim at or above shapedAnswersContract, since a build from that contract on states
+		// its own (podContracts), so the pod's claim at OwnerPlanContract moves neither half and
+		// the pod alone at it is served this daemon's own body, as production serves it. The
+		// field is older than the floor, so the case names no value that arrived with it.
+		droppedHoldReason: {
+			state: heldIssues, low: shapedAnswersContract - 1, high: OwnerPlanContract,
+			carries: func(t *testing.T, body []byte) bool {
+				for _, hold := range holdsServed(t, body) {
+					if hold[0] == string(record.HoldTaskStopped) || hold[0] == string(record.HoldForChildren) {
+						return true
+					}
+				}
+				return false
+			},
+			stays: func(t *testing.T, whole, mixed []byte) {
+				served := holdsServed(t, mixed)
+				for key, hold := range holdsServed(t, whole) {
+					want := hold
+					if hold[0] == string(record.HoldTaskStopped) || hold[0] == string(record.HoldForChildren) {
+						want[0] = ""
+					}
+					if served[key] != want {
+						t.Errorf("the {%d, %d} pod is served %s held %q, want %q: the strip takes the reason the pod's %d process refuses and nothing else",
+							shapedAnswersContract-1, OwnerPlanContract, key, served[key], want, shapedAnswersContract-1)
+					}
+				}
+			},
+			// A held issue whose reason is a word no row declares.
+			undeclaredIssue: Issue{Key: "SHAPES-3", Phase: "held", HoldReason: undeclaredValue, HeldFrom: "testing"},
+		},
+		// A pod recording the contract before shapedAnswersContract is served each row of
+		// `admission.held` under `children_before_retro` or `task_stopped` as `unclassified` with
+		// no `heldBy`: the two arrived at OwnerPlanContract, after the field, and the pod's process
+		// reads `reason` with a `z.enum` of the eleven words before them. Every other row stays as
+		// it stands. The pod's claim at OwnerPlanContract moves neither half, as above. The
+		// eleven words arrived with the field at heldContract and ride its band, which follows the
+		// pod's highest contract; no pod whose highest reads the new words is a pod at all, so
+		// that half is read on a pod recording the floor and the contract before
+		// shapedAnswersContract (TestAnOlderCallerReadsTheNewHeldWordsAsUnclassified) rather than
+		// here.
+		droppedHeldWord: {
+			state: heldWordIssues, low: shapedAnswersContract - 1, high: OwnerPlanContract,
+			carries: func(t *testing.T, body []byte) bool {
+				for _, row := range heldRowsServed(t, body) {
+					if row["reason"] == string(record.HeldChildrenBeforeRetro) || row["reason"] == string(record.HeldTaskStopped) {
+						return true
+					}
+				}
+				return false
+			},
+			stays: func(t *testing.T, whole, mixed []byte) {
+				served := heldRowsServed(t, mixed)
+				for key, row := range heldRowsServed(t, whole) {
+					want := row
+					if row["reason"] == string(record.HeldChildrenBeforeRetro) || row["reason"] == string(record.HeldTaskStopped) {
+						want = map[string]any{"issue": key, "reason": string(record.HeldUnclassified)}
+					}
+					if !reflect.DeepEqual(served[key], want) {
+						t.Errorf("the {%d, %d} pod is served %s's held row as %v, want %v: the strip rewrites the word the pod's %d process refuses and nothing else",
+							shapedAnswersContract-1, OwnerPlanContract, key, served[key], want, shapedAnswersContract-1)
+					}
+				}
+			},
+			// A row of the held list whose word no row of the table declares.
+			undeclaredState: State{Admission: Admission{Held: []HeldIssue{{Issue: "SHAPES-4", Reason: record.HeldReason(undeclaredValue)}}}},
+		},
 		// A pod recording whyAndLineFieldsContract is served the state without the `why` of the
 		// issue the work hold holds: `held` arrived at workHoldContract, and the pod's process
 		// parses `why.state` with an enumeration of the four words before it, and refuses the
@@ -535,7 +607,7 @@ func valueStripCases() map[string]valueStripCase {
 		// shapedAnswersContract on states its own contract (podContracts): the pod alone at it is
 		// served this daemon's own body, the value with it, and the mixed pod is read at its
 		// lowest contract alone. So the case gives no beforeField, though the field arrived above
-		// the floor: a pod spanning a contract below 85 and one at 223 is a pod below 85 alone,
+		// the floor: a pod spanning a contract below 85 and one at 290 is a pod below 85 alone,
 		// which the band of 85 serves no `why` at all. That the strip takes no word that arrived
 		// with the field is read here instead: the mixed pod is served every other issue's
 		// `why` as written.

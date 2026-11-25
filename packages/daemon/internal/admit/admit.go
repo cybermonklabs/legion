@@ -41,11 +41,9 @@ type Admission struct {
 	// experiments are the project's declared experiments (UseExperiments,
 	// config.Project.ExperimentsDeclared), drawn for each unit this admission records: every
 	// tree-unit experiment when it opens a tree for the first time, and every issue-unit
-	// experiment when it first records an issue (drawExperiments). source is the random source a
-	// `random` mode is drawn with, experiment.CryptoSource in production and a pinned one in a
-	// test, injected as now is.
+	// experiment when it first records an issue (drawExperiments), each drawn with the engine's
+	// random source (workflow.Engine's ExperimentSource), the one source of the daemon's draws.
 	experiments []config.Experiment
-	source      func(uint64) (uint64, error)
 	// stalledTreeNotice is `stalled_tree_notice_hours` (UseStalledTreeNotice), how long a tree
 	// of this project may be quiet before the pass tells the project's controller once that it
 	// has stopped (tellStalledTrees). Zero is no bound and tells nobody, which is the
@@ -83,7 +81,7 @@ type Admission struct {
 	// catchingUp names each root the daemon's boot catch-up has yet to finish
 	// (HoldForCatchUp): its record may still miss what its Dispatch event log holds, so no pass
 	// decides whether it waits on a person (workflow's ReconcileAwaiting), nor resumes it once
-	// answered — it keeps the place its answer gives it in the waiting line's first part,
+	// answered — it keeps the place its answer gives it in the waiting line, within its priority,
 	// among the issues whose work came back, oldest first (record.Waiting) — until the catch-up
 	// has applied its window and releases it (ReleaseCatchUp). Unlike pending, a release's own
 	// pass does not lift it.
@@ -167,8 +165,7 @@ func New(store record.Store, engine *workflow.Engine, cap int, project string, l
 		log = slog.Default()
 	}
 	return &Admission{store: store, engine: engine, cap: cap, project: project, log: log, now: time.Now,
-		source: experiment.CryptoSource, pending: make(map[string]heldSummary),
-		unclassifiedLogged: make(map[string]uint64)}
+		pending: make(map[string]heldSummary), unclassifiedLogged: make(map[string]uint64)}
 }
 
 // Apply records root and orphan todo observations of issues handed to Legion and every newer
@@ -382,7 +379,7 @@ func (a *Admission) applyReread(ctx context.Context, tx pgx.Tx, reread map[strin
 			continue
 		}
 		stored.Ancestry = ancestry
-		if err := a.store.PutIssue(ctx, tx, *stored); err != nil {
+		if err := a.engine.WriteIssue(ctx, tx, *stored); err != nil {
 			return fmt.Errorf("record the Dispatch chain of %s: %w", key, err)
 		}
 	}
@@ -652,8 +649,8 @@ type phaseWorker struct {
 // an issue of this project whose phase has a worker role (workflow.OpenPhaseRole) and whose work
 // the record shows under way in a tree that does not linger. project is the project's claim
 // token (claim.ProjectToken), and byKey is the project's live records by key, which the tree
-// roots are read from and which the slot repair walks its slots and its issues past review
-// through.
+// roots are read from and which the slot repair walks its slots and its issues in accepting,
+// retro or merging through.
 //
 // Its two callers are the repairs over phase workers: the tick's silent list (silentWorkers,
 // through phaseWorkers) and the selection of the roles behind the entry their phases row names
@@ -978,6 +975,7 @@ func (a *Admission) putNewRoot(ctx context.Context, tx pgx.Tx, observation intak
 		Generation:      1,
 		Status:          "todo",
 		Rank:            observation.Rank,
+		Priority:        observation.Priority,
 		HandedOver:      observation.HandedOver,
 		LastDispatchSeq: observation.Seq,
 		DispatchStatus:  observation.Status,
@@ -988,7 +986,7 @@ func (a *Admission) putNewRoot(ctx context.Context, tx pgx.Tx, observation intak
 	if issue.Ancestry, err = a.engine.Ancestry(ctx, tx, issue, observation.Ancestry); err != nil {
 		return fmt.Errorf("read whether %s ran as a tree of its own: %w", observation.Key, err)
 	}
-	if err := a.store.PutIssue(ctx, tx, issue); err != nil {
+	if err := a.engine.WriteIssue(ctx, tx, issue); err != nil {
 		return fmt.Errorf("record admitted root %s: %w", observation.Key, err)
 	}
 	a.engine.HearRepository(ctx, issue.GitHubRepo)
@@ -1002,12 +1000,12 @@ func (a *Admission) putNewRoot(ctx context.Context, tx pgx.Tx, observation intak
 }
 
 // drawExperiments draws every experiment the project declares over unit (UseExperiments) and
-// records the answers against key, in the caller's transaction (experiment.DrawAndRecord): the
-// tree-unit experiments of a tree against its root's key when the tree's lifecycle row is
-// created (promoteHolds), and the issue-unit experiments of an issue against its own key when
-// the daemon first records it (putNewRoot).
+// records the answers against key, in the caller's transaction (experiment.DrawAndRecord), with
+// the engine's random source: the tree-unit experiments of a tree against its root's key when the
+// tree's lifecycle row is created (promoteHolds), and the issue-unit experiments of an issue
+// against its own key when the daemon first records it (putNewRoot).
 func (a *Admission) drawExperiments(ctx context.Context, tx pgx.Tx, key string, unit config.ExperimentUnit) error {
-	return experiment.DrawAndRecord(ctx, tx, a.store, key, a.experiments, unit, a.source, a.now())
+	return experiment.DrawAndRecord(ctx, tx, a.store, key, a.experiments, unit, a.engine.ExperimentSource(), a.now())
 }
 
 // declaredAssignments is one entry per experiment the project declares now, carrying its name and
@@ -1174,7 +1172,7 @@ func (a *Admission) applyListed(ctx context.Context, tx pgx.Tx, summary intake.D
 		stored, status = refreshed, summary.Status
 	}
 	o := observed{
-		Title: summary.Title, Parent: summary.Parent, Rank: summary.Rank,
+		Title: summary.Title, Parent: summary.Parent, Rank: summary.Rank, Priority: summary.Priority,
 		Status: status, Shown: summary.Status, Ancestry: summary.Ancestry, HandedOver: handed, Seq: seq,
 	}
 	if summary.Status == "todo" && handed && stored.Readmittable() {
@@ -1184,9 +1182,9 @@ func (a *Admission) applyListed(ctx context.Context, tx pgx.Tx, summary intake.D
 	// daemon itself wrote and Dispatch had not shown yet. It is taken only while the issue's tree
 	// is not live: a running tree's member keeps what the record says, because the tree is the
 	// thing that says the work is under way, and the row the member holds, or does not hold, says
-	// nothing about it: it keeps that row through every phase up to its review, worked or not
-	// (record.KeepsSlot), holds none past it, and gives it back while it waits on another issue
-	// before then (releaseSlotsForWaits).
+	// nothing about it: it keeps that row through every phase that keeps one, worked or not
+	// (record.KeepsSlot), holds none in accepting, retro or merging, and gives it back while it
+	// waits on another issue (releaseSlotsForWaits).
 	if summary.Status == "todo" && stored.Status == "in_progress" {
 		if _, running := live[stored.Tree]; running {
 			return nil
@@ -1223,16 +1221,16 @@ func (a *Admission) unrecordedSummaryStale(ctx context.Context, tx pgx.Tx, summa
 }
 
 // applyObservation records a newer Dispatch observation of a recorded issue: the one place a live
-// event's title, rank, parent, label, and status reach the record, so a re-rank, a rename, or the
-// label taken off or put back at the same status moves the waiting line at once. A todo on a
-// lingering or closed root handed to Legion is a re-admission.
+// event's title, rank, priority, parent, label, and status reach the record, so a re-rank, a
+// priority change, a rename, or the label taken off or put back at the same status reaches the
+// record at once. A todo on a lingering or closed root handed to Legion is a re-admission.
 func (a *Admission) applyObservation(ctx context.Context, tx pgx.Tx, stored record.Issue, observation intake.DispatchIssue) error {
 	if observation.Seq != 0 && observation.Seq <= stored.LastDispatchSeq {
 		return nil
 	}
 	handed := observation.HandedOver
 	o := observed{
-		Title: observation.Title, Parent: observation.Parent, Rank: observation.Rank,
+		Title: observation.Title, Parent: observation.Parent, Rank: observation.Rank, Priority: observation.Priority,
 		Status: observation.Status, Shown: observation.Status, Ancestry: observation.Ancestry, HandedOver: handed, Seq: observation.Seq,
 	}
 	if observation.DaemonActor && observation.HandedOver && observation.Status == "todo" {
@@ -1297,7 +1295,7 @@ func (a *Admission) consumeHandover(ctx context.Context, tx pgx.Tx, fact intake.
 		a.log.Info("admission hand-over", "issue", fact.Issue, "tree", fact.Tree, "linger", fact.Generation, "via", "outbox")
 	})
 	return a.readmit(ctx, tx, *stored, observed{
-		Title: stored.Title, Parent: deref(stored.Parent), Rank: stored.Rank, Ancestry: stored.Ancestry, Seq: stored.LastDispatchSeq,
+		Title: stored.Title, Parent: deref(stored.Parent), Rank: stored.Rank, Priority: stored.Priority, Ancestry: stored.Ancestry, Seq: stored.LastDispatchSeq,
 	}, stored.CarriesRun())
 }
 
@@ -1329,21 +1327,22 @@ func (a *Admission) orphan(ctx context.Context, tx pgx.Tx, stored record.Issue, 
 // the boot read: Shown is the status Dispatch showed, and Status the one the record takes, which is
 // Shown except from a boot listing no newer than the record, which keeps the record's own.
 // Ancestry is the Dispatch chain its preparation read, which a record takes as the engine's
-// Ancestry says.
+// Ancestry says, and Priority the issue's own Dispatch priority.
 type observed struct {
 	Title, Parent, Rank, Status, Shown string
+	Priority                           record.Priority
 	Ancestry                           []string
 	HandedOver                         bool
 	Seq                                int64
 }
 
 // recordObservation is where admission writes a Dispatch observation to an issue record: a live
-// event's and the boot read's, so a rename, a re-rank, a re-parent, a label or a status change is
-// written the same way whichever brought it. Each caller owns its own guards — the stream's
-// sequence fence, the boot read's — and this writes what they let through. The engine, which runs
-// first, writes the observation itself when it keeps its own status over the event's (its
-// keepStatus: a session's write it sets back, or an edit that changed no status), and a live event
-// it wrote then stops at the sequence fence here. A re-parent never changes the record's tree
+// event's and the boot read's, so a rename, a re-rank, a priority change, a re-parent, a label or a
+// status change is written the same way whichever brought it. Each caller owns its own guards — the
+// stream's sequence fence, the boot read's — and this writes what they let through. The engine,
+// which runs first, writes the observation itself when it keeps its own status over the event's
+// (its keepStatus: a session's write it sets back, or an edit that changed no status), and a live
+// event it wrote then stops at the sequence fence here. A re-parent never changes the record's tree
 // here: the only path that does is adoption, which the same fact's promote runs next
 // (adoptQueuedRoots) for a todo root that never ran and whose new parent is in a live tree.
 func (a *Admission) recordObservation(ctx context.Context, tx pgx.Tx, stored record.Issue, o observed) error {
@@ -1351,7 +1350,7 @@ func (a *Admission) recordObservation(ctx context.Context, tx pgx.Tx, stored rec
 	if err != nil {
 		return fmt.Errorf("read whether %s ran as a tree of its own: %w", stored.Key, err)
 	}
-	if stored.Title == o.Title && stored.Rank == o.Rank && stored.Status == o.Status && stored.DispatchStatus == o.Shown &&
+	if stored.Title == o.Title && stored.Rank == o.Rank && stored.Priority == o.Priority && stored.Status == o.Status && stored.DispatchStatus == o.Shown &&
 		stored.HandedOver == o.HandedOver && sameParent(stored.Parent, record.ParentOf(o.Parent)) && stored.LastDispatchSeq == o.Seq &&
 		slices.Equal(stored.Ancestry, ancestry) {
 		return nil
@@ -1359,26 +1358,27 @@ func (a *Admission) recordObservation(ctx context.Context, tx pgx.Tx, stored rec
 	stored.Title = o.Title
 	stored.Parent = record.ParentOf(o.Parent)
 	stored.Rank = o.Rank
+	stored.Priority = o.Priority
 	stored.Status = o.Status
 	stored.DispatchStatus = o.Shown
 	stored.HandedOver = o.HandedOver
 	stored.LastDispatchSeq = o.Seq
 	stored.Ancestry = ancestry
-	if err := a.store.PutIssue(ctx, tx, stored); err != nil {
+	if err := a.engine.WriteIssue(ctx, tx, stored); err != nil {
 		return fmt.Errorf("record observation of %s: %w", stored.Key, err)
 	}
 	return nil
 }
 
 // readmit records a lingering or closed root's todo, or an orphan's, as a new generation waiting
-// for a slot, taking o's title, parent, rank, Dispatch chain (as the engine's Ancestry takes it;
-// a root that left another tree takes none) and sequence. A root starts a fresh generation: its
-// facts clear across its whole tree, as do those of an orphan readmitted without carry. An orphan
-// readmitted with carry (one that started a phase) is the same work moving from a finished root to
-// a root of its own, so its phase, phase rows, gate and pull request (with its observed head) carry
-// into the new generation, and its promotion starts both its architect and the role of that
-// carried phase. A merged pull request is never observed as merged again, and a review or an
-// acceptance would otherwise rerun work already decided or landed.
+// for a slot, taking o's title, parent, rank, priority, Dispatch chain (as the engine's Ancestry
+// takes it; a root that left another tree takes none) and sequence. A root starts a fresh
+// generation: its facts clear across its whole tree, as do those of an orphan readmitted without
+// carry. An orphan readmitted with carry (one that started a phase) is the same work moving from a
+// finished root to a root of its own, so its phase, phase rows, gate and pull request (with its
+// observed head) carry into the new generation, and its promotion starts both its architect and the
+// role of that carried phase. A merged pull request is never observed as merged again, and a review
+// or an acceptance would otherwise rerun work already decided or landed.
 //
 // An issue leaving another tree, a hand-over or an orphan, carried or not, records that tree
 // (record.Issue.HandedOverFrom) and stays a tree of its own from then on: re-admitting or reopening
@@ -1449,9 +1449,10 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 	stored.Generation++
 	stored.Status, stored.DispatchStatus = "todo", "todo"
 	stored.Rank = o.Rank
+	stored.Priority = o.Priority
 	stored.LingerUntil = nil
 	stored.LastDispatchSeq = o.Seq
-	if err := a.store.PutIssue(ctx, tx, stored); err != nil {
+	if err := a.engine.WriteIssue(ctx, tx, stored); err != nil {
 		return fmt.Errorf("record re-admission %s: %w", stored.Key, err)
 	}
 	// The re-admission is a new generation of the tree: this write changes the generation, the
@@ -1465,6 +1466,14 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 	// the daemon what it already knows.
 	if err := a.store.MarkIssueMoved(ctx, tx, stored.Key, a.now()); err != nil {
 		return err
+	}
+	// The members this generation leaves mid-phase, and those reopened at done, come back the
+	// first time its tree runs: at the promotion that opens it, or at the pass that finds it
+	// running first, its design gate opened before the root's promotion from the waiting line
+	// (returnMembersOfRunningTrees). The mark is what makes either of them bring the members back
+	// once in the generation (record.Issue.MembersOwed, dispatch://INFRA-5471).
+	if err := a.store.OweMembers(ctx, tx, stored.Key); err != nil {
+		return fmt.Errorf("record re-admission %s: %w", stored.Key, err)
 	}
 	// A generation that ended takes what its architect handed back with it: the re-admission is a
 	// handout, so an ask.opened or a hand-back of the old run, delivered late, at or below what the
@@ -1501,19 +1510,27 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 		}
 	}
 	if orphan {
-		// The carried run keeps the phase it ran in, past admitted (record.Issue.CarriesRun), so it
-		// never leaves admitted, where a run's plan is written otherwise: its new generation's plan
-		// is written here (WritePlan).
-		if err := a.engine.WritePlan(ctx, tx, stored); err != nil {
-			return fmt.Errorf("write the plan of re-admitted orphan %s: %w", stored.Key, err)
-		}
 		if pr != nil {
-			// The carried pull request starts the generation's fence; its head run goes, as with a
-			// new generation (record.ClearGeneration), since its replay would put the old fence back.
-			pr.Generation, pr.Run = int64(stored.Generation), nil
+			// The carried pull request keeps its CI settlement fence: its Generation is the
+			// listener's generation of the settlement that stands, not the issue's, so a settlement
+			// of its head from before the carry, delivered late or replayed, is as stale after it as
+			// it was before. Its head run goes, as with a new generation (record.ClearGeneration),
+			// since its replay would put the old fence back; the write deletes the run's own memory.
+			pr.Run = nil
 			if err := a.store.PutPullRequest(ctx, tx, *pr); err != nil {
 				return fmt.Errorf("carry pull request to re-admitted orphan %s: %w", stored.Key, err)
 			}
+		}
+		// The carried run goes on at the step it stood at, so its plan goes with it, each task
+		// where it stood; an orphan that ran before plans has none, and the carry writes nothing.
+		if err := a.store.CarryPlan(ctx, tx, stored.Key, oldGeneration, stored.Generation, true); err != nil {
+			return fmt.Errorf("carry the plan to re-admitted orphan %s: %w", stored.Key, err)
+		}
+		// The carried run keeps the phase it ran in, past admitted (record.Issue.CarriesRun), so it
+		// never leaves admitted, where a run's plan is written otherwise: its new generation's plan
+		// node is written here (WritePlan), after the carry, so it names the plan the run carries.
+		if err := a.engine.WritePlan(ctx, tx, stored); err != nil {
+			return fmt.Errorf("write the plan of re-admitted orphan %s: %w", stored.Key, err)
 		}
 		// Every root a hand-over created is recorded as one, so its architect's catch-up says it was
 		// handed over and decomposes nothing anew; it is marked as carrying a gate, which tells the
@@ -1575,6 +1592,9 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 	if claim.IsTreeRoot(stored.Key, oldTree) {
 		if err := a.store.CancelTreeHandovers(ctx, tx, oldTree, oldGeneration); err != nil {
 			return err
+		}
+		if err := a.releaseTreeSlots(ctx, tx, stored.Key); err != nil {
+			return fmt.Errorf("record re-admission %s: %w", stored.Key, err)
 		}
 	}
 	// The gate rows the clear below deletes, which the two records of the old generation's approval
@@ -1656,6 +1676,45 @@ func (a *Admission) recordSpecApproval(ctx context.Context, tx pgx.Tx, key strin
 		Version: *row.ApprovedVersion, LatestVersion: row.LatestVersion, Mark: row.ApprovedMark})
 }
 
+// releaseTreeSlots frees every slot an issue of tree holds and clears the mark of a release for a
+// wait from every issue of it, at the re-admission of the tree's own root (readmit): no slot and
+// no wait mark of the generation that ended outlives it. They are the rows releaseSlots frees and
+// the marks it clears for a tree that lingers (record.NeedsSlot), and on a project that is not
+// paused the pass of the backlog's own fact has freed them already, so this finds nothing. A
+// paused project's pass releases nothing, though, and the re-admission ends the linger that
+// release reads, so a tree moved out and back during a pause would otherwise come back holding
+// its old slots: the line would read its root's as a promotion already made, the pass that clears
+// the mark an earlier release's promotion left would take it for one and strand the members
+// (promotedByEarlierRelease), and its members' would fill the cap against a tree that has not
+// opened. So a slot on a marked root that re-admitted itself was granted after its re-admission.
+// The root's own wait mark is gone already, since its leave cleared it (workflow's leave); its
+// members' are not.
+//
+// Rows are freed here only under a pause, and they reach neither the pass's released list nor the
+// controller's slot-free wake (wakeForFreeSlot): the project is still paused, so a wake would call
+// the controller to fill capacity it cannot use, and the resume's notice tells it of the capacity
+// instead. The resume's pass promotes the root into one of them at most, and into none while its
+// tree's cleanup is reserved or a Dispatch blocker holds it, and its own release finds nothing, so
+// no slot-free wake follows for these rows. A member arriving from another tree keeps the row it
+// held there (Waiting's queued-root loop), so only the tree's own root coming back reaches this.
+// Each release is logged with the slots the project holds after it, lowered in slot order, as
+// releaseSlots logs its own; the count is read here, where every caller of logSlot counts, and
+// only when something was released.
+func (a *Admission) releaseTreeSlots(ctx context.Context, tx pgx.Tx, tree string) error {
+	released, err := a.store.ReleaseTreeSlots(ctx, tx, tree)
+	if err != nil || len(released) == 0 {
+		return err
+	}
+	own, err := a.store.SlottedIssues(ctx, tx, a.project)
+	if err != nil {
+		return err
+	}
+	for i, key := range released {
+		a.logSlot(ctx, "released", key, len(own)+len(released)-1-i)
+	}
+	return nil
+}
+
 // keepStaleApproval keeps, for the architect start of the root key re-admission is clearing, the
 // person's approval a gate of its holds (gates) of a version its document has since moved past:
 // the new generation's architect registers each step again on a cleared gate, and its start task
@@ -1699,14 +1758,17 @@ func (a *Admission) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string
 // (record.NeedsSlot, the one statement of the release of an issue that needs no slot at all,
 // whose phase half the grant reads too — record.KeepsSlot) and reports those issues in slot
 // order. Each release is logged once the fact commits. A tree leaving the workflow, a root
-// finishing, an issue whose work passes its review, an issue reaching its done, and a linger all
-// read the same predicate, so one rule says when an issue stops needing a slot where it stands.
-// The daemon makes one other release, releaseSlotsForWaits, judged by blockers.waitsOf rather
-// than by record.NeedsSlot, which frees the row of an issue that goes on working and waits on
+// finishing, an issue moving into accepting, retro or merging, an issue reaching its done, and a
+// linger all read the same predicate, so one rule says when an issue stops needing a slot where
+// it stands.
+// The daemon makes two other releases. releaseSlotsForWaits, judged by blockers.waitsOf rather
+// than by record.NeedsSlot, frees the row of an issue that goes on working and waits on
 // another issue; the two are apart because they free rows for opposite reasons — this one
 // because the issue's phase holds no row, that one because the work is held — and only that one
-// leaves a mark, since only its issue stands in the line for the row again. An issue past its
-// review is never one it frees (blockers.waitsOf says why).
+// leaves a mark, since only its issue stands in the line for the row again. An issue in
+// accepting, retro or merging is never one it frees (blockers.waitsOf says why). The
+// re-admission of a tree's own root frees every row and mark of its tree (releaseTreeSlots): the
+// ones this would have freed while the tree lingered, had a pause not held the project's passes.
 //
 // It reads the slotted issues in one query (record.Store.SlottedIssues), never a record per slot
 // and never the whole issues table: every fact applies this under the one fact lock
@@ -1882,9 +1944,9 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		return 0, nil, fmt.Errorf("reconcile the roots waiting on a person: %w", err)
 	}
 	// Reconcile wrote roots of the snapshot (a wait entered or answered, a resume told in place),
-	// so what follows reads them as they now stand: an answer it recorded puts its root in the
-	// first part of this pass's waiting line, among the issues whose work came back, oldest first
-	// (record.Waiting), at the moment its own wait was answered.
+	// so what follows reads them as they now stand: an answer it recorded puts its root in this
+	// pass's waiting line, within its priority, among the issues whose work came back, oldest
+	// first (record.Waiting), at the moment its own wait was answered.
 	if changed {
 		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {
 			return 0, nil, err
@@ -1937,6 +1999,24 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	// One re-read and one second judgement answer for both releases: each took rows away, and
 	// what the promotion loop and ownSlots must read is the state after the last of them.
 	if len(waiting) > 0 || unslotted {
+		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {
+			return 0, released, err
+		}
+		if rows, facts, line, dropped, err = blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, rows, a.now()); err != nil {
+			return 0, released, err
+		}
+	}
+	// A re-admitted tree that runs before its root's promotion from the waiting line — its architect
+	// registered a design a person had already approved, so the gate opened and the root stopped
+	// being a queued root — will see no promotion, and so no return of its members from one. They
+	// come back here instead, after the releases, so that a root the releases took out of the
+	// workflow is not read as running, and before the line is promoted, so that a member's owed
+	// start stands in this pass's own line (returnMembersOfRunningTrees, dispatch://INFRA-5471).
+	wrote, err := a.returnMembersOfRunningTrees(ctx, tx, issues, slots, facts, heldKeys)
+	if err != nil {
+		return 0, released, err
+	}
+	if wrote {
 		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {
 			return 0, released, err
 		}
@@ -2135,7 +2215,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 					issue.Status = "in_progress"
 				}
 				issue.Ancestry = nil
-				if err := a.store.PutIssue(ctx, tx, issue); err != nil {
+				if err := a.engine.WriteIssue(ctx, tx, issue); err != nil {
 					return admitted, released, fmt.Errorf("record admitted issue %s: %w", issue.Key, err)
 				}
 				if writeInProgress {
@@ -2173,7 +2253,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				// hand-over row of its generation, which the re-admission that carried it wrote
 				// (workflow.ArchitectStartOf says why the two agree here).
 				issue.HandedOverFrom = ""
-				if err := a.store.PutIssue(ctx, tx, issue); err != nil {
+				if err := a.engine.WriteIssue(ctx, tx, issue); err != nil {
 					return admitted, released, fmt.Errorf("record admitted issue %s: %w", issue.Key, err)
 				}
 				// The promotion opens the tree's lifecycle, writes the root in_progress and
@@ -2221,10 +2301,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				if err := a.engine.StartArchitect(ctx, tx, issue); err != nil {
 					return admitted, released, fmt.Errorf("start the architect of %s: %w", issue.Key, err)
 				}
-				if err := a.startMidPhaseMembers(ctx, tx, issue, issues, now); err != nil {
-					return admitted, released, err
-				}
-				if err := a.reenterStrandedChildren(ctx, tx, issue, issues); err != nil {
+				if err := a.returnOwedMembers(ctx, tx, issue, issues, now); err != nil {
 					return admitted, released, err
 				}
 				opened = opened || facts.Gates[issue.Tree].Open()
@@ -2288,20 +2365,23 @@ func (a *Admission) reread(ctx context.Context, tx pgx.Tx) ([]record.Issue, []re
 // predicate, so no pass hands out a row the next pass would take back.
 //
 // It reads the phase the candidate's record carries rather than the phase its promotion leaves
-// it in, and the two agree wherever this is asked: KeepsSlot refuses the three phases past an
-// issue's review — accepting, retro and merging — a phase of done and a Dispatch status out of
-// the workflow, and no promotion moves an issue into or out of any of them. A first phase
-// starts at phase.Planning from a record standing at admitted, an answered root goes from
-// awaiting_person back to admitted, a returning issue keeps the worker phase it stands in, and
-// a root whose tree is opened keeps the phase it ran in the tree it left.
+// it in, and the two agree wherever this is asked: KeepsSlot refuses accepting, retro and
+// merging (in the default steps, the phases after the review), a phase of done and a Dispatch
+// status out of the workflow, and no promotion moves an issue into or out of any of them. A first
+// phase starts at the phase of the task's first step from a record standing at admitted —
+// planning or implementing, since every tester, reviewer and acceptance step stands after the
+// implementer — an answered root goes from awaiting_person back to admitted, a returning issue
+// keeps the worker phase it stands in, and a root whose tree is opened keeps the phase it ran in
+// the tree it left.
 //
 // So a root another tree handed over carrying accepting, retro or merging is a candidate this
 // refuses, and its promotion opens its tree while it holds no row. That follows from the rule
-// and is intended: the work of such a root is its sign-off, its retro and its merge, which
-// write no more of the change, and the cap counts the issues whose change is still to write.
-// The tree opens, the phase's own worker starts on a row the outbox holds for no slot
-// (workflow.StartOrOwe), and the root takes a row again only where its architect sends the work
-// back to a phase that keeps one.
+// and is intended: the work of such a root in those phases is its sign-off, its retro and its
+// merge, which write no more of the change, and the cap counts the issues whose change is still
+// to write. The tree opens, the phase's own worker starts on a row the outbox holds for no slot
+// (workflow.StartOrOwe), and the root takes a row again only where its work moves to a phase
+// that keeps one: its architect sends the work back, or a step after its acceptance whose phase
+// keeps a slot starts, and it waits for that row in the line.
 //
 // A candidate that holds a row takes no second one: the line carries holders (the kinds
 // record.LineEntry.Holds names). A candidate that takes no slot is promoted whatever the cap:
@@ -2319,7 +2399,7 @@ func slotFor(entry record.LineEntry) bool {
 //
 // It is the one statement of the cap's half, and two readers ask it: the promotion itself
 // (promoteHolds) and the stall measure's free-slot term (lineCanMove). Read apart, the measure
-// said the cap held a queued root past its review that the promotion of the same pass started,
+// said the cap held a queued root in accepting, retro or merging that the promotion of the same pass started,
 // and told the controller of a stall that was not one.
 func capLets(entry record.LineEntry, held, cap int) bool {
 	if cap <= 0 {
@@ -2451,8 +2531,8 @@ func (a *Admission) waitsForChildren(waits map[string]record.ChildWait, issue re
 //
 // Holding no slot is the normal state of a root waiting to start: the cap counts the issues the
 // daemon has started whose change is still to write, so a root waiting in the line, one whose
-// tree has left the workflow and one standing past its review — in accepting, retro or
-// merging — hold none, and a started root before its review that waits on another issue — a
+// tree has left the workflow and one standing in accepting, retro or
+// merging hold none, and a started root in a phase that keeps one that waits on another issue — a
 // blocker of it that is not done, or an open child its own first phase waits for — gives its row
 // back for that wait as well. Three started roots keep the row they were started with through
 // such a wait (blockers.waitsOf): one waiting on a person (awaiting_person, answered or not), one
@@ -2623,7 +2703,7 @@ func (a *Admission) refreshHeldSummary(observation intake.DispatchIssue) {
 	a.stamps++
 	a.pending[observation.Key] = heldSummary{summary: intake.DispatchIssue{
 		Key: observation.Key, Seq: observation.Seq, Status: observation.Status, Title: observation.Title,
-		Parent: observation.Parent, Rank: observation.Rank, HandedOver: observation.HandedOver,
+		Parent: observation.Parent, Rank: observation.Rank, Priority: observation.Priority, HandedOver: observation.HandedOver,
 		ResolvedRepo: observation.ResolvedRepo, Ancestry: observation.Ancestry,
 	}, stamp: a.stamps}
 }
@@ -2736,11 +2816,110 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 	return own
 }
 
-// startMidPhaseMembers brings back the roles that have run of every member of the tree promotion
-// has just opened, and gives the one role whose phase the member stands in the task that carries
-// that phase on. A hand-over turns a child into that root while preserving its phase, so its phase
-// role needs the same resume start ordinary mid-phase children receive
-// (workflow.ResumePhaseTask, which says to carry the phase's work on and names no head, since a
+// returnOwedMembers is the first run of a re-admitted tree: it brings back the members the
+// re-admission left mid-phase (startMidPhaseMembers) and those reopened at done
+// (reenterStrandedChildren), and clears root's mark (record.Issue.MembersOwed) in the same
+// transaction. Bringing the members back and clearing the mark together is what makes the return
+// once in the generation (dispatch://INFRA-5471), so both callers come through here: the promotion
+// of a queued root, which brings back the members of every tree it opens whatever its mark, and
+// the pass that finds a re-admitted tree running before any promotion
+// (returnMembersOfRunningTrees). Only a root that carries the mark is written, so a fresh root's
+// promotion costs no statement.
+func (a *Admission) returnOwedMembers(ctx context.Context, tx pgx.Tx, root record.Issue, issues []record.Issue, now time.Time) error {
+	if err := a.startMidPhaseMembers(ctx, tx, root, issues, now); err != nil {
+		return err
+	}
+	if err := a.reenterStrandedChildren(ctx, tx, root, issues); err != nil {
+		return err
+	}
+	if !root.MembersOwed {
+		return nil
+	}
+	return a.store.ClearMembersOwed(ctx, tx, root.Key)
+}
+
+// returnMembersOfRunningTrees brings back the members of each re-admitted tree that runs with no
+// promotion to come (record.MembersReturnOwed): its root's design gate opened while the root still
+// waited in the line, so the root stopped being a queued root and its promotion, which brings a
+// re-admitted tree's members back, will not run. The members come back here as that promotion
+// brings them (returnOwedMembers), in the same pass as the gate's opening and whatever path opened
+// it: register_gate, a person's approval or a carried copy all reach this pass, since every fact
+// runs it. It answers whether it wrote anything, so the caller reads the records again.
+//
+// The mark is what says a member waits for its tree's first run: a suspended member is no sign of
+// it, since an idle release, a tester between production-check looks and an operator's suspension
+// leave the same state, and only the re-admission knows which trees it left mid-phase.
+//
+// heldKeys is the promotion's own hold (promoteHolds): a root the Dispatch consumer's pending
+// Reconcile summary or the boot's catch-up still holds is passed over, as the promotion stops at
+// it, because its record may still miss what Dispatch holds. The pass after the hold's release
+// brings its members back.
+//
+// A marked root an earlier release's promotion left (promotedByEarlierRelease) has its mark
+// cleared and nothing started: that generation's members came back already.
+func (a *Admission) returnMembersOfRunningTrees(ctx context.Context, tx pgx.Tx, issues []record.Issue, slots []record.Slot,
+	facts record.LineFacts, heldKeys func(string) bool,
+) (bool, error) {
+	slotted := make(map[string]struct{}, len(slots))
+	for _, slot := range slots {
+		slotted[slot.Issue] = struct{}{}
+	}
+	wrote := false
+	for _, root := range issues {
+		if !record.MembersReturnOwed(root, facts.Lifecycles[root.Key], facts.Gates[root.Key]) || heldKeys(root.Key) {
+			continue
+		}
+		wrote = true
+		_, holds := slotted[root.Key]
+		if promotedByEarlierRelease(root, holds) {
+			if err := a.store.ClearMembersOwed(ctx, tx, root.Key); err != nil {
+				return wrote, err
+			}
+			a.logOnCommit(ctx, "admission clears the members' return an earlier release's promotion already made",
+				"issue", root.Key, "generation", root.Generation)
+			continue
+		}
+		if err := a.returnOwedMembers(ctx, tx, root, issues, a.now()); err != nil {
+			return wrote, err
+		}
+		a.logOnCommit(ctx, "admission brings back the members of a re-admitted tree that runs before its promotion",
+			"issue", root.Key, "generation", root.Generation)
+	}
+	return wrote, nil
+}
+
+// promotedByEarlierRelease says whether root, which carries the mark of a return still owed
+// (record.Issue.MembersOwed), was promoted by a daemon of an earlier release that shares this
+// database: holds is whether it holds an admission slot. That release's promotion brought the
+// members back and never names the mark, so the mark outlived it. Such a root holds the slot the
+// promotion granted, or carries the mark of the slot it gave back for a wait
+// (record.Issue.ReleasedForWaitAt), or stands in a phase of its own tree past admitted, as it does
+// once its tree has moved on to accepting, retro or merging, which keep no slot and clear the wait
+// mark (record.PhaseKeepsSlot, releaseSlots).
+//
+// A marked root of this release is none of these. Its promotion clears the mark in the
+// transaction that grants the slot; its re-admission leaves its tree no slot of the generation
+// before (releaseTreeSlots says why); and it takes no first phase before
+// returnMembersOfRunningTrees has brought its members back, since that pass runs ahead of the
+// promotion loop, a root it passes over for the promotion's hold is one that loop stops at through
+// the same hold, and a root whose label a person took off is held in the line (record.Waiting).
+// The phase is read where the root stands (record.StandsAt), not as Issue.CarriesRun reads it: a
+// marked root whose retried architect failed is held while its members are still owed, and it
+// stands at admitted. A root that arrived from another tree carrying its phase there
+// (Issue.HandedOverFrom) stays a queued root until its promotion, which clears that mark, so it is
+// never one either. Once no daemon of an earlier release shares a database, this goes with its
+// branch in returnMembersOfRunningTrees, the slotted map it reads and that function's slots
+// parameter.
+func promotedByEarlierRelease(root record.Issue, holds bool) bool {
+	return holds || root.ReleasedForWaitAt != nil || (root.HandedOverFrom == "" && record.StandsAt(root) != phase.Admitted)
+}
+
+// startMidPhaseMembers brings back the roles that have run of every member of a re-admitted tree at
+// its first run (returnOwedMembers, its one caller), and gives the one role whose phase the member
+// stands in the task
+// that carries that phase on. A hand-over turns a child into that root while preserving its
+// phase, so its phase role needs the same resume start ordinary mid-phase children receive
+// (workflow's Engine.ResumeTask, which says to carry the phase's work on and names no head, since a
 // merger reads the head it merges on GitHub). A root promoted held, which only a hand-over leaves
 // (every other re-admission starts its root at admitted), starts no worker. The hold's first
 // notice was routed in the tree the root was handed over from, where it reached the root's own
@@ -2759,7 +2938,9 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 // worker's, which carries that phase's task (workflow.StartOrOwe), and the live sessions of a
 // member's other roles are exactly what the design keeps so that a person can still talk to any of
 // them. Those rows carry no task and wait for no slot, so each is claimable at once and a role
-// with nothing to do comes back and is told nothing.
+// with nothing to do comes back and is told nothing. The role of a held member's stopped task's
+// step is queued with them, and its start finishes at the outbox, where every start of a role is
+// run (workflow.StoppedStepRole): that role starts again only when its task does.
 //
 // Such a role comes back only where it holds a claim row, which is the durable record that the
 // role has run: a re-admission clears the generation's facts — clearGeneration touches
@@ -2782,9 +2963,9 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 // work already under way, and a member standing at admitted is passed over, since nothing of it
 // has run in this generation and its first phase is the waiting line's to start.
 //
-// root is the promoted root as the promotion has just written it, and issues the pass's own
-// records, which still carry that root as the pass read it. The caller passes both and appends
-// nothing: the root is read from the parameter and its copy among the records is passed over.
+// root is the tree's root as returnOwedMembers has it, and issues the pass's own records, which
+// carry that root as the pass read it. The caller passes both and appends nothing: the root is
+// read from the parameter and its copy among the records is passed over.
 func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root record.Issue, issues []record.Issue, now time.Time) error {
 	project, err := claim.ProjectToken(a.project)
 	if err != nil {
@@ -2811,13 +2992,12 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 	// reading of the claims half of it made.
 	var members []midPhaseMember
 	var keys []record.RoleRunKey
-	// The caller hands this the pass's own records and the promoted root beside them
-	// (promoteHolds), and the records still carry that root as the pass read it, before the
-	// promotion wrote it. So the root's own record is taken from the parameter, which is the
-	// fresher of the two, and the copy among the records is passed over. It is walked last, the
-	// place the appended copy held, so the order of the rows this writes is unchanged. Reading
-	// both would start one member twice: a phase worker handed the same task on two rows, which
-	// the start of a phase past its review no longer coalesces into one (workflow.StartOrOwe).
+	// The root's own record is taken from the parameter, which is never the staler of the two
+	// (the promotion hands over the root it has just written), and its copy among the records is
+	// passed over. The members are walked in the order of the records and the root after them, so
+	// the root's rows are the last this writes. Reading both copies would start one member twice:
+	// a phase worker handed the same task on two rows, which the start of accepting, retro or
+	// merging no longer coalesces into one (workflow.StartOrOwe).
 	walk := func(member record.Issue) error {
 		if member.Tree != root.Tree || record.OutOfWorkflow(member.Status) {
 			return nil
@@ -2935,7 +3115,8 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		// workflow.StartFor finds already started begin it here. The store's run mark decides
 		// (workflow's StartStepRecord): a run still open goes on and gets no second start — the
 		// one a start above began, and the merge step of a member held from merging, which the
-		// linger left open and the hold's retry goes on with.
+		// linger left open and the hold's retry goes on with. A member its plan holds, a stopped
+		// task or a parent held for its children, starts no step there.
 		if err := a.engine.StartStepRecord(ctx, tx, member); err != nil {
 			return err
 		}
@@ -3039,7 +3220,7 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 // among them.
 //
 // Its domain is the issues holding one of the cap's slots and this project's issues that stand
-// past their review (record.PastReview, the complement of the phases that keep a row), by key
+// in accepting, retro or merging (record.InSlotlessPhase, the complement of the phases that keep a row), by key
 // and once each, and beside them the architect of each root released for a wait
 // (readSlotHolders says why that root's architect alone). The second half is there because such
 // an issue holds no row at all now (record.KeepsSlot) and its worker would otherwise be repaired
@@ -3049,7 +3230,7 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 //
 // The second half asks of the record the three terms the first half gets from the row itself,
 // and it must: a slot row exists only while record.NeedsSlot holds, which is the issue in the
-// workflow, its tree running and its root not lingering, while an issue past its review is in
+// workflow, its tree running and its root not lingering, while an issue in accepting, retro or merging is in
 // the pass's records whatever Dispatch now says of it, since record.Store.LiveIssues answers
 // every record that is not done, a parked one included. So this half asks each of the three —
 // record.InWorkflow, whose own statement is record.OutOfWorkflow over the Dispatch status, and
@@ -3062,7 +3243,7 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 // record.TreeRuns is asked of each such issue's root rather than record.RunningRoots being
 // built once for the call: the set costs a walk of every record of the project and a map the
 // size of it on every pass, while the rule asked here costs two map lookups for each issue
-// past its review, of which a healthy project has a handful.
+// in accepting, retro or merging, of which a healthy project has a handful.
 //
 // Only the role of each candidate's current phase is read (workflow.OpenPhaseRole, in the
 // selection both repairs over phase workers make, phaseWorkerOf), and a root's own architect
@@ -3083,7 +3264,7 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 // answers false for a root at admitted once its design gate has opened, where the architect is
 // still the only role at work on the root itself, and a relaunched architect of exactly such a
 // root is the measured defect (dispatch://INFRA-2614). The architect of every root of the domain
-// is weighed here, slotted, past its review or released for a wait, and the reach that decides
+// is weighed here, slotted, in accepting, retro or merging, or released for a wait, and the reach that decides
 // which of them is owed anything is read once its claim is behind (architectReached,
 // workflow.ArchitectAtWork): a root at admitted whatever its gate, a root a hand-over carried in
 // while it stands in the run that hand-over carried it into, and a root past admitted under its
@@ -3097,7 +3278,7 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 // architects this names are exactly those the pass sends a start to, and the sweep's gate opens
 // for no root the pass would send nothing.
 //
-// The slots are walked here, in the order the store answered, then the issues past their review
+// The slots are walked here, in the order the store answered, then the issues in accepting, retro or merging
 // in the order the pass holds them, and the candidates those two halves make are what the
 // selection is given: it is the tick's silent list that walks the project's live issues
 // (silentWorkers). The roots released for a wait come last and give that selection nothing,
@@ -3126,9 +3307,9 @@ func (a *Admission) owedEntryRoles(ctx context.Context, tx pgx.Tx, issues []reco
 // review or a root released for a wait: the issue, its tree's root, the role and its claim token,
 // in the shape both selections answer (phaseWorker: phaseWorkerOf and rootArchitectOf), and when
 // the issue was admitted (record.Slot.AdmittedAt), which the gate arm of the stall reading weighs
-// its bound from (architectStalls). An issue past its review and a root released for a wait hold
+// its bound from (architectStalls). An issue in accepting, retro or merging and a root released for a wait hold
 // no slot and carry the zero time, and that arm reads a root at admitted with no step of its
-// design gate registered alone, which no issue past its review is, and no released root either:
+// design gate registered alone, which no issue in accepting, retro or merging is, and no released root either:
 // a root at admitted is released only once its design gate has opened (blockers.waitsOf).
 type slotHolder struct {
 	phaseWorker
@@ -3147,7 +3328,7 @@ type slotReading struct {
 }
 
 // readSlotHolders is the reading owedEntryRoles weighs, over its domain: every slot of the
-// project, then each issue of the project past its review in a tree that runs, then the architect
+// project, then each issue of the project in accepting, retro or merging in a tree that runs, then the architect
 // of each root of the project released for a wait in a tree that runs. Only the role of each
 // candidate's current phase is held, and a root's own architect.
 //
@@ -3169,7 +3350,7 @@ type slotReading struct {
 // a row (releaseSlots clears it), and the loop asks the same two terms the past-review half asks,
 // so a parked root, or one whose tree left the workflow, is weighed by nothing here.
 //
-// It reads over at most the cap's worth of slotted issues, the handful past their review and the
+// It reads over at most the cap's worth of slotted issues, the handful in accepting, retro or merging and the
 // roots released for a wait, which the cap does not bound, through one batched record.RoleRuns
 // read rather than a read per candidate, and one batched read
 // of the phase entry each holder's row names with the moment it was raised
@@ -3218,7 +3399,7 @@ func (a *Admission) readSlotHolders(ctx context.Context, tx pgx.Tx, issues []rec
 		}
 	}
 	for _, issue := range issues {
-		if !record.PastReview(issue) || !record.InWorkflow(issue) {
+		if !record.InSlotlessPhase(issue) || !record.InWorkflow(issue) {
 			continue
 		}
 		root, rooted := byKey[issue.Tree]
@@ -3375,7 +3556,7 @@ func (a *Admission) architectReached(ctx context.Context, tx pgx.Tx, root record
 // sub-architect claim outside the rule, since its start, which the child's first phase start
 // queues (workflow's gateOpened), carries no task and raises no entry). The slotted form
 // reads nothing, because root is one readSlotHolders holds: it holds one of the slots this pass
-// read, or stands past its review in a tree that runs, or was released for a wait in a tree that
+// read, or stands in accepting, retro or merging in a tree that runs, or was released for a wait in a tree that
 // runs (record.TreeRuns, which no queued root does), and so waits for none. And the root must be
 // inside the reach (workflow.ArchitectAtWork): a root standing at admitted, whatever its design
 // gate, a root a hand-over carried in while it stands in the run that hand-over carried it into,
@@ -3406,7 +3587,7 @@ func (a *Admission) architectServed(ctx context.Context, tx pgx.Tx, root record.
 // entry (workflow's SendOwedEntry). A root's own architect is sent its start instead, which
 // differs from a phase worker's in the two ways a root architect's start differs: the row waits
 // for no admission slot, because a root architect's start takes no slot, whether the root holds
-// its row, holds none past its review (record.KeepsSlot) or gave it back for a wait
+// its row, holds none in accepting, retro or merging (record.KeepsSlot) or gave it back for a wait
 // (releaseSlotsForWaits), and a task the derivation wrote is derived again from the
 // record rather than taken off the row, while a task the resume of a person's answer wrote is
 // sent as written (workflow's SendArchitectStart, over record.PhaseRow.EntryVerbatim). Where the
@@ -3679,14 +3860,15 @@ func stopOutlivedStart(held *record.RoleClaim, owed record.OwedStart) bool {
 	return true
 }
 
-// reenterStrandedChildren re-enters, at candidate's promotion, every tree member admission left
-// recorded todo with its previous run's phase at done: a reopen admission declined to re-enter for
-// want of the label while the tree was not live, which recordObservation otherwise records with the
-// phase untouched. Candidate's own promotion is what makes the tree live for these, since nothing
-// else reaches them afterward — Engine.ReenterChild only re-enters a live tree's reopened child on
-// its own live event, and a later todo observation of one already todo changes nothing. The
-// synthetic fact carries the child's own already-recorded fields: no live event reopened it, so
-// there is nothing newer to apply, only its own next generation to start.
+// reenterStrandedChildren re-enters, at the first run of candidate's tree, every tree member
+// admission left recorded todo with its previous run's phase at done: a reopen admission declined
+// to re-enter for want of the label while the tree was not live, which recordObservation otherwise
+// records with the phase untouched. That first run (returnOwedMembers, its one caller) is what
+// makes the tree live for these, since nothing else reaches them afterward: Engine.ReenterChild only
+// re-enters a live tree's reopened child on its own live event, and a later todo observation of
+// one already todo changes nothing. The synthetic fact carries the child's own already-recorded
+// fields: no live event reopened it, so there is nothing newer to apply, only its own next
+// generation to start.
 //
 // What a child waits on is deliberately not read here either: this re-enters a child whose
 // previous run finished (phase.Done), and Engine.ReenterChild's own entry withholds the start of

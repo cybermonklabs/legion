@@ -150,6 +150,7 @@ func seedLeftAlone(t *testing.T, r *mainPathRig, index int, row leftAloneClaim) 
 // a phase worker of the root's own tree whose claim is retired. None of them is sent anything,
 // and each is read from the same pass that served the root.
 func TestAQueuedRootWhoseArchitectWasQueuedNoEntryIsSentThatEntrysTask(t *testing.T) {
+	t.Parallel()
 	r := newMainPathRig(t, true)
 	r.put(r.waitingRoot())
 	r.admitPass()

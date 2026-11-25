@@ -41,6 +41,7 @@ import (
 // On this change's base the same read answers 404 with the catch-all body that names no route
 // (`{"error":"no route"}`): the mux has no /readyz at all.
 func TestReadyzIsFalseUntilTheDaemonServes(t *testing.T) {
+	t.Parallel()
 	// A database of this test's own and a pool of its own on it: the lock below and the reads of
 	// pg_stat_activity go over a connection the daemon neither owns nor can wait for.
 	pool := isolatedOutboxPool(t)

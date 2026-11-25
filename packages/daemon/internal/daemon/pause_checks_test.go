@@ -44,6 +44,7 @@ import (
 // (admit.Admission.promoteHolds): Z is then admitted while P is paused, and the test fails at that
 // admission.
 func TestPauseHoldsEveryStart(t *testing.T) {
+	t.Parallel()
 	r := newPauseDaemonRig(t, func(cfg *config.Config) { cfg.AdmissionCap = 8 })
 	X, Y, U, W, V, Z := r.issue(1), r.issue(2), r.issue(3), r.issue(4), r.issue(5), r.issue(6)
 	A, B := r.token(X, claim.RolePlanner), r.token(X, claim.RoleArchitect)
@@ -181,18 +182,18 @@ func TestPauseHoldsEveryStart(t *testing.T) {
 		t.Fatalf("E was launched %d times, want only its boot launch: its parked relaunch does not run", len(launched))
 	}
 
-	// The pods of X and W stay, held by the pause, and no rule deletes them or saves their work.
-	deleted, bundled := r.rt.podReads()
-	if len(deleted) != 0 || len(bundled) != 0 {
-		t.Fatalf("the runtime deleted the pods of %v and bundled %v while the project is paused, want none", deleted, bundled)
+	// The pods of X and W stay, held by the pause, and no rule deletes them or reads their workspace.
+	deleted, read := r.rt.podReads()
+	if len(deleted) != 0 || len(read) != 0 {
+		t.Fatalf("the runtime deleted the pods of %v and read the workspaces of %v while the project is paused, want none", deleted, read)
 	}
 	for _, issue := range []string{X, W} {
 		if !r.openPodHold(issue) {
 			t.Fatalf("no pause holds %s's pod, want the pause's hold over the pod it stopped", issue)
 		}
 	}
-	if saved := r.count(`select count(*) from workspace_bundles`); saved != 0 {
-		t.Fatalf("%d workspaces saved while the project is paused, want none", saved)
+	if declined := r.count(`select count(*) from idle_release_declines`); declined != 0 {
+		t.Fatalf("%d releases declined while the project is paused, want none: the pause marks no release", declined)
 	}
 
 	// Z is not admitted.
@@ -291,6 +292,7 @@ func TestPauseHoldsEveryStart(t *testing.T) {
 // launch; and no let-out moment stamped (projectPause.wakeLetOut), where the test fails at a stuck
 // warning before the last launch.
 func TestResumeReleasesHeldWorkAtThePace(t *testing.T) {
+	t.Parallel()
 	const (
 		roles      = 101
 		woken      = 90
@@ -573,6 +575,7 @@ func (r *pauseDaemonRig) runPacing(since, want int, made func(waveLaunch), read 
 // which the boot resumes by rule: after the restart a start row is queued for S, and the test
 // fails there.
 func TestPauseHoldsAcrossRestart(t *testing.T) {
+	t.Parallel()
 	r := newPauseDaemonRig(t, func(cfg *config.Config) { cfg.AdmissionCap = 8 })
 	issues := []string{r.issue(1), r.issue(2), r.issue(3), r.issue(4), r.issue(5)}
 	G, H := r.token(issues[0], claim.RoleImplementer), r.token(issues[1], claim.RoleArchitect)
@@ -682,6 +685,7 @@ func TestPauseHoldsAcrossRestart(t *testing.T) {
 // The negative control is the pause's hold taken out of workflow.UnownedPodRelease: pod 4 is
 // deleted after the idle period once the project resumes, and the test fails there.
 func TestPauseKeepsThePods(t *testing.T) {
+	t.Parallel()
 	r := newPauseDaemonRig(t, func(cfg *config.Config) { cfg.AdmissionCap = 8 })
 	// The update rounds' sweep runs beside the machines (overrides.orphanSweep), reading the test
 	// clock at each pass.
@@ -746,13 +750,13 @@ func TestPauseKeepsThePods(t *testing.T) {
 	// Past the idle period and past the rounds' bound, with the project paused.
 	r.advance(pauseRigPodUpdateGrace + time.Minute)
 	r.advance(pauseRigIdleMinutes * time.Minute)
-	deleted, bundled := r.rt.podReads()
-	if !slices.Equal(deleted, []string{pods[4]}) || len(bundled) != 0 {
-		t.Fatalf("while the project is paused the runtime deleted the pods of %v and bundled %v, want pod 5's deletion alone",
-			deleted, bundled)
+	deleted, read := r.rt.podReads()
+	if !slices.Equal(deleted, []string{pods[4]}) || len(read) != 0 {
+		t.Fatalf("while the project is paused the runtime deleted the pods of %v and read the workspaces of %v, want pod 5's deletion alone",
+			deleted, read)
 	}
-	if saved := r.count(`select count(*) from workspace_bundles`); saved != 0 {
-		t.Fatalf("%d workspaces saved while the project is paused, want none", saved)
+	if declined := r.count(`select count(*) from idle_release_declines`); declined != 0 {
+		t.Fatalf("%d releases declined while the project is paused, want none: the pause marks no release", declined)
 	}
 	roundsHeld := 0
 	for _, n := range []int{2, 6} {
@@ -792,10 +796,10 @@ func TestPauseKeepsThePods(t *testing.T) {
 	}
 	r.advance(pauseRigIdleMinutes*time.Minute + time.Minute)
 	r.advance(time.Minute)
-	deleted, bundled = r.rt.podReads()
-	if !slices.Equal(deleted, []string{pods[4]}) || len(bundled) != 0 {
-		t.Fatalf("after the resume the runtime deleted the pods of %v and bundled %v, want pod 5's deletion alone: pod 4, which holds only an architect, stands too",
-			deleted, bundled)
+	deleted, read = r.rt.podReads()
+	if !slices.Equal(deleted, []string{pods[4]}) || len(read) != 0 {
+		t.Fatalf("after the resume the runtime deleted the pods of %v and read the workspaces of %v, want pod 5's deletion alone: pod 4, which holds only an architect, stands too",
+			deleted, read)
 	}
 	for _, issue := range []string{pods[0], pods[1], pods[2], pods[3]} {
 		if !r.openPodHold(issue) {
@@ -820,9 +824,9 @@ func TestPauseKeepsThePods(t *testing.T) {
 	if _, present := r.rt.IssueSandbox(pods[0]); !present {
 		t.Fatal("pod 1's Sandbox is gone at the wake, want the worker launched in the pod that holds its work")
 	}
-	deleted, bundled = r.rt.podReads()
-	if slices.Contains(deleted, pods[0]) || len(bundled) != 0 {
-		t.Fatalf("pod 1 deleted (%v) or a workspace bundled (%v) at the wake, want the disk kept", deleted, bundled)
+	deleted, read = r.rt.podReads()
+	if slices.Contains(deleted, pods[0]) || len(read) != 0 {
+		t.Fatalf("pod 1 deleted (%v) or a workspace read (%v) at the wake, want the disk kept", deleted, read)
 	}
 	r.ready(worker(1))
 	testwait.Eventually(t, "the hold on pod 1 to end at its worker's ready", func() bool {

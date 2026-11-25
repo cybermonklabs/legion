@@ -161,6 +161,7 @@ func newsItem(issue string, audience record.DesignAudience, step record.DesignSt
 // at the send: a task composed while the gate stood open and sent after a later version closed it
 // says closed.
 func TestTheNewsATaskCarriesIsWhatTheRecordSaysAtItsSend(t *testing.T) {
+	t.Parallel()
 	r := newNewsRig(t)
 	const ownText = "Implement the plan. Issue: LEGION-500. Phase: implementing."
 	standing := newsItem(newsRoot, record.AudienceHolder, record.DesignStepSpec, "artifact-spec", 3, 5)
@@ -277,6 +278,7 @@ func TestWorkHoldOpeningSentencesSurviveEachSendOfTheNews(t *testing.T) {
 // holder last took could not be read, and why, never that the version is a first approval, and the
 // delivery goes on carrying the item with no earlier version and that unread history.
 func TestAnItemWhoseReviewHistoryIsRecordedUnreadIsSentSoAndOneNotYetReadIsDropped(t *testing.T) {
+	t.Parallel()
 	r := newNewsRig(t)
 	r.inTx(func(tx pgx.Tx) error {
 		_, err := tx.Exec(r.ctx, `update design_news_told set versions = '{}'::jsonb where issue = $1 and audience = 'holder'`, newsTested)
@@ -331,6 +333,7 @@ func TestAnItemWhoseReviewHistoryIsRecordedUnreadIsSentSoAndOneNotYetReadIsDropp
 // as unread, and once it is, as that pair, and the delivery goes on carrying the item from that
 // version with no unread history.
 func TestAResendTellsAnItemByTheUnreadHistoryItCarriesUntilItsPairIsRecorded(t *testing.T) {
+	t.Parallel()
 	r := newNewsRig(t)
 	r.inTx(func(tx pgx.Tx) error {
 		_, err := tx.Exec(r.ctx, `update design_news_told set versions = '{}'::jsonb where issue = $1 and audience = 'holder'`, newsTested)
@@ -391,6 +394,7 @@ func TestAResendTellsAnItemByTheUnreadHistoryItCarriesUntilItsPairIsRecorded(t *
 // of its phase, since no claim holds it; a reviewer told nothing because only the root's checks
 // changed for it; a member not started yet; and a tester owed news whose change set is not recorded.
 func TestTheRootArchitectsSummaryNamesEachMemberAsTheRecordStandsAtItsSend(t *testing.T) {
+	t.Parallel()
 	r := newNewsRig(t)
 	const ownText = "A person approved a new version of the design of LEGION-500."
 	summary := record.DeliveryNews{Task: ownText,
@@ -420,6 +424,7 @@ func TestTheRootArchitectsSummaryNamesEachMemberAsTheRecordStandsAtItsSend(t *te
 // (record.UntoldOutOfWorkflow), whatever version its holder took, and the root architect's summary
 // names it told nothing for that reason.
 func TestTheRootArchitectsSummaryNamesAMemberOutOfTheWorkflowAsToldNothing(t *testing.T) {
+	t.Parallel()
 	r := newNewsRig(t)
 	r.inTx(func(tx pgx.Tx) error {
 		tested, err := r.records.Issue(r.ctx, tx, newsTested)
@@ -441,6 +446,7 @@ func TestTheRootArchitectsSummaryNamesAMemberOutOfTheWorkflowAsToldNothing(t *te
 // opening is sent a task with it, which says nothing its issue holds changed, so the summary names
 // that member as owed and how its holder is told, never as told nothing.
 func TestTheRootArchitectsSummaryNamesADecisionOnlyMemberOwedTheOpeningAsTold(t *testing.T) {
+	t.Parallel()
 	summaryOfAMemberOwedNoWork(t, record.DesignChanges{
 		VersionPair: record.VersionPair{ArtifactID: "artifact-spec", From: 4, To: 5}, State: record.DesignChangesRead,
 		DecisionOnly: true, ReadAt: time.Now()})
@@ -451,6 +457,7 @@ func TestTheRootArchitectsSummaryNamesADecisionOnlyMemberOwedTheOpeningAsTold(t 
 // the same text, and no decision block is said to have changed. A member whose holder row also owes
 // the opening is named as owed and how its holder is told, as a decision-only one is.
 func TestTheRootArchitectsSummaryNamesAnUnchangedMemberAsToldNothingAndOneOwedTheOpeningAsTold(t *testing.T) {
+	t.Parallel()
 	summaryOfAMemberOwedNoWork(t, record.DesignChanges{
 		VersionPair: record.VersionPair{ArtifactID: "artifact-spec", From: 4, To: 5}, State: record.DesignChangesRead,
 		Unchanged: true, ReadAt: time.Now()})
@@ -508,6 +515,7 @@ func rootSummary() record.DeliveryNews {
 // anything while the gate is closed, and no start will tell it: each such member is told nothing
 // yet, and why, and no line says a task or a start carries its news.
 func TestTheRootArchitectsSummarySentAfterTheGateClosedAgainTellsOwedMembersNothingYet(t *testing.T) {
+	t.Parallel()
 	r := newNewsRig(t)
 	r.gate(record.DesignStepSpec, "artifact-spec", 6, 5)
 
@@ -540,6 +548,7 @@ func TestTheRootArchitectsSummarySentAfterTheGateClosedAgainTellsOwedMembersNoth
 // summary queued for its news alone and sent once the root lingers has nothing to say, and the
 // machine retires it rather than sends it.
 func TestALingeringTreesSummaryIsLeftWithNothingToSay(t *testing.T) {
+	t.Parallel()
 	r := newNewsRig(t)
 	var root *record.Issue
 	r.inTx(func(tx pgx.Tx) error {
