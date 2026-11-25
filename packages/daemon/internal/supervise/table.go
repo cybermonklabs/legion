@@ -2156,7 +2156,11 @@ func (m *Machine) staleStep(s StreamToolStep) bool {
 // (compactEnded). That turn's start line is written here (startTurn), because its end writes the
 // end line (turnEnded): an operator reads an end with no start as a turn the daemon never saw
 // begin, and the daemon saw this one. The daemon prompted nothing for it, so it is no task's turn
-// and its line names no delivery.
+// and its line names no delivery. The turn is dated here too (Claim.LastTurnStart), as beginTurn
+// dates every other: the start of the turn before it would leave this one timed from that turn,
+// so the controller keeper would read a turn that never ends as no turn at all, and one it read
+// before a displacement as this one (dispatch://INFRA-2045 R2). Both ends of the compaction write
+// the claim (compactEnded), and this date with it.
 //
 // The two never meet: a compaction is taken only from a ready or idle claim (compactStart), and a
 // busy answer records only a ready or idle one.
@@ -2169,6 +2173,7 @@ func turnStartedWhileBusy(m *Machine, ctx context.Context, ev Event) error {
 		return nil
 	}
 	m.startTurn("")
+	m.claim.LastTurnStart = m.deps.Clock.Now()
 	m.log.Info("supervise: a turn started while this claim's session is being compacted; the claim is left working for it",
 		"generation", m.claim.Generation)
 	m.compacting.inTurn, m.compacting.back = true, StateIdle

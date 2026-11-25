@@ -16,25 +16,25 @@ import (
 // session, the requirement and its reason. An operator and a production check read it whole.
 const controllerSessionReplacedLine = "controller: the daemon's controller session is older than controller_session_max_age_hours; the keeper replaces it with a fresh session between turns"
 
-// mind is the keeper's look at a controller that runs: ready, working or idle. A turn open longer
-// than turnBound is ended (TurnPastBound, dispatch://INFRA-2045 R2), and an idle session older
-// than maxAge is replaced by a fresh one (replaceOld, R3). Each rule is off at 0, and neither acts
-// over the operator's own decisions: a turn is ended through the machine's own row for it, and a
-// session is replaced only between turns, with no task waiting.
+// mind is the keeper's look at a controller that runs: ready, working or idle. For a working
+// claim, a turn open longer than turnBound is ended (TurnPastBound, dispatch://INFRA-2045 R2); for
+// one between turns, an idle session older than maxAge is replaced by a fresh one (replaceOld,
+// R3). Each rule is off at 0, and neither acts over the operator's own decisions: a turn is ended
+// through the machine's own row for it, and a session is replaced only between turns, with no task
+// waiting.
 func (k *controllerKeeper) mind(ctx context.Context, m *supervise.Machine) error {
 	c := m.Claim()
 	now := k.now()
-	// A turn is open while the claim is working and its start is not before the last turn's end: a
-	// claim stored working for a compaction with no turn under it keeps the start of a turn that
-	// finished, and the machine, which knows the compaction, decides the case of equal times.
-	turnOpen := c.State == supervise.StateWorking && !c.LastTurnStart.Before(c.LastTurnEnd)
 	switch {
-	case turnOpen:
+	case c.State == supervise.StateWorking:
+		// A working claim is never between turns, so it never reaches replaceOld. Whether it is in
+		// a turn, and that turn the one read here, is the machine's to say (supervise's
+		// endTurnPastBound): a claim working for a compaction with no turn under it keeps the start of
+		// a turn that finished, and the machine leaves it alone, as it leaves a turn that ended or a
+		// new one.
 		if k.turnBound <= 0 || c.LastTurnStart.IsZero() || !c.LastTurnStart.Add(k.turnBound).Before(now) {
 			return nil
 		}
-		// The machine re-reads the turn before it ends the launch, and leaves a turn that ended or
-		// a new one alone (supervise's endTurnPastBound).
 		return m.Handle(ctx, supervise.TurnPastBound{Claim: c.Token, Bound: k.turnBound, TurnStart: c.LastTurnStart})
 	case c.Pending != nil:
 		// A task waiting is work the controller has not done yet; its session is kept until it

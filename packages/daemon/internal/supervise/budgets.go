@@ -168,11 +168,12 @@ func (m *Machine) deathLaunchFailureCharged(cause FailureCause) bool {
 // nothing, so a parked agent killed again before it read it holds that and nothing else, and its
 // death is not counted either.
 //
-// The death ends the turn it interrupted (Claim.LastTurnEnd), which no other path does: a turn
-// records its end only when the agent ends it, so a turn whose agent died would otherwise stay
-// open for ever and every later death of the relaunched agent — idle, with nothing pending —
-// would be charged against it, failing a claim that is doing nothing wrong. Each death after
-// this one is judged on the turn it finds, as the first was.
+// The death ends the turn it interrupted (Claim.LastTurnEnd), as the controller keeper's end of a
+// turn open past its bound does (endTurnPastBound): a turn otherwise records its end only when the
+// agent ends it, so a turn whose agent died would stay open for ever and every later death of the
+// relaunched agent — idle, with nothing pending — would be charged against it, failing a claim
+// that is doing nothing wrong. Each death after this one is judged on the turn it finds, as the
+// first was.
 func (m *Machine) chargeDeath() bool {
 	if slices.Contains(unready, m.claim.State) {
 		return false

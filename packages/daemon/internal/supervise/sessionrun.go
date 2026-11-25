@@ -2,6 +2,7 @@ package supervise
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -73,7 +74,7 @@ type SessionRun struct {
 // reportNotReplaced).
 func (m *Machine) sessionEnded(how string) {
 	if m.countEnd(how) {
-		m.reportNotReplaced()
+		m.reportNotReplaced(m.claim.Session, m.claim.SessionRun.Endings)
 	}
 }
 
@@ -97,9 +98,10 @@ func (m *Machine) countEnd(how string) (reached bool) {
 
 // reportNotReplaced is the one Error line of a controller session that ended
 // controllerSessionEnds launches in a row and never finished a turn: it is not replaced, and only
-// the keeper's retries bring it back.
-func (m *Machine) reportNotReplaced() {
-	m.log.Error(sessionNotReplacedLine, "session", m.claim.Session, "endings", m.claim.SessionRun.Endings)
+// the keeper's retries bring it back. The caller names the session and its endings as they stood
+// at the end, since a relaunch made since may have cleared both (endTurnPastBound).
+func (m *Machine) reportNotReplaced(session string, endings []string) {
+	m.log.Error(sessionNotReplacedLine, "session", session, "endings", endings)
 }
 
 // diedEnding is how a death the machine charged ended the session's launch (died), for the run's
@@ -150,8 +152,11 @@ func turnPastBound(m *Machine, ctx context.Context, ev Event) error {
 // endTurnPastBound is the controller keeper's end of a controller turn open longer than its bound
 // (TurnPastBound, dispatch://INFRA-2045 R2). It acts only on the turn the keeper read: one still
 // open, begun at the moment the keeper read, and still past the bound now, since a turn that ended
-// and one that began since are the controller working. A claim that already holds a wake is left to
-// that wake, as the stall backstop leaves one (backstopStalledTurn): its turn replaces the process.
+// and one that began since are the controller working. What is a turn is the machine's own answer,
+// as the stall backstop asks it (backstopStalledTurn): the claim reads working at a let-go
+// (endState), which a claim working for a compaction with no turn under it does not, and the turn
+// began no earlier than the last turn's end. A claim that already holds a wake is left to that
+// wake, as the stall backstop leaves one: its turn replaces the process.
 //
 // Otherwise it ends the launch as the stall backstop ends a stalled turn, whether or not steps still
 // arrive in the turn (replaceProcess): the task the turn served goes back to waiting and is sent to
@@ -161,10 +166,7 @@ func turnPastBound(m *Machine, ctx context.Context, ev Event) error {
 // backstop's does not, so a controller ended past its bound does not spend its launch budget.
 func (m *Machine) endTurnPastBound(ctx context.Context, ev TurnPastBound) error {
 	start, now := m.claim.LastTurnStart, m.deps.Clock.Now()
-	// A claim stored working for a compaction with no turn started under it (compactStart) is in
-	// no turn: its compaction is not cut off, and counts nothing.
-	inTurn := m.turnOpen() && !(m.compacting != nil && !m.compacting.inTurn)
-	if !inTurn || !start.Equal(ev.TurnStart) || !start.Add(ev.Bound).Before(now) {
+	if m.endState() != StateWorking || start.Before(m.claim.LastTurnEnd) || !start.Equal(ev.TurnStart) || !start.Add(ev.Bound).Before(now) {
 		m.log.Info("supervise: the controller turn the keeper read open past its bound has ended, or another began; it is left alone",
 			"turnStartedAt", start, "read", ev.TurnStart, "bound", ev.Bound)
 		return nil
@@ -184,16 +186,27 @@ func (m *Machine) endTurnPastBound(ctx context.Context, ev TurnPastBound) error 
 	counted, ended := m.claim.SessionRun, m.claim.LastTurnEnd
 	counted.Endings = slices.Clone(counted.Endings)
 	reached := m.countEnd(fmt.Sprintf("its turn stayed open longer than %s, from %s", ev.Bound, start.UTC().Format(time.RFC3339)))
-	// The end closes the turn, as a death's does (chargeDeath): the relaunched controller then
-	// reads as in no turn, so the keeper's next look reads it again (its age among them).
+	// The session and its endings as this end leaves them, for the Error line written once the end
+	// stands: the relaunch the end makes may start a fresh session, which clears both.
+	session, endings := m.claim.Session, slices.Clone(m.claim.SessionRun.Endings)
+	// The end closes the turn (Claim.LastTurnEnd), as a death's does (chargeDeath): a death of the
+	// relaunched agent is then judged on the turn it finds rather than charged against this one
+	// (turnOpen), and over a relaunch the pacing parked, which leaves the claim working as this end
+	// found it (endReached), a later TurnPastBound of the same turn reads it closed above and counts
+	// it no second time.
 	m.claim.LastTurnEnd = now
 	end, err := m.replaceProcess(ctx, "the daemon ended a controller turn that stayed open past its bound", ordinaryEnd, endTurnPastBound(ev.Bound))
 	switch {
 	case end == EndNotMade:
+		// The take-back can have written the claim with the end counted and the turn closed before
+		// the lifecycle refused the launch, which writes nothing for a claim that still records its
+		// process (relaunchRefused). The restore is written too, or a daemon restarted before the
+		// keeper's next look would read the turn closed and never end it.
 		m.claim.SessionRun, m.claim.LastTurnEnd = counted, ended
+		err = errors.Join(err, m.persist(ctx))
 	case reached:
 		// Written once the end stands, so a take-back writes no second line for one end.
-		m.reportNotReplaced()
+		m.reportNotReplaced(session, endings)
 	}
 	m.log.Info("supervise: the end of the controller turn open past its bound", "end", end)
 	return err
