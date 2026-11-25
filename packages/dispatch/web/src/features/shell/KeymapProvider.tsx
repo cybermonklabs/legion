@@ -7,11 +7,11 @@ import { useLinkCopy } from "./link-copy";
 
 /**
  * Binds the application registry to `window` - the keydown that runs a binding, and before every
- * control the capture-phase keydown, keyup and blur that keep a held key's repeats from the page
- * (`Keymap.captureKeyDown`) - renders the chord indicator, gives every registration below it the
- * keys `login` changed (`keymap-keys.ts`), and registers the one key of no page, the `y` that
- * copies a focused link's address (`link-copy.ts`). With no `login` - nobody signed in, or a unit
- * test - every action takes its defaults.
+ * control the capture-phase keydown and keyup, and the window's own blur, that keep a held key's
+ * repeats from the page (`Keymap.captureKeyDown`) - renders the chord indicator, gives every
+ * registration below it the keys `login` changed (`keymap-keys.ts`), and registers the one key of
+ * no page, the `y` that copies a focused link's address (`link-copy.ts`). With no `login` -
+ * nobody signed in, or a unit test - every action takes its defaults.
  */
 export function KeymapProvider({
   children,

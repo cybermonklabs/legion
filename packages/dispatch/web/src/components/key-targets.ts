@@ -28,6 +28,14 @@ export const MENU_TRIGGER_ATTRIBUTE = "data-list-menu";
 /** A menu's trigger (`MENU_TRIGGER_ATTRIBUTE`). */
 export const MENU_TRIGGER_SELECTOR = `[${MENU_TRIGGER_ATTRIBUTE}]`;
 
+/** What `typedOnMenuTrigger` and `writesText` read of a key pressed: a keydown, the DOM's or
+ *  React's. */
+interface TypedKey {
+  readonly ctrlKey: boolean;
+  readonly key: string;
+  readonly metaKey: boolean;
+}
+
 /**
  * Whether `press` is a character typed on a menu's trigger while its menu is closed - one
  * character other than the space, with no Ctrl or Cmd - which is the page's key and no text
@@ -42,10 +50,7 @@ export const MENU_TRIGGER_SELECTOR = `[${MENU_TRIGGER_ATTRIBUTE}]`;
  * list - the assignee, the repository, an ask's hand-on, a filter's fields - takes a select's
  * keys, and a character typed on it opens its list with the character in the box.
  */
-export function typedOnMenuTrigger(
-  target: EventTarget | null,
-  press: { readonly ctrlKey: boolean; readonly key: string; readonly metaKey: boolean }
-): boolean {
+export function typedOnMenuTrigger(target: EventTarget | null, press: TypedKey): boolean {
   return (
     target instanceof Element &&
     target.matches(MENU_TRIGGER_SELECTOR) &&
@@ -60,7 +65,8 @@ export function typedOnMenuTrigger(
 /** The keys that only move the focus, the caret or the view: a send's hold on the composer lets
  *  them through, so the reader can still move about the draft and leave the composer by keyboard
  *  (`MentionComposer`), and a held one repeats on whatever control holds the focus now, so a held
- *  arrow walks the list a press of it opened (`Keymap.captureKeyDown`). */
+ *  arrow walks the list a press of it opened, but for Tab, which takes a fresh press
+ *  (`Keymap.captureKeyDown`). */
 export const MOVING_KEYS: Readonly<Record<string, true>> = {
   ArrowDown: true,
   ArrowLeft: true,
@@ -75,13 +81,9 @@ export const MOVING_KEYS: Readonly<Record<string, true>> = {
 
 /** Whether a key would write into a text field: held with no Ctrl or Cmd, a character, Enter,
  *  Backspace or Delete. A field an offer holds read only takes none of them, and says why
- *  (`KeptDraftOffers`' `typedOver`), and only such a key repeats in the field that had the focus
- *  before its press (`Keymap.captureKeyDown`). */
-export function writesText(press: {
-  readonly ctrlKey: boolean;
-  readonly key: string;
-  readonly metaKey: boolean;
-}): boolean {
+ *  (`KeptDraftOffers`' `typedOver`), and, of the keys that act, only such a key repeats in the
+ *  field that had the focus before its press (`Keymap.captureKeyDown`). */
+export function writesText(press: TypedKey): boolean {
   const { key } = press;
   if (press.ctrlKey || press.metaKey) return false;
   return key.length === 1 || key === "Enter" || key === "Backspace" || key === "Delete";

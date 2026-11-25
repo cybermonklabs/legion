@@ -308,8 +308,8 @@ function ChangeComposer({
   // together: a read that runs to its own deadline followed by an offline comment must not hold
   // Send for a second one. The timer is the press's, and goes once the write settles.
   const [pressLate, setPressLate] = useState(false);
-  const pressDeadline = useRef<(() => void) | undefined>(undefined);
-  useEffect(() => () => pressDeadline.current?.(), []);
+  const pressDeadline = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(pressDeadline.current), []);
   const send = useKeyedWrite({
     inline: true,
     label: () => `${CONTROL_LABELS.change_decision} ${decision.heading}`,
@@ -348,7 +348,7 @@ function ChangeComposer({
       drafts?.set(decision.ref, input.body);
     },
     onSettled: () => {
-      pressDeadline.current?.();
+      clearTimeout(pressDeadline.current);
       pressDeadline.current = undefined;
       setPressLate(false);
     },
@@ -395,9 +395,8 @@ function ChangeComposer({
         readingRef.current = true;
         setReading(true);
         setPressLate(false);
-        pressDeadline.current?.();
-        const deadline = setTimeout(() => setPressLate(true), SEND_DEADLINE_MS);
-        pressDeadline.current = () => clearTimeout(deadline);
+        clearTimeout(pressDeadline.current);
+        pressDeadline.current = setTimeout(() => setPressLate(true), SEND_DEADLINE_MS);
         let tree: DisplayTree | undefined;
         const read = api.getArtifactText(documentId).then(
           (text) => {
@@ -452,9 +451,10 @@ function ChangeComposer({
       ) : null}
       <p className="flex min-w-0 flex-wrap items-baseline gap-2">
         {/* The document read and the comment are both this press's own send, so Send is held
-            while either is out, the comment within its deadline, never disabled: it keeps the
-            focus the press gave it (`heldPress`), and the form's submit sends nothing then. Only
-            an empty field, which has nothing to send, disables it. */}
+            while either is out, until the press's own deadline, which runs across both
+            (`pressLate`), never disabled: it keeps the focus the press gave it (`heldPress`), and
+            the form's submit sends nothing then. Only an empty field, which has nothing to send,
+            disables it. */}
         <button
           aria-disabled={sendHeld || undefined}
           className={`rounded border px-1 text-xs ${tones.rule} ${tones.muted}`}

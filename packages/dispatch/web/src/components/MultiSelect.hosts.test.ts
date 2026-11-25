@@ -140,20 +140,13 @@ const HOSTS: readonly Host[] = [
   { elements: 1, file: "components/Pager.tsx", rows: THEIRS, rules: [], surface: "Rows per page" },
   {
     elements: 1,
-    file: "features/agent-view/AgentConversationPage.tsx",
-    rows: THEIRS,
-    rules: [],
-    surface: "the live agent view's Delivery mode",
-  },
-  {
-    elements: 1,
     file: "features/agents/AgentMessageComposer.tsx",
     rows: THEIRS,
     rules: [],
     surface: "the Agents composer's Issue list",
   },
   {
-    elements: 4,
+    elements: 3,
     file: "features/agents/AgentsPage.tsx",
     rows: THEIRS,
     rules: [],
@@ -179,6 +172,13 @@ const HOSTS: readonly Host[] = [
     rows: THEIRS,
     rules: [],
     surface: "a document's Version list",
+  },
+  {
+    elements: 1,
+    file: "features/conversation/DeliveryModePick.tsx",
+    rows: THEIRS,
+    rules: [],
+    surface: "the Delivery mode of the live agent view and of the Agents page's broadcast",
   },
   {
     elements: 3,

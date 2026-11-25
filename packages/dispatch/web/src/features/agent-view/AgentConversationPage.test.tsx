@@ -939,10 +939,9 @@ test("the live view's Delivery mode is the shared single pick of the session's m
     putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
   });
 
-  const mode = await screen.findByRole("button", { name: pickNamed("Delivery mode") });
+  const mode = await modeHeld("Aside");
   expect(mode).toHaveAttribute("aria-haspopup", "listbox");
   expect(mode).toHaveAttribute("data-testid", "agent-delivery-picker");
-  await waitFor(() => expect(mode).toHaveAccessibleName("Delivery mode Aside"));
   expect(await optionsOffered(user, mode)).toEqual(["Aside", "BTW"]);
 
   await pickFromList(user, mode, "BTW");
@@ -968,7 +967,7 @@ test("the live view's Delivery mode is the shared single pick of the session's m
 test("opening the Delivery mode list closes the row's open panel, and opening a panel closes the list", async () => {
   const user = userEvent.setup();
   await renderWithPickers([settingsFrame(1), commandsFrame(2, SWITCHES)]);
-  const mode = screen.getByRole("button", { name: pickNamed("Delivery mode") });
+  const mode = await deliveryPick();
 
   await user.click(screen.getByRole("button", { name: "What the message box does" }));
   expect(screen.getByTestId("agent-help-popover")).toBeTruthy();

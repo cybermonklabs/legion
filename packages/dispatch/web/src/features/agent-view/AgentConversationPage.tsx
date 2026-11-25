@@ -7,7 +7,6 @@ import { agentMessageRequest, apiErrorMessage } from "../../api/client";
 import { agentMessagesQuery, whoAmIQuery } from "../../api/queries";
 import type { Message } from "../../api/types";
 import { ContextRing } from "../../components/ContextRing";
-import { MultiSelect } from "../../components/MultiSelect";
 import { PinButton } from "../../components/PinButton";
 import { AgentListRefilling } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -25,13 +24,8 @@ import {
 } from "../../theme/classes";
 import { useAgentPinWrite, usePinnedAgents } from "../agents/pins";
 import { useMarkRepliesRead } from "../agents/unread";
-import {
-  capabilityLabel,
-  deliveryMode,
-  deliveryModesOf,
-  MODE_LABELS,
-  noDeliveryLine,
-} from "../conversation/delivery";
+import { DeliveryModePick } from "../conversation/DeliveryModePick";
+import { deliveryModesOf, MODE_LABELS, noDeliveryLine } from "../conversation/delivery";
 import { useAgents } from "../conversation/useAgents";
 import { useSessionSends } from "../conversation/useSessionSends";
 import { AgentName, AgentUnresponsiveNote, useAgentText } from "../refs/AgentName";
@@ -528,26 +522,12 @@ export function AgentConversationPage({
             data-testid="agent-composer-facts"
             tabIndex={-1}
           >
-            {/* The shared list's single pick of the modes this session takes, in the composer's
-                order, whose text box narrows them as the reader types; its trigger shows the
-                mode the next message goes in. A pick of that mode changes nothing, as a select
-                set to the value it holds fires nothing, so a mode the session list settled stays
-                the list's until the human picks another. The trigger keeps the select's look and
-                room, which the row's layout reads. */}
-            <MultiSelect
-              emptyMessage="No mode matches that."
-              label="Delivery mode"
+            <DeliveryModePick
               marks={{ trigger: { "data-testid": "agent-delivery-picker" } }}
-              mode="single"
+              modes={modes}
               onOpenChange={(next) => setPanel(next ? "mode" : null)}
-              onPick={(value) => {
-                const next = deliveryMode(value);
-                if (next !== undefined && next !== mode) setPicked(next);
-              }}
+              onPick={setPicked}
               open={panel === "mode"}
-              optionLabel={capabilityLabel}
-              options={modes}
-              searchLabel="Search delivery modes"
               triggerClassName={`min-h-8 shrink-0 rounded-lg px-2 py-1 text-xs ${inputClasses(false)}`}
               value={mode}
             />

@@ -14,12 +14,11 @@ import { inputClasses, textMutedOnCanvas } from "../../theme/classes";
 import type { SessionSettingsView } from "./conversation";
 import type { SwitchRequest } from "./use-session-switch";
 
-/** A picker in the row under the message box: a native `<select>`. A
- *  long model id is clipped on screen only (the option's value, which a pick sends, is the whole
- *  id), so the picker never runs wider than a phone, and `shrink-0` keeps it at that width while
- *  the directory beside it takes what is left and shortens (INFRA-812, R6). A held picker
- *  (`aria-disabled`, `useKeySteps`) looks disabled through the `refused:` variant
- *  (`styles.css`). */
+/** A picker in the row under the message box: a native `<select>`. A long model id is clipped on
+ *  screen only (the option's value, which a pick sends, is the whole id), so the picker never runs
+ *  wider than a phone, and `shrink-0` keeps it at that width while the directory beside it takes
+ *  what is left and shortens (INFRA-812, R6). A held picker (`aria-disabled`, `useKeySteps`) looks
+ *  disabled through the `refused:` variant (`styles.css`). */
 const selectClasses = `min-h-8 max-w-56 min-w-0 shrink-0 truncate rounded-lg px-2 py-1 text-xs refused:opacity-50 ${inputClasses(false)}`;
 
 /** The values a picker offers: the session's list, with the current value added when the list

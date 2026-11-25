@@ -129,6 +129,26 @@ function answerDaemonRemovals() {
   );
 }
 
+/** A write's try that fails at the network, as every try does while Dispatch cannot be reached. */
+const failsAtTheNetwork = () =>
+  Promise.reject(
+    new NetworkError("/api/v1/projects/ACME/legion/daemon", new TypeError("Failed to fetch"))
+  );
+
+/** The section's two writes, by the control that makes each: Save, and a row's Remove, which
+ *  takes its row away at the press, so its hold is read on the other row's Remove (`start`). */
+const savesAndRemovals = [
+  { label: "Save Legion daemon", start: undefined },
+  { label: "Remove the Legion daemon of CORE", start: "Remove the Legion daemon of ACME" },
+] as const;
+
+/** How many tries `writes` took between them: every call of each. */
+function triesOf(
+  writes: readonly { readonly mock: { readonly calls: readonly (readonly unknown[])[] } }[]
+): number {
+  return writes.reduce((count, write) => count + write.mock.calls.length, 0);
+}
+
 test("every project that names a daemon is a row of its own", async () => {
   const section = await renderSection(
     legionServer([setting, { ...setting, project: "CORE", state_url: "https://daemon.example" }])
@@ -253,7 +273,7 @@ test.each([
     await user.paste("http://127.0.0.1:9731");
     await pressHeld(user, section.getByRole(role, { name: label }), {
       name: label,
-      sent: () => writes.reduce((count, write) => count + write.mock.calls.length, 0),
+      sent: () => triesOf(writes),
       start: start === undefined ? undefined : section.getByRole("button", { name: start }),
     });
   } finally {
@@ -269,17 +289,12 @@ test.each([
 // focus while it is held and once it is let go, under `emulateChromiumFocusFixup` throughout. A
 // Remove takes its row away at the press, so its hold is read on the other row's Remove, which
 // the reader moves to.
-test.each([
-  { label: "Save Legion daemon", start: undefined },
-  { label: "Remove the Legion daemon of CORE", start: "Remove the Legion daemon of ACME" },
-] as const)("offline, $label is held until its write's deadline, let go there, and keeps the focus throughout", async ({
+test.each(
+  savesAndRemovals
+)("offline, $label is held until its write's deadline, let go there, and keeps the focus throughout", async ({
   label,
   start,
 }) => {
-  const failsAtTheNetwork = () =>
-    Promise.reject(
-      new NetworkError("/api/v1/projects/ACME/legion/daemon", new TypeError("Failed to fetch"))
-    );
   const writes = [
     answerDaemonSaves().mockImplementation(failsAtTheNetwork),
     answerDaemonRemovals().mockImplementation(failsAtTheNetwork),
@@ -302,7 +317,7 @@ test.each([
     onlineManager.setOnline(false);
     await pressHeld(userOnFakeClock(), pressed, {
       name: label,
-      sent: () => writes.reduce((count, write) => count + write.mock.calls.length, 0),
+      sent: () => triesOf(writes),
       start: start === undefined ? undefined : section.getByRole("button", { name: start }),
     });
 
@@ -333,10 +348,9 @@ test.each([
 // Remove through that read only up to the request deadline (`REQUEST_DEADLINE_MS`), lets them go
 // there with the focus on the control pressed, and says why the daemons are not read yet. Once
 // the network returns the project is read, and the note goes.
-test.each([
-  { label: "Save Legion daemon", start: undefined },
-  { label: "Remove the Legion daemon of CORE", start: "Remove the Legion daemon of ACME" },
-] as const)("offline, $label whose write landed is let go at the request deadline, and the section says why", async ({
+test.each(
+  savesAndRemovals
+)("offline, $label whose write landed is let go at the request deadline, and the section says why", async ({
   label,
   start,
 }) => {
@@ -363,7 +377,7 @@ test.each([
   try {
     await pressHeld(userOnFakeClock(), pressed, {
       name: label,
-      sent: () => writes.reduce((count, write) => count + write.mock.calls.length, 0),
+      sent: () => triesOf(writes),
       start: start === undefined ? undefined : section.getByRole("button", { name: start }),
     });
 
@@ -378,7 +392,7 @@ test.each([
       "paused"
     );
 
-    // The write landed in the step before, which is when the hold's timer started: a second
+    // The write landed in the step before, which is when the hold's timer started: two seconds
     // short of the request deadline the control is still held.
     await tick(REQUEST_DEADLINE_MS - 2_000);
     expect(heldNotDisabled(pressed, label)).toBe(true);
@@ -410,17 +424,12 @@ test.each([
 // a section that held its controls through that read would hold them again, with nothing to end
 // it until the network returns. The section lets them go with the stop instead, says the write
 // was stopped, and the project is still read once the network returns.
-test.each([
-  { label: "Save Legion daemon", start: undefined },
-  { label: "Remove the Legion daemon of CORE", start: "Remove the Legion daemon of ACME" },
-] as const)("offline, $label is let go when its late write is stopped, though the project's read is paused", async ({
+test.each(
+  savesAndRemovals
+)("offline, $label is let go when its late write is stopped, though the project's read is paused", async ({
   label,
   start,
 }) => {
-  const failsAtTheNetwork = () =>
-    Promise.reject(
-      new NetworkError("/api/v1/projects/ACME/legion/daemon", new TypeError("Failed to fetch"))
-    );
   const writes = [
     answerDaemonSaves().mockImplementation(failsAtTheNetwork),
     answerDaemonRemovals().mockImplementation(failsAtTheNetwork),
@@ -441,7 +450,7 @@ test.each([
     onlineManager.setOnline(false);
     await pressHeld(userOnFakeClock(), pressed, {
       name: label,
-      sent: () => writes.reduce((count, write) => count + write.mock.calls.length, 0),
+      sent: () => triesOf(writes),
       start: start === undefined ? undefined : section.getByRole("button", { name: start }),
     });
     await stopTheLateWrite(queryClient);
@@ -925,17 +934,13 @@ async function saveBehindLateWrite(
   const server = legionServer([setting]);
   const taken: string[] = [];
   let reachable = false;
-  const unreachable = () =>
-    Promise.reject(
-      new NetworkError("/api/v1/projects/ACME/legion/daemon", new TypeError("Failed to fetch"))
-    );
   answerDaemonSaves().mockImplementation((project, body) => {
-    if (!reachable) return unreachable();
+    if (!reachable) return failsAtTheNetwork();
     taken.push(`PUT ${body.state_url}`);
     return server.put(project, body.state_url);
   });
   answerDaemonRemovals().mockImplementation((project) => {
-    if (!reachable) return unreachable();
+    if (!reachable) return failsAtTheNetwork();
     taken.push("DELETE");
     return server.remove(project);
   });

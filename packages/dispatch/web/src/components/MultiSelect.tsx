@@ -579,24 +579,30 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // The hand-back of the latest render, for the close's effect below.
   const handBackNow = useRef(handBack);
   handBackNow.current = handBack;
+  // A pick the list takes - a single pick's row, or a `createLabel` row its host took - closes the
+  // list and gives the focus back with no scroll: the element held the focus as the list opened,
+  // and a host whose pick takes it away hands the focus on itself - the Inbox's hand-off focuses
+  // the row after the snoozed ones with no scroll while they still stand, and brings it into view
+  // once they have gone (`pane-selection.ts`). The engine's own scroll of a card a key opened the
+  // bar's Snooze from, partly out of sight, moved the list 230 px in card mode at the pick; at the
+  // issue header's `Use "owner/repo"`, its Repository half out of sight, it moved a 390 px page
+  // 22 px.
+  const closeOnPick = () => {
+    onOpenChange(false, "pick");
+    handBack({ preventScroll: true });
+  };
   // A single pick gives the focus back - to the trigger, or where a menu's goes - before it hands
   // the value over, so a pick that takes the trigger away - the search bar's Project list, gone
   // once its narrowing is on - takes it from the trigger's own place, from which the panel around
   // it hands the focus on (`useFocusPlace`), rather than from a list portalled outside that
   // panel; and a snooze whose write folds the row a key opened its menu from takes the focus from
-  // that row, which the Inbox's hand-off reads (R8). It gives it back with no scroll, as a taken
-  // `createLabel` row does (`create`): the element held the focus as the list opened, and a host
-  // whose pick takes it away hands the focus on itself - the Inbox's hand-off focuses the row
-  // after the snoozed ones with no scroll while they still stand, and brings it into view once
-  // they have gone (`pane-selection.ts`). The engine's own scroll of a card a key opened the bar's
-  // Snooze from, partly out of sight, moved the list 230 px in card mode at the pick. A menu whose
-  // host's write is out writes nothing and stays open (`ariaDisabled`).
+  // that row, which the Inbox's hand-off reads (R8). A menu whose host's write is out writes
+  // nothing and stays open (`ariaDisabled`).
   const choose = (value: string) => {
     if (menu !== undefined && ariaDisabled) return;
     setActiveValue(value);
     if (props.mode === "single") {
-      onOpenChange(false, "pick");
-      handBack({ preventScroll: true });
+      closeOnPick();
       props.onPick(value);
       return;
     }
@@ -607,10 +613,8 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     );
   };
   // A multi-select's row adds the typed value and starts a fresh search. A single pick's row
-  // hands it to the host, which answers whether it took it: taken, the list closes and the focus
-  // goes back with no scroll, as a pick's does - the engine's own scroll moved a 390 px page 22 px
-  // at the issue header's `Use "owner/repo"`, its Repository half out of sight; refused, the list
-  // stays open with the text in its box for the reader to correct.
+  // hands it to the host, which answers whether it took it: taken, the list closes; refused, the
+  // list stays open with the text in its box for the reader to correct.
   const create = (value: string) => {
     if (menu !== undefined && ariaDisabled) return;
     setActiveValue(value);
@@ -618,8 +622,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
       props.onCreate?.(value);
       setQuery("");
     } else if (props.onCreate?.(value) === true) {
-      onOpenChange(false, "pick");
-      handBack({ preventScroll: true });
+      closeOnPick();
     }
   };
   // A menu's press outside, in the panel's capture-phase `pointerdown` that closes the list

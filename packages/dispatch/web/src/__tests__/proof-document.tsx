@@ -15,6 +15,7 @@ import type {
 import type { ComposerAnchor } from "../features/conversation/composer-model";
 import { type DocumentToolbar, ProofDocument } from "../features/doc/ProofDocument";
 import { DocumentRuntime } from "../features/doc/runtime";
+import { NoTooltips } from "../features/issue-page/NoTooltips";
 import { MarginProvider, useMargin } from "../features/margin/margin-context";
 import type { MarkPlacement } from "../features/margin/useMarginItems";
 import { RefPreviewHost } from "../features/refs/RefPreview";
@@ -151,6 +152,7 @@ export function renderProofDocument({
   fake = fakeDocumentRuntime({ text: "The live document" }),
   highlightTerm,
   isClosed = false,
+  noTooltips = false,
   onAskAnswered,
   onUnavailable,
   queryClient = createQueryClient(),
@@ -162,6 +164,8 @@ export function renderProofDocument({
   fake?: FakeDocumentRuntime;
   highlightTerm?: string;
   isClosed?: boolean;
+  /** Draws the page inside `NoTooltips`, as the issue page draws it. */
+  noTooltips?: boolean;
   onAskAnswered?(askId: string): void;
   onUnavailable?(reason: string): void;
   queryClient?: QueryClient;
@@ -209,34 +213,39 @@ export function renderProofDocument({
   };
   const renderDocument = (
     next: { highlightTerm?: string; isClosed?: boolean; showDiff?: boolean; version?: number } = {}
-  ) => (
-    <MemoryRouter>
-      <QueryClientProvider client={queryClient}>
-        <DocumentRuntime.Provider value={fake.runtime}>
-          <MarginProvider>
-            <CurrentRoute />
-            <MarginProbe />
-            <ProofDocument
-              artifact={document}
-              highlight={undefined}
-              highlightTerm={next.highlightTerm ?? highlightTerm}
-              isClosed={next.isClosed ?? isClosed}
-              onAskAnswered={onAskAnswered}
-              onToolbarChange={onToolbarChange}
-              onUnavailable={onUnavailable}
-              owner={{ key: "CORE-1", kind: "issue" }}
-              onVersionChange={onVersionChange}
-              showDiff={next.showDiff ?? showDiff}
-              surface={surface}
-              user={{ event_head: "0", kind: "user", login: "alice" }}
-              version={next.version ?? version}
-            />
-            <RefPreviewHost />
-          </MarginProvider>
-        </DocumentRuntime.Provider>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
+  ) => {
+    const page = (
+      <DocumentRuntime.Provider value={fake.runtime}>
+        <MarginProvider>
+          <CurrentRoute />
+          <MarginProbe />
+          <ProofDocument
+            artifact={document}
+            highlight={undefined}
+            highlightTerm={next.highlightTerm ?? highlightTerm}
+            isClosed={next.isClosed ?? isClosed}
+            onAskAnswered={onAskAnswered}
+            onToolbarChange={onToolbarChange}
+            onUnavailable={onUnavailable}
+            owner={{ key: "CORE-1", kind: "issue" }}
+            onVersionChange={onVersionChange}
+            showDiff={next.showDiff ?? showDiff}
+            surface={surface}
+            user={{ event_head: "0", kind: "user", login: "alice" }}
+            version={next.version ?? version}
+          />
+          <RefPreviewHost />
+        </MarginProvider>
+      </DocumentRuntime.Provider>
+    );
+    return (
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          {noTooltips ? <NoTooltips>{page}</NoTooltips> : page}
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+  };
   const cachedText = queryClient.getQueryData<Partial<ArtifactText>>([
     "artifact",
     document.id,

@@ -408,7 +408,9 @@ function isEditableTarget(event: KeyboardEvent): boolean {
 interface HeldPress {
   readonly event: KeyboardEvent;
   readonly target: EventTarget | null;
-  movement?: string;
+  /** The id of the stepping binding (`KeyBinding.repeats`) the press ran, which its repeats run
+   *  again (`handleKeyDown`). */
+  steps?: string;
 }
 
 /** The physical key a keydown or a keyup is of, which its press, its repeats and its release
@@ -671,18 +673,20 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
     // Tab can dismiss a layer. A fresh press is required to leave the next one.
     if (event.key === "Tab") return false;
     if (MOVING_KEYS[event.key] === true) return true;
-    const { exact, partial } = resolve([pressOf(event)], isEditableTarget(event));
-    if (exact !== undefined || partial) {
-      return (
-        press?.movement !== undefined &&
-        exact?.binding.repeats === true &&
-        exact.binding.id === press.movement
-      );
-    }
     const { target } = event;
-    if (press === undefined || press.target !== target || !(target instanceof Element)) {
+    // Neither way on below lets a repeat go on without a held press, nor from a press that ran no
+    // stepping binding and is not on the repeat's own element: the bindings need not be read then.
+    if (
+      press === undefined ||
+      (press.steps === undefined && (press.target !== target || !(target instanceof Element)))
+    ) {
       return false;
     }
+    const { exact, partial } = resolve([pressOf(event)], isEditableTarget(event));
+    if (exact !== undefined || partial) {
+      return exact?.binding.repeats === true && exact.binding.id === press.steps;
+    }
+    if (press.target !== target || !(target instanceof Element)) return false;
     if (event.key === " ") return !press.event.defaultPrevented;
     if (!takesText(target) || !writesText(event)) return false;
     if (event.key === "Enter") {
@@ -846,7 +850,7 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
           presses.length === 1 &&
           resolution.exact.binding.repeats === true
         ) {
-          heldPress.movement = resolution.exact.binding.id;
+          heldPress.steps = resolution.exact.binding.id;
         }
         event.preventDefault();
         clearPending();

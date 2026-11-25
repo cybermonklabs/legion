@@ -602,7 +602,7 @@ export function agentMessageRequest(
   );
 }
 
-/** `PUT /api/v1/me/asks/{id}/snooze` (`snoozeAsk`). */
+/** `PUT /api/v1/me/asks/{id}/snooze` (`useAskSnoozeWrites`, `useAskSnoozeMany`). */
 export function askSnoozeRequest(id: string, snoozedUntil: string) {
   return writeRequest(
     "put",
@@ -612,7 +612,7 @@ export function askSnoozeRequest(id: string, snoozedUntil: string) {
   );
 }
 
-/** `DELETE /api/v1/me/asks/{id}/snooze`: brings the row back now (`unsnoozeAsk`). */
+/** `DELETE /api/v1/me/asks/{id}/snooze`: brings the row back now (`useAskSnoozeWrites`). */
 export function askUnsnoozeRequest(id: string) {
   return writeRequest("delete", "/api/v1/me/asks/{id}/snooze", { id });
 }
@@ -1363,18 +1363,6 @@ export class DispatchApiClient {
 
   getInbox(project?: string) {
     return this.read("/api/v1/inbox", {}, { project });
-  }
-
-  /** `PUT /api/v1/me/asks/{id}/snooze`: fold this inbox row away for the caller until
-   *  `snoozedUntil` (RFC3339). Needs the `person` scope, like the inbox itself. */
-  async snoozeAsk(id: string, snoozedUntil: string, bounds: WriteBounds) {
-    return this.send(askSnoozeRequest(id, snoozedUntil), bounds);
-  }
-
-  /** `DELETE /api/v1/me/asks/{id}/snooze`: bring the row back now. A row that is not snoozed
-   *  answers the same 204. */
-  async unsnoozeAsk(id: string, bounds: WriteBounds): Promise<void> {
-    await this.send(askUnsnoozeRequest(id), bounds);
   }
 
   /** `PUT /api/v1/asks/{id}/asked-of`: hand an open ask to `askedOf`, the email of somebody who

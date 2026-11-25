@@ -68,7 +68,7 @@ function snoozeAsk({ askId }: AskSnoozePress): string {
  *  (`useAskSnoozeWrites`) and the bar's (`useAskSnoozeMany`) alike. Writes to one target go out
  *  in press order, so of the snooze writes of one ask an older one never lands after a newer one
  *  and overwrites the reader's newer choice. */
-export function askSnoozeTarget(askId: string): string {
+function askSnoozeTarget(askId: string): string {
   return `ask-snooze:${askId}`;
 }
 

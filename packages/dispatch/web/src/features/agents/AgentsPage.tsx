@@ -75,13 +75,8 @@ import {
 } from "../../theme/classes";
 import { replyParentOf } from "../conversation/composer-model";
 import { listedReplies } from "../conversation/conversation-model";
-import {
-  broadcastDelivery,
-  capabilityLabel,
-  deliveryMode,
-  deliveryModesOf,
-  MODE_LABELS,
-} from "../conversation/delivery";
+import { DeliveryModePick } from "../conversation/DeliveryModePick";
+import { broadcastDelivery, deliveryModesOf, MODE_LABELS } from "../conversation/delivery";
 import { useHeldSends } from "../conversation/held-sends";
 import { ReplyTurn, ThreadReplies } from "../conversation/ReplyTurn";
 import { capabilitiesForTarget, TargetedMessageCard } from "../conversation/TargetedMessageCard";
@@ -1353,23 +1348,11 @@ function BroadcastComposer({
         })}
       </ul>
       <div className="mt-2 flex flex-wrap items-center gap-2 narrow-or-short:order-2 narrow-or-short:mt-0">
-        {/* The shared list's single pick of the modes, whose text box narrows them as the reader
-            types; its trigger shows the mode the broadcast sends in. A pick of that mode changes
-            nothing, as a select set to the value it holds fires nothing: a restored broadcast
-            stays the one refused, and a mode the selection takes stays unpicked. */}
-        <MultiSelect
-          emptyMessage="No mode matches that."
-          label="Delivery mode"
-          mode="single"
+        <DeliveryModePick
+          modes={DELIVERY_CAPABILITIES}
           onOpenChange={setModeListOpen}
-          onPick={(picked) => {
-            const mode = deliveryMode(picked);
-            if (mode !== undefined && mode !== delivery) onDelivery(mode);
-          }}
+          onPick={onDelivery}
           open={modeListOpen}
-          optionLabel={capabilityLabel}
-          options={DELIVERY_CAPABILITIES}
-          searchLabel="Search delivery modes"
           size="comfortable"
           triggerClassName={`rounded-lg border text-left text-sm ${inputClasses(true)}`}
           value={delivery}

@@ -1,9 +1,8 @@
 import { beforeEach, expect, jest, spyOn, test } from "bun:test";
 import type { ArtifactRebuildReport } from "@legion/contracts";
-import { onlineManager, type QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { onlineManager } from "@tanstack/react-query";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
 
 import manifest from "../../../../../envoy/internal/dispatch/pmdoc/schema/blocks.json";
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
@@ -26,12 +25,8 @@ import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/clie
 import { DispatchQueryClient } from "../../api/query-client";
 import type { ArtifactText } from "../../api/types";
 import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
-import { NoTooltips } from "../issue-page/NoTooltips";
-import { MarginProvider } from "../margin/margin-context";
 import { stoppedWriteNote } from "../writes/keyed-write";
-import { ProofDocument } from "./ProofDocument";
 import { deletePendingEdits, openPendingEdits } from "./pending-edits";
-import { DocumentRuntime } from "./runtime";
 import { compiledSchemaCreatable } from "./schema";
 
 // Whether the live editor may connect, and what the page shows when it may not or cannot: the
@@ -358,6 +353,16 @@ test("ProofDocument starts the refusal backoff again once a socket syncs", async
   }
 });
 
+/** What Dispatch answers a rebuild that restored the document's latest saved version. */
+const REBUILT_REPORT: ArtifactRebuildReport = {
+  head: 1,
+  removed_checkpoints: 0,
+  removed_snapshots: 0,
+  removed_updates: 3,
+  source_version: 1,
+  validation_error: "decode live document: unexpected end of input",
+};
+
 // Only a stored history that cannot load is rebuilt: the page offers the rebuild for the code the
 // server answers that state with, and the read after the rebuild admits the editor again.
 test("ProofDocument offers a rebuild for a history that cannot load and reconnects after it", async () => {
@@ -365,14 +370,7 @@ test("ProofDocument offers a rebuild for a history that cannot load and reconnec
   const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(
     new ApiError(409, { code: "DOCUMENT_UNLOADABLE", error: UNLOADABLE_REFUSAL })
   );
-  const rebuildArtifact = spyOn(api, "rebuildArtifact").mockResolvedValue({
-    head: 1,
-    removed_checkpoints: 0,
-    removed_snapshots: 0,
-    removed_updates: 3,
-    source_version: 1,
-    validation_error: "decode live document: unexpected end of input",
-  });
+  const rebuildArtifact = spyOn(api, "rebuildArtifact").mockResolvedValue(REBUILT_REPORT);
   const confirm = spyOn(window, "confirm").mockReturnValue(true);
   const { connections, view } = renderProofDocument();
   try {
@@ -472,42 +470,12 @@ test("Rebuild lets go at the document write deadline and sends again", async () 
   }
 });
 
-/** What Dispatch answers a rebuild that restored the document's latest saved version. */
-const REBUILT_REPORT: ArtifactRebuildReport = {
-  head: 1,
-  removed_checkpoints: 0,
-  removed_snapshots: 0,
-  removed_updates: 3,
-  source_version: 1,
-  validation_error: "decode live document: unexpected end of input",
-};
-
-/** The document's page drawn inside `NoTooltips`, as the issue page draws it, over `queryClient`:
- *  there the rebuild stays pending through the reads its landing makes stale. */
-function renderInsideNoTooltips(queryClient: QueryClient) {
-  const fake = fakeDocumentRuntime({ text: "The live document" });
-  const view = render(
-    <MemoryRouter>
-      <QueryClientProvider client={queryClient}>
-        <NoTooltips>
-          <DocumentRuntime.Provider value={fake.runtime}>
-            <MarginProvider>
-              <ProofDocument
-                artifact={artifact}
-                highlight={undefined}
-                isClosed={false}
-                onVersionChange={() => undefined}
-                owner={{ key: "CORE-1", kind: "issue" }}
-                showDiff={false}
-                user={{ event_head: "0", kind: "user", login: "alice" }}
-              />
-            </MarginProvider>
-          </DocumentRuntime.Provider>
-        </NoTooltips>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
-  return { connections: fake.connections, view };
+/** The app's own query client, with reads fresh until a write invalidates them, as the other rows
+ *  of this file give the page theirs (`createQueryClient`). */
+function freshReadsQueryClient(): DispatchQueryClient {
+  return new DispatchQueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
 }
 
 // A rebuild that lands as the browser goes offline has the reads it made stale paused by the
@@ -524,12 +492,8 @@ test("offline, inside NoTooltips, Rebuild is held through the reads its landed r
   const rebuilt = Promise.withResolvers<ArtifactRebuildReport>();
   const rebuildArtifact = spyOn(api, "rebuildArtifact").mockImplementation(() => rebuilt.promise);
   const confirm = spyOn(window, "confirm").mockReturnValue(true);
-  // The app's own query client, with reads fresh until a write invalidates them, as the other
-  // rows of this file give the page theirs.
-  const queryClient = new DispatchQueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  });
-  const { view } = renderInsideNoTooltips(queryClient);
+  const queryClient = freshReadsQueryClient();
+  const { view } = renderProofDocument({ noTooltips: true, queryClient });
   const online = onlineManager.isOnline();
   const stopFocusFixup = emulateChromiumFocusFixup();
   try {
@@ -553,7 +517,7 @@ test("offline, inside NoTooltips, Rebuild is held through the reads its landed r
       "paused"
     );
 
-    // The rebuild landed in the step before, which is when the hold's timer started: a second
+    // The rebuild landed in the step before, which is when the hold's timer started: two seconds
     // short of the request deadline the reads are still paused, and Rebuild held.
     await tick(REQUEST_DEADLINE_MS - 2_000);
     expect(heldNotDisabled(button, name)).toBe(true);
@@ -596,10 +560,8 @@ test("inside NoTooltips, Rebuild stays held through the read after its rebuild u
   const rebuildArtifact = spyOn(api, "rebuildArtifact").mockImplementation(() => rebuilt.promise);
   const confirm = spyOn(window, "confirm").mockReturnValue(true);
   const reread = Promise.withResolvers<ArtifactText>();
-  const queryClient = new DispatchQueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  });
-  const { connections, view } = renderInsideNoTooltips(queryClient);
+  const queryClient = freshReadsQueryClient();
+  const { connections, view } = renderProofDocument({ noTooltips: true, queryClient });
   const stopFocusFixup = emulateChromiumFocusFixup();
   try {
     const name = "Rebuild from the latest version";
