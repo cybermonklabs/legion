@@ -296,4 +296,10 @@ var FactSources = map[string]FactSource{
 	"BasePush":                  {Way: FactLeftOut, Assumption: assumeNoGitHub},
 	"MergeQueueReadDone":        {Way: FactLeftOut, Assumption: assumeNoGitHub},
 	"ConflictConfirmDone":       {Way: FactLeftOut, Assumption: assumeNoGitHub},
+
+	// A review request GitHub opened or withdrew on a pull request, and the daemon's own fact that a
+	// read of GitHub's merge state failed while the record holds a `blocked` answer: the replay reads
+	// no GitHub, so neither comes to it.
+	"PullRequestReviewRequests":   {Way: FactLeftOut, Assumption: assumeNoGitHub},
+	"PullRequestMergeStateUnread": {Way: FactLeftOut, Assumption: assumeNoGitHub},
 }
