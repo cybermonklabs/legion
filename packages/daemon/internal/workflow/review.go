@@ -1148,7 +1148,7 @@ func stuckMergeStateReason(pr record.PullRequest) string {
 // (classify.ApprovalStands) and GitHub reports that head one the issue may advance on
 // (record.MergeState.Mergeable), or once the pull request has merged at that head: a merged pull
 // request has nothing left to merge, GitHub answers `unknown` for it for good, and the daemon
-// never reads its state again (askMergeStateFor), so nothing it could wait on would ever come.
+// never reads its state again (mergeStateOwed), so nothing it could wait on would ever come.
 // An approval of a head the record holds in a confirmed conflict with its base
 // (classify.ConflictRound) ends the round too, whatever GitHub's merge state for it
 // (dispatch://INFRA-4374 R0): nothing GitHub answers about that head changes until the base is
@@ -1386,7 +1386,7 @@ func told(row record.PhaseRow, r round) bool {
 }
 
 // askMergeState asks the daemon to read GitHub's merge state for the pull request fact is of,
-// when the fact owes that read (askMergeStateFor, Config.ReadMergeState): the round the fact has
+// when the fact owes that read (mergeStateOwed, Config.ReadMergeState): the round the fact has
 // just been applied to leaves waiting on GitHub's answer for the head (round.waitsOnMergeState),
 // or the fact moves the head of an issue in implementing through merging, which a conflict with
 // the base needs read (the gate's reason, classify.MergeStateReadOwed, dispatch://INFRA-4374 R0).
@@ -1407,9 +1407,9 @@ func told(row record.PhaseRow, r round) bool {
 // (daemon's mergeStateLadder), and the next fact of the issue asks again.
 //
 // A base push is the one fact of many pull requests, and the one this leaves alone: its handler
-// walks the open pull requests recorded on the base once, and asks for each read inside that
-// walk (basePush), since the record it overwrites as it goes is what tells a redelivered push
-// from a first delivery.
+// walks the open pull requests recorded on the base once, and asks for their reads as one batch
+// inside that walk (basePush, Config.ReadBaseMergeStates), since the record it overwrites as it
+// goes is what tells a redelivered push from a first delivery.
 //
 // It reads the pull request's row alone (pullRequestRow, pullRequestRowByBranch): it writes
 // nothing of the record and reads none of what it remembers of its settled heads.
@@ -1447,49 +1447,47 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 	if err != nil || pr == nil {
 		return err
 	}
-	return e.askMergeStateFor(ctx, tx, pr, kind)
+	owed, err := e.mergeStateOwed(ctx, tx, pr, kind)
+	if err != nil || !owed {
+		return err
+	}
+	key := pr.Issue
+	store.OnCommit(ctx, func() { e.cfg.ReadMergeState(key) })
+	return nil
 }
 
-// askMergeStateFor queues the read for one pull request when a fact of kind fact asks for it, by
-// one of the gate's two reasons (classify.MergeStateReadOwed, on the walk's line: a head move of
-// an issue in implementing or a phase after it, a base push of an issue in a phase after it) or by
-// the
-// third, which the gate does not hold: the issue's review round waiting on GitHub's answer for the
-// head (reviewRound's waitsOnMergeState), worked out here only for a fact the gate owes no read
-// for. The guard on a daemon with no reader is here as well as in askMergeState, because a base
-// push reaches this from its handler's walk rather than through that switch (basePush), and that
-// walk is the one caller that names classify.MergeStateFactBasePush. A pull request that is not
-// open is read for nothing: it merges nothing until a reopen, which asks again, and its round
-// waits on no answer (classify.RoundWaitsOnMergeState holds only for an open one), so the test of
-// its state here saves the store reads below.
-func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, fact classify.MergeStateFact) error {
-	if e.cfg.ReadMergeState == nil || pr.State != record.PullRequestOpen {
-		return nil
+// mergeStateOwed says whether a fact of kind fact owes a read of pr's merge state, by one of the
+// gate's two reasons (classify.MergeStateReadOwed, on the walk's line: a head move of an issue in
+// implementing or a phase after it, a base push of an issue in a phase after it) or by the third,
+// which the gate does not hold: the issue's review round waiting on GitHub's answer for the head
+// (reviewRound's waitsOnMergeState), worked out here only for a fact the gate owes no read for. It
+// is the one decision both askMergeState, for a fact of one pull request, and basePush, for
+// each pull request on a pushed base, read by. A pull request that is not open is owed nothing:
+// it merges nothing until a reopen, which asks again, and its round waits on no answer
+// (classify.RoundWaitsOnMergeState holds only for an open one), so the test of its state here
+// saves the store reads below.
+func (e *Engine) mergeStateOwed(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, fact classify.MergeStateFact) (bool, error) {
+	if pr.State != record.PullRequestOpen {
+		return false, nil
 	}
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
 	if err != nil || issue == nil {
-		return err
+		return false, err
 	}
 	w, err := e.walk(ctx, tx, *issue)
 	if err != nil {
-		return err
+		return false, err
 	}
-	owed := classify.MergeStateReadOwed(*issue, w.Line, fact)
-	if !owed {
-		// The round's own answer matters only where the fact and the phase owe no read: every
-		// phase a round can wait on GitHub in already owes one on a head move or a base push.
-		reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
-		if err != nil {
-			return err
-		}
-		owed = e.reviewRound(*issue, reviewer, pr).waitsOnMergeState
+	if classify.MergeStateReadOwed(*issue, w.Line, fact) {
+		return true, nil
 	}
-	if !owed {
-		return nil
+	// The round's own answer matters only where the fact and the phase owe no read: every phase
+	// a round can wait on GitHub in already owes one on a head move or a base push.
+	reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
+	if err != nil {
+		return false, err
 	}
-	key := issue.Key
-	store.OnCommit(ctx, func() { e.cfg.ReadMergeState(key) })
-	return nil
+	return e.reviewRound(*issue, reviewer, pr).waitsOnMergeState, nil
 }
 
 // recordPass counts task one more pass through its steps from the one a move back goes to, which

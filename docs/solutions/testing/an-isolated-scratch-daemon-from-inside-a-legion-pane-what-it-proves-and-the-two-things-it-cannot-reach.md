@@ -35,7 +35,10 @@ symptoms:
 
 ## Which order applies
 
-Sami's 2026-09-13 order withdrew rigs; his 2026-09-14 19:41Z correction (LEGION-25 spec v21,
+On 2026-09-13 Sami had the Legion smoke rig shut down ("Please shutdown the goddamn legion smoke.
+It's pointless and it has led to destructive actions twice now.", relayed verbatim in
+https://github.com/cybermonklabs/legion/pull/1022#issuecomment-5658482554), and the operator then withdrew every rig; the
+2026-09-14 19:41Z correction (LEGION-25 spec v21,
 recorded in
 [`../legion/pre-merge-surface-withdrawn-by-standing-order-what-the-pr-carries-instead.md`](../legion/pre-merge-surface-withdrawn-by-standing-order-what-the-pr-carries-instead.md))
 allows a throwaway instance of the worker's own — its own team slug, state directory, ports, NATS

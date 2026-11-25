@@ -11,6 +11,7 @@ import (
 // never starts, where a reader that ends a -- comment at a newline alone, or that skips no quoted
 // span, reads it otherwise.
 func TestWithoutCommentsReadsACommentWherePostgresReadsOne(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		text string
 		// comments are the comments of text, in order, each of which the answer blanks.
@@ -63,6 +64,7 @@ func TestWithoutCommentsReadsACommentWherePostgresReadsOne(t *testing.T) {
 // Statements splits at the semicolons Postgres reads as such: none inside a string, a quoted
 // identifier, a dollar quote or a comment.
 func TestStatementsSplitsAtTheSemicolonsOutsideQuotesAndComments(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		text string
 		want []string

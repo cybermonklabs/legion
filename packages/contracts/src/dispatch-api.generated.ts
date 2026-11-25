@@ -1368,7 +1368,7 @@ export interface paths {
     /** @description List issues; filters project, status (repeatable: the issues standing in any of those statuses; a blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no issue: alone it answers none, and beside another status it adds nothing), parent, label, priority (repeatable: 0-3, or none for unset), advances (repeatable: a priority id, none for the work that advances no live priority or any for the work that advances one, own or inherited; several are a union), open, updated_since, closed_since and closed_before (RFC3339; the issues closed at or after closed_since and before closed_before, so an open issue matches neither), route_status (live, no_holder or unknown; open issues only); ?pinned=true needs the person scope, since the pins are one person's. A malformed updated_since, closed_since or closed_before is 400 INVALID_UPDATED_SINCE, INVALID_CLOSED_SINCE or INVALID_CLOSED_BEFORE, and a closed_before at or before closed_since 400 INVALID_CLOSED_WINDOW. Each issue carries closed_at, when it was closed or null while it is open, and progress: {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none. ?moved=true adds moved_at and moved_by to each issue standing in backlog or icebox: when it was moved there and who moved it, read from its newest issue.updated event that set one of the two statuses, as GET /api/v1/priorities' parked work reads them; an issue standing elsewhere, or whose events do not reach back to the move, carries neither, and a listing without moved=true carries neither on any issue. Pages with limit (1-250) and offset (0 or more; alone it pages 50): a paged answer is {issues, total, limit, offset}, total counting every issue the filters match; without either it is every matching issue as an array. cursor is 400 INVALID_QUERY. */
     get: operations["getApiV1Issues"];
     put?: never;
-    /** @description Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee when the parent is of the issue's own project, or the project's default assignee. Every create names its project, a create from a ref included: external with no project, or an empty one, is 400 INVALID_ISSUE. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate). */
+    /** @description Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee when the parent is of the issue's own project, or the project's default assignee. Every create names its project, a create from a ref included: external with no project, or an empty one, is 400 INVALID_ISSUE. A title over 1000 characters is 400 CAP_EXCEEDED. With DISPATCH_PARENT_STATUS_RULE on, a parent that the new issue would leave out of line with its children (a done parent) is 409 PARENT_STATUS_CONFLICT {code, error, issues: [{key, title, status, relation}]}, issues naming each issue that holds the rule. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate). */
     post: operations["postApiV1Issues"];
     delete?: never;
     options?: never;
@@ -1400,14 +1400,14 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Read an issue with its open asks, primary document, children, and progress: {tasks, children}, its spec's task-list items (`- [ ]` / `- [x]`, nested lists included) and its direct children as {done, total}, each null when it has none. */
+    /** @description Read an issue with its open asks, primary document, children, and progress: {tasks, children}, its spec's task-list items (`- [ ]` / `- [x]`, nested lists included) and its direct children as {done, total}, each null when it has none. blocks is the keys of the issues whose blocked_by names this one, sorted, [] when none; GET /api/v1/issues lists no blocks. comment_count is how many comments GET /api/v1/issues/{key}/comments lists, left out when the issue holds none. */
     get: operations["getApiV1IssuesByKey"];
     put?: never;
     post?: never;
     delete?: never;
     options?: never;
     head?: never;
-    /** @description Update title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, rank, assignee (the email of a person who has signed in, or null; anyone may reassign), or components ({mode: inherit|explicit|none, ids, reason}; allowed on a closed issue). Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. */
+    /** @description Update title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, rank, assignee (the email of a person who has signed in, or null; anyone may reassign), or components ({mode: inherit|explicit|none, ids, reason}; allowed on a closed issue). Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. With DISPATCH_PARENT_STATUS_RULE on, a status or a parent that would leave a parent out of line with its children is 409 PARENT_STATUS_CONFLICT {code, error, issues: [{key, title, status, relation}]}, relation parent or child, issues naming each issue that holds the rule. */
     patch: operations["patchApiV1IssuesByKey"];
     trace?: never;
   };
@@ -1860,6 +1860,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/issues/{key}/status-change": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Write the status of an issue, and with an option what happens to the issues under it or above it, so that each parent's status stays in line with its children's: a parent is done only when each child is done, and while a child is in work its parent is in work. The body is {status, include_children?, unlink_children?, include_parent?, dry_run?, expected_sequence?, actor?}, and expected_sequence and actor are read as PATCH /api/v1/issues/{key} reads them. include_children writes the status on each open issue under the issue, at any depth, that is not in the status's group (not started, in work or done). unlink_children removes each open child from the issue, so that each one becomes a root. include_parent moves each ancestor that is not in work to in_progress. Each issue that an option changes gets a comment from Dispatch that names the call. When the options changed at least one issue, the issue the call names gets one comment from Dispatch too, after the last write, that names the call and lists each of those changes. The call writes one issue at a time, each in a transaction of its own, in an order where each write keeps the rule, and it checks its whole plan before the first write. The answer is 200 {issue, changed}: issue is the issue as the PATCH answers it, and changed has one entry {key, status, parent, previous_last_seq, issue} for each issue whose status or parent the call changed, the issue itself included, in the order of the writes. status and parent are what the call left, previous_last_seq is the issue's last_seq as its own write read it under its lock, and issue is that issue as its write answered it. The answer's issue is read at the issue's own write, so later events of the same call can follow it on the stored issue: a child.status for each direct child that include_children moves after it, for a status in work, and the comment.created of the comment on the issue the call names. So the stored last_seq can be past the answer's, and a client that sends the answer's last_seq as expected_sequence can get 409 ISSUE_CHANGED: it reads the issue again before a write that the sequence fences. With dry_run the call writes nothing and answers the same shape: each entry has the status and the parent that the call would leave and the issue's last_seq now, and no issue. 409 ISSUE_CHANGED: expected_sequence is not the issue's last event. This is decided first, also for a dry run, and again at each write, where an event on the issue that the call did not write stops the call. 409 PARENT_STATUS_CONFLICT {code, error, issues: [{key, title, status, relation}], changed}, relation parent or child: the call breaks the rule, with DISPATCH_PARENT_STATUS_RULE on, and for a dry run whatever the setting. 403 BROWSER_SIGN_IN_REQUIRED: include_children with done from a request that presents a token. 403 PROJECT_SCOPE: the request's credential may write one project, and a write of the call is of an issue of another project (a parent may be one), refused before any write, also for a dry run. 400 INVALID_STATUS: the status is not in the lifecycle. 400 STATUS_CHANGE_INPUT: no status, or include_children with unlink_children. 409 PARENT_CONTENDED: the issues of the call moved at each attempt to lock them, and nothing was applied. 409 ISSUE_CLOSED: done on an issue that is closed. 404 NOT_FOUND: no such issue. Each refusal above carries changed: the entries of the writes that committed before it, [] when none did. A repeat under the same Idempotency-Key while the first call runs is 409 KEY_IN_FLIGHT, whose changed is the entries of the writes the first call has committed so far. */
+    post: operations["postApiV1IssuesByKeyStatusChange"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/issues/{key}/steps": {
     parameters: {
       query?: never;
@@ -2071,10 +2088,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List the caller's personal agent tokens, each with the scopes it holds. */
+    /** @description List the caller's personal agent tokens, newest first, each with the scopes it holds: a read-only token's scopes hold read. */
     get: operations["getApiV1MeAgentTokens"];
     put?: never;
-    /** @description Mint a personal agent token {name, scopes?}: scopes is the set the new token holds, defaulting to the scopes the caller's own credential holds. A scope this deployment does not know, or approve without person, is 400 TOKEN_SCOPES_INPUT; a scope the caller does not hold itself is 403 OAUTH_SCOPE_REQUIRED. The answer is the one time the token's plaintext is shown. */
+    /** @description Mint a personal agent token {name, scopes?}: scopes is the set the new token holds, defaulting to the scopes the caller's own credential holds. A set holding read mints a read-only token, which Dispatch answers on the GET routes it classes as reads and refuses every other route, 403 READ_ONLY_TOKEN: read alone, or read beside person. A scope this deployment does not know, approve without person, or read beside approve, is 400 TOKEN_SCOPES_INPUT; a scope the caller does not hold itself is 403 OAUTH_SCOPE_REQUIRED, and read needs none. The answer is the one time the token's plaintext is shown. */
     post: operations["postApiV1MeAgentTokens"];
     delete?: never;
     options?: never;
@@ -2092,11 +2109,11 @@ export interface paths {
     get?: never;
     put?: never;
     post?: never;
-    /** @description Revoke a personal agent token. */
+    /** @description Revoke a personal agent token, read-only or not; a revoked token answers 401 TOKEN_REVOKED. */
     delete: operations["deleteApiV1MeAgentTokensById"];
     options?: never;
     head?: never;
-    /** @description Set the scopes of one of the caller's personal agent tokens {scopes}: the whole set it is to hold, with the mint's refusals, answering the updated token. A token of another person's, or none, is 404 NOT_FOUND. */
+    /** @description Set the scopes of one of the caller's personal agent tokens {scopes}: the whole set it is to hold, with the mint's refusals, answering the updated token. No token changes to or from read only: a set holding read, and any set for a read-only token, is 400 TOKEN_SCOPES_INPUT, since a person makes a new token for that. A token of another person's, or none, is 404 NOT_FOUND. */
     patch: operations["patchApiV1MeAgentTokensById"];
     trace?: never;
   };
@@ -2417,7 +2434,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List one project's near-copy gate answers, one row for each create the gate answered (an external create runs no gate and has none), recorded when the create was refused or once it was written: the rows of ?project= (required; 400 INVALID_PROJECT when it is not a key) within [from, to) (RFC3339, each optional; 400 INVALID_QUERY when from is not before to), oldest first, at most ?limit= (1 to 1000, default 1000), after the row whose id ?after= names (400 INVALID_QUERY when it is no row of the project). A window should end some time before now: a row written in its create's transaction holds that transaction's start as created_at and is seen only once the transaction commits, so a reader that pages up to now and resumes with ?after= can miss it. {project, from, to} echo the query (null when absent), checks are the rows, and next_after is the id to pass as ?after= for the next page, null on the last. A row is {id, created_at, project, actor_kind, actor_id, outcome, reason, force, title, spec_sha256, parent, issue, candidates, refuse_score, nudge_score, build_commit}, with no spec: GET /api/v1/near-copy-checks/{id} reads one row with it. outcome is refused (the gate refused it and nothing was written; every 409 POSSIBLE_DUPLICATE has this row, written before the answer), forced (written past a refusal with force), nudged (written, its closest open issue named as a likely duplicate), passed (written with nothing named) or not_made (no check that could stop the create was made, and it went in unchecked); reason is bound, failed or unrecorded for not_made and null otherwise; force is whether the create asked for it; spec_sha256 is the sha256 of the spec as sent, on every row; issue is the key written, null for a refusal; candidates are the issues the gate read at or above nudge_score, at most 5, best first, each {key, title, score}; refuse_score and nudge_score are the build's bars and build_commit the commit it was built from, null for an unstamped build. A refusal is answered only once its row is known to be written: otherwise it refuses nothing, and the create goes in as not_made, reason unrecorded, writing its row in its own transaction. The row of every other create that went in is written after the commit, on a context of its own bounded to 1s, and tried once more in the background for up to 30s when a timeout or a lock stopped it, so one whose row still could not be written has none and is otherwise unchanged. */
+    /** @description List one project's near-copy gate answers, one row for each create the gate answered (an external create runs no gate and has none), recorded when the create was refused or once it was written: the rows of ?project= (required; 400 INVALID_PROJECT when it is not a key) within [from, to) (RFC3339, each optional; 400 INVALID_QUERY when from is not before to), oldest first, at most ?limit= (1 to 1000, default 1000), after the row whose id ?after= names (400 INVALID_QUERY when it is no row of the project). A window should end some time before now: a row written in its create's transaction holds that transaction's start as created_at and is seen only once the transaction commits, so a reader that pages up to now and resumes with ?after= can miss it. {project, from, to} echo the query (null when absent), checks are the rows, and next_after is the id to pass as ?after= for the next page, null on the last. A row is {id, created_at, project, actor_kind, actor_id, outcome, reason, force, title, spec_sha256, parent, issue, candidates, refuse_score, nudge_score, build_commit, read_ms, read_stage}, with no spec: GET /api/v1/near-copy-checks/{id} reads one row with it. outcome is refused (the gate refused it and nothing was written; every 409 POSSIBLE_DUPLICATE has this row, written before the answer), forced (written past a refusal with force), nudged (written, its closest open issue named as a likely duplicate), passed (written with nothing named) or not_made (no check that could stop the create was made, and it went in unchecked); reason is bound, failed or unrecorded for not_made and null otherwise; force is whether the create asked for it; spec_sha256 is the sha256 of the spec as sent, on every row; issue is the key written, null for a refusal; candidates are the issues the gate read at or above nudge_score, at most 5, best first, each {key, title, score}; refuse_score and nudge_score are the build's bars and build_commit the commit it was built from, null for an unstamped build; read_ms is how long the create waited on the gate's read, in milliseconds, its rollback included, and read_stage the step the read was in when it answered or ended (connect, terms, keys, or score, which every answered read ends in), both null on a row written before they were recorded. A refusal is answered only once its row is known to be written: otherwise it refuses nothing, and the create goes in as not_made, reason unrecorded, writing its row in its own transaction. The row of every other create that went in is written after the commit, on a context of its own bounded to 1s, and tried once more in the background for up to 30s when a timeout or a lock stopped it, so one whose row still could not be written has none and is otherwise unchanged. */
     get: operations["getApiV1NearCopyChecks"];
     put?: never;
     post?: never;
@@ -3020,7 +3037,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The "phrase", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. This route declares ?q=, ?project=, ?limit= and ?offset= alone, and GET /api/v1/search/results declares all nine: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= there, because a build released before those five answers this route 200 with the member dropped, which is unnarrowed rows under the filters a person chose, where it answers that path 404 no route. This route still reads all nine, so a page served by an earlier release that sends one of the five here is still answered narrowed. A q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY. */
+    /** @description Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). A comment's, a message's and an ask's hit carries author, the actor that wrote it. A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The "phrase", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. This route declares ?q=, ?project=, ?limit= and ?offset= alone, and GET /api/v1/search/results declares all nine: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= there, because a build released before those five answers this route 200 with the member dropped, which is unnarrowed rows under the filters a person chose, where it answers that path 404 no route. This route still reads all nine, so a page served by an earlier release that sends one of the five here is still answered narrowed. A q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY. */
     get: operations["getApiV1Search"];
     put?: never;
     post?: never;
@@ -3054,7 +3071,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The "phrase", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. This route declares all nine members and answers exactly what GET /api/v1/search answers, from the same handler: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= here, because a build released before those five answers this path 404 no route, where it answers GET /api/v1/search 200 with the member dropped, which is unnarrowed rows under the filters a person chose. GET /api/v1/search still reads all nine, so a page served by an earlier release that sends one of the five there is still answered narrowed. A q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY. */
+    /** @description Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). A comment's, a message's and an ask's hit carries author, the actor that wrote it. A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The "phrase", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. This route declares all nine members and answers exactly what GET /api/v1/search answers, from the same handler: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= here, because a build released before those five answers this path 404 no route, where it answers GET /api/v1/search 200 with the member dropped, which is unnarrowed rows under the filters a person chose. GET /api/v1/search still reads all nine, so a page served by an earlier release that sends one of the five there is still answered narrowed. A q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY. */
     get: operations["getApiV1SearchResults"];
     put?: never;
     post?: never;
@@ -3225,7 +3242,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, scopes} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the one project key that credential lets the caller write, null where it names none). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles. A write records its actor with proven: true only where this credential proved that actor, the person at a browser or the session above, and never for a session a request names under a credential that proves none. */
+    /** @description Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, scopes, cut, sign_in_required} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or, for a broker-issued token naming no person, the fleet its machine belongs to or the Kubernetes account an exchange entry lists, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the one project key that credential lets the caller write, null where it names none; cut is the past time a read-only credential reads at, an RFC 3339 time in UTC, null for a credential with no cut; sign_in_required is true where Dispatch refuses every write of the credential with 403 SIGN_IN_REQUIRED until a person signs in on its machine, which is a broker-issued token of a machine nobody has signed in on, and false for every other credential, an exchange entry's token naming its account and every read-only credential among them). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles; a read-only credential, which may call only the GET routes Dispatch classes as reads, is answered read after them. A read-only token that carries a cut is answered here, and refused 403 AS_OF_TOKEN_NOT_SERVED on every other read. A write records its actor with proven: true only where this credential proved that actor, the person at a browser or the session above, and never for a session a request names under a credential that proves none. */
     get: operations["getApiV1Whoami"];
     put?: never;
     post?: never;
@@ -3710,6 +3727,7 @@ export interface components {
       sha256?: string;
       size?: number;
       summary: null | string;
+      token?: string;
     };
     ArtifactWithTrees: {
       approval?: components["schemas"]["ArtifactApprovalWithTrees"];
@@ -4359,7 +4377,7 @@ export interface components {
     };
     CreateAgentTokenInput: {
       name: string;
-      scopes?: null | string[];
+      scopes?: null | ("person" | "approve" | "read")[];
     };
     CreateArtifactReviewInput: {
       reason?: null | string;
@@ -5506,10 +5524,12 @@ export interface components {
       artifacts: components["schemas"]["ArtifactWithTrees"][] | null;
       assignee: null | string;
       blocked_by: string[] | null;
+      blocks?: string[];
       children: components["schemas"]["IssueChild"][] | null;
       claim: components["schemas"]["IssueClaim"] | null;
       /** Format: date-time */
       closed_at: null | string;
+      comment_count?: number;
       components: components["schemas"]["IssueComponents"];
       /** Format: date-time */
       created_at: string;
@@ -6100,6 +6120,9 @@ export interface components {
       outcome: "refused" | "forced" | "nudged" | "passed" | "not_made";
       parent: null | string;
       project: string;
+      read_ms: null | number;
+      /** @enum {null|string} */
+      read_stage: "connect" | "terms" | "keys" | "score" | null;
       /** @enum {null|string} */
       reason: "bound" | "failed" | "unrecorded" | null;
       /** Format: double */
@@ -6178,6 +6201,17 @@ export interface components {
       artifact?: components["schemas"]["Artifact"];
       kind: string;
       to_id: string;
+    };
+    ParentStatusConflictBody: {
+      code: string;
+      error: string;
+      issues: components["schemas"]["ParentStatusConflictIssue"][] | null;
+    };
+    ParentStatusConflictIssue: {
+      key: string;
+      relation: string;
+      status: string;
+      title: string;
     };
     PassCounts: {
       graphql_points: number;
@@ -6758,6 +6792,7 @@ export interface components {
     SearchResult: {
       artifact?: components["schemas"]["SearchArtifactRef"];
       ask?: components["schemas"]["SearchAsk"];
+      author?: components["schemas"]["Actor"];
       block_id?: string;
       /** Format: date-time */
       deleted_at?: string;
@@ -6829,6 +6864,37 @@ export interface components {
     StateResponse: {
       /** @enum {string} */
       state: "denied" | "cancelled" | "revoked";
+    };
+    StatusChangeAnswer: {
+      changed: components["schemas"]["StatusChangeEntry"][] | null;
+      issue: components["schemas"]["Issue"];
+    };
+    StatusChangeConflict: {
+      changed: components["schemas"]["StatusChangeEntry"][] | null;
+      code: string;
+      error: string;
+      issues: components["schemas"]["ParentStatusConflictIssue"][] | null;
+    };
+    StatusChangeEntry: {
+      issue?: components["schemas"]["Issue"];
+      key: string;
+      parent: null | string;
+      previous_last_seq: number;
+      status: string;
+    };
+    StatusChangeInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      dry_run?: boolean;
+      expected_sequence?: null | number;
+      include_children?: boolean;
+      include_parent?: boolean;
+      status: string;
+      unlink_children?: boolean;
+    };
+    StatusChangeRefusal: {
+      changed: components["schemas"]["StatusChangeEntry"][] | null;
+      code: string;
+      error: string;
     };
     StepRatingInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -6980,6 +7046,8 @@ export interface components {
       fields?: components["schemas"]["ToolField"][];
       item?: components["schemas"]["ToolField"];
       kind: string;
+      max?: number;
+      min?: number;
       name?: string;
       nullable?: boolean;
       required?: boolean;
@@ -6990,7 +7058,7 @@ export interface components {
       examples: string[] | null;
     };
     UpdateAgentTokenScopesInput: {
-      scopes: null | string[];
+      scopes: null | ("person" | "approve")[];
     };
     UpdateDeliverySessionGroupInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -7065,8 +7133,10 @@ export interface components {
       sha256?: string;
       size?: number;
       summary: null | string;
+      token?: string;
     };
     WhoamiAgent: {
+      cut: null | string;
       /** @enum {string} */
       kind: "agent";
       owner: null | string;
@@ -7074,6 +7144,7 @@ export interface components {
       scopes: string[] | null;
       service: null | string;
       session: null | string;
+      sign_in_required: boolean;
     };
     WhoamiUser: {
       /** @enum {string} */
@@ -10585,7 +10656,8 @@ export interface operations {
         content: {
           "application/json":
             | components["schemas"]["IssueDuplicateError"]
-            | components["schemas"]["ErrorBody"];
+            | components["schemas"]["ErrorBody"]
+            | components["schemas"]["ParentStatusConflictBody"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -10703,7 +10775,8 @@ export interface operations {
         content: {
           "application/json":
             | components["schemas"]["ForeignChildOpenError"]
-            | components["schemas"]["ErrorBody"];
+            | components["schemas"]["ErrorBody"]
+            | components["schemas"]["ParentStatusConflictBody"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -11975,6 +12048,67 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["IssueRoleHolders"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1IssuesByKeyStatusChange: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["StatusChangeInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StatusChangeAnswer"];
+        };
+      };
+      /** @description Forbidden */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["StatusChangeRefusal"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["StatusChangeConflict"]
+            | components["schemas"]["ErrorBody"]
+            | components["schemas"]["StatusChangeRefusal"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -15739,6 +15873,8 @@ export type OpenAskItemOwner = components["schemas"]["OpenAskItemOwner"];
 export type OpenAskOwner = components["schemas"]["OpenAskOwner"];
 export type OpenAsksResponse = components["schemas"]["OpenAsksResponse"];
 export type OutgoingReference = components["schemas"]["OutgoingReference"];
+export type ParentStatusConflictBody = components["schemas"]["ParentStatusConflictBody"];
+export type ParentStatusConflictIssue = components["schemas"]["ParentStatusConflictIssue"];
 export type PassCounts = components["schemas"]["PassCounts"];
 export type PassCursor = components["schemas"]["PassCursor"];
 export type PassRecord = components["schemas"]["PassRecord"];
@@ -15819,6 +15955,11 @@ export type SessionAnswersResponse = components["schemas"]["SessionAnswersRespon
 export type SlowWriteInput = components["schemas"]["SlowWriteInput"];
 export type StandingReview = components["schemas"]["StandingReview"];
 export type StateResponse = components["schemas"]["StateResponse"];
+export type StatusChangeAnswer = components["schemas"]["StatusChangeAnswer"];
+export type StatusChangeConflict = components["schemas"]["StatusChangeConflict"];
+export type StatusChangeEntry = components["schemas"]["StatusChangeEntry"];
+export type StatusChangeInput = components["schemas"]["StatusChangeInput"];
+export type StatusChangeRefusal = components["schemas"]["StatusChangeRefusal"];
 export type StepRatingInput = components["schemas"]["StepRatingInput"];
 export type StepRecord = components["schemas"]["StepRecord"];
 export type StepRecordInput = components["schemas"]["StepRecordInput"];

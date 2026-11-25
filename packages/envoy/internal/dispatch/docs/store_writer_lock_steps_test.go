@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // storeStepWait bounds how long a run waits for the write under test to queue behind a hold, and
@@ -80,6 +81,7 @@ const storeStepWait = 30 * time.Second
 // backend a run waits on is read from the holder: the one backend queued behind it. Every run is
 // then held to leaving no node or tuple row with a negative cause (storetest.RequireNoMarkedCause).
 func TestEveryDocsStoreWriterTakesTheStoreLockOrder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newDocsWriterRig(t)
 	for _, writer := range []docsWriter{rig.tick(), rig.settledVersion(), rig.settledAsk(), rig.settledAskAndVersion(), rig.tickEvents()} {
@@ -1013,7 +1015,7 @@ func (r *docsWriterRig) beginHolder(t *testing.T, ctx context.Context) (pgx.Tx, 
 		released = true
 		_ = holder.Rollback(context.Background())
 	}
-	t.Cleanup(release)
+	testcleanup.Add(t, release)
 	return holder, release
 }
 

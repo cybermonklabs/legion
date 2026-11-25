@@ -18,7 +18,11 @@ import (
 // handed the copy. What A's return does with the frame is the row.
 
 // twoSessionStart is that start: the rig, the role message's event id, and B's stand-in once B has
-// received the copy.
+// received the copy and its consumer has acknowledged it. B answers the copy done, and the relay
+// acknowledges it only once that answer reaches it, so a take-back that ran before the ack would
+// find the copy unread and copy it to A again, a second delivery to A that R4 allows and that the
+// row's own count does not (seen once at a box load of about 1,000: "ses_cr14_a received ... 2
+// times, want 1").
 func twoSessionStart(t *testing.T, row string) (*crashRig, string, *sessionStandIn) {
 	t.Helper()
 	rig := newCrashRig(t)
@@ -28,7 +32,11 @@ func twoSessionStart(t *testing.T, row string) (*crashRig, string, *sessionStand
 	sent := rig.sendTo(a, role, 1, "for "+a+", which does not read it")
 	next := rig.relayed(b, answerDone)
 	rig.claim(rig.mux, b, role)
-	crashAwaitEvents(t, next, sent, nil, b+", handed the copy of what "+a+" did not read")
+	for _, frame := range crashAwaitEvents(t, next, sent, nil, b+", handed the copy of what "+a+" did not read") {
+		if frame.item.EventID == sent[0] {
+			awaitAcked(t, rig.consumers, b, frame.seq)
+		}
+	}
 	return rig, sent[0], next
 }
 

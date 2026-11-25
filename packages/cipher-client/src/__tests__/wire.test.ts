@@ -22,7 +22,13 @@ import { projectedToken } from "../projected-token";
 import type { SubjectToken, TokenSource } from "../source";
 import { type BrokerToken, BrokerTokenClient } from "../token-client";
 import { BrokerRefusedError } from "../token-errors";
-import { FORM_LAUNCHER_CREDENTIAL, FORM_LAUNCHER_CREDENTIAL_DECLINED, TOKEN_PATH } from "../wire";
+import {
+  FORM_AS_OF,
+  FORM_LAUNCHER_CREDENTIAL,
+  FORM_LAUNCHER_CREDENTIAL_DECLINED,
+  FORM_SCOPE,
+  TOKEN_PATH,
+} from "../wire";
 
 const makeDirectory = temporaryDirectories("broker-client");
 
@@ -352,10 +358,13 @@ test("the wire corpus holds this client", async () => {
         : { actor: await corpusSource(exchange.actor, broker.url) }),
       session: exchange.session,
       projects: exchange.projects,
-      // The entry's own form says whether this trade declines the launcher credential, so the
-      // one place the corpus states it is the form it asserts.
+      // The entry's own form says whether this trade declines the launcher credential, and the
+      // scope and the cut it asks for, so the one place the corpus states them is the form it
+      // asserts.
       launcherCredential:
         exchange.form[FORM_LAUNCHER_CREDENTIAL] !== FORM_LAUNCHER_CREDENTIAL_DECLINED,
+      scope: exchange.form[FORM_SCOPE],
+      asOf: exchange.form[FORM_AS_OF],
       sleep: (_ms: number, signal?: AbortSignal) => {
         caller.abort();
         const { promise, resolve } = Promise.withResolvers<void>();
