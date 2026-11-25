@@ -1,0 +1,16 @@
+kind: Added
+body: |-
+  Every Dispatch project has an owner (`projects.owner`, migration `20261116015736_project_access`),
+  a non-empty lowercase login. The migration gives each project its default assignee as owner where
+  that person has signed in, and its census refuses the deploy while a project's default assignee
+  has never signed in. A project inserted with no owner takes its default assignee, and a write that
+  would clear an owner is refused (`23514`). The boot gives every project still without an owner to
+  `DISPATCH_PROJECT_OWNER_FALLBACK`'s full member, recording each grant as a `project.access_changed`
+  event, or refuses to serve naming each such project; `envoy-dispatch project-owner <KEY> <email>`
+  gives a project to another full member, and writes nothing for its current owner. The access
+  model's tables (each project's visibility and access list, groups, member kinds, the projects each
+  session acted in or reached) and its package (`internal/dispatch/access`) land beside it; no route
+  or reader uses them yet, so every project stays public and every read answers as before.
+time: 2026-11-23T23:23:55Z
+custom:
+    Issue: project-owners
