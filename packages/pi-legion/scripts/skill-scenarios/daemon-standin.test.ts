@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { roleForPhase } from "@legion/contracts";
+import { daemonContract } from "@legion/contracts/daemon-contract";
 import {
   LegionErrorResponse,
   LegionGrantResponse,
@@ -30,6 +31,8 @@ const skipGo = skipWithout("go");
 
 const STANDIN = path.join(import.meta.dir, "daemon-standin.ts");
 const freshDir = temporaryDirectories("daemon-standin");
+/** The contract this checkout's plugin speaks, as the stand-in computes it without `--label`. */
+const OWN_CONTRACT = daemonContract(pkg, import.meta.dir);
 
 /** A Legion project token: lower-case letters and digits (`isLegionProjectToken`). */
 const PROJECT = "skillsstandin";
@@ -152,21 +155,40 @@ async function grant(standin: Standin, claim: LegionRegistration): Promise<strin
 }
 
 /** A label checkout with the parts the stand-in reads: its plugin's `package.json`, which states
- *  its contract, and a stub of the entry at the path the rig calls it by. The stub takes exactly
+ *  its contract as a number, or, given `released` and `entries`, states none and leaves it to the
+ *  checkout's frozen list and its count of entry fixtures (one file beside them is no entry); and a
+ *  stub of the entry at the path the rig calls it by. The stub takes exactly
  *  the entry's interface for `plan-check` (exit 2 for a usage error), keeps the request it was
  *  given as `request-seen.json` beside itself, then: with `planted-no-answer` beside it, prints
  *  its PASS line and exits 0 with no answer file; with `planted-answer.json`, answers that; and
  *  otherwise fails as a run whose test did not pass: lines on stderr, the last of them
  *  `planted-failure.txt`'s, and exit 1. */
-function plantLabel(dir: string, contract: number): { label: string; entryDir: string } {
+function plantLabel(
+  dir: string,
+  contract: number | { readonly released: readonly number[]; readonly entries: number }
+): { label: string; entryDir: string } {
   const label = path.join(dir, "label");
   const plugin = path.join(label, "packages", "pi-legion");
   const entryDir = path.join(plugin, "scripts", "skill-scenarios");
   mkdirSync(entryDir, { recursive: true });
-  writeFileSync(
-    path.join(plugin, "package.json"),
-    JSON.stringify({ name: "@sjawhar/pi-legion", legion: { daemonApiVersion: contract } })
-  );
+  if (typeof contract === "number") {
+    writeFileSync(
+      path.join(plugin, "package.json"),
+      JSON.stringify({ name: "@sjawhar/pi-legion", legion: { daemonApiVersion: contract } })
+    );
+  } else {
+    writeFileSync(path.join(plugin, "package.json"), JSON.stringify({ name: "@sjawhar/pi-legion" }));
+    const fixtures = path.join(label, "packages", "contracts", "fixtures", "daemon-api");
+    mkdirSync(path.join(fixtures, "contracts"), { recursive: true });
+    writeFileSync(
+      path.join(fixtures, "released-contracts.json"),
+      JSON.stringify(contract.released)
+    );
+    for (let entry = 0; entry < contract.entries; entry++) {
+      writeFileSync(path.join(fixtures, "contracts", `2026112500000${entry}_entry-${entry}.json`), "{}");
+    }
+    writeFileSync(path.join(fixtures, "contracts", "README.md"), "no entry\n");
+  }
   writeFileSync(
     path.join(entryDir, "label-texts.sh"),
     [
@@ -286,7 +308,7 @@ function plannedIssue(dir: string): string[] {
 // C2's, or that cuts a block's text by character where Dispatch's range counts bytes.
 test("register_plan reads the version from Dispatch and answers what the label's check answers", async () => {
   const dir = freshDir();
-  const { label, entryDir } = plantLabel(dir, pkg.legion.daemonApiVersion);
+  const { label, entryDir } = plantLabel(dir, OWN_CONTRACT);
   const marker = randomUUID();
   const planted = {
     status: 409,
@@ -385,7 +407,7 @@ test("register_plan reads the version from Dispatch and answers what the label's
 // no Dispatch to ask.
 test("register_plan answers 500 naming the entry's exit and its stderr's last line, and never 200 on its own", async () => {
   const dir = freshDir();
-  const { label, entryDir } = plantLabel(dir, pkg.legion.daemonApiVersion);
+  const { label, entryDir } = plantLabel(dir, OWN_CONTRACT);
   const lastLine = `no --- PASS line for TestRigPlanCheck ${randomUUID()}`;
   writeFileSync(path.join(entryDir, "planted-failure.txt"), `${lastLine}\n`);
   const artifactId = randomUUID();
@@ -466,7 +488,7 @@ async function withPlanCheck(
   }) => Promise<void>
 ): Promise<void> {
   const dir = freshDir();
-  const { label, entryDir } = plantLabel(dir, pkg.legion.daemonApiVersion);
+  const { label, entryDir } = plantLabel(dir, OWN_CONTRACT);
   const artifactId = randomUUID();
   const markdown = ":::plan_task{#a}\nThe task.\n:::\n";
   const dispatch = stubDispatch({
@@ -536,7 +558,7 @@ test("register_plan answers 502 when the run's Dispatch fails its read, and runs
 // planOwner and planAt): the agent would read a 200 where the daemon answers it a refusal.
 test("register_plan refuses another issue's document 404 ARTIFACT_NOT_ON_ISSUE, and an issue outside the claim's tree 403 ISSUE_OUTSIDE_TREE, and runs no entry for either", async () => {
   const dir = freshDir();
-  const { label, entryDir } = plantLabel(dir, pkg.legion.daemonApiVersion);
+  const { label, entryDir } = plantLabel(dir, OWN_CONTRACT);
   writeFileSync(path.join(entryDir, "planted-answer.json"), RAN_ANYWAY);
   const artifactId = randomUUID();
   const markdown = ":::plan_task{#a}\nThe task.\n:::\n";
@@ -785,7 +807,7 @@ test("an activity report is answered and logged with its backgroundWork", async 
 // checkout, which is the contract the label's plugin speaks and `read_build` reads.
 test("the health header states the label's contract, not the rig's", async () => {
   const dir = freshDir();
-  const contract = pkg.legion.daemonApiVersion + 7;
+  const contract = OWN_CONTRACT + 7;
   const { label } = plantLabel(dir, contract);
   await withStandin(
     dir,
@@ -794,10 +816,26 @@ test("the health header states the label's contract, not the rig's", async () =>
       const health = await fetch(`${standin.url}/healthz`);
       expect(health.status).toBe(200);
       expect(health.headers.get("Legion-Daemon-Contract")).toBe(String(contract));
-      expect(health.headers.get("Legion-Daemon-Contract")).not.toBe(
-        String(pkg.legion.daemonApiVersion)
-      );
+      expect(health.headers.get("Legion-Daemon-Contract")).not.toBe(String(OWN_CONTRACT));
       expect(await health.json()).toEqual({ status: "ok", project: PROJECT });
+    }
+  );
+});
+
+// Catches: a header that reads a label's contract from its manifest alone, which a checkout's
+// manifest leaves out from the daemon API contract cutover on, where the label's plugin speaks the
+// frozen list's greatest number plus its checkout's count of entry fixtures.
+test("the health header states the contract a label's checkout counts when its manifest states none", async () => {
+  const dir = freshDir();
+  const last = OWN_CONTRACT + 20;
+  const { label } = plantLabel(dir, { released: [last - 3, last], entries: 4 });
+  await withStandin(
+    dir,
+    [PROJECT, "LWEVAL-7", "architect", ...REPO, "admitted", "--label", label],
+    async (standin) => {
+      const health = await fetch(`${standin.url}/healthz`);
+      expect(health.status).toBe(200);
+      expect(health.headers.get("Legion-Daemon-Contract")).toBe(String(last + 4));
     }
   );
 });
@@ -1014,9 +1052,7 @@ test.skipIf(skipGo)(
         defaultBranch: DEFAULT_BRANCH,
       });
       const health = await fetch(`${standin.url}/healthz`);
-      expect(health.headers.get("Legion-Daemon-Contract")).toBe(
-        String(pkg.legion.daemonApiVersion)
-      );
+      expect(health.headers.get("Legion-Daemon-Contract")).toBe(String(OWN_CONTRACT));
       expect(existsSync(standin.log)).toBe(true);
     });
   },

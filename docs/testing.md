@@ -519,13 +519,15 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
   TMPDIR="$L" GOTMPDIR="$L" go test ./<package>/... -count=1
   ```
 
-## A test in `internal/dispatch/api` or `internal/dispatch/docs` runs beside the others
+## A test in `internal/dispatch/api`, `internal/dispatch/docs` or the daemon's `internal/intake` runs beside the others
 
-Every top-level test of `packages/envoy/internal/dispatch/api` and
-`packages/envoy/internal/dispatch/docs` calls `t.Parallel()` as its first statement, and each
-package's `TestMain` sets how many run at once: 8 in api, 6 in docs. Each test already has a
-database and a server or document service of its own (`storetest.Open`), so run alone it spends
-most of its time waiting on Postgres while the machine's other cores sit idle.
+Every top-level test of `packages/envoy/internal/dispatch/api`,
+`packages/envoy/internal/dispatch/docs` and `packages/daemon/internal/intake` calls `t.Parallel()`
+as its first statement, and each package's `TestMain` sets how many run at once: 8 in api, 6 in
+docs, 4 in intake. Each test already has a database and a server or document service of its own
+(`storetest.Open`; in intake `testpg.Clone` and a NATS server of `testnats`' pool, one per test that
+holds one), so run alone it spends most of its time waiting on Postgres while the machine's other
+cores sit idle.
 
 A test stays serial when it, or a helper it calls, changes or measures something the whole test
 process shares: the default logger (`logtest.SetDefault`, `slog.SetDefault`), the environment
@@ -691,9 +693,17 @@ to migrate the template its `Clone` copies, so a test binary of `internal/store`
 `internal/testpg` back, and the half of the fixture that needs no schema sits in `testdb`, which
 imports no package of the module except `internal/testwait`, which imports none, and so is open to
 every package of it.
+Each of those tests runs beside the others on databases and pools of its own, four at a time unless
+the command line names a `-parallel` (`storeTestParallelism`). A pool writes its refusals, and
+`Transact`'s lines about a commit over that `*Pool` itself, to its own log (`Pool.log`), so a test
+reads its own lines there (`captureLog`) and never swaps the default logger. `Transact`'s lines
+about a commit over any other `TxPool`, a test's wrapper of a `*Pool` included, go to the default
+logger.
 `internal/daemon`'s tests boot daemons, which migrate the database they are given: each test's
 daemons write in a clone of the package's template (`testDSN`), so a boot there finds the schema
-in place, and the tests run beside each other on databases of their own.
+in place, and the tests run beside each other on databases of their own. So do `internal/workflow`'s,
+each driving its engine over a clone of its own (`migratedPool`), four at a time unless the command
+line names a `-parallel` (`workflowTestParallelism`).
 
 Dispatch's store package cannot import `storetest`, which imports it, and its migration tests each
 need the schema as it stood at some earlier version. Its own tests take

@@ -11,6 +11,7 @@ import (
 // A claim's issue is read from the daemon's own claims, in the issue key's own case, which its
 // token lowercases; a token no claim holds is refused.
 func TestClaimIssueIsTheIssueTheClaimIsOn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := migratedStore(t)
 	if err := s.PutClaim(ctx, supervise.Claim{Token: "legion-legion-legion-209-implementer", Project: "legion", Tree: "LEGION-208", Issue: "LEGION-209",

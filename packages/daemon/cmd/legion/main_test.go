@@ -40,6 +40,16 @@ const testMainEnv = "LEGION_CMD_TEST_MAIN"
 // tests build links the same path (legionBuild).
 const testCurlEnv = "LEGION_CMD_TEST_CURL"
 
+// testJJWordBoundEnv names, to this package's test binary run as `legion` (TestMain), the bound
+// in bytes of the jj step's words of ids (jjWordBound), so that a test of `legion jj` in a process
+// of its own reaches that bound with a few commits.
+const testJJWordBoundEnv = "LEGION_TEST_JJ_WORD_BOUND"
+
+// testJJArgMaxEnv names, to this package's test binary run as `legion` (TestMain), the bound in
+// bytes that the jj step keeps the push's command and each of its metaedits under (jjArgMax), so
+// that a test of `legion jj` in a process of its own reaches that bound with a few commits.
+const testJJArgMaxEnv = "LEGION_TEST_JJ_ARG_MAX"
+
 func TestMain(m *testing.M) {
 	// An operator's NATS nkey seed, or either seed's _FILE pointer, reaches no test here and no
 	// run of this binary as `legion`: a test that means to hand one over sets it itself. They are
@@ -63,6 +73,20 @@ func TestMain(m *testing.M) {
 		// system's own curl.
 		if curl := os.Getenv(testCurlEnv); curl != "" {
 			leakguardCurl = curl
+		}
+		// A test's bounds of the jj step, of its words of ids and of the push's command, low
+		// enough that a push of a few commits reaches them. Only this test binary reads the
+		// variables; the legion binary has no such hook, and its bounds stay 100,000 and
+		// 2,097,152 bytes.
+		for name, bound := range map[string]*int{testJJWordBoundEnv: &jjWordBound, testJJArgMaxEnv: &jjArgMax} {
+			if value := os.Getenv(name); value != "" {
+				n, err := strconv.Atoi(value)
+				if err != nil || n <= 0 {
+					fmt.Fprintf(os.Stderr, "TestMain: %s is %q, which is no number of bytes\n", name, value)
+					os.Exit(2)
+				}
+				*bound = n
+			}
 		}
 		// The bounds legion sets on a program it starts, at what is left of the deadline of the
 		// test binary that started this run (boundByTheDeadline). Only this test binary reads the
@@ -604,6 +628,64 @@ func TestVersionNamesTheLinkedPluginsOnlyWhenBothAreLinked(t *testing.T) {
 				t.Fatalf("stdout = %q, want a plugins line: %t", out.String(), tc.wantPluginsLine)
 			}
 		})
+	}
+}
+
+// `legion version --contracts` prints this build's own contract, whether its entries are numbered
+// in the merge order a stamp gives or by id, and each entry's id, number and slug, in the build's
+// order. This test binary carries no stamp, so it prints `order id`. A build linked with the
+// stamp of its own entries, as the release and the worker image link theirs (`-ldflags "-X
+// github.com/sjawhar/legion/daemon/internal/api.contractOrder=v1:<ids>"`), prints `order stamped`
+// and the same lines — the stamp `v1:` of a build of no entries among them. A build linked with a
+// stamp that names an entry it does not register runs no command, `legion version` included: it
+// exits non-zero and names the id.
+func TestVersionContractsPrintsTheBuildsEntriesAndItsOrder(t *testing.T) {
+	entries := api.NumberedEntries()
+	ids := make([]string, 0, len(entries))
+	lines := []string{fmt.Sprintf("contract %d", api.DaemonAPIVersion()), ""}
+	for _, entry := range entries {
+		ids = append(ids, strconv.Itoa(entry.ID))
+		lines = append(lines, fmt.Sprintf("%d %d %s", entry.ID, entry.Number, entry.Slug))
+	}
+	want := func(order string) string {
+		lines[1] = "order " + order
+		return strings.Join(lines, "\n") + "\n"
+	}
+
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"legion", "version", "--contracts"}, &out, &errb); code != 0 {
+		t.Fatalf("legion version --contracts exited %d: %s", code, errb.String())
+	}
+	if got := out.String(); got != want("id") {
+		t.Errorf("legion version --contracts of a build with no stamp = %q, want %q", got, want("id"))
+	}
+
+	stamp := "v1:" + strings.Join(ids, ",")
+	const stray = "20990101000000"
+	strayStamp := "v1:" + strings.Join(append(slices.Clone(ids), stray), ",")
+	stamped, refused := filepath.Join(t.TempDir(), "legion"), filepath.Join(t.TempDir(), "legion")
+	for binary, linked := range map[string]string{stamped: stamp, refused: strayStamp} {
+		build := exec.Command("go", "build", "-ldflags", "-X github.com/sjawhar/legion/daemon/internal/api.contractOrder="+linked, "-o", binary, ".")
+		if built, err := build.CombinedOutput(); err != nil {
+			t.Fatalf("go build stamped %q: %v\n%s", linked, err, built)
+		}
+	}
+	printed, err := exec.Command(stamped, "version", "--contracts").Output()
+	if err != nil {
+		t.Fatalf("legion version --contracts of a build stamped %q: %v", stamp, err)
+	}
+	if got := string(printed); got != want("stamped") {
+		t.Errorf("legion version --contracts of a build stamped %q = %q, want %q", stamp, got, want("stamped"))
+	}
+
+	var refusal bytes.Buffer
+	version := exec.Command(refused, "version")
+	version.Stderr = &refusal
+	if err := version.Run(); err == nil {
+		t.Fatalf("legion version of a build stamped %q exited 0, want it refused before it runs", strayStamp)
+	}
+	if !strings.Contains(refusal.String(), stray) {
+		t.Errorf("the refusal of a build stamped %q = %q, want it to name %s", strayStamp, refusal.String(), stray)
 	}
 }
 
@@ -1434,6 +1516,57 @@ func TestConfigCheckReportsTheConfigurationsCapabilityGaps(t *testing.T) {
 
 			if want := demoCheckConfigOK + tc.want + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
 				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+			}
+		})
+	}
+}
+
+// `legion config check` (`legion start --check-config` before the CLI moved onto cobra, which this
+// test's name, cited by dispatch://INFRA-4425's check K1, keeps) takes dispatch_token_broker from
+// the file alone (dispatch://INFRA-4425 R1): with none of the identity variables the daemon's own
+// trade reads set (AGENT_SECRETS_URL, AGENT_SECRETS_MACHINE_IDENTITY,
+// AGENT_SECRETS_MACHINE_TOKEN_FILE), a file with the setting and no dispatch_token_file prints
+// Config OK and exits 0. The check reads a dispatch_token_transition_file as it reads
+// dispatch_token_file: one it can read passes, and one it cannot is refused naming the key. The
+// control is the same file with dispatch_token_file added, refused naming both keys.
+func TestStartCheckConfigTakesTheBrokerSettingWithNoIdentity(t *testing.T) {
+	legionState(t)
+	fixtureenv.Unset(t, "AGENT_SECRETS_URL", "AGENT_SECRETS_MACHINE_IDENTITY", "AGENT_SECRETS_MACHINE_TOKEN_FILE")
+	const exchange = "    agent_secrets: {url: https://secrets.internal.example, token_file: /var/run/legion/agent-secrets-token/token, exchange_audience: legion-broker-exchange}\n"
+	const pluginsGap = "plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
+	const broker = "dispatch_token_broker: true\n"
+	const transition = broker + "dispatch_token_transition_file: ./transition-token\n"
+	passes := func(string) (int, string, string) { return 0, demoCheckConfigOK + defaultCacheLine + pluginsGap, "" }
+	for _, tc := range []struct {
+		name, credential string
+		token            bool // whether ./transition-token exists
+		want             func(dir string) (code int, stdout, stderr string)
+	}{
+		{"the setting alone", broker, false, passes},
+		{"the setting with a transition file the check reads", transition, true, passes},
+		{"the setting with a transition file the check cannot read", transition, false, func(dir string) (int, string, string) {
+			return 1, "", "legion config check: dispatch_token_transition_file names " + filepath.Join(dir, "transition-token") + ", which could not be read: "
+		}},
+		{"the setting beside dispatch_token_file", "dispatch_token_file: ./dispatch-token\n" + broker, false, func(string) (int, string, string) {
+			return 1, "", "legion config check: dispatch_token_file and dispatch_token_broker are both set: the daemon's Dispatch credential is the bearer a file holds or its own pod identity traded at the secrets broker, never both\n"
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := kubernetesCheckConfig(t, exchange)
+			dir := filepath.Dir(config)
+			rewrite(t, config, "dispatch_token_file: ./dispatch-token\n", tc.credential)
+			if tc.token {
+				if err := os.WriteFile(filepath.Join(dir, "transition-token"), []byte("dispatch-shared\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+
+			wantCode, wantOut, wantErr := tc.want(dir)
+			if code != wantCode || out.String() != wantOut || !strings.HasPrefix(errb.String(), wantErr) || (wantErr == "") != (errb.Len() == 0) {
+				t.Fatalf("exit code = %d, stdout %q, stderr %q; want %d, stdout %q and stderr starting %q", code, out.String(), errb.String(), wantCode, wantOut, wantErr)
 			}
 		})
 	}

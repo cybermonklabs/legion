@@ -11,6 +11,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -38,56 +39,94 @@ const root = path.resolve(import.meta.dir, "../../../..");
 const fn = scriptFunctions(path.join(import.meta.dir, "rig.sh"));
 /**
  * The directory this file's work directory goes in: memoryRoot, so /dev/shm where the machine has
- * a tmpfs there, unless its real path holds a character other than letters, digits and `/._-`, and
- * then /tmp. A plain path, because the model route installers and judge-omp write the path of each
- * key command, and of the key file, into a profile as one plain `!command` word, and refuse any
- * other character in it (install-model-gateway.sh and install-key-file-model-route.sh at `--dest`,
- * rig.sh's judge_keys at the key file): under a TMPDIR with a space or a quote in its name, every
- * row that installs a route failed on that refusal. A tmpfs, because the file's afterAll removes
- * the whole directory under the file's 60 s: on the disk TMPDIR names, that removal of about 1,600
- * entries took 70 to 90 s at a five-minute load of about 2,200, and failed the file with "a
- * beforeEach/afterEach hook timed out" after every row had passed. `need` is about sixteen times
- * the 1.8 MiB a run held there at its largest (1,392 entries).
+ * a tmpfs there, unless its real path holds a character other than letters, digits and `/._-`, or
+ * is in the developer's home, and then /tmp. A plain path, because the model route installers and
+ * judge-omp write the path of each key command, and of the key file, into a profile as one plain
+ * `!command` word, and refuse any other character in it (install-model-gateway.sh and
+ * install-key-file-model-route.sh at `--dest`, rig.sh's judge_keys at the key file): under a
+ * TMPDIR with a space or a quote in its name, every row that installs a route failed on that
+ * refusal. Not in the developer's home, because childCwd is in this directory (memoryRoot gives
+ * TMPDIR where /dev/shm does not suit, and a TMPDIR can be in the home). A tmpfs, because the
+ * file's afterAll removes the whole directory under the file's 60 s: on the disk TMPDIR names,
+ * that removal of about 1,600 entries took 70 to 90 s at a five-minute load of about 2,200, and
+ * failed the file with "a beforeEach/afterEach hook timed out" after every row had passed. `need`
+ * is about sixteen times the 1.8 MiB a run held there at its largest (1,392 entries).
  */
 const memory = memoryRoot({ need: 32 * 1024 * 1024 });
-const workRoot = /^[A-Za-z0-9/._-]+$/.test(realpathSync(memory)) ? memory : "/tmp";
+const memoryPath = realpathSync(memory);
+// A HOME that does not exist holds no config, and realpathSync would throw on it.
+const developerHome = existsSync(homedir()) ? realpathSync(homedir()) : path.resolve(homedir());
+/** Whether DIR, a real path, is the developer's home or a directory in it. Every path is in a
+ * home of `/`. */
+function inDeveloperHome(dir: string): boolean {
+  const relative = path.relative(developerHome, dir);
+  return !(relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative));
+}
+const workRoot =
+  /^[A-Za-z0-9/._-]+$/.test(memoryPath) && !inDeveloperHome(memoryPath) ? memory : "/tmp";
 if (workRoot !== memory) {
   console.error(
-    `rig.test.ts: ${memory} holds a character a plain \`!command\` word cannot, so the work directory is under /tmp`
+    `rig.test.ts: ${memory} holds a character a plain \`!command\` word cannot, or is in ${developerHome}, so the work directory is under /tmp`
   );
 }
 const work = temporaryDirectory("skill-scenarios-rig", { root: workRoot });
 const operatorHome = path.join(work, "operator-home");
+/** The cwd of each child process that childSpawn starts. The test runner's own cwd is in the
+ * checkout, and every checkout on a devbox is in the developer's home. mise reads a config file
+ * in the cwd and in each directory above it. Under a HOME that is not the developer's, it reads
+ * the developer's ~/.config/mise/config.toml found there as the config of a project, not as its
+ * global config. That file holds [settings], [env] and [tool_alias], and mise loads each of them
+ * only from a trusted file. Under that HOME no record marks the file trusted, so every mise shim
+ * exits 1 there, python3 included ("Config files in /home/<user>/.config/mise/config.toml are not
+ * trusted", in services_up's row). The work directory is not in the developer's home (workRoot),
+ * so no directory above this one is. */
+const childCwd = path.join(work, "child-cwd");
 // The home the probes must not reach, with the one thing they look for in it: a judge that could
-// read it would list this directory. It is staged in a hook, below the one the reservation
-// registered: a run that selects no row of this file makes neither. Each level is made on its
-// own, never with `recursive`, so this hook makes nothing above the reserved root and a root the
-// fixture did not make is an error here rather than a directory nothing removes.
+// read it would list this directory. It and childCwd are staged in a hook, below the one the
+// reservation registered: a run that selects no row of this file makes none of them. Each level
+// is made on its own, never with `recursive`, so this hook makes nothing above the reserved root
+// and a root the fixture did not make is an error here rather than a directory nothing removes.
 beforeAll(() => {
   mkdirSync(operatorHome);
   mkdirSync(path.join(operatorHome, ".ssh"));
   writeFileSync(path.join(operatorHome, ".ssh", "id_ed25519"), "not a key\n", { mode: 0o600 });
+  mkdirSync(childCwd);
 });
-/** The variables every child process of this file gets: the caller's PATH, a HOME of the test's
- * own, and the caller's mise data and config directories when the caller names them. A tool on
- * PATH can be a mise shim (jq and jj are, on a devbox). Under a fresh HOME such a shim finds
- * neither its installs nor its global config, so it fails. make_omp_home keeps the operator's two
- * directories for the processes it starts for the same reason, and base_env passes MISE_DATA_DIR
- * to every agent. A caller that names neither variable gets neither: the developer's own home
- * decides nothing here. */
+/** The caller's PATH, which a row puts its stand-ins ahead of. */
+const callerPath = process.env.PATH ?? "";
 const miseData =
   process.env.MISE_DATA_DIR ??
   (process.env.XDG_DATA_HOME === undefined
     ? undefined
     : path.join(process.env.XDG_DATA_HOME, "mise"));
-const childEnv = {
-  PATH: process.env.PATH ?? "",
-  HOME: operatorHome,
-  ...(miseData === undefined ? {} : { MISE_DATA_DIR: miseData }),
-  ...(process.env.XDG_CONFIG_HOME === undefined
-    ? {}
-    : { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }),
-};
+/** Runs ARGV, in childCwd, with the test's child environment and ENV over it: the caller's PATH,
+ * a HOME of the test's own, and the caller's mise data and config directories when the caller
+ * names them. A tool on PATH can be a mise shim (jq and jj are, on a devbox). Under a fresh HOME
+ * such a shim finds neither its installs nor its global config, so it fails. make_omp_home keeps
+ * the operator's two directories for the processes it starts for the same reason, and base_env
+ * passes MISE_DATA_DIR to every agent. A caller that names neither variable gets neither: the
+ * developer's own home decides nothing here. It is the one place this file builds that
+ * environment, and its `cwd` is the only one in the file but the omp turn's below, so a child that
+ * gets the test's HOME gets childCwd with it. Every child of this file starts through it but five,
+ * and none of those gets the test's HOME: the key command, the libpq probe and the model stand-in
+ * pass no environment, so they run under the caller's own HOME, where mise reads the caller's
+ * config as its global config. runProcess's child gets PATH and SKILL_SCENARIO_RUN alone, and
+ * runs sleep, not a mise shim. The model stand-in row's omp turn gets its profile's HOME and the
+ * system's PATH alone, in a workspace under this file's work directory. */
+function childSpawn(argv: string[], env: Record<string, string> = {}) {
+  return Bun.spawnSync(argv, {
+    env: {
+      PATH: callerPath,
+      HOME: operatorHome,
+      ...(miseData === undefined ? {} : { MISE_DATA_DIR: miseData }),
+      ...(process.env.XDG_CONFIG_HOME === undefined
+        ? {}
+        : { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }),
+      ...env,
+    },
+    cwd: childCwd,
+  });
+}
 
 let profiles = 0;
 /** A label's profile directory with an empty Oh My Pi home, as make_omp_home leaves it. */
@@ -102,7 +141,7 @@ function keyFile(mode: number): string {
   return file;
 }
 function route(dir: string, env: Record<string, string>, model = "") {
-  const result = Bun.spawnSync(
+  const result = childSpawn(
     [
       "bash",
       "-c",
@@ -112,7 +151,7 @@ function route(dir: string, env: Record<string, string>, model = "") {
       dir,
       model,
     ],
-    { env: { ...childEnv, ...env } }
+    env
   );
   return { code: result.exitCode, stderr: result.stderr.toString() };
 }
@@ -430,7 +469,7 @@ describe("a setup that fails after install_model_route", () => {
     );
     const built = bash(`${fn("install_model_route")}\n${judgeProfiles}`, [co, work], {
       ...routeEnv(),
-      PATH: `${bin}:${childEnv.PATH}`,
+      PATH: `${bin}:${callerPath}`,
     });
     expect({ code: built.code, stderr: built.stderr }).toEqual({ code: 0, stderr: "" });
     expect(existsSync(calls)).toBe(false);
@@ -449,12 +488,10 @@ describe("a setup that fails after install_model_route", () => {
   });
 });
 
-/** Runs SCRIPT (rig.sh functions and a call of them) under bash with ARGS as $1..., in an
- * environment of PATH and the test's own HOME. */
+/** Runs SCRIPT (rig.sh functions and a call of them) under bash with ARGS as $1..., through
+ * childSpawn. */
 function bash(script: string, args: string[] = [], env: Record<string, string> = {}) {
-  const result = Bun.spawnSync(["bash", "-c", script, "-", ...args], {
-    env: { ...childEnv, ...env },
-  });
+  const result = childSpawn(["bash", "-c", script, "-", ...args], env);
   return {
     code: result.exitCode,
     stdout: result.stdout.toString(),
@@ -469,25 +506,34 @@ function freshDir(name: string): string {
   return dir;
 }
 
+// Catches: a child of this file that starts in the test runner's cwd, or a work directory in the
+// developer's home. Either way the developer's home is above the child's cwd, where a mise shim
+// run under the test's HOME exits 1 (childCwd). Every child that gets the test's HOME starts
+// through childSpawn, and bash() is one of them, so this row holds each one. CI's PATH holds no
+// mise shim, so services_up's row passes in CI either way. Without childCwd this row fails in CI
+// too, because a runner's checkout is in the runner's home.
+test("a child of this file starts in childCwd, outside the developer's home", () => {
+  const cwd = realpathSync(childCwd);
+  expect(bash("pwd -P")).toEqual({ code: 0, stdout: `${cwd}\n`, stderr: "" });
+  expect({ cwd, inDeveloperHome: inDeveloperHome(cwd) }).toEqual({ cwd, inDeveloperHome: false });
+});
+
 // cmd_profile records the label's commit in built-from with checkout_commit. A git worktree holds
 // no .jj, and jj alone printed an empty commit line for it.
 describe("checkout_commit", () => {
   const git = (dir: string, ...args: string[]) => {
-    const result = Bun.spawnSync(
-      [
-        "git",
-        "-C",
-        dir,
-        "-c",
-        "user.name=Rig Test",
-        "-c",
-        "user.email=rig@example.invalid",
-        "-c",
-        "commit.gpgsign=false",
-        ...args,
-      ],
-      { env: childEnv }
-    );
+    const result = childSpawn([
+      "git",
+      "-C",
+      dir,
+      "-c",
+      "user.name=Rig Test",
+      "-c",
+      "user.email=rig@example.invalid",
+      "-c",
+      "commit.gpgsign=false",
+      ...args,
+    ]);
     if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
     return result.stdout.toString().trim();
   };
@@ -605,8 +651,8 @@ describe("omp_ancestor", () => {
     const top = freshDir("omp-rig");
     mkdirSync(path.join(top, ".omp"));
     const work = path.join(top, "work");
-    const result = Bun.spawnSync(["bash", path.join(import.meta.dir, "rig.sh"), "score"], {
-      env: { ...childEnv, SKILL_SCENARIOS_WORK: work },
+    const result = childSpawn(["bash", path.join(import.meta.dir, "rig.sh"), "score"], {
+      SKILL_SCENARIOS_WORK: work,
     });
     expect(result.exitCode).toBe(1);
     expect(result.stderr.toString()).toContain(`${top}/.omp`);
@@ -725,7 +771,7 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
         `S=$3\nservices_env=$S/env\nservices_postgres=$S/postgres-url\nservices_up`,
       [pgUrl, loopbackDsn, services],
       {
-        PATH: `${bin}:${childEnv.PATH}`,
+        PATH: `${bin}:${callerPath}`,
         SKILL_SCENARIOS_POSTGRES_URL: url,
         SKILL_SCENARIOS_NATS_URL: "nats://127.0.0.1:4222",
       }
@@ -807,8 +853,8 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
       stderr: "ignore",
     });
   const groupBash = (script: string, args: string[], procRoot: string) => {
-    const result = Bun.spawnSync(ownGroup(["bash", "-c", script, "-", ...args]), {
-      env: { ...childEnv, proc_root: procRoot },
+    const result = childSpawn(ownGroup(["bash", "-c", script, "-", ...args]), {
+      proc_root: procRoot,
     });
     return {
       code: result.exitCode,
@@ -1095,7 +1141,7 @@ echo done
       bash(
         `${fn("fail")}\n${fn("pinned_omp")}\n${fn("rig_omp")}\n${fn("install_superpowers")}\nsuperpowers_skills=(writing-plans brainstorming)\ninstall_superpowers "$1" skills-s1 omp@pin`,
         [label],
-        { PATH: `${bin}:${childEnv.PATH}`, SKILL_SCENARIOS_SUPERPOWERS: src, USER: "rig" }
+        { PATH: `${bin}:${callerPath}`, SKILL_SCENARIOS_SUPERPOWERS: src, USER: "rig" }
       );
     return { bin, label, run };
   }
@@ -1225,17 +1271,14 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
     output = "answer.json",
     env: Record<string, string> = {}
   ) =>
-    Bun.spawnSync(["bash", path.join(import.meta.dir, "rig.sh"), "judge-omp", kind, dir, output], {
-      env: {
-        ...childEnv,
-        USER: "rig",
-        SKILL_SCENARIOS_WORK: work,
-        SKILL_SCENARIOS_JUDGE_OMP: omp,
-        SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${operatorHome} WORK=${work}`,
-        LEGION_E2E_MODEL_ROUTE: "key-file",
-        LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile(0o600),
-        ...env,
-      },
+    childSpawn(["bash", path.join(import.meta.dir, "rig.sh"), "judge-omp", kind, dir, output], {
+      USER: "rig",
+      SKILL_SCENARIOS_WORK: work,
+      SKILL_SCENARIOS_JUDGE_OMP: omp,
+      SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${operatorHome} WORK=${work}`,
+      LEGION_E2E_MODEL_ROUTE: "key-file",
+      LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile(0o600),
+      ...env,
     });
   let jobs = 0;
   function judgeDir(): string {
@@ -1423,7 +1466,7 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
     });
     const gatewayJudge = (kind: string, dir: string, env: Record<string, string> = {}) =>
       judge(kind, dir, "answer.json", {
-        PATH: `${fakeBin}:${childEnv.PATH}`,
+        PATH: `${fakeBin}:${callerPath}`,
         SKILL_SCENARIOS_WORK: gatewayWork,
         SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${operatorHome} WORK=${gatewayWork}`,
         LEGION_E2E_MODEL_ROUTE: "gateway",
@@ -1518,7 +1561,7 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
             recursive: true,
             force: true,
           });
-        const result = gatewayJudge("ste", refused, { PATH: `${broken}:${childEnv.PATH}` });
+        const result = gatewayJudge("ste", refused, { PATH: `${broken}:${callerPath}` });
         expect(result.exitCode).toBe(1);
         expect(result.stderr.toString()).toContain(
           "judge-omp: the gateway's key command gave no key"
@@ -1554,18 +1597,15 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
         recursive: true,
       });
       const rootWork = freshDir("judge-root-work");
-      const result = Bun.spawnSync(
+      const result = childSpawn(
         ["bash", path.join(scripts, "rig.sh"), "judge-omp", "ste", judgeDir(), "answer.json"],
         {
-          env: {
-            ...childEnv,
-            USER: "rig",
-            SKILL_SCENARIOS_WORK: rootWork,
-            SKILL_SCENARIOS_JUDGE_OMP: omp,
-            LEGION_E2E_MODEL_ROUTE: "key-file",
-            LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile(0o600),
-            GIT_CEILING_DIRECTORIES: path.dirname(top),
-          },
+          USER: "rig",
+          SKILL_SCENARIOS_WORK: rootWork,
+          SKILL_SCENARIOS_JUDGE_OMP: omp,
+          LEGION_E2E_MODEL_ROUTE: "key-file",
+          LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile(0o600),
+          GIT_CEILING_DIRECTORIES: path.dirname(top),
         }
       );
       expect(result.exitCode).toBe(1);
@@ -1621,7 +1661,7 @@ sleep() { command sleep 0.05; }`;
     const result = bash(
       `${fn("fail")}\n${fn("pinned_omp")}\n${fn("rig_omp")}\n${fn("launch")}\n${standIns}\nR=$1 tag=t pin=omp@pin\nlaunch spec-writing-s1-1 --continue\ncp "$R/out.txt" "$R/seen"`,
       [run],
-      { PATH: `${bin}:${childEnv.PATH}` }
+      { PATH: `${bin}:${callerPath}` }
     );
     expect(result.code).toBe(0);
     expect(readFileSync(path.join(run, "seen"), "utf8")).toBe(
@@ -1656,9 +1696,9 @@ describe("worker_routes", () => {
       ]);
       expect(routes).toEqual({ code: 0, stdout: "", stderr: "" });
     }
-    const result = Bun.spawnSync(
+    const result = childSpawn(
       [process.execPath, path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
-      { env: { ...childEnv, SKILL_SCENARIO_RUN: run } }
+      { SKILL_SCENARIO_RUN: run }
     );
     return {
       code: result.exitCode,
@@ -1737,16 +1777,13 @@ const sha256 = (file: string) => createHash("sha256").update(readFileSync(file))
 /** git in DIR, with no user or system configuration and no signing; its stdout, as it printed it.
  * A failure throws with git's stderr. */
 function git(dir: string, ...args: string[]): string {
-  const result = Bun.spawnSync(["git", "-C", dir, "-c", "commit.gpgsign=false", ...args], {
-    env: {
-      ...childEnv,
-      GIT_CONFIG_GLOBAL: "/dev/null",
-      GIT_CONFIG_NOSYSTEM: "1",
-      GIT_AUTHOR_NAME: "rig",
-      GIT_AUTHOR_EMAIL: "rig@example.invalid",
-      GIT_COMMITTER_NAME: "rig",
-      GIT_COMMITTER_EMAIL: "rig@example.invalid",
-    },
+  const result = childSpawn(["git", "-C", dir, "-c", "commit.gpgsign=false", ...args], {
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_AUTHOR_NAME: "rig",
+    GIT_AUTHOR_EMAIL: "rig@example.invalid",
+    GIT_COMMITTER_NAME: "rig",
+    GIT_COMMITTER_EMAIL: "rig@example.invalid",
   });
   if (result.exitCode !== 0)
     throw new Error(`git ${args.join(" ")} in ${dir}: ${result.stderr.toString()}`);
@@ -2102,15 +2139,9 @@ describe("a label older than its entry", () => {
       ["profile", "skills-old\n"],
     ] as const)
       writeFileSync(path.join(P, file), text);
-    const batch = Bun.spawnSync(
+    const batch = childSpawn(
       ["bash", path.join(scenarios, "rig.sh"), "batch-scored", "owner-walk", "1", "old"],
-      {
-        env: {
-          ...childEnv,
-          SKILL_SCENARIOS_WORK: work,
-          SKILL_SCENARIOS_OWNER_WALK_CASE: "root-B-claude",
-        },
-      }
+      { SKILL_SCENARIOS_WORK: work, SKILL_SCENARIOS_OWNER_WALK_CASE: "root-B-claude" }
     );
     expect({
       code: batch.exitCode,
@@ -2263,7 +2294,7 @@ describe.skipIf(withoutPython || withoutLibpq)("a batch given its Postgres and N
       "done",
     ].join("\n");
     const env = {
-      PATH: `${bin}:${childEnv.PATH}`,
+      PATH: `${bin}:${callerPath}`,
       SKILL_SCENARIOS_POSTGRES_URL: url,
       SKILL_SCENARIOS_NATS_URL: "nats://127.0.0.1:4999",
     };
@@ -2446,7 +2477,7 @@ echo "the pod's omp ran"
       { mode: 0o755 }
     );
     const env = {
-      PATH: `${tools}:${childEnv.PATH}`,
+      PATH: `${tools}:${callerPath}`,
       SKILL_SCENARIOS_OMP: omp,
     };
     const pin = "github:example/oh-my-pi@1.2.3-4";
@@ -2454,7 +2485,7 @@ echo "the pod's omp ran"
     const run = freshDir("omp-direct-run");
     for (const dir of ["cwd", "sessions"]) mkdirSync(path.join(run, dir));
     writeFileSync(path.join(run, "prompt.txt"), "Plan the issue.\n");
-    writeFileSync(path.join(run, "pane.env"), `PATH=${tools}:${childEnv.PATH}\n`);
+    writeFileSync(path.join(run, "pane.env"), `PATH=${tools}:${callerPath}\n`);
     const standIns = `
 tmux() { case $1 in new-session) (command sleep 0.3 && bash -c "\${@: -1}") & ;; esac; }
 sleep() { command sleep 0.05; }`;
@@ -2496,10 +2527,7 @@ describe("owner_walk_case", () => {
   // Catches: an owner-walk run with no case, or one owner-walk.ts does not know, which would run
   // a world no cell counts.
   test("SKILL_SCENARIOS_OWNER_WALK_CASE is refused when unset or unknown, naming its values", () => {
-    const listed = Bun.spawnSync(
-      [process.execPath, path.join(scenarios, "owner-walk.ts"), "cases"],
-      { env: childEnv }
-    );
+    const listed = childSpawn([process.execPath, path.join(scenarios, "owner-walk.ts"), "cases"]);
     const cases = listed.stdout
       .toString()
       .trim()
@@ -2629,9 +2657,9 @@ describe("rig.sh cell", () => {
   }
   /** `rig.sh cell owner-walk LABEL CASE COUNT`'s one line. */
   function line(work: string, label: string, kase: string, count: number): string {
-    const cell = Bun.spawnSync(
+    const cell = childSpawn(
       ["bash", path.join(scenarios, "rig.sh"), "cell", "owner-walk", label, kase, String(count)],
-      { env: { ...childEnv, SKILL_SCENARIOS_WORK: work } }
+      { SKILL_SCENARIOS_WORK: work }
     );
     expect({ code: cell.exitCode, stderr: cell.stderr.toString() }).toEqual({
       code: 0,
@@ -2681,15 +2709,9 @@ describe("rig.sh batch", () => {
   // batch-scored's owner-walk steps.
   test("rig.sh batch refuses owner-walk, naming batch-scored, before it starts anything", () => {
     const work = freshDir("batch-owner-walk");
-    const batch = Bun.spawnSync(
+    const batch = childSpawn(
       ["bash", path.join(scenarios, "rig.sh"), "batch", "owner-walk", "1", "head"],
-      {
-        env: {
-          ...childEnv,
-          SKILL_SCENARIOS_WORK: work,
-          SKILL_SCENARIOS_OWNER_WALK_CASE: "root-B-claude",
-        },
-      }
+      { SKILL_SCENARIOS_WORK: work, SKILL_SCENARIOS_OWNER_WALK_CASE: "root-B-claude" }
     );
     expect(batch.exitCode).toBe(1);
     expect(batch.stderr.toString()).toContain("rig.sh batch-scored owner-walk");
@@ -2855,7 +2877,7 @@ function rpcRun(
     path.join(R, "pane.env"),
     [
       `HOME=${R}`,
-      `PATH=${childEnv.PATH}`,
+      `PATH=${callerPath}`,
       `SKILL_SCENARIO_RUN=${R}`,
       `FAKE_OMP_PLAN=${path.join(R, "plan.json")}`,
       "",
@@ -3282,8 +3304,8 @@ describe("the reach lines", () => {
     ];
     const reachOf = (out: string) => out.split("\n").filter((line) => line.startsWith("reach "));
     // `rig.sh rows`, the command scored-job.sh runs.
-    const rows = Bun.spawnSync(["bash", path.join(scenarios, "rig.sh"), "rows", "owner-walk"], {
-      env: { ...childEnv, SKILL_SCENARIOS_WORK: work },
+    const rows = childSpawn(["bash", path.join(scenarios, "rig.sh"), "rows", "owner-walk"], {
+      SKILL_SCENARIOS_WORK: work,
     });
     expect(rows.exitCode).toBe(0);
     expect(reachOf(rows.stdout.toString())).toEqual(want);
@@ -3348,7 +3370,7 @@ esac
     );
     const work = freshDir("job-work");
     const run = (env: Record<string, string>) => {
-      const result = Bun.spawnSync(
+      const result = childSpawn(
         [
           "bash",
           path.join(here, "scored-job.sh"),
@@ -3359,9 +3381,7 @@ esac
           "--count",
           "1",
         ],
-        {
-          env: { ...childEnv, PATH: `${bin}:${childEnv.PATH}`, SKILL_SCENARIOS_WORK: work, ...env },
-        }
+        { PATH: `${bin}:${callerPath}`, SKILL_SCENARIOS_WORK: work, ...env }
       );
       const read = (file: string) =>
         existsSync(path.join(work, file)) ? readFileSync(path.join(work, file), "utf8") : "";

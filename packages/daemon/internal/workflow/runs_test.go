@@ -22,6 +22,7 @@ import (
 // prior run stays live, but a handoff it reports is fenced to that previous generation. Re-entry
 // queues no suspension: roles stay live while the child remains in the workflow.
 func TestAnInFlightChildSetBackToTodoKeepsThePreviousRunsWorkerLive(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		phase phase.Phase
@@ -79,6 +80,7 @@ func TestAnInFlightChildSetBackToTodoKeepsThePreviousRunsWorkerLive(t *testing.T
 // live. The claim token is stable across runs, so the daemon names the completion's run from the
 // task the worker took; a completion of a generation the issue has left changes nothing.
 func TestACompletionFromAnInterruptedRunIsRefused(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	approved := 1

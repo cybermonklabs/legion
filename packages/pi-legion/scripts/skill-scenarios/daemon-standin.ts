@@ -65,9 +65,9 @@
  *   state and the record route answer beside the claim's. An issue in no phase is one the daemon
  *   records nothing of, so neither names it. A file that gives the claim's issue another tree or
  *   phase than the command line does is refused.
- * - `--label` is the run's label checkout: the `Legion-Daemon-Contract` header states its plugin's
- *   `legion.daemonApiVersion`, the contract that label's plugin speaks, and `register_plan` runs its
- *   entry. Without it the header states this checkout's own.
+ * - `--label` is the run's label checkout: the `Legion-Daemon-Contract` header states the contract
+ *   that label's plugin speaks, and `register_plan` runs its entry. Without it the header states
+ *   this checkout's own.
  * - `--dispatch` is the run's Dispatch and the file of its bearer token, which `register_plan`
  *   reads the plan from.
  *
@@ -80,6 +80,7 @@ import { appendFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { isLegionRole, roleToken } from "@legion/contracts";
+import { daemonContract } from "@legion/contracts/daemon-contract";
 import {
   LEGION_PHASES,
   LegionActivityRequest,
@@ -179,22 +180,28 @@ const [PHASE = "", HANDOFF_WORD = ""] =
     ? runDaemonPane(DAEMON_MODULE, ["phase", role]).split("\n")
     : [phaseArg, ""];
 
-/** The label's plugin as far as the stand-in reads it: the contract it speaks. */
+/** The label's plugin as far as the stand-in reads it: the contract its manifest states, which a
+ *  manifest in a checkout leaves out from the daemon API contract cutover on. */
 const LabelPlugin = z.object({
-  legion: z.object({ daemonApiVersion: z.number().int().positive() }),
+  legion: z.object({ daemonApiVersion: z.number().int().positive().optional() }).optional(),
 });
 
 /** The contract the `Legion-Daemon-Contract` header states: the label's plugin's, or this
- * checkout's own without `--label`. */
-const DAEMON_CONTRACT =
-  options.label === undefined ? pkg.legion.daemonApiVersion : labelContract(options.label);
+ * checkout's own without `--label`. Each is `daemonContract` of that plugin's manifest from its
+ * own directory: the manifest's `legion.daemonApiVersion` where it states one, else the frozen
+ * list's greatest number plus the count of entry fixtures of the checkout that holds it. That is
+ * the number the label's install writes into the plugin it packs. */
+const DAEMON_CONTRACT = String(
+  options.label === undefined ? daemonContract(pkg, import.meta.dir) : labelContract(options.label)
+);
 
 function labelContract(checkout: string): number {
-  const file = path.join(checkout, "packages", "pi-legion", "package.json");
+  const plugin = path.join(checkout, "packages", "pi-legion");
+  const file = path.join(plugin, "package.json");
   try {
-    return LabelPlugin.parse(JSON.parse(readFileSync(file, "utf8"))).legion.daemonApiVersion;
+    return daemonContract(LabelPlugin.parse(JSON.parse(readFileSync(file, "utf8"))), plugin);
   } catch (error) {
-    refuse(`--label ${checkout}: ${file} states no contract (legion.daemonApiVersion): ${error}`);
+    refuse(`--label ${checkout}: its plugin states no contract (${file}): ${error}`);
   }
 }
 
@@ -315,8 +322,7 @@ const STATE = stateParse.data;
 const HEALTH = LegionHealthResponse.parse({ status: "ok", project });
 
 /** The response header the daemon states its own contract in
- * (`packages/daemon/internal/api/server.go`). The number is DAEMON_CONTRACT: the label's plugin's
- * `legion.daemonApiVersion`, which is the contract a daemon that label's plugin pairs with speaks. */
+ * (`packages/daemon/internal/api/server.go`). */
 const DAEMON_CONTRACT_HEADER = "Legion-Daemon-Contract";
 
 /** The entry of the label's own code, under the label's checkout (C2). */
@@ -720,7 +726,7 @@ async function answer(method: string, route: string, body: unknown): Promise<Ans
     if (route === "/healthz") {
       return {
         response: Response.json(HEALTH, {
-          headers: { [DAEMON_CONTRACT_HEADER]: String(DAEMON_CONTRACT) },
+          headers: { [DAEMON_CONTRACT_HEADER]: DAEMON_CONTRACT },
         }),
       };
     }
