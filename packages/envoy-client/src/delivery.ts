@@ -927,21 +927,140 @@ function dispatchCompact(
 }
 
 function dispatchPayload(event: DispatchEvent): unknown {
-  const schema = DISPATCH_PAYLOAD_SCHEMAS[event.type];
+  // `Object.hasOwn`: the map inherits `Object.prototype`, so a frame typed `constructor` or
+  // `toString` would read one of its functions as its schema.
+  const schema = Object.hasOwn(DISPATCH_PAYLOAD_SCHEMAS, event.type)
+    ? DISPATCH_PAYLOAD_SCHEMAS[event.type]
+    : undefined;
   if (schema === undefined) return event.payload;
   const parsed = schema.safeParse(event.payload);
   return parsed.success ? parsed.data : event.payload;
 }
 
-function hasTarget(value: unknown): value is { readonly target: unknown } {
-  return isObject(value) && "target" in value;
+/**
+ * The fields of a Dispatch payload that are Dispatch's own bookkeeping, which its outbox and its
+ * web clients read and an agent has no use for: the delivery attempts of a comment's mentions,
+ * the routes a comment's mentions took a copy from (`model.Comment`'s route suppression), the
+ * Inboxes a write moved (`thread_logins`), and the backlink counts it moved (`references_changed`
+ * and its truncation marks).
+ */
+const DISPATCH_BOOKKEEPING: ReadonlySet<string> = new Set([
+  "deliveries",
+  "mentions_decide_routes",
+  "suppress_route",
+  "suppressed_route",
+  "suppressed_route_session_id",
+  "suppressed_authors",
+  "thread_logins",
+  "references_changed",
+  "references_changed_truncated",
+  "references_changed_truncated_kinds",
+]);
+
+/**
+ * The payload a Dispatch card prints: the event's payload with no field that states nothing, none
+ * that repeats the card, and none of Dispatch's bookkeeping (`DISPATCH_BOOKKEEPING`). `issuedAt`
+ * is when Envoy issued the envelope, which the card's `at` gives to the second.
+ *
+ * A field states nothing when it is `null`, `""`, `false` or `[]`, or an object whose every field
+ * states nothing: Dispatch writes those for a field that is unset, and reads a boolean it does not
+ * find as `false`. The rule holds at every depth, for each field of an object; a list keeps each
+ * of its items, since an item's place in the list is part of what it says. A present suggestion
+ * and its `replace_with` stay: an empty replacement proposes deleting the quoted text.
+ *
+ * A field repeats the card when the card already says it: `issue_key` is the card's `owner`,
+ * `author` the card's `actor` when the two name the same actor, and `created_at` the card's `at`
+ * when it is less than a second from `issuedAt`: the two differ by milliseconds, often across a
+ * second's edge. On a comment, `thread_root_id` always names the comment `reply_to` names, and
+ * `answers` names it on a reply to a thread's root.
+ *
+ * A `target` that names this session reads `you (<target>)`.
+ */
+function dispatchPayloadForReader(
+  event: DispatchEvent,
+  sessionID: string,
+  issuedAt: number | undefined
+): unknown {
+  const payload = withoutEmptyFields(dispatchPayload(event));
+  if (!isObject(payload) || Array.isArray(payload)) return payload;
+  const { reply_to: replyTo } = payload;
+  const repeatsTheCard = (key: string, value: unknown): boolean => {
+    switch (key) {
+      case "issue_key":
+        return value === event.issue_key;
+      case "author":
+        return (
+          isObject(value) && value["kind"] === event.actor.kind && value["id"] === event.actor.id
+        );
+      case "created_at": {
+        if (typeof value !== "string") return false;
+        const timestamp = Date.parse(value);
+        return issuedAt !== undefined && Math.abs(timestamp - issuedAt) < 1_000;
+      }
+      case "thread_root_id":
+      case "answers":
+        return typeof replyTo === "string" && value === replyTo;
+      default:
+        return DISPATCH_BOOKKEEPING.has(key);
+    }
+  };
+  const shown: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (repeatsTheCard(key, value)) continue;
+    shown[key] = key === "target" && value === `session:${sessionID}` ? `you (${value})` : value;
+  }
+  return shown;
 }
 
-function dispatchPayloadForReader(event: DispatchEvent, sessionID: string): unknown {
-  const payload = dispatchPayload(event);
-  if (!hasTarget(payload)) return payload;
-  const target = payload.target;
-  return target === `session:${sessionID}` ? { ...payload, target: `you (${target})` } : payload;
+/**
+ * A copy of `value` with no field that states nothing (`dispatchPayloadForReader`), at any
+ * depth: an object left with no field after its own fields went states nothing too. Nothing of
+ * `value` is written to. The walk keeps the objects and lists still to copy on a stack of its own,
+ * so a payload too deep for the card's encoder fails in the encoder, where the card shows it as
+ * text (`payloadShownAsText`), and not here. `value` is `parseFrameJSON`'s, so no key of it is
+ * `__proto__` and each is set by assignment.
+ */
+function withoutEmptyFields(value: unknown): unknown {
+  if (!isObject(value)) return value;
+  // A list's indices are its keys, so one type holds each copy, list or object.
+  const root = (Array.isArray(value) ? [] : {}) as Record<string, unknown>;
+  const suggestion = value["suggestion"];
+  const pending: [from: Readonly<Record<string, unknown>>, to: Record<string, unknown>][] = [
+    [value, root],
+  ];
+  // Each object copied into an object's field, in the order the walk placed it: a field's object
+  // is placed after the object that holds it, so the list read from its end sees every object
+  // after the objects it holds.
+  const placed: [holder: Record<string, unknown>, key: string, held: Record<string, unknown>][] =
+    [];
+  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+    const [from, to] = next;
+    const inList = Array.isArray(from);
+    for (const [key, item] of Object.entries(from)) {
+      const statesNothing =
+        item === null ||
+        item === undefined ||
+        item === "" ||
+        item === false ||
+        (Array.isArray(item) && item.length === 0);
+      const preserveField =
+        (from === value && key === "suggestion" && item !== null && item !== undefined) ||
+        (from === suggestion && key === "replace_with");
+      if (!inList && !preserveField && statesNothing) continue;
+      if (!isObject(item)) {
+        to[key] = item;
+        continue;
+      }
+      const copy = (Array.isArray(item) ? [] : {}) as Record<string, unknown>;
+      pending.push([item, copy]);
+      if (!inList && !preserveField && !Array.isArray(item)) placed.push([to, key, copy]);
+      to[key] = copy;
+    }
+  }
+  for (const [holder, key, held] of placed.reverse()) {
+    if (Object.keys(held).length === 0) delete holder[key];
+  }
+  return root;
 }
 
 // A comment.created reply to an ask carries the question text (ask_question) alongside
@@ -1182,6 +1301,7 @@ export function renderInbound(
   let payloadSessions: readonly string[] = [];
   // Text that follows the card's TOON block: a person's edit's diff as a fenced `diff` block.
   let trailer = "";
+  const at = inboundTimestamp(envelope.issued_at);
   const dispatchRendered = envelope.source === "dispatch" && envelope.payload !== undefined;
   if (envelope.source === "dispatch") {
     const topic = subject ?? envelope.topic;
@@ -1339,12 +1459,30 @@ export function renderInbound(
                   ask: dispatchReplyRef(frame.event, topic, compact.askId, commentPayload),
                   ...compact.record,
                 };
+        const payload =
+          compactRecord === undefined
+            ? dispatchPayloadForReader(frame.event, sessionID, envelope.issued_at)
+            : undefined;
+        // A session's `origin` says where it runs (its host, machine, directory and tmux pane),
+        // which a person finding the session reads and an agent does not: the card keeps the
+        // session's title alone. `dispatchActor` keeps the actor whole for the host.
+        let actor: unknown = frame.event.actor;
+        if ("origin" in frame.event.actor) {
+          const { origin, ...rest } = frame.event.actor;
+          const title = isObject(origin) ? origin["session_title"] : undefined;
+          actor =
+            typeof title === "string" && title !== ""
+              ? { ...rest, origin: { session_title: title } }
+              : rest;
+        }
         dispatchEvent = {
           owner: dispatchOwner(frame.event, topic),
           type: frame.event.type,
-          actor: frame.event.actor,
+          actor,
           ...(relation === undefined ? {} : { relation }),
-          ...(compactRecord ?? { payload: dispatchPayloadForReader(frame.event, sessionID) }),
+          // A payload left with no field says nothing, so the card prints no `payload:` for it.
+          ...(compactRecord ??
+            (isObject(payload) && Object.keys(payload).length === 0 ? {} : { payload })),
         };
         dispatchActor = frame.event.actor;
         bodyNote = carriedBodyNote(frame.event);
@@ -1433,7 +1571,7 @@ export function renderInbound(
       ? { to: `you (${sessionID})` }
       : {}),
     from: senderLabel(envelope),
-    at: inboundTimestamp(envelope.issued_at),
+    at,
     id: envelope.event_id ?? "unknown",
     // The listener could not deliver this message when it was sent, so it kept it until this
     // session claimed the role. The time it was kept says how long it waited.

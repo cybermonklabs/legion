@@ -46,9 +46,17 @@ of it. A payload that is text already is never held to the bound; its frame boun
 Malformed input is safe: a non-JSON frame becomes a TOON block naming its topic and an
 `unrecognised` parse failure. The renderer never emits raw frame bytes. Dispatch envelopes
 (`source: "dispatch"`) render through the same TOON path as every other source, nesting the
-parsed event under `dispatch: { issue_key, type, actor, payload }` with `payload` typed per event
-type; a payload whose shape disagrees with its event type's schema is preserved as its raw parsed
-value under `dispatch`, never dropped or reduced to prose. A dispatch envelope with no payload at
+parsed event under `dispatch: { owner, type, actor, payload }` with `payload` typed per event
+type. The card's `payload` leaves out each field that states nothing (`null`, `""`, `false`,
+`[]`, or an object left empty; a list keeps every item, and a suggestion keeps its
+`replace_with`), each field that repeats the card (`issue_key`, an `author` that is the
+`actor`, a `created_at` less than a second from the card's time, a comment's `thread_root_id`
+and `answers` equal to its `reply_to`), and Dispatch's own outbox and client bookkeeping
+(`deliveries`, `thread_logins`, `references_changed*`, `mentions_decide_routes`, `suppress*`).
+A session actor's `origin` keeps only its `session_title`. A payload whose shape disagrees with
+its event type's schema keeps its raw parsed fields under the same rules, and a frame that is no
+Dispatch event is shown as its raw parsed value under `dispatch`; neither is dropped or reduced
+to prose. A dispatch envelope with no payload at
 all falls back to the same `summary` field every other source gets and marks `unrecognised:
 payload`. On a `notifications.dispatch.*` topic, which carries every event of its owner, the
 renderer skips the events Dispatch marks `quiet` — a delivery receipt, an anchor refresh,

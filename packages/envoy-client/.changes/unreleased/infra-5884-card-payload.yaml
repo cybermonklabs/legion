@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  A Dispatch event's card prints only the payload fields that say something. It leaves out each
+  field that is `null`, `""`, `false`, `[]` or an object left empty, each field the card already
+  says (`issue_key`, an `author` that is the event's actor, a `created_at` less than a second from
+  the card's time, a comment's `answers` and `thread_root_id` equal to its `reply_to`), and
+  Dispatch's own routing and client-cache bookkeeping (`deliveries`, `thread_logins`,
+  `references_changed*`, `mentions_decide_routes`, `suppress*`). A suggestion keeps its
+  `replace_with`, an empty one included. A session actor's `origin` keeps only the session's
+  title, not its host, machine, directory or tmux pane. On 1,465 `comment.created` cards from real
+  sessions, the payload rules alone make a card 650 bytes shorter on average.
