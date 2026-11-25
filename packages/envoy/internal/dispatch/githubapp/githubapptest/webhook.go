@@ -96,7 +96,10 @@ func NewWebhook(t testing.TB, publicKey *rsa.PublicKey, clientID string, redeliv
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /app/hook/deliveries", w.list)
 	mux.HandleFunc("POST /app/hook/deliveries/{id}/attempts", w.attempt)
-	w.server = httptest.NewServer(mux)
+	// The server starts only once w.server holds it: list reads w.server.URL for its Link header,
+	// and httptest.NewServer would serve before the assignment landed.
+	w.server = httptest.NewUnstartedServer(mux)
+	w.server.Start()
 	t.Cleanup(w.server.Close)
 	return w
 }

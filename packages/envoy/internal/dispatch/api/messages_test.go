@@ -1389,7 +1389,7 @@ func TestTargetedMessageAttemptIsPendingAcrossItsSend(t *testing.T) {
 	stateDuringSend := "not observed"
 	envelopeDuringSend := "not observed"
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
-	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	listener := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
 			writeSessionRecord(t, w, sessions, "s1")
@@ -1433,7 +1433,9 @@ func TestTargetedMessageAttemptIsPendingAcrossItsSend(t *testing.T) {
 	}))
 	defer listener.Close()
 	var handler http.Handler
-	handler, database = newTargetedMessageHandler(t, listener.URL)
+	// The listener serves only once handler and database hold what its handler reads.
+	handler, database = newTargetedMessageHandler(t, "http://"+listener.Listener.Addr().String())
+	listener.Start()
 	issue := createInteractionIssue(t, handler, "TEST", "Durable targeted attempt", "before")
 	message := createIssueMessage(t, handler, issue.Key, map[string]any{
 		"body": "This attempt must be durable before its send.", "target": "session:s1", "delivery": "steer",
@@ -2133,7 +2135,7 @@ func TestReplyDuringASendStillRecordsTheDeliveryReceipt(t *testing.T) {
 	var handler http.Handler
 	replied := 0
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
-	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	listener := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
 			writeSessionRecord(t, w, sessions, "s1")
@@ -2175,7 +2177,9 @@ func TestReplyDuringASendStillRecordsTheDeliveryReceipt(t *testing.T) {
 	}))
 	defer listener.Close()
 	var database *store.Store
-	handler, database = newTargetedMessageHandler(t, listener.URL)
+	// The listener serves only once handler and database hold what its handler reads.
+	handler, database = newTargetedMessageHandler(t, "http://"+listener.Listener.Addr().String())
+	listener.Start()
 	issue := createInteractionIssue(t, handler, "TEST", "Answered mid-send", "before")
 	message := createIssueMessage(t, handler, issue.Key, map[string]any{
 		"body": "Answer this while it is still in flight.", "target": "session:s1", "delivery": "steer",
@@ -2218,7 +2222,7 @@ func TestReplyDuringASendThatErrorsStillRecordsTheOwedReceiptAsSent(t *testing.T
 	var handler http.Handler
 	replied := 0
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
-	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	listener := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
 			writeSessionRecord(t, w, sessions, "s1")
@@ -2261,7 +2265,9 @@ func TestReplyDuringASendThatErrorsStillRecordsTheOwedReceiptAsSent(t *testing.T
 	}))
 	defer listener.Close()
 	var database *store.Store
-	handler, database = newTargetedMessageHandler(t, listener.URL)
+	// The listener serves only once handler and database hold what its handler reads.
+	handler, database = newTargetedMessageHandler(t, "http://"+listener.Listener.Addr().String())
+	listener.Start()
 	issue := createInteractionIssue(t, handler, "TEST", "Answered before an erroring send returns", "before")
 	message := createIssueMessage(t, handler, issue.Key, map[string]any{
 		"body": "Answer this before the send errors.", "target": "session:s1", "delivery": "steer",
@@ -2290,7 +2296,7 @@ func TestErrorReplyDuringASendLeavesOneReceiptAgreeingWithTheAttempt(t *testing.
 	var handler http.Handler
 	replied := 0
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
-	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	listener := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
 			writeSessionRecord(t, w, sessions, "s1")
@@ -2332,7 +2338,9 @@ func TestErrorReplyDuringASendLeavesOneReceiptAgreeingWithTheAttempt(t *testing.
 	}))
 	defer listener.Close()
 	var database *store.Store
-	handler, database = newTargetedMessageHandler(t, listener.URL)
+	// The listener serves only once handler and database hold what its handler reads.
+	handler, database = newTargetedMessageHandler(t, "http://"+listener.Listener.Addr().String())
+	listener.Start()
 	issue := createInteractionIssue(t, handler, "TEST", "Refused mid-send", "before")
 	message := createIssueMessage(t, handler, issue.Key, map[string]any{
 		"body": "Refuse this while it is still in flight.", "target": "session:s1", "delivery": "steer",
@@ -2376,7 +2384,7 @@ func TestAMessageSenderPastItsLeaseLeavesTheResumedAttemptsReceiptAlone(t *testi
 	var handler http.Handler
 	answerTheSend := false
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
-	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	listener := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
 			writeSessionRecord(t, w, sessions, "s1")
@@ -2417,7 +2425,9 @@ func TestAMessageSenderPastItsLeaseLeavesTheResumedAttemptsReceiptAlone(t *testi
 		}
 	}))
 	defer listener.Close()
-	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL})
+	// The listener serves only once handler holds what its handler reads.
+	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: "http://" + listener.Listener.Addr().String()})
+	listener.Start()
 	issue := createInteractionIssue(t, handler, "TEST", "Message answered under a resumed claim", "before")
 	message := createIssueMessage(t, handler, issue.Key, map[string]any{
 		"body": "Answer this while a lapsed sender is still out there.", "target": "session:s1", "delivery": "steer",

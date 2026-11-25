@@ -100,7 +100,10 @@ func newEnrolBroker(t *testing.T) *enrolBroker {
 		}
 		w.WriteHeader(204)
 	})
-	b.srv = httptest.NewServer(mux)
+	// The server starts only once b.srv holds it: both handlers read b.srv.URL, and
+	// httptest.NewServer would serve before the assignment landed.
+	b.srv = httptest.NewUnstartedServer(mux)
+	b.srv.Start()
 	t.Cleanup(b.srv.Close)
 	return b
 }
