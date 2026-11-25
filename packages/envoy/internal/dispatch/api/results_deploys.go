@@ -37,7 +37,15 @@ type deploysQuery struct {
 
 // deployWriterOf records the credential's resolved identity, without accepting a body-selected
 // writer or imposing a second caller list after the deployment-wide write scope.
-func deployWriterOf(actor model.Actor) model.Actor { return actor.Recorded() }
+func deployWriterOf(actor model.Actor) model.Actor {
+	if actor.Kind == "session" && actor.ID == "" && actor.Owner != nil && actor.Credential != nil {
+		credential := actor.Credential
+		actor.Kind, actor.ID, actor.Owner = "user", *actor.Owner, nil
+		actor.Proven = true
+		actor.Act = &model.ActorAct{TokenID: credential.TokenID, TokenName: credential.TokenName, Scopes: credential.Scopes}
+	}
+	return actor.Recorded()
+}
 
 func (s *server) deployRepository(value string) (string, error) {
 	owner, repo, err := refs.ParseGitHubRepo(value)

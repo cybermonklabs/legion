@@ -76,6 +76,20 @@ test("eventDescription labels an edited comment", () => {
   expect(eventDescription(commentEvent("comment.edited"))).toEqual(["Comment edited"]);
 });
 
+test("a recorded deploy names its program and build without claiming a check passed", () => {
+  const payload = {
+    repo: "acme/widgets", program: "worker", commit: "c".repeat(40),
+    deployed_at: "2026-10-25T00:00:00Z", source: "route" as const,
+  };
+  const recorded: DispatchEvent = { ...commentEvent("comment.edited"), type: "deploy.recorded", payload };
+  expect(eventDescription(recorded)).toEqual([
+    `Recorded a deploy of worker in acme/widgets at ${payload.commit}, deployed ${payload.deployed_at}.`,
+  ]);
+  expect(activityDescription(recorded)).toEqual([
+    `recorded a deploy of worker in acme/widgets at ${payload.commit}, deployed ${payload.deployed_at}.`,
+  ]);
+});
+
 test("eventDescription labels an edited ask with its new question", () => {
   expect(eventDescription(editedAskEvent())).toEqual(["Ask edited: Publish?"]);
 });
