@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -16,19 +19,22 @@ import (
 // the runs happened: by generation, then by start, a run whose start never arrived first, then by
 // id. The attempt is the place of a run among the issue's runs of the same task, step and kind in
 // that order, from 1, so the retro and the merge, both at step 0, each count from 1. An issue
-// Legion never ran answers none.
+// Legion never ran answers none, and so does an issue of a project who does not see: the
+// statement holds the issue to who itself (access.IssueProjectClause), whatever the caller read
+// of the issue before.
 //
 // It reads the `part_of` tuples into the issue through workflow_tuples_inbound, whose predicate
 // the literal to_kind implies, and joins each to its node row, so it costs the issue's own runs
 // and nothing else.
-func IssueSteps(ctx context.Context, q Queryer, issue string) ([]StepRead, error) {
+func IssueSteps(ctx context.Context, q Queryer, who model.Actor, issue string) ([]StepRead, error) {
 	rows, err := q.Query(ctx, `
 		select n.id, n.attributes
 		from workflow_tuples t
 		join workflow_nodes n on n.kind = t.from_kind and n.id = t.from_id
 		where t.to_kind = '`+KindIssue+`' and t.to_id = $1 and t.kind = '`+RelationPartOf+`'
 			and t.from_kind = '`+KindStep+`' and t.asserted
-	`, issue)
+			and `+access.IssueProjectClause("$1", "$2")+`
+	`, issue, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("read the steps of %s: %w", issue, err)
 	}
@@ -133,8 +139,9 @@ func IssueRunsRevision(ctx context.Context, q Queryer, issue string) (int64, err
 //
 // It is one statement for the whole project, whatever the number of issues: the project's
 // finished issues, each left-joined through the `part_of` tuples into it (workflow_tuples_inbound,
-// whose predicate the literal to_kind implies) to the node rows of its runs and plans.
-func ProjectPlans(ctx context.Context, q Queryer, project string, window Window) ([]IssuePlan, error) {
+// whose predicate the literal to_kind implies) to the node rows of its runs and plans. The issues
+// are read as who sees them (access.ProjectClause), so a project who does not see answers none.
+func ProjectPlans(ctx context.Context, q Queryer, who model.Actor, project string, window Window) ([]IssuePlan, error) {
 	rows, err := q.Query(ctx, `
 		select i.key, i.title, i.closed_at, n.kind, n.id, n.attributes, n.made_at
 		from issues i
@@ -144,8 +151,9 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, window Window)
 		where i.project_key = $1 and i.status = 'done' and i.closed_at is not null
 			and ($2::timestamptz is null or i.closed_at >= $2)
 			and ($3::timestamptz is null or i.closed_at < $3)
+			and `+access.ProjectClause("i.project_key", "$4")+`
 		order by i.closed_at desc, i.key
-	`, project, store.MicrosecondCeiling(window.Since), store.MicrosecondCeiling(window.Until))
+	`, project, store.MicrosecondCeiling(window.Since), store.MicrosecondCeiling(window.Until), refs.VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("read the plans of %s: %w", project, err)
 	}

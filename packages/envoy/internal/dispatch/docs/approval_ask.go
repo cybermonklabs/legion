@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // ApprovalDocumentsJSONPath is the artifact ids of every document an approval names, over the
@@ -129,8 +130,8 @@ func openApprovalAsk(ctx context.Context, tx pgx.Tx, artifactID string) (*model.
 // Commit. Where its writes are queued, the ledger records the request as moved
 // (recordPendingApproval), so the carry that follows in the same version write reads the request
 // as this move leaves it.
-func MoveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, version model.Version, markdown string, mover model.Actor, bySettlement bool, serverURL string) error {
-	return moveApprovalAsk(ctx, tx, broker, artifactID, version, markdown, mover, nil, bySettlement, serverURL)
+func MoveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, version model.Version, markdown string, mover model.Actor, bySettlement bool, origins text.Origins) error {
+	return moveApprovalAsk(ctx, tx, broker, artifactID, version, markdown, mover, nil, bySettlement, origins)
 }
 
 // moveApprovalAsk is MoveApprovalAsk with keptEditor, the editor a settlement on the document's
@@ -146,7 +147,7 @@ func MoveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, arti
 // The version the keep-turn rule reads is a stored one: the request names a version written
 // before this transaction, since the one transaction that moves a request with bySettlement set
 // writes at most one version of the document (a settlement's) or none (the reopen's follow).
-func moveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, version model.Version, markdown string, mover model.Actor, keptEditor *model.Actor, bySettlement bool, serverURL string) error {
+func moveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, version model.Version, markdown string, mover model.Actor, keptEditor *model.Actor, bySettlement bool, origins text.Origins) error {
 	ask, err := openApprovalAsk(ctx, tx, artifactID)
 	if err != nil {
 		return err
@@ -181,7 +182,7 @@ func moveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, arti
 		}
 	}
 	quiet := keepsTurn || ApprovalAwaitsHandBack(ask.Approval.Documents)
-	if err := rewriteApprovalAsk(ctx, tx, broker, ask, mover, documents, summary, serverURL, quiet); err != nil {
+	if err := rewriteApprovalAsk(ctx, tx, broker, ask, mover, documents, summary, origins, quiet); err != nil {
 		return err
 	}
 	recordPendingApproval(ctx, tx, artifactID, ask)
@@ -222,10 +223,11 @@ func RewriteApprovalAsk(
 	ask *model.Ask,
 	actor model.Actor,
 	documents []model.AskApprovalDocument,
-	summary, serverURL string,
+	summary string,
+	origins text.Origins,
 ) error {
 	quiet := approvalMoves(ask.Approval.Documents, documents) && ApprovalAwaitsHandBack(ask.Approval.Documents)
-	return rewriteApprovalAsk(ctx, tx, broker, ask, actor, documents, summary, serverURL, quiet)
+	return rewriteApprovalAsk(ctx, tx, broker, ask, actor, documents, summary, origins, quiet)
 }
 
 // rewriteApprovalAsk is the rewording RewriteApprovalAsk and MoveApprovalAsk share. Each caller
@@ -237,7 +239,8 @@ func rewriteApprovalAsk(
 	ask *model.Ask,
 	actor model.Actor,
 	documents []model.AskApprovalDocument,
-	summary, serverURL string,
+	summary string,
+	origins text.Origins,
 	quiet bool,
 ) error {
 	if ledgerFrom(ctx) == nil {
@@ -256,7 +259,7 @@ func rewriteApprovalAsk(
 	if err != nil {
 		return err
 	}
-	reader := refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, serverURL)
+	reader := refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, origins)
 	changes, index, err := planEditedAskReferences(ctx, tx, reader, ask.ID, previous.Question, ask.Question)
 	if err != nil {
 		return fmt.Errorf("index approval ask: %w", err)

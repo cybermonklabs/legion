@@ -1,9 +1,13 @@
 package api
 
-import "net/http"
+import (
+	"net/http"
 
-func (s *server) documentOwnerForHandler(w http.ResponseWriter, r *http.Request) (owner, bool) {
-	_, documentOwner, err := s.documentOwnerFromRequest(r.Context(), s.deps.Store.Pool, r)
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+)
+
+func (s *server) documentOwnerForHandler(w http.ResponseWriter, r *http.Request, who model.Actor) (owner, bool) {
+	_, documentOwner, err := s.documentOwnerFromRequest(r.Context(), s.deps.Store.Pool, who, r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return owner{}, false
@@ -12,11 +16,11 @@ func (s *server) documentOwnerForHandler(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *server) listArtifactAsks(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
-	owner, ok := s.documentOwnerForHandler(w, r)
+	owner, ok := s.documentOwnerForHandler(w, r, who)
 	if !ok {
 		return
 	}
@@ -37,24 +41,27 @@ func (s *server) listArtifactAsks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) createArtifactAsk(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
-		return
-	}
-	owner, ok := s.documentOwnerForHandler(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
-	s.createAskFor(w, r, owner)
+	owner, ok := s.documentOwnerForHandler(w, r, who)
+	if !ok {
+		return
+	}
+	// The ask's related-item check reads as this same reader (createAskFor's readerOf).
+	s.createAskFor(w, r.WithContext(withReader(r.Context(), who)), owner)
 }
 
 // listArtifactComments answers an unlinked document's comment list: the same list as an issue's,
 // under the same validator and keeping the same answer (answerCommentList), scoped to the one
 // document the route names rather than to an issue.
 func (s *server) listArtifactComments(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
-	owner, ok := s.documentOwnerForHandler(w, r)
+	owner, ok := s.documentOwnerForHandler(w, r, who)
 	if !ok {
 		return
 	}
@@ -62,10 +69,11 @@ func (s *server) listArtifactComments(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) createArtifactComment(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
-	owner, ok := s.documentOwnerForHandler(w, r)
+	owner, ok := s.documentOwnerForHandler(w, r, who)
 	if !ok {
 		return
 	}
@@ -73,11 +81,11 @@ func (s *server) createArtifactComment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) listArtifactEvents(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
-	owner, ok := s.documentOwnerForHandler(w, r)
+	owner, ok := s.documentOwnerForHandler(w, r, who)
 	if !ok {
 		return
 	}

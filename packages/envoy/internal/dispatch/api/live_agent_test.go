@@ -212,8 +212,10 @@ func TestAnAgentViewIsServedToThePersonScopeAndRefusedWithoutIt(t *testing.T) {
 		client := rig.dial(t, withBearer(token))
 		client.subscribeAgent(t, "agent", reviewerSessionID)
 		refusal := client.refusal(t, agentFeedWait, "agent", codeScopeRequired)
-		if !strings.Contains(refusal.Message, model.ScopePerson) {
-			t.Fatalf("%s was refused %q, which does not name the %s scope", name, refusal.Message, model.ScopePerson)
+		// The words the view has always refused it in (R9: a deployment with no private project
+		// answers as before).
+		if want := "this socket's credential does not hold the " + model.ScopePerson + " scope, which watching an agent's conversation requires"; refusal.Message != want {
+			t.Fatalf("%s was refused %q, want %q", name, refusal.Message, want)
 		}
 		client.quiet(t, 300*time.Millisecond, "after the agent view of "+name+" was refused")
 		if got := source.Watches(reviewerSessionID); got != 0 {

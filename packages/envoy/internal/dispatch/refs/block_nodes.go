@@ -59,10 +59,12 @@ func blockFits(refKey string, nodes []model.ArtifactBlock) ([]bool, int) {
 	return fits, past
 }
 
-// blockNode is one block's node as a version's index writes it: project-visible, in state, made
-// by the version's writer at its time, and with no cause yet - graphstore.Caused gives it the
-// version's event. A node already there keeps its made_at and made_by, so a block is made by
-// the version that first indexed it.
+// blockNode is one block's node as a version's index writes it: project-visible, in state, in the
+// project of the document that holds it, made by the version's writer at its time, and with no
+// cause yet - graphstore.Caused gives it the version's event. A node already there keeps its
+// made_at and made_by, so a block is made by the version that first indexed it, and a block an
+// earlier build indexed with no project takes its document's here (graphstore.Write fills a
+// project the row does not hold).
 //
 // The index owns a block's text and its place in its document, not its state or its visibility,
 // so every node it writes restates the block (graphstore.Node's Restates): state is live for a
@@ -71,11 +73,12 @@ func blockFits(refKey string, nodes []model.ArtifactBlock) ([]bool, int) {
 // marked it with - a requirement marked proposed whose words a version changes stays proposed -
 // while one stored gone, a block a version restores, comes back live. A block the version
 // dropped goes gone whatever it was.
-func blockNode(address string, writer model.Actor, at time.Time, state string) graphstore.Node {
+func blockNode(address string, record IndexedVersion, at time.Time, state string) graphstore.Node {
 	return graphstore.Node{
 		Kind: BlockNodeKind, ID: address, Supertag: BlockSupertag,
 		Visibility: graphstore.VisibilityProject, State: state,
-		MadeAt: at, MadeBy: writer, SourceEvent: graphstore.NoEvent,
+		Project: record.Project, Parties: record.Parties,
+		MadeAt: at, MadeBy: record.Writer, SourceEvent: graphstore.NoEvent,
 		Restates: true,
 	}
 }
@@ -92,46 +95,56 @@ func membership(address, refKey string, joined time.Time, writer model.Actor) gr
 }
 
 // BlockInDocument is block blockID's node, live, and its in_document tuple, its membership of the
-// document refKey names, both as the index pass states them (blockNode, membership): made, dated
-// and stated by writer at at, and caused by event. fits is false, and the two are zero, for a
-// block whose address is past MaxBlockNodeBytes, which is no node of the store. It is the one
-// statement of a block's node and its membership for a writer that holds its cause already: the
-// backfill of the block rows written before the store (graphcensus), under the event that
-// recorded each row's version.
-func BlockInDocument(refKey, blockID string, writer model.Actor, at time.Time, event int64) (node graphstore.Node, member graphstore.Tuple, fits bool) {
-	if !blockIDFits(refKey, blockID) {
+// document record.RefKey names, both as the index pass states them (blockNode, membership): made,
+// dated and stated by record.Writer at at, in record's project or between its parties, and caused
+// by event. fits is false, and the two are zero, for a block whose address is past
+// MaxBlockNodeBytes, which is no node of the store. It is the one statement of a block's node and
+// its membership for a writer that holds its cause already: the backfill of the block rows
+// written before the store (graphcensus), under the event that recorded each row's version.
+func BlockInDocument(record IndexedVersion, blockID string, at time.Time, event int64) (node graphstore.Node, member graphstore.Tuple, fits bool) {
+	if !blockIDFits(record.RefKey, blockID) {
 		return graphstore.Node{}, graphstore.Tuple{}, false
 	}
-	address := blockNodeAddress(refKey, blockID)
-	node = blockNode(address, writer, at, graphstore.StateLive)
+	address := blockNodeAddress(record.RefKey, blockID)
+	node = blockNode(address, record, at, graphstore.StateLive)
 	node.SourceEvent = event
-	member = membership(address, refKey, at, writer).Tuple
+	member = membership(address, record.RefKey, at, record.Writer).Tuple
 	member.SourceEvent = event
 	return node, member, true
 }
 
-// ReadIndexedVersion is what the version's own row says of the pass (IndexedVersion), read
-// through q: the document's ref_key and the first actor that row records as the version's
-// writer.
+// ReadIndexedVersion is what the version's own row and its document's row say of the pass
+// (IndexedVersion), read through q: the document's ref_key, the first actor the version's row
+// records as its writer, and the project the document belongs to or the session whose
+// conversation holds it.
 func ReadIndexedVersion(ctx context.Context, q Queryer, artifactID string, version int) (IndexedVersion, error) {
-	var refKey string
+	var record IndexedVersion
+	var project, session *string
 	var authors []byte
 	if err := q.QueryRow(ctx, `
-		select a.ref_key, v.authors
+		select a.ref_key, a.project_key, a.session_id, v.authors
 		from artifacts a
 		left join artifact_versions v on v.artifact_id = a.id and v.number = $2
 		where a.id = $1::uuid
-	`, artifactID, version).Scan(&refKey, &authors); err != nil {
+	`, artifactID, version).Scan(&record.RefKey, &project, &session, &authors); err != nil {
 		return IndexedVersion{}, fmt.Errorf("read version %d of %s for its block index: %w", version, artifactID, err)
 	}
+	var projectKey, conversation string
+	if project != nil {
+		projectKey = *project
+	}
+	if session != nil {
+		conversation = *session
+	}
+	record.Project, record.Parties = graphstore.SessionScope(projectKey, conversation)
 	writers, err := storedActors(authors)
 	if err != nil {
 		return IndexedVersion{}, fmt.Errorf("decode the authors of version %d of %s: %w", version, artifactID, err)
 	}
-	if len(writers) == 0 {
-		return IndexedVersion{RefKey: refKey}, nil
+	if len(writers) > 0 {
+		record.Writer = writers[0]
 	}
-	return IndexedVersion{RefKey: refKey, Writer: writers[0]}, nil
+	return record, nil
 }
 
 // nodelessBlock is one block of the version whose document_blocks row names no node: its id,
@@ -150,18 +163,20 @@ type nodelessBlock struct {
 // for each block whose row the pass writes, each block the version deleted and each block whose
 // row names no node. Where the store's statement of the document is stale it reads that
 // statement (heldDocumentBlocks) and answers it, for the link step to compare the version's pairs
-// with (unheldLinks), and it answers nil elsewhere. now is the transaction's now(), the time a
-// row the pass inserts is dated by.
+// with (unheldLinks), and it answers nil elsewhere. record is what the version's own row says of
+// the pass (IndexedVersion): its writer, who states every node and tuple, and the document's
+// scope, which every block node carries. now is the transaction's now(), the time a row the pass
+// inserts is dated by.
 func (b *BlockIndexing) planBlockNodes(
 	ctx context.Context,
 	q Queryer,
 	stale bool,
 	nodes []model.ArtifactBlock,
 	texts blockTexts,
-	writer model.Actor,
+	record IndexedVersion,
 	now time.Time,
 ) (map[string][]heldLink, error) {
-	refKey, versionAt := b.refKey, b.versionAt
+	refKey, versionAt, writer := b.refKey, b.versionAt, record.Writer
 	// The nodes this pass states are the blocks whose document_blocks row it writes - the new,
 	// the changed and the restored - the ids the version dropped, and the blocks whose row
 	// names no node, and no other. The first two are exactly the set R16's foreign key needs a
@@ -180,7 +195,7 @@ func (b *BlockIndexing) planBlockNodes(
 		if !texts.written[position].fits {
 			continue
 		}
-		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), writer, versionAt, graphstore.StateLive))
+		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), record, versionAt, graphstore.StateLive))
 	}
 	// A block the version no longer holds has its node stated gone, whatever state it held: a
 	// restating write that says gone is written gone, and keeps only the visibility. The tuple
@@ -193,7 +208,7 @@ func (b *BlockIndexing) planBlockNodes(
 		if !blockIDFits(refKey, id) {
 			continue
 		}
-		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), writer, versionAt, graphstore.StateGone))
+		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), record, versionAt, graphstore.StateGone))
 	}
 	// Where the store's statement of the document is stale, a block another release's version
 	// dropped has no row left for deleted to name, and its node stands: the store's own
@@ -206,7 +221,7 @@ func (b *BlockIndexing) planBlockNodes(
 			return nil, err
 		}
 		for _, id := range goneSinceStated(statement, nodes, b.deleted) {
-			blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), writer, versionAt, graphstore.StateGone))
+			blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), record, versionAt, graphstore.StateGone))
 		}
 	}
 	// A row written before this release names no node: migration 20261109022248 added the
@@ -229,7 +244,7 @@ func (b *BlockIndexing) planBlockNodes(
 		}
 		address := blockNodeAddress(refKey, block.id)
 		if _, stated := texts.changed[block.id]; !stated {
-			blockNodes = append(blockNodes, blockNode(address, writer, versionAt, graphstore.StateLive))
+			blockNodes = append(blockNodes, blockNode(address, record, versionAt, graphstore.StateLive))
 		}
 		memberships = append(memberships, membership(address, refKey, block.joined, writer))
 	}

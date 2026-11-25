@@ -51,7 +51,7 @@ func edgeSummary(edge model.GraphEdge) string {
 
 func edgeSummaries(t *testing.T, tx pgx.Tx, query Query) []string {
 	t.Helper()
-	edges, err := Edges(context.Background(), tx, model.Actor{}, query)
+	edges, err := Edges(context.Background(), tx, serverReader, query)
 	if err != nil {
 		t.Fatalf("read %s edges of %s %s: %v", query.Direction, query.Kind, query.ID, err)
 	}
@@ -93,7 +93,7 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 	messageBlock := itemBlockNodeID(ItemMessage, message, "b2")
 	citer := insertIndexedItem(t, tx, ItemComment, "CORE-1", "See dispatch://CORE-1/comment/"+comment+"#b-b2.")
 	ask := insertAsk(t, tx, "CORE-1", "Ship dispatch://CORE-2 first?", model.AskOption{Label: "Yes"})
-	askMentions := NewReader(ctx, tx, ask.Author, "ask", ask.ID, itemBlockServer).Mentions(ask.Question)
+	askMentions := NewReader(ctx, tx, ask.Author, "ask", ask.ID, text.NewOrigins(itemBlockServer)).Mentions(ask.Question)
 	if _, err := replaceRefs(ctx, tx, "ask", ask.ID, text.Refs(askMentions), nil); err != nil {
 		t.Fatalf("index the ask's own references: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 	if got := edgeSummaries(t, tx, Query{Direction: "out", Kind: "ask", ID: ask.ID, Kinds: []string{"mentions"}}); !slices.Equal(got, []string{"out mentions issue:CORE-2@b1"}) {
 		t.Errorf("this build's ask links = %v; want the mention from its question part", got)
 	}
-	counts, err := BacklinkCounts(ctx, tx, model.Actor{}, "issue", []string{"CORE-2"}, nil)
+	counts, err := BacklinkCounts(ctx, tx, serverReader, "issue", []string{"CORE-2"}, nil)
 	if err != nil {
 		t.Fatalf("count CORE-2 backlinks: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 		slices.Sort(kinds)
 		return kinds
 	}
-	current, err := resolveNodes(ctx, tx, model.Actor{}, false, ends)
+	current, err := resolveNodes(ctx, tx, serverReader, false, ends)
 	if err != nil {
 		t.Fatalf("resolve the ends: %v", err)
 	}
@@ -177,17 +177,18 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 	}
 	registry := nodeRegistry
 	previous := maps.Clone(registry)
-	for kind := range previous {
+	for kind, entry := range previous {
 		if slices.Contains(previousReleaseNodeKinds, kind) {
 			continue
 		}
 		// That release resolves no node of the kind. Its key stays, and with it the predicate
 		// VisibleKind binds: the registry answered for every kind then as it does now, and only
 		// the loader is the newer build's.
-		previous[kind] = nil
+		entry.load = nil
+		previous[kind] = entry
 	}
 	nodeRegistry = previous
-	older, err := resolveNodes(ctx, tx, model.Actor{}, false, ends)
+	older, err := resolveNodes(ctx, tx, serverReader, false, ends)
 	nodeRegistry = registry
 	if err != nil {
 		t.Fatalf("resolve the ends as the previous release: %v", err)
@@ -297,14 +298,14 @@ func TestAnItemBlocksLinkReachesItsItem(t *testing.T) {
 	comment := insertIndexedItem(t, tx, ItemComment, "CORE-1", "Intro.\n\nSee dispatch://CORE/artifact/handbook-md.")
 	insertIndexedItem(t, tx, ItemComment, "CORE-1", "Cites dispatch://CORE-1/comment/"+comment+"#b-b2.")
 
-	references, err := Closure(ctx, tx, model.Actor{}, "CORE-1")
+	references, err := Closure(ctx, tx, serverReader, "CORE-1")
 	if err != nil {
 		t.Fatalf("read closure: %v", err)
 	}
 	if want := []Member{{RefKey: handbook, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: comment}}}; !reflect.DeepEqual(references.Members, want) {
 		t.Errorf("closure = %#v; want %#v", references.Members, want)
 	}
-	citers, err := ReferencedBy(ctx, tx, model.Actor{}, handbook)
+	citers, err := ReferencedBy(ctx, tx, serverReader, handbook)
 	if err != nil {
 		t.Fatalf("read referenced-by: %v", err)
 	}
@@ -340,7 +341,7 @@ func TestAnAskOptionsLinkJoinsItsIssuesClosure(t *testing.T) {
 		t.Fatalf("the ask holds %d refs rows of its own; the link is meant to be its option's alone", own)
 	}
 
-	references, err := Closure(ctx, tx, model.Actor{}, "CORE-1")
+	references, err := Closure(ctx, tx, serverReader, "CORE-1")
 	if err != nil {
 		t.Fatalf("read closure: %v", err)
 	}

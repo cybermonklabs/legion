@@ -178,12 +178,13 @@ func closureStatementRows(t *testing.T, database *store.Store, statement string,
 // Closure's members are main's rows of depth 1 over the same data, each at depth 1 with main's
 // via: a block its document still holds reaches that document, one no version holds reaches
 // nothing, and the documents of the chain past its first, which main's walk answered at depths
-// two to ten, are no member. It reads as somebody who proves no author, and no node of this data
-// is reserved for one, so the predicates it binds leave every member main answered.
+// two to ten, are no member. It reads as the server's own viewer, which proves no author, and no
+// node of this data is reserved for one, so the predicates it binds leave every row main's
+// statement answered at depth 1.
 func TestTheClosureAnswersWhatMainsStatementDid(t *testing.T) {
 	fixture := newClosureFixture(t)
 	wantMembers := mainsDepthOneMembers(t, fixture.database, "CORE-1")
-	references, err := Closure(context.Background(), fixture.database.Pool, model.Actor{}, "CORE-1")
+	references, err := Closure(context.Background(), fixture.database.Pool, serverReader, "CORE-1")
 	if err != nil {
 		t.Fatalf("read the closure: %v", err)
 	}
@@ -203,39 +204,43 @@ func TestTheClosureAnswersWhatMainsStatementDid(t *testing.T) {
 // on exactly the column it probes, and never reads that table whole. An `exists` probe written in
 // the predicate may be planned as a hashed subplan instead, which reads all of document_blocks to
 // build its hash and cannot use that index at all; the lateral join is what keeps the probe a
-// keyed one. Every read of refs is keyed too.
+// keyed one. Every read of refs is keyed too. The plan is read for each of planReaders: the
+// server's own viewer folds every project and party arm away, so a plan read for it alone never
+// shows a member's.
 func TestTheClosureProbesDocumentBlocksThroughItsNodeIndex(t *testing.T) {
 	fixture := newClosureFixture(t)
 	ctx := context.Background()
-	tx, err := fixture.database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the plan's transaction: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	// A fixture this small is read fastest whole, so sequential scans are off: what is left is
-	// the index each read is written for, and a read no index serves still shows as a scan
-	// carrying no index condition.
-	if _, err := tx.Exec(ctx, "set local enable_seqscan = off"); err != nil {
-		t.Fatalf("set local enable_seqscan = off: %v", err)
-	}
-	var raw []byte
-	if err := tx.QueryRow(ctx, "explain (format json) "+linksOutQuery(), "CORE-1", VisibilityArg(model.Actor{})).Scan(&raw); err != nil {
-		t.Fatalf("explain the out statement: %v", err)
-	}
-	plan := explaintest.OnePlan(t, raw)
-
-	if explaintest.SeqScansRelation(t, plan, "document_blocks") {
-		t.Errorf("the closure reads document_blocks whole:\n%s", plan)
-	}
-	explaintest.NewIndexKeys(fixture.database.Pool).RequireIndexKeyed(t, plan,
-		"document_blocks_node_id", "the closure", explaintest.CondRequired)
-	for _, scan := range explaintest.IndexScans(t, plan) {
-		if scan.Relation == "refs" && scan.Cond == "" {
-			t.Errorf("the closure reads %s with no index condition, so it reads every refs row:\n%s", scan, plan)
+	for _, reader := range planReaders("CORE") {
+		tx, err := fixture.database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin the plan's transaction: %v", err)
 		}
-	}
-	if explaintest.SeqScansRelation(t, plan, "refs") {
-		t.Errorf("the closure reads refs whole:\n%s", plan)
+		// A fixture this small is read fastest whole, so sequential scans are off: what is left is
+		// the index each read is written for, and a read no index serves still shows as a scan
+		// carrying no index condition.
+		if _, err := tx.Exec(ctx, "set local enable_seqscan = off"); err != nil {
+			t.Fatalf("set local enable_seqscan = off: %v", err)
+		}
+		var raw []byte
+		if err := tx.QueryRow(ctx, "explain (format json) "+linksOutQuery(), "CORE-1", VisibilityArg(reader.reader)).Scan(&raw); err != nil {
+			t.Fatalf("explain the out statement read by %s: %v", reader.name, err)
+		}
+		_ = tx.Rollback(ctx)
+		plan := explaintest.OnePlan(t, raw)
+
+		if explaintest.SeqScansRelation(t, plan, "document_blocks") {
+			t.Errorf("the closure read by %s reads document_blocks whole:\n%s", reader.name, plan)
+		}
+		explaintest.NewIndexKeys(fixture.database.Pool).RequireIndexKeyed(t, plan,
+			"document_blocks_node_id", "the closure read by "+reader.name, explaintest.CondRequired)
+		for _, scan := range explaintest.IndexScans(t, plan) {
+			if scan.Relation == "refs" && scan.Cond == "" {
+				t.Errorf("the closure read by %s reads %s with no index condition, so it reads every refs row:\n%s", reader.name, scan, plan)
+			}
+		}
+		if explaintest.SeqScansRelation(t, plan, "refs") {
+			t.Errorf("the closure read by %s reads refs whole:\n%s", reader.name, plan)
+		}
 	}
 }
 
@@ -318,35 +323,6 @@ func membersDiff(members, want []Member, wantName string) (string, []Member) {
 	return strings.Join(problems, "; "), got
 }
 
-// writeOutsideStoreNodes writes n session nodes into graph_nodes, each live and visible to its
-// project, and one value of each into graph_tuples, none of which any read of these tests
-// reaches, and analyzes both tables. Every read of the graph binds the visibility registry's
-// predicates (visibility.go), each a probe of graph_nodes by its key, and graph_edges' own tuple
-// arm reads graph_tuples by its far end, so both are tables the statements read, and a test that
-// holds every table its statements read to a real size holds these two to one too. A value is no
-// relation, so no arm of graph_edges answers one.
-func writeOutsideStoreNodes(t *testing.T, pool *store.Pool, n int) {
-	t.Helper()
-	ctx := context.Background()
-	if _, err := pool.Exec(ctx, `
-		insert into graph_nodes (kind, id, supertag, visibility, state, made_at, made_by, source_event)
-		select 'session', 'outside-session-' || i, 'session', 'project', 'live', now(), '{"kind":"user","id":"alice"}', 0
-		from generate_series(1, $1::int) i
-	`, n); err != nil {
-		t.Fatalf("write %d outside nodes into graph_nodes: %v", n, err)
-	}
-	if _, err := pool.Exec(ctx, `
-		insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event)
-		select 'session', 'outside-session-' || i, 'name', 'value', 'Outside session ' || i, now(), '{"kind":"user","id":"alice"}', 0
-		from generate_series(1, $1::int) i
-	`, n); err != nil {
-		t.Fatalf("write a value of each of %d outside nodes into graph_tuples: %v", n, err)
-	}
-	if _, err := pool.Exec(ctx, "analyze graph_nodes, graph_tuples"); err != nil {
-		t.Fatalf("analyze graph_nodes and graph_tuples: %v", err)
-	}
-}
-
 // The references read reads one hop in each direction, keyed by the issue and its own content,
 // however large the graph beyond them. On a graph of the size and shape of INFRA-1098's closure
 // (newOneHopFixture), Closure answers under the route's 2 s bound: its links hold the 25
@@ -365,9 +341,7 @@ func writeOutsideStoreNodes(t *testing.T, pool *store.Pool, n int) {
 // are at most 20 times the issue's own content, its links out and in and the rows of both fields;
 // and every table is read through an index by its first key column, artifacts by ref_key, id or
 // the issue's key. Every table a statement reads holds oneHopMinimumRows or more, so the planner
-// plans the default settings on tables of a real size; graph_nodes, which each visibility
-// predicate of the statements probes by its key, is filled to that size with nodes no read of the
-// test reaches (writeOutsideStoreNodes).
+// plans the default settings on tables of a real size.
 //
 // The control runs main's statement on the same fixture under the same bound: it must end at the
 // bound (SQLSTATE 57014) or read ten times the rows of plan nodes the out statement reads, which
@@ -375,7 +349,6 @@ func writeOutsideStoreNodes(t *testing.T, pool *store.Pool, n int) {
 // is printed.
 func TestTheReferencesReadReadsOnlyTheIssuesOwnLinks(t *testing.T) {
 	fixture := newOneHopFixture(t, true)
-	writeOutsideStoreNodes(t, fixture.database.Pool, oneHopMinimumRows)
 	ctx := context.Background()
 	sizes := fixture.sizes(t)
 	bound := sizes.out + sizes.in + sizes.held
@@ -393,7 +366,7 @@ func TestTheReferencesReadReadsOnlyTheIssuesOwnLinks(t *testing.T) {
 	}
 	recorder := &statementRecorder{Queryer: tx}
 	read := time.Now()
-	references, err := Closure(ctx, recorder, model.Actor{}, fixture.issue)
+	references, err := Closure(ctx, recorder, serverReader, fixture.issue)
 	took := time.Since(read)
 	_ = tx.Rollback(ctx)
 	if err != nil {
@@ -551,7 +524,7 @@ func depthOneDiff(t *testing.T, database *store.Store, issueKey string, reached 
 			t.Fatalf("main's statement answers %s at no depth 1 for %s, so the fixture decides nothing; its rows of depth 1: %v", refKey, issueKey, want)
 		}
 	}
-	references, err := Closure(context.Background(), database.Pool, model.Actor{}, issueKey)
+	references, err := Closure(context.Background(), database.Pool, serverReader, issueKey)
 	if err != nil {
 		t.Fatalf("read %s's references: %v", issueKey, err)
 	}
@@ -721,7 +694,7 @@ func TestTheReferencesReadAnswersMainsDepthOneMembers(t *testing.T) {
 		insertReference(t, tx, "message", message, "artifact", reached["message"])
 		insertIndexedItem(t, tx, ItemMessage, "CORE-1", "Intro.\n\nSee dispatch://CORE/artifact/by-message-block-md.")
 		question := insertAsk(t, tx, "CORE-1", "Ship dispatch://CORE/artifact/by-question-md first?", model.AskOption{Label: "Yes"})
-		mentions := NewReader(ctx, tx, question.Author, "ask", question.ID, itemBlockServer).Mentions(question.Question)
+		mentions := NewReader(ctx, tx, question.Author, "ask", question.ID, text.NewOrigins(itemBlockServer)).Mentions(question.Question)
 		if _, err := replaceRefs(ctx, tx, "ask", question.ID, text.Refs(mentions), nil); err != nil {
 			t.Fatalf("index the ask's own references: %v", err)
 		}

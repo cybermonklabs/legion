@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -148,7 +147,7 @@ func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) 
 			"scopes is required: it is the whole set the token is to hold")
 		return
 	}
-	scopes, ok := tokenScopes(w, actor, input.Scopes)
+	reader, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -260,13 +259,13 @@ func (s *server) revokeAgentToken(w http.ResponseWriter, r *http.Request) {
 func (s *server) personalTokenActor(ctx context.Context, plaintext string) (model.Actor, error) {
 	hash := sha256.Sum256([]byte(plaintext))
 	var id, name, owner string
-	var scopes []string
+	var scopes, projects []string
 	var revokedAt *time.Time
 	err := s.deps.Store.Pool.QueryRow(ctx, `
-		select id::text, name, owner, scopes, revoked_at
+		select id::text, name, owner, scopes, projects, revoked_at
 		from agent_tokens
 		where token_hash = $1
-	`, hash[:]).Scan(&id, &name, &owner, &scopes, &revokedAt)
+	`, hash[:]).Scan(&id, &name, &owner, &scopes, &projects, &revokedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.Actor{}, nil
 	}
@@ -290,7 +289,7 @@ func (s *server) personalTokenActor(ctx context.Context, plaintext string) (mode
 	return model.Actor{
 		Kind:       "session",
 		Owner:      &owner,
-		Credential: &model.Credential{Scopes: scopes, TokenID: id, TokenName: name},
+		Credential: &model.Credential{Scopes: scopes, TokenID: id, TokenName: name, Projects: projects},
 	}, nil
 }
 

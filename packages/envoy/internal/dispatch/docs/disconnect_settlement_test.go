@@ -30,7 +30,7 @@ func TestLastPeerDisconnectSettlesDocumentBeforeEviction(t *testing.T) {
 		t.Fatalf("disconnect after edit: %v", err)
 	}
 	waitForDocumentVersion(t, service.store, artifactID, 2)
-	if got, err := service.Text(context.Background(), artifactID); err != nil || got != "after\n" {
+	if got, err := service.Text(context.Background(), serverReader, artifactID); err != nil || got != "after\n" {
 		t.Fatalf("reopened text = %q (%v), want settled edit", got, err)
 	}
 	var events int

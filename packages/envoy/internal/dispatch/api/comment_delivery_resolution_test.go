@@ -618,7 +618,7 @@ func TestDeliveryResolvesAnUnresponsiveHolderAndRefusesAGoneOne(t *testing.T) {
 	defer listener.Close()
 	served := &server{deps: Deps{Envoy: envoy.New(listener.URL)}, lifetime: context.Background()}
 
-	id, title, refusal := served.resolveDeliveryTarget(
+	id, title, refusal, _ := served.resolveDeliveryTarget(
 		context.Background(), model.Route{Kind: "role", ID: "reviewer"}, "steer",
 	)
 	if refusal != "" {
@@ -628,7 +628,7 @@ func TestDeliveryResolvesAnUnresponsiveHolderAndRefusesAGoneOne(t *testing.T) {
 		t.Fatalf("resolved %q (%q), want the unresponsive holder s1", id, title)
 	}
 
-	gone, _, refused := served.resolveDeliveryTarget(
+	gone, _, refused, _ := served.resolveDeliveryTarget(
 		context.Background(), model.Route{Kind: "session", ID: "s2"}, "steer",
 	)
 	if gone != "s2" || refused != "no live session s2" {

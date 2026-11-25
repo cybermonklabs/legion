@@ -133,18 +133,26 @@ const FIELD_DIFFERENCES = SPELLED_TWICE.map(({ name, declaredName, schema }) =>
   fieldDifferences(name, declaredName, schema)
 );
 
-/** The one pair whose two spellings do not agree, and whose differences the counted rules carry.
- *  A row cannot both assert that a pair agrees and excuse a difference it has, and a row that
- *  stepped aside whenever it found one would never red at all, so the pair is named here and
- *  every other pair keeps a row that reds under its own name. */
+/** The one pair whose two spellings do not agree about which fields may be absent, and whose
+ *  differences the counted rules carry. A row cannot both assert that a pair agrees and excuse a
+ *  difference it has, and a row that stepped aside whenever it found one would never red at all,
+ *  so the pair is named here and every other pair keeps a row that reds under its own name. */
 const COUNTED_PAIR = "Ask";
 
+/** The fields a schema keeps that the document no longer declares, by pair: `Actor.project`, kept
+ *  for events an older server stored (below). The pair's row compares every other field, so a
+ *  second field drifting on `Actor` still reds under its own name. */
+const SCHEMA_ONLY_FIELDS: Record<string, readonly string[]> = { Actor: ["project"] };
+
 /**
- * How many fields of a paired shape one spelling knows and the other does not. All four are
- * `Ask`'s, and they are not drift: `AskSchema` is the reading of several ask answers at once, so
- * it declares `issue`, `document` and `last_reply`, which the document carries on the inbox and
+ * How many fields of a paired shape one spelling knows and the other does not. Four are `Ask`'s,
+ * and they are not drift: `AskSchema` is the reading of several ask answers at once, so it
+ * declares `issue`, `document` and `last_reply`, which the document carries on the inbox and
  * open-ask rows rather than on the ask row, and it leaves out `waiting_on_person`, which the
- * server resolves at read time and writes on no payload.
+ * server resolves at read time and writes on no payload. The fifth is `Actor.project`: servers
+ * before private projects wrote it on a named broker token's writes, the server's Actor no longer
+ * has it, and `ActorSchema` keeps it optional so a reader takes an event such a server stored
+ * while the two versions run side by side.
  *
  * It is a count rather than a list for the reason the counts below are, and it carries the same
  * edge: a number is blind to a swap, so one field excused here and another drifting in passes it,
@@ -152,7 +160,7 @@ const COUNTED_PAIR = "Ask";
  * count prints the set it measured, each name with the side that knows it, so the red names the
  * shapes, the fields and the direction even though what it asserts is a number.
  */
-const ONE_SIDED_FIELDS = 4;
+const ONE_SIDED_FIELDS = 5;
 
 describe("a shape spelled twice knows the same fields in both spellings", () => {
   test(`${SPELLED_TWICE_COUNT} shapes carry both a schema here and a shape the document declares`, () => {
@@ -169,7 +177,7 @@ describe("a shape spelled twice knows the same fields in both spellings", () => 
       const written = fieldsOf(schema);
       expect(written, `${name}Schema's fields are readable`).toBeDefined();
       expect(
-        comparedFields(written ?? []),
+        comparedFields(written ?? []).filter((field) => !SCHEMA_ONLY_FIELDS[name]?.includes(field)),
         `${name}Schema and the contract's ${declaredName} declare the same fields: a field on ` +
           "one side alone is either dropped by the bus or read from something the server never sends"
       ).toEqual(comparedFields(declaredFields(declaredName) ?? []));

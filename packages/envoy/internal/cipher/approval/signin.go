@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -89,17 +90,25 @@ func readPending(r *http.Request) (pendingSignIn, bool) {
 // one the sign-in sent (compared in constant time), a sign-in returning anywhere but a record's
 // page, a code longer than oidc.MaxCallbackCode, which it sends the provider no request for, a
 // code the provider will not exchange with the sign-in's PKCE verifier, an ID token that does not
-// verify (issuer, audience, signature, expiry, nonce), and a person outside the Workspace domain or
-// with an unverified email (oidc.WorkspaceLogin). Otherwise it mints a fresh random session secret
-// into the session cookie, stores only its SHA-256 with the session's expiry, ends the session the
-// browser held before (no fixation, no lingering session), and answers 303 to the sign-in's page.
+// verify (issuer, audience, signature, expiry, nonce), a person outside the Workspace domain or
+// with an unverified email (oidc.WorkspaceLogin), and a Google account that no longer holds the
+// person's address, which Dispatch named replaced when another account took it
+// (store.ErrBrowserSessionSubjectReplaced). Otherwise it mints a fresh random session secret into
+// the session cookie, stores only its SHA-256 with the session's expiry and the account that
+// signed in (the ID token's issuer, as oidc.CanonicalIssuer spells it, and its `sub`), ends the
+// session the browser held before (no fixation, no lingering session), and answers 303 to the
+// sign-in's page. The account is what a revoke of a replaced account ends the session by, and the
+// replaced account's refusal is read under the person's lock in the transaction that writes the
+// session, so a sign-in racing that revoke either is refused or writes a session the revoke
+// deletes (store.Store.CreateBrowserSession).
 //
 // From the exchange onward it also writes the sign-in's outcome into the broker's sign-in
 // status, which GET /signin/status answers: the time of a sign-in that completed, or the time
 // and coded reason of one that failed (status.go). The refusals above it write nothing - a
 // browser with no sign-in in progress, a state that is not the sign-in's, a next outside the page
 // and a code longer than any the broker sends is a request that was never this broker's sign-in
-// to fail.
+// to fail - and neither does the refusal of a replaced account, which is the broker's own record
+// refusing a sign-in the provider completed, and none of the status's codes.
 func (p *Page) ServeCallback(w http.ResponseWriter, r *http.Request, _ Session) {
 	pending, ok := readPending(r)
 	clearCookie(w, signInCookie)
@@ -160,14 +169,23 @@ func (p *Page) ServeCallback(w http.ResponseWriter, r *http.Request, _ Session) 
 		return
 	}
 	secret := randomBytes()
-	if old, ok := sessionSecret(r); ok {
-		if err := p.cfg.Store.DeleteBrowserSession(r.Context(), sha256.Sum256(old)); err != nil {
-			writeUnavailable(w, "end the previous sign-in", err)
-			return
-		}
-	}
 	lifetime := p.cfg.SignIn.SessionLifetime
-	if err := p.cfg.Store.CreateBrowserSession(r.Context(), sha256.Sum256(secret), login, time.Now().Add(lifetime)); err != nil {
+	in := store.BrowserSignIn{
+		Hash: sha256.Sum256(secret), Login: login,
+		Account: store.IssuerSubject{Issuer: oidc.CanonicalIssuer(claims.Issuer), Subject: claims.Subject},
+		Expires: time.Now().Add(lifetime),
+	}
+	if old, ok := sessionSecret(r); ok {
+		previous := sha256.Sum256(old)
+		in.Previous = &previous
+	}
+	switch err := p.cfg.Store.CreateBrowserSession(r.Context(), in); {
+	case errors.Is(err, store.ErrBrowserSessionSubjectReplaced):
+		slog.Warn("approval sign-in refused: another account holds the address now", "login", login)
+		writeMessage(w, http.StatusForbidden, codeSignInAccountReplaced, say("Sign-in refused",
+			"The Google account you signed in with no longer holds "+login+": another account holds that address now, and the secrets broker signs in no account it replaced."))
+		return
+	case err != nil:
 		writeUnavailable(w, "keep the sign-in", err)
 		return
 	}

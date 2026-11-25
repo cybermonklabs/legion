@@ -13,12 +13,11 @@ import (
 	tailscalesdk "github.com/pulumi/pulumi-tailscale/sdk/go/tailscale"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
-	"github.com/stretchr/testify/require"
-
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/gcp"
 	"github.com/sjawhar/envoy/infra/internal/pulumitest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -434,6 +433,9 @@ func TestDispatchResolverRefusesInvalidInputs(t *testing.T) {
 		{name: "an invalid allowed namespace", input: "allowedNamespaces", edit: func(a *gcp.DispatchArgs) { a.AllowedNamespaces = []string{"envoy", "Legion"} }, err: []string{"allowedNamespaces[1]", "DNS label"}},
 		{name: "a namespace longer than a DNS label", input: "namespace", edit: func(a *gcp.DispatchArgs) { a.Namespace = pulumi.StringRef(strings.Repeat("a", 64)) }, err: []string{"namespace", "DNS label"}},
 		{name: "an allowed namespace longer than a DNS label", input: "allowedNamespaces", edit: func(a *gcp.DispatchArgs) { a.AllowedNamespaces = []string{strings.Repeat("a", 64)} }, err: []string{"allowedNamespaces[0]", "DNS label"}},
+		{name: "an empty allowed app", input: "allowedApps", edit: func(a *gcp.DispatchArgs) { a.AllowedApps = []string{"envoy-broker", ""} }, err: []string{"allowedApps[1]", "label value"}},
+		{name: "an allowed app that is no label value", input: "allowedApps", edit: func(a *gcp.DispatchArgs) { a.AllowedApps = []string{"envoy broker"} }, err: []string{"allowedApps[0]", "label value"}},
+		{name: "an allowed app longer than a label value", input: "allowedApps", edit: func(a *gcp.DispatchArgs) { a.AllowedApps = []string{strings.Repeat("a", 64)} }, err: []string{"allowedApps[0]", "label value"}},
 		{name: "no tailnet auth key", input: "tailnetAuthKey", edit: func(a *gcp.DispatchArgs) { a.TailnetAuthKey = nil }, err: []string{"tailnetAuthKey", "required"}},
 		{name: "no NATS URL", input: "natsUrl", edit: func(a *gcp.DispatchArgs) { a.NatsUrl = nil }, err: []string{"natsUrl", "required"}},
 		{name: "no NATS seed secret", input: "natsSeedSecret", edit: func(a *gcp.DispatchArgs) { a.NatsSeedSecret = nil }, err: []string{"natsSeedSecret", "required"}},
@@ -836,6 +838,8 @@ func TestDispatchRefusesAnNKeySeedInAPlainInput(t *testing.T) {
 		{"a seed inside the OIDC issuer", "oidcIssuer", func(a *gcp.DispatchArgs) {
 			a.OidcAudience, a.OidcIssuer = dispatchOidcAudience, "https://"+lower+".internal.example"
 		}},
+		{"a seed inside the project owner fallback", "projectOwnerFallback", func(a *gcp.DispatchArgs) { a.ProjectOwnerFallback = lower + "@example.com" }},
+		{"a seed as an allowed app", "allowedApps[1]", func(a *gcp.DispatchArgs) { a.AllowedApps = []string{"envoy-broker", lower} }},
 		{"a seed as the app client ID", "appClientId", func(a *gcp.DispatchArgs) { a.AppClientId = seed }},
 		{"a seed as the app ID", "appId", func(a *gcp.DispatchArgs) { a.AppId = seed }},
 		{"a seed as the app private key secret name", "appPrivateKeySecretName", func(a *gcp.DispatchArgs) { a.AppPrivateKeySecretName = lower }},
@@ -2098,6 +2102,47 @@ func TestDispatchNetworkPolicyAdmitsOnlyTheGivenNamespaces(t *testing.T) {
 	require.Equal(t, []string{"example-dispatch-tailnet"}, ingressPods(t, rules[1], 8766))
 }
 
+// allowedApps admits, on 8766, the pods of the component's own namespace that wear app=<name>, one
+// rule per app: the secrets broker runs in Dispatch's own namespace, which an allowedNamespaces
+// entry would open to every pod. The apps' rules sit beside the allowedNamespaces rule, after it
+// and before the front door's, so in the shape the consuming stack passes, namespaces and apps
+// both named, the rules are the namespaces', each app's in the order given, then the front door's;
+// with no namespace named the apps' rules come first. Each app's peer is a pod selector alone, so
+// a pod of another namespace wearing the label is not admitted by it.
+func TestDispatchNetworkPolicyAdmitsEachAllowedApp(t *testing.T) {
+	for _, row := range []struct {
+		name       string
+		namespaces []string
+	}{
+		{name: "beside allowed namespaces", namespaces: []string{"envoy", "legion"}},
+		{name: "alone"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			args := dispatchArgs()
+			args.AllowedNamespaces = row.namespaces
+			args.AllowedApps = []string{"envoy-broker", "example-reader"}
+			m, err := runDispatch(t, args, true)
+			require.NoError(t, err)
+
+			first := 0
+			if len(row.namespaces) > 0 {
+				first = 1
+			}
+			rules := policyIngressRules(t, m, "example-dispatch", first+3)
+			if first == 1 {
+				from := rules[0].(map[string]any)["from"].([]any)
+				require.Len(t, from, len(row.namespaces))
+				for _, peer := range from {
+					require.Contains(t, peer, "namespaceSelector", "the first rule is still the namespaces'")
+				}
+			}
+			require.Equal(t, []string{"envoy-broker"}, ingressPods(t, rules[first], 8766))
+			require.Equal(t, []string{"example-reader"}, ingressPods(t, rules[first+1], 8766))
+			require.Equal(t, []string{"example-dispatch-tailnet"}, ingressPods(t, rules[first+2], 8766))
+		})
+	}
+}
+
 // Whatever reaches the proxy at 1055 gets tailnet egress as a front-door node, on every front-door
 // pod, so only the two workloads that dial the hub through it may; and only the app calls the
 // listener's API at 9020.
@@ -2732,6 +2777,32 @@ func TestDispatchRefusesAnOidcIssuerWithNoAudience(t *testing.T) {
 	require.ErrorContains(t, err, "envoy-infra:gcp:Dispatch example-dispatch: oidcAudience is required when oidcIssuer is set")
 	requireInputError(t, err, "oidcAudience")
 	require.ElementsMatch(t, []string{gcpProviderType, randomProviderType, tailscaleProviderType}, m.Types())
+}
+
+// requireOptionalEnv fails unless env carries name with want, or, with want "", carries no name at
+// all: an optional setting renders only when its input is set.
+func requireOptionalEnv(t *testing.T, env map[string]any, name, want string) {
+	t.Helper()
+	if want == "" {
+		require.NotContains(t, env, name)
+		return
+	}
+	require.Equal(t, want, env[name])
+}
+
+// projectOwnerFallback renders DISPATCH_PROJECT_OWNER_FALLBACK, the member Dispatch makes, at boot,
+// the owner of every project the migration left without one, and renders nothing when it is unset.
+func TestDispatchRendersTheProjectOwnerFallbackOnlyWhenSet(t *testing.T) {
+	for _, owner := range []string{"", "owner@example.com"} {
+		t.Run(fmt.Sprintf("%q", owner), func(t *testing.T) {
+			args := dispatchArgs()
+			args.ProjectOwnerFallback = owner
+			m, err := runDispatch(t, args, true)
+			require.NoError(t, err)
+			env := containerEnv(t, podContainer(t, deploymentPodTemplate(t, m, "example-dispatch"), "envoy-dispatch"))
+			requireOptionalEnv(t, env, "DISPATCH_PROJECT_OWNER_FALLBACK", owner)
+		})
+	}
 }
 
 // A refused Azure configuration is refused by the resolver, before the component registers, so

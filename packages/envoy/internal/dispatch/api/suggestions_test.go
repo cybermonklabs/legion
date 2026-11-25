@@ -137,7 +137,7 @@ func TestRelatedCheckReportsNotMadeWhenItsContextIsDone(t *testing.T) {
 	<-expired.Done()
 
 	suggestions := srv.relatedCheck(expired, relatedInput{
-		project: "ANY", text: "a title that would otherwise search",
+		who: everyReader, project: "ANY", text: "a title that would otherwise search",
 		source: suggestionSource{kind: "issue", issueKey: "ANY-1"},
 	})
 	if suggestions.Outcome != "not_made" || suggestions.Missing != "the request that ran it ended before the check finished" || suggestions.Search != "" {
@@ -296,7 +296,7 @@ func suggestionsBehindLock(
 
 	answered := make(chan *model.Suggestions, 1)
 	go func() {
-		answered <- srv.relatedCheck(context.Background(), relatedInput{project: project, text: text, source: source})
+		answered <- srv.relatedCheck(context.Background(), relatedInput{who: everyReader, project: project, text: text, source: source})
 	}()
 	// The call queues within milliseconds, and it ends on its own once its allowance does: the wait
 	// returns at once when it answers. So the bound, three allowances, is reached only by a call

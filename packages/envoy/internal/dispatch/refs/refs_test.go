@@ -94,7 +94,7 @@ func TestReplaceWritesRefKeysAndSkipsExternalURLs(t *testing.T) {
 	defer tx.Rollback(ctx)
 
 	body := "see dispatch://CORE/artifact/design-notes and dispatch://OPS-2/artifact/spec and https://example.com"
-	if _, err := replaceRefs(ctx, tx, "comment", "c1", text.Extract(body, "https://dispatch.example"), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, "comment", "c1", text.Extract(body, text.NewOrigins("https://dispatch.example")), nil); err != nil {
 		t.Fatalf("replace references: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -141,7 +141,7 @@ func TestReplaceWritesRefKeysAndSkipsExternalURLs(t *testing.T) {
 		t.Fatalf("begin clear transaction: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := replaceRefs(ctx, tx, "comment", "c1", text.Extract("", "https://dispatch.example"), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, "comment", "c1", text.Extract("", text.NewOrigins("https://dispatch.example")), nil); err != nil {
 		t.Fatalf("clear references: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -176,7 +176,7 @@ func TestABlockTargetAtTheGrammarsBoundIsStoredWhole(t *testing.T) {
 		t.Run(owner, func(t *testing.T) {
 			const server = "https://dispatch.example"
 			markdown := "See dispatch://" + owner + "/artifact/" + random(t, text.MaxTargetBytes-len(owner+"/#x")) + "#b-x.\n"
-			located := text.ExtractAt(markdown, server)
+			located := text.ExtractAt(markdown, text.NewOrigins(server))
 			if len(located) != 1 || located[0].Kind != "block" {
 				t.Fatalf("the reference at the bound parsed as %#v, want one block", located)
 			}
@@ -188,7 +188,7 @@ func TestABlockTargetAtTheGrammarsBoundIsStoredWhole(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer tx.Rollback(ctx)
-			if _, err := replaceRefs(ctx, tx, "comment", "00000000-0000-4000-8000-000000000000", text.Extract(markdown, server), nil); err != nil {
+			if _, err := replaceRefs(ctx, tx, "comment", "00000000-0000-4000-8000-000000000000", text.Extract(markdown, text.NewOrigins(server)), nil); err != nil {
 				t.Fatalf("write the reference at the bound from a comment: %v", err)
 			}
 			createReferenceProject(t, tx, "ACME")
@@ -253,7 +253,7 @@ func TestEveryTargetAtTheGrammarsBoundIsStoredWhole(t *testing.T) {
 	for _, reference := range references {
 		markdown += "See " + reference + ".\n"
 	}
-	located := text.ExtractAt(markdown, server)
+	located := text.ExtractAt(markdown, text.NewOrigins(server))
 	if len(located) != len(references) {
 		t.Fatalf("%d references at the bound parsed as %d", len(references), len(located))
 	}
@@ -269,7 +269,7 @@ func TestEveryTargetAtTheGrammarsBoundIsStoredWhole(t *testing.T) {
 	defer tx.Rollback(ctx)
 	createReferenceProject(t, tx, "ACME")
 	citer, _ := createReferenceArtifact(t, tx, "", "ACME", "citer")
-	if _, err := replaceRefs(ctx, tx, "artifact", citer, text.Extract(markdown, server), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, "artifact", citer, text.Extract(markdown, text.NewOrigins(server)), nil); err != nil {
 		t.Fatalf("write the references at the bound from a document: %v", err)
 	}
 	citingBlock := random(t, text.MaxBlockIDBytes)
@@ -340,12 +340,12 @@ func TestEveryTargetIDIsTheNodeIDTheGraphStores(t *testing.T) {
 		{"https://dispatch.example/issues/CORE-1/messages/m1#b-b2", "message_block", "message/m1#b2"},
 	} {
 		t.Run(test.reference, func(t *testing.T) {
-			ref, ok := text.ParseRef(test.reference, server)
+			ref, ok := text.ParseRef(test.reference, text.NewOrigins(server))
 			target, _ := TargetOf(ref)
 			if !ok || target.Kind != test.kind || target.ID != test.node {
 				t.Fatalf("%s parsed as %#v (%t), whose target is %#v; want a %s at %q", test.reference, ref, ok, target, test.kind, test.node)
 			}
-			if _, err := replaceRefs(ctx, tx, "comment", from, text.Extract("See "+test.reference+".", server), nil); err != nil {
+			if _, err := replaceRefs(ctx, tx, "comment", from, text.Extract("See "+test.reference+".", text.NewOrigins(server)), nil); err != nil {
 				t.Fatalf("write the reference: %v", err)
 			}
 			var stored []string
@@ -399,7 +399,7 @@ func replaceAndStamp(t *testing.T, database *store.Store, fromKind, fromID, body
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := replaceRefs(ctx, tx, fromKind, fromID, text.Extract(body, "https://dispatch.example"), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, fromKind, fromID, text.Extract(body, text.NewOrigins("https://dispatch.example")), nil); err != nil {
 		t.Fatalf("replace references: %v", err)
 	}
 	if err := Stamp(ctx, tx, fromKind, fromID, eventID); err != nil {
@@ -503,7 +503,7 @@ func TestClosureFollowsArtifactLinksToDepthEightAndReportsTruncation(t *testing.
 		t.Fatalf("commit fixture: %v", err)
 	}
 
-	references, err := Closure(ctx, database.Pool, model.Actor{}, "CORE-1")
+	references, err := Closure(ctx, database.Pool, serverReader, "CORE-1")
 	if err != nil {
 		t.Fatalf("read closure: %v", err)
 	}
@@ -532,7 +532,7 @@ func TestReferencedByIncludesArtifactSources(t *testing.T) {
 		t.Fatalf("commit fixture: %v", err)
 	}
 
-	got, err := ReferencedBy(ctx, database.Pool, model.Actor{}, d2RefKey)
+	got, err := ReferencedBy(ctx, database.Pool, serverReader, d2RefKey)
 	if err != nil {
 		t.Fatalf("read artifact sources: %v", err)
 	}
@@ -561,7 +561,7 @@ func TestReferencedByListsAnAskCitingFromItsParts(t *testing.T) {
 	writeAskAnswer(t, tx, &ask, "bob", []string{"gRPC"}, "Ship it, as dispatch://"+refKey+" says.")
 	indexAskPartsAt(t, tx, ask, 1)
 
-	got, err := ReferencedBy(ctx, tx, model.Actor{}, refKey)
+	got, err := ReferencedBy(ctx, tx, serverReader, refKey)
 	if err != nil {
 		t.Fatalf("read the citers of %s: %v", refKey, err)
 	}
@@ -594,28 +594,28 @@ func TestGraphReadsSkipANodeKindThisBuildCannotAddress(t *testing.T) {
 	insertReference(t, tx, "comment", commentID, "future", "x#y")
 	insertReference(t, tx, "future", "x#y", "issue", "OPS-1")
 
-	incoming, err := Edges(ctx, tx, model.Actor{}, Query{Direction: "in", Kind: "issue", ID: "CORE-1", Kinds: []string{"mentions"}})
+	incoming, err := Edges(ctx, tx, serverReader, Query{Direction: "in", Kind: "issue", ID: "CORE-1", Kinds: []string{"mentions"}})
 	if err != nil {
 		t.Errorf("read CORE-1 backlinks: %v", err)
 	} else if len(incoming) != 1 || incoming[0].Kind != "mentions" || incoming[0].Direction != "in" || incoming[0].Node.Kind != "comment" || incoming[0].Node.ID != commentID {
 		t.Errorf("CORE-1 backlinks = %#v; want only the mention from comment %q", incoming, commentID)
 	}
 
-	outgoing, err := Edges(ctx, tx, model.Actor{}, Query{Direction: "out", Kind: "comment", ID: commentID})
+	outgoing, err := Edges(ctx, tx, serverReader, Query{Direction: "out", Kind: "comment", ID: commentID})
 	if err != nil {
 		t.Errorf("read comment links: %v", err)
 	} else if len(outgoing) != 1 || outgoing[0].Kind != "mentions" || outgoing[0].Direction != "out" || outgoing[0].Node.Kind != "issue" || outgoing[0].Node.ID != "CORE-1" {
 		t.Errorf("comment links = %#v; want only the mention of CORE-1", outgoing)
 	}
 
-	unknownOnly, err := Edges(ctx, tx, model.Actor{}, Query{Direction: "in", Kind: "issue", ID: "OPS-1"})
+	unknownOnly, err := Edges(ctx, tx, serverReader, Query{Direction: "in", Kind: "issue", ID: "OPS-1"})
 	if err != nil {
 		t.Errorf("read OPS-1 backlinks: %v", err)
 	} else if unknownOnly == nil || len(unknownOnly) != 0 {
 		t.Errorf("OPS-1 backlinks = %#v; want an empty list", unknownOnly)
 	}
 
-	counts, err := BacklinkCounts(ctx, tx, model.Actor{}, "issue", []string{"CORE-1", "OPS-1"}, nil)
+	counts, err := BacklinkCounts(ctx, tx, serverReader, "issue", []string{"CORE-1", "OPS-1"}, nil)
 	if err != nil {
 		t.Errorf("count issue backlinks: %v", err)
 	} else if want := map[string]int{"CORE-1": 1}; !reflect.DeepEqual(counts, want) {
@@ -623,13 +623,13 @@ func TestGraphReadsSkipANodeKindThisBuildCannotAddress(t *testing.T) {
 	}
 	// Every ask read passes AskBacklinkExclusions, so this is the count each ask card and the
 	// Inbox show: the comment's mention stays and the unknown-kind row stays out.
-	askCounts, err := BacklinkCounts(ctx, tx, model.Actor{}, "issue", []string{"CORE-1", "OPS-1"}, AskBacklinkExclusions)
+	askCounts, err := BacklinkCounts(ctx, tx, serverReader, "issue", []string{"CORE-1", "OPS-1"}, AskBacklinkExclusions)
 	if err != nil {
 		t.Errorf("count issue backlinks with the ask exclusions: %v", err)
 	} else if want := map[string]int{"CORE-1": 1}; !reflect.DeepEqual(askCounts, want) {
 		t.Errorf("issue backlink counts with the ask exclusions = %v; want %v", askCounts, want)
 	}
-	excluded, err := BacklinkCounts(ctx, tx, model.Actor{}, "issue", []string{"CORE-1", "OPS-1"}, []string{"mentions"})
+	excluded, err := BacklinkCounts(ctx, tx, serverReader, "issue", []string{"CORE-1", "OPS-1"}, []string{"mentions"})
 	if err != nil {
 		t.Errorf("count issue backlinks excluding mentions: %v", err)
 	} else if len(excluded) != 0 {

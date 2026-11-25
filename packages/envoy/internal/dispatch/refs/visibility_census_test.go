@@ -76,6 +76,19 @@ func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 			strings.Join(problems, "\n  "), resolved, declared)
 	}
 
+	// Every entry states its project and party rule (nodeVisibility.scope). A kind whose scope
+	// nobody stated reads as visible to the server alone, which is safe and is still a rule no one
+	// wrote, so it fails here, named.
+	for _, kind := range declared {
+		scope := nodeRegistry[kind].visibility.scope
+		if scope.name == "" {
+			t.Errorf("the registry holds the node kind %q with no stated scope: give its nodeVisibility the project and "+
+				"party rule its nodes take", kind)
+			continue
+		}
+		t.Logf("the node kind %s takes the %s scope", kind, scope.name)
+	}
+
 	reads := graphReads(t, ctx, database)
 	if len(reads) == 0 {
 		t.Fatal("no read of the graph was recorded, so no statement was checked")
@@ -86,7 +99,13 @@ func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 		var marks, tests int
 		for index, statement := range read.statements {
 			statementMarks := strings.Count(statement, VisibilityMarker)
-			statementTests := strings.Count(statement, ".visibility")
+			// A project's own visibility, the public arm of the access rule a person's scope
+			// binds (store.PersonSeesProjectSQL, `<project>.visibility = 'public'`), and the
+			// private-project SessionClause and RoleClause gates (`<project>.visibility =
+			// 'private'`), are tests of a project and not of a node, so neither is a registry
+			// predicate of the statement's own.
+			statementTests := strings.Count(statement, ".visibility") - strings.Count(statement, ".visibility = 'public'") -
+				strings.Count(statement, ".visibility = 'private'")
 			marks, tests = marks+statementMarks, tests+statementTests
 			// A statement may bind no predicate where another statement of its read filters
 			// its rows, but a test of `visibility` that no marker opens is a rule the
@@ -111,9 +130,9 @@ func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 		// 2026-11-12. Every read of the graph answers only what the acting person may see, so
 		// every read binds at least one predicate. The rule is the read's and not each
 		// statement's, because a read may filter one statement's rows by another's:
-		// BlockLinks lists its links out of block_refs with no predicate and keeps only those
-		// whose two blocks the block loader, which binds the block predicate, resolves for the
-		// viewer.
+		// BlockLinks lists its links out of block_refs under its two documents' predicates
+		// alone and keeps only those whose two blocks the block loader, which binds the block
+		// predicate, resolves for the viewer.
 		if marks == 0 || tests == 0 {
 			t.Errorf("the %s read binds %d predicate of the registry's and makes %d test of `visibility` in all of its %d statements: a read of the graph that binds no visibility rule answers every node to everyone\n%s",
 				read.call, marks, tests, len(read.statements), strings.Join(read.statements, "\n----\n"))
@@ -145,25 +164,26 @@ func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 // Why each exported read of the store that takes no acting person binds no visibility
 // predicate. Each reason is one of the few that hold: the read is the server's own work and
 // answers no reader, or it answers no node at all, or it reads one node its caller has already
-// read through a read that binds that node's predicate and answers nothing of any other node. A
-// read whose answer reaches a reader and names a node is none of these: it takes the acting
-// person instead, and the census above holds it to the registry.
+// read through a read that binds that node's predicate and answers nothing of any other node, or
+// only an access account reads its answer, never a person or a session. A read whose answer
+// reaches a person and names a node is none of these: it takes the acting person instead, and the
+// census above holds it to the registry.
 const (
 	serverWork = "the server's own work: a pass or a write calls it, and its answer reaches no reader"
 	noNode     = "it answers no node: a fact about one row the caller names, never a node's id or text"
 	nodeDetail = "it reads a detail of one node its caller has already read through a read that binds that node's predicate " +
 		"(Node, RemovedItemBlockNode, or the caller's own registry predicate), and answers nothing of any other node"
+	accessAccountOnly = "only a service account DISPATCH_ACCESS_ACCOUNTS names reads its answer, through a route of the read class " +
+		"accessAccount, never a person or a session"
 )
 
 // readsWithoutAViewer names each exported read of the store that takes no acting person, with
 // the reason it binds no predicate (storeReads lists them from the package's source).
 var readsWithoutAViewer = map[string]string{
-	"AskPartIDs":           nodeDetail,
-	"BlockChanges":         nodeDetail,
-	"BlockEmbeddingStates": nodeDetail,
-	"BlockIndexing.Cited":  serverWork + " - a version write reads the blocks that cite the blocks its index changes, to count what it moves",
-	"BlockTargets":         serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
-	"BlockTextAt":          nodeDetail,
+	"BlockChanges":        nodeDetail,
+	"BlockIndexing.Cited": serverWork + " - a version write reads the blocks that cite the blocks its index changes, to count what it moves",
+	"BlockTargets":        serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
+	"BlockTextAt":         nodeDetail,
 	"BlockTexts": "it reads the text of each block GET /api/v1/reference-targets has already named through TargetNames, " +
 		"which binds each block's predicate, as CurrentBlockText and CurrentItemBlockText read one, and answers nothing of any other node",
 	"CountedChanges":       serverWork + " - a write records what its own text cites, as the addresses that text already spells",
@@ -185,10 +205,12 @@ var readsWithoutAViewer = map[string]string{
 	"OwedItemBlocks":   serverWork,
 	"PendingDocument.Scope": serverWork + " - the document a source whose row is only queued belongs to, which the index-time " +
 		"resolver reads for no person",
-	"PlanBlocks":         serverWork + " - a version write's read phase plans its block index against what the store holds of the document",
-	"PlanItemIfOwed":     serverWork + " - a write's read phase plans the index an item it writes beside is owed",
-	"PlanReplace":        serverWork + " - a write's read phase plans the reconciliation of a source's references against its edges",
-	"QueueAskPartIDs":    nodeDetail,
+	"PlanBlocks":     serverWork + " - a version write's read phase plans its block index against what the store holds of the document",
+	"PlanItemIfOwed": serverWork + " - a write's read phase plans the index an item it writes beside is owed",
+	"PlanReplace":    serverWork + " - a write's read phase plans the reconciliation of a source's references against its edges",
+	"ProjectRepositories": accessAccountOnly + " - the repository answer, the repository names the issues of one project resolve " +
+		"to, or the key of the one issue whose chain it could not resolve; the GitHub proxy reads the same rule only through " +
+		"RepositoryClause, which binds the viewer",
 	"ReadBlockIndex":     serverWork + " - a version write's read phase reads the document's block index it plans against",
 	"ReadIndexedVersion": serverWork + " - a version write's read phase reads the document's address and the version's writer",
 	"ReadItemIndex":      serverWork + " - a write's read phase reads the item's block index it plans against",
@@ -284,7 +306,9 @@ type graphRead struct {
 func graphReads(t *testing.T, ctx context.Context, database *store.Store) []graphRead {
 	t.Helper()
 	recorder := &recordingQueryer{inner: database.Pool}
-	who := model.Actor{Kind: "user", ID: "alice"}
+	// A viewer that sees every project, so each read reaches every statement it issues: what the
+	// statements bind is the same text for every viewer, which is a parameter of each.
+	who := model.Actor{Kind: "user", ID: "alice", Viewer: model.ServerViewer}
 	var reads []graphRead
 	record := func(function, call string, run func() error) {
 		t.Helper()
@@ -336,6 +360,21 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 			return database.Pool.SendBatch(ctx, batch).Close()
 		})
 	}
+	// An ask's part ids, read only where the viewer sees the ask: both halves, the batched one as
+	// the count's is.
+	asked := []*model.Ask{{ID: "00000000-0000-4000-8000-000000000003"}}
+	record("AskPartIDs", "AskPartIDs of an ask", func() error {
+		_, err := AskPartIDs(ctx, recorder, who, asked)
+		return err
+	})
+	record("QueueAskPartIDs", "QueueAskPartIDs of an ask", func() error {
+		batch := &pgx.Batch{}
+		QueueAskPartIDs(batch, who, asked, make([]AskIDs, len(asked)))
+		for _, queued := range batch.QueuedQueries {
+			recorder.statements = append(recorder.statements, queued.SQL)
+		}
+		return database.Pool.SendBatch(ctx, batch).Close()
+	})
 	record("ReferencedBy", "ReferencedBy of CORE-1/spec", func() error {
 		_, err := ReferencedBy(ctx, recorder, who, "CORE-1/spec")
 		return err
@@ -400,11 +439,11 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 	// statement that resolves it is the read of the graph the census holds it to.
 	const shortComment = "See dispatch://CORE-1/comment/00000000."
 	record("NewReader", "NewReader's resolution of a short comment id", func() error {
-		NewReader(ctx, recorder, who, "comment", "00000000-0000-4000-8000-000000000002", "https://dispatch.example").Mentions(shortComment)
+		NewReader(ctx, recorder, who, "comment", "00000000-0000-4000-8000-000000000002", text.NewOrigins("https://dispatch.example")).Mentions(shortComment)
 		return nil
 	})
 	record("NewReaderInScope", "NewReaderInScope's resolution of a short comment id", func() error {
-		NewReaderInScope(ctx, recorder, who, "comment", "00000000-0000-4000-8000-000000000002", "https://dispatch.example", nil).Mentions(shortComment)
+		NewReaderInScope(ctx, recorder, who, "comment", "00000000-0000-4000-8000-000000000002", text.NewOrigins("https://dispatch.example"), nil).Mentions(shortComment)
 		return nil
 	})
 	// A document's own scope is its id, answered with no statement; the three kinds whose scope
@@ -419,6 +458,19 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		_, err := QuestionMap(ctx, recorder, who, "00000000-0000-4000-8000-000000000001")
 		return err
 	})
+	// A document's windows are keyed by its uuid, an item's by `<kind>/<uuid>`; each binds the
+	// predicate of its owner's kind.
+	for _, owner := range []struct{ kind, key string }{
+		{DocumentWindowKind, "00000000-0000-4000-8000-000000000001"},
+		{ItemComment.WindowKind(), ItemComment.WindowOwnerKey("00000000-0000-4000-8000-000000000002")},
+		{ItemAsk.WindowKind(), ItemAsk.WindowOwnerKey("00000000-0000-4000-8000-000000000003")},
+		{ItemMessage.WindowKind(), ItemMessage.WindowOwnerKey("00000000-0000-4000-8000-000000000004")},
+	} {
+		record("BlockEmbeddingStates", "BlockEmbeddingStates of "+owner.key, func() error {
+			_, err := BlockEmbeddingStates(ctx, recorder, who, owner.kind, owner.key)
+			return err
+		})
+	}
 	record("StoredExcerpts", "StoredExcerpts of CORE-1", func() error {
 		_, err := StoredExcerpts(ctx, recorder, who, "issue", "CORE-1")
 		return err
@@ -437,14 +489,18 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		_, err := IssueDescendants(ctx, recorder, who, "CORE-1")
 		return err
 	})
+	record("IssueAncestorsAsSeen", "IssueAncestorsAsSeen of CORE-1", func() error {
+		_, err := IssueAncestorsAsSeen(ctx, recorder, who, "CORE-1")
+		return err
+	})
 	return reads
 }
 
 // seedBlockLink indexes one document whose first block links to its second, and answers the
-// document's id. BlockLinks reads its links out of block_refs, a statement that binds no
-// predicate, and resolves the two blocks of each through the block loader, which binds the
-// block predicate: with no link to list it never reaches the loader, and the census would read
-// only the statement that binds none.
+// document's id. BlockLinks reads its links out of block_refs under the predicates of its two
+// documents, and resolves the two blocks of each through the block loader, which binds the block
+// predicate: with no link to list it never reaches the loader, and the census would read only the
+// statement that binds the documents' predicates.
 func seedBlockLink(t *testing.T, ctx context.Context, database *store.Store) string {
 	t.Helper()
 	tx, err := database.Pool.Begin(ctx)
@@ -460,7 +516,7 @@ func seedBlockLink(t *testing.T, ctx context.Context, database *store.Store) str
 		{ID: "source", Type: "paragraph", From: 0, To: len(source)},
 		{ID: "target", Type: "paragraph", From: len(source), To: len(markdown)},
 	}
-	located := text.ExtractAt(markdown, "https://dispatch.example")
+	located := text.ExtractAt(markdown, text.NewOrigins("https://dispatch.example"))
 	_, _, write, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, located, nil)
 	if err != nil {
 		t.Fatalf("index the linked document: %v", err)

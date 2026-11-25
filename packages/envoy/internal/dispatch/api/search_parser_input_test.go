@@ -10,7 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -208,10 +208,11 @@ func TestSearchHandsTheParserNoRunJoinedAcrossAnAskBlock(t *testing.T) {
 		{"a comment", `insert into comments (issue_key, author, body) values ('PARSE-1', '` + actor + `', $1)`, []any{text}, []string{"comments_search"}},
 		{"an ask", `insert into asks (issue_key, author, question) values ('PARSE-1', '` + actor + `', $1)`, []any{text}, []string{"asks_search"}},
 		{"a message", `insert into messages (issue_key, author, body) values ('PARSE-1', '{"kind":"session","id":"s1"}', $1)`, []any{text}, []string{"messages_search"}},
-		// A statement's own call to search_vector has search_vector outermost.
-		{"the related-item picker", relatedTermsSQL, []any{"PARSE", text, "", nil, "Parser input"}, []string{"search_vector"}},
+		// A statement's own call to search_vector has search_vector outermost. Both statements
+		// take the reader's viewer last; the server's own reader sees every project of the seed.
+		{"the related-item picker", relatedTermsSQL, []any{"PARSE", text, "", nil, "Parser input", relatedViewer(everyReader)}, []string{"search_vector"}},
 		// The issue's own title, so the issue is a candidate and its spec is compared.
-		{"the duplicate check", duplicateEqualLexemesQuery, []any{"PARSE", "Parser input, retitled", text, []string{}, headlineOptions}, []string{"search_vector"}},
+		{"the duplicate check", duplicateEqualLexemesQuery, []any{"PARSE", "Parser input, retitled", text, []string{}, headlineOptions, refs.VisibilityArg(everyReader)}, []string{"search_vector"}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			take()

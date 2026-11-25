@@ -7,6 +7,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // parseDeliveryLiveView resolves a subscribed view as the matching GET route reads its query, or
@@ -16,6 +19,7 @@ import (
 // that the kind is one of the five, and that only a kind that reads a project's daemon
 // (viewReadsLegion) is given a project; a legion_issue view, the one such kind that names no
 // project, refuses one itself (parseLegionIssueLiveView).
+// The spec it answers names no reader yet (readFor).
 //
 // An issue is refused by nothing here. The socket's decode (decodeSocketClientFrame, a plain
 // json.Unmarshal, which type-checks every member its struct declares) accepts an `issue` member
@@ -68,7 +72,7 @@ func parseDeliveryWindowView(spec *deliveryLiveSpec, view DeliveryLiveView) *Liv
 	if refusal != nil {
 		return refusal
 	}
-	spec.key = view.Kind + "|" + named + "|" + spec.query.Encode()
+	spec.shape = view.Kind + "|" + named + "|" + spec.query.Encode()
 	return nil
 }
 
@@ -79,7 +83,7 @@ func parsePipelineLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveE
 	if view.Window != nil || view.Query != nil {
 		return invalidLiveView("INVALID_FRAME", "a pipeline view names at most an at")
 	}
-	spec.key = "pipeline|now|"
+	spec.shape = "pipeline|now|"
 	if view.At != nil {
 		at, err := parseOptionalRFC3339(url.Values{"at": {*view.At}}, "at", time.Time{})
 		if err != nil {
@@ -87,7 +91,7 @@ func parsePipelineLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveE
 		}
 		at = at.UTC()
 		spec.at = &at
-		spec.key = "pipeline|" + at.Format(time.RFC3339Nano) + "|"
+		spec.shape = "pipeline|" + at.Format(time.RFC3339Nano) + "|"
 	}
 	return nil
 }
@@ -106,11 +110,11 @@ func parseLegionLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveErr
 	// (legionProject), which are every project route's (INVALID_PROJECT, projectKeyProblem), so a
 	// person who meets the mistake at either door learns one name for it. A project that does not
 	// exist is the read's to refuse, as the route's is (readLegionBoardView, loadProject).
-	if !projectKeyPattern.MatchString(project) {
+	if !contracts.ValidProjectKey(project) {
 		return invalidLiveView("INVALID_PROJECT", projectKeyProblem("project", project))
 	}
 	spec.project = project
-	spec.key = legionBoardView + "|" + project + "|"
+	spec.shape = legionBoardView + "|" + project + "|"
 	return nil
 }
 
@@ -169,4 +173,36 @@ func (spec *deliveryLiveSpec) readWindow(window *DeliveryLiveWindow) (string, *L
 	default:
 		return refuse("INVALID_FRAME", "a window is a preset or a from and to")
 	}
+}
+
+// readFor makes spec the view reader reads: the reader, its part of the key (deliveryReaderKey),
+// and the key itself, the view's shape and that part.
+func (spec *deliveryLiveSpec) readFor(reader model.Actor) {
+	spec.reader, spec.viewer = reader, deliveryReaderKey(reader)
+	spec.key = spec.shape + "|" + spec.viewer
+}
+
+// deliveryReaderKey is the part of a view's key its reader decides: whether the reader is the
+// server's own viewer and whether it is open; and, for a reader that does not see every object
+// (seesEveryObject), the projects it sees, which the timeline's rule reads of a viewer
+// (readDeliveryRows: access.ProjectClause on each pull request's issue, and openness for one that
+// names none and for a run that shipped none), and its person and session, which the event rule
+// the view's session titles are read under reads (delivery.ResolveSessionTitles under
+// readableEvents: its party and own-session arms), as access.SessionClause's own-session arm does
+// for the session groups (groupsShown). Readers that agree on the key read the same rows and share
+// one view. A reader that sees every object is shown every row, whatever projects it sees, so where
+// no project is private every open viewer shares the one view it always did, and a new project
+// leaves it there: the view is read for the newest of its readers (recheckSubs), which sees the new
+// project, and no page of it is sent a snapshot for the project (R9). A reader with no viewer is
+// the closed one, which sees nothing.
+func deliveryReaderKey(reader model.Actor) string {
+	viewer := reader.Viewer
+	if viewer == nil {
+		viewer = &model.Viewer{}
+	}
+	key := "all=" + strconv.FormatBool(viewer.All) + ",open=" + strconv.FormatBool(viewer.Open)
+	if !seesEveryObject(reader) {
+		key += ",sees=" + strings.Join(viewer.Sees, ",") + ",person=" + viewer.Person + ",session=" + viewer.Session
+	}
+	return key
 }

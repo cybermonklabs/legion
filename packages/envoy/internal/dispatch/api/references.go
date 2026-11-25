@@ -18,7 +18,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -42,7 +42,7 @@ func (s *server) queueAskParts(
 	at time.Time,
 	beside model.ReferenceChanges,
 ) (model.ReferenceChanges, error) {
-	return ledger.QueueAskParts(ctx, ask, s.deps.ServerURL, document, at, beside)
+	return ledger.QueueAskParts(ctx, ask, s.deps.Origins, document, at, beside)
 }
 
 // referencesSinceWait bounds how long a since read waits for the safe horizon to pass every event
@@ -81,13 +81,16 @@ const referencesSinceWait = time.Second
 // prefix names a row only within some set, and the set the reference itself names is the one
 // its writer meant and the only one that can be answered without guessing.
 func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
-	actor, human, err := s.optionalActor(r)
+	_, human, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return
 	}
-	who := actor.Recorded()
-	query, ref, unknownKinds, err := parseReferencesQuery(r, s.deps.ServerURL)
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	query, ref, unknownKinds, err := parseReferencesQuery(r, s.deps.Origins)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -123,7 +126,11 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		if query.Direction == "out" && ref.Kind == "artifact" {
-			if err := s.deps.Store.Pool.QueryRow(r.Context(), `select id::text from artifacts where ref_key = $1`, query.ID).Scan(&query.ID); err != nil {
+			// A document its reader may not read is a ref_key no row holds (access.DocumentClause),
+			// so it answers exactly as a missing one: the same refusal, naming the reference the
+			// caller wrote rather than the id the row holds, and the same one statement.
+			if err := s.deps.Store.Pool.QueryRow(r.Context(), `select id::text from artifacts where ref_key = $1 and `+
+				access.DocumentClause("artifacts", "$2"), query.ID, refs.VisibilityArg(who)).Scan(&query.ID); err != nil {
 				if errors.Is(err, pgx.ErrNoRows) {
 					s.writeHandlerError(w, errorf(http.StatusNotFound, "NOT_FOUND", "no document at %s", query.ID))
 					return
@@ -247,12 +254,15 @@ var questionSourceKinds = []string{"artifact", "ask", "comment", "message"}
 // (refs.ScopeOf, canonicalUUID), which is the one place it is canonicalized, so this route
 // hands on what it was given and `urn:uuid:<uuid>` answers as the canonical id answers.
 func (s *server) getReferenceQuestions(w http.ResponseWriter, r *http.Request) {
-	actor, human, err := s.optionalActor(r)
+	_, human, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return
 	}
-	who := actor.Recorded()
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
 	if !slices.Contains(questionSourceKinds, kind) {
 		s.writeHandlerError(w, errorf(http.StatusBadRequest, "INVALID_KIND",
@@ -542,26 +552,27 @@ var blockPin = regexp.MustCompile(`@v[0-9]+$`)
 
 // pinsAMessageBlock reports whether raw, a reference text.ParseRef refused, is a block of a
 // message pinned to a revision: the grammar reads none, since a message records no revisions.
-func pinsAMessageBlock(raw, serverURL string) bool {
+func pinsAMessageBlock(raw string, origins text.Origins) bool {
 	unpinned := blockPin.ReplaceAllString(raw, "")
 	if unpinned == raw {
 		return false
 	}
-	ref, ok := text.ParseRef(unpinned, serverURL)
+	ref, ok := text.ParseRef(unpinned, origins)
 	return ok && ref.Kind == "block" && ref.Item == "message"
 }
 
 // parseRequestRef reads one reference a request names - a ?to= or ?from=, or one ?ref= of the
-// batched read - by text.ParseRef, so a node is read whatever the length of its name: the target
+// batched read - by text.ParseRef under the server's origins, so a node is read whatever the
+// length of its name and whichever of the server's origins a dashboard link names: the target
 // bound decides only what text indexes, and a node no index holds an edge to simply has fewer
 // edges. Anything else is 400 INVALID_REFERENCE naming the value, with its own sentence for a
 // pinned block of a message, which the grammar reads as no reference at all.
-func parseRequestRef(raw, serverURL string) (text.Ref, error) {
-	ref, ok := text.ParseRef(raw, serverURL)
+func parseRequestRef(raw string, origins text.Origins) (text.Ref, error) {
+	ref, ok := text.ParseRef(raw, origins)
 	if ok {
 		return ref, nil
 	}
-	if pinsAMessageBlock(raw, serverURL) {
+	if pinsAMessageBlock(raw, origins) {
 		return text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q pins a block of a message, which records no revisions; name the block without @v<N>", raw)
 	}
 	return text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q is not a dispatch:// reference to an issue, document, block, ask, comment, message, or component", raw)
@@ -573,7 +584,7 @@ func parseRequestRef(raw, serverURL string) (text.Ref, error) {
 // item id for the from side (the caller swaps an artifact's ref_key for its uuid). The reference
 // itself is read by parseRequestRef, as the batched read reads each of its own. It returns apart
 // the ?kind= values that are no edge kind of this build.
-func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.Ref, []string, error) {
+func parseReferencesQuery(r *http.Request, origins text.Origins) (refs.Query, text.Ref, []string, error) {
 	values := r.URL.Query()
 	to, from := strings.TrimSpace(values.Get("to")), strings.TrimSpace(values.Get("from"))
 	if (to == "") == (from == "") {
@@ -583,7 +594,7 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 	if from != "" {
 		raw, direction = from, "out"
 	}
-	ref, err := parseRequestRef(raw, serverURL)
+	ref, err := parseRequestRef(raw, origins)
 	if err != nil {
 		return refs.Query{}, text.Ref{}, nil, err
 	}
@@ -664,7 +675,7 @@ func (s *server) documentMentionExcerpts(ctx context.Context, who model.Actor, q
 // under its own ETag; absent, empty or all is the full answer. A repeated versions is refused
 // rather than read by its first value.
 func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -684,7 +695,7 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	issue, err := s.loadIssue(r.Context(), s.deps.Store.Pool, r.PathValue("key"))
+	issue, err := s.loadIssue(r.Context(), s.deps.Store.Pool, who, r.PathValue("key"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -848,11 +859,11 @@ func closureBoundHit(err error) bool {
 }
 
 func (s *server) getArtifactReferences(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
-	artifact, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
+	artifact, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, who, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

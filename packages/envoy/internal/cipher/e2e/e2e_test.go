@@ -1,7 +1,7 @@
 // e2e_test.go is the acceptance proof for the secrets broker: the whole credential-request story
 // driven as real HTTP against the mux built by api.Register, on a real Postgres store and a fake
 // Secrets Manager. Every step below drives HTTP; none calls a service method directly
-// (Machine.ApplyDecision and friends are exercised only through the routes that wrap them). A
+// (Machine.ApplyPageDecision and friends are exercised only through the routes that wrap them). A
 // machine login's decision is a UI-route call naming the approver's login with the login's code,
 // the body Dispatch's server sends on the person's behalf; a secret request's decision is made on
 // the broker's own approval page, by a browser signed in to the broker at the test's provider.

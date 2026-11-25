@@ -7,6 +7,8 @@ import { deliveryMeasuresQuery, deliveryTimelineQuery } from "../../api/queries"
 import type { DeliverySessionGroup } from "../../api/types";
 import { MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
+import { Switch } from "../../components/Switch";
+import { useRestrictedMember } from "../../hooks/useRestrictedMember";
 import { useRepeatableSearchParams, useSearchParamsUpdate } from "../../lib/url-array-params";
 import {
   borderStrong,
@@ -14,9 +16,6 @@ import {
   linkText,
   surfaceBg,
   surfaceMutedBg,
-  switchOffBg,
-  switchOnBg,
-  switchThumbBg,
   textMutedOnCanvas,
   textPrimaryOnCanvas,
   textPrimaryOnSurface,
@@ -228,18 +227,9 @@ function LanesSwitch({
   onChange: (checked: boolean) => void;
 }): ReactNode {
   return (
+    // biome-ignore lint/a11y/noLabelWithoutControl: Switch is a button, which this label wraps and so names
     <label className="ml-4 flex cursor-pointer items-center gap-2">
-      <button
-        aria-checked={checked}
-        className={`inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${checked ? switchOnBg : switchOffBg}`}
-        onClick={() => onChange(!checked)}
-        role="switch"
-        type="button"
-      >
-        <span
-          className={`block h-4 w-4 rounded-full shadow-lg transition-transform ${switchThumbBg} ${checked ? "translate-x-4.5" : "translate-x-0.5"}`}
-        />
-      </button>
+      <Switch checked={checked} onClick={() => onChange(!checked)} />
       <span className={textPrimaryOnCanvas}>Swimlanes</span>
     </label>
   );
@@ -290,9 +280,13 @@ function OwnColourPicker({
  *  timeline view shows them. Until the timeline's configuration is set, Dispatch refuses the
  *  page's live view with `DELIVERY_NOT_CONFIGURED` and the page shows the settings form in the
  *  timeline's place; once a save configures it, Dispatch answers the same subscription with the
- *  timeline. */
+ *  timeline. A restricted member (`useRestrictedMember`) reads the page too: the timeline and the
+ *  measures answer them the pull requests whose issue they see, and the page makes none of its
+ *  reads or writes of the deployment's own - the settings form, a run's jobs (`DrillDown`), the
+ *  session groups' editor (`FacetPanel`). */
 export function DeliveryPage(): ReactNode {
   useDocumentTitle("Delivery · Dispatch");
+  const restricted = useRestrictedMember();
   const [state, setState] = useDeliveryUrlState();
   const [selection, setSelection] = useState<TimelineSelection | null>(null);
   const search = useSettled(state.filters.search.trim(), SEARCH_DEBOUNCE_MS);
@@ -427,19 +421,26 @@ export function DeliveryPage(): ReactNode {
       </header>
 
       {notConfigured ? (
-        <section aria-labelledby="delivery-setup-heading" className="max-w-4xl">
-          <h2
-            className={`text-base font-semibold ${textPrimaryOnCanvas}`}
-            id="delivery-setup-heading"
-          >
-            Set up the delivery timeline
-          </h2>
-          <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
-            Once set, this page shows the merged pull requests of the authors you name, the
-            production deploys that shipped them, and the pipeline failures in between.
-          </p>
-          <DeliverySettingsForm initial={null} />
-        </section>
+        // The settings are the deployment's (read class `deployment`, written under
+        // `scopeDeployment`), which Dispatch refuses a restricted member: their page says the
+        // timeline is not set up, and offers no form that would read or write them.
+        restricted ? (
+          <p className={`text-sm ${textSecondaryOnCanvas}`}>Delivery is not set up yet.</p>
+        ) : (
+          <section aria-labelledby="delivery-setup-heading" className="max-w-4xl">
+            <h2
+              className={`text-base font-semibold ${textPrimaryOnCanvas}`}
+              id="delivery-setup-heading"
+            >
+              Set up the delivery timeline
+            </h2>
+            <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
+              Once set, this page shows the merged pull requests of the authors you name, the
+              production deploys that shipped them, and the pipeline failures in between.
+            </p>
+            <DeliverySettingsForm initial={null} />
+          </section>
+        )
       ) : (
         <>
           {data === undefined ? null : (

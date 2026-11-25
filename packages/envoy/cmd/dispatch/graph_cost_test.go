@@ -308,7 +308,7 @@ func (a *costArm) count(t *testing.T, statement string, args ...any) int64 {
 
 // documentUpload is the JSON body of an upload of content as the document issue holds under name,
 // sent as login. An upload replacing a document names the token of the version it replaces, which
-// Dispatch refuses every replacement without (docs.ErrPreconditionRequired), so the body names the
+// Dispatch checks under the write's own locks (docs.Service.ReplaceText), so the body names the
 // token the document carries now; a document's first version replaces nothing and names none.
 func (p *dispatchProcess) documentUpload(t *testing.T, issue, name, content, login string) string {
 	t.Helper()

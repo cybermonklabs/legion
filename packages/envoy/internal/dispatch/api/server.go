@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,10 +23,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"golang.org/x/sync/singleflight"
-
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
@@ -43,12 +43,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/readclass"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"golang.org/x/sync/singleflight"
 )
 
 // issueKeyShape is a Dispatch issue key, `INFRA-431`, unanchored. Go's regular expressions and
@@ -56,10 +58,7 @@ import (
 // (duplicateTitleKeyPattern) take the same shape from it.
 const issueKeyShape = `[A-Z][A-Z0-9]{1,9}-[0-9]+`
 
-var (
-	projectKeyPattern = regexp.MustCompile(contracts.ProjectKeyPattern)
-	issueKeyPattern   = regexp.MustCompile(`^` + issueKeyShape + `$`)
-)
+var issueKeyPattern = regexp.MustCompile(`^` + issueKeyShape + `$`)
 
 // projectKeyProblem is every route's refusal of a value that is not a project key: the field it
 // came in and the rule, worded once in contracts (PROJECT_KEY_RULE) so the dispatch command and
@@ -98,8 +97,11 @@ type Deps struct {
 	// NewIssueSession empty is an issue made with no conversation started on it.
 	NewIssueLabel   string
 	NewIssueSession string
-	ServerURL       string
-	Docs            docs.API
+	// Origins is the server's web origins, canonical first (text.NewOrigins of DepsInput.ServerURL
+	// and DepsInput.OutsideOrigin): a dashboard URL of either that a text or a request writes is
+	// read as the reference its page names.
+	Origins text.Origins
+	Docs    docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549), and its Identity
 	// is the only one search compares queries with (INFRA-393); nil means Dispatch has no
 	// embedder, and search answers keyword-only on every request, always setting
@@ -134,6 +136,18 @@ type Deps struct {
 	// verifier stays non-nil while its issuer is undiscovered, so such a bearer
 	// is answered 503 then, never taken for a personal token.
 	OIDC ServiceTokenVerifier
+	// OIDCAccounts are the Kubernetes service-account subjects this deployment admits
+	// (cmd/dispatch: DISPATCH_OIDC_ACCOUNTS), each `system:serviceaccount:<namespace>:<name>`. A
+	// verified token of any other subject is refused 401 SERVICE_ACCOUNT_NOT_ADMITTED before any
+	// handler reads a row (serviceTokenActor). Empty admits every verified subject of the issuer
+	// and audience, as a deployment that names none always did.
+	OIDCAccounts []string
+	// AccessAccounts are the service-account subjects that may read the routes of the read class
+	// accessAccount (cmd/dispatch: DISPATCH_ACCESS_ACCOUNTS, whose README paragraph lists them). A
+	// caller with no credential, or one whose credential does not verify, is refused there as
+	// every route refuses it (401 NO_IDENTITY for none), and every other caller is 403
+	// ACCESS_ACCOUNT_REQUIRED.
+	AccessAccounts []string
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme (brokerTokenActor); nil is a deployment with no broker, which has no such
 	// credential kind and answers a DPoP presentation exactly as it always has.
@@ -193,8 +207,9 @@ type Deps struct {
 	// ListenerRosterUncached is for end-to-end test processes only: every read of the listener's
 	// session list (route_status on an issue read, GET /api/v1/agents) asks the listener rather
 	// than reading the stored answer every process shares (the route_roster row), so a test that
-	// changes the listener's sessions sees the change at its next read. A deployment leaves it
-	// false.
+	// changes the listener's sessions sees the change at its next read. Each answer is still
+	// stored, so route_roster_session_projects records the listener's sessions for SessionClause.
+	// A deployment leaves it false.
 	ListenerRosterUncached bool
 	// OutboxPublishes is that an outbox publishes this deployment's events: cmd/dispatch sets it
 	// unless NATS is disabled (DISPATCH_NATS_DISABLED=1). A mention's send then goes only once no
@@ -204,8 +219,9 @@ type Deps struct {
 	// the wait would never end: the send goes at once, as it does in every test of this package
 	// that runs no outbox.
 	OutboxPublishes bool
-	// Metrics is the process's registry, which register adds the gauges of the mention sends held
-	// behind an earlier event to (registerHeldGauges); nil adds none, as this package's tests run.
+	// Metrics is the process's registry: GET /metrics serves it (getMetrics), and register adds
+	// the gauges of the mention sends held behind an earlier event to it (registerHeldGauges). Nil,
+	// as this package's tests run, serves an empty one and adds none.
 	Metrics *metrics.Registry
 	// AnswersLatency times each GET /api/v1/agents/{session_id}/answers read this process
 	// serves from the moment it enters the route's handler chain, as the access-log line times
@@ -273,9 +289,11 @@ type DepsInput struct {
 
 	// App is the loaded GitHub App credentials (nil when unconfigured);
 	// GitHubAPIBase overrides the GitHub API origin (DISPATCH_GITHUB_API_BASE).
-	App           *auth.AppConfig
-	GitHubAPIBase string
-	OIDC          ServiceTokenVerifier
+	App            *auth.AppConfig
+	GitHubAPIBase  string
+	OIDC           ServiceTokenVerifier
+	AccessAccounts []string
+	BusProjects    BusProjects
 	// BrokerTokens decides a broker-issued DPoP token; nil where no broker is configured. See
 	// Deps.BrokerTokens; cmd/dispatch builds it (brokerTokenVerifier).
 	BrokerTokens *ciphertoken.Verifier
@@ -342,6 +360,9 @@ func NewDeps(input DepsInput) (Deps, error) {
 	if input.Events == nil {
 		input.Events = events.NewBroker()
 	}
+	// The `/` trimmed here is not redundant with parseServer, which trims one from each base path:
+	// together they read a server URL ending in `//` as the one ending in `/`.
+	origins := text.NewOrigins(strings.TrimSuffix(input.ServerURL, "/"), input.OutsideOrigin)
 	var envoyClient *envoy.Client
 	if envoyURL := strings.TrimSpace(input.EnvoyURL); envoyURL != "" {
 		options := []envoy.Option{envoy.WithToken(input.EnvoyToken)}
@@ -360,6 +381,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 	// GitHub budgets the App and each installation, not this process.
 	var githubOptions []githubapp.Option
 	if input.Store != nil {
+		pool := input.Store.Pool
 		githubOptions = append(githubOptions, githubapp.WithLimits(ratelimit.New(input.Store.Pool)))
 	}
 	github, err := githubapp.New(input.App, input.GitHubAPIBase, githubOptions...)
@@ -380,7 +402,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		AgentTokens:            input.AgentTokens,
 		NewIssueLabel:          newIssue.Label,
 		NewIssueSession:        newIssue.Session,
-		ServerURL:              strings.TrimSuffix(input.ServerURL, "/"),
+		Origins:                origins,
 		Docs:                   input.Docs,
 		Embedder:               input.Embedder,
 		Answerer:               input.Answerer,
@@ -391,6 +413,9 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Renames:                input.Renames,
 		Attributor:             delivery.NewAttributor(input.Renames),
 		OIDC:                   input.OIDC,
+		OIDCAccounts:           input.OIDCAccounts,
+		AccessAccounts:         input.AccessAccounts,
+		BusProjects:            input.BusProjects,
 		BrokerTokens:           input.BrokerTokens,
 		AgentStream:            input.AgentStream,
 		AgentPublisher:         input.AgentPublisher,
@@ -530,6 +555,10 @@ type server struct {
 	// on every server register mounts: it starts its listening connection on the first of them to
 	// subscribe and stops it with the last.
 	eventRelay *eventStreamRelay
+	// sessionTies is each (session, person) pair a broker-issued token proved that this process
+	// has recorded in session_owners (tieBrokerSession), so a session's every request does not
+	// write it again.
+	sessionTies tiedSessions
 	// testHooks carries every test hook to every process serving the database
 	// (test_hooks_fanout.go); nil without Deps.TestHooksEnabled, and on a server with no Store,
 	// which shares nothing with another process and runs a hook on itself.
@@ -654,15 +683,6 @@ type queryer interface {
 	SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults
 }
 
-// RouteMux is what Register mounts the routes on: an *http.ServeMux in a server, and in the routes
-// package's TestAKeyedWriteNeverRunsUnkeyed one that also keeps the pattern of each, so the test
-// reads every route the router mounts from the mounting itself rather than from a list kept beside
-// it, and finds a write mounted beside the table, which runs outside keyedWrites.
-type RouteMux interface {
-	Handle(pattern string, handler http.Handler)
-	HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request))
-}
-
 // Register mounts every native-workspace route on mux. The routes live in routes_table.go; the
 // same table answers GET /api/v1.
 //
@@ -700,7 +720,7 @@ type RouteMux interface {
 // on no context that ever ends, so they would outlive the process's shutdown, or the test that
 // built the server, and the returned wait would block for ever once an events subscription had
 // started the relay, or at once under the test hooks.
-func Register(mux RouteMux, lifetime context.Context, deps Deps) Background {
+func Register(mux *http.ServeMux, lifetime context.Context, deps Deps) Background {
 	s := register(mux, lifetime, deps)
 	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, EventHead: s.eventFeedHead, EventHorizon: s.horizon}
 }
@@ -714,9 +734,11 @@ type Background struct {
 	// process that died left owed is sent, once, under its own attempt number. The maintenance loop
 	// runs it (RunMaintenanceSweep).
 	ResumeDeliveries func(context.Context) error
-	// EventHead is the event_head GET /auth/whoami answers (eventFeedHead): an id at or below which
-	// every event is already final, which a page resumes its first events subscription from.
-	EventHead func(context.Context) (int64, error)
+	// EventHead is the event_head GET /auth/whoami answers the person whose cookie the request
+	// carries (personEventHead): an id at or below which every event is already final, which a page
+	// resumes its first events subscription from, read as the highest id of an event that person
+	// can see (viewerEventHead), resolved from the request's own credential.
+	EventHead func(r *http.Request) (int64, error)
 	// EventHorizon answers the server's one events.Horizon (horizon(), event_stream_relay.go),
 	// built on the first call: the safe horizon every reader that pages the event log by a global
 	// id cursor reads up to. The suggestion outcome sweep takes it (RunSuggestionOutcomeSweep) so
@@ -802,7 +824,7 @@ func (b *backgroundWork) wait() {
 // log's boot mark does (takeBootMark), for a server that has a Store. The test hooks' listener is
 // one of those: it needs Deps.TestHooksEnabled and a Store and dials on a goroutine of its own,
 // since a process has to be listening before another process calls a hook.
-func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
+func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	if lifetime == nil {
 		panic("api.Register: the lifetime parameter is required: it is the context that ends the delivery hub, the event stream relay and every live socket (a test passes t.Context())")
 	}
@@ -824,9 +846,16 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	}
 	routes := s.routes()
 	if undecidable := s.undecidableWrites(routes); len(undecidable) > 0 {
-		// A mutating row the project check cannot decide would serve a project-scoped caller a
-		// write nothing judged, so the table is refused rather than mounted (project_scope.go).
-		panic("api.Register: the route table holds a mutating row the project-scope check cannot decide: " + strings.Join(undecidable, "; "))
+		// A mutating row nothing decides - no class, or a project's write the hidden-object walk
+		// has no probe for - would serve a write nothing judged, so the table is refused rather
+		// than mounted (project_scope.go).
+		panic("api.Register: the route table holds a mutating row nothing decides: " + strings.Join(undecidable, "; "))
+	}
+	if undecided := undecidedReads(routes, readClasses); len(undecided) > 0 {
+		// A GET row with no read class is a read nothing decided who may see, and a class for a
+		// row nothing serves is a row renamed or deleted and its entry left behind; the table is
+		// refused rather than mounted (read_classes.go).
+		panic("api.Register: the route table holds a GET row the read check cannot decide: " + strings.Join(undecided, "; "))
 	}
 	if unmounted := scopedRoutesNotMounted(); len(unmounted) > 0 {
 		// A scope named on a route nothing serves is a scope nothing enforces — a row renamed or
@@ -869,16 +898,37 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	for _, route := range routes {
 		mux.HandleFunc(route.Method+" "+route.Pattern, s.routeHandler(route, replays[route.Method+" "+route.Pattern]))
 	}
+	// The two sockets are mounted beside the table, each with what it reads (readclass.Handle):
+	// a document room holds one document of a project, and the live socket carries events of
+	// projects, people's own state and the deployment's rows.
 	if websocket, ok := deps.Docs.(interface {
 		ServeHTTP(http.ResponseWriter, *http.Request)
 	}); ok {
 		// The document service admits a socket by its sign-in cookie alone, so its heartbeat
 		// re-checks that cookie and nothing the request carries beside it (signInStillResolves).
 		const pattern = "/ws/doc/{room}"
-		mux.Handle("GET "+pattern, accesslog.Handler(pattern, s.whileCallerResolves(s.signInStillResolves,
-			trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP)))))
+		readclass.Handle(mux, []readclass.Class{readclass.Project}, "GET "+pattern,
+			accesslog.Handler(pattern, s.refuseUnlistedServiceAccount(s.whileCallerResolves(s.signInStillResolves, false,
+				trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP))))))
+		// An access change made by SQL alone announces nothing the document service hears, so it
+		// re-checks its sockets' access on their heartbeat too, as the live socket and the
+		// Delivery views re-check their readers (accessRecheckEvery), until lifetime ends.
+		if recheck, ok := deps.Docs.(interface {
+			RunAccessRecheck(context.Context, time.Duration)
+		}); ok {
+			go recheck.RunAccessRecheck(lifetime, s.accessRecheckEvery())
+		}
+		// A session's documents follow the session content rule, which reads the stored listener
+		// answer only while it is fresh, so the document service refreshes it before each read of
+		// a socket's rule, as the live agent view does (refreshRosterForContent).
+		if refresh, ok := deps.Docs.(interface {
+			SetRosterRefresh(func(context.Context))
+		}); ok {
+			refresh.SetRosterRefresh(s.refreshRosterForContent)
+		}
 	}
-	mux.Handle("GET "+liveSocketPattern, s.liveSocketHandler(s.serveLiveSocket))
+	readclass.Handle(mux, []readclass.Class{readclass.Project, readclass.People, readclass.Deployment}, "GET "+liveSocketPattern,
+		s.liveSocketHandler(s.serveLiveSocket))
 	return s
 }
 
@@ -918,6 +968,12 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 	// prefix into is the value the project check resolves and the value the handler
 	// addresses its row by, one value for both (resolveIDPrefixes, project_scope.go).
 	handler = s.resolveIDPrefixes(route, handler)
+	if route.Method == http.MethodGet {
+		// Outside resolveIDPrefixes, so the reader it resolves is in the request's context
+		// before any read of the row's binds one (readerOf); inside the parameter check and
+		// the scope gate, so a request either refuses is refused before anything is read.
+		handler = s.withinReadScope(route, handler)
+	}
 	handler = s.refuseUnstorableParameters(route.Pattern, handler)
 	if len(route.OAuthScopes) > 0 {
 		// Ahead of the keyed layer and the project and session checks, so the row's own
@@ -1098,9 +1154,10 @@ type apiError struct {
 	message string
 	// retryAfter is the Retry-After the answer carries, in whole seconds, and 0 for an answer
 	// that carries none. Only a refusal that knows when the caller may come back sets it:
-	// brokerTokenActor's 429, the results write's 409 CHECK_CONTENDED, both deletes' 409
-	// DELETE_CONTENDED, and linkedReadRefusal's 502 for a linked repository's read GitHub
-	// rate-limited with a wait. writeHandlerError writes the header.
+	// brokerTokenActor's 429, its 503 for a broker token past its deadline (errBrokerTokenLapsed),
+	// the results write's 409 CHECK_CONTENDED, both deletes' 409 DELETE_CONTENDED, and
+	// linkedReadRefusal's 502 for a linked repository's read GitHub rate-limited with a wait.
+	// writeHandlerError writes the header.
 	retryAfter int
 	// scope is the OAuth scope a missing-scope refusal names, and is empty for every other
 	// refusal. Only missingScopeError sets it; writeHandlerError writes the challenge header
@@ -1251,7 +1308,9 @@ func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 	accesslog.Note(r.Context(), accesslog.KindUser, login)
 	// A person at a browser is the person, so their cookie holds every scope and names no agent
 	// that acted for them. The cookie proved the login, so the actor is Proven.
-	return model.Actor{Kind: "user", ID: login, Credential: personCredential, Proven: true}, true, nil
+	actor := model.BrowserActor(login)
+	actor.Proven = true
+	return actor, true, nil
 }
 
 // The two credentials every request of their kind shares. Each is a fact of the deployment
@@ -1271,7 +1330,11 @@ var (
 // an operator the token was verified and refused rather than simply unknown. A
 // token the verifier could not judge because its issuer has not been discovered
 // is a 503 OIDC_ISSUER_UNAVAILABLE, never a 401: the caller retries rather than
-// reads its token as refused.
+// reads its token as refused. A verified token of an account the deployment does not
+// name (Deps.OIDCAccounts) is 401 SERVICE_ACCOUNT_NOT_ADMITTED: optionalActor is the
+// one caller resolution of every route, both sockets and every write, so the refusal
+// comes before any handler reads or writes a row. A deployment that names no account
+// admits every verified one, as it did before the list existed.
 func (s *server) serviceTokenActor(r *http.Request, token string) (model.Actor, bool, error) {
 	claims, err := s.deps.OIDC.Verify(r.Context(), token)
 	if errors.Is(err, oidc.ErrIssuerUnavailable) {
@@ -1289,6 +1352,10 @@ func (s *server) serviceTokenActor(r *http.Request, token string) (model.Actor, 
 			"service-account token rejected (%s)", reason)
 	}
 	accesslog.Note(r.Context(), accesslog.KindService, claims.Subject)
+	if len(s.deps.OIDCAccounts) > 0 && !slices.Contains(s.deps.OIDCAccounts, claims.Subject) {
+		return model.Actor{}, false, errorf(http.StatusUnauthorized, "SERVICE_ACCOUNT_NOT_ADMITTED",
+			"the service account %s is not one this deployment admits (DISPATCH_OIDC_ACCOUNTS)", claims.Subject)
+	}
 	// A credential that holds no scope, not the absence of one: a pod's projected token proves a
 	// workload and no person, so it acts as nobody.
 	return model.Actor{Service: &claims.Subject, Credential: scopelessCredential}, false, nil
@@ -1926,28 +1993,63 @@ func (s *server) readyPool() (*store.Pool, error) {
 
 // lockIssue takes the issue's owner lock and returns its lifecycle status, closed or not. It is
 // the lock requireOpenOwnerStatus takes, without the closed refusal, for the writes a closed
-// issue still takes: a message, its deliveries and the agent's reply to one. The read is the
-// statement after the lock, sent with it, so it sees a close the lock's previous holder
-// committed while this one waited (store.LockOwnerAndRead).
+// issue still takes on a message already read: its deliveries and the agent's reply to one. The
+// read is the statement after the lock, sent with it, so it sees a close the lock's previous
+// holder committed while this one waited (store.LockOwnerAndRead). It decides nothing about who
+// may write: its callers read the message as its writer reads it first, or deliver as the
+// server, so it reads the issue with no project clause (issueStatusRead).
 func (s *server) lockIssue(ctx context.Context, tx pgx.Tx, key string) (string, error) {
-	status, _, err := issueStatus(ctx, key, lockedOwnerRead(tx))
+	var status string
+	var open bool
+	err := store.LockOwnerAndRead(ctx, tx, store.IssueOwner(key), issueStatusRead, []any{key}, &status, &open)
 	return status, err
 }
 
 // issueStatusRead reads an issue's lifecycle status and whether it is open.
 const issueStatusRead = `select status, closed_at is null from issues where key = $1`
 
-// issueStatus is that read made through read: under the issue's owner lock for the check that
-// decides (lockIssue, ownerStatus), and through the pool for the check a comment makes before
-// its transaction opens, which reads exactly what the locked check will. It refuses nothing:
-// each write that a closed issue refuses decides that from open.
-func issueStatus(ctx context.Context, key string, read ownerRead) (string, bool, error) {
+// visibleIssueStatusRead is issueStatusRead as the viewer $2 binds reads it
+// (access.ProjectClause): an issue of a project that viewer does not see is no row.
+var visibleIssueStatusRead = issueStatusRead + ` and ` + access.ProjectClause("project_key", "$2")
+
+// issueStatus is that read made through read, as who reads it: under the issue's owner lock for
+// the check that decides (ownerStatus; lockedOwnerReadOnceFound for a write that names the issue by
+// its key alone), and through the pool for the check a comment makes before its transaction opens,
+// which reads exactly what the locked check will. An issue of a project who does not see is
+// pgx.ErrNoRows, as a key no issue holds is. It refuses nothing: each write that a closed issue
+// refuses decides that from open.
+func issueStatus(ctx context.Context, who model.Actor, key string, read ownerRead) (string, bool, error) {
 	var status string
 	var open bool
-	if err := read(ctx, store.IssueOwner(key), issueStatusRead, []any{key}, &status, &open); err != nil {
+	if err := read(ctx, store.IssueOwner(key), visibleIssueStatusRead, []any{key, refs.VisibilityArg(who)}, &status, &open); err != nil {
 		return "", false, err
 	}
 	return status, open, nil
+}
+
+// lockOwnerOnceFound takes owner's lock only once read, the owner's row as the caller reads it,
+// has found the owner: for a write that names its owner by a key it has not read yet. read runs
+// first with nothing locked, so an owner the caller does not see is refused there (pgx.ErrNoRows,
+// as Scan returns it) before any lock is asked for, as a key no row holds is: it never waits
+// behind the writers of its project, which a key no row holds never does either. Then the lock is
+// taken and read runs again in the statement after it (store.LockOwnerAndRead), since the lock's
+// previous holder may have changed the row meanwhile; dest holds that second read. read must bind
+// the caller's viewer (access.ProjectClause or its like), or a hidden owner would pass the first
+// read and wait.
+func lockOwnerOnceFound(ctx context.Context, tx pgx.Tx, owner store.Owner, read string, args []any, dest ...any) error {
+	if err := tx.QueryRow(ctx, read, args...).Scan(dest...); err != nil {
+		return err
+	}
+	return store.LockOwnerAndRead(ctx, tx, owner, read, args, dest...)
+}
+
+// lockedOwnerReadOnceFound is lockedOwnerRead for a write that names its owner by a key it has not
+// read yet: the owner is read as its caller reads it before the lock is taken (lockOwnerOnceFound).
+// Every read an owner check makes binds the caller's viewer (issueStatus, ownerStatus).
+func lockedOwnerReadOnceFound(tx pgx.Tx) ownerRead {
+	return func(ctx context.Context, owner store.Owner, sql string, args []any, dest ...any) error {
+		return lockOwnerOnceFound(ctx, tx, owner, sql, args, dest...)
+	}
 }
 
 // closedWrite says, of one write that takes the owner's lock through ownerStatus, whether a

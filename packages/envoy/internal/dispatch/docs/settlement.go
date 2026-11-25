@@ -686,13 +686,14 @@ func (st *settlement) commitRepairs(ctx context.Context) (settleStep, settleOutc
 // An ask event that names thread_logins has its insert read them (settlementEventLogins), after
 // the ask writes queued before it.
 //
-// caused holds, by an event's place in events, a write of the node and tuple store that event is
-// the cause of (graphstore.Uncaused): the version's block index, or the follow of an ask the
-// settlement opened. Its append is queued right after the event's and its stamp, naming the
-// event's id as the id sequence left it (graphstore.LatestEvent), so nothing between the two
-// appends another event. A held write is read when the step runs, in the write phase, so one an
-// earlier step fills then (createAskBlock) is read as that step left it.
-func (st *settlement) appendEvents(ctx context.Context, events []model.Event, caused map[int]*graphstore.Uncaused) error {
+// caused holds, by an event's place in events, the writes of the node and tuple store that event
+// is the cause of (graphstore.Uncaused), in the order they are stated: the version's block index,
+// or the node of an ask the settlement opened and its author's follow. Their appends are queued
+// right after the event's and its stamp, naming the event's id as the id sequence left it
+// (graphstore.LatestEvent), so nothing between the two appends another event. A held write is
+// read when the step runs, in the write phase, so one an earlier step fills then (createAskBlock)
+// is read as that step left it.
+func (st *settlement) appendEvents(ctx context.Context, events []model.Event, caused map[int][]*graphstore.Uncaused) error {
 	if len(events) == 0 {
 		return nil
 	}
@@ -705,7 +706,7 @@ func (st *settlement) appendEvents(ctx context.Context, events []model.Event, ca
 			if sourceKind, sourceID, ok := referenceSource(planned, st.room); ok {
 				refs.QueueStamp(b, sourceKind, sourceID)
 			}
-			if stated := caused[index]; stated != nil {
+			for _, stated := range caused[index] {
 				graphstore.QueueCaused(b, *stated, graphstore.LatestEvent)
 			}
 		}
@@ -887,12 +888,12 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		// What this settlement's block index stated waits for that event: its id is the cause
 		// every node and tuple of the pass carries, and it exists only once the event's insert has
 		// run, so it is stated right after it (appendEvents).
-		if err := st.appendEvents(ctx, []model.Event{versionEvent}, map[int]*graphstore.Uncaused{0: &result.blocks}); err != nil {
+		if err := st.appendEvents(ctx, []model.Event{versionEvent}, map[int][]*graphstore.Uncaused{0: {&result.blocks}}); err != nil {
 			return settleDone, st.abandon(err)
 		}
 	}
-	// The follows of the asks this settlement opened wait for those asks' ask.opened events, each
-	// stated right after its own (followsByEvent).
+	// The nodes and the follows of the asks this settlement opened wait for those asks' ask.opened
+	// events, each stated right after its own (followsByEvent).
 	follows, err := st.reconciliation.followsByEvent(st.reconciliation.events)
 	if err != nil {
 		return settleDone, st.abandon(err)
@@ -931,6 +932,9 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		}
 	}); err != nil {
 		return settleDone, st.commitFailed(advanced, fmt.Errorf("commit document settlement: %w", err))
+	}
+	if s.afterSettlementCommit != nil {
+		s.afterSettlementCommit(room)
 	}
 	st.finishSlots()
 	for _, event := range st.published {

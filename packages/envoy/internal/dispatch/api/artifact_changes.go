@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // The ways a top-level unit or a typed block of a document stands between two of its versions
@@ -95,10 +96,13 @@ type artifactBlockChange struct {
 
 // getArtifactChanges answers what changed between versions from and to of one document
 // (artifactChanges). It reads the document as GET …/versions/{number} reads it: an authenticated
-// caller, and the artifact's own row by its id (loadArtifactRowByID), the row that route's read
-// finds and the 404 it answers, without the versions and the approval that read goes on to carry,
-// which this one uses neither of and which say nothing of who may read the document. So a caller
-// reads here exactly what it may read there. An id that names no artifact is that route's 404
+// caller (artifactReaderOf), and the artifact's own row by its id as that caller reads it
+// (loadArtifactRowByID, access.DocumentClause), the row that route's read finds and the 404 it
+// answers, without the versions and the approval that read goes on to carry, which this one uses
+// neither of and which say nothing of who may read the document. Both versions' text is read as
+// that caller reads it too (versionsMarkdown). So a caller reads here exactly what it may read
+// there, and a document of a private project its list does not let the caller into is the 404
+// of an id nobody holds. An id that names no artifact is that route's 404
 // ARTIFACT_NOT_FOUND, and a version the document does not have is its 404 NOT_FOUND. The artifact
 // is read before the query is, so an id that names nothing answers that 404 whatever the query
 // holds, as idRoutes says it does. Both numbers must be version numbers a document can have
@@ -111,7 +115,11 @@ func (s *server) getArtifactChanges(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	artifact, err := loadArtifactRowByID(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
+	who, ok := s.artifactReaderOf(w, r)
+	if !ok {
+		return
+	}
+	artifact, err := loadArtifactRowByID(r.Context(), s.deps.Store.Pool, who, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -131,7 +139,7 @@ func (s *server) getArtifactChanges(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_VERSION", http.StatusBadRequest, fmt.Sprintf("from (%d) must be below to (%d)", from, to))
 		return
 	}
-	before, after, err := s.twoVersionsMarkdown(r.Context(), artifact.ID, from, to)
+	before, after, err := s.twoVersionsMarkdown(r.Context(), artifact.ID, from, to, refs.VisibilityArg(who))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -146,10 +154,10 @@ func (s *server) getArtifactChanges(w http.ResponseWriter, r *http.Request) {
 }
 
 // twoVersionsMarkdown is the stored markdown of versions from and to of one document, in one
-// read (versionsMarkdown). A version the document does not have is the 404 NOT_FOUND GET
-// …/versions/{number} answers for it, naming the version.
-func (s *server) twoVersionsMarkdown(ctx context.Context, artifactID string, from, to int) (string, string, error) {
-	markdown, err := s.versionsMarkdown(ctx, artifactID, []int{from, to})
+// read as viewer reads it (versionsMarkdown). A version the document does not have is the 404
+// NOT_FOUND GET …/versions/{number} answers for it, naming the version.
+func (s *server) twoVersionsMarkdown(ctx context.Context, artifactID string, from, to int, viewer any) (string, string, error) {
+	markdown, err := s.versionsMarkdown(ctx, artifactID, []int{from, to}, viewer)
 	if err != nil {
 		return "", "", err
 	}

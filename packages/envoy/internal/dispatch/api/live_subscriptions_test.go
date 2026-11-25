@@ -13,9 +13,9 @@ import (
 	"time"
 
 	gws "github.com/gorilla/websocket"
-
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // fakeLiveKind stands in for the events and agent views, which a live socket starts as it starts
@@ -188,6 +188,44 @@ func TestASubscriptionPastTheCapIsRefused(t *testing.T) {
 	events.next(t, 5*time.Second, "over-e, once e1 left")
 	client.send(t, deliverySubscribe("over-d", livePipelineView(nil)))
 	client.refusal(t, 3*time.Second, "over-d", "TOO_MANY_SUBSCRIPTIONS")
+}
+
+// TestADeliveryViewTheHubDropsFreesItsPlaceUnderTheCap: the cap counts the subscriptions a socket
+// holds, and a delivery view's is the hub's to hold. The hub drops one on its own when a re-check
+// finds that the view's GET row refuses its caller's new reader (recheckReaders), and the place it
+// held is then free. alice fills her socket to the cap with one delivery view and events
+// subscriptions, and is then made a restricted member, which the access change's announcement
+// has the hub read: her delivery view is refused DEPLOYMENT_READ_REFUSED, and one more events
+// subscription starts.
+//
+// Control: the socket goes on counting the view the hub dropped; the last subscribe is refused
+// TOO_MANY_SUBSCRIPTIONS and the test fails.
+func TestADeliveryViewTheHubDropsFreesItsPlaceUnderTheCap(t *testing.T) {
+	events := newFakeLiveKind(0, 0)
+	rig := newLiveSocketRig(t, testServerOptions{liveKinds: map[string]liveKind{liveEventsView: events.kind(true)}}, nil)
+	seedPeople(t, rig.database, "alice")
+	client := rig.dial(t, asUser("alice"))
+
+	client.send(t, deliverySubscribe("d", livePipelineView(nil)))
+	client.refusal(t, 10*time.Second, "d", "DELIVERY_NOT_CONFIGURED")
+	for n := range contracts.LiveSocketMaxSubscriptions - 1 {
+		client.send(t, liveSubscribe("e"+strconv.Itoa(n), eventsView(), ""))
+		events.next(t, 5*time.Second, "events subscription "+strconv.Itoa(n))
+	}
+	client.send(t, liveSubscribe("over", eventsView(), ""))
+	client.refusal(t, 3*time.Second, "over", "TOO_MANY_SUBSCRIPTIONS")
+
+	markRestricted(t, rig.database, "alice")
+	if _, err := rig.database.Pool.Exec(t.Context(), `select pg_notify($1, '')`, store.AccessChangedChannel); err != nil {
+		t.Fatalf("announce the access change: %v", err)
+	}
+	client.refusal(t, 10*time.Second, "d", "DEPLOYMENT_READ_REFUSED")
+	if held := hubSubs(rig.served.deliveryHub); held != 0 {
+		t.Fatalf("the hub holds %d subscriptions after it dropped alice's one delivery view", held)
+	}
+
+	client.send(t, liveSubscribe("over", eventsView(), ""))
+	events.next(t, 5*time.Second, "the events subscription in the place the dropped view left")
 }
 
 func TestARepeatedSubReplacesAnotherKind(t *testing.T) {
@@ -510,7 +548,7 @@ func TestSendWaitReturnsWhenItsSubscriptionStops(t *testing.T) {
 	t.Run("the socket ends", func(t *testing.T) {
 		// The socket's end ends the subscription's context too, which derives from the socket's, and
 		// SendWait answers the socket's end whichever of the two it sees first.
-		socket := newLiveSocket(context.Background(), nil, nil)
+		socket := newLiveSocket(context.Background(), nil, model.Actor{})
 		socket.stream = make(chan liveStreamFrame, 1)
 		stream := &liveSubscriptionStream{socket: socket}
 		ctx, cancel := context.WithCancel(socket.ctx)

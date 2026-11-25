@@ -168,8 +168,9 @@ type DeliveryLiveFreshness struct {
 }
 
 // LiveEventsStart opens every events subscription, before any LiveEventFrame: Since is the decimal
-// id the subscription starts after, the page's resume clamped to the feed's head, or the head when
-// the page sent none. ReplayComplete is true when the page resumed from an id at or below the
+// id the subscription starts after, the page's resume clamped to the feed's head, or, when the page
+// sent none, the head as its caller reads it, the newest event the caller can see
+// (viewerEventHead). ReplayComplete is true when the page resumed from an id at or below the
 // head: the subscription replays every event after it before it goes live, so the page missed
 // nothing and owes no refresh for the gap. A subscription that names no resume, and one whose
 // resume is above the head (an id of a log this one replaced), was replayed nothing it missed and

@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -24,8 +25,10 @@ import (
 // beside itself.
 //
 // The socket holds at most contracts.LiveSocketMaxSubscriptions, of every kind; one more is
-// refused TOO_MANY_SUBSCRIPTIONS and starts nothing. A subscribe for a sub the socket holds
-// replaces it, whatever its kind. Every subscription ends when the socket does.
+// refused TOO_MANY_SUBSCRIPTIONS and starts nothing. A delivery view the hub dropped on its own,
+// one a re-check found its caller may no longer read (recheckReaders), holds no place. A subscribe
+// for a sub the socket holds replaces it, whatever its kind. Every subscription ends when the
+// socket does.
 
 // errLiveSocketClosed is what SendWait answers once the socket has ended.
 var errLiveSocketClosed = errors.New("dispatch: the live socket closed")
@@ -47,6 +50,9 @@ type liveStreamer interface {
 	// that credential at the upgrade: the gate a view only a person's credential may watch uses,
 	// since gateRouteScopes gates a route and no frame carries a credential.
 	Holds(scope string) bool
+	// Caller is the caller as the socket's upgrade resolved it, its credential kept, from which an
+	// events subscription resolves again what the caller sees (readerFor, feedEvents).
+	Caller() model.Actor
 }
 
 // runningSubscription is an events or agent subscription whose whole life runs on a goroutine of
@@ -143,6 +149,8 @@ func (stream *liveSubscriptionStream) ended(ctx context.Context) error {
 
 func (stream *liveSubscriptionStream) Holds(scope string) bool { return stream.socket.holds(scope) }
 
+func (stream *liveSubscriptionStream) Caller() model.Actor { return stream.socket.caller() }
+
 // subscribeLive answers one subscribe frame: it starts the subscription the frame's view's kind
 // names in place of any the socket holds under the frame's sub, or answers the error frame refusing
 // it. A frame the socket refuses itself (no sub, a kind it does not serve, a resume of another
@@ -184,6 +192,15 @@ func (s *server) subscribeLive(socket *liveSocket, frame LiveSubscribe) {
 	}
 	held := socket.subs[sub]
 	if held == nil && len(socket.subs) >= contracts.LiveSocketMaxSubscriptions {
+		// A delivery view the hub dropped on its own holds no place, so the socket lets go of each
+		// before it counts.
+		for id, kept := range socket.subs {
+			if kept.streamed == nil && !s.deliveryHub.Holds(socket, id) {
+				delete(socket.subs, id)
+			}
+		}
+	}
+	if held == nil && len(socket.subs) >= contracts.LiveSocketMaxSubscriptions {
 		socket.Send(liveRefusal(sub, "TOO_MANY_SUBSCRIPTIONS", fmt.Sprintf(
 			"a socket holds at most %d subscriptions; unsubscribe one before subscribing another", contracts.LiveSocketMaxSubscriptions)))
 		return
@@ -193,7 +210,8 @@ func (s *server) subscribeLive(socket *liveSocket, frame LiveSubscribe) {
 		if held != nil && held.streamed != nil {
 			s.endLive(socket, sub, held)
 		}
-		if s.deliveryHub.Subscribe(socket, deliverySubscription{Sub: sub, View: frame.View.DeliveryLiveView, Resume: deliveryResume}) {
+		resolve := func(ctx context.Context) (model.Actor, error) { return s.readerFor(ctx, socket.caller()) }
+		if s.deliveryHub.Subscribe(socket, deliverySubscription{Sub: sub, View: frame.View.DeliveryLiveView, Resume: deliveryResume, Resolve: resolve, Holds: socket.holds}) {
 			socket.subs[sub] = &liveSub{}
 		}
 		return

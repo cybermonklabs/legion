@@ -69,7 +69,8 @@ export interface MultiSelectProps {
   /** The trigger is busy with what the last close committed: it stays focusable, and says so
    *  rather than looking actionable and doing nothing. */
   readonly ariaDisabled?: boolean;
-  /** Shown under the list, e.g. a host's validation message for a rejected `onCreate`. */
+  /** Shown, and announced, in the footer pinned below the list, e.g. a host's validation message
+   *  for a rejected `onCreate`. */
   readonly error?: string | null;
   /** Shown in place of the list when nothing is left to choose or nothing matches the search. */
   readonly emptyMessage: string;
@@ -380,25 +381,39 @@ export function MultiSelect({
               </p>
             ) : null}
           </div>
-          {error === null ? null : (
-            <p
-              className={`border-t px-3 py-2 text-sm ${tooltips ? `${borderDefault} ${dangerText}` : ON_PAGE.failure}`}
-            >
-              {error}
-            </p>
-          )}
-          {selected.length === 0 ? null : (
-            <div className={`sticky bottom-0 border-t p-2 ${tooltips ? card : ON_PAGE.panel}`}>
-              <button
-                className={`min-h-11 w-full rounded-lg px-3 py-2 text-sm font-medium ${tooltips ? `${surfaceMutedBg} ${textSecondaryOnSurface}` : ON_PAGE.clear}`}
-                disabled={disabled}
-                onClick={() => onChange([])}
-                onClickCapture={focusSearchFirst}
-                onMouseDown={(event) => event.preventDefault()}
-                type="button"
-              >
-                Clear {label.toLocaleLowerCase()}
-              </button>
+          {/* The rows scroll under this footer, so an error drawn after them would sit below the
+              row just pressed, or under the footer itself: it is drawn here, in view, and
+              announced. */}
+          {error === null && selected.length === 0 ? null : (
+            <div className={`sticky bottom-0 border-t ${tooltips ? card : ON_PAGE.panel}`}>
+              {error === null ? null : (
+                <p
+                  className={`px-3 py-2 text-sm ${tooltips ? dangerText : ON_PAGE.failure}`}
+                  role="alert"
+                >
+                  {error}
+                </p>
+              )}
+              {selected.length === 0 ? null : (
+                <div
+                  className={
+                    error === null
+                      ? "p-2"
+                      : `border-t p-2 ${tooltips ? borderDefault : ON_PAGE.panel}`
+                  }
+                >
+                  <button
+                    className={`min-h-11 w-full rounded-lg px-3 py-2 text-sm font-medium ${tooltips ? `${surfaceMutedBg} ${textSecondaryOnSurface}` : ON_PAGE.clear}`}
+                    disabled={disabled}
+                    onClick={() => onChange([])}
+                    onClickCapture={focusSearchFirst}
+                    onMouseDown={(event) => event.preventDefault()}
+                    type="button"
+                  >
+                    Clear {label.toLocaleLowerCase()}
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </AnchoredPanel>

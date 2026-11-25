@@ -8,6 +8,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // A settlement's version move keeps an approval request with the person when the document waits on
@@ -111,7 +112,7 @@ func moveStoredApprovalAsk(t *testing.T, database *store.Store, artifactID strin
 	}
 	queued, ledger := queueWrites(ctx, tx)
 	if err := MoveApprovalAsk(queued, tx, events.NewBroker(), artifactID, model.Version{Number: number}, markdown,
-		model.Actor{Kind: "user", ID: "alice"}, true, ""); err != nil {
+		model.Actor{Kind: "user", ID: "alice"}, true, text.NewOrigins("")); err != nil {
 		t.Fatalf("move the request to version %d: %v", number, err)
 	}
 	if err := ledger.runQueue(ctx, nil); err != nil {

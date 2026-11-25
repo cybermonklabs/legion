@@ -1804,13 +1804,16 @@ func copyWaitsForRole(ctx context.Context, deps Deps, role, session string) bool
 }
 
 // fallbackClaimQuery is claimFallbackCopies's one statement, named so that a test can tell it,
-// byte for byte, from every other statement a fallback pass sends.
-const fallbackClaimQuery = `
+// byte for byte, from every other statement a fallback pass sends. $3 is the private-delivery hold
+// (Deps.holdRead). It is a variable, since privateOwnerSQL writes the hold's clause.
+var fallbackClaimQuery = `
 		with claimed as (
 			update comment_fallback_copies set next_attempt_at = now() + $2
 			where (comment_id, destination) in (
-				select comment_id, destination from comment_fallback_copies
+				select comment_id, destination from comment_fallback_copies waiting
 				where settled_at is null and (next_attempt_at is null or next_attempt_at <= now())
+				  and not ($3::boolean and exists (
+				      select 1 from events e where e.id = waiting.event_id and ` + privateOwnerSQL("e") + `))
 				order by created_at
 				limit $1
 				for update skip locked
@@ -1826,7 +1829,10 @@ const fallbackClaimQuery = `
 // in one statement: for update skip locked, so a second process's pass skips them, and
 // next_attempt_at pushed out by fallbackClaim in the same breath, which each row returns as its
 // claim. It reads the partial index of unsettled rows, so a pass with nothing to decide reads no
-// row.
+// row. While the private-delivery hold is on (Deps.holdRead) it claims no copy of an event
+// whose owner's project the database holds private (privateOwnerSQL), as the batch's read chooses
+// no such owner: the row is left as it stands, unclaimed and unwritten, for a pass after the hold,
+// and the retry timer looks again meanwhile (Outbox.nextRetry).
 //
 // The statement runs outside the pass's context, under claimTimeout of its own, as the record
 // step does: a context that ends once it has committed would answer context canceled and lose the
@@ -1835,7 +1841,7 @@ const fallbackClaimQuery = `
 func claimFallbackCopies(ctx context.Context, deps Deps) ([]fallbackCopy, error) {
 	claim, cancel := context.WithTimeout(context.WithoutCancel(ctx), claimTimeout)
 	defer cancel()
-	rows, err := deps.Store.Pool.Query(claim, fallbackClaimQuery, batchSize, fallbackClaim)
+	rows, err := deps.Store.Pool.Query(claim, fallbackClaimQuery, batchSize, fallbackClaim, deps.holdRead())
 	if err != nil {
 		return nil, err
 	}

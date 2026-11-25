@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 var (
@@ -75,11 +76,15 @@ const (
 // connection caps (cmd/dispatch's DISPATCH_MAX_LIVE_ROOMS and DISPATCH_MAX_DOC_CONNECTIONS); zero
 // is the default, 1,000 each.
 type Deps struct {
-	Store             *store.Store
-	Persistence       VersionedStore
-	Events            *events.Broker
-	Identity          identity.Identity
-	ServerURL         string
+	Store       *store.Store
+	Persistence VersionedStore
+	Events      *events.Broker
+	Identity    identity.Identity
+	// Origins is the web origins the server answers at, the canonical one (DISPATCH_SERVER_URL)
+	// first, then the outside one (DISPATCH_OUTSIDE_ORIGIN) when it has one: a dashboard URL of
+	// either that a text writes is read as the reference its page names. The zero value reads only
+	// `dispatch://` references.
+	Origins           text.Origins
 	Settle            time.Duration
 	MarkWait          time.Duration
 	UnrecordedMarkTTL time.Duration
@@ -142,7 +147,9 @@ type VersionedStore interface {
 	AppendUpdateTx(ctx context.Context, tx pgx.Tx, room string, update []byte, contentChanged bool) (persistence.Version, error)
 	RebuildTx(ctx context.Context, tx pgx.Tx, room string, loaded persistence.Version, seed []byte) (RebuildReport, error)
 	Head(ctx context.Context, room string) (persistence.Version, error)
-	DocumentStamp(ctx context.Context, room string) (DocumentStamp, error)
+	// DocumentStamp is the room's DocumentStamp for the reader whose viewer viewer is
+	// (refs.VisibilityArg): pgx.ErrNoRows where that reader may not read the document.
+	DocumentStamp(ctx context.Context, room string, viewer any) (DocumentStamp, error)
 	LoadDocument(ctx context.Context, room string) (LoadedDocument, error)
 	compactRoom(ctx context.Context, room string, rule compactRule, wait bool) (compactResult, error)
 	pgVersioned() *PgVersioned
@@ -155,7 +162,7 @@ type Service struct {
 	persistence       VersionedStore
 	events            *events.Broker
 	identity          identity.Identity
-	serverURL         string
+	origins           text.Origins
 	settle            time.Duration
 	markWait          time.Duration
 	unrecordedMarkTTL time.Duration
@@ -163,6 +170,15 @@ type Service struct {
 	editNoticeQuiet time.Duration
 	// buildCommit is Deps.BuildCommit.
 	buildCommit string
+	// rosterRefresh is the API's refresh of the stored listener answer (SetRosterRefresh), run
+	// once before each read of which rooms a person still reads (readableRooms,
+	// refreshRosterForReader); nil refreshes nothing.
+	rosterRefresh atomic.Pointer[func(context.Context)]
+	// accessEpoch counts the access changes this process has heard, on which its document
+	// sockets ask their rule again (socketAsk), and projectsPrivate is the last read of whether a
+	// project is private, kept for the epoch it was read at (anyProjectPrivate).
+	accessEpoch     accessEpoch
+	projectsPrivate privateRead
 	// markingRule is the block index's marking rule this build applies, refs.BlockIndexMarkingRule
 	// as New sets it: the rule its marks, its event cursor and its index passes carry
 	// (markVersionedDocuments, readEventsAfterCursor, refs.PlanBlocks). A test sets another to run
@@ -172,6 +188,11 @@ type Service struct {
 	// blockIndexHorizon builds under horizonOnce on the first tick that asks for it.
 	horizonOnce  sync.Once
 	eventHorizon *events.Horizon
+	// objectPassFinished is when this process's last object pass finished with nothing left, in
+	// Unix nanoseconds by the service's clock (now), and zero before one has: a block-index tick
+	// owes the pass on the process's first tick and once objectPassInterval has passed since
+	// (readEventsAfterCursor).
+	objectPassFinished atomic.Int64
 	// maxPendingItems is the pending queue the service's rooms decode their stored state under
 	// (Server.MaxPendingItems, which New sets from it and ygo reads as each room loads) and the
 	// queue the check a room's load is compared with takes (validateUpdate). New sets it to
@@ -199,6 +220,11 @@ type Service struct {
 	// afterSettleLock runs after settleRoom has taken the document's advisory lock and before
 	// it touches the room. Nil outside tests; tests use it to fail the room in that window.
 	afterSettleLock func(room string)
+	// afterSettlementCommit runs once a settlement's transaction has committed and released the
+	// room's lock it held across the commit (commitSettlement), and before the settlement finishes.
+	// Nil outside tests; a test reads the room there, the first moment another reader can find
+	// what the settlement committed.
+	afterSettlementCommit func(room string)
 	// beforeAwarenessWatch is given a room's awareness before the relay registers its own
 	// observer on it (awarenessRelay.watchRoomAwareness). Nil outside tests; tests use it to put
 	// an observer of their own ahead of the relay's, since ygo fires a room's update observers in
@@ -392,6 +418,11 @@ type Service struct {
 	// closes it (holdDocumentSocket). Nil outside tests; tests run a switch there, the gap the
 	// count of switches covers (schemaSwitches).
 	afterSocketAdmitted func(room string)
+	// afterSocketRecorded runs in ygo's authorization of a document socket (authorize) once the
+	// socket's admission is recorded where an access re-check walks it (schemaAdmissions.admit) and
+	// authorize has admitted it, and before ygo joins the room and upgrades the socket. Nil outside
+	// tests; tests take the socket's person off the room's list and run a re-check there.
+	afterSocketRecorded func(room string)
 	// afterSocketPreload runs in a cold document socket's admission (ServeHTTP) once it has offered
 	// the durable state it loaded to the room's load (offerPreload), and before it hands the socket
 	// to ygo. Nil outside tests; tests use it to hold two cold sockets of one room until both have
@@ -431,7 +462,8 @@ type Service struct {
 	// between the mutation's read of it and its write, where a peer's update can land: Apply runs
 	// the mutation outside the document's lock and takes the lock for each transaction alone.
 	inServiceTransaction func(txn *crdt.Transaction)
-	// now is the clock the unrecorded-mark sweep ages marks by (sweepUnrecordedMarks).
+	// now is the clock the unrecorded-mark sweep ages marks by (sweepUnrecordedMarks), and the
+	// block-index tick times its object pass by (objectPassInterval).
 	now      func() time.Time
 	settleWG sync.WaitGroup
 	// evictWG counts the forced evictions failRoomLocked spawns. They flush the room through
@@ -907,7 +939,7 @@ func New(deps Deps) *Service {
 		processID:         processID,
 		events:            deps.Events,
 		identity:          deps.Identity,
-		serverURL:         strings.TrimSuffix(deps.ServerURL, "/"),
+		origins:           deps.Origins,
 		settle:            settle,
 		markWait:          markWait,
 		now:               time.Now,
@@ -3457,11 +3489,7 @@ type Queryer interface {
 // shared pool closes the same cycle the transaction rule closes.
 func (s *Service) issueOpen(ctx context.Context, q Queryer, artifactID string) (bool, error) {
 	var open bool
-	if err := q.QueryRow(ctx, `
-		select coalesce(i.closed_at is null, true)
-		from artifacts a left join issues i on i.key = a.issue_key
-		where a.id = $1 and a.kind = 'doc'
-	`, artifactID).Scan(&open); err != nil {
+	if err := q.QueryRow(ctx, issueOpenStatement, artifactID).Scan(&open); err != nil {
 		return false, fmt.Errorf("check document issue: %w", err)
 	}
 	return open, nil

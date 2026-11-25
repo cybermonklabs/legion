@@ -17,7 +17,6 @@ import (
 	policyv1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/policy/v1"
 	schedulingv1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/scheduling/v1"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
-
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/internal/bus"
 )
@@ -934,6 +933,12 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// policies add up.
 	if len(args.LoadBalancerSourceRanges) > 0 {
 		appIngress = append(appIngress, ingressFrom(8766, ipBlockPeers(args.LoadBalancerSourceRanges)))
+	}
+	// Each allowed app is a rule of its own, admitting the pods of this namespace that wear its
+	// app label: a workload such as the secrets broker runs in Dispatch's own namespace, which an
+	// allowedNamespaces entry would open to every pod.
+	for _, app := range args.AllowedApps {
+		appIngress = append(appIngress, ingressFrom(8766, networkingv1.NetworkPolicyPeerArray{podPeer(app)}))
 	}
 	// The front door is a pod of this namespace, which no namespace selector covers, so without
 	// this rule Serve reaches the app at no port at all. Without a front door there is no such pod
