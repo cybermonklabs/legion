@@ -17,14 +17,20 @@
 -- append to an issue waits at most for this one statement. The ALTER that took the table's
 -- ACCESS EXCLUSIVE lock committed in 20261125094500, so no reader of issues waits on it.
 --
--- It takes the rows in key order (`key collate "C"`): `unfilled` selects the rows it writes in
--- that order `for no key update`, and the update joins it, so each row's lock is taken before the
--- update reaches any row. That is the order in which store.LockOwners takes the rows of several
--- issues (ownerRowsIssues in store/ownerlock.go), so the fill and such a write take any two issue
--- rows in one order. An update that locked each row when its scan reached it could hold one row
--- of such a write and wait for another the write holds, while the write waits for the first, and
--- Postgres would abort one of the two, the migration or the write.
+-- It waits on no row: `unfilled` selects the rows it writes `for no key update skip locked`, and
+-- the update joins it, so a row another transaction holds is left out rather than waited for. A
+-- request takes its issues' owner locks first (store.LockOwners) and their rows after, in the
+-- order its statements reach them: a child's status write takes the child's row and then its
+-- parent's, for child.status (api/issue_patch.go, events/broker.go's lockEventOwner). No order of
+-- rows matches every such write, and the fill takes no owner lock, which would be one lock for
+-- each of its rows, so a fill that waited for a row a write holds could hold the row that write
+-- asks for next, and Postgres would abort one of the two, the migration or the request. A fill
+-- that takes the rows in key order deadlocked so, as one that takes them as its scan meets them
+-- did, beside a child's status write whose parent's key sorts first (dispatch://INFRA-5791,
+-- 2026-11-25). A fill that waits on nothing takes no order, so `unfilled` has none.
 --
+-- A row left out keeps its pair as it was, null on a row written before 20261125094500, which the
+-- read takes for unknown and probes; the row's next append through this release writes the pair.
 -- A process of the release before this one that appends an event while this runs, or later in
 -- the same roll, leaves its row's pair behind last_seq; the read probes that row, and the row's
 -- next append through this release writes the pair again.
@@ -32,8 +38,7 @@ with unfilled as materialized (
   select key
   from issues
   where last_seq > 0 and last_event_at_seq is distinct from last_seq
-  order by key collate "C"
-  for no key update
+  for no key update skip locked
 )
 update issues
 set (last_event_at, last_event_at_seq) = (

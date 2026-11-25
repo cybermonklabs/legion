@@ -160,7 +160,8 @@ func seededRank(index int) string {
 }
 
 // issuesLastEventAtFillMigration is the migration that fills each issue's newest-event pair
-// (last_event_at, last_event_at_seq) from its event of last_seq, taking the rows in key order.
+// (last_event_at, last_event_at_seq) from its event of last_seq, skipping each row another
+// transaction holds.
 const issuesLastEventAtFillMigration = "20261125094600_issues_last_event_at_backfill.up.sql"
 
 // fillNewestEventPairs runs that migration's file on database as the runner applies it

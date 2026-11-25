@@ -12,33 +12,27 @@ import (
 // (last_event_at, last_event_at_seq) from its event of last_seq.
 const newestEventFillMigration = "20261125094600_issues_last_event_at_backfill.up.sql"
 
-// newestEventFillWait bounds how long the test waits for the fill's backend to queue behind the
-// row the second transaction holds, and for the fill to end once that transaction lets go. Both
-// are far above what a fill of three rows takes, so a wait that runs out is the order being
-// wrong, not a slow machine.
+// newestEventFillWait bounds how long the test waits for the fill to end while a second
+// transaction holds one of its rows. It is far above what a fill of three rows takes, so a wait
+// that runs out is the fill waiting on that row, not a slow machine.
 const newestEventFillWait = 20 * time.Second
 
-// TestTheNewestEventFillTakesTheIssueRowsInKeyOrder holds 20261125094600's fill to R5 of
-// dispatch://INFRA-5791: it takes the row lock of each issue it writes in key order (`key collate
-// "C"`), the order store.LockOwners takes the rows of several issues in (ownerRowsIssues), so the
-// fill and such a write take any two issue rows in one order. It proves the order as the lock-step
-// tests of the store's writers prove theirs (TestTheSeedsCommentWriteTakesTheStoreLockOrder in
-// cmd/dispatch-seed): a second transaction holds a row the fill takes, and the test reads where
-// the fill's own backend waits.
+// TestTheNewestEventFillWaitsOnNoIssueRowAnotherTransactionHolds holds 20261125094600's fill to
+// R5 of dispatch://INFRA-5791: it never waits on a row lock. A request takes its issues' rows in
+// the order its statements reach them, so a fill that waited for a row a request holds could hold
+// the row that request asks for next, and Postgres would abort one of the two. The fill leaves a
+// held row's pair as it was, which the read probes, and the row's next append writes the pair.
 //
-// Three issues, each with one event and a null pair, are written by COPY with the greatest key
-// first, so a sequential scan reaches the greatest key first. The second transaction takes the
-// row of the least key `for no key update`; the fill then runs as its migration file holds it
-// (migrationFiles), on a connection of its own, and the test waits until that backend waits on
-// the second transaction. While it waits, the second transaction takes the row of the greatest key
-// `for no key update nowait`: a fill in key order holds no row yet, so the take succeeds, where a
-// fill in the order of its scan holds that row, and the take fails with lock_not_available
-// (55P03). Then the second transaction rolls back, and the fill ends and writes the pair of each
-// of the three issues from its event.
-//
-// The fill's backend is watched through pg_stat_activity and pg_blocking_pids, read through the
-// pool as storetest.CountLockWaits reads them, since that package imports this one.
-func TestTheNewestEventFillTakesTheIssueRowsInKeyOrder(t *testing.T) {
+// Three issues, each with one event and a null pair, are written by COPY. A second transaction
+// takes the row of the middle one `for no key update`, as a request's write does. The fill then
+// runs as its migration file holds it (migrationFiles), on a connection of its own, and the test
+// reads, through the pool, where that backend is until it ends (pg_stat_activity and
+// pg_blocking_pids, as storetest.CountLockWaits reads them; that package imports this one): a
+// fill that waits behind the second transaction fails the test. Once the fill has ended, with the
+// row still held, the held issue's pair is null and the other two hold the pair of their event of
+// last_seq. Then the second transaction appends an event to the held issue as this release's
+// QueueAppendWithLogins writes one, and commits, and the issue's pair is that event's.
+func TestTheNewestEventFillWaitsOnNoIssueRowAnotherTransactionHolds(t *testing.T) {
 	ctx := context.Background()
 	store := openMigratedTestStore(t, latestVersion)
 	fill, err := migrationFiles.ReadFile("migrations/" + newestEventFillMigration)
@@ -46,15 +40,16 @@ func TestTheNewestEventFillTakesTheIssueRowsInKeyOrder(t *testing.T) {
 		t.Fatalf("read %s: %v", newestEventFillMigration, err)
 	}
 	const project = "FILL"
-	least, middle, greatest := project+"-1", project+"-2", project+"-3"
+	keys := []string{project + "-1", project + "-2", project + "-3"}
+	held := keys[1]
 	at := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	if _, err := store.Pool.Exec(ctx,
 		`insert into projects (key, name, default_assignee, next_number) values ($1, 'The fill', 'alice', 4)`, project); err != nil {
 		t.Fatalf("write the project: %v", err)
 	}
 	var issues, events [][]any
-	for number, key := range []string{greatest, middle, least} {
-		issues = append(issues, []any{key, project, 3 - number, "Filled " + key, "todo", `{"kind":"user","id":"alice"}`, key, 1})
+	for number, key := range keys {
+		issues = append(issues, []any{key, project, number + 1, "Filled " + key, "todo", `{"kind":"user","id":"alice"}`, key, 1})
 		events = append(events, []any{key, 1, "issue.created", `{"kind":"user","id":"alice"}`, `{}`, false, at.Add(time.Duration(number) * time.Minute)})
 	}
 	for _, write := range []struct {
@@ -75,8 +70,8 @@ func TestTheNewestEventFillTakesTheIssueRowsInKeyOrder(t *testing.T) {
 		t.Fatalf("begin the second transaction: %v", err)
 	}
 	defer holder.Rollback(ctx)
-	if _, err := holder.Exec(ctx, `select key from issues where key = $1 for no key update`, least); err != nil {
-		t.Fatalf("hold the row of %s: %v", least, err)
+	if _, err := holder.Exec(ctx, `select key from issues where key = $1 for no key update`, held); err != nil {
+		t.Fatalf("hold the row of %s: %v", held, err)
 	}
 	holderPID := holder.Conn().PgConn().PID()
 
@@ -91,78 +86,87 @@ func TestTheNewestEventFillTakesTheIssueRowsInKeyOrder(t *testing.T) {
 		_, err := filler.Exec(ctx, string(fill))
 		done <- err
 	}()
-
 	for deadline := time.Now().Add(newestEventFillWait); ; {
 		select {
 		case err := <-done:
-			t.Fatalf("the fill ended (%v) while a second transaction holds the row of %s, which it writes: it waited on no row", err, least)
+			if err != nil {
+				t.Fatalf("the fill while a second transaction holds the row of %s: %v", held, err)
+			}
 		default:
+			var behind bool
+			if err := store.Pool.QueryRow(ctx, `
+				select coalesce(bool_or(wait_event_type = 'Lock' and $2 = any(pg_blocking_pids(pid))), false)
+				from pg_stat_activity where pid = $1
+			`, fillerPID, holderPID).Scan(&behind); err != nil {
+				t.Fatalf("read where the fill waits: %v", err)
+			}
+			if behind {
+				t.Fatalf("the fill waits behind the second transaction's row of %s: it waits on a row another transaction holds", held)
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("the fill did not end within %s while a second transaction holds the row of %s", newestEventFillWait, held)
+			}
+			time.Sleep(2 * time.Millisecond)
+			continue
 		}
-		var behind bool
-		if err := store.Pool.QueryRow(ctx, `
-			select coalesce(bool_or(wait_event_type = 'Lock' and $2 = any(pg_blocking_pids(pid))), false)
-			from pg_stat_activity where pid = $1
-		`, fillerPID, holderPID).Scan(&behind); err != nil {
-			t.Fatalf("read where the fill waits: %v", err)
-		}
-		if behind {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the fill never queued behind the second transaction's row of %s within %s", least, newestEventFillWait)
-		}
-		time.Sleep(2 * time.Millisecond)
+		break
 	}
-	var running string
-	if err := store.Pool.QueryRow(ctx, `select query from pg_stat_activity where pid = $1`, fillerPID).Scan(&running); err != nil {
-		t.Fatalf("read the fill's statement: %v", err)
-	}
-	t.Logf("the fill (backend %d) waits behind the second transaction's row of %s, running: %.200s", fillerPID, least, running)
+	t.Logf("the fill ended while the second transaction holds the row of %s, and never waited behind it", held)
 
-	if _, err := holder.Exec(ctx, `select key from issues where key = $1 for no key update nowait`, greatest); err != nil {
-		if isSQLState(err, "55P03") {
-			t.Fatalf("the fill holds the row of %s while it waits for the row of %s, which a second transaction holds: it takes the rows of issues out of key order", greatest, least)
-		}
-		t.Fatalf("take the row of %s without waiting: %v", greatest, err)
-	}
-	t.Logf("while the fill waits for %s, the second transaction takes the row of %s without waiting: the fill holds no row of a greater key", least, greatest)
-	if err := holder.Rollback(ctx); err != nil {
-		t.Fatalf("roll the second transaction back: %v", err)
-	}
-	select {
-	case err := <-done:
+	pairs := func() map[string]bool {
+		t.Helper()
+		rows, err := store.Pool.Query(ctx, `
+			select i.key, i.last_event_at_seq is not distinct from i.last_seq and i.last_event_at is not distinct from e.created_at,
+			       i.last_event_at is null and i.last_event_at_seq is null
+			from issues i left join events e on e.issue_key = i.key and e.seq = i.last_seq
+			where i.project_key = $1
+		`, project)
 		if err != nil {
-			t.Fatalf("the fill once the second transaction let go: %v", err)
+			t.Fatalf("read the pairs: %v", err)
 		}
-	case <-time.After(newestEventFillWait):
-		t.Fatalf("the fill did not end within %s of the second transaction letting go", newestEventFillWait)
+		named := map[string]bool{}
+		if _, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (string, error) {
+			var key string
+			var names, null bool
+			if err := row.Scan(&key, &names, &null); err != nil {
+				return "", err
+			}
+			if !names && !null {
+				t.Errorf("%s holds a pair that names no event of it and is not null", key)
+			}
+			named[key] = names
+			return key, nil
+		}); err != nil {
+			t.Fatalf("read the pairs: %v", err)
+		}
+		return named
+	}
+	after := pairs()
+	for _, key := range keys {
+		switch {
+		case key == held && after[key]:
+			t.Errorf("after the fill, the held issue %s holds the pair of its event, want it null: the fill wrote a row another transaction held", key)
+		case key != held && !after[key]:
+			t.Errorf("after the fill, %s holds no pair of its event of last_seq, want the fill to have written it", key)
+		}
 	}
 
-	rows, err := store.Pool.Query(ctx, `
-		select i.key, i.last_event_at_seq, i.last_event_at = e.created_at
-		from issues i left join events e on e.issue_key = i.key and e.seq = i.last_seq
-		where i.project_key = $1
-		order by i.key collate "C"
-	`, project)
-	if err != nil {
-		t.Fatalf("read the pairs the fill wrote: %v", err)
+	if _, err := holder.Exec(ctx, `
+		with appended as (
+			insert into events (issue_key, seq, type, actor, payload, notify)
+			values ($1, (select last_seq from issues where key = $1) + 1, 'comment.created', '{"kind":"user","id":"alice"}', '{}', false)
+			returning seq, created_at
+		)
+		update issues set last_seq = appended.seq, last_event_at = appended.created_at, last_event_at_seq = appended.seq,
+			updated_at = greatest(issues.updated_at, appended.created_at)
+		from appended where issues.key = $1
+	`, held); err != nil {
+		t.Fatalf("append an event to %s: %v", held, err)
 	}
-	written, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (string, error) {
-		var key string
-		var seq *int64
-		var named *bool
-		if err := row.Scan(&key, &seq, &named); err != nil {
-			return "", err
-		}
-		if seq == nil || *seq != 1 || named == nil || !*named {
-			t.Errorf("after the fill, %s holds the pair (seq %v, time of its event of last_seq %v), want the seq and the time of its event of last_seq 1", key, seq, named)
-		}
-		return key, nil
-	})
-	if err != nil {
-		t.Fatalf("read the pairs the fill wrote: %v", err)
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatalf("commit the append to %s: %v", held, err)
 	}
-	if len(written) != 3 {
-		t.Fatalf("read %d issues after the fill, want the 3 written (%v)", len(written), written)
+	if !pairs()[held] {
+		t.Errorf("after an append to the held issue %s, its pair names no event of last_seq, want the append's", held)
 	}
 }
