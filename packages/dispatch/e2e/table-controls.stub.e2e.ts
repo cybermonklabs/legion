@@ -23,6 +23,7 @@ import {
 } from "../web/src/components/control-names";
 import { control, controlRow, openFilterPanel } from "./filters";
 import { nextFrames } from "./frames";
+import { COMPACT_VIEWPORT_WIDTH } from "./inbox-threads";
 import { stubbed } from "./stub/stub-test";
 import {
   closeControlPanel,
@@ -316,7 +317,7 @@ test("each page draws every shared control its design gives it, and no other @pr
     // page rather than in the surface, so there **View** is read as an item of **More** instead.
     // Below 640 px of a bar with a trigger its chips stand at the top of the Filter panel, which
     // also opens over the page, so there the chip is read in the panel.
-    if (name === "Artifacts tab" && (page.viewportSize()?.width ?? 0) >= 1280) {
+    if (name === "Artifacts tab" && (page.viewportSize()?.width ?? 0) >= COMPACT_VIEWPORT_WIDTH) {
       // The issue page can paint artifact rows before its desktop review margin takes width.
       await expect(
         page.getByTestId("desktop-margin-shell"),
@@ -648,7 +649,8 @@ test("k-one-row: each page on the bar's slots draws one bar of one line above it
   }
 });
 
-// SLOW(>=2s): eight pages, each read at rest and under one, two, three or six narrowings.
+// SLOW(>=2s): eight pages, each read at rest and under one, two, three or six narrowings, and the
+// priorities page's three issue-list bars read at rest and with their chips.
 test("k-bar: each page on the bar's slots draws its design's controls and no other, quiet at rest, with its trigger's count, its chips and its panel's list @phone @pr", async ({
   page,
   scene,

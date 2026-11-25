@@ -1584,7 +1584,9 @@ async function expectRestingBar(
 
 /** The priorities index draws two fault lists and the work table under an expanded priority. */
 async function expandPriorityWork(surface: Surface): Promise<Locator> {
-  await surface.firstRow.getByRole("button", { name: /^Open .*Keep the books whole$/ }).click();
+  await surface.firstRow
+    .getByRole("button", { name: new RegExp(`^Open .*${SURFACE_PRIORITY.title}$`) })
+    .click();
   const work = surface.root.getByRole("region", {
     exact: true,
     name: `Work advancing ${SURFACE_PRIORITY.title}`,
@@ -1600,9 +1602,11 @@ async function expectPriorityIssueChips(
   status: string
 ): Promise<void> {
   const bar = controlRow(region);
-  await settledBar(page, "priority page", bar, 1);
+  await settledBar(page, "project List", bar, 1);
   const chip = `Remove Status: ${status} filter`;
-  if ((await readBar(bar)).width < NARROW_BELOW) {
+  // settledBar waited for the bar to count its one narrowing, so its width is settled.
+  const width = await bar.evaluate((node) => node.getBoundingClientRect().width);
+  if (width < NARROW_BELOW) {
     const panel = await openFilterPanel(page, region);
     await expect(
       control(panel, CONTROL.chip).and(panel.getByRole("button", { exact: true, name: chip })),
@@ -1631,8 +1635,11 @@ export async function expectBarDesign(
   const surface = await openSurface(page, name, scene, { phone, searchTerm: SURFACE_SEARCH_TERM });
   const bar = surface.row;
   // At rest: no narrowing, nothing hovered, nothing focused.
-  await page.mouse.move(size.width - 1, size.height - 1);
-  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  const toRest = async () => {
+    await page.mouse.move(size.width - 1, size.height - 1);
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  };
+  await toRest();
   const rest = await expectRestingBar(bar, name, where, phone);
   const narrow = rest.width < NARROW_BELOW;
   if (narrow && name === "priorities page") {
@@ -1649,22 +1656,22 @@ export async function expectBarDesign(
     return;
   }
   if (name === "priorities page") {
-    // The priorities table's own chips, which have no Filter trigger to stand for them.
-    if (!narrow) {
-      await narrowBar(page, name, scene, surface, 6, phone);
-      const { line, listed } = await chipsOfBar(page, bar, 6, `${where}, six narrowings on`);
-      expect(new Set([...line, ...listed]).size, `${where}: six chips, each once`).toBe(6);
-      await page.goto("/priorities");
-    }
+    // The three issue-list bars at rest, on the load `openSurface` made and before the six
+    // narrowings below load the page again: opening the work section puts no narrowing on.
     const work = await expandPriorityWork(surface);
     const faultLists = PRIORITIES_TABLES.slice(1).map(
       (region) => [region, surface.root.getByRole("region", { exact: true, name: region })] as const
     );
     const issueLists = [...faultLists, [`Work advancing ${SURFACE_PRIORITY.title}`, work] as const];
-    await page.mouse.move(size.width - 1, size.height - 1);
-    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await toRest();
     for (const [label, region] of issueLists) {
       await expectRestingBar(controlRow(region), "project List", `${where}, ${label}`, phone);
+    }
+    // The priorities table's own chips, which have no Filter trigger to stand for them.
+    if (!narrow) {
+      await narrowBar(page, name, scene, surface, 6, phone);
+      const { line, listed } = await chipsOfBar(page, bar, 6, `${where}, six narrowings on`);
+      expect(new Set([...line, ...listed]).size, `${where}: six chips, each once`).toBe(6);
     }
     // These are client-side status filters on the same recorded open-issue listings.
     await page.goto("/priorities?n.status=in_progress&k.status=backlog&w.status=in_progress");

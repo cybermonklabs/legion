@@ -1905,7 +1905,8 @@ test("a row with no issue carries no mark", async ({ browser }) => {
 });
 
 // SLOW(>=2s): six approval changes written while the page is open, each waited on live in two
-// marks and the pane's line, then the Dismissed view loaded and one more approval waited on.
+// marks and the pane's line with the ask's selection read after each, then the Dismissed view
+// loaded and one more approval waited on.
 test("a change recorded while the Inbox is open", async ({ browser }) => {
   await setLiveSessions([THREAD_SESSION]);
   await createProject({ key: "LIVEGATE", name: "A moving gate" });

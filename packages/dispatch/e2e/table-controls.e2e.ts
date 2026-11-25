@@ -101,7 +101,7 @@ import {
   selectedRow,
   selectRow,
 } from "./inbox-pane";
-import { asSession, seedCommentThread, THREAD_SESSION } from "./inbox-threads";
+import { asSession, seedAgentThread, seedCommentThread, THREAD_SESSION } from "./inbox-threads";
 import {
   bandHeadings,
   bandLabel,
@@ -269,22 +269,29 @@ async function seedLongInbox(): Promise<void> {
   }
 }
 
-/** Questions, decisions and reply threads, all in Alice's Inbox and with no credential requests. */
+/** `count` items of three Inbox kinds - questions, Agent rows and reply threads - all in Alice's
+ *  Inbox, with no credential request waiting: twenty or more items of several kinds, so the list
+ *  is longer than either window. Each question is a blocking ask on a P0 issue and waits on
+ *  Alice, who holds every issue; an Agent row is a message to a live session and has no issue. */
 async function seedInboxHeight(count: number): Promise<void> {
+  await setLiveSessions([THREAD_SESSION]);
   await createProject({ key: "CORE", name: "Core" });
   for (let index = 0; index < count; index++) {
-    const issue = await createIssue({ project: "CORE", title: `Height check ${index}` });
-    await patchIssue(issue.key, { priority: 0 });
+    if (index % 6 === 4) {
+      await seedAgentThread({ body: `Is mirror ${index} warm?`, replies: ["Warming it."] });
+      continue;
+    }
+    const issue = await createIssue({
+      priority: 0,
+      project: "CORE",
+      title: `Height check ${index}`,
+    });
     if (index % 6 === 5) {
       await seedCommentThread(issue.key, "When is the rollout?", "Tomorrow.");
     } else {
       await createAsk(
         issue.key,
-        {
-          ...(index % 6 === 4 ? { options: [{ label: "Yes" }, { label: "No" }] } : {}),
-          question: `Ready for item ${index}?`,
-          urgency: "blocking",
-        },
+        { question: `Ready for item ${index}?`, urgency: "blocking" },
         SURFACE_SESSION
       );
     }
@@ -2278,7 +2285,8 @@ async function barChip(
   );
 }
 
-const KEEP_OPTIONS = {
+/** Every option each Inbox field offers on the k-keep row's seed. */
+const INBOX_FIELD_OPTIONS = {
   assignee: ["unassigned", "alice", "bob", "carol"],
   priority: ["P0", "P1", "P2", "P3", "none"],
   project: ["CORE", "MIRROR", "none"],
@@ -2290,18 +2298,18 @@ const KEEP_OPTIONS = {
 async function expectInboxFacetCounts(
   page: Page,
   main: Locator,
-  applied: keyof typeof KEEP_OPTIONS,
+  applied: keyof typeof INBOX_FIELD_OPTIONS,
   narrowed: readonly ViewRow[]
 ): Promise<void> {
   const panel = await openFilterPanel(page, main);
-  for (const field of Object.keys(KEEP_OPTIONS) as (keyof typeof KEEP_OPTIONS)[]) {
+  for (const field of Object.keys(INBOX_FIELD_OPTIONS) as (keyof typeof INBOX_FIELD_OPTIONS)[]) {
     if (field === applied) continue;
     const trigger = panel.getByRole("button", { name: `Filter by ${field}` });
     await trigger.click();
     const label = field[0]?.toUpperCase() + field.slice(1);
     const options = page.getByRole("listbox", { name: `${label} options` }).getByRole("option");
     const counts = countsOf(narrowed, field);
-    for (const value of KEEP_OPTIONS[field]) {
+    for (const value of INBOX_FIELD_OPTIONS[field]) {
       const name = value === "unassigned" ? "Unassigned" : valueLabel(field, value);
       const detail = field === "assignee" && value === "alice" ? "you, " : "";
       await expect(
@@ -2310,7 +2318,7 @@ async function expectInboxFacetCounts(
       ).toHaveAccessibleName(`${name}, ${detail}${counts.get(value) ?? 0} rows`);
     }
     await expect(options, `with ${applied} narrowed: all ${label} options`).toHaveCount(
-      KEEP_OPTIONS[field].length
+      INBOX_FIELD_OPTIONS[field].length
     );
     await trigger.click();
     await expect(trigger).toHaveAttribute("aria-expanded", "false");
@@ -4308,7 +4316,7 @@ test("k-needs-you: Blocked on you carries what the banner carried, narrows the I
   ).toHaveAccessibleName("Filter");
   const view = await openDisplay(page, main);
   await expect(
-    view.getByRole("group", { name: "Show" }).locator('input[value="inbox"]'),
+    displayChoice(view, "Show", "inbox"),
     "Blocked on you did not keep the Inbox view"
   ).toBeChecked();
   await page.keyboard.press("Escape");

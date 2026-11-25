@@ -1050,7 +1050,7 @@ stream's worst case comes back inside 1.2 seconds on the fastest of up to eight 
 the Agents page paints six hundred sessions inside 100 milliseconds while holding the main
 thread under 150 ms, the first load inside both of those bounds of up to twenty taken) and
 `e2e/inbox-dismissed-timing.e2e.ts` (the median time to the Dismissed view's first row over 5,000
-dismissed threads is at most 1.25 times the median over 250, five loads of each), and
+dismissed threads is at most 1.25 times the median over 250, eleven loads of each), and
 `firefox-alone` and `webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines.
 Each sets `default: false`, so a run that names no project holds none of their 52 rows, and each
 caps its own workers at one.

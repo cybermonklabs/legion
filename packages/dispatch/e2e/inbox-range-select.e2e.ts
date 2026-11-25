@@ -143,6 +143,18 @@ function markInSight(page: Page, id: string): Promise<boolean> {
   });
 }
 
+/** The id of the first drawn row whose checkbox, the box the bar's return judges rather than the
+ *  row's, lies wholly inside the list column's visible box; undefined while no row's does. */
+function firstMarkInSight(page: Page): Promise<string | undefined> {
+  return inboxList(page).evaluate((list) => {
+    const seen = list.getBoundingClientRect();
+    return [...list.querySelectorAll<HTMLElement>("[data-inbox-row]")].find((node) => {
+      const box = node.querySelector('input[type="checkbox"]')?.getBoundingClientRect();
+      return box !== undefined && box.top >= seen.top && box.bottom <= seen.bottom;
+    })?.dataset.inboxRow;
+  });
+}
+
 /** Moves the selection to the row at `to` among `ids` with `j` and `k`, from the row it is on. */
 async function selectWithKeys(page: Page, ids: readonly string[], to: number): Promise<void> {
   // Each caller reads this once the selection stands on one row, and nothing moves it before
@@ -799,6 +811,8 @@ test("a range Dismiss hands the focus to a row that stays", async ({ browser }) 
   }
 });
 
+// SLOW(>=2s): thirty-two dismissed threads seeded and the Dismissed view loaded, a range of four
+// marked, the list scrolled and one Move to Inbox pressed.
 test("a range action whose rows stood above the view hands the focus to the first row after them in sight", async ({
   browser,
 }) => {
@@ -848,13 +862,7 @@ test("a range action whose rows stood above the view hands the focus to the firs
     for (const id of range) await expect(row(page, id)).toHaveCount(0);
     await frameAndTask(page);
 
-    const first = await box.evaluate((list) => {
-      const sight = list.getBoundingClientRect();
-      return [...list.querySelectorAll<HTMLElement>("[data-inbox-row]")].find((node) => {
-        const rect = node.getBoundingClientRect();
-        return rect.top >= sight.top && rect.bottom <= sight.bottom;
-      })?.dataset.inboxRow;
-    });
+    const first = await firstMarkInSight(page);
     expect(first, "there is a surviving row in sight").toBeDefined();
     expect(
       await holdsFocus(mark(page, first ?? "")),
@@ -971,16 +979,7 @@ test("the bar's return keeps the row marked last, or takes the first row in sigh
     await bar(page).getByRole("button", { name: "Select all" }).click();
     await expect(bar(page)).toContainText("Every row selected");
     const before = await scrollPositions(page);
-    const firstInSight = await list.evaluate((node) => {
-      const seen = node.getBoundingClientRect();
-      for (const each of node.querySelectorAll("[data-inbox-row]")) {
-        const box = each.querySelector('input[type="checkbox"]')?.getBoundingClientRect();
-        if (box !== undefined && box.top >= seen.top && box.bottom <= seen.bottom) {
-          return each.getAttribute("data-inbox-row") ?? "";
-        }
-      }
-      return "";
-    });
+    const firstInSight = (await firstMarkInSight(page)) ?? "";
     expect(
       drawn.indexOf(firstInSight),
       "the first row in sight is below the list's top"
