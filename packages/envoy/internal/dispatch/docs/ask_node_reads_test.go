@@ -3,6 +3,7 @@ package docs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -90,5 +91,27 @@ func TestTheTextsAsksReadTheAnswerOffTheAsksNodeNotItsRow(t *testing.T) {
 	const answered = `#ship state="answered" answered_by="alice" answered_at="2026-11-20T10:00:00Z" selected=["No"]` + "\n"
 	if got := askLines(read.Asks); got != answered {
 		t.Fatalf("the text's asks once the node holds alice's answer = %s, want %s", got, answered)
+	}
+}
+
+// The text routes' asks member decodes the values of each ask's node through the reader every read
+// of an answer shares (asks.NodeAnswer), so an answer_state outside open, answered and resolved
+// refuses the read as it refuses an ask read and drops the Decisions read's entry, where the text
+// once served the state it found.
+func TestTheTextsAsksRefuseAnAnswerStateTheNodeHoldsOutsideTheThree(t *testing.T) {
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	ctx := context.Background()
+	seedServiceText(t, service, artifactID, "Context\n\n"+shipBlock)
+	settleCurrentGeneration(t, service, artifactID)
+	ask := blockAskOn(t, service, artifactID, "ship")
+	if _, err := service.store.Pool.Exec(ctx, `
+		insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, asserted)
+		values ('ask', $1, 'answer_state', 'value', 'half-answered', now(), '{"kind":"user","id":"alice"}'::jsonb, 0, true)
+	`, ask.ID); err != nil {
+		t.Fatalf("state an answer_state of none of the three on the ask's node: %v", err)
+	}
+	if read, err := service.TextWithAsks(ctx, artifactID, false); !errors.Is(err, asks.ErrNodeAnswerUnreadable) {
+		t.Fatalf("the text of a document whose ask's node holds the answer state half-answered = %s, %v, want ErrNodeAnswerUnreadable", askLines(read.Asks), err)
 	}
 }
