@@ -54,12 +54,14 @@
 # tell one entry's change from the other's. TestEntryFixtures and the request gate then pass over
 # the two fixtures.
 #
-# Two more rows hold the script to its main and to a stacked branch. Before the first branch's
-# conversion, the script run with the first branch's base as its main, a main from before the
-# cutover whose tree defines no registerEntry, exits non-zero naming that ref, and leaves the branch
-# as it was. After the first branch is converted and its row moved, a stacked branch made from the
-# first branch's commit of N+1 adds numbered entry N+2 (its text, its constant in
-# SupportedContracts, its manifests and its goldens by `-update`). The script run on it with
+# More rows hold the script to the ref the branch merges, --base, and to a stacked branch: one made
+# from the first branch's commit of N+1, which adds numbered entry N+2 (its text, its constant in
+# SupportedContracts, its manifests and its goldens by `-update`). Before the first branch's
+# conversion, the script refuses each ref it cannot merge, exits non-zero naming the ref, and
+# leaves the branch as it was: on the first branch, the first branch's base, a main from before the
+# cutover whose tree defines no registerEntry, and this change with no version.go, which it cannot
+# read; on the stacked branch, the first branch, a base branch that has not merged the cutover yet.
+# After the first branch is converted and its row moved, the script run on the stacked branch with
 # --base naming the first branch converts N+2 alone and merges the first branch, in a commit that
 # names it: the stacked branch then differs from the first branch by N+2's entry file and fixture,
 # so N+1, which the first branch converted, is not converted a second time under another id.
@@ -184,6 +186,24 @@ fixture_of() {
   sed -E "s|.*/contract_([0-9]{14})_(.*)\\.go\$|$fixtures/contracts/\\1_\\2.json|" <<<"$1"
 }
 
+# refused WHAT TEXT... -- OPTION... runs the script with OPTION... on the branch of the current
+# directory, and fails unless it exits non-zero, leaves the branch as it was, and prints each TEXT.
+refused() {
+  local what=$1 at status=0 text texts=()
+  shift
+  while [ "$1" != -- ]; do texts+=("$1"); shift; done
+  shift
+  at=$(git rev-parse HEAD)
+  bash "$root/scripts/daemon-contract-convert.sh" "$@" >"$scratch/refused.txt" 2>&1 || status=$?
+  [ "$status" != 0 ] || { cat "$scratch/refused.txt"; fail "$what exits 0"; }
+  [ "$(git rev-parse HEAD)" = "$at" ] && [ -z "$(git status --porcelain)" ] ||
+    { cat "$scratch/refused.txt"; fail "$what changed the branch: HEAD $(git rev-parse --short HEAD), want ${at:0:10}"; }
+  for text in "${texts[@]}"; do
+    grep -qF -- "$text" "$scratch/refused.txt" || { cat "$scratch/refused.txt"; fail "$what is refused, but not with: $text"; }
+  done
+  echo "refused, exit $status: $(cat "$scratch/refused.txt")"
+}
+
 # git's identity is the test's own, so the test needs no configuration of the machine it runs on.
 export GIT_AUTHOR_NAME=convert-test GIT_AUTHOR_EMAIL=convert-test@localhost
 export GIT_COMMITTER_NAME=convert-test GIT_COMMITTER_EMAIL=convert-test@localhost
@@ -299,22 +319,44 @@ echo "branch: $(git diff --name-only "$base" HEAD | tr '\n' ' ')"
 # The commit of entry $k, which the stacked branch below starts from.
 entry_commit=$(git rev-parse HEAD)
 
+step "the stacked branch: numbered entry $((k + 1)) on the first branch's commit of entry $k"
+cd "$root"
+git worktree add -q -b "$branch_stacked" "$repo_stacked" "$entry_commit"
+cd "$repo_stacked"
+numbered_entry "$((k + 1))" stacked
+git add -A
+git commit -q -m "feat(daemon): the conversion test's entry $((k + 1)), stacked on entry $k"
+cd "$repo"
+
 step "a main from before the cutover is refused"
 # The base is such a main: its version.go declares `const DaemonAPIVersion`, and its tree defines
 # no registerEntry, which the entry files of the conversion call.
-status=0
-bash "$root/scripts/daemon-contract-convert.sh" --main "$base" >"$scratch/convert-old-main.txt" 2>&1 || status=$?
-[ "$status" != 0 ] || { cat "$scratch/convert-old-main.txt"; fail "the conversion against main at $base, which declares const DaemonAPIVersion, exits 0"; }
-grep -qF "main at $base " "$scratch/convert-old-main.txt" && grep -qF 'declares `const DaemonAPIVersion`' "$scratch/convert-old-main.txt" ||
-  { cat "$scratch/convert-old-main.txt"; fail "the refusal does not name main at $base and its const DaemonAPIVersion"; }
-[ "$(git rev-parse HEAD)" = "$entry_commit" ] && [ -z "$(git status --porcelain)" ] ||
-  fail "the refused conversion changed the branch: HEAD $(git rev-parse --short HEAD), want ${entry_commit:0:10}"
-echo "refused, exit $status: $(cat "$scratch/convert-old-main.txt")"
+refused "the conversion against main at ${base:0:10}, which declares const DaemonAPIVersion," \
+  "$base (${base:0:10}) declares \`const DaemonAPIVersion\`" "it has not merged the cutover" -- --base "$base"
+
+step "a ref whose version.go git cannot read is refused"
+# This change with no version.go: the script cannot tell whether it holds the cutover, so it
+# refuses it, where it would otherwise read it as after the cutover.
+GIT_INDEX_FILE=$scratch/index git read-tree "$this"
+GIT_INDEX_FILE=$scratch/index git update-index --force-remove "$api/version.go"
+no_version=$(git commit-tree "$(GIT_INDEX_FILE=$scratch/index git write-tree)" -p "$this" -m "convert-test: this change with no version.go")
+rm -f "$scratch/index"
+refused "the conversion against this change with no version.go" \
+  "$no_version (${no_version:0:10}) holds no $api/version.go that git can read" -- --base "$no_version"
+
+step "a base branch that has not merged the cutover is refused"
+# The first branch, not converted yet, still declares `const DaemonAPIVersion`: the stacked branch
+# converts after it.
+cd "$repo_stacked"
+refused "the conversion of the stacked branch over $branch, not converted yet," \
+  "$branch (${entry_commit:0:10}) declares \`const DaemonAPIVersion\`" "it has not merged the cutover" \
+  "convert it if it adds a numbered entry, else merge main into it" -- --base "$branch"
+cd "$repo"
 
 step "the conversion"
 # The control takes out the one line that runs the script, and leaves the branch as it was.
 : >"$scratch/convert.txt"
-bash "$root/scripts/daemon-contract-convert.sh" --main "$this" >"$scratch/convert.txt" 2>&1 || { cat "$scratch/convert.txt"; fail "scripts/daemon-contract-convert.sh failed"; }
+bash "$root/scripts/daemon-contract-convert.sh" --base "$this" >"$scratch/convert.txt" 2>&1 || { cat "$scratch/convert.txt"; fail "scripts/daemon-contract-convert.sh failed"; }
 cat "$scratch/convert.txt"
 
 step "the merge of this change"
@@ -420,16 +462,9 @@ DAEMON_API_CONTRACT_BASE=$this bash .github/scripts/check-daemon-api-contract.sh
   >"$scratch/gate.txt" 2>&1) || { excerpt "$scratch/gate.txt"; fail "the shape gate fails on the converted branch"; }
 echo "PASS: entry $k converts to entry $id, merges this change with no conflict, and passes the contract check and the shape gate"
 
-step "the stacked branch: numbered entry $((k + 1)) on the first branch's commit of entry $k"
-cd "$root"
-git worktree add -q -b "$branch_stacked" "$repo_stacked" "$entry_commit"
-cd "$repo_stacked"
-numbered_entry "$((k + 1))" stacked
-git add -A
-git commit -q -m "feat(daemon): the conversion test's entry $((k + 1)), stacked on entry $k"
-
 step "the conversion of the stacked branch over its base branch"
-bash "$root/scripts/daemon-contract-convert.sh" --main "$this" --base "$branch" >"$scratch/convert-stacked.txt" 2>&1 ||
+cd "$repo_stacked"
+bash "$root/scripts/daemon-contract-convert.sh" --base "$branch" >"$scratch/convert-stacked.txt" 2>&1 ||
   { cat "$scratch/convert-stacked.txt"; fail "scripts/daemon-contract-convert.sh --base $branch failed on the stacked branch"; }
 cat "$scratch/convert-stacked.txt"
 
@@ -471,7 +506,7 @@ recorded() {
 echo "the second branch records convertFirst at $k, and convertFirst and convertSecond at $((k + 1)), at $route"
 
 step "the conversion of the second branch"
-bash "$root/scripts/daemon-contract-convert.sh" --main "$this" >"$scratch/convert-two.txt" 2>&1 ||
+bash "$root/scripts/daemon-contract-convert.sh" --base "$this" >"$scratch/convert-two.txt" 2>&1 ||
   { cat "$scratch/convert-two.txt"; fail "scripts/daemon-contract-convert.sh failed on the second branch"; }
 cat "$scratch/convert-two.txt"
 git merge-base --is-ancestor "$this" HEAD || fail "the second branch does not hold this change after the conversion"
