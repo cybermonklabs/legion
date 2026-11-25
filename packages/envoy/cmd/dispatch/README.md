@@ -375,7 +375,7 @@ So redelivering a delivery that did reach the stream adds nothing to the stream.
   A time value past ASCII can make such a text, since package time writes each of its bytes past ASCII as `\xNN`.
   The sweep's errors and lines therefore carry that text the same way.
   A next page link longer than 2048 bytes is refused rather than followed.
-  Every link a line or an error names passes through `answeredTarget`: the rule for remote text, with the credentials the request that answered with the link carried redacted, and then `githubapp.ShownBody`.
+  Every link a line or an error names passes through `answeredTarget`: the rule for remote text, with the credentials of the request whose answer carried the link redacted, and then `githubapp.ShownBody`.
   A shorter link that cannot be parsed, that leaves GitHub's API origin or that carries user information is refused, and an error that names a next page GitHub answered with a status other than 200 names it the same way.
 
 - The running sweep lists the last hour and six minutes (`redeliver.Lookback`, the longest backoff plus three sweep intervals), long enough that a delivery coming due still sees GitHub's answer to its last request in the listing.
