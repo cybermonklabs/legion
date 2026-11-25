@@ -8,8 +8,8 @@
  *  write's.
  *
  *  CI runs it: the step "Read-only token of the dev broker against a local Dispatch" of the
- *  envoy-session-stall leg of ci.yaml's go-envoy job
- *  (.github/actions/go-envoy/envoy-session-stall) starts the two stacks it reads on the runner,
+ *  envoy-session-proofs leg of ci.yaml's envoy-held job
+ *  (.github/actions/go-envoy/envoy-session-proofs) starts the two stacks it reads on the runner,
  *  from packages/dispatch, on the job's Postgres:
  *
  *  1. The broker: `bash ../envoy/scripts/dev-broker.sh`, with `DEV_BROKER_POSTGRES_URL` naming

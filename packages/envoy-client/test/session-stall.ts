@@ -21,9 +21,11 @@
  *
  * Run it from packages/envoy-client with `bun test ./test/session-stall.ts` and
  * LEGION_E2E_ENVOY_STACK=1, with LEGION_E2E_DISPATCH_STACK=1 and DISPATCH_TEST_DATABASE_URL for
- * the second rig and LEGION_TEST_OMP and LEGION_TEST_CLAUDE for the third (the
- * envoy-session-stall job sets all of them). The kernel must let a test stop its child with
- * SIGSTOP without hanging up the test's own process group, which gVisor does not.
+ * the second rig and LEGION_TEST_OMP and LEGION_TEST_CLAUDE for the third. CI runs the first rig
+ * in go-envoy's envoy-session-stall leg, and the other two in envoy-held's envoy-session-proofs
+ * leg. Each step picks its rig by name with `-t`, and each leg sets what its rigs read.
+ * The kernel must let a test stop its child with SIGSTOP without hanging up the test's own
+ * process group, which gVisor does not.
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
@@ -31,7 +33,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { EnvelopeSchema, legacyAgentSubject } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
-import { requireOrSkip } from "@legion/test-fixtures/host-tools";
+import { hostGate } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { connect, Events, type KV, type NatsConnection, StringCodec } from "nats";
 import { z } from "zod";
@@ -66,7 +68,7 @@ import {
 
 // Destructured: claude-envoy's typecheck, which compiles this directory, forbids `process.env.X`.
 // LEGION_TEST_OMP and LEGION_TEST_CLAUDE name the pinned Oh My Pi and Claude Code the third rig
-// runs (install-omp and install-claude-code set them in the envoy-session-stall job).
+// runs (install-omp and install-claude-code set them in the envoy-session-proofs leg).
 const {
   ENVOY_SESSION_STALL_CHILD,
   LEGION_TEST_OMP,
@@ -1108,14 +1110,19 @@ describe.skipIf(!envoyStackEnabled || !dispatchStackEnabled)(
  * each leave the id they replace gone at once rather than unresponsive until the horizon, and a
  * `claude --resume` of a session gets back the topics it had subscribed. The model is a stand-in
  * that answers both hosts; the listener and natsd are built from this checkout.
+ *
+ * The rig checks for the two hosts when its tests run, not when this file loads. So a step that
+ * leaves the rig out with `-t` loads the file, as envoy-session-stall's step does, which installs
+ * neither host. With the envoy stack on and a host missing, each of the rig's tests fails under
+ * GITHUB_ACTIONS, naming what is missing, and elsewhere each is skipped with one warning. With
+ * the stack off, the rig skips as the other two do, and the check says nothing.
  */
-const hostsSkipped =
-  !envoyStackEnabled ||
-  requireOrSkip(
-    "LEGION_TEST_OMP and LEGION_TEST_CLAUDE, naming the pinned Oh My Pi and Claude Code",
-    LEGION_TEST_OMP !== undefined && LEGION_TEST_CLAUDE !== undefined,
-    "envoy-session-stall"
-  );
+const hosts = hostGate({
+  reason:
+    envoyStackEnabled && (LEGION_TEST_OMP === undefined || LEGION_TEST_CLAUDE === undefined)
+      ? "This run does not have LEGION_TEST_OMP and LEGION_TEST_CLAUDE, naming the pinned Oh My Pi and Claude Code, which envoy-held's envoy-session-proofs leg installs."
+      : "",
+});
 /** How soon an id a host left must read gone: well inside the gone horizon, which is what "at
  *  once" is set against. */
 const LEFT_GONE_MS = 20_000;
@@ -1183,7 +1190,7 @@ function offeredTool(body: Record<string, unknown>, name: string): string | unde
     .find((offered) => offered === name || offered.endsWith(`__${name}`));
 }
 
-describe.skipIf(hostsSkipped)(
+describe.skipIf(!envoyStackEnabled)(
   "the real hosts' own sessions on a listener with short windows",
   () => {
     let stack: EnvoyStack | undefined;
@@ -1199,6 +1206,7 @@ describe.skipIf(hostsSkipped)(
     };
 
     beforeAll(async () => {
+      if (hosts.missing) return;
       stack = await startEnvoyStack({
         work: hostsStackDirectory,
         listenerEnv: {
@@ -1254,250 +1262,260 @@ describe.skipIf(hostsSkipped)(
       await stack?.stop();
     }, 120_000);
 
-    test("Oh My Pi's new_session leaves the id it replaces gone at once, and the new one live", async () => {
-      const stack = rig();
-      const binary = LEGION_TEST_OMP ?? "";
-      const { home, workspace, sessions } = await ompRoot(binary, "session-stall-omp-", cleanup);
-      await writeStandinProfile(home, modelBase);
-      const answers = new Map<string, Record<string, unknown>>();
-      const rpc = spawnRpc(
-        binary,
-        {
-          extensions: [PI_ENVOY_EXTENSION],
-          home,
-          workspace,
-          sessions,
-          env: {
-            ENVOY_URL: stack.envoyUrl,
-            ENVOY_NATS_URL: stack.natsUrl,
-            ENVOY_HEARTBEAT_MS: String(HEARTBEAT_MS),
-            ENVOY_MACHINE_ID: "session-stall-hosts",
-          },
-          onFrame: (frame) => {
-            const answer = z
-              .object({ type: z.literal("response"), id: z.string() })
-              .passthrough()
-              .safeParse(frame);
-            if (answer.success) answers.set(answer.data.id, answer.data);
-          },
-        },
-        cleanup
-      );
-      let asked = 0;
-      const ask = async (type: string): Promise<Record<string, unknown>> => {
-        asked += 1;
-        const id = `session-stall-${asked}`;
-        rpc.send({ type, id });
-        await until(`Oh My Pi to answer ${type}`, Date.now() + HOST_TURN_MS, () => answers.has(id));
-        return answers.get(id) ?? {};
-      };
-      const sessionOf = async (): Promise<string> =>
-        z.object({ data: z.object({ sessionId: z.string() }) }).parse(await ask("get_state")).data
-          .sessionId;
-
-      const before = await sessionOf();
-      await awaitState(stack.envoyUrl, before, "live", Date.now() + HOST_TURN_MS);
-      await ask("new_session");
-      await awaitState(stack.envoyUrl, before, "gone", Date.now() + LEFT_GONE_MS);
-      const after = await sessionOf();
-      expect(after).not.toBe(before);
-      await awaitState(stack.envoyUrl, after, "live", Date.now() + HOST_TURN_MS);
-      await rpc.end();
-    }, 300_000);
-
-    test("Claude Code's /clear leaves the id it replaces gone at once, registers the id it mints under its own direct subject alone, and claude --resume gets back the session's topics", async () => {
-      const stack = rig();
-      const binary = LEGION_TEST_CLAUDE ?? "";
-      const [home, config, workspace] = ["home", "claude-config", "workspace"].map((name) =>
-        path.join(hostsDirectory, name)
-      );
-      for (const directory of [home, config, workspace])
-        await mkdir(directory, { recursive: true });
-      // The plugin the session loads, built from this checkout outside it, since a pull request's
-      // tree carries no built dist/ or legion/.
-      const plugin = path.join(hostsDirectory, "claude-envoy");
-      const build = Bun.spawn(["bun", CLAUDE_ENVOY_BUILD, "--out", plugin], {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      if ((await build.exited) !== 0) {
-        throw new Error(`claude-envoy did not build: ${await new Response(build.stderr).text()}`);
-      }
-      // The channel server is told the plugin data directory Claude Code hands this plugin's hooks
-      // (`<config>/plugins/data/<plugin>-inline` for a plugin loaded by --plugin-dir): the hook writes
-      // there the id `/clear` mints, and the server adopts it from there.
-      const mcpConfig = path.join(hostsDirectory, "claude-mcp.json");
-      await writeFile(
-        mcpConfig,
-        JSON.stringify({
-          mcpServers: {
-            legion: {
-              command: process.execPath,
-              args: [path.join(plugin, "dist", "envoy-channel.js")],
-              env: {
-                CLAUDE_PLUGIN_DATA: path.join(config, "plugins", "data", "claude-envoy-inline"),
-              },
-            },
-          },
-        })
-      );
-      const session = crypto.randomUUID();
-
-      /** One Claude Code process in stream-json both ways, as a Legion worker's bridge runs it. */
-      const start = (flag: "--session-id" | "--resume") => {
-        const child = Bun.spawn(
-          [
-            binary,
-            "-p",
-            "--input-format",
-            "stream-json",
-            "--output-format",
-            "stream-json",
-            "--verbose",
-            "--permission-mode",
-            "bypassPermissions",
-            "--strict-mcp-config",
-            "--mcp-config",
-            mcpConfig,
-            "--plugin-dir",
-            plugin,
-            "--plugin-dir",
-            path.join(plugin, "legion"),
-            flag,
-            session,
-          ],
+    hosts.test(
+      "Oh My Pi's new_session leaves the id it replaces gone at once, and the new one live",
+      async () => {
+        const stack = rig();
+        const binary = LEGION_TEST_OMP ?? "";
+        const { home, workspace, sessions } = await ompRoot(binary, "session-stall-omp-", cleanup);
+        await writeStandinProfile(home, modelBase);
+        const answers = new Map<string, Record<string, unknown>>();
+        const rpc = spawnRpc(
+          binary,
           {
-            cwd: workspace,
+            extensions: [PI_ENVOY_EXTENSION],
+            home,
+            workspace,
+            sessions,
             env: {
-              PATH: SHELL_PATH,
-              HOME: home,
-              CLAUDE_CONFIG_DIR: config,
-              CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
-              // Every MCP tool offered with the turn rather than behind a tool search, so the
-              // stand-in can call envoy_subscribe by the name the turn offers it under.
-              ENABLE_TOOL_SEARCH: "false",
-              ANTHROPIC_BASE_URL: modelBase,
-              ANTHROPIC_API_KEY: fixtureSecret("standin"),
               ENVOY_URL: stack.envoyUrl,
               ENVOY_NATS_URL: stack.natsUrl,
               ENVOY_HEARTBEAT_MS: String(HEARTBEAT_MS),
               ENVOY_MACHINE_ID: "session-stall-hosts",
             },
-            stdin: "pipe",
-            stdout: "pipe",
-            stderr: "pipe",
-            // A session of its own, so Claude Code leads a process group that holds what it
-            // starts (its stdio MCP servers) and stop can end that group whole. This row stops no
-            // member, so the session's orphaned group sends it no SIGHUP
-            // (scripts/e2e/lib/own-group.ts says when that matters).
-            detached: true,
-          }
-        );
-        let results = 0;
-        let output = "";
-        void (async () => {
-          const decoder = new TextDecoder();
-          // A line can reach this read split across two chunks, so a line is counted once its
-          // newline has come: what follows a chunk's last newline waits for the chunks after it,
-          // and is a whole line of its own when the output ends.
-          let partial = "";
-          const result = '"type":"result"';
-          for await (const chunk of child.stdout) {
-            const text = decoder.decode(chunk, { stream: true });
-            output += text;
-            const lines = (partial + text).split("\n");
-            partial = lines.pop() ?? "";
-            results += lines.filter((line) => line.includes(result)).length;
-          }
-          if (partial.includes(result)) results += 1;
-        })();
-        const stderr = new Response(child.stderr).text();
-        // groupLives is whether any process of Claude Code's group still runs: kill(2) with signal 0
-        // to the group's id answers ESRCH once its last member has gone.
-        const groupLives = () => {
-          try {
-            process.kill(-child.pid, 0);
-            return true;
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
-            throw error;
-          }
-        };
-        const endGroup = () => {
-          if (groupLives()) process.kill(-child.pid, "SIGKILL");
-        };
-        // stop ends the input, which ends Claude Code's run and closes its MCP servers' stdin, and
-        // waits up to 10 s for the whole group to go before it kills what is left of it. The
-        // SIGKILL of Claude Code alone would leave its MCP servers running with no end of input,
-        // beside the `--resume` of the same session that follows (cybermonklabs/legion#4357's
-        // case), so the fallback ends the group, and nothing of this process runs once stop returns.
-        const stop = async () => {
-          child.stdin.end();
-          const timer = setTimeout(endGroup, 10_000);
-          await child.exited;
-          const deadline = Date.now() + 10_000;
-          while (groupLives() && Date.now() < deadline) await Bun.sleep(POLL_MS);
-          clearTimeout(timer);
-          endGroup();
-        };
-        cleanup.push(stop);
-        return {
-          /** Sends one user turn and waits for that turn's result line. */
-          turn: async (text: string) => {
-            const before = results;
-            child.stdin.write(
-              `${JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text }] } })}\n`
-            );
-            child.stdin.flush();
-            const deadline = Date.now() + HOST_TURN_MS;
-            while (results <= before) {
-              if (child.exitCode !== null || Date.now() > deadline) {
-                throw new Error(
-                  `Claude Code ended no turn for ${JSON.stringify(text)}:\n${output}\n${await stderr}`
-                );
-              }
-              await Bun.sleep(POLL_MS);
-            }
+            onFrame: (frame) => {
+              const answer = z
+                .object({ type: z.literal("response"), id: z.string() })
+                .passthrough()
+                .safeParse(frame);
+              if (answer.success) answers.set(answer.data.id, answer.data);
+            },
           },
-          stop,
+          cleanup
+        );
+        let asked = 0;
+        const ask = async (type: string): Promise<Record<string, unknown>> => {
+          asked += 1;
+          const id = `session-stall-${asked}`;
+          rpc.send({ type, id });
+          await until(`Oh My Pi to answer ${type}`, Date.now() + HOST_TURN_MS, () =>
+            answers.has(id)
+          );
+          return answers.get(id) ?? {};
         };
-      };
+        const sessionOf = async (): Promise<string> =>
+          z.object({ data: z.object({ sessionId: z.string() }) }).parse(await ask("get_state")).data
+            .sessionId;
 
-      const first = start("--session-id");
-      await first.turn(`Call the envoy_subscribe tool for the topic ${topic}.`);
-      await awaitState(stack.envoyUrl, session, "live", Date.now() + HOST_TURN_MS);
-      await until("the session to hold its subscribed topic", Date.now() + HOST_TURN_MS, () =>
-        holdsTopic(stack.envoyUrl, session, topic)
-      ).catch((error: unknown) => {
-        throw new Error(`${String(error)}\n${exchanges.join("\n")}`);
-      });
-      await first.turn("/clear");
-      await awaitState(stack.envoyUrl, session, "gone", Date.now() + LEFT_GONE_MS);
-      // The id /clear minted registers from the same project directory, within the 10 s the
-      // channel server's poll of its handoff file allows, and its row lists its own direct subject
-      // and never the one it replaced - at once, and again two heartbeats later, since a later
-      // registration must not bring the old subject back.
-      let minted = "";
-      await until("the id /clear minted to register", Date.now() + 10_000, async () => {
-        const rows = await sessionsOf(stack.envoyUrl, workspace);
-        minted = rows.find((row) => row.session_id !== session)?.session_id ?? "";
-        return minted !== "";
-      });
-      for (const wait of [0, 2 * HEARTBEAT_MS + 1_000]) {
-        await Bun.sleep(wait);
-        const rows = await sessionsOf(stack.envoyUrl, workspace);
-        expect(rows.map((row) => row.session_id)).toEqual([minted]);
-        expect(rows[0]?.topics ?? []).toContain(`notifications.agent.${minted}`);
-        expect(rows[0]?.topics ?? []).not.toContain(`notifications.agent.${session}`);
-      }
-      await first.stop();
+        const before = await sessionOf();
+        await awaitState(stack.envoyUrl, before, "live", Date.now() + HOST_TURN_MS);
+        await ask("new_session");
+        await awaitState(stack.envoyUrl, before, "gone", Date.now() + LEFT_GONE_MS);
+        const after = await sessionOf();
+        expect(after).not.toBe(before);
+        await awaitState(stack.envoyUrl, after, "live", Date.now() + HOST_TURN_MS);
+        await rpc.end();
+      },
+      300_000
+    );
 
-      const resumed = start("--resume");
-      await resumed.turn("Reply with one word.");
-      await until("the resumed session to get its topic back", Date.now() + HOST_TURN_MS, () =>
-        holdsTopic(stack.envoyUrl, session, topic)
-      );
-      await resumed.stop();
-    }, 420_000);
+    hosts.test(
+      "Claude Code's /clear leaves the id it replaces gone at once, registers the id it mints under its own direct subject alone, and claude --resume gets back the session's topics",
+      async () => {
+        const stack = rig();
+        const binary = LEGION_TEST_CLAUDE ?? "";
+        const [home, config, workspace] = ["home", "claude-config", "workspace"].map((name) =>
+          path.join(hostsDirectory, name)
+        );
+        for (const directory of [home, config, workspace])
+          await mkdir(directory, { recursive: true });
+        // The plugin the session loads, built from this checkout outside it, since a pull request's
+        // tree carries no built dist/ or legion/.
+        const plugin = path.join(hostsDirectory, "claude-envoy");
+        const build = Bun.spawn(["bun", CLAUDE_ENVOY_BUILD, "--out", plugin], {
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        if ((await build.exited) !== 0) {
+          throw new Error(`claude-envoy did not build: ${await new Response(build.stderr).text()}`);
+        }
+        // The channel server is told the plugin data directory Claude Code hands this plugin's hooks
+        // (`<config>/plugins/data/<plugin>-inline` for a plugin loaded by --plugin-dir): the hook writes
+        // there the id `/clear` mints, and the server adopts it from there.
+        const mcpConfig = path.join(hostsDirectory, "claude-mcp.json");
+        await writeFile(
+          mcpConfig,
+          JSON.stringify({
+            mcpServers: {
+              legion: {
+                command: process.execPath,
+                args: [path.join(plugin, "dist", "envoy-channel.js")],
+                env: {
+                  CLAUDE_PLUGIN_DATA: path.join(config, "plugins", "data", "claude-envoy-inline"),
+                },
+              },
+            },
+          })
+        );
+        const session = crypto.randomUUID();
+
+        /** One Claude Code process in stream-json both ways, as a Legion worker's bridge runs it. */
+        const start = (flag: "--session-id" | "--resume") => {
+          const child = Bun.spawn(
+            [
+              binary,
+              "-p",
+              "--input-format",
+              "stream-json",
+              "--output-format",
+              "stream-json",
+              "--verbose",
+              "--permission-mode",
+              "bypassPermissions",
+              "--strict-mcp-config",
+              "--mcp-config",
+              mcpConfig,
+              "--plugin-dir",
+              plugin,
+              "--plugin-dir",
+              path.join(plugin, "legion"),
+              flag,
+              session,
+            ],
+            {
+              cwd: workspace,
+              env: {
+                PATH: SHELL_PATH,
+                HOME: home,
+                CLAUDE_CONFIG_DIR: config,
+                CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+                // Every MCP tool offered with the turn rather than behind a tool search, so the
+                // stand-in can call envoy_subscribe by the name the turn offers it under.
+                ENABLE_TOOL_SEARCH: "false",
+                ANTHROPIC_BASE_URL: modelBase,
+                ANTHROPIC_API_KEY: fixtureSecret("standin"),
+                ENVOY_URL: stack.envoyUrl,
+                ENVOY_NATS_URL: stack.natsUrl,
+                ENVOY_HEARTBEAT_MS: String(HEARTBEAT_MS),
+                ENVOY_MACHINE_ID: "session-stall-hosts",
+              },
+              stdin: "pipe",
+              stdout: "pipe",
+              stderr: "pipe",
+              // A session of its own, so Claude Code leads a process group that holds what it
+              // starts (its stdio MCP servers) and stop can end that group whole. This row stops no
+              // member, so the session's orphaned group sends it no SIGHUP
+              // (scripts/e2e/lib/own-group.ts says when that matters).
+              detached: true,
+            }
+          );
+          let results = 0;
+          let output = "";
+          void (async () => {
+            const decoder = new TextDecoder();
+            // A line can reach this read split across two chunks, so a line is counted once its
+            // newline has come: what follows a chunk's last newline waits for the chunks after it,
+            // and is a whole line of its own when the output ends.
+            let partial = "";
+            const result = '"type":"result"';
+            for await (const chunk of child.stdout) {
+              const text = decoder.decode(chunk, { stream: true });
+              output += text;
+              const lines = (partial + text).split("\n");
+              partial = lines.pop() ?? "";
+              results += lines.filter((line) => line.includes(result)).length;
+            }
+            if (partial.includes(result)) results += 1;
+          })();
+          const stderr = new Response(child.stderr).text();
+          // groupLives is whether any process of Claude Code's group still runs: kill(2) with signal 0
+          // to the group's id answers ESRCH once its last member has gone.
+          const groupLives = () => {
+            try {
+              process.kill(-child.pid, 0);
+              return true;
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+              throw error;
+            }
+          };
+          const endGroup = () => {
+            if (groupLives()) process.kill(-child.pid, "SIGKILL");
+          };
+          // stop ends the input, which ends Claude Code's run and closes its MCP servers' stdin, and
+          // waits up to 10 s for the whole group to go before it kills what is left of it. The
+          // SIGKILL of Claude Code alone would leave its MCP servers running with no end of input,
+          // beside the `--resume` of the same session that follows (cybermonklabs/legion#4357's
+          // case), so the fallback ends the group, and nothing of this process runs once stop returns.
+          const stop = async () => {
+            child.stdin.end();
+            const timer = setTimeout(endGroup, 10_000);
+            await child.exited;
+            const deadline = Date.now() + 10_000;
+            while (groupLives() && Date.now() < deadline) await Bun.sleep(POLL_MS);
+            clearTimeout(timer);
+            endGroup();
+          };
+          cleanup.push(stop);
+          return {
+            /** Sends one user turn and waits for that turn's result line. */
+            turn: async (text: string) => {
+              const before = results;
+              child.stdin.write(
+                `${JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text }] } })}\n`
+              );
+              child.stdin.flush();
+              const deadline = Date.now() + HOST_TURN_MS;
+              while (results <= before) {
+                if (child.exitCode !== null || Date.now() > deadline) {
+                  throw new Error(
+                    `Claude Code ended no turn for ${JSON.stringify(text)}:\n${output}\n${await stderr}`
+                  );
+                }
+                await Bun.sleep(POLL_MS);
+              }
+            },
+            stop,
+          };
+        };
+
+        const first = start("--session-id");
+        await first.turn(`Call the envoy_subscribe tool for the topic ${topic}.`);
+        await awaitState(stack.envoyUrl, session, "live", Date.now() + HOST_TURN_MS);
+        await until("the session to hold its subscribed topic", Date.now() + HOST_TURN_MS, () =>
+          holdsTopic(stack.envoyUrl, session, topic)
+        ).catch((error: unknown) => {
+          throw new Error(`${String(error)}\n${exchanges.join("\n")}`);
+        });
+        await first.turn("/clear");
+        await awaitState(stack.envoyUrl, session, "gone", Date.now() + LEFT_GONE_MS);
+        // The id /clear minted registers from the same project directory, within the 10 s the
+        // channel server's poll of its handoff file allows, and its row lists its own direct subject
+        // and never the one it replaced - at once, and again two heartbeats later, since a later
+        // registration must not bring the old subject back.
+        let minted = "";
+        await until("the id /clear minted to register", Date.now() + 10_000, async () => {
+          const rows = await sessionsOf(stack.envoyUrl, workspace);
+          minted = rows.find((row) => row.session_id !== session)?.session_id ?? "";
+          return minted !== "";
+        });
+        for (const wait of [0, 2 * HEARTBEAT_MS + 1_000]) {
+          await Bun.sleep(wait);
+          const rows = await sessionsOf(stack.envoyUrl, workspace);
+          expect(rows.map((row) => row.session_id)).toEqual([minted]);
+          expect(rows[0]?.topics ?? []).toContain(`notifications.agent.${minted}`);
+          expect(rows[0]?.topics ?? []).not.toContain(`notifications.agent.${session}`);
+        }
+        await first.stop();
+
+        const resumed = start("--resume");
+        await resumed.turn("Reply with one word.");
+        await until("the resumed session to get its topic back", Date.now() + HOST_TURN_MS, () =>
+          holdsTopic(stack.envoyUrl, session, topic)
+        );
+        await resumed.stop();
+      },
+      420_000
+    );
   }
 );

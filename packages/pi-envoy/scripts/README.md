@@ -82,8 +82,10 @@ resumed a live session's id can neither take, release nor outlast that session's
 predecessor that is gone or is the claimant's own client instance (dispatch://INFRA-404, R8 and
 A5 of its spec); and once a session that holds a role restarts, the role lookup and the session
 listing name the same holder (dispatch://INFRA-2747). It needs no model at all, not even a
-stand-in, and no deployment: `go` and `bun` alone, and CI runs it as a step of the
-`envoy-session-stall` job.
+stand-in, and no deployment: `go` and `bun` alone. CI runs it as the step "Role takeover smoke" of
+the `envoy-session-stall` leg of the `go-envoy` job, and runs its `--base-rev` form (below) as the
+step "Role takeover smoke against the base's listener" of the `envoy-session-proofs` leg of the
+`envoy-held` job.
 
 It builds natsd (`packages/envoy/internal/testnats/cmd/natsd`) and the listener
 (`packages/envoy/cmd/listener`) from the checkout and runs both on loopback ports of its own, as
@@ -185,7 +187,10 @@ Eighteen rows are printed, each with its outcome:
 ### Usage
 
 ```bash
+# CI: envoy-session-stall / envoy-session-stall (go-envoy), step "Role takeover smoke".
 bash packages/pi-envoy/scripts/smoke-role-takeover.sh
+# CI: envoy-session-proofs / envoy-session-proofs (envoy-held), step "Role takeover smoke against
+# the base's listener", with the base of the change as one commit id in place of main@origin.
 bash packages/pi-envoy/scripts/smoke-role-takeover.sh --base-rev main@origin   # every row passes at b601d25b
 bash packages/pi-envoy/scripts/smoke-role-takeover.sh --listener-bin <built listener>
 SMOKE_DROP_ROLE_FROM_COPY=1 bash packages/pi-envoy/scripts/smoke-role-takeover.sh \
@@ -203,6 +208,17 @@ row's negative control is `SMOKE_DROP_ROLE_FROM_COPY=1` against a scratch build,
 the revision without touching the working copy (`jj --ignore-working-copy log` resolves it,
 `git archive` extracts `packages/envoy`), moves no bookmark and writes nothing outside its
 scratch.
+
+CI runs `--base-rev` against the base of the change, not `main@origin`: the merge group's base, a
+pull request's base branch head, or main's head when a dispatched run started. The step "Fetch
+the base the role takeover smoke builds its listener from"
+([`.github/scripts/fetch-compared-base.sh`](../../../.github/scripts/fetch-compared-base.sh))
+resolves that commit and fetches it into the leg's checkout of one commit. The step "Make the
+checkout a jj repository that holds the base" runs `jj git init --colocate`, and the smoke gets
+the commit by its id. A shallow checkout serves it: jj resolves a commit that a `--depth=1` fetch
+wrote to `refs/remotes/origin/compared-base`, and `git archive` extracts its tree. A failed row
+fails the step, and a pass prints `SMOKE ROLE TAKEOVER PASS: all 18 rows held against the
+listener built from <commit id>`.
 
 `--listener-bin <path>` runs that built listener in place of building one, so a control can run a
 scratch build; natsd is still built from the checkout. A path that is not an executable file is

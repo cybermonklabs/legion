@@ -81,7 +81,11 @@
 # has carried that change since, so `--base-rev main@origin` is no longer a negative control for
 # them. The INFRA-2747 row passes there too: with nothing taken out of its copy, that listener's
 # copy names the restarted holder's role as the claim record does. That row's negative control is
-# SMOKE_DROP_ROLE_FROM_COPY=1 against a scratch build, below.
+# SMOKE_DROP_ROLE_FROM_COPY=1 against a scratch build, below. CI runs `--base-rev` with the base of
+# the change as one commit id: the step "Role takeover smoke against the base's listener" of
+# envoy-held's envoy-session-proofs leg (.github/actions/go-envoy/envoy-session-proofs), after a
+# step that makes the checkout a jj repository. go-envoy's envoy-session-stall leg runs the smoke
+# against this checkout's listener.
 #
 # `--listener-bin <path>` runs that built listener in place of building one, so a control can run
 # a scratch build; natsd is still built from this checkout. A path that is not an executable file

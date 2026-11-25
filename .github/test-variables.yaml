@@ -118,12 +118,12 @@ variables:
     why: Selects the tests against a real NATS container, which ts's envoy-client leg and pi's pi-envoy and claude-envoy legs run (main's #4287).
   LEGION_E2E_DISPATCH_STACK:
     class: selector
-    jobs: [go-envoy]
-    why: Selects the envoy-client tests that start a Dispatch stack, which go-envoy's envoy-session-stall leg runs.
+    jobs: [go-envoy, envoy-held]
+    why: Selects the envoy-client tests that start a Dispatch stack, which go-envoy's envoy-session-stall leg and envoy-held's envoy-session-proofs leg run.
   LEGION_E2E_ENVOY_STACK:
     class: selector
-    jobs: [go-envoy]
-    why: Selects the envoy-client tests that build and start natsd and the listener, which go-envoy's envoy-session-stall leg runs.
+    jobs: [go-envoy, envoy-held]
+    why: Selects the envoy-client tests that build and start natsd and the listener, which go-envoy's envoy-session-stall leg and envoy-held's envoy-session-proofs leg run.
   LEGION_MEMORY_GUARD_LIVE:
     class: tool
     why: The switch of the memory guard's live runs on a pod's own memory, BenchmarkMemoryGuardLiveSandbox and the launcher's TestControllerPodMemoryGuardLiveSandbox, which INFRA-3531's measurement Jobs set in gVisor pods.
@@ -135,7 +135,7 @@ variables:
     why: The capture of one daemon's GET /legion/v1/state that BenchmarkTheLegionReadMatchesACapturedDaemonState holds Dispatch's Legion read to.
   LEGION_TEST_CLAUDE:
     class: set
-    jobs: [pi, agent-harness, go-envoy]
+    jobs: [pi, agent-harness, envoy-held]
     why: The Claude Code binary install-claude-code puts in the job's environment.
   LEGION_TEST_CODEX:
     class: set
@@ -166,7 +166,7 @@ variables:
     why: The NATS service of pi's pi-envoy leg and of pi-held, which run the Oh My Pi extension tests.
   LEGION_TEST_OMP:
     class: set
-    jobs: [go-daemon, plugin-pack, agent-harness, pi, pi-held, go-envoy]
+    jobs: [go-daemon, plugin-pack, agent-harness, pi, pi-held, envoy-held]
     why: The Oh My Pi binary install-omp puts in the job's environment.
   LEGION_TEST_PG_DSN:
     class: set

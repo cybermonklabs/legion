@@ -498,7 +498,7 @@ sends such a token to every route Dispatch mounts. The `envoy-go-checks` job run
 `packages/envoy/scripts/dev-broker.test.sh`, which holds that this script writes the read entry's
 pod token and names it in its banner.
 
-The `envoy-session-stall` leg of the `go-envoy` job holds both halves at once, with
+The `envoy-session-proofs` leg of the `envoy-held` job holds both halves at once, with
 `packages/dispatch/e2e/read-token-live.ts`. On its runner it starts this script and a
 `bun run dispatch:local` Dispatch that reads this broker, as the steps below do, and the script
 seeds the project `EXAMPLE` with an architecture source and an issue. It then sends three

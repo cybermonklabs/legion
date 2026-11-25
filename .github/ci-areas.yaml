@@ -123,8 +123,6 @@ go-envoy: # go-envoy and envoy-held
   - &gac [packages/daemon/internal/claim/*, packages/daemon/internal/controller/*, packages/daemon/internal/notify/*, packages/daemon/internal/redact/*] # test architecture-check
   - &gab [*bun, *tsp, *cc, *cl, *plug, *tf] # pkg+ws envoy-session-stall
   - &gpf [packages/proof-editor/**, packages/dispatch/web/src/features/refs/__fixtures__/**] # test parity-fuzz.ts
-  - [*sk, *omp, .claude-code-pin, &gsr [packages/daemon/docker/worker.Dockerfile, packages/dispatch/e2e/fake-*.ts, packages/dispatch/e2e/harness-ports.ts]] # test session-stall's rig
-  - *dsp # test read-token-live.ts, the dispatch:local stack it reads
   - [*scr, &dsa .dispatch/**, *tgt] # test spec-check guard, architecture-check, build-envoy-command.sh
   - &ggh [*gh, *dur] # test spec-check guard, cluster.test.sh's helm (tool-fallback's, in *gh); own go-envoy/**
 text-checks: # credential_argument_test.go reads every text file
@@ -137,4 +135,4 @@ scripts-held: *sca
 pi-held: [*pia, [*bun, *dm, *sk, *e2l, *pp, *tpn, *omp], *pie, [*am, *rme], *opi] # pkg+ws+test pi-legion; own
 web-cold: [*tsk, *bun, [*agm, *tpn], *tse, *tsh, *o8] # pkg+ws+test web tests; own
 dispatch-browser-pr: *dba
-envoy-held: [*ew, *gac, *gab, *gpf, *gsr, *dsp, [*scr, *tgt], *ggh] # pkg+mod+test held legs; own
+envoy-held: [*ew, *gac, *gab, *gpf, *dsp, [*scr, *tgt], *ggh, [*sk, *omp, .claude-code-pin, packages/daemon/docker/worker.Dockerfile, packages/dispatch/e2e/fake-*.ts, packages/dispatch/e2e/harness-ports.ts]] # pkg+mod+test held legs; test session-stall's rig (its hosts, and jj's and Oh My Pi's pins), read-token-live.ts; own

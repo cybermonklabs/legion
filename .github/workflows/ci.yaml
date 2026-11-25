@@ -609,7 +609,7 @@ jobs:
           - {leg: envoy-go-build, runner: ubuntu-24.04, timeout: 15}
           - {leg: envoy-infra-build, runner: ubuntu-24.04-arm, timeout: 32}
           - {leg: airlock-lean, runner: ubuntu-24.04-arm, timeout: 45}
-          - {leg: envoy-session-stall, runner: ubuntu-24.04, timeout: 30, pg: true}
+          - {leg: envoy-session-stall, runner: ubuntu-24.04-arm, timeout: 30, pg: true}
           - {leg: envoy-e2e-local, runner: ubuntu-24.04-arm, timeout: 30}
           - {leg: broker-multiprocess, runner: ubuntu-24.04-arm, timeout: 30, pg: true}
           - {leg: listener-server-change, runner: ubuntu-24.04-arm, timeout: 30}

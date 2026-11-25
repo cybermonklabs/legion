@@ -1,14 +1,23 @@
 name: envoy-session-proofs
 description: >-
-  The envoy-session-proofs leg of ci.yaml's envoy-held job: three proofs against envoy and
-  Dispatch stacks built from this tree, on the job's Postgres - claimant delivery of Dispatch's
-  outbox (scripts/e2e/dispatch-claimant-delivery.sh), the verification results of Dispatch
+  The envoy-session-proofs leg of ci.yaml's envoy-held job. The merge queue runs it, and so does a
+  pull request with full-ci or a lane label of the job. Its proofs run against envoy and Dispatch
+  stacks built from this tree, on the job's Postgres. All of them but the last ran in go-envoy's
+  envoy-session-stall leg, and took that leg past the 10 minutes a pull request's job is held to.
+  Three took it to 16.2 minutes in CI run 45292147224: claimant delivery of Dispatch's outbox
+  (scripts/e2e/dispatch-claimant-delivery.sh), the verification results of Dispatch
   (scripts/e2e/verification-results.sh) and the session title of claude-envoy
-  (packages/claude-envoy/scripts/smoke-session-title.sh) - which the merge queue runs, and a pull
-  request with full-ci or a lane label of the job. They ran in envoy-session-stall's leg, which
-  passed the 10 minutes a pull request's job is held to with them (16.2 minutes in CI run
-  45292147224). The leg runs on ubuntu-24.04, with the setup that leg gives them.
-  DISPATCH_TEST_DATABASE_URL names the job's Postgres, and each step carries it.
+  (packages/claude-envoy/scripts/smoke-session-title.sh). Four took it to 14.35 minutes in CI run
+  45440563929: the session state rig's second and third parts
+  (packages/envoy-client/test/session-stall.ts), the approved-version bytes of the real CLI, and
+  the read-only token of the dev broker against a local Dispatch
+  (packages/dispatch/e2e/read-token-live.ts). The last proof is the role takeover smoke with the
+  listener built from the base of the change and every client built from this tree. It fails when
+  the head breaks a client that main ships. .github/scripts/fetch-compared-base.sh resolves that
+  base. The leg runs on ubuntu-24.04 (x86_64), because the pinned Oh My Pi that the rig's third
+  part runs ships linux-x64 alone. LEGION_E2E_ENVOY_STACK and LEGION_E2E_DISPATCH_STACK select the
+  suites that start the envoy and Dispatch stacks, and DISPATCH_TEST_DATABASE_URL names the job's
+  Postgres. Each step carries what it reads.
 inputs:
   postgres:
     description: The id of the job's Postgres service container (ci.yaml's `job.services.postgres.id`).
@@ -16,9 +25,15 @@ inputs:
 runs:
   using: composite
   steps:
+    # The session rig's third part runs the pinned Oh My Pi and Claude Code. install-omp installs
+    # the pin through the mise that install-jj leaves, and install-claude-code needs Bun. jj also
+    # resolves the base that the role takeover smoke builds its listener from.
+    - uses: ./.github/actions/install-jj
+    - uses: ./.github/actions/install-omp
     - uses: ./.github/actions/setup-bun
     - shell: bash
       run: bun install --frozen-lockfile
+    - uses: ./.github/actions/install-claude-code
     - id: setup-go
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
@@ -26,7 +41,7 @@ runs:
         go-download-base-url: https://go.dev/dl
         token: ''
         cache: false
-    # go-envoy: the listener, natsd and envoy-dispatch the three proofs build.
+    # go-envoy: the listener, natsd and envoy-dispatch the proofs build.
     - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |
@@ -43,8 +58,9 @@ runs:
       shell: bash
       working-directory: packages/contracts
       run: bun run build
-    # The two Dispatch proofs below each reset a database of their own on the job's Postgres,
-    # through psql, which this runner may not carry.
+    # The two Dispatch proofs below and the read-only token's Dispatch stack each reset a database
+    # of their own on the job's Postgres, through psql, which this runner may not carry; the dev
+    # broker beside that stack creates its own database through psql too.
     - name: Install psql and create the Dispatch proofs' databases
       shell: bash
       env:
@@ -52,7 +68,7 @@ runs:
       run: |
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends postgresql-client
-        for database in claimant_delivery verification_results; do
+        for database in claimant_delivery verification_results read_token_live; do
           psql "$DISPATCH_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -c "create database $database"
         done
     # Dispatch's outbox publishes a person's answer, comment or untargeted message on a claimed
@@ -81,3 +97,132 @@ runs:
       env:
         DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       run: bash packages/claude-envoy/scripts/smoke-session-title.sh
+    # A path, not a filter: bun test discovers only names holding ".test" or ".spec", and takes
+    # this one as a file because of the leading "./". `-t` matches a test's full name, which starts
+    # with the name of its describe block. This step keeps the rig's second part: what a stalled
+    # session keeps across a second listener, a bus outage and Dispatch. go-envoy's
+    # envoy-session-stall leg runs the rig's first part.
+    - name: Session state rig of a stalled session across a second listener, a bus outage and Dispatch
+      shell: bash
+      working-directory: packages/envoy-client
+      env:
+        LEGION_E2E_ENVOY_STACK: "1"
+        LEGION_E2E_DISPATCH_STACK: "1"
+        DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      run: bun test ./test/session-stall.ts -t "^what a stalled session keeps "
+    # The rig's third part: the pinned Oh My Pi's new session, and Claude Code's /clear and resume,
+    # against a model stand-in.
+    - name: Session state rig of the real hosts' own sessions
+      shell: bash
+      working-directory: packages/envoy-client
+      env:
+        LEGION_E2E_ENVOY_STACK: "1"
+        LEGION_E2E_DISPATCH_STACK: "1"
+        DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      run: bun test ./test/session-stall.ts -t "^the real hosts' own sessions "
+    # A person's approval pins the bytes of the version they approved, and the real `dispatch` CLI
+    # against a real Dispatch server of this tree prints the hash of that version's UTF-8 bytes,
+    # after a later version too.
+    - name: Approved-version bytes of the real CLI against a real Dispatch
+      shell: bash
+      working-directory: packages/envoy-client
+      env:
+        LEGION_E2E_ENVOY_STACK: "1"
+        LEGION_E2E_DISPATCH_STACK: "1"
+        DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      run: bun test src/__tests__/approved-version-bytes.live.test.ts
+    # A read-only token the dev broker mints reads Dispatch's architecture route and nothing else,
+    # and the example entry's token still writes: packages/dispatch/e2e/read-token-live.ts, whose
+    # header says what it seeds and sends, against the dev broker (dev-broker.sh) on the job's
+    # Postgres and a `bun run dispatch:local` Dispatch that reads that broker, both built from this
+    # tree and started as the script's header says. Each stack runs in a process group of its own,
+    # which the step stops on its way out, and its log follows the script's lines in a group. The
+    # broker's address, its caller token and its work directory are what its banner exports.
+    - name: Read-only token of the dev broker against a local Dispatch
+      shell: bash
+      working-directory: packages/dispatch
+      env:
+        DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      run: |
+        logs=$(mktemp -d "$RUNNER_TEMP/read-token-live.XXXXXX")
+        broker_pid=""
+        dispatch_pid=""
+        stop() {
+          local pid name
+          for pid in "$dispatch_pid" "$broker_pid"; do
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+              kill -TERM -- "-$pid" 2>/dev/null || true
+              wait "$pid" 2>/dev/null || true
+            fi
+          done
+          for name in dev-broker dispatch-local; do
+            echo "::group::$name log"
+            cat "$logs/$name.log" 2>/dev/null || true
+            echo "::endgroup::"
+          done
+        }
+        trap stop EXIT
+        # await <what> <seconds> <log> <grep -E pattern> <pid>, as dev-airlock.sh's: it fails the
+        # step the moment the process ends, or once the bound passes without the line.
+        await() {
+          local waited=0
+          while [ "$waited" -lt "$(($2 * 2))" ]; do
+            if grep -qE "$4" "$3" 2>/dev/null; then return 0; fi
+            if ! kill -0 "$5" 2>/dev/null; then
+              echo "::error::$1 ended before it was up; its log is below"
+              exit 1
+            fi
+            sleep 0.5
+            waited=$((waited + 1))
+          done
+          echo "::error::$1 was not up within $2 s; its log is below"
+          exit 1
+        }
+        # The six builds take minutes on a cold build cache.
+        DEV_BROKER_POSTGRES_URL=$DISPATCH_TEST_DATABASE_URL \
+          setsid bash ../envoy/scripts/dev-broker.sh >"$logs/dev-broker.log" 2>&1 &
+        broker_pid=$!
+        await dev-broker.sh 600 "$logs/dev-broker.log" '^dev-broker: ready\.$' "$broker_pid"
+        broker_url=$(sed -n 's/^  export AGENT_SECRETS_URL=//p' "$logs/dev-broker.log")
+        account_token_file=$(sed -n 's/^  export AGENT_SECRETS_ACCOUNT_TOKEN_FILE=//p' "$logs/dev-broker.log")
+        broker_dir=$(sed -n 's/^  export DEV_BROKER_DIR=//p' "$logs/dev-broker.log")
+        if [ -z "$broker_url" ] || [ -z "$account_token_file" ] || [ -z "$broker_dir" ]; then
+          echo "::error::dev-broker.sh's banner exports no AGENT_SECRETS_URL, AGENT_SECRETS_ACCOUNT_TOKEN_FILE or DEV_BROKER_DIR"
+          exit 1
+        fi
+        # The web build, the server build and the seed; the last line of its banner ends the wait.
+        DATABASE_URL="${DISPATCH_TEST_DATABASE_URL%/*}/read_token_live?sslmode=disable" \
+          DISPATCH_E2E_AGENT_SECRETS_URL=$broker_url \
+          DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE=$account_token_file \
+          setsid bun run dispatch:local >"$logs/dispatch-local.log" 2>&1 &
+        dispatch_pid=$!
+        await "bun run dispatch:local" 600 "$logs/dispatch-local.log" '^Press Ctrl-C to stop\.$' "$dispatch_pid"
+        # The ports its "Run a spec against it" line prints, each a NAME=port word of that line.
+        mapfile -t ports < <(grep -m1 '^    DISPATCH_E2E_REUSE_SERVERS=1 ' "$logs/dispatch-local.log" | tr ' ' '\n' | grep -E '^[A-Z0-9_]+_PORT(_[AB])?=[0-9]+$')
+        env "${ports[@]}" AGENT_SECRETS_URL="$broker_url" DEV_BROKER_DIR="$broker_dir" \
+          timeout 300 bun e2e/read-token-live.ts
+    # The base that the role takeover smoke builds its listener from: one commit id, read from the
+    # run and fetched with its tree, so the smoke fetches nothing.
+    # .github/scripts/fetch-compared-base.sh says what a merge group, a pull request and a
+    # dispatched run each give.
+    - name: Fetch the base the role takeover smoke builds its listener from
+      id: base
+      shell: bash
+      env:
+        BASE: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+        GH_TOKEN: ${{ github.token }}
+      run: .github/scripts/fetch-compared-base.sh
+    # smoke-role-takeover.sh resolves --base-rev with jj, and the checkout is a git repository
+    # alone. A jj repository colocated with it imports the ref that the fetch above wrote the base
+    # into.
+    - name: Make the checkout a jj repository that holds the base
+      shell: bash
+      run: jj git init --colocate
+    # The role takeover smoke's rows with the listener built from the base and every client built
+    # from this tree: the pair a deploy meets while the hub still runs main's listener. go-envoy's
+    # envoy-session-stall leg runs the same rows against this tree's listener.
+    - name: Role takeover smoke against the base's listener
+      shell: bash
+      env:
+        BASE: ${{ steps.base.outputs.sha }}
+      run: bash packages/pi-envoy/scripts/smoke-role-takeover.sh --base-rev "$BASE"

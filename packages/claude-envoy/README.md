@@ -661,13 +661,14 @@ marketplace name comes from the repository's `marketplace.json` and would replac
 `legion-plugins` registration.
 
 The `/clear` handoff is a case of `packages/envoy-client/test/session-stall.ts`, which the
-`envoy-session-stall` job of `ci.yaml` runs: the real Claude Code, with a copy of this plugin built
-from this tree, against a listener and NATS built from this tree and a stand-in model. After
-`/clear` the id it replaced reads gone at once, and the registry entry of the id it minted lists
-that id's own direct subject and never the old one, at once and again two heartbeats later.
+`envoy-session-proofs` leg of the `envoy-held` job of `ci.yaml` runs: the real Claude Code, with a
+copy of this plugin built from this tree, against a listener and NATS built from this tree and a
+stand-in model. After `/clear` the id it replaced reads gone at once, and the registry entry of the
+id it minted lists that id's own direct subject and never the old one, at once and again two
+heartbeats later.
 
 `smoke-session-title.sh` is the test that the name a person gave a session is what the plugin
-registers, and the same job runs it. It builds natsd (`internal/testnats/cmd/natsd`) and an Envoy
+registers, and the same leg runs it. It builds natsd (`internal/testnats/cmd/natsd`) and an Envoy
 listener from this tree, builds a copy of
 the plugin from this tree in its temp directory (`scripts/build.ts --out`), runs that copy's
 `dist/session-hook.js` and `dist/session-title-hook.js` on the payloads Claude Code's hooks

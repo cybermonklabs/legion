@@ -17,7 +17,10 @@ description: >-
   session-settings runs dispatch-session-settings.sh (Dispatch's live view switches an Oh My Pi
   session's model and thinking level, on one Chromium page), and session-scripts
   dispatch-user-turns.sh and envoy-session-delivery.sh (a person's turns from Dispatch's page,
-  and every Envoy event reaching an Oh My Pi and a Claude Code session once). plugin-smokes runs
+  and every Envoy event reaching an Oh My Pi and a Claude Code session once). session-scripts then
+  runs envoy-session-delivery.sh two more times against the base of the change, the commit that
+  .github/scripts/fetch-compared-base.sh resolves: this checkout's hub with the base's plugins, and
+  sessions that start on the base's plugins and resume on this checkout's. plugin-smokes runs
   the Oh My Pi plugin's four live scripts on Envoy and Dispatch stacks of their own, and
   nats-callout-sessions runs scripts/e2e/nats-callout-sessions.sh in its two modes, the plugins'
   code under stand-in hosts and then the pinned hosts themselves. Each script is itself the test
@@ -195,6 +198,39 @@ runs:
       env:
         LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       run: SESSION_DELIVERY_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/session-delivery" bash scripts/e2e/envoy-session-delivery.sh
+
+    # The base that the two forms below compare with: one commit id, read from the run and fetched
+    # with its tree, so neither form fetches anything. .github/scripts/fetch-compared-base.sh says
+    # what a merge group, a pull request and a dispatched run each give.
+    - name: Fetch the base the rollout forms compare with
+      id: base
+      if: ${{ !cancelled() && inputs.leg == 'session-scripts' }}
+      shell: bash
+      env:
+        BASE: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+        GH_TOKEN: ${{ github.token }}
+      run: .github/scripts/fetch-compared-base.sh
+
+    # The rollout a release meets first: this checkout's listeners, natsd, Dispatch and bridge with
+    # pi-envoy and claude-envoy built from the base. A head that breaks the plugins main ships fails
+    # here.
+    - name: Every Envoy event reaches the base's plugins once on this checkout's hub
+      if: ${{ !cancelled() && inputs.leg == 'session-scripts' && steps.base.outcome == 'success' }}
+      shell: bash
+      env:
+        LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+        BASE: ${{ steps.base.outputs.sha }}
+      run: SESSION_DELIVERY_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/session-delivery-plugins-from" bash scripts/e2e/envoy-session-delivery.sh --plugins-from "$BASE"
+
+    # The upgrade: both sessions start on the base's plugins, and window a's resume starts them on
+    # this checkout's. A Legion worker makes this move when its image is re-pinned.
+    - name: Sessions started on the base's plugins resume on this checkout's
+      if: ${{ !cancelled() && inputs.leg == 'session-scripts' && steps.base.outcome == 'success' }}
+      shell: bash
+      env:
+        LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+        BASE: ${{ steps.base.outputs.sha }}
+      run: SESSION_DELIVERY_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/session-delivery-resume-plugins-from" bash scripts/e2e/envoy-session-delivery.sh --disruptions a --resume-plugins-from "$BASE"
 
     - name: A message to a role reaches the session that claimed it
       if: inputs.leg == 'plugin-smokes'

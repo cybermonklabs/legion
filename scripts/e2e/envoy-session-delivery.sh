@@ -3,7 +3,8 @@
 # a real Claude Code session exactly once, also when it was published while the session, its NATS
 # connection, either listener or Dispatch was down, and when it was stored for a session before that
 # session first registered. The agent-harness job's session-scripts part runs it as a step
-# (.github/actions/agent-harness).
+# (.github/actions/agent-harness), and then runs --plugins-from and --resume-plugins-from (below)
+# against the base of the change, each a step of its own.
 #
 # The stack runs on the machine the script runs on, every part of it built from a checkout: natsd
 # (packages/envoy/internal/testnats/cmd/natsd, JetStream on a store directory of the run's own),
@@ -137,7 +138,8 @@
 # --build-from builds them, and everything else — the listeners, natsd, Dispatch, the bridge —
 # stays this checkout's. It is the pair a release meets first, a hub already updated and a session
 # still running the plugins of the release before it. The two flags name one tree each and are not
-# given together.
+# given together. CI runs it with the base of the change as <rev>: the session-scripts leg's step
+# "Every Envoy event reaches the base's plugins once on this checkout's hub".
 #
 # --resume-plugins-from <rev> is the upgrade, and it runs only with disruption a: both sessions
 # start on the plugins built from <rev>, and the resume after the SIGKILL starts them on this
@@ -145,7 +147,9 @@
 # makes when its image is re-pinned: the session registered on the old plugin's path, went away,
 # the stream stored its events, and the new plugin opens its first consumer. The run judges the
 # table as it always does, so every event of every window must still be counted once. The flag
-# names one tree, as --plugins-from and --build-from do, and is not given with either.
+# names one tree, as --plugins-from and --build-from do, and is not given with either. CI runs it
+# with --disruptions a and the base of the change as <rev>: the session-scripts leg's step
+# "Sessions started on the base's plugins resume on this checkout's".
 #
 # --second-followed-issue makes both sessions follow a second Dispatch issue's topic beside the
 # first, and publishes one more comment there in every window. Two followed issue topics and a

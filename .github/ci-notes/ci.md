@@ -172,7 +172,7 @@ ubuntu-24.04, each a reason of its own machine and not of the job's code:
     one is installed from its `-aarch64` row there, as changie (test and tooling-checks), crane
     (ci-images), mise and jj (pi-shared) and elan (airlock-lean) are;
   * the pinned Oh My Pi build, which .omp-pin names and whose release ships linux-x64 alone:
-    daemon-go, plugin-pack, pi-envoy, pi-legion and envoy-session-stall;
+    daemon-go, plugin-pack, pi-envoy, pi-legion and envoy-session-proofs;
   * a browser: dispatch-browser (its container is an image built for linux/amd64 alone),
     dispatch-two-builds and docs (Playwright's Chromium on the runner's own libraries);
   * an image of this repository built for linux/amd64: worker-image, browser-image, and
@@ -750,6 +750,25 @@ command. The merge queue runs the job, a dispatched run with the input kind-and-
 and a pull request only with the label `full-ci` or `lane:agent_harness`
 (#a-lane-label-turns-on-one-held-job-on-a-pull-request). Not fail-open: its tests were in no
 job that `changes` failing runs.
+
+session-scripts runs envoy-session-delivery.sh two more times against the base of the change, so
+it fails when the head breaks the plugins that main ships. The step "Fetch the base the rollout
+forms compare with" runs .github/scripts/fetch-compared-base.sh: it resolves the base from the run
+(a merge group's base_sha, a pull request's base.sha, or main's head when a dispatched run
+started) and fetches that one commit with its tree, at depth 1. Then two steps hand it to the
+script by its id:
+  * `--plugins-from <base>`: this checkout's hub with pi-envoy and claude-envoy built from the
+    base, every window.
+  * `--disruptions a --resume-plugins-from <base>`: both sessions start on the base's plugins, and
+    window a's resume starts them on this checkout's.
+Each runs once the fetch passed, whether or not an earlier step failed. Each prints its CHECK
+lines and `ENVOY SESSION DELIVERY: PASS` or `FAIL`, and a failed check fails its step. In CI run
+45440563929 the leg took 10.19 minutes, and the plain run 3.98 of them: 21 s of builds, 11 s for
+the services and the sessions, and 3.4 minutes for the eight windows. Each form adds the base's
+tree, its `bun install`, its pack and its claude-envoy build: 20 s or less (gVisor figures: the
+install took 11 s, the pack and the build 2 s). So `--plugins-from` adds about 4.2 minutes, and
+`--resume-plugins-from` with window a alone about 1.3. The fetch adds a few seconds. The leg is
+expected to take about 16 minutes, under 25 and under its timeout of 30.
 
 ## The kind-image job
 
@@ -1459,29 +1478,39 @@ reconnect within 60 s: envoy-client's shared connection options on their own, th
 pi-envoy extension and the real claude-envoy channel server on consumer delivery, each
 subscribing its relay subject again on the new connection, registering a new epoch, and showing
 the message sent while it was cut off once. They run only with LEGION_E2E_ENVOY_STACK=1,
-which only this job sets, so the envoy-client, pi-envoy and claude-envoy jobs, which set up no
-Go, skip them.
+which the go-envoy job's envoy-session-stall leg and the envoy-held job's envoy-session-proofs
+leg set, so the envoy-client, pi-envoy and claude-envoy jobs, which set up no Go, skip them.
 
-The session state rig (dispatch://INFRA-392) runs on the same stack and needs no agent: it
-SIGSTOPs a child process carrying envoy-client's own registration and heartbeat and holds the
-listener to `unresponsive` — the role claim kept, the send stored — until the gone horizon.
-Its longest property waits out that horizon and one reaper pass: the role claim reaper runs
-at ENVOY_ROLE_CLAIM_REAP_INTERVAL, which the rig sets to two seconds, so the suite costs the
-horizon rather than the five minutes that reaper's own default would cost it.
-The live Dispatch-stack suite rides this job too (dispatch://INFRA-1727). It builds
+The session state rig (dispatch://INFRA-392), packages/envoy-client/test/session-stall.ts, runs
+on the same stack. Its first part needs no agent: it SIGSTOPs a child process carrying
+envoy-client's own registration and heartbeat and holds the listener to `unresponsive` — the role
+claim kept, the send stored — until the gone horizon. Its longest property waits out that horizon
+and one reaper pass: the role claim reaper runs at ENVOY_ROLE_CLAIM_REAP_INTERVAL, which the rig
+sets to two seconds, so the suite costs the horizon rather than the five minutes that reaper's own
+default would cost it. envoy-session-stall runs that first part alone (`-t "^a session its box
+stalls "`). The file's second part (what a stalled session keeps across a second listener, a bus
+outage and Dispatch) and its third (the pinned Oh My Pi's and Claude Code's own sessions) run in
+envoy-held's envoy-session-proofs leg, a step each, chosen by the name of each part's describe
+block. With them this leg took 14.35 minutes in CI run 45440563929, past the 10 minutes a pull
+request's job is held to. Without them it runs main's steps, 9.37 minutes in main's job
+138232842142 on the same ubuntu-24.04-arm runner. No x86_64 runner is needed: the Oh My Pi and
+Claude Code installs went with the third part.
+
+The live Dispatch-stack suite rides this leg too (dispatch://INFRA-1727). It builds
 packages/envoy's ./cmd/dispatch, makes a database of its own on DISPATCH_TEST_DATABASE_URL and
 runs the real `dispatch` CLI against that server (packages/envoy-client/test/dispatch-stack.ts),
-so it needs a PostgreSQL and a Go, which this job is the only envoy-client lane to have: the
-envoy-client job sets up neither, so a suite gated on LEGION_E2E_DISPATCH_STACK would skip
-there for ever. The go-envoy area already names packages/envoy/** and
-packages/envoy-client/**, so the suite brings no new path into this job's closure.
+so it needs a PostgreSQL and a Go. The envoy-client job sets up neither, so a suite gated on
+LEGION_E2E_DISPATCH_STACK would skip there for ever. The go-envoy area already names
+packages/envoy/** and packages/envoy-client/**, so the suite brings no new path into this job's
+closure. The approved-version bytes suite (src/__tests__/approved-version-bytes.live.test.ts)
+uses the same stack in envoy-session-proofs.
 
-The read-only token's live proof rides this leg too: packages/dispatch/e2e/read-token-live.ts
-against the two stacks its header names, the dev broker (packages/envoy/scripts/dev-broker.sh, on
-the job's Postgres through DEV_BROKER_POSTGRES_URL, so no Docker) and a `bun run dispatch:local`
-Dispatch that reads it. It needs the Postgres, Go, psql and Bun this leg already sets up. The
-go-envoy area names packages/dispatch/**, the script, its helpers, and the SPA and e2e harness
-that Dispatch builds and runs.
+The read-only token's live proof runs in envoy-session-proofs too:
+packages/dispatch/e2e/read-token-live.ts against the two stacks its header names, the dev broker
+(packages/envoy/scripts/dev-broker.sh, on the job's Postgres through DEV_BROKER_POSTGRES_URL, so
+no Docker) and a `bun run dispatch:local` Dispatch that reads it. It needs the Postgres, Go, psql
+and Bun that leg sets up. The envoy-held area names packages/dispatch/**, the script, its helpers,
+and the SPA and e2e harness that Dispatch builds and runs.
 
 ## What the lint leg holds the CI layout and every workflow file to
 
@@ -1953,6 +1982,34 @@ envoy-e2e-local's bucket refill (envoy-e2e-refill; 10.8 minutes in that run). Th
 `lane:envoy_go_checks` and `lane:envoy_infra_go` lift the job whole. Its legs keep the runners
 of the legs they came from; the session proofs' leg takes the job's Postgres, sized for its
 Dispatch processes.
+
+envoy-session-proofs also runs the four proofs that took envoy-session-stall to 14.35 minutes in
+CI run 45440563929 (#the-session-stall-suites-the-session-state-rig-and-the-live-dispatch-stack):
+  * The session state rig's second part and its third part. Each is a step of its own that runs
+    `bun test ./test/session-stall.ts -t "^<the part's describe name> "`.
+  * The approved-version bytes of the real CLI against a real Dispatch.
+  * The read-only token of the dev broker against a local Dispatch.
+The rig's third part runs the pinned Oh My Pi and Claude Code, so this leg installs jj, Oh My Pi
+and Claude Code, and stays on ubuntu-24.04.
+
+Its last step is the role takeover smoke with the listener built from the base of the change and
+every client built from this tree (`smoke-role-takeover.sh --base-rev`). It fails when the head
+breaks a client that main ships. .github/scripts/fetch-compared-base.sh resolves the base from the
+run: a merge group's base_sha, a pull request's base.sha, or main's head when a dispatched run
+started. It fetches that one commit with its tree, at depth 1, into
+refs/remotes/origin/compared-base. `jj git init --colocate` then makes the checkout a jj
+repository that holds the commit, and the smoke gets it by its id and fetches nothing. A run in a
+copy of the checkout of one commit, with no remote to fetch from, passed all 18 rows against the
+listener of main's c227d04661 (2026-11-25).
+
+Times, from CI run 45440563929 on ubuntu-24.04, added to this leg's 4.1 minutes there:
+  * The rig's two parts: 2.71 minutes. The whole file took 4.09, and its first part 1.38 on main.
+  * The approved-version bytes 0.12, the read-only token 1.95, and the three installs 0.12.
+  * The base's fetch and the jj repository: under 0.1 each. The checkout's own fetch of one
+    commit took 2 s. `jj git init --colocate` took 3.5 s in a gVisor pod.
+  * The smoke against the base's listener: about 2.3. The smoke took 1.83 against this tree's
+    listener, whose build hit the cache. The base's listener built in 22 s in a gVisor pod.
+So the leg is expected to take about 11.5 minutes, under its 20.
 
 ## Why every job sets JOB_TIMEOUT_MINUTES
 

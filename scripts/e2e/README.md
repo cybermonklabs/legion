@@ -1195,7 +1195,9 @@ The `daemon-live` job's `TestPlanRatingsLive` (`internal/daemon/plan_ratings_liv
 ## envoy-session-delivery.sh
 
 The test of session delivery: every Envoy event reaches a real Oh My Pi session and a real Claude Code session exactly once, also when it was published while the session, its NATS connection, either listener or Dispatch was down, and when it was stored for a session before that session first registered.
-The agent-harness job's `session-scripts` part runs it as a step.
+The agent-harness job's `session-scripts` part runs it as a step ("Every Envoy event reaches both sessions once").
+The same part then runs the two forms below that name `origin/main`, each a step of its own, with the base of the change as one commit id in place of `origin/main`.
+The step "Fetch the base the rollout forms compare with" ([`.github/scripts/fetch-compared-base.sh`](../../.github/scripts/fetch-compared-base.sh)) resolves that commit from the run and fetches it, so neither form fetches anything.
 
 ```bash
 LEGION_TEST_OMP=<omp> LEGION_TEST_CLAUDE=<claude> LEGION_TEST_PG_DSN='postgres://postgres@127.0.0.1:<port>/postgres?sslmode=disable' \
@@ -1206,12 +1208,14 @@ LEGION_TEST_OMP=<omp> LEGION_TEST_CLAUDE=<claude> LEGION_TEST_PG_DSN='postgres:/
 … bash scripts/e2e/envoy-session-delivery.sh --build-from 926040d9048572765639e56d516226b822288b46 --expect-lost role
 
 # The rollout state production meets first: this checkout's hub with the plugins of the release
-# before it.
+# before it. CI: agent-harness / session-scripts, step "Every Envoy event reaches the base's
+# plugins once on this checkout's hub".
 … bash scripts/e2e/envoy-session-delivery.sh --plugins-from origin/main
 
 # The upgrade: the sessions start on the plugins of <rev> and are resumed on this checkout's, so
 # one session's own life crosses the release — the move every Legion worker makes when its image
-# is re-pinned. Only with disruption a, which is the window it upgrades in.
+# is re-pinned. Only with disruption a, which is the window it upgrades in. CI: agent-harness /
+# session-scripts, step "Sessions started on the base's plugins resume on this checkout's".
 … bash scripts/e2e/envoy-session-delivery.sh --disruptions a --resume-plugins-from origin/main
 ```
 
