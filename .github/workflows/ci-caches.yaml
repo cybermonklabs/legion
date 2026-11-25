@@ -218,8 +218,8 @@ jobs:
       # packages daemon-go runs under the detector, whose
       # objects are cache entries of their own. Those five are the list
       # .github/scripts/ci_job_reads.py's DAEMON_RACE_PACKAGES holds, which check-ci-filters.sh
-      # holds ci.yaml's two steps to, so a package that joins or leaves the detector there is the
-      # side this command follows. The test binaries are compiled and never run (`go test -c -o
+      # holds daemon-go's race legs (.github/go-legs.yaml) to, so a package that joins or leaves the
+      # detector there is the side this command follows. The test binaries are compiled and never run (`go test -c -o
       # /dev/null` links each one and writes nothing): running them would want tmux, jj, Oh My Pi,
       # uv, container images and a Postgres service, and the build cache this entry holds is what
       # a compile leaves. The x86_64 leg alone: daemon-go, plugin-pack and pi-legion, which read

@@ -1,0 +1,132 @@
+# The packages each leg of a Go job runs. A job that runs in legs runs one copy of itself per leg,
+# at the same time, each over the packages its leg lists here, with the same flags (-race, -skip,
+# -timeout) in every leg; a job of the job's old name then passes only when every leg passed, so
+# its check-run name and ci-ok's reading of it stay as they were.
+#
+# Each package of a module is in exactly one place here: one leg of one job, or `elsewhere`, a
+# job that runs it outside these legs. .github/scripts/go_legs.py, which each leg's go test step
+# runs for its packages, fails the step first when `go list ./...` prints a package no place names,
+# or names one twice, or when a place names a directory that is no package: so a new package fails
+# every leg until it is added here, and none runs in no job.
+#
+# The legs are balanced from measured times: a leg takes as long as its longest package, or as
+# its packages' sum over the runner's four cores when that is longer, and go test starts its
+# packages in the order they are given, so each leg lists its longest first. The times beside the
+# packages are those of merge group 45553934471 (2026-11-25), job 139002010987 for daemon-go's and
+# job 139002011254 for daemon-go-race's; a package with none ran under a second or has no test.
+# Rebalance from the times the legs' own runs print, `ok <package> <seconds>s`.
+# why: .github/ci-notes/ci-job-daemon-go.md#why-the-daemons-tests-run-in-legs
+packages/daemon:
+  # daemon-go (.github/workflows/ci-job-daemon-go.yaml, job daemon-go-legs): plain, every package
+  # but the race step's and the text checks. Leg 1 is internal/store's, whose 542 s sets its time,
+  # beside the next three, each on a core of its own; leg 2 is the rest, about 880 s of package
+  # time over four cores, and the steps that run no leg's packages (the race-impossible tests, the
+  # forced-order tests and the Stage 1 proof).
+  daemon-go:
+    1:
+      - internal/store                          # 542 s
+      - internal/runtime/sandbox                # 287 s
+      - internal/workflow                       # 281 s
+      - cmd/legion                              # 276 s
+    2:
+      - internal/admit                          # 179 s
+      - internal/workspace                      # 166 s
+      - internal/api                            # 124 s
+      - internal/leakguard                      # 52 s
+      - internal/classify                       # 45 s
+      - internal/record                         # 44 s
+      - internal/repocache                      # 33 s
+      - internal/runtime/tmux                   # 29 s
+      - internal/testnats                       # 27 s
+      - internal/supervise                      # 21 s
+      - internal/podsafety                      # 17 s
+      - internal/modeltoken                     # 14 s
+      - internal/memoryguard                    # 13 s
+      - internal/capabilities                   # 13 s
+      - internal/shim                           # 13 s
+      - internal/cipher                         # 11 s
+      - internal/pause                          # 11 s
+      - internal/procgroup                      # 9 s
+      - internal/appauth                        # 9 s
+      - internal/stream                         # 9 s
+      - internal/claudebridge                   # 9 s
+      - internal/natsauth                       # 8 s
+      - internal/blockers                       # 4 s
+      - internal/fixtureenv                     # 4 s
+      - internal/rolefile                       # 3 s
+      - internal/ompsessions                    # 3 s
+      - internal/projection                     # 2 s
+      - internal/testpg/testdb                  # 2 s
+      - internal/testpg                         # 2 s
+      - internal/ghconfig                       # 1 s
+      - internal/config                         # 1 s
+      - internal/prompts                        # 1 s
+      - internal/termsafe
+      - internal/bootprobe
+      - internal/testtmp
+      - internal/redact
+      - internal/runtime
+      - internal/runtime/shellprefix
+      - internal/dispatch
+      - internal/registry
+      - internal/notify
+      - internal/testwait
+      - internal/plan
+      - internal/store/storetext
+      - internal/testbin
+      - internal/ompdirs
+      - internal/backoff
+      - internal/ghbranch
+      - internal/testfifo
+      - internal/clock/clocktest
+      - internal/githubrest
+      - internal/omplaunch
+      - internal/experiment
+      - internal/controller
+      - internal/runtime/workerbin
+      - internal/runtime/fake
+      - internal/phase
+      - internal/store/migrations
+      - internal/lookpath
+      - internal/programbound
+      - internal/claim
+      - internal/claudelaunch
+      - internal/credential
+      - internal/ghrepo
+      - internal/promptrefs
+      - internal/testport
+      - internal/wait
+      - internal/envlisting
+      - internal/reviewround
+      - internal/testkernel
+      - internal/wakepace
+      - internal/volumestat
+      - internal/capabilities/capabilitiestest
+      - internal/clock
+      - internal/fixturegit
+      - internal/githubtest
+      - internal/leakguard/leakguardtest
+      - internal/pods
+      - internal/runtime/sandbox/rolegitconfig
+      - internal/supervise/supervisetest
+      - internal/testbinary
+      - internal/testbuild
+      - internal/testlog
+      - internal/testnkeys
+      - internal/testtypes
+      - internal/tlsalert
+      - internal/treelifecycle
+  # daemon-go-race (job daemon-go-race-legs): under the race detector, the five packages
+  # .github/scripts/ci_job_reads.py's DAEMON_RACE_PACKAGES says why. internal/daemon alone in leg 1;
+  # the four others in leg 2, whose time is internal/intake's.
+  daemon-go-race:
+    1:
+      - internal/daemon                         # 629 s
+    2:
+      - internal/intake                         # 522 s
+      - internal/launcher                       # 311 s
+      - internal/sessionproxy                   # 8 s
+      - internal/shimwire                       # 3 s
+  # Packages of the module no leg runs, each with the job that does.
+  elsewhere:
+    internal/textcheck: text-checks
