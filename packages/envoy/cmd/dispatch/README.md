@@ -165,6 +165,8 @@ An issue imported from GitHub (`POST /api/v1/issues` with `external`) names its 
 No setting seeds a default repository or chooses the project of an import.
 A boot that still sets one of the two settings that did is refused, naming what replaced it (`removedSettings` in `cmd/dispatch/settings.go`).
 
+Every project has an owner, and a boot over a project with none refuses to serve until `DISPATCH_PROJECT_OWNER_FALLBACK` names a full member to own it, or an operator gives it one (Giving a project to another owner, below).
+
 Where browser sign-in is configured, `DISPATCH_SERVER_URL` IS the sign-in callback origin:
 it must equal the URL humans type into their browser, and the sign-in pool's app client must list `<DISPATCH_SERVER_URL>/auth/callback` as a callback URL.
 With no `DISPATCH_SIGNIN_*` setting nobody signs in through a browser, and the variable is the origin Dispatch builds its own links from and nothing more.
@@ -189,10 +191,15 @@ It is presented under RFC 9449's DPoP scheme
 — `Authorization: DPoP <token>` with a `DPoP:` proof header signed by the key the token is bound to
 — because that RFC refuses a DPoP-bound token presented under any other scheme;
 the server decides a request by its scheme before it reads any token, so such a presentation is never retried as a bearer, and a bearer is never sent to this check.
-The server asks the broker what the token is (RFC 7662 introspection on `/v1/oauth/introspect`, presenting the same projected ServiceAccount token `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` names as the approval relays do, one affirmative answer reused for five seconds from the broker's answer) and checks the proof against the `jkt` that answer carries, with `DISPATCH_SERVER_URL` as the origin the proof's `htu` must name.
-No setting of its own configures it.
+The server asks the broker what the token is (RFC 7662 introspection on `/v1/oauth/introspect`, presenting the same projected ServiceAccount token `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` names as the approval relays do, one affirmative answer reused for five seconds from the broker's answer) and checks the proof against the `jkt` that answer carries.
 A revoked token therefore stops resolving within five seconds of the introspection that last called it live, not of the revocation:
 an introspection already in flight when the token is revoked is remembered from the moment it completes, and it may take up to five seconds to complete.
+The proof's `htu` must name one of the origins Dispatch is reached at, plus the request's path:
+`DISPATCH_SERVER_URL`'s origin, or one `DISPATCH_PROOF_ORIGINS` adds, a comma-separated list of origins such as the in-cluster address pods and daemons call, since a client signs the URL it calls.
+Unset, `DISPATCH_SERVER_URL`'s origin is the only one.
+An entry that is not an absolute http(s) URL with no path, query, fragment or user refuses the start, naming it, and an entry equal to `DISPATCH_SERVER_URL`'s origin or to another entry is taken once.
+A proof naming an origin neither setting names is refused as any wrong target is, and a proof is spent once whichever origin it names.
+That list is the one setting of its own this credential takes.
 A verified caller acts as the session the token names, for the person it names, or, where the broker names none, for the service it names (the fleet of the machine holding it, or the service a read entry names), and `actor` in the body does not decide that session:
 absent is accepted, one naming the same session is accepted and its `origin` kept, and one naming any other writer is `403 ACTOR_SESSION_MISMATCH` naming the session the token carries.
 A token scoped to one project carries that project on every actor it writes, set from the token and never from the body;
@@ -1474,7 +1481,7 @@ So for each surface the two builds share, this is what build N+1 may change whil
   A change to the stream's `MaxAge`, `Duplicates` or subjects, or to a durable's config, takes a new generation (`streamConfigGeneration` in `internal/bus/stream.go`, `consumerConfigGeneration` in `internal/dispatch/delivery/intake.go`, each pinned by a test row).
   A build that finds a higher generation deployed leaves the stream as it is and recreates a durable with the deployed config, so build N never reverts what build N+1 set.
   Dispatch keeps the stream's deployed replica count, and keeps its deployed consumer cap where that is higher than its own (`streamMaxConsumers`): the cap, like the replica count and the byte limit, is only ever raised, so it takes no generation and the two builds never lower each other's.
-  Every ensure keeps a deployed subject it does not know, unless it overlaps a subject of its own, and each client publishes a topic on the transport the deployed stream's subjects call for (`bus.Client.UsesCoreTransport`), so build N publishes a topic under a subject only build N+1 adds to the stream too, with its message id.
+  Every ensure keeps a deployed subject it does not know, unless it overlaps a subject of its own, and each client publishes a topic on the transport the deployed stream's subjects call for (`bus.Client.UsesCoreTransport`), so build N publishes a topic under a subject only build N+1 adds to the stream too, with its message id; a topic build N stores itself is never sent over core NATS, and while the deployed stream does not capture it the publish sends nothing and fails with `bus.ErrSubjectNotDeployed`, so the queue of a message to a session no listener holds settles failed and the build announcer leaves its announcement unpublished for the next pass.
   No subject is retired while a running build publishes to it: retiring one is an operator step (`internal/bus/stream.go`, `streamReconciliation`).
   Each delivery durable has one intake holder at a time, the process that holds its `duty.Hold` (above).
 
@@ -1568,6 +1575,7 @@ The two-build test checks this rule (`cmd/dispatch/twobuild_*_test.go`, `go test
 ./cmd/dispatch`, CI job `dispatch-two-builds`).
 `packages/envoy/scripts/build-dispatch-build.sh` builds the previous release from its commit, and the test runs it beside this tree on one Postgres, cloned at this tree's schema, and one NATS.
 It drives each build's `dispatch` command against the other build's server, reads and edits each build's stored documents and opens their document socket on the other build, passes messages both ways while it checks that the stream and consumer settings stay as they are, races a write of each build on one issue, the previous build's committing first, boots the previous build, with its web app, while a write of this tree is between its owner lock and its write, and boots it with no web app while a write of this tree holds the gate longer than the registration's bound, which refuses that registration and keeps every heartbeat of this tree inside the live window.
+On the previous build it makes a document again where this build removed one, and removes a document this build made, once it has read whether that build writes document nodes (`twobuild_nodes_test.go`): beside a build that writes none, it holds the census to naming the removed document's node `orphaned`, the backfill to leaving it, and this build's block-index tick to curing every row the previous build left once that build stops; beside one that writes them, as this tree built as the previous build does (CI job `dispatch-two-builds-same`), it holds each node to that build's own statement and the census to naming none.
 It also runs the page admission across the earlier build's departure.
 Beside the previous release, a page of this tree is admitted by that release's numbers, and it stays writable throughout when they are this tree's own.
 The first rollout of the fleet's numbers needs a release before the fleet columns, so `build-dispatch-build.sh` builds the first-rollout build as well, with `--commit edb69e0d7588ec037847182e74a04a343a0664c9` (the release tagged `legion-envoy-v30.20.2`), and the test runs it and holds a page of this tree read-only while that build's process is live and writable once that process has left.
@@ -3229,6 +3237,38 @@ that one-release gap is the author's to reason about, and the two-build test (Tw
 The five-second `pgmigrate.LockTimeout` also bites harder under a rolling update than under `Recreate`, which stops the previous pods before the new one boots:
 while a deployment rolls, the old build's connections are still open and still holding locks on the tables the migration wants, so a migration that applies cleanly against an idle database can fail the new pod's boot.
 
+### Giving a project to another owner
+
+Every project has one owner, the full member who changes its access list and whether it is public or private (`projects.owner`).
+An operator gives any project to another full member with the database credential alone, with no server running if need be:
+
+```sh
+envoy-dispatch project-owner <KEY> <email>
+```
+
+It reads `DATABASE_URL`, as every other subcommand does, and makes the change in one transaction that appends `project.access_changed` with change `owner`, written by the actor `{"kind": "system", "id": "envoy-dispatch project-owner"}` (`access.SetOwner`).
+Who owned the project before, and whether that person is still a member, makes no difference.
+It exits 0 once the change commits;
+2 for a key no project holds, for an email that is not a full member's (a restricted member, or a login nobody has signed in with), and for arguments that are not exactly a key and an email, writing nothing;
+and 1 when the database cannot be opened or written.
+No write clears an owner: an update that would is refused with `check_violation` (`23514`, the trigger `projects_owner_kept`), and so is an owner that is empty or not lowercase (the column's check).
+Giving a project to the person who owns it already writes nothing, and the command says so.
+
+Migration `20261116015736_project_access` gives each project its default assignee as owner where that person has signed in.
+An insert that names no owner, every project create included, takes its default assignee as owner (`projects_owner_from_default`).
+A project whose default assignee had never signed in when the migration ran would keep no owner, so the migration's census counts such projects, and a count above `0` refuses the deploy.
+Repair them before it, on the release still serving: give each a default assignee who has signed in with `PUT /api/v1/projects/{key}/default-assignee`, then deploy again.
+They are listed there by the query `20261116015736_project_access.census.sql`'s header gives:
+
+```sql
+select key, default_assignee from projects p
+where not exists (select 1 from people where email = p.default_assignee);
+```
+
+Should a project still have no owner at boot, the boot refuses to serve while any project has none, naming each one by its key, and both repairs, and no person's email, since it writes the refusal to its log (`store.EnsureProjectOwners`, run at boot, before the server serves):
+set `DISPATCH_PROJECT_OWNER_FALLBACK` to the lowercase email of a full member who has signed in, and the next boot makes that person the owner of every such project, each grant recorded as the command's is (`project.access_changed`, written by the actor `{"kind": "system", "id": "DISPATCH_PROJECT_OWNER_FALLBACK"}`);
+or give each one an owner with the command above.
+
 ### Pre-deploy census
 
 `envoy-dispatch census` is run before a new image goes out, with the service's `DATABASE_URL` and under the service's own database credentials, and it is a gate:
@@ -3523,6 +3563,13 @@ It refuses:
     no rule (`pg_rewrite`), no row-level security (`relrowsecurity`), and, for an `update` without `only`, no child table.
     The census reads the table's keys, rules and triggers as they stand before any pending migration applies, so no earlier pending migration may touch the table with more than bounded writes, and neither the migration nor an earlier pending one may hold a statement whose effect the census cannot read, the ones that take the exceptions above from every later migration.
     Nor may the migration hold a statement after which its names can resolve to another table, a `set` of any setting but `lock_timeout` and `statement_timeout` among them.
+    Three kinds of earlier pending migration do not count as touching the table with more than bounded writes, since none changes what the census judges those writes by:
+    a single non-unique `create index concurrently` of the table;
+    a migration exempt above as catalog-only that only adds columns to the table, each nullable with no default and no constraint (`alter table t add column c text`);
+    and a migration exempt above as catalog-only that names the table only as the table its foreign keys reference, each by columns of the table's primary key (`alter table other add constraint other_t foreign key (t_id) references t (id) not valid`).
+    An index adds no key, rule, row-level security, child table or trigger, a column with nothing on it is in no key and no foreign key references it, an update may not set a primary-key column anyway, and the triggers Postgres makes for a foreign key are internal ones, which the census leaves out of the table's triggers.
+    A column with a default still counts, since an insert that leaves the column out runs its default for each row, and so does a key to a column outside the primary key, since an update may set such a column.
+    The census reads the primary key in the catalog, so a migration that has no catalog reads still counts for every table its keys reference.
     An enabled trigger of the table, and the default of a column an insert leaves out, run for each row written, and the census reads neither, as it reads no function's body.
     A column default does not refuse, but an enabled trigger can read any table, so the admission is refused while the table has one that is not on the census's reviewed list (`reviewedTriggers`), whose entry says why its body is bounded; an admitted table's report prints the number of statements, the bound and the table's enabled triggers.
     The list holds `graph_nodes`' two triggers, `graph_nodes_block_schema_written` and `graph_nodes_block_schema_removed` (migration `20261109051232`): each runs `block_schema_changed`, which reads no table and sends one `dispatch_block_schema` notification, one per transaction however many rows it writes.
@@ -3649,6 +3696,24 @@ The kinds are:
   An address past the store's bound is no part of the store on purpose: a role name longer than the bound is no node and no page, a comment anchored to or owned by a document whose `ref_key` is longer states no such tuple, and a session named past it is no node either.
   The census leaves each such address out of both comparisons and counts it as a class of its own, reporting the count as `addresses_past_bound` on the kind's line rather than as a difference, in both directions.
 
+- The project of every node: `issue`, `artifact`, `ask`, `message`, `comment` and `block`, the kinds whose node names the project a read of it is limited by (`graphstore.Node`'s `Project`), or, for an object no project owns, the parties it is between (`Parties`).
+  Each row of those kinds is held to what its node must carry, by the rule its writer follows (`graphcensus.scopedRows`): an issue's project; a document's project, or its conversation's session for a conversation's file; an ask's and a comment's issue's project, else its document's, else that document's conversation; a message's issue's project, or, on no issue, the parties of its thread's root (`graphstore.ThreadParties`: who wrote the root, and the session it was sent to); a block's document's.
+  It prints one line per kind, `census: project kind=<kind> rows=<n> missing=<n> gone=<n> differs=<n> unscoped=<n> orphaned=<n>`: a row whose node the store does not hold, a row whose node is gone (a node at any other state, a later release's `proposed` included, is there) or is another row's, a row whose node names another project or other parties than the row's, a row whose node names neither, and a node no row stands behind.
+  A second line per kind, `census: project past_bound kind=<kind> addresses=<n>`, counts its rows whose address is past the store's bound - a document whose `ref_key` is, a block whose address is, a comment on such a document - which no writer projects; they are in no count of the first line and no finding, as the store lines' `addresses_past_bound=` are.
+  `gone` and `orphaned` are read for an issue, a document, an ask and a message, whose rows only their own creates write and only a document's removal deletes; the store census above reads both directions for a comment and a block.
+  A document the removal can take - one of an issue that is not its spec, plays no role and is a document - gives up its address to the next document of that issue and name, so a node there may be an earlier row's: the census reads the newest state statement a create, removal or backfill made as this row's only when the row's own `artifact.created` caused it, or when it is at the sentinel and the row has no such event; a later release's mark is passed over.
+  Every release appends that event for such a document, so no shared time makes an earlier row's statement read as a later one's.
+  Every other document keeps its address while the store holds it, and a node not `gone` is enough for it; not all of them record an `artifact.created` of their own (`issue.created` records a spec, and a conversation's upload appends no event).
+  A removal made to take another shape of document must add it to `graphcensus.removableDocument` in the same change, which `TestEveryDocumentARemovalCanTakeIsReadByItsCreateEvent` holds.
+
+  - This build's removal states the node gone as it deletes the row, and a build before this one writes no node, so during a roll or after a rollback each class can appear on a healthy database: `gone` is a document an earlier build created at an address this build's removal stated gone, which `backfill-graph-store` gives a live node, and `orphaned` is a document an earlier build removed after this build wrote its node, which this build's block-index tick states gone during the roll (`docs/block_index_roll.go`, `writeObjectNodesAnotherBuildWrote`); an orphaned node a delete outside the builds made has no in-band cure.
+
+  - A build before this one writes a comment's node and a block's node with no project, and this build's block-index tick gives a node only to a comment whose row names none and marks no document whose blocks that build stated at the document's version, so a comment such a build writes during a roll or after a rollback, and a block it states that no later write of this build states again, is `unscoped` until `backfill-graph-store` runs again once every server runs this build (Backfilling the node and tuple store, below).
+
+  - Any count of the five refuses the census, and the first rows and nodes of them are named on `census: project incomplete <kind> <id>: <class>` lines (`graphcensus.ProjectComplete`, the same read), each ending with its cure: `; run envoy-dispatch backfill-graph-store` for `missing`, `gone` and `unscoped`, which the backfill writes, but for a row naming a party the store refuses (one empty or holding white space), which no writer and no pass of the backfill writes a node for and whose line says no command cures it; for `orphaned`, `; no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone`, since no backfill reads a node no row stands behind; and for `differs`, which a node in another project is at any state, that no command cures it: a node's project never moves, and a person must compare the row with its node.
+    The refusal line names the same cures.
+    An address past the store's bound is left out, as its writer leaves it out of the store.
+
 It passes only when it checked more than zero rows of every kind it covers and found zero differences in both directions.
 A total over the kinds is no such proof: two empty sides of one kind agree, so a kind that checked no row prints `census: store kind=<kind> checked no row` and the verdict refuses naming it.
 A database the store does not exist in yet holds no kind to read: the census prints `census: store absent` and refuses, since it read nothing.
@@ -3660,13 +3725,13 @@ the write rate by kind over the last 28 days of `events`; the row count and tota
 The kinds are a term for each kind R20 gives the five children of the parent change, each printed on a `census: sizing tuples-a-write ` line and a `census: sizing share ` line that names the child that moves it (`moved_by=`, one of the five names below), its writes inside the window and its share of the tuples a day.
 Where a write states facts beyond its node, each such fact is a term of its own, counted over the writes that state it:
 
-- `this-change`, this change itself: a comment's node and two base attributes, and its `authored_by`, `anchored_to`, `owned_by` and aliases where its row names each; a comment delivery's `delivered_to`; a block a version inserts afresh, restores, drops (its `gone` state) or moves to another parent (the old parent's retraction and the new one's assertion); a block reference's assertion and the retraction that may end it; and a person, a session, a role and a role's page, each counted over the ones the window records for the first time.
+- `this-change`, this change itself: a comment's node and its three base attributes (visibility, state, and project or parties), and its `authored_by`, `anchored_to`, `owned_by` and aliases where its row names each; the node and three base attributes of an issue, an artifact, an ask and a message, and the `gone` state a document's removal states of its node (`artifact_removed`); a comment delivery's `delivered_to`; a block a version inserts afresh, restores, drops (its `gone` state) or moves to another parent (the old parent's retraction and the new one's assertion); a block reference's assertion and the retraction that may end it; and a person, a session, a role and a role's page, each counted over the ones the window records for the first time.
 
-- `inbox-child`, the child that moves the inbox, the messages and the read state: a message's node and the tuples its target and its broadcast become; a reply's meaning tuple and its `part_of`; a comment's mentions; a person's part in a thread; the `delivered_to` of each write to every other participant of its thread and of an ask to the person it waits on, and the move of that person; the body blocks of a comment, a message and an ask, their links and their removal; a delivery attempt's node; and the message deliveries, read marks, clears, dismissals and snoozes.
+- `inbox-child`, the child that moves the inbox, the messages and the read state: a message's `authored_by` and `part_of`, and the tuples its target and its broadcast become; a reply's meaning tuple and its `part_of`; a comment's mentions; a person's part in a thread; the `delivered_to` of each write to every other participant of its thread and of an ask to the person it waits on, and the move of that person; the body blocks of a comment, a message and an ask, their links and their removal; a delivery attempt's node; and the message deliveries, read marks, clears, dismissals and snoozes.
 
-- `blocks-child`, the child that moves issues, their documents, a block's text and rank, results and components: the text and rank values of each block whose text a version wrote; an issue's node with its `child_of` and `needs`; an artifact's node and a document version's; a result's node with its values and tuples, its screenshots and its retraction; a component's node with its `part_of`, `depends_on` and `affects`; and a criterion's `authored_by`.
+- `blocks-child`, the child that moves issues, their documents, a block's text and rank, results and components: the text and rank values of each block whose text a version wrote; an issue's `child_of` and `needs`; an artifact's `part_of` its issue and a document version's node; a result's node with its values and tuples, its screenshots and its retraction; a component's node with its `part_of`, `depends_on` and `affects`; and a criterion's `authored_by`.
 
-- `asks-child`, the child that moves decisions, readings, asks and their answers: an ask's node and what its `ask.*` events state, an edit, an answer, a resolution and a follower; a Keep; and an agent's decision and its reading.
+- `asks-child`, the child that moves decisions, readings, asks and their answers: an ask's `answer_state`, question, options, `authored_by`, `anchored_to` and `owned_by` that `ask.opened` states, and what its other `ask.*` events state, an edit, an answer, a resolution and a follower; a Keep; and an agent's decision and its reading.
 
 - `lenses-child`, the child that moves interactions, lenses, lens kinds, constraints and risks: an interaction and its frames, a lens and its finding blocks, a lens kind, a constraint and a risk.
 
@@ -3695,6 +3760,7 @@ the output says so on the line that uses it.
 
 `envoy-dispatch backfill-graph-store` writes the nodes and tuples of the comments, document blocks and block references written before the store existed — every row of the three projected tables that names no node, since migration `20261109022248` added the columns and filled none of them.
 It walks each kind in batches, writing a batch's nodes, its tuples and the projection columns that name them in one transaction, so a row and its node commit together or not at all, exactly as a live write does.
+A comment batch takes each comment's owner lock before writing and rechecks that its row still exists and names no node, so a second run's cached batch cannot restore a comment whose row went after the batch read it.
 It appends no event of its own, and a fact whose row's own event cannot be found carries the store's sentinel (`source_event` 0) as its cause:
 a comment's own event is the `comment.created` that stored it, a block's is the event that recorded the version its row was written at, and a block reference's is its `source_seq`, which is that event's id already.
 Each of those reads probes an index of its own, so the run reads no whole table once for each row: a block batch reads the `artifact.version` event of each document and version among its rows through `events_artifact_version_number` (migration `20261119020700`), and a comment batch reads each comment's `comment.created` event through `events_comment_created_id` (migration `20261119020800`) (`TestTheBackfillsEventReadsProbeTheirIndexes`).
@@ -3713,6 +3779,18 @@ Once every row of a kind the store can hold names its node, the run reports that
 It then gives every role the census's row side names, in a row now or in an event, and that has no node its node, its page and the page's `part_of` the role, as the publisher writes them for the events it publishes: the publisher writes none for an event it published before it wrote roles, so without this pass every role an older database names is a census difference.
 The input is the census's own role row side, so the roles the pass gives a node are exactly the roles the census holds to one; each role's node is caused by the first event that named it, or by the sentinel for a role only a row names, and a role that already holds both nodes is left alone.
 The report counts them on its `kind=role` line, and `remaining=` is how many roles the census names still lack a node or a page.
+
+It then writes a live node for every issue, document, ask and message written before its kind's writer wrote one, or created by an earlier build at an address whose node is gone, or whose node names neither a project nor parties, and gives every comment and block node written before a node named its project that project, or its conversation's party.
+Each pass walks only the rows its marker does not mark - a node not `gone` naming a project or parties for an issue, a document, an ask and a message, whose rows name no node in a column of their own, and for a document the removal can take such a node whose newest create, removal or backfill statement is the row's own (as the census above reads it), and the node's own `project_key` and `parties` for a comment and a block - and writes the marker in the transaction that states the facts, so a second run writes nothing.
+A node that is its row's own and not `gone` is written again keeping the state and the visibility another write gave it, a later release's included, and states only the project or parties it lacks; a node held `gone`, or one another row left, is written as its new row makes it, and comes back `live`.
+A batch of documents takes each document's owner lock first - its issue's, or the document's own where no issue owns it - which is the lock a removal of an issue's document takes, and writes only nodes whose document still has the id the batch read.
+A document made again at the address, even within the same microsecond, has another id, so a removal or a re-created document that commits while the batch reads leaves no live node behind and no node describing the removed row.
+A node the backfill makes is made by its row's own author at its row's own `created_at`; a node the store already holds keeps the `made_at` and `made_by` it has.
+The row's author states the node live, and the backfill itself states gone a document's node that stood live for an earlier row; each statement is dated at the row's `created_at` or one microsecond past the newest statement the store holds about the node where that is later, so a read as of a time reads the order the store appended in.
+A document's statements are caused by its own `artifact.created` event where the backfill finds one; an issue's, an ask's and a message's, and a document's with no such event, are at the sentinel.
+A filled project is stated at the node's own `made_at`, by its `made_by`, under its cause (`graphstore.FillScopes`); and the fill of a block's project takes its document's revision fence first, as every writer of a block's node does.
+The report prints a `kind=` line for each of `issue`, `artifact`, `ask`, `message`, `comment_project` and `block_project`; `envoy-dispatch census --store` then reads `missing=0 gone=0 differs=0 unscoped=0` for every project-owned kind, and `orphaned=0` unless an earlier build removed a document whose node this one wrote, which this build's block-index tick states gone during the roll.
+A build before this one keeps writing comment and block nodes with no project while it serves, during a roll or after a rollback, and no tick of this build gives those nodes one (the node and tuple store census, above), so the backfill runs a second time once every server runs this build: that run gives the comments and blocks the earlier build wrote meanwhile their project and writes nothing over the rows the first run marked.
 
 A block's parent is the one fact it does not write.
 The parent is the nesting of the rendered version, which no column of `document_blocks` holds, and the version's stored markdown cannot give it either, since a paragraph's id is no part of that text; only the server renders the document the ids belong to.
@@ -3746,7 +3824,7 @@ A tick reads at most 1,000 events, in id order, after the cursor and at or below
 A full page moves the cursor to the last event it read and brings the next tick 2 s later; otherwise the cursor moves to the horizon, and it never moves past it.
 The mark is the backfill's own, set in one statement that takes the documents' `document_block_versions` rows in ascending `artifact_id` order and no owner row.
 The tick's transaction takes its cursor row first, then those rows, and only then the comments' nodes, tuples and rows, since every writer under the revision fence takes a document's `document_block_versions` row before any node it writes; the marks, the comments and the cursor's move commit together.
-The tick's `dispatch: block index` line carries `events=`, the events it read, `marked=`, the documents it marked, `comments=`, the comments it gave their nodes, and `another_build=`, whether a live process of the registry (`server_processes`) registered a commit other than this process's own (`main.buildCommit`, which `docs.Deps.BuildCommit` carries), which the tick reports and which decides nothing (`TestAVersionThePreviousReleaseWritesAfterTheDrainReachesTheStore`).
+The tick's `dispatch: block index` line carries `events=`, the events it read, `marked=`, the documents it marked, `comments=`, the comments it gave their nodes, and `another_build=`, whether a live process of the registry (`server_processes`) registered a commit other than this process's own (`main.buildCommit`, which `docs.Deps.BuildCommit` carries), which decides nothing of what the tick marks (`TestAVersionThePreviousReleaseWritesAfterTheDrainReachesTheStore`) and decides whether it owes the object pass (below).
 The migration's census answers `0`: the two tables are new and hold no row at deploy.
 
 The marking rule versions what a block-index pass and the tick owe: which documents a build marks and which comments its tick writes.
@@ -3768,8 +3846,9 @@ A version of the document that this release writes before the run does the same,
 No release deletes a comment's row: no route of either deletes one, and a document is removed only while no comment points at it, so a comment leaves nothing to state `gone`.
 
 It is no repair.
-Its input is each row's own content and the two versions each document's row records: it never reads one side of a projection to write the other, so a row whose node is already written is left alone and a kind whose rows disagree with the store is for the census to report.
-It is safe to run again at any time, after a rollback as well: every pass walks only the rows that name no node, names their nodes in the transaction that writes their tuples, and reads no row that names one, its guards included; a document is marked only while it holds no mark and the store has not stated its latest indexed version; and no release before this one drains the mark.
+Its input is each row's own content and the two versions each document's row records: it never reads one side of a projection to write the other, so a row its marker marks is left alone and a kind whose rows disagree with the store is for the census to report.
+Two reads of the store's own statements decide no fact and only order what it writes: for a document the removal can take, the cause of its node's newest state statement, its marker (above); and the time of a node's newest statement, which it dates past where the row's `created_at` is no later, so a read of the node as of a time keeps the order the store appended in.
+It is safe to run again at any time, after a rollback as well: every pass walks only the rows its marker does not mark - a row that names no node, or for an issue, a document, an ask and a message a row no node at a state but `gone` stands for, or for a document the removal can take a row whose node's live statement is another row's - writes the marker in the transaction that writes its tuples, and reads no marked row, its guards included; a document is marked only while it holds no mark and the store has not stated its latest indexed version; and no release before this one drains the mark.
 The pointer pass skips a link whose block's node the store does not hold or holds `gone`, read off `graph_nodes` and not off the block's `document_blocks` row, which is `graph_edges`' own test of the tuple arm: a link stamped against a gone node would answer from neither arm.
 So a run interrupted anywhere carries on from where it stopped, and a run over tables whose every row names its node writes no node, no tuple and no node column (`TestASecondBackfillWritesNothingOverMarkedRows`).
 It migrates the database first, as the other backfills do, and exits 1 when it skipped a row or left one naming no node.
@@ -4955,7 +5034,7 @@ Each item below names a path with its method and identity, then its purpose.
   The dashboard offers "A new version is available" only when `live` holds exactly one entry and it is not the tab's own, so no tab is told to reload while a rolling update or a rollback still runs two builds.
   An older process answers `404`, which the dashboard reads as no new version.
 
-- `/api/v1/issues?project=&status=&parent=&priority=&advances=&updated_since=&closed_since=&closed_before=&route_status=&moved=&limit=&offset=` (GET; cookie, trusted header, or bearer)
+- `/api/v1/issues?project=&status=&parent=&priority=&advances=&own=&updated_since=&closed_since=&closed_before=&route_status=&moved=&limit=&offset=` (GET; cookie, trusted header, or bearer)
 
   List issue summaries: every matching issue as an array, or, with `limit` (1–250) or `offset` (0 or more;
   alone it pages 50), one page `{issues, total, limit, offset}` cut after every filter, `total` counting the issues they match.
@@ -4969,15 +5048,17 @@ Each item below names a path with its method and identity, then its purpose.
   `priority` repeats (`priority=0&priority=1`), each value `0`–`3` or `none` for an issue with no priority; any other value is `400 INVALID_PRIORITY`.
   `status` repeats (`status=todo&status=in_progress`) and keeps the issues standing in any status named; no `status`, or only blank ones, is every status.
   A value is matched as written and never refused, so a status the lifecycle does not hold, or one in another case, alone answers the empty list, as a lone `status` always has, and beside another status adds nothing.
-  `advances` repeats too, each value a priority id (the issues that advance that priority, by their own relation or one an issue above them states, in any project), `none` (the issues that advance no live priority) or `any` (the issues that advance one, every issue `none` leaves out);
-  several are a union, so `advances=none&advances=any` is every issue, and an id no live priority carries matches no issue rather than refusing.
-  A blank `advances` is `400 INVALID_ADVANCES`.
-  `advances=none&status=in_progress&status=testing&status=needs_review&status=retro` and `advances=any&status=backlog&status=icebox` are the two fault lists of `GET /api/v1/priorities` whole and uncut.
-  `moved=true` adds `moved_at` and `moved_by` to each summary standing in `backlog` or `icebox`: when the issue was moved there and who moved it, read from its newest `issue.updated` event that set one of the two statuses, as the parked fault of `GET /api/v1/priorities` reads them;
-  a summary standing elsewhere, or whose events do not reach back to the move, carries neither field, and a listing without `moved=true` reads no event and carries neither on any summary.
   `route_status` (`live`, `no_holder` or `unknown`;
   anything else is `400 INVALID_ROUTE_STATUS`) keeps the open issues whose route is in that state, whatever their priority;
   `live` or `no_holder` is `503 ENVOY_REFILLING` with the listener's `Retry-After` while the listener refuses its list as refilling, and `503 ENVOY_UNAVAILABLE` when it does not answer.
+
+  - `advances` repeats, each value a priority id (the issues that advance that priority, by their own relation or one an issue above them states, in any project), `none` (the issues that advance no live priority) or `any` (the issues that advance one, every issue `none` leaves out);
+    several are a union, so `advances=none&advances=any` is every issue, and an id no live priority carries matches no issue rather than refusing.
+    A blank `advances` is `400 INVALID_ADVANCES`.
+    `own=true` keeps, of the issues the `advances` values answer, those whose own row names a priority a value matches and no issue above them carries it: a child that only inherits a priority, or restates one an issue above it carries, is left out, and `none`, which matches no priority, keeps nothing; without an `advances` value it filters nothing.
+    `advances=none&status=in_progress&status=testing&status=needs_review&status=retro` and `advances=any&own=true&status=backlog&status=icebox` are the two fault lists of `GET /api/v1/priorities` whole and uncut.
+    `moved=true` adds `moved_at` and `moved_by` to each summary standing in `backlog` or `icebox`: when the issue was moved there and who moved it, read from its newest `issue.updated` event that set one of the two statuses, as the second fault of `GET /api/v1/priorities` reads them;
+    a summary standing elsewhere, or whose events do not reach back to the move, carries neither field, and a listing without `moved=true` reads no event and carries neither on any summary.
 
   - Summaries contain `key`, `title`, `status`, `priority`, `parent`, `assignee`, `route`, `route_status`, `route_holder`, `route_status_reason`, `updated_at`, `closed_at` (when the issue was closed, null while it is open), `last_seq`, and `open_asks`.
     Every issue read (this list, `?pinned=true`, and `GET /api/v1/issues/{key}`) resolves `route_status` against the process's one copy of the listener's `GET /v1/sessions`, stored in no table:

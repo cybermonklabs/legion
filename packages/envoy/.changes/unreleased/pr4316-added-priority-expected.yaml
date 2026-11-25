@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  `PATCH /api/v1/priorities/{id}` takes `expected: {title?, description?}`, the value the
+  writer's edit of that attribute started from. The server compares it with the stored value
+  under the priority row's lock, in the transaction that writes, and refuses one that differs
+  `409 PRIORITY_CHANGED`, naming the value stored now and writing nothing, so a save-as-you-type
+  field no longer writes over another person's change unseen. An `expected` that names an
+  attribute the same write does not write is `400 PRIORITY_INPUT`. A write with no `expected`
+  writes as before, and owner and rank take none.
