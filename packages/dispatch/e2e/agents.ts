@@ -19,6 +19,7 @@ import { type KeyedWrite, keyedWrite, watchWrites } from "./keyed-writes";
 import { sql } from "./psql";
 import { sessionIds } from "./session-ids";
 import { expandedState } from "./settled";
+import type { SignInLogin } from "./users";
 
 export interface FakeSession {
   session_id: string;
@@ -68,14 +69,15 @@ export async function setLiveSessions(rows: FakeSession[], port?: number): Promi
   await fixtureRequest("/__fixture/sessions", "PUT", rows, port);
 }
 
-/** A live session for the Agents page to list, seen 5 s ago. Its id is a UUID, which Dispatch's
- *  agent routes require. `last_seen` is taken when the row seeds, never at a module's scope,
- *  which a worker evaluates once and every later spec of that worker ages. */
-export function listedSession(sessionID: string, title: string): FakeSession {
+/** A live session for the Agents page to list, seen `silentFor` ago, 5 s unless a row says
+ *  otherwise. Its id is a UUID, which Dispatch's agent routes require. `last_seen` is taken when
+ *  the row seeds, never at a module's scope, which a worker evaluates once and every later spec
+ *  of that worker ages. */
+export function listedSession(sessionID: string, title: string, silentFor = 5_000): FakeSession {
   return {
     capabilities: ["aside", "btw"],
     dir: `/workspaces/${title.toLowerCase()}`,
-    last_seen: Date.now() - 5_000,
+    last_seen: Date.now() - silentFor,
     machine_id: `${title.toLowerCase()}-host`,
     roles: [title.toLowerCase()],
     session_id: sessionID,
@@ -83,13 +85,16 @@ export function listedSession(sessionID: string, title: string): FakeSession {
   };
 }
 
-/** One unread reply of the session `sessionID` to the reader, which is what keeps a row for a
- *  session that has since left the registry. */
-export async function seedUnreadReply(sessionID: string): Promise<void> {
-  const asked = await createAgentMessage(sessionID, {
-    body: "How far along?",
-    delivery: "aside",
-  });
+/** One unread reply of the session `sessionID` to `reader`, the person who asked it, which is
+ *  what keeps a row for a session that has since left the registry. A reply is unread for the
+ *  person who asked, so a row passes its own person (`rowPerson`, e2e/test.ts) and its own
+ *  session (`rowSessionId`): Dispatch keeps the message and the reply by the session's id. */
+export async function seedUnreadReply(sessionID: string, reader: SignInLogin): Promise<void> {
+  const asked = await createAgentMessage(
+    sessionID,
+    { body: "How far along?", delivery: "aside" },
+    { login: reader }
+  );
   await replyToMessageDelivery(
     asked.id,
     { attempt: 1, body: "Done and gone." },

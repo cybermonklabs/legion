@@ -2,30 +2,23 @@ import {
   agentFilter,
   agentGroupToggle,
   agentRow,
-  type FakeSession,
+  listedSession,
   openAgentFilter,
   pickAgentFilter,
+  seedUnreadReply,
   setLiveSessions,
   setSessionLive,
   shownAgentRows,
   toggleAgentGroup,
 } from "./agents";
-import {
-  createAgentMessage,
-  createAsk,
-  createComment,
-  createIssue,
-  createProject,
-  getIssueEvents,
-  patchIssue,
-  replyToMessageDelivery,
-} from "./api";
+import { createAsk, createComment, createIssue, createProject, getIssueEvents } from "./api";
+import { refuseChanges, seedRefusedMove } from "./foot-floats";
 import { expectFootClear } from "./foot-probe";
 import { pendingWrites } from "./keyed-writes";
 import { expectRailAgents } from "./rail";
 import { setEventCreatedAt } from "./seed";
 import { expect, type Locator, type Page, rowKey, rowPerson, rowSessionId, test } from "./test";
-import { asUser, type SignInLogin } from "./users";
+import { asUser } from "./users";
 
 /**
  * How the Agents page groups and narrows its sessions (INFRA-812, R7; the browser cases of the
@@ -74,20 +67,6 @@ async function boxOf(locator: Locator): Promise<{ bottom: number; height: number
   };
 }
 
-/** A live session for a row to group. `last_seen` is taken when the row seeds, never at this
- *  module's scope, which a worker evaluates once and every later spec of that worker ages. */
-function session(sessionID: string, title: string, silentFor = 5_000): FakeSession {
-  return {
-    capabilities: ["aside", "btw"],
-    dir: `/workspaces/${title.toLowerCase()}`,
-    last_seen: Date.now() - silentFor,
-    machine_id: `${title.toLowerCase()}-host`,
-    roles: [title.toLowerCase()],
-    session_id: sessionID,
-    title,
-  };
-}
-
 /** One open question of this session's, on an issue of the reader's, whose next move is theirs:
  *  what puts a session in `Needs you`. */
 async function seedOpenAsk(sessionID: string, issue: string, question: string): Promise<void> {
@@ -105,21 +84,6 @@ async function seedActivity(sessionID: string, issue: string, agoMs: number): Pr
   );
   if (written === undefined) throw new Error("the session's comment wrote no event");
   await setEventCreatedAt(written.id, new Date(Date.now() - agoMs).toISOString());
-}
-
-/** One unread reply of this session's to `reader`, the person who asked it, which is what keeps
- *  a row for a session that has since left the registry. */
-async function seedUnreadReply(sessionID: string, reader: SignInLogin): Promise<void> {
-  const asked = await createAgentMessage(
-    sessionID,
-    { body: "How far along?", delivery: "aside" },
-    { login: reader }
-  );
-  await replyToMessageDelivery(
-    asked.id,
-    { attempt: 1, body: "Done and gone." },
-    { id: sessionID, kind: "session" }
-  );
 }
 
 /** The group each drawn row is listed under, top to bottom. */
@@ -157,11 +121,11 @@ test("the Agents page lists its sessions in four collapsible counted groups", as
   const dozing = rowSessionId("dozing");
   const sleeper = rowSessionId("sleeper");
   await setLiveSessions([
-    session(asker, "Asker"),
-    session(talker, "Talker"),
-    session(silent, "Silent"),
-    session(dozing, "Dozing", 5 * 60_000),
-    session(sleeper, "Sleeper", 60 * 60_000),
+    listedSession(asker, "Asker"),
+    listedSession(talker, "Talker"),
+    listedSession(silent, "Silent"),
+    listedSession(dozing, "Dozing", 5 * 60_000),
+    listedSession(sleeper, "Sleeper", 60 * 60_000),
   ]);
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({ project: core, title: "Grouping" });
@@ -236,7 +200,7 @@ test("a session with an open ask is in Needs you however long the registry has b
 }) => {
   const core = rowKey("CORE");
   const asker = rowSessionId("asker");
-  await setLiveSessions([session(asker, "Asker", 2 * 60 * 60_000)]);
+  await setLiveSessions([listedSession(asker, "Asker", 2 * 60 * 60_000)]);
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({ project: core, title: "Precedence" });
   await seedOpenAsk(asker, issue.key, "Which of the two do we keep?");
@@ -278,7 +242,7 @@ test("an ended session that replied is under Replied, no longer connected and in
   const me = rowPerson("alice");
   const endedId = rowSessionId("ended");
   const silent = rowSessionId("silent");
-  await setLiveSessions([session(endedId, "Ended"), session(silent, "Silent")]);
+  await setLiveSessions([listedSession(endedId, "Ended"), listedSession(silent, "Silent")]);
   await seedUnreadReply(endedId, me);
   // The listener no longer lists it: the session exited after answering.
   await setSessionLive(endedId, false);
@@ -324,10 +288,10 @@ test("each filter on the Agents page is a multi-select with a text box, a count 
 }) => {
   const silent = rowSessionId("silent");
   await setLiveSessions([
-    session(silent, "Silent"),
-    session(rowSessionId("dozing"), "Dozing", 5 * 60_000),
-    session(rowSessionId("sleeper"), "Sleeper", 60 * 60_000),
-    session(rowSessionId("talker"), "Talker", 60 * 60_000),
+    listedSession(silent, "Silent"),
+    listedSession(rowSessionId("dozing"), "Dozing", 5 * 60_000),
+    listedSession(rowSessionId("sleeper"), "Sleeper", 60 * 60_000),
+    listedSession(rowSessionId("talker"), "Talker", 60 * 60_000),
   ]);
 
   const context = await asUser(browser, "alice");
@@ -446,7 +410,7 @@ test("an agent row carries its state, its name, its age, its directory and its p
 }) => {
   const core = rowKey("CORE");
   const talker = rowSessionId("talker");
-  await setLiveSessions([session(talker, "Talker")]);
+  await setLiveSessions([listedSession(talker, "Talker")]);
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({ project: core, title: "Row shape" });
   await seedActivity(talker, issue.key, 60_000);
@@ -507,9 +471,9 @@ test("ticking two rows reads two selected, the composer names them, and a pill r
   const silent = rowSessionId("silent");
   const dozing = rowSessionId("dozing");
   await setLiveSessions([
-    session(silent, "Silent"),
-    session(dozing, "Dozing", 5 * 60_000),
-    session(rowSessionId("sleeper"), "Sleeper", 60 * 60_000),
+    listedSession(silent, "Silent"),
+    listedSession(dozing, "Dozing", 5 * 60_000),
+    listedSession(rowSessionId("sleeper"), "Sleeper", 60 * 60_000),
   ]);
 
   const context = await asUser(browser, "alice");
@@ -561,7 +525,7 @@ test("an agent row stands at the height recorded for its width @phone", async ({
 }, testInfo) => {
   const isPhone = testInfo.project.name === "iphone";
   const talker = rowSessionId("talker");
-  await setLiveSessions([session(talker, "Talker")]);
+  await setLiveSessions([listedSession(talker, "Talker")]);
 
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
@@ -621,24 +585,17 @@ test("scrolled to its end in a short window, the Agents page's broadcast compose
     (_, index) => `Agent ${String(index + 1).padStart(2, "0")}`
   );
   await setLiveSessions([
-    ...titles.map((title, index) => session(rowSessionId(`agent${index}`), title)),
-    session(endedId, "Ended"),
+    ...titles.map((title, index) => listedSession(rowSessionId(`agent${index}`), title)),
+    listedSession(endedId, "Ended"),
   ]);
   await seedUnreadReply(endedId, me);
   await setSessionLive(endedId, false);
-  await createProject({ key: core, name: "Core" });
-  const epic = await createIssue({ project: core, title: "Parser rollout" });
-  await patchIssue(epic.key, { labels: ["epic"] });
-  const refused = await createIssue({ project: core, parent: epic.key, title: "Refused move" });
+  const refused = await seedRefusedMove();
   const context = await asUser(browser, me);
   try {
     const page = await context.newPage();
     await page.setViewportSize({ width: 1280, height: 800 });
-    await page.route(`**/api/v1/issues/${refused.key}`, async (route) => {
-      if (route.request().method() === "PATCH")
-        await route.fulfill({ status: 403, json: { error: "Move refused" } });
-      else await route.continue();
-    });
+    await refuseChanges(page, refused.key);
     await page.goto(`/projects/${core}/issues`);
     await page.getByRole("checkbox", { name: `Select ${refused.key}`, exact: true }).check();
     await page.getByRole("toolbar").getByRole("button", { name: "Take out of epic" }).click();

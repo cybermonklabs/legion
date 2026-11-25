@@ -84,7 +84,7 @@ import { pendingWrites } from "./keyed-writes";
 import { expectConversationInFront } from "./live-view-cost";
 import { type ReviewedRoute, reviewRoutes, waitForRouteSettled } from "./review-routes";
 import { seedReviewRoutes } from "./review-seed";
-import { type Browser, expect, type Page, rowKey, test } from "./test";
+import { type Browser, expect, type Page, rowKey, rowPerson, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 /** A size of the window. */
@@ -525,35 +525,34 @@ test("the floats leave the foot of the Board clear in every combination at seven
 // The Agents page: fourteen live sessions, which run its list past a short window, one ended
 // with an unread reply under them, and three of them selected for broadcast, which brings the
 // broadcast composer to the foot, as the Agents rows of `e2e/issues-table.e2e.ts` seed it.
-// SLOW(>=2s): four combinations of the floats at seven sizes, each a settled reading at the end
-// of every scroller.
+// SLOW(>=2s): four combinations of the floats at seven sizes, each a settled reading at the end of
+// every scroller.
 test("the floats leave the foot of the Agents page clear in every combination at seven sizes @foot", async ({
   browser,
 }) => {
+  // The reader and the sessions are the row's own (`rowPerson` and `rowSessionId`, e2e/test.ts):
+  // the ended session's reply is unread for the person who asked, and what the Agents page lists
+  // is read off what Dispatch keeps under each id.
+  const me = rowPerson("alice");
+  const endedId = rowSessionId("ended");
   const titles = Array.from(
     { length: 14 },
     (_, index) => `Agent ${String(index + 1).padStart(2, "0")}`
   );
-  const endedSession = "01a04731-0c07-7000-8000-000000000400";
   // The Agents setup and the issues setup touch nothing in common, so each chain goes out beside
   // the other, and each keeps its own order.
   const [, refused] = await Promise.all([
     (async () => {
       await setLiveSessions([
-        ...titles.map((title, index) =>
-          listedSession(
-            `01a04731-0c07-7000-8000-0000000004${String(index + 1).padStart(2, "0")}`,
-            title
-          )
-        ),
-        listedSession(endedSession, "Ended"),
+        ...titles.map((title, index) => listedSession(rowSessionId(`agent${index}`), title)),
+        listedSession(endedId, "Ended"),
       ]);
-      await seedUnreadReply(endedSession);
-      await setSessionLive(endedSession, false);
+      await seedUnreadReply(endedId, me);
+      await setSessionLive(endedId, false);
     })(),
     seedRefusedMove(),
   ]);
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, me);
   try {
     const page = await context.newPage();
     const broadcast = page.getByRole("region", { name: "Broadcast" });
@@ -640,7 +639,9 @@ test("the floats leave the foot of the Inbox clear in every combination at seven
   browser,
 }) => {
   const [refused, approval] = await Promise.all([seedRefusedMove(), seedApprovalPlace()]);
-  const context = await asUser(browser, "alice");
+  // The reader is the row's own person (`rowPerson`, e2e/test.ts), the one `seedApprovalPlace`
+  // writes the approval for (e2e/inbox-pane-scroll.ts): the Inbox is one person's list.
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     await sweepSurface(page, refused.key, {
@@ -661,15 +662,17 @@ test("the floats leave the foot of the Inbox clear in every combination at seven
  * `e2e/issues-table.e2e.ts` seeds it, at `sizes` (`sweepSurface`).
  */
 async function sweepLiveView(browser: Browser, sizes: readonly Size[]): Promise<void> {
-  /** A live session whose conversation is at the stream's limit. Its id is a UUID, which
-   *  Dispatch's agent routes require. */
+  /** A live session whose conversation is at the stream's limit, under the row's own id for it
+   *  (`rowSessionId`, e2e/test.ts), a UUID, which Dispatch's agent routes require: the live view
+   *  shows the messages Dispatch keeps for a session by its id, for every person at once, beside
+   *  the turns its replay holds. */
   const live: FakeSession = {
     capabilities: ["aside", "btw", "steer"],
     dir: "/workspaces/foot-sweep",
     last_seen: Date.now() - 5_000,
     machine_id: "foot-sweep-host",
     roles: [],
-    session_id: "01a04731-0c07-7000-8000-000000000500",
+    session_id: rowSessionId("live"),
     title: "Sweep",
   };
   const [refused] = await Promise.all([

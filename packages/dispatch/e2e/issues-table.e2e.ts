@@ -1,4 +1,5 @@
 import type { Issue } from "../web/src/api/types";
+import { defaultView } from "../web/src/features/project/issues-table-model";
 import { SEND_DEADLINE_MS } from "../web/src/features/writes/keyed-write";
 import {
   type FakeSession,
@@ -16,6 +17,7 @@ import {
   getIssue,
   listIssueMessages,
   listIssues,
+  listPriorities,
   patchIssue,
   seedAgentStreamConversations,
 } from "./api";
@@ -55,7 +57,16 @@ import {
   watchShown,
 } from "./pick-writes";
 import { navigateInApp } from "./sends";
-import { type Browser, expect, type Locator, type Page, rowKey, rowPerson, test } from "./test";
+import {
+  type Browser,
+  expect,
+  type Locator,
+  type Page,
+  rowKey,
+  rowPerson,
+  rowSessionId,
+  test,
+} from "./test";
 import { asUser } from "./users";
 
 test("the table sorts, searches facets and fuzzy text, groups, pages and receives a second page's edit live", async ({
@@ -373,10 +384,7 @@ test("with a refused change pending, New epic from these and Clear selection sti
   browser,
 }) => {
   const core = rowKey("CORE");
-  await createProject({ key: core, name: "Core" });
-  const epic = await createIssue({ project: core, title: "Parser rollout" });
-  await patchIssue(epic.key, { labels: ["epic"] });
-  const refused = await createIssue({ project: core, parent: epic.key, title: "Refused move" });
+  const refused = await seedRefusedMove();
   const other = await createIssue({ project: core, title: "Ship the parser" });
   const context = await asUser(browser, "alice");
   try {
@@ -601,7 +609,11 @@ async function walkTheBarCombinations(
   // row for the table's last row below. They come after, so the two rows a press picks are drawn
   // while the box is at its start.
   await seedFillers();
-  const context = await asUser(browser, "alice");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts). The phone's header draws
+  // the reader's Inbox and New replies counts, and alice's, which every row before on the worker
+  // raises, take a second line, which moves the table against the selection bar fixed under the
+  // header (the bulk write row below), and the walk presses the table's rows with the bar shown.
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     await routeFloats(page, refused.key);
@@ -684,31 +696,30 @@ test("no two of the broadcast composer, Pending changes and the update banner me
 }) => {
   // The setup of `agents-groups.e2e.ts`'s row for the composer: fourteen live sessions, which run
   // the Agents page's list past a short window, and one that has ended with an unread reply to
-  // the reader, which keeps it a row of the section of ended sessions under them.
+  // the reader, which keeps it a row of the section of ended sessions under them. The reader and
+  // the sessions are the row's own (`rowPerson` and `rowSessionId`, e2e/test.ts): the section
+  // lists each session with a reply unread for the person who asked, and what the page lists is
+  // read off what Dispatch keeps under each id.
+  const me = rowPerson("alice");
+  const endedId = rowSessionId("ended");
   const titles = Array.from(
     { length: 14 },
     (_, index) => `Agent ${String(index + 1).padStart(2, "0")}`
   );
-  const endedSession = "01a04731-0c07-7000-8000-000000000200";
   // The Agents setup and the issues setup touch nothing in common, so each chain goes out beside
   // the other, and each keeps its own order.
   const [, refused] = await Promise.all([
     (async () => {
       await setLiveSessions([
-        ...titles.map((title, index) =>
-          listedSession(
-            `01a04731-0c07-7000-8000-0000000001${String(index).padStart(2, "0")}`,
-            title
-          )
-        ),
-        listedSession(endedSession, "Ended"),
+        ...titles.map((title, index) => listedSession(rowSessionId(`agent${index}`), title)),
+        listedSession(endedId, "Ended"),
       ]);
-      await seedUnreadReply(endedSession);
-      await setSessionLive(endedSession, false);
+      await seedUnreadReply(endedId, me);
+      await setSessionLive(endedId, false);
     })(),
     seedRefusedMove(),
   ]);
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, me);
   try {
     const page = await context.newPage();
     await routeFloats(page, refused.key);
@@ -810,15 +821,16 @@ test("the margin column, the live view's transcript and the Inbox reading pane e
     actor: { id: "e2e-foot-clearance", kind: "session" as const },
     as: "agent" as const,
   };
-  /** A live session whose conversation is at the stream's limit. Its id is a UUID, which
-   *  Dispatch's agent routes require. */
+  /** A live session whose conversation is at the stream's limit, under the row's own id for it
+   *  (`rowSessionId`, e2e/test.ts), a UUID, which Dispatch's agent routes require: the live view
+   *  shows the messages Dispatch keeps for a session by its id, for every person at once. */
   const live: FakeSession = {
     capabilities: ["aside", "btw", "steer"],
     dir: "/workspaces/foot",
     last_seen: Date.now() - 5_000,
     machine_id: "foot-host",
     roles: [],
-    session_id: "01a04731-0c07-7000-8000-000000000300",
+    session_id: rowSessionId("live"),
     title: "Foot",
   };
   // Twelve words of the spec, each the anchor of one question in the margin.
@@ -867,7 +879,9 @@ test("the margin column, the live view's transcript and the Inbox reading pane e
       await seedAgentStreamConversations([live.session_id]);
     })(),
   ]);
-  const context = await asUser(browser, "alice");
+  // The reader is the row's own person (`rowPerson`, e2e/test.ts), the one `seedApprovalPlace`
+  // writes the approval for (e2e/inbox-pane-scroll.ts): the Inbox is one person's list.
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     await routeFloats(page, refused.key);
@@ -942,7 +956,9 @@ test("with the update banner shown, every control of the selection bar takes a p
   const epic = await createIssue({ project: core, title: "Parser rollout" });
   await patchIssue(epic.key, { labels: ["epic"] });
   const other = await createIssue({ project: core, title: "Ship the parser" });
-  const context = await asUser(browser, "alice");
+  // The reader is a person of the row's own, for the reason the walk above gives: on a phone the
+  // row presses the bar under the header that draws the reader's counts.
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     // Every live process now serves one build the page does not run (`deploymentChanged`).
@@ -987,10 +1003,7 @@ test("with the bar, the banner and Pending changes shown, the table's last row s
   browser,
 }) => {
   const core = rowKey("CORE");
-  await createProject({ key: core, name: "Core" });
-  const epic = await createIssue({ project: core, title: "Parser rollout" });
-  await patchIssue(epic.key, { labels: ["epic"] });
-  const refused = await createIssue({ project: core, parent: epic.key, title: "Refused move" });
+  const refused = await seedRefusedMove();
   const other = await createIssue({ project: core, title: "Ship the parser" });
   // Enough issues that the table's box scrolls at the desktop sizes below.
   for (let index = 0; index < 40; index++) {
@@ -1000,17 +1013,9 @@ test("with the bar, the banner and Pending changes shown, the table's last row s
   try {
     const page = await context.newPage();
     await page.setViewportSize({ width: 1600, height: 1000 });
-    await page.route(`**/api/v1/issues/${refused.key}`, async (route) => {
-      if (route.request().method() === "PATCH")
-        await route.fulfill({ status: 403, json: { error: "Move refused" } });
-      else await route.continue();
-    });
-    // Every live process now serves one build the page does not run (`deploymentChanged`).
-    await page.route("**/api/v1/dashboard/builds", (route) =>
-      route.fulfill({
-        json: { live: ["/assets/index-next.js"], serving: "/assets/index-next.js" },
-      })
-    );
+    // Every live process now serves one build the page does not run (`deploymentChanged`), and a
+    // move of the refused issue out of its epic is refused (`routeFloats`).
+    await routeFloats(page, refused.key);
     await page.goto(`/projects/${core}/issues`);
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     await expect(page.getByRole("status", { name: "A new version is available" })).toBeVisible();
@@ -1057,20 +1062,13 @@ test("with a refused change pending, an issue page scrolled to its end keeps the
   browser,
 }) => {
   const core = rowKey("CORE");
-  await createProject({ key: core, name: "Core" });
-  const epic = await createIssue({ project: core, title: "Parser rollout" });
-  await patchIssue(epic.key, { labels: ["epic"] });
-  const refused = await createIssue({ project: core, parent: epic.key, title: "Refused move" });
+  const refused = await seedRefusedMove();
   const other = await createIssue({ project: core, title: "Ship the parser" });
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
     await page.setViewportSize({ width: 1600, height: 1000 });
-    await page.route(`**/api/v1/issues/${refused.key}`, async (route) => {
-      if (route.request().method() === "PATCH")
-        await route.fulfill({ status: 403, json: { error: "Move refused" } });
-      else await route.continue();
-    });
+    await refuseChanges(page, refused.key);
     await page.goto(`/projects/${core}/issues`);
     await page.getByRole("checkbox", { name: `Select ${refused.key}`, exact: true }).check();
     await page.getByRole("toolbar").getByRole("button", { name: "Take out of epic" }).click();
@@ -1591,15 +1589,20 @@ const STEADY_EVERY_MS = 250;
 test("a window resize made while scrolled past the issues table keeps the table's box at its size", async ({
   browser,
 }) => {
-  await createProject({ key: rowKey("CORE"), name: "Core" });
+  // The list is the whole stack's: it holds every issue in flight under no priority, of every
+  // project, and rows before this one on the worker leave theirs there. So the row reads how many
+  // stand there before it writes its own, and the table then lists those and its forty.
+  const held = (await listPriorities()).work_under_no_priority.count;
+  const inFlight = held + IN_FLIGHT_ISSUES;
+  /** The rows the table's first page holds, at the page size the list opens on (`defaultView`). */
+  const pageRows = Math.min(inFlight, defaultView.pageSize);
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   // Each one in progress under no priority, so `/priorities` lists it in its first table. Nothing
   // reads their order among themselves, so they go out side by side.
   await Promise.all(
     Array.from({ length: IN_FLIGHT_ISSUES }, async (_, index) => {
-      const issue = await createIssue({
-        project: rowKey("CORE"),
-        title: `In flight number ${index}`,
-      });
+      const issue = await createIssue({ project: core, title: `In flight number ${index}` });
       await patchIssue(issue.key, { status: "in_progress" });
     })
   );
@@ -1611,7 +1614,7 @@ test("a window resize made while scrolled past the issues table keeps the table'
     const table = page.getByRole("region", { exact: true, name: "In flight under no priority" });
     const box = table.getByTestId("issues-table-scroll");
     const pager = table.getByTestId("issues-table-pager");
-    await expect(pager).toContainText(`of ${IN_FLIGHT_ISSUES}`);
+    await expect(pager).toContainText(`of ${inFlight}`);
     await expect(box.locator("[data-issue-row]").first()).toBeVisible();
     await expect
       .poll(
@@ -1657,8 +1660,8 @@ test("a window resize made while scrolled past the issues table keeps the table'
     ).toBeLessThanOrEqual(1);
     expect(
       Math.max(...boxHeights),
-      `the table's box's scrollHeight against its header and ${IN_FLIGHT_ISSUES} rows`
-    ).toBeLessThan((IN_FLIGHT_ISSUES + 1) * TABLE_LINE_CEILING_PX);
+      `the table's box's scrollHeight against its header and the ${pageRows} rows of its page`
+    ).toBeLessThan((pageRows + 1) * TABLE_LINE_CEILING_PX);
   } finally {
     await context.close();
   }
