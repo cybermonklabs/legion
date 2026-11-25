@@ -73,7 +73,9 @@
 # Then the script run on the stacked branch with --base naming the first branch converts N+2 alone
 # and merges the first branch, in a commit that names it: the stacked branch then differs from the
 # first branch by N+2's entry file and fixture, so N+1, which the first branch converted, is not
-# converted a second time under another id.
+# converted a second time under another id. A branch from the same commit whose edit of N+1's
+# row of lineKinds makes the merge of the first branch conflict gets its conversion committed
+# alone, and the script names the first branch and its commit, for the author to merge by hand.
 #
 # Run from the repository root: bash scripts/daemon-contract-convert.test.sh [<base>]
 set -euo pipefail
@@ -91,11 +93,12 @@ repo_two=$scratch/repo-two
 branch_stacked=convert-test-stacked-$$
 repo_stacked=$scratch/repo-stacked
 branch_crossed=convert-test-crossed-$$
+branch_conflict=convert-test-conflict-$$
 cleanup() {
   git -C "$root" worktree remove --force "$repo" >/dev/null 2>&1 || true
   git -C "$root" worktree remove --force "$repo_two" >/dev/null 2>&1 || true
   git -C "$root" worktree remove --force "$repo_stacked" >/dev/null 2>&1 || true
-  git -C "$root" branch -D -q "$branch" "$branch_two" "$branch_stacked" "$branch_crossed" >/dev/null 2>&1 || true
+  git -C "$root" branch -D -q "$branch" "$branch_two" "$branch_stacked" "$branch_crossed" "$branch_conflict" >/dev/null 2>&1 || true
   rm -rf "$scratch"
 }
 trap cleanup EXIT
@@ -559,6 +562,31 @@ stacked_fixture=$(fixture_of "${stacked[0]}")
 [ "$(git diff --no-renames --name-only "$branch" HEAD | sort)" = "$(printf '%s\n' "${stacked[0]}" "$stacked_fixture" | sort)" ] ||
   { git diff --stat "$branch" HEAD; fail "the stacked branch differs from its base branch $branch by more than ${stacked[0]} and $stacked_fixture"; }
 echo "PASS: the stacked branch converts entry $((k + 1)) alone to ${stacked[0]}, and differs from $branch by that entry's file and fixture"
+
+step "a merge of the base branch that conflicts is left to the author, with the ref and its commit"
+# A branch made from the first branch's commit of entry $k adds numbered entry $((k + 1)) and edits
+# the row of lineKinds that the first branch moved into its entry file after its conversion, so
+# the merge of the first branch conflicts in answers.go. The script commits the conversion alone,
+# and says which ref to merge by hand and at which commit, the one it read.
+git checkout -q -b "$branch_conflict" "$entry_commit"
+numbered_entry "$((k + 1))" conflict
+sed -i 's/{Value: "convert_probe", Since: convertProbeContract},/{Value: "convert_probe_edited", Since: convertProbeContract},/' "$api/answers.go"
+grep -qF '"convert_probe_edited"' "$api/answers.go" || fail "the conflicting branch: the edit of lineKinds' row found nothing"
+git add -A
+git commit -q -m "feat(daemon): the conversion test's entry $((k + 1)), which edits the row entry $k moved"
+conflict_commit=$(git rev-parse HEAD)
+status=0
+bash "$root/scripts/daemon-contract-convert.sh" --base "$branch" >"$scratch/convert-conflict.txt" 2>&1 || status=$?
+[ "$status" != 0 ] || { cat "$scratch/convert-conflict.txt"; fail "the conversion whose merge of $branch conflicts exits 0"; }
+branch_at=$(git rev-parse "$branch")
+for text in "the merge of $branch conflicts in:" "  $api/answers.go" "merge $branch (${branch_at:0:10}) by hand"; do
+  grep -qF -- "$text" "$scratch/convert-conflict.txt" ||
+    { cat "$scratch/convert-conflict.txt"; fail "the conversion whose merge of $branch conflicts does not print: $text"; }
+done
+[ "$(git rev-parse HEAD^)" = "$conflict_commit" ] && ! git rev-parse -q --verify HEAD^2 >/dev/null && [ -z "$(git status --porcelain)" ] ||
+  { cat "$scratch/convert-conflict.txt"; fail "the conversion whose merge of $branch conflicts is not committed alone on the branch"; }
+echo "PASS: the merge of $branch conflicts in $api/answers.go; the conversion is committed alone, and the script says: $(grep -F 'by hand' "$scratch/convert-conflict.txt")"
+git checkout -q "$branch_stacked"
 
 step "the second branch: numbered entries $k and $((k + 1)), each adding one field to one request"
 cd "$root"
