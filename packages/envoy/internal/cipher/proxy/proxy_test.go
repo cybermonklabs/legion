@@ -1258,13 +1258,14 @@ func TestAMintedValueIsMintedAgainBeforeItExpires(t *testing.T) {
 // TestAnEndedStoredGrantsValuesAreDropped: a grant released from a stored secret ends at the end
 // its connection carries, as a minted capability's does, and nothing extends it, so the read that
 // adds a new grant's entry drops the entry of a stored grant whose end the pod's clock has reached,
-// keeps every live grant's entry, the older ones' too, and reads nothing to do it
-// (TestAnEndedMintedGrantsValuesAreDropped is the minted half, with the same script).
+// keeps every live grant's entry, the older ones' too, and a grant's with no end at all, and reads
+// nothing to do it (TestAnEndedMintedGrantsValuesAreDropped is the minted half, with the same
+// script).
 func TestAnEndedStoredGrantsValuesAreDropped(t *testing.T) {
 	clock := &testClock{now: time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC)}
 	r := newRig(t, Options{Now: clock.read})
-	// Three stored grants, each with a placeholder and an end of its own: the first ends a
-	// quarter of an hour in, the other two an hour after it.
+	// Four stored grants: the first ends a quarter of an hour in, the next two an hour after it,
+	// and the last has no end (its connection carries no Expires: it lasts until its session ends).
 	type storedGrant struct {
 		id, placeholder string
 		ends            time.Time
@@ -1273,10 +1274,14 @@ func TestAnEndedStoredGrantsValuesAreDropped(t *testing.T) {
 		{"grant-00000011", placeholder.Prefix + "QqRrSsTtUuVvWwXxYyZz0123456789cd", clock.read().Add(15 * time.Minute)},
 		{"grant-00000012", placeholder.Prefix + "QqRrSsTtUuVvWwXxYyZz0123456789ef", clock.read().Add(time.Hour)},
 		{"grant-00000013", placeholder.Prefix + "QqRrSsTtUuVvWwXxYyZz0123456789gh", clock.read().Add(time.Hour)},
+		{"grant-00000014", placeholder.Prefix + "QqRrSsTtUuVvWwXxYyZz0123456789ij", time.Time{}},
 	}
 	for _, g := range grants {
 		connection := testConnection()
-		connection.GrantID, connection.Expires = g.id, &g.ends
+		connection.GrantID, connection.Expires = g.id, nil
+		if !g.ends.IsZero() {
+			connection.Expires = &g.ends
+		}
 		connection.Names = map[string]requests.AirlockGrantName{workerName: {Slots: map[string]string{requests.SlotValue: g.placeholder}}}
 		r.grants.setConnection(g.placeholder, connection)
 		r.grants.setValues(g.id, storedValues(workerName, workerValue))
@@ -1294,11 +1299,12 @@ func TestAnEndedStoredGrantsValuesAreDropped(t *testing.T) {
 		_, held := r.proxy.values[g.id]
 		return held
 	}
-	first, second, third := grants[0], grants[1], grants[2]
+	first, second, third, endless := grants[0], grants[1], grants[2], grants[3]
 
+	call(endless)
 	call(first)
-	if !holds(first) {
-		t.Fatalf("the pod holds no values of grant %s after its call; the row cannot see a drop", first.id)
+	if !holds(first) || !holds(endless) {
+		t.Fatalf("held: first %v, endless %v after their calls; the row cannot see a drop", holds(first), holds(endless))
 	}
 	// Before the first grant's end, a new grant's read leaves the first grant's values held.
 	clock.set(first.ends.Add(-time.Minute))
@@ -1318,8 +1324,13 @@ func TestAnEndedStoredGrantsValuesAreDropped(t *testing.T) {
 	if !holds(second) || !holds(third) {
 		t.Errorf("held: second %v, third %v; want both, since neither grant has ended", holds(second), holds(third))
 	}
-	if reads := r.grants.valueReads(first.id); reads != 1 {
-		t.Errorf("the values of grant %s were read %d times; want once, for its call", first.id, reads)
+	if !holds(endless) {
+		t.Errorf("the pod holds no values of grant %s, which has no end and so keeps its entry until the pod rolls", endless.id)
+	}
+	for _, g := range []storedGrant{first, endless} {
+		if reads := r.grants.valueReads(g.id); reads != 1 {
+			t.Errorf("the values of grant %s were read %d times; want once, for its call", g.id, reads)
+		}
 	}
 }
 

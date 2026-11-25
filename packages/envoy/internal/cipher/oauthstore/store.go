@@ -91,7 +91,8 @@ var sweepStatements = []struct{ what, sql string }{
 	{"pod session registrations", `delete from oauth_pod_sessions where (pod_uid, session) in (select pod_uid, session from oauth_pod_sessions
 		where expires_at <= now() order by expires_at limit $1)`},
 	// Every review trades an approve grant of its own (ApproveGrants), which no read serves once it
-	// has ended, so an ended one goes; the proxy's own copy of its values goes with its pod.
+	// has ended, so an ended one goes. The proxy's own copy of its values goes at its pod's next
+	// read of a new grant, by the one rule proxy.Server's valuesFor states.
 	{"approve grants", `delete from approve_grants where id in (select id from approve_grants
 		where expires_at <= now() order by expires_at limit $1)`},
 }
