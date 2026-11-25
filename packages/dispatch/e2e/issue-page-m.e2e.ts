@@ -4335,6 +4335,81 @@ test("the address of a short reply under a long agents' turn keeps the reply in 
   expect(outOfView, outOfView.join("; ")).toEqual([]);
 });
 
+// Each turn of the history is drawn whole, and a node's words keep a wide block - a table of
+// many columns, a long line of code - scrolling sideways inside itself (`styles.css`, the rule on
+// `[data-node-words] .dispatch-markdown table` and `pre`), so Details' own box never scrolls
+// sideways. Found by the tester on a running build with a copy of a large real issue: an agent's
+// turn holding a table 565 px wide made Details' box 605 px wide in a box of 368 px at 1440 px
+// and of 389 px at 390 px, so the whole of Details, its headings included, moved sideways.
+test("a wide table or a long line of code in a history turn scrolls inside itself, and Details never scrolls sideways", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "A turn with a wide table" });
+  await createComment(issue.key, { body: "A person's comment, a row of the outline." });
+  const columns = Array.from({ length: 8 }, (_, index) => `Column${index}heading`);
+  const body = [
+    "The agents' findings, one row each:",
+    "",
+    `| ${columns.join(" | ")} |`,
+    `| ${columns.map(() => "---").join(" | ")} |`,
+    `| ${columns.map((_, index) => `finding${index}withoutanybreak`).join(" | ")} |`,
+    "",
+    "```",
+    `const reading = ${"x".repeat(120)};`,
+    "```",
+  ].join("\n");
+  const turn = await createComment(issue.key, { body }, attentionSession);
+  // Each width's widths, so one run says every width Details scrolled sideways at.
+  const readings: { client: number; scroll: number; width: number }[] = [];
+  for (const size of [DESKTOP, PHONE]) {
+    const context = await reader(browser, "alice");
+    try {
+      const page = await context.newPage();
+      await page.setViewportSize(size);
+      await gotoIssue(page, `/issues/${issue.key}/activity`);
+      await expect(marginShell(page), "the history's address did not open Details").toBeVisible();
+      const drawn = historyItem(page, turn.id);
+      await expect(drawn.locator("table"), "the turn's table is not drawn").toHaveCount(1);
+      await expect(drawn.locator("pre"), "the turn's code is not drawn").toHaveCount(1);
+      // Read once the table and the code are drawn and two frames have laid them out, so one
+      // instant's widths are the widths the reader sees.
+      await nextFrames(page);
+      const widths = await drawn.evaluate((item) => {
+        let box = item.parentElement;
+        while (box !== null && !/(auto|scroll)/.test(getComputedStyle(box).overflowY)) {
+          box = box.parentElement;
+        }
+        const table = item.querySelector("table");
+        return {
+          client: box?.clientWidth ?? 0,
+          scroll: box?.scrollWidth ?? 0,
+          table: table?.scrollWidth ?? 0,
+        };
+      });
+      expect(
+        widths.client,
+        `at ${size.width} px the history has no box it scrolls in`
+      ).toBeGreaterThan(0);
+      expect(
+        widths.table,
+        `at ${size.width} px the table is no wider than Details, so the row proves nothing`
+      ).toBeGreaterThan(widths.client);
+      readings.push({ client: widths.client, scroll: widths.scroll, width: size.width });
+    } finally {
+      await context.close();
+    }
+  }
+  const sideways = readings
+    .filter((reading) => reading.scroll > reading.client + 1)
+    .map(
+      (reading) =>
+        `at ${reading.width} px Details scrolls sideways: its content is ${reading.scroll} px wide in a box of ${reading.client} px`
+    );
+  expect(sideways, sideways.join("; ")).toEqual([]);
+});
+
 // At 767 px and below Details covers the page, so a link of the
 // history that leaves it, and Reply, close Details; a turn's own time is the turn's address,
 // which opens Details at it, so it leaves Details open, and never hides it for a moment.
