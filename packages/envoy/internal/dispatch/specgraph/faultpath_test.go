@@ -3,7 +3,7 @@ package specgraph
 import "testing"
 
 // The failing example of a program check of the code counts only when each path of its fault is a
-// source file and no file of a test (CheckStates, step 7). A source file ends in .go, .ts or .tsx.
+// source file and no file of a test (deriveChecks, step 7). A source file ends in .go, .ts or .tsx.
 // A file of a test has a name that ends in _test.go, .test.ts, .test.tsx or .e2e.ts, or a directory
 // in its path that starts with test, ends with test or tests, or is __tests__ or e2e. Each row is one
 // part of the rule, or a path beside it that the part does not take.

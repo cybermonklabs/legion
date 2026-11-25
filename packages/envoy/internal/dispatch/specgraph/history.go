@@ -74,7 +74,7 @@ func ReadFixtureHistory(r io.Reader) (FixtureHistory, error) {
 // (isRepoPath) or a content label of no letter and no digit (hasWord), which names no content,
 // the least such path by its order being the one named. Each would read as a tree or a content
 // that another such commit shares, or as a change that no tie covers, so a failing example would
-// count across them (CheckStates, step 7); and a history that does not set its commits is not one
+// count across them (deriveChecks, step 7); and a history that does not set its commits is not one
 // that knows that it has none.
 func (h FixtureHistory) check() error {
 	if h.Commits == nil {

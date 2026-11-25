@@ -88,7 +88,7 @@ var checkStateTie = []string{
 	"packages/envoy/go.sum",
 }
 
-// checkCase is one row's input to CheckStates: the spec files as nodes in files, the approved spec,
+// checkCase is one row's input to deriveChecks: the spec files as nodes in files, the approved spec,
 // and a history that rows add commits to. input completes it.
 type checkCase struct {
 	t *testing.T
@@ -157,9 +157,6 @@ func (s *checkCase) input() Input {
 		if c, ok := current.CheckByID(r.Check); ok && r.CheckDigest == "" {
 			r.CheckDigest = c.Digest()
 		}
-		if r.Leg == nil {
-			r.Leg = new("")
-		}
 		r.Seq = int64(i + 1)
 		if s.Now.IsZero() && r.At.Add(time.Hour).After(in.Now) {
 			in.Now = r.At.Add(time.Hour)
@@ -211,7 +208,7 @@ func (s *checkCase) approve(at time.Time, nodes ...specNode) {
 		id := specNodeID(n)
 		node, held := s.Approved.Nodes[id]
 		if !held {
-			node = ApprovedNode{ID: id, Removed: new(false), PartlyChecked: new(false)}
+			node = ApprovedNode{ID: id}
 		}
 		node.Versions = append(node.Versions, ApprovedVersion{Version: len(node.Versions) + 1, At: at, Block: block})
 		s.Approved.Nodes[id] = node
@@ -371,7 +368,7 @@ func checkRun(commit string, outcome Outcome, at time.Time) Result {
 
 // legRun is a run of C's job at commit in one leg and attempt, recorded at at.
 func legRun(commit, leg string, attempt int, outcome Outcome, at time.Time) Result {
-	return Result{Check: checkStateCheck.ID, Kind: ResultRun, Outcome: outcome, Commit: commit, Job: "go-checks", Leg: new(leg), Attempt: attempt, At: at}
+	return Result{Check: checkStateCheck.ID, Kind: ResultRun, Outcome: outcome, Commit: commit, Job: "go-checks", Leg: leg, Attempt: attempt, At: at}
 }
 
 // caughtFault is a failing example of C on which its test failed, with the fault that the step

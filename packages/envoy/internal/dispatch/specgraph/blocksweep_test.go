@@ -18,7 +18,7 @@ import (
 // block's opening line, or a line of its body after the marker of a field of a check (blockTexts),
 // in a block of approved.json or of a spec file of the base, written as " " or "", as an id that
 // no node of the base holds, and as the id of a check of the base, a kind of node that no relation
-// names (relationKinds); and each attribute of the opening line of each block of approved.json
+// names (relationRule); and each attribute of the opening line of each block of approved.json
 // left out, in approved.json alone and in the spec files that hold the same line too
 // (leftOutAttributes). No such input may move a state toward true: the reader refuses a relation
 // of an approved block that names no node of the approved spec, or, in the current text of a node

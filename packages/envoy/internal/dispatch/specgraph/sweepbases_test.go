@@ -108,7 +108,7 @@ type builtBase struct {
 // fault_paths, and the sweep writes each of its two fault paths as " ", a blank path beside a real
 // one, which leaves a record that does not say where its fault was planted or what it changed,
 // newer than carry's caught one, so that a rule by which such a record counted nowhere and let the
-// older caught one decide would read the check true (CheckStates, step 7). And the same later
+// older caught one decide would read the check true (deriveChecks, step 7). And the same later
 // failing example with no planted_on: the check reads unknown (no_planted_on) at c2 and at m2, and
 // the refusal sweep refuses the check at its own commit, f2, which must not take it out; the member
 // sweep adds each planted_on that a record names and c9, no commit of the history. And the same
@@ -127,7 +127,7 @@ type builtBase struct {
 // for each kind of check that reads no commit: its query of the graph,
 // and that check written as an agent of the graph, as a query of production and as an agent of
 // production. A result of each belongs to no commit, so CI's refusal at the commit that its
-// test_commit names takes out nothing of it (CheckStates, step 2), and R7 decides. Of each two, one
+// test_commit names takes out nothing of it (deriveChecks, step 2), and R7 decides. Of each two, one
 // holds test_commit c1 on the check's failing run and the other CI's refusal of the check at c1:
 // the refusal sweep adds the refusal to the one and the member sweep the test_commit to the other,
 // so an input of each holds both facts, and a rule by which such a refusal took out that run would
@@ -153,8 +153,8 @@ func builtBases() map[string]builtBase {
 	const code, faultPath, secondPath = "a-restart-loses-no-message", "packages/envoy/cmd/listener/main.go", "packages/envoy/cmd/listener/store.go"
 	const graph, program = "the-graph-holds-a-delivery-of-each-message", "a-production-restart-loses-no-message"
 	disagree := CheckState{State: checkUnknown, Reason: reasonDisagree, Disagree: true}
-	passedAtM1 := CheckState{State: checkTrue, Reason: reasonPassed, From: "m1"}
-	failedAtM1 := CheckState{State: checkFalse, Reason: reasonFailed, From: "m1"}
+	passedAtM1 := CheckState{State: CheckTrue, Reason: reasonPassed, From: "m1"}
+	failedAtM1 := CheckState{State: CheckFalse, Reason: reasonFailed, From: "m1"}
 	table := map[string]builtBase{
 		"silent-leg with its matrix dropped at m2": {"silent-leg", func(t *testing.T, fsys fstest.MapFS) (fstest.MapFS, fstest.MapFS) {
 			from := cloneFiles(fsys)
@@ -248,7 +248,7 @@ func builtBases() map[string]builtBase {
 		{"carry with a later failing example planted on c9, no commit of the history",
 			"a failing example after carry's caught one, at the commit f2, planted on c9, which the history does not hold, with carry's fault path and a second source file of the tie, on which the test missed its fault",
 			[]addedResult{{1, map[string]any{"commit": "f2", "outcome": "pass", "seq": 7, "planted_on": "c9", "fault_paths": []any{faultPath, secondPath}}}}, nil,
-			CheckState{State: checkUnknown, Reason: reasonPlantedOnOutside, Detail: "c9"}, []string{"c2", "m2"},
+			CheckState{State: checkUnknown, Reason: ReasonPlantedOnOutside, Detail: "c9"}, []string{"c2", "m2"},
 			func(s Scenario) bool {
 				_, held, err := s.History.Changed("c9", "c9")
 				return err == nil && !held && slices.ContainsFunc(s.Results, func(r Result) bool {
@@ -300,7 +300,7 @@ func builtBases() map[string]builtBase {
 	// gives the check its kind and results that read another subject, or no result that counts,
 	// gives no base: a check of the graph unknown, since its pass and its failure at the transaction
 	// tx1 disagree (R7), and one of production false, since its newest run decides, at the deploy d1.
-	failed := CheckState{State: checkFalse, Reason: reasonFailed, From: "d1"}
+	failed := CheckState{State: CheckFalse, Reason: reasonFailed, From: "d1"}
 	type converted struct {
 		convert func(*testing.T, fstest.MapFS) fstest.MapFS // nil for production-and-graph as it is
 		want    CheckState

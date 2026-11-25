@@ -1,8 +1,6 @@
 package specgraph
 
 import (
-	"fmt"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -160,7 +158,7 @@ func TestStatementState(t *testing.T) {
 			mainWithL1False(s)
 			s.drop(T)
 		}, want: []StatementState{missing(T)}, waits: map[string]bool{T: false}},
-		{name: "note 4: T has no own check and no supporter, and the files hold its text; subject the head of main", change: func(s *checkCase) {
+		{name: "T has statements under it, no own check and no supporter, and the files hold its text; subject the head of main", change: func(s *checkCase) {
 			alone := statementSupporter
 			alone.Serves = nil
 			s.replace(alone)
@@ -295,8 +293,8 @@ func TestStatementState(t *testing.T) {
 		// pairs this rule with R6's (supported-without-check beside leaf-without-check), and so does
 		// the derivation: T, which P supports, with statements under it and no own check, reads
 		// unknown, no_check, as a leaf with no check does, and so does each statement above it; its
-		// own state is unknown, so a wait on it holds. "note 4" is the tree that the rules take: no
-		// supporter, and the wait ends.
+		// own state is unknown, so a wait on it holds. The same T with no supporter is a tree that the
+		// rules take, and a wait on it ends (the row of T with no own check and no supporter above).
 		{name: "R5: T, which P supports, has statements under it and no own check; subject the head of main, where a wait on T holds", change: func(s *checkCase) {
 			s.remove(CT)
 			s.Subject.Branch = "main"
@@ -309,28 +307,28 @@ func TestStatementState(t *testing.T) {
 			s.addNodes(statementFast, statementFastCheck)
 			s.remove(CT)
 		}, want: []StatementState{held(Q, "unknown", "no_check", T, "met"), held(T, "unknown", "no_check", T, "unknown"), met(L1)}},
-		// D1: the derivation gives no clean state for a tree that the rules refuse. A statement that
+		// The derivation gives no clean state for a tree that the rules refuse. A statement that
 		// Validate refuses reads unknown, refused, with the rule as the detail, and each statement
 		// above it reads unknown, statement_refused, with the detail that names it; its own state is
 		// unknown, so a wait on it holds. A problem that names no check and no statement refuses each
 		// check and statement of the tree: a file is no relation of The Spec, so the split of the tree
 		// into files changes no state.
-		{name: "D1: L1, whose text has no letter and no digit, reads refused, and T above it reads unknown; subject the head of main", change: func(s *checkCase) {
+		{name: "L1, whose text has no letter and no digit, reads refused, and T above it reads unknown; subject the head of main", change: func(s *checkCase) {
 			bare := checkStateLeaf
 			bare.Text = "-"
 			s.replace(bare)
 			s.Subject.Branch = "main"
 		}, want: []StatementState{held(L1, "unknown", "refused", "no-text", "unknown"), held(T, "unknown", "statement_refused", L1, "met"), met(L2), met(P)},
 			waits: map[string]bool{L1: false, T: true}},
-		{name: "D1: a problem of a term in the file of the statements refuses each of them", change: func(s *checkCase) {
+		{name: "a problem of a term in the file of the statements refuses each of them", change: func(s *checkCase) {
 			s.files["spec.md"] = append(s.files["spec.md"], Term{ID: "message", Name: "message", Definition: "-"})
 		}, want: []StatementState{held(T, "unknown", "refused", "bad-term", "unknown"), held(L1, "unknown", "refused", "bad-term", "unknown"),
 			held(L2, "unknown", "refused", "bad-term", "unknown"), held(P, "unknown", "refused", "bad-term", "unknown")}},
-		{name: "D1: a problem of a component in a file of its own refuses each statement of the tree", change: func(s *checkCase) {
+		{name: "a problem of a component in a file of its own refuses each statement of the tree", change: func(s *checkCase) {
 			s.files["components.md"] = []specNode{Component{ID: "listener", Name: "the listener", Purpose: "-"}}
 		}, want: []StatementState{held(T, "unknown", "refused", "bad-component", "unknown"), held(L1, "unknown", "refused", "bad-component", "unknown"),
 			held(L2, "unknown", "refused", "bad-component", "unknown"), held(P, "unknown", "refused", "bad-component", "unknown")}},
-		{name: "D1: a problem of a term refuses P and its check in a file of their own too", change: func(s *checkCase) {
+		{name: "a problem of a term refuses P and its check in a file of their own too", change: func(s *checkCase) {
 			s.drop(P, CP)
 			s.files["p.md"] = []specNode{statementSupporter, statementSupporterCheck}
 			s.files["spec.md"] = append(s.files["spec.md"], Term{ID: "message", Name: "message", Definition: "-"})
@@ -410,7 +408,7 @@ func TestTheTreeAndTheDerivationAskForACheckOfOneSetOfStatements(t *testing.T) {
 	}
 }
 
-// D1: the derivation gives no clean state for a tree that the rules refuse. For each problem that
+// The derivation gives no clean state for a tree that the rules refuse. For each problem that
 // Validate finds in the files, Derive reads no check that the problem names as true, and no
 // statement that it names, or that is above a check or a statement that it names, as met; a
 // problem that names no check and no statement does so for each check and statement of the tree,
@@ -537,7 +535,7 @@ func withParents(files Tree, ids []string) []string {
 	return named
 }
 
-// Derive gives the subject, the state of each check that CheckStates judges, and the state of each
+// Derive gives the subject, the state of each check that deriveChecks judges, and the state of each
 // current approved statement in preorder: top statements by id, then the statements under each
 // one by id, depth first.
 func TestDeriveListsEachStatementInPreorder(t *testing.T) {
@@ -555,78 +553,6 @@ func TestDeriveListsEachStatementInPreorder(t *testing.T) {
 	want := []string{statementFast.ID, checkStateTop.ID, statementLeafTwo.ID, checkStateLeaf.ID, statementSupporter.ID}
 	if got := statementIDs(state); !slices.Equal(got, want) {
 		t.Errorf("the statements of Derive: %q, want %q", got, want)
-	}
-}
-
-// The entry of the derivation refuses a loop of parent and serves relations among the current
-// statements (approvedFault; R5: "The parent and support relations taken together form no cycle"),
-// and the derivation checks its own answer too (statementJudge.derive): each current statement has
-// its state once, by its own relations, or Derive gives an error that names each statement that it
-// gives no state of. So a gap of the entry's rule is an error and never a met: a loop of parents
-// leaves its statements out of the preorder, and the statement above them would read met without
-// them, and a loop through serves would make the search go on with no end. Each row: wait-cycle's
-// judges at m1, from its whole Input, with the current tree that the row changes laid past the
-// entry, as a gap of its loop rule would lay it; the control gives wait-cycle's three states.
-func TestTheDerivationGivesNoStateOfAStatementThatALoopPastTheEntryReaches(t *testing.T) {
-	t.Parallel()
-	const top, survives, late = "envoy-delivers-messages", "a-message-survives-a-restart", "a-message-reaches-a-late-session"
-	type relations struct {
-		parent string
-		serves []string
-	}
-	const passed = ": a loop of parent and serves relations among the current statements passed the entry"
-	for _, row := range []struct {
-		name    string
-		changes map[string]relations
-		want    string // the error; "" for the control
-	}{
-		{name: "control: wait-cycle as written"},
-		{name: "a statement its own parent", changes: map[string]relations{survives: {parent: survives}},
-			want: `specgraph: the derivation gives no state of "a-message-survives-a-restart"` + passed},
-		{name: "two statements each the parent of the other", changes: map[string]relations{survives: {parent: late}, late: {parent: survives}},
-			want: `specgraph: the derivation gives no state of "a-message-reaches-a-late-session", "a-message-survives-a-restart"` + passed},
-		{name: "a statement that serves itself", changes: map[string]relations{survives: {parent: top, serves: []string{survives}}},
-			want: `specgraph: the derivation gives no state of "a-message-survives-a-restart"` + passed},
-		{name: "two statements each a supporter of the other", changes: map[string]relations{survives: {parent: top, serves: []string{late}}, late: {parent: top, serves: []string{survives}}},
-			want: `specgraph: the derivation gives no state of "a-message-reaches-a-late-session", "a-message-survives-a-restart"` + passed},
-		{name: "the top statement serves one under it", changes: map[string]relations{top: {serves: []string{survives}}},
-			want: `specgraph: the derivation gives no state of "a-message-survives-a-restart", "envoy-delivers-messages"` + passed},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			t.Parallel()
-			s, err := ReadScenario(scenarioFS(t, filepath.Join("testdata", "scenarios", "wait-cycle")))
-			if err != nil {
-				t.Fatal(err)
-			}
-			in := s.Input(0)
-			checks, err := newCheckJudge(in)
-			if err != nil {
-				t.Fatal(err)
-			}
-			states, err := checks.states()
-			if err != nil {
-				t.Fatal(err)
-			}
-			current := checks.current
-			current.Statements = slices.Clone(current.Statements)
-			changed := 0
-			for i, st := range current.Statements {
-				if r, held := row.changes[st.ID]; held {
-					current.Statements[i].Parent, current.Statements[i].Serves = r.parent, r.serves
-					changed++
-				}
-			}
-			if changed != len(row.changes) {
-				t.Fatalf("the current tree holds %d of the %d statements that the row changes", changed, len(row.changes))
-			}
-			got, err := newStatementJudge(current, in.Approved, checks.holds, checks.refused, states).derive(current)
-			switch {
-			case row.want == "" && (err != nil || len(got) != 3):
-				t.Errorf("error %v, %d states; want the 3 states of wait-cycle", err, len(got))
-			case row.want != "" && (fmt.Sprint(err) != row.want || got != nil):
-				t.Errorf("error %v, %d states\nwant the error %q and no state", err, len(got), row.want)
-			}
-		})
 	}
 }
 
@@ -713,7 +639,7 @@ func (s *checkCase) remove(ids ...string) {
 // partlyChecked marks the statement id as partly checked in the approved spec.
 func (s *checkCase) partlyChecked(id string) {
 	node := s.Approved.Nodes[id]
-	node.PartlyChecked = new(true)
+	node.PartlyChecked = true
 	s.Approved.Nodes[id] = node
 }
 

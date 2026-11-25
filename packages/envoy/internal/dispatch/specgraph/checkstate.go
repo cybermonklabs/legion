@@ -51,7 +51,7 @@ func subjectFault(p Point, now time.Time) string {
 // commit (R48), by commit and then by check id, each with the rule that refused it. Its tag input
 // marks how each member reads when the caller does not set it (memberMark): a run of a job never
 // moves a state toward true, and a refusal by CI makes its check read unknown at its commit and
-// cancels the results of that commit that support true wherever they count (R48, CheckStates step
+// cancels the results of that commit that support true wherever they count (R48, deriveChecks step
 // 2), so each can move a state away from what the evidence without it gives, and never toward
 // true, and the caller gives JobRuns and Uncited, empty for none, and Input.check refuses nil. A run
 // counts only at its own commit, and a failing example also at another commit, by the ties and the
@@ -89,16 +89,17 @@ type CheckState struct {
 	Disagree bool   `json:"disagree"`
 }
 
-// The states of a check (R7).
+// The states of a check (R7); the command names CheckTrue and CheckFalse.
 const (
-	checkTrue    = "true"
-	checkFalse   = "false"
+	CheckTrue    = "true"
+	CheckFalse   = "false"
 	checkUnknown = "unknown"
 )
 
-// The reason codes of a check state, each the step of CheckStates that gives it.
+// The reason codes of a check state, each the step of deriveChecks that gives it; the command names
+// ReasonNotBuilt and ReasonPlantedOnOutside.
 const (
-	reasonNotBuilt             = "not_built"
+	ReasonNotBuilt             = "not_built"
 	reasonRefused              = "refused"
 	reasonUncited              = "uncited"
 	reasonStatementChanged     = "statement_changed"
@@ -115,21 +116,23 @@ const (
 	reasonNoFaultPaths         = "no_fault_paths"
 	reasonBlankFaultPath       = "blank_fault_path"
 	reasonPlantedOnTested      = "planted_on_tested_commit"
-	reasonPlantedOnOutside     = "planted_on_outside_history"
+	ReasonPlantedOnOutside     = "planted_on_outside_history"
 	reasonPassed               = "passed"
 	reasonFailed               = "failed"
 )
 
-// CheckStates is the state at in.Subject of each check that the approved spec holds a current text
-// of, sorted by id. A check of production or of the graph is judged only at a subject that names a
-// deploy, and there a check of the graph counts only the results at the subject's transaction, so
+// deriveChecks is the judge of in and the state at in.Subject of each check that the approved spec
+// holds a current text of, sorted by id: the one entry that Derive and the tests share. A check of
+// production or of the graph is judged only at a subject that names a deploy, and there a check of
+// the graph counts only the results at the subject's transaction, so
 // it reads unknown when the subject names no transaction or one that no result read (R10: "Only
 // the checks that read the subject count. A check whose subject is production decides nothing for
 // the head of a branch"; "Unknown: every other case"; the graph is production's data, R13).
 //
 // The state of a check C at subject S comes from the first of these steps that decides; no later
 // step overrides an earlier one, and a failure decides only at step 8, after every unknown case of
-// R9 ("Five cases read as unknown, and never as true"):
+// R9 ("Six cases read as unknown, and never as true"). Each helper of checkJudge.state names its
+// step here and does not restate it:
 //
 //  1. The files do not hold C's current approved text: unknown, not_built. That text names no
 //     failing example, a text with no letter and no digit by the rule that Validate reads it with
@@ -159,13 +162,15 @@ const (
 //     7). A query or an agent of production or of the graph has no commit of a result, so only CI's
 //     refusal at S.Commit counts for it, whatever commit a result's TestCommit names. A run of the
 //     job is no result, and no refusal takes one out.
-//  3. The candidates are C's results of kind run or failing_example that carry the digest of C's
-//     current text (R7: a result counts "only for the procedure that ran it"), a run of a program
-//     check only when the check's job reported it (R6: "only the reports of that job count"), and
-//     only those recorded at or after the newest approval of C's statement and of each statement
-//     above it (R7: "A change to the text of a statement makes every result under it suspect").
-//     Results that pass the other tests and are all older than that approval: unknown,
-//     statement_changed.
+//  3. The candidates (candidates) are C's results of kind run or failing_example that carry the
+//     digest of C's current text and were recorded at or after the approval of that text (R7: a
+//     result counts "only for the procedure that ran it"; "a change to either ends the standing of
+//     earlier results", so a text that changes and changes back has no results from before), a run
+//     of a program check only when the check's job reported it (R6: "only the reports of that job
+//     count"), and only those recorded at or after the newest approval of C's statement and of
+//     each statement above it (R7: "A change to the text of a statement makes every result under
+//     it suspect"). Results that pass the other tests and are all older than that approval:
+//     unknown, statement_changed.
 //  4. The runs that count at S. For a code check, the runs at S.Commit alone: a run at another
 //     commit does not count at S, even where no file of C's tie changed between the two (runCounts;
 //     the rule that replaces The Spec's R8: "A result counts only at the commit that it read. A CI
@@ -200,7 +205,9 @@ const (
 //     test: in each leg its newest run under S.Deploy decides (R7: "A pass, then a failure, then a
 //     pass across deploys is ordinary"). Then a newest run that could not run: unknown,
 //     could_not_run.
-//  6. C has a time limit and its newest run that counts is older: unknown, expired.
+//  6. C has a time limit and the newest run that counts of one of its legs is older: unknown,
+//     expired, since no leg replaces the result of another (R12), so a fresh leg does not hide a
+//     leg whose result expired.
 //  7. The newest failing example that counts. For a program check of the code, one whose record
 //     names the commit that the step planted its fault on (PlantedOn) and one path of the fault or
 //     more (FaultPaths), each a source file and no file of a test (isFaultPath) and each covered by
@@ -229,16 +236,20 @@ const (
 //  8. The newest run of each leg passed: true, passed; each failed: false, failed (R7: "the latest
 //     counts, and a later failure cancels an earlier pass").
 //
-// CheckStates gives an error, and no state, for an Input that is not whole (Input.check), so the
+// deriveChecks gives an error, and no state, for an Input that is not whole (Input.check), so the
 // judge never reads the zero value of a member that the caller did not set as a real one, and for
 // a History that could not answer (History.Changed gives an error), since a history that listed
 // nothing has not read two equal trees.
-func CheckStates(in Input) ([]CheckState, error) {
+func deriveChecks(in Input) (*checkJudge, []CheckState, error) {
 	j, err := newCheckJudge(in)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return j.states()
+	states, err := j.states()
+	if err != nil {
+		return nil, nil, err
+	}
+	return j, states, nil
 }
 
 // newCheckJudge is the judge of the checks of in: the current approved text of each node, which
@@ -260,7 +271,7 @@ func newCheckJudge(in Input) (*checkJudge, error) {
 	return j, nil
 }
 
-// states is the state of each check that CheckStates judges, sorted by id, or the first error of
+// states is the state of each check that deriveChecks judges, sorted by id, or the first error of
 // the history, with no state.
 func (j *checkJudge) states() ([]CheckState, error) {
 	var states []CheckState
@@ -317,10 +328,17 @@ func refusals(files Tree) map[string]string {
 			}
 		}
 	}
+	// The loop rule of Validate names the smallest id of a loop, and the loop refuses each statement
+	// of its strongly connected part (loopParts), so that no state depends on the order of the ids.
+	loops := loopParts(statementEdges(files.Statements))
 	for _, p := range problems {
 		switch {
 		case p.Rule == "loop" && slices.ContainsFunc(files.Statements, func(s Statement) bool { return s.ID == p.Node }):
-			refuse(p.Rule, loopOf(files, p.Node)...)
+			for _, part := range loops {
+				if slices.Contains(part, p.Node) {
+					refuse(p.Rule, part...)
+				}
+			}
 		case slices.Contains(nodes, p.Node):
 			refuse(p.Rule, p.Node)
 		default:
@@ -330,75 +348,16 @@ func refusals(files Tree) map[string]string {
 	return refused
 }
 
-// loopOf is each statement of files in one loop of parent and serves relations with the statement
-// id, id among them: each that id reaches and that reaches id. The loop rule of Validate names the
-// smallest id of the loop, and the loop refuses each of its statements, so that no state depends
-// on the order of the ids.
-func loopOf(files Tree, id string) []string {
-	up, down := map[string][]string{}, map[string][]string{}
-	for from, edges := range statementEdges(files.Statements) {
-		for _, e := range edges {
-			up[from] = append(up[from], e.to)
-			down[e.to] = append(down[e.to], from)
-		}
-	}
-	reachedUp, reachedDown := reached(up, id), reached(down, id)
-	var loop []string
-	for _, s := range files.Statements {
-		if reachedUp[s.ID] && reachedDown[s.ID] {
-			loop = append(loop, s.ID)
-		}
-	}
-	return loop
-}
-
-// statementEdges is the parent and serves relations of each of statements to another of them, as
-// the edges of Validate's loop rule: a relation to an id that is no statement of the list is none.
-func statementEdges(statements []Statement) map[string][]edge {
-	held := make(map[string]bool, len(statements))
-	for _, s := range statements {
-		held[s.ID] = true
-	}
-	edges := map[string][]edge{}
-	for _, s := range statements {
-		if held[s.Parent] {
-			edges[s.ID] = append(edges[s.ID], edge{to: s.Parent, relation: "parent"})
-		}
-		for _, id := range s.Serves {
-			if held[id] {
-				edges[s.ID] = append(edges[s.ID], edge{to: id, relation: "serves"})
-			}
-		}
-	}
-	return edges
-}
-
-// reached is start and each node that edges lead to from it.
-func reached(edges map[string][]string, start string) map[string]bool {
-	seen := map[string]bool{start: true}
-	for next := []string{start}; len(next) > 0; {
-		n := next[len(next)-1]
-		next = next[:len(next)-1]
-		for _, to := range edges[n] {
-			if !seen[to] {
-				seen[to] = true
-				next = append(next, to)
-			}
-		}
-	}
-	return seen
-}
-
 // changedPaths is one answer of History.Changed.
 type changedPaths struct {
 	paths []string
 	ok    bool
 }
 
-// state is the state of c at the subject, in the order of CheckStates.
+// state is the state of c at the subject, in the order of deriveChecks.
 func (j *checkJudge) state(c Check) CheckState {
-	if h := j.holds[c.ID]; !h.Present || !h.Current {
-		return unknownCheck(reasonNotBuilt, "")
+	if !j.holds[c.ID].holdsCurrent() {
+		return unknownCheck(ReasonNotBuilt, "")
 	}
 	if !hasWord(c.FailingExample) {
 		return unknownCheck(reasonNoFailingExample, "")
@@ -409,24 +368,8 @@ func (j *checkJudge) state(c Check) CheckState {
 	if rule, refused := j.in.Uncited[j.in.Subject.Commit][c.ID]; refused {
 		return unknownCheck(reasonUncited, rule)
 	}
-
 	job := checkJob(c)
-	statement, since := j.newestApproval(c.Serves)
-	digest := c.Digest()
-	var runs, faults []Result
-	suspect := false
-	for _, r := range j.results[c.ID] {
-		switch {
-		case r.CheckDigest != digest || r.Kind != ResultRun && r.Kind != ResultFailingExample:
-		case r.Kind == ResultRun && c.Procedure == ProcedureProgram && r.Job != job:
-		case r.At.Before(since):
-			suspect = true
-		case r.Kind == ResultRun:
-			runs = append(runs, r)
-		default:
-			faults = append(faults, r)
-		}
-	}
+	runs, faults, statement, suspect := j.candidates(c, job)
 	rule, refused, runs, faults := j.withoutRefused(c, runs, faults)
 	counting := j.countingRuns(c, runs)
 	if refused && len(counting) == 0 {
@@ -447,8 +390,8 @@ func (j *checkJudge) state(c Check) CheckState {
 		}
 	}
 	latest, _ := newestResult(counting)
-	newest := map[string]Result{*latest.Leg: latest}
-	if c.Subject == SubjectCode || c.Procedure == ProcedureProgram { // the checks that a job's matrix runs
+	newest := map[string]Result{latest.Leg: latest}
+	if countsAtACommit(c) { // the checks that a job's matrix runs
 		newest = newestOfEachLeg(counting)
 		switch leg, ended, found := j.legWithNoResult(c, job, newest); {
 		case job == "" || !found:
@@ -469,8 +412,10 @@ func (j *checkJudge) state(c Check) CheckState {
 		}
 	}
 
-	if c.TimeLimit > 0 && j.in.Now.Sub(latest.At) > c.TimeLimit {
-		return unknownCheck(reasonExpired, "")
+	for _, r := range newest {
+		if c.TimeLimit > 0 && j.in.Now.Sub(r.At) > c.TimeLimit {
+			return unknownCheck(reasonExpired, "")
+		}
 	}
 
 	fault, caught := newestResult(j.countingFaults(c, faults))
@@ -491,9 +436,33 @@ func (j *checkJudge) state(c Check) CheckState {
 	// After step 5 the newest run of each leg has latest's outcome: latest is the newest of its leg.
 	from := readOf(c, latest.Commit, latest.Deploy, latest.GraphTx)
 	if latest.Outcome == OutcomePass {
-		return CheckState{State: checkTrue, Reason: reasonPassed, From: from}
+		return CheckState{State: CheckTrue, Reason: reasonPassed, From: from}
 	}
-	return CheckState{State: checkFalse, Reason: reasonFailed, From: from}
+	return CheckState{State: CheckFalse, Reason: reasonFailed, From: from}
+}
+
+// candidates is C's results of step 3, the runs and the failing examples apart, and the statement
+// whose approval made results suspect: a result that carries the digest of C's current text and
+// was recorded at or after the approval of that text, of kind run or failing_example, a run of a
+// program check only when job reported it, and only when recorded at or after the newest approval
+// of C's statement and of each statement above it (newestApproval); suspect is whether a result
+// passed every test but that last.
+func (j *checkJudge) candidates(c Check, job string) (runs, faults []Result, statement string, suspect bool) {
+	statement, since := j.newestApproval(c.Serves)
+	digest, approved := c.Digest(), j.in.Approved.Since(c.ID)
+	for _, r := range j.results[c.ID] {
+		switch {
+		case r.CheckDigest != digest || r.At.Before(approved) || r.Kind != ResultRun && r.Kind != ResultFailingExample:
+		case r.Kind == ResultRun && c.Procedure == ProcedureProgram && r.Job != job:
+		case r.At.Before(since):
+			suspect = true
+		case r.Kind == ResultRun:
+			runs = append(runs, r)
+		default:
+			faults = append(faults, r)
+		}
+	}
+	return runs, faults, statement, suspect
 }
 
 // byAnotherAgent is whether the record of the failing example fault shows that an agent that did
@@ -526,11 +495,11 @@ func (j *checkJudge) newestApproval(statement string) (string, time.Time) {
 }
 
 // countingRuns is the runs of c that count at the subject (step 4): for a check whose results count
-// at a commit (CountsAtACommit), the runs of a commit where a run of c counts at the subject
+// at a commit (countsAtACommit), the runs of a commit where a run of c counts at the subject
 // (runCounts); and for a check of production or of the graph, of those, the runs that read the
 // subject's deploy or its transaction of the graph.
 func (j *checkJudge) countingRuns(c Check, runs []Result) []Result {
-	if CountsAtACommit(c) {
+	if countsAtACommit(c) {
 		runs = resultsWhere(runs, func(r Result) bool { return j.runCounts(c, resultCommit(r)) })
 	}
 	if c.Subject == SubjectCode {
@@ -555,13 +524,11 @@ func (j *checkJudge) runCounts(c Check, commit string) bool {
 	return j.carries(c.ID, commit)
 }
 
-// CountsAtACommit is whether the commit where the job of a result of c ran (resultCommit) decides
-// where the result counts: for a check of the code, a run counts only at that commit (runCounts),
-// and a failing example also at a commit where no file that its test reads changed (carries); for a
-// program check of production or of the graph, whose test is code (R7: "The procedure is the text
-// of the check and the code that runs it"), a result counts only while that test is unchanged. A
-// query or an agent of production or of the graph reads no commit.
-func CountsAtACommit(c Check) bool {
+// countsAtACommit is whether the commit where the job of a result of c ran (resultCommit) decides
+// where the result counts (steps 2, 4 and 7): a check of the code, or a program check of
+// production or of the graph, whose test is code. A query or an agent of production or of the
+// graph reads no commit.
+func countsAtACommit(c Check) bool {
 	return c.Subject == SubjectCode || c.Procedure == ProcedureProgram
 }
 
@@ -579,17 +546,12 @@ func readOf(c Check, commit, deploy, graphTx string) string {
 	return commit
 }
 
-// countingFaults is the failing examples of c that count at the subject (step 7). For a program
-// check of the code (countsFromPlantedOn), a failing example counts from the commit that its fault
-// was planted on (faultCommit), and never at a subject at its own Commit, the commit that CI
-// tested, whatever its PlantedOn names: the code of that commit is the code with the fault. Beside
-// those it gives each failing example of such a check whose record does not say where the step
-// planted its fault (unplanted), or whose PlantedOn names no commit of the history (unplaced), which
-// counts nowhere, so that step 7 reads the check unknown when such a record is the newest, as a
-// later answer of the step decides (R7: "the latest counts").
+// countingFaults is the failing examples of c that count at the subject (step 7), with each of a
+// program check of the code that counts nowhere (unknownPlacement) beside them, so that step 7
+// reads the check unknown when such a record is the newest.
 func (j *checkJudge) countingFaults(c Check, faults []Result) []Result {
 	switch {
-	case !CountsAtACommit(c):
+	case !countsAtACommit(c):
 		return faults
 	case !countsFromPlantedOn(c):
 		return resultsWhere(faults, func(r Result) bool { return j.carries(c.ID, resultCommit(r)) })
@@ -608,12 +570,8 @@ func countsFromPlantedOn(c Check) bool {
 }
 
 // unplanted is the reason of step 7 for a failing example r of a program check of the code whose
-// record does not say where the step planted its fault, and "" when it says: r names no commit that
-// the fault was planted on (no_planted_on); or no path of the fault, a path that is empty or only
-// white space being no path (no_fault_paths); or such a path beside a real one (blank_fault_path),
-// which is no source file, so the record counts nowhere, and which leaves the check unknown, so that
-// no older failing example decides; or its own Commit as that commit (planted_on_tested_commit),
-// where the step stores the one parent of the fault's commit, which is never the commit itself.
+// record does not say where the step planted its fault (no_planted_on, no_fault_paths,
+// blank_fault_path, planted_on_tested_commit), and "" when it says.
 func unplanted(r Result) string {
 	blank := func(path string) bool { return strings.TrimSpace(path) == "" }
 	switch {
@@ -637,7 +595,7 @@ func (j *checkJudge) unknownPlacement(r Result) (reason, detail string) {
 		return reason, ""
 	}
 	if j.unplaced(r) {
-		return reasonPlantedOnOutside, r.PlantedOn
+		return ReasonPlantedOnOutside, r.PlantedOn
 	}
 	return "", ""
 }
@@ -657,15 +615,10 @@ func (j *checkJudge) unplaced(r Result) bool {
 	return !held
 }
 
-// faultCommit is the commit that the failing example r of c counts from (step 7), "" for none. For
-// a program check of the code, it is r's PlantedOn, the commit that the step planted the fault on,
-// when r says where the step planted it and a commit of the history holds it (unknownPlacement),
-// and each path of the fault is a source file
-// and no file of a test (isFaultPath) and is covered by c's tie at PlantedOn where that tie is
-// known; else none. It is never r's Commit, the fault's own commit, which CI tested (R9: "For a
-// check that a program runs, the failing example is a fault that a step plants in the code"): the
-// code of that commit is the code with the fault, and no commit of the branch holds it. For each
-// other check, it is the commit where r's job ran (resultCommit).
+// faultCommit is the commit that the failing example r of c counts from (step 7), "" for none: for
+// a program check of the code, its PlantedOn when the record can be placed and each path of the
+// fault is a source file that c's tie there covers where it is known, never its Commit; for each
+// other check, the commit where r's job ran (resultCommit).
 func (j *checkJudge) faultCommit(c Check, r Result) string {
 	if !countsFromPlantedOn(c) {
 		return resultCommit(r)
@@ -730,23 +683,14 @@ func (j *checkJudge) carries(check, commit string) bool {
 	return changed.ok && !slices.ContainsFunc(changed.paths, func(path string) bool { return from.Covers(path) || to.Covers(path) })
 }
 
-// withoutRefused takes out of runs and faults, the candidates of c (step 2), each result of a
-// commit where CI refused c that supports true (supportsTrue): a pass, by the commit where its job
-// ran (resultCommit), and a failing example that caught its fault, by the commit that it counts
-// from (faultCommit), the commit that the step planted the fault on for a program check of the
-// code. R48 bounds a refusal to its commit ("At that commit, such a check reads unknown, and no
-// earlier result of it counts"), and at every other subject R7 decides, where "a later failure
-// cancels an earlier pass", and R9's unknown cases read "never as true": so the refused commit's
-// failures, its runs that could not run and its failing examples that missed their fault stay
-// wherever they count, and a refusal never moves a state toward true. The results of each other
-// commit stay, whatever CI refused elsewhere. refused is whether a result taken out would have
-// counted at the subject, and rule the least rule, by its name, of those refusals, so that the
-// order of the results, which says nothing, does not choose the rule that the state names. A
-// check whose results count at no commit (CountsAtACommit), a query or an agent of production or
-// of the graph, has no result of a commit, so it keeps each candidate, whatever commit a result's
-// TestCommit names: only CI's refusal at S.Commit counts for it, before its results are read.
+// withoutRefused takes out of runs and faults, the candidates of c, each result of a commit where
+// CI refused c that supports true (step 2; supportsTrue), a run by the commit where its job ran
+// (resultCommit) and a failing example by the commit that it counts from (faultCommit). refused is
+// whether a result taken out would have counted at the subject, and rule the least rule, by its
+// name, of those refusals. A check whose results count at no commit (countsAtACommit) keeps each
+// candidate.
 func (j *checkJudge) withoutRefused(c Check, runs, faults []Result) (rule string, refused bool, keptRuns, keptFaults []Result) {
-	if !CountsAtACommit(c) {
+	if !countsAtACommit(c) {
 		return "", false, runs, faults
 	}
 	kept := func(commitOf func(Result) string, counts func(commit string) bool) func(Result) bool {
@@ -780,7 +724,7 @@ func supportsTrue(r Result) bool {
 // jobEnded is whether a run of job, in any leg, ended at a commit where a run of c counts at the
 // subject (runCounts): for a check of the code, the subject's commit alone.
 func (j *checkJudge) jobEnded(c Check, job string) bool {
-	return slices.ContainsFunc(j.in.JobRuns, func(r JobRun) bool { return r.Job == job && *r.Ended && j.runCounts(c, r.Commit) })
+	return slices.ContainsFunc(j.in.JobRuns, func(r JobRun) bool { return r.Job == job && r.Ended && j.runCounts(c, r.Commit) })
 }
 
 // legWithNoResult is the first leg, by name, of a run of job at a commit where a run of c counts at
@@ -790,13 +734,13 @@ func (j *checkJudge) jobEnded(c Check, job string) bool {
 func (j *checkJudge) legWithNoResult(c Check, job string, newest map[string]Result) (leg string, ended, found bool) {
 	var silent, running []string
 	for _, r := range j.in.JobRuns {
-		if _, reported := newest[*r.Leg]; r.Job != job || reported || !j.runCounts(c, r.Commit) {
+		if _, reported := newest[r.Leg]; r.Job != job || reported || !j.runCounts(c, r.Commit) {
 			continue
 		}
-		if *r.Ended {
-			silent = append(silent, *r.Leg)
+		if r.Ended {
+			silent = append(silent, r.Leg)
 		} else {
-			running = append(running, *r.Leg)
+			running = append(running, r.Leg)
 		}
 	}
 	switch {
@@ -868,8 +812,8 @@ func checkJob(c Check) string {
 func newestOfEachLeg(results []Result) map[string]Result {
 	newest := map[string]Result{}
 	for _, r := range results {
-		if old, held := newest[*r.Leg]; !held || byRecord(r, old) > 0 {
-			newest[*r.Leg] = r
+		if old, held := newest[r.Leg]; !held || byRecord(r, old) > 0 {
+			newest[r.Leg] = r
 		}
 	}
 	return newest

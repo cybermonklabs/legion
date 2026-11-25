@@ -1,5 +1,7 @@
 package textcheck
 
+//ci:reads packages/envoy/**/*.go !**/*_test.go !packages/envoy/**/testdata/** TestOnlyTestFilesImportSpecgraphtest calls nonTestImporters on ../.., whose walk passes over testdata, vendor and node_modules and parses each .go file but the test files
+
 import (
 	"go/parser"
 	"go/token"

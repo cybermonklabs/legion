@@ -79,17 +79,25 @@ type validator struct {
 	problems []Problem
 }
 
-// relationKinds is the kinds of node that each relation may name, by the kind of the node that
-// sets it and its member: the one rule of a relation, which Validate reads in the files and the
-// approved reader in the approved spec (relationFault).
-var relationKinds = map[string][]string{
-	"statement parent": {"statement"},
-	"statement serves": {"statement"},
-	"statement about":  {"component", "interface"},
-	"check serves":     {"statement"},
-	"component parent": {"component"},
-	"component joins":  {"component"},
+// relationRule is one relation that a node of one kind sets: its member, and the kinds of node that
+// it may name. Each is a named value below, the one rule of its relation, which Validate reads in
+// the files and the approved reader in the approved spec (relationFault); a rule is read by its
+// name, so a misspelt one does not compile, where a misspelt key of a map would read no kind and
+// refuse every such relation.
+type relationRule struct {
+	member string
+	kinds  []string
 }
+
+// The relations of each kind of node, by the kind that sets them and the member.
+var (
+	statementParent = relationRule{member: "parent", kinds: []string{"statement"}}
+	statementServes = relationRule{member: "serves", kinds: []string{"statement"}}
+	statementAbout  = relationRule{member: "about", kinds: []string{"component", "interface"}}
+	checkServes     = relationRule{member: "serves", kinds: []string{"statement"}}
+	componentParent = relationRule{member: "parent", kinds: []string{"component"}}
+	componentJoins  = relationRule{member: "joins", kinds: []string{"component"}}
+)
 
 // problem records a problem of node at pos; detail begins with the rule.
 func (v *validator) problem(pos Position, node, detail string) {
@@ -168,19 +176,19 @@ func (v *validator) statement(s Statement) {
 		v.problem(s.Pos, s.ID, fmt.Sprintf("bad-kind: %q is not behavior, structure or property", s.Kind))
 	}
 	if s.Parent != "" {
-		if slices.Contains(relationKinds["statement parent"], v.kinds[s.Parent]) {
+		if slices.Contains(statementParent.kinds, v.kinds[s.Parent]) {
 			v.edges[s.ID] = append(v.edges[s.ID], edge{to: s.Parent, relation: "parent"})
 		} else {
 			v.problem(s.Pos, s.ID, fmt.Sprintf("no-parent: the files hold no statement %q", s.Parent))
 		}
 	}
 	for _, id := range s.Serves {
-		if v.target(s.Pos, s.ID, "serves", id, relationKinds["statement serves"]...) {
+		if v.target(s.Pos, s.ID, statementServes.member, id, statementServes.kinds...) {
 			v.edges[s.ID] = append(v.edges[s.ID], edge{to: id, relation: "serves"})
 		}
 	}
 	for _, id := range s.About {
-		v.target(s.Pos, s.ID, "about", id, relationKinds["statement about"]...)
+		v.target(s.Pos, s.ID, statementAbout.member, id, statementAbout.kinds...)
 	}
 	if s.Kind == KindStructure && len(s.About) == 0 {
 		v.problem(s.Pos, s.ID, "no-about: a statement of kind structure names its components or interfaces")
@@ -203,7 +211,7 @@ func (v *validator) served(id string) bool {
 }
 
 func (v *validator) check(c Check) {
-	if strings.Contains(c.Serves, " ") || !slices.Contains(relationKinds["check serves"], v.kinds[c.Serves]) {
+	if strings.Contains(c.Serves, " ") || !slices.Contains(checkServes.kinds, v.kinds[c.Serves]) {
 		v.problem(c.Pos, c.ID, "check-serves: a check serves exactly one statement of the files")
 	}
 	for _, part := range []struct{ value, detail string }{
@@ -271,7 +279,7 @@ func (v *validator) component(c Component) {
 		v.problem(c.Pos, c.ID, "bad-component: a component has a name and one sentence of purpose")
 	}
 	if c.Parent != "" {
-		if slices.Contains(relationKinds["component parent"], v.kinds[c.Parent]) {
+		if slices.Contains(componentParent.kinds, v.kinds[c.Parent]) {
 			v.edges[c.ID] = append(v.edges[c.ID], edge{to: c.Parent, relation: "parent"})
 		} else {
 			v.problem(c.Pos, c.ID, fmt.Sprintf("bad-component: parent %q is no component", c.Parent))
@@ -285,7 +293,7 @@ func (v *validator) component(c Component) {
 	}
 	if c.Interface {
 		for _, id := range c.Joins {
-			if !slices.Contains(relationKinds["component joins"], v.kinds[id]) {
+			if !slices.Contains(componentJoins.kinds, v.kinds[id]) {
 				v.problem(c.Pos, c.ID, fmt.Sprintf("bad-interface: joins %q, which is no component", id))
 			}
 		}

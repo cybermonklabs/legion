@@ -1,6 +1,7 @@
 package specgraph
 
 import (
+	"cmp"
 	"encoding/json/jsontext"
 	"errors"
 	"fmt"
@@ -68,10 +69,12 @@ var (
 
 // scenarioResult is one result of results.json: a Result, whose members its own JSON names give,
 // with check_version in the place of its CheckDigest, which names the approved version of the check
-// that ran.
+// that ran, and Leg nil where the file leaves it out, which readResults refuses, since "" is the
+// leg of no matrix.
 type scenarioResult struct {
 	Result
-	CheckVersion int `json:"check_version" input:"nonzero"`
+	Leg          *string `json:"leg" input:"present: \"\" is the leg of no matrix, which the results of a job from before its matrix give"`
+	CheckVersion int     `json:"check_version" input:"nonzero"`
 }
 
 // The forms of the JSON files of a scenario that ReadScenario reads itself, with the type of each
@@ -134,7 +137,7 @@ const (
 //     and a result of a program check of production or of the graph names test_commit; each of
 //     fault_paths is a repository path. A failing example of a program check of the code counts
 //     from planted_on, the commit that its fault was planted on, and never at its commit, the
-//     fault's own commit (CheckStates, step 7). No two results of one check have one at and one
+//     fault's own commit (deriveChecks, step 7). No two results of one check have one at and one
 //     seq;
 //   - jobs.json, [{"job","leg","commit","ended"}]: each run sets job and commit, leg ("" for no
 //     matrix), and ended, false for a run that has not ended;
@@ -313,7 +316,8 @@ func readWith[T any](fsys fs.FS, name string, read func(io.Reader) (T, error)) (
 
 // readResults reads results.json, each result carrying the Digest of the approved version of its
 // check that check_version names, and the text of that version of each, and refuses a result that
-// Result.fault refuses by that text, and two results that sameRecordFault names.
+// leaves out its leg, one that Result.fault refuses by that text, and two results that
+// sameRecordFault names.
 func readResults(fsys fs.FS, approved Approved) ([]Result, []*Check, error) {
 	read, err := readEach[scenarioResult](fsys, "results.json", "result", resultForm)
 	if err != nil {
@@ -327,7 +331,11 @@ func readResults(fsys fs.FS, approved Approved) ([]Result, []*Check, error) {
 		if !held {
 			return nil, nil, scenarioFault("results.json", "result %d: the approved spec holds no version %d of check %s", i+1, r.CheckVersion, quoted(r.Check))
 		}
+		if r.Leg == nil {
+			return nil, nil, scenarioFault("results.json", `result %d: it sets no leg; a result of no matrix sets ""`, i+1)
+		}
 		results[i] = r.Result
+		results[i].Leg = *r.Leg
 		results[i].CheckDigest = check.Digest()
 		texts[i], procedures[i] = check, &texts[i]
 		if fault := results[i].fault(procedures[i]); fault != "" {
@@ -354,14 +362,17 @@ func checkVersion(approved Approved, id string, v int) (Check, bool) {
 	return text.Checks[0], true
 }
 
-// readJobRuns reads jobs.json, and refuses a run that JobRun.fault refuses.
+// readJobRuns reads jobs.json, and refuses a run that leaves out its leg or ended
+// (jobRunFile.unsetFault), and one that JobRun.fault refuses.
 func readJobRuns(fsys fs.FS) ([]JobRun, error) {
-	runs, err := readEach[JobRun](fsys, "jobs.json", "job run", jobRunForm)
+	read, err := readEach[jobRunFile](fsys, "jobs.json", "job run", jobRunForm)
 	if err != nil {
 		return nil, err
 	}
-	for i, r := range runs {
-		if fault := r.fault(); fault != "" {
+	runs := make([]JobRun, len(read))
+	for i, r := range read {
+		runs[i] = r.run()
+		if fault := cmp.Or(r.unsetFault(), runs[i].fault()); fault != "" {
 			return nil, scenarioFault("jobs.json", "job run %d: %s", i+1, fault)
 		}
 	}
@@ -384,11 +395,8 @@ func readUnits(fsys fs.FS, approved Approved) ([]Unit, error) {
 	for _, st := range current.Statements {
 		statements[st.ID] = true
 	}
-	ids := map[string]bool{}
+	ids := make(map[string]bool, len(units))
 	for _, u := range units {
-		if ids[u.ID] {
-			return nil, scenarioFault("units.json", "unit %s is in the file two times", quoted(u.ID))
-		}
 		ids[u.ID] = true
 	}
 	for _, u := range units {

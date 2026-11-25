@@ -270,7 +270,7 @@ func TestScenarioRefusals(t *testing.T) {
 		{"an approved block whose parent is a check that the approved spec removed", "wait-cycle", func(t *testing.T, dir string) {
 			editApproved(t, filepath.Join(dir, "approved.json"), func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
 				removed := *approvedNode(t, nodes, "a-late-session-gets-the-message")
-				removed.ID, removed.Removed = "an-old-check", new(true)
+				removed.ID, removed.Removed = "an-old-check", true
 				removed.Versions = []specgraph.ApprovedVersion{removed.Versions[0]}
 				removed.Versions[0].Block = strings.Replace(removed.Versions[0].Block, "#a-late-session-gets-the-message", "#an-old-check", 1)
 				return append(nodes, removed)
@@ -347,6 +347,8 @@ func TestScenarioRefusals(t *testing.T) {
 			"units.json", `it is not in the form [` + unitForm + `, …]: the value at "/0/waits_on" is null`},
 		{"a unit with no id", "wait-cycle", write("units.json", `[{"serves":[],"needs":[],"waits_on":[]}]`),
 			"units.json", "unit 1 has no id"},
+		{"a unit two times", "wait-cycle", write("units.json", `[{"id":"u-a","serves":[],"needs":[],"waits_on":[]},{"id":"u-a","serves":[],"needs":[],"waits_on":[]}]`),
+			"units.json", `unit "u-a" is in the list two times`},
 		{"a wait on no statement", "wait-cycle", write("units.json", `[{"id":"u-a","serves":[],"needs":[],"waits_on":["no-such-statement"]}]`),
 			"units.json", `unit "u-a": waits_on names "no-such-statement", which is no current statement of the approved spec`},
 		{"a need of no unit", "wait-cycle", write("units.json", `[{"id":"u-a","serves":[],"needs":["u-x"],"waits_on":[]}]`),

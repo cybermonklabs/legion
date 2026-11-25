@@ -70,7 +70,7 @@ type stateKind struct {
 func stateKinds() []stateKind {
 	statement := []string{statementNotBuilt, statementMet, statementNotMet, statementUnknown}
 	return []stateKind{
-		{words: "check ", states: []string{checkTrue, checkFalse, checkUnknown}, top: checkTrue},
+		{words: "check ", states: []string{CheckTrue, CheckFalse, checkUnknown}, top: CheckTrue},
 		{words: "statement ", states: statement, top: statementMet},
 		{words: "own state of ", states: statement, top: statementMet},
 		{words: "wait of ", states: []string{waitEnds, waitHolds}, top: waitEnds},
@@ -152,12 +152,12 @@ func TestTheSweepsJudgmentReadsAsTheSpec(t *testing.T) {
 		right           right
 		toward, beyond  bool
 	}{
-		{`R7: "true, false, or unknown with a reason"; unknown to true`, check, checkUnknown, checkTrue, none, true, true},
-		{`R7: false to true`, check, checkFalse, checkTrue, none, true, true},
-		{`R7: "silence is not a pass"; true where the base reads no state`, check, "", checkTrue, none, true, true},
+		{`R7: "true, false, or unknown with a reason"; unknown to true`, check, checkUnknown, CheckTrue, none, true, true},
+		{`R7: false to true`, check, CheckFalse, CheckTrue, none, true, true},
+		{`R7: "silence is not a pass"; true where the base reads no state`, check, "", CheckTrue, none, true, true},
 		{`R7: unknown where the base reads no state`, check, "", checkUnknown, none, false, false},
-		{`R7: false to unknown is no move to true`, check, checkFalse, checkUnknown, none, false, false},
-		{`R7: true to false`, check, checkTrue, checkFalse, none, false, false},
+		{`R7: false to unknown is no move to true`, check, CheckFalse, checkUnknown, none, false, false},
+		{`R7: true to false`, check, CheckTrue, CheckFalse, none, false, false},
 		{`R10: "not built, met, not met, or unknown"; not built to met`, statement, statementNotBuilt, statementMet, none, true, true},
 		{`R10: not met to met`, statement, statementNotMet, statementMet, none, true, true},
 		{`R10: not met to unknown is no move to met`, statement, statementNotMet, statementUnknown, none, false, false},
@@ -166,10 +166,10 @@ func TestTheSweepsJudgmentReadsAsTheSpec(t *testing.T) {
 		{`R29: "That wait ends when main holds the statement's approved text and its own checks read true there"; holds to ends`, wait, waitHolds, waitEnds, none, true, true},
 		{`R29: a wait that ends in the base`, wait, waitEnds, waitEnds, none, false, false},
 		{`R29: ends to holds`, wait, waitEnds, waitHolds, none, false, false},
-		{`a right that covers each place allows unknown to true`, check, checkUnknown, checkTrue, each, true, false},
-		{`a right that names the place with true allows false to true`, check, checkFalse, checkTrue, naming(check, checkTrue), true, false},
-		{`a right that names the place with unknown allows no true`, check, checkFalse, checkTrue, naming(check, checkUnknown), true, true},
-		{`a right that names another place allows nothing here`, wait, waitHolds, waitEnds, naming(check, checkTrue), true, true},
+		{`a right that covers each place allows unknown to true`, check, checkUnknown, CheckTrue, each, true, false},
+		{`a right that names the place with true allows false to true`, check, CheckFalse, CheckTrue, naming(check, CheckTrue), true, false},
+		{`a right that names the place with unknown allows no true`, check, CheckFalse, CheckTrue, naming(check, checkUnknown), true, true},
+		{`a right that names another place allows nothing here`, wait, waitHolds, waitEnds, naming(check, CheckTrue), true, true},
 		{`a right that names places and leaves this one out allows nothing here`, statement, statementNotMet, statementMet, right{has: true, allowed: map[string]string{}}, true, true},
 	} {
 		base := map[string]string{}
@@ -186,9 +186,9 @@ func TestTheSweepsJudgmentReadsAsTheSpec(t *testing.T) {
 		what        string
 		base, input map[string]string
 	}{
-		{"a place of no kind", nil, map[string]string{"subject 1 note of c": checkTrue}},
+		{"a place of no kind", nil, map[string]string{"subject 1 note of c": CheckTrue}},
 		{"a check that reads a state of a statement", nil, map[string]string{check: statementMet}},
-		{"a wait that reads a state of a check", nil, map[string]string{wait: checkTrue}},
+		{"a wait that reads a state of a check", nil, map[string]string{wait: CheckTrue}},
 		{"a base whose statement reads a state of a wait", map[string]string{statement: waitEnds}, map[string]string{statement: statementMet}},
 	} {
 		if _, _, err := judgeAnswer(r.base, r.input, false, nil); err == nil {

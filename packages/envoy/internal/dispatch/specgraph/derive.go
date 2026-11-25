@@ -1,28 +1,26 @@
 package specgraph
 
 import (
-	"cmp"
 	"errors"
 	"fmt"
 	"maps"
 	"slices"
-	"strings"
 )
 
 // State is the state of each check and each statement at one subject (R10: "A page says which
-// subject it shows"): Checks as CheckStates gives them, and Statements in the order of Derive.
+// subject it shows"): Checks as deriveChecks gives them, and Statements in the order of Derive.
 type State struct {
 	Subject    Point            `json:"subject"`
 	Checks     []CheckState     `json:"checks"`
 	Statements []StatementState `json:"statements"`
 }
 
-// Derive is the state at in.Subject of each check that CheckStates judges, and of each statement
+// Derive is the state at in.Subject of each check that deriveChecks judges, and of each statement
 // that the approved spec holds a current text of, in preorder: the top statements by id, then the
 // statements under each one by id, depth first.
 //
 // The state of a statement S follows its own checks that read the subject, the checks that
-// CheckStates judges (R10: "Only the checks that read the subject count"), the state of each
+// deriveChecks judges (R10: "Only the checks that read the subject count"), the state of each
 // statement under S, and the state of each statement that supports S, the statements whose serves
 // names S (R1: "A statement is true when the statements under it, the statements that support it,
 // and its own checks are true"). So it follows them at each level: a failing check of a supporter
@@ -37,8 +35,9 @@ type State struct {
 //     at that commit do not hold the approved text of the statement, or of a statement under it").
 //     A supporter that is not built does not make S not built; it makes S unknown (rule 3).
 //  2. An own check is false, or a statement under S or a supporter is not met: not_met,
-//     check_false or supporter_not_met (R10: "Not met: one of them is false"), also when the tree
-//     rules refuse S, since a refusal never hides a failure.
+//     check_false or supporter_not_met (R10: "Not met: an own check reads false, or a statement
+//     under it or that supports it reads not met"), also when the tree rules refuse S, since a
+//     refusal never hides a failure.
 //  3. An own check is unknown, S has no check where the tree rules ask for one (a leaf, or a
 //     statement that other statements serve), the tree rules refuse S, or a statement under S or a
 //     supporter is unknown or not built: unknown, check_unknown, no_check, refused,
@@ -46,7 +45,8 @@ type State struct {
 //     case"; R6: "Each leaf statement has one or more checks"; R5: "A statement that other
 //     statements support still has checks of its own"; R7: "silence is not a pass"; and no clean
 //     state for a tree that the rules refuse).
-//  4. Else met, checks_true, also when no check counts (R10: "Met: all of them are true"), and
+//  4. Else met, checks_true, also when no check counts (R10: "Met: its own checks read true, and
+//     statements under it or that support it read met"), and
 //     PartlyChecked when the approved spec marks S (R10: "The page then says partly checked beside
 //     met"). R37 needs that reading of no check: a statement whose only checks read production or
 //     the graph is met at the head of main before its issue is done and its production checks run.
@@ -55,23 +55,18 @@ type State struct {
 //
 // Own is the state of S over its own checks that read the subject, which a wait on S reads (R29:
 // "its own checks read true there. The statements under it do not count for that wait"; R10:
-// "Only the checks that read the subject count"): not_built when the files do not hold S's current
-// text; unknown when S has no check where the tree rules ask for one, or the tree rules refuse S,
-// so a wait on it holds (R6, R5, and R10: "Met means that its checks pass"); else not_met when one
-// of them is false, unknown when one is unknown, and met when all are true, also when S has
-// statements under it, no supporter and no own check, or none of its checks reads the subject. So
-// at the head of main a wait on S never waits for a check of production.
+// "Only the checks that read the subject count"), in this order (statementJudge.ownState):
+// not_built when the files do not hold S's current text; else not_met when one of them is false,
+// also when the tree rules refuse S, since a refusal never hides a failure; else unknown when S has
+// no check where the tree rules ask for one, the tree rules refuse S, or one of them is unknown, so
+// a wait on it holds (R6, R5, and R10: "Met means that its checks pass"); else met, also when S
+// has statements under it, no supporter and no own check, or none of its checks reads the subject.
+// So at the head of main a wait on S never waits for a check of production.
 //
-// Derive gives an error, and no state, for an Input that is not whole (Input.check), for a History
-// that could not answer, as CheckStates does, and for an answer that is not whole: a current
-// statement that it gives no state of once, as a loop past the entry would make
-// (statementJudge.derive), so such a gap is an error and never a met.
+// Derive gives an error, and no state, for an Input that is not whole (Input.check), and for a
+// History that could not answer, as deriveChecks does.
 func Derive(in Input) (State, error) {
-	checks, err := newCheckJudge(in)
-	if err != nil {
-		return State{}, err
-	}
-	states, err := checks.states()
+	checks, states, err := deriveChecks(in)
 	if err != nil {
 		return State{}, err
 	}
@@ -80,9 +75,7 @@ func Derive(in Input) (State, error) {
 		s.Checks = []CheckState{}
 	}
 	j := newStatementJudge(checks.current, in.Approved, checks.holds, checks.refused, s.Checks)
-	if s.Statements, err = j.derive(checks.current); err != nil {
-		return State{}, err
-	}
+	s.Statements = j.derive(checks.current)
 	return s, nil
 }
 
@@ -90,23 +83,25 @@ func Derive(in Input) (State, error) {
 // that the scenario reader refuses the same fault with. A member that the caller did not set is its
 // zero value, and the judge would read that value as a real one, which turns a state toward true or
 // hides a failure; so the judge never reads one, and no state is given. A member marked present has
-// a type whose zero value is "not set" (memberMark), refused here as a file that leaves it out is,
-// and each name and each path is read by the one rule of its kind (nameFault, isRepoPath):
+// a type whose zero value is "not set" (memberMark), refused here as a file that leaves it out is;
+// a member whose zero is a value is the plain value, as its type says what a caller that leaves it
+// zero gives: Leg "" is the leg of no matrix, Ended false a run that has not ended, Removed false a
+// node that the approved spec keeps, and PartlyChecked false a statement whose checks decide all of
+// it. Each name and each path is read by the one rule of its kind (nameFault, isRepoPath):
 //
 //   - the subject: its commit, its now, exactly one of a branch and a deploy, graph_tx only with a
 //     deploy, and no name of no letter and no digit (subjectFault); with no now no time limit would
 //     end, and with neither, no check of production would be judged;
-//   - the approved spec, as ReadApproved refuses it (approvedFault), Removed and PartlyChecked of
-//     each node set among it, and each node under its own id, as WriteApproved refuses it: a node
-//     with no version, a block that is not its one block, a relation that names no node of the
-//     approved spec of its kind, a check whose block leaves out serves, or a key that is not its id
-//     would leave the node or the relation out, a loop of parent and support relations would leave
-//     each statement of the loop out of the tree of the statement above it (R5), and a version with
-//     no time would make no result suspect (R7: "A change to the text of a statement makes every
-//     result under it suspect");
-//   - each result (Result.fault), its Leg set among it, with the current text of its check when it
-//     carries that text's digest, so it is judged by what the judge reads of it, and no two results
-//     of one check at one At and one Seq (sameRecordFault);
+//   - the approved spec, as ReadApproved refuses it (approvedFault), and each node under its own
+//     id, as WriteApproved refuses it: a node with no version, a block that is not its one block, a
+//     relation that names no node of the approved spec of its kind, a check whose block leaves out
+//     serves, or a key that is not its id would leave the node or the relation out, a loop of
+//     parent and support relations would leave each statement of the loop out of the tree of the
+//     statement above it (R5), and a version with no time would make no result suspect (R7: "A
+//     change to the text of a statement makes every result under it suspect");
+//   - each result (Result.fault), with the current text of its check when it carries that text's
+//     digest, so it is judged by what the judge reads of it, and no two results of one check at one
+//     At and one Seq (sameRecordFault);
 //   - History set, FixtureHistory{Commits: []FixtureCommit{}} for none: with no history no result
 //     carries, so a failure at another commit counts nowhere, and a caller that gives none is not
 //     one that states that it has none; a FixtureHistory as ReadFixtureHistory refuses it
@@ -126,7 +121,7 @@ func Derive(in Input) (State, error) {
 //     check reads unknown, and no earlier result of it counts"), and elsewhere by the results of
 //     the refused commit, which count nowhere; and Uncited as the reader of uncited.json refuses it
 //     (uncitedFault);
-//   - each job run (JobRun.fault), its Leg and Ended set among it.
+//   - each job run (JobRun.fault).
 //
 // A History that could not answer is refused later, where the judge first asks it (checkJudge).
 // current is the tree of the current texts of in.Approved.
@@ -142,7 +137,7 @@ func (in Input) check(current Tree) error {
 		}
 		nodes = append(nodes, n)
 	}
-	if err := approvedFault(nodes); err != nil {
+	if err := approvedFault(nodes, nil); err != nil {
 		return err
 	}
 	type text struct {
@@ -204,40 +199,24 @@ func (in Input) check(current Tree) error {
 // reader of uncited.json and the entry of the derivation both refuse uncited by it, and the least
 // place by commit and then by check is the one named, whatever the order of the map.
 func uncitedFault(uncited map[string]map[string]string) string {
-	// A place is a commit (depth 0), or a check of it (depth 1); the fault of a commit comes before
-	// the faults of its checks.
-	type place struct {
-		commit, check string
-		depth         int
-		fault         string
-	}
-	var faults []place
-	for commit, checks := range uncited {
+	for _, commit := range slices.Sorted(maps.Keys(uncited)) {
+		checks := uncited[commit]
 		switch {
 		case !hasWord(commit):
-			faults = append(faults, place{commit, "", 0, "a commit of no letter and no digit names no commit"})
+			return fmt.Sprintf("commit %s: a commit of no letter and no digit names no commit", quoted(commit))
 		case checks == nil:
-			faults = append(faults, place{commit, "", 0, "it sets no map of the checks that CI refused there, and a commit where CI refused no check has an empty map or no key"})
+			return fmt.Sprintf("commit %s: it sets no map of the checks that CI refused there, and a commit where CI refused no check has an empty map or no key", quoted(commit))
 		}
-		for check, rule := range checks {
+		for _, check := range slices.Sorted(maps.Keys(checks)) {
 			switch {
 			case !hasWord(check):
-				faults = append(faults, place{commit, check, 1, "a check of no letter and no digit names no check"})
-			case rule == "":
-				faults = append(faults, place{commit, check, 1, "its rule is empty, and a refusal of CI names the rule that refused the check"})
+				return fmt.Sprintf("commit %s: check %s: a check of no letter and no digit names no check", quoted(commit), quoted(check))
+			case checks[check] == "":
+				return fmt.Sprintf("commit %s: check %s: its rule is empty, and a refusal of CI names the rule that refused the check", quoted(commit), quoted(check))
 			}
 		}
 	}
-	if len(faults) == 0 {
-		return ""
-	}
-	first := slices.MinFunc(faults, func(a, b place) int {
-		return cmp.Or(strings.Compare(a.commit, b.commit), cmp.Compare(a.depth, b.depth), strings.Compare(a.check, b.check))
-	})
-	if first.depth == 0 {
-		return fmt.Sprintf("commit %s: %s", quoted(first.commit), first.fault)
-	}
-	return fmt.Sprintf("commit %s: check %s: %s", quoted(first.commit), quoted(first.check), first.fault)
+	return ""
 }
 
 // WaitEnds is whether a wait on the statement ends at the subject (R29: "That wait ends when main

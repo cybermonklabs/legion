@@ -46,7 +46,7 @@
 // statements as added, and a checkout with no spec file has no program check.
 //
 // compare compares the files of one directory with an approved spec in the form of approved.json
-// (specgraph.ApprovedFile). It exits 1 when the files hold a node in a text that the approved spec
+// (specgraph.ReadApproved). It exits 1 when the files hold a node in a text that the approved spec
 // never held, with one line for each such node on standard error, "spec-check:
 // <dir>/<file>:<line>: <node>: <detail>", and "spec-check: <dir>: the comparison fails on <n>
 // nodes" on standard output. It exits 0 otherwise, with "spec-check: <dir>: the approved spec held
@@ -129,8 +129,9 @@
 // no bound on its size.
 //
 // state reads a scenario of The Spec in the format of specgraph.ReadScenario (the directories of
-// internal/dispatch/specgraph/testdata/scenarios) and derives the state of each check and each
-// statement at each subject of it. For each subject it prints "spec-check: subject <commit>, the
+// internal/dispatch/specgraph/testdata/scenarios; packages/envoy/docs/spec-check-state.md is its
+// guide for a user) and derives the state of each check and each statement at each subject of it.
+// For each subject it prints "spec-check: subject <commit>, the
 // head of <branch>", "spec-check: subject <commit>, the commit that production runs at deploy
 // <deploy>", or with the graph_tx of the subject "…, the commit that production runs at deploy
 // <deploy>, and the graph at transaction <graph_tx>", then each current approved statement in

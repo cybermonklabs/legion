@@ -13,7 +13,7 @@ import (
 
 // decodeJSON decodes data, one JSON value, into v, and form is the format as a person reads it,
 // such as approvedForm, which it names for a value of another type. It is the one reader of every
-// JSON file of a format of this package (approved.json, ApprovedFile, and each JSON file of a
+// JSON file of a format of this package (approved.json, approvedFile, and each JSON file of a
 // scenario), and it refuses each text that the format does not hold:
 //
 //   - a byte that is not UTF-8 (RFC 8259 §8.1: JSON text "MUST be encoded using UTF-8"): "it is not

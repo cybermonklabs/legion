@@ -489,10 +489,10 @@ type addableRecords struct {
 // nothing, since the commit of a result has one reading, its commit (resultCommit), for the judge
 // and for the leg rule alike; one on a result of a query or an agent of production or of the graph
 // moves nothing, also where CI refused the check at that commit, since such a check reads no commit
-// (CountsAtACommit); and a commit on a result of a check of production or of the graph is refused.
+// (countsAtACommit); and a commit on a result of a check of production or of the graph is refused.
 // A planted_on alone, or fault_paths alone, on a failing example of a program check of the code
 // that no step planted moves no state: it counts from planted_on only with both, and with one of
-// the two it reads unknown with the reason that names the other (CheckStates, step 7). A planted_on
+// the two it reads unknown with the reason that names the other (deriveChecks, step 7). A planted_on
 // that names a commit of the history has one right: where the ties do not carry that commit to a
 // subject, the record counts nowhere there and the base without that record decides
 // (plantedOnElsewhere). A planted_on that names no commit of the history has none: such a record

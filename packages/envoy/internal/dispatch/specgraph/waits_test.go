@@ -74,8 +74,10 @@ func expectCycle(t *testing.T, units []Unit, want []string) {
 // A unit that sets no id would read as a unit named "", one of no letter and no digit as a unit
 // named nothing, one that does not set serves, needs or waits_on as one with none, and a name of
 // no letter and no digit in them as a statement or a unit that nothing else names, each of which
-// hides a cycle of waits (R29): WaitCycle refuses each, in the words of the reader of units.json,
-// and gives no cycle. The control row closes a cycle.
+// hides a cycle of waits (R29); and a unit with the id of a unit before it would read as one unit
+// with the relations of both, which can close a cycle that the units do not have, as u-a here,
+// which would wait on its own statement. WaitCycle refuses each, in the words of the reader of
+// units.json, and gives no cycle. The control row closes a cycle.
 func TestWaitCycleRefusesAUnitThatIsNotWhole(t *testing.T) {
 	t.Parallel()
 	other := Unit{ID: "u-a", Serves: []string{"s-a"}, Needs: none, WaitsOn: []string{"s-b"}}
@@ -95,6 +97,8 @@ func TestWaitCycleRefusesAUnitThatIsNotWhole(t *testing.T) {
 			`specgraph: unit "u-b": waits_on holds " ", which names no statement`},
 		{"a unit of no letter and no digit in needs", Unit{ID: "u-b", Serves: []string{"s-b"}, Needs: []string{""}, WaitsOn: []string{"s-a"}},
 			`specgraph: unit "u-b": needs holds "", which names no unit`},
+		{"the id of the unit before it", Unit{ID: "u-a", Serves: none, Needs: none, WaitsOn: []string{"s-a"}},
+			`specgraph: unit "u-a" is in the list two times`},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()

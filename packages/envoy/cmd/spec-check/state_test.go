@@ -85,6 +85,17 @@ func TestScenarios(t *testing.T) {
 			t.Errorf("the statements at c3:\n got %+v\nwant %+v", states[2].Statements, want3)
 		}
 	})
+	// R48: a refusal of CI names the rule that refused the check. The text of the scenario refusal
+	// prints its check at c2 as unknown (uncited), and --json prints the rule as the check's detail.
+	t.Run("--json prints the rule of a refusal of CI as the detail of the check", func(t *testing.T) {
+		t.Parallel()
+		var states []specgraph.State
+		decodeStrict(t, runBinary(t, binary, "", "state", "--scenario", fixture(t, "scenarios", "refusal"), "--json"), &states)
+		want := []specgraph.CheckState{{ID: "a-restart-loses-no-message", State: "unknown", Reason: "uncited", Detail: "test-not-in-code"}}
+		if len(states) == 0 || states[0].Subject != (specgraph.Point{Commit: "c2", Branch: "listener-restart"}) || !slices.Equal(states[0].Checks, want) {
+			t.Errorf("the states: %+v\nwant first the state at c2, with the checks %+v", states, want)
+		}
+	})
 	t.Run("--json with units.json prints the states and the cycle", func(t *testing.T) {
 		t.Parallel()
 		var out struct {
@@ -145,7 +156,7 @@ func TestARelationToANodeThatTheApprovedSpecRemovedIsTaken(t *testing.T) {
 	binary := cmdtest.Build(t, "spec-check")
 	dir := copyScenario(t, "wait-cycle")
 	editApproved(t, filepath.Join(dir, "approved.json"), func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
-		approvedNode(t, nodes, "envoy-delivers-messages").Removed = new(true)
+		approvedNode(t, nodes, "envoy-delivers-messages").Removed = true
 		return nodes
 	})
 	replaceIn(t, filepath.Join(dir, "units.json"), `"waits_on": ["envoy-delivers-messages"]`, `"waits_on": []`)
@@ -388,8 +399,7 @@ func addApproved(t *testing.T, dir, id string, node interface{ Print() (string, 
 		t.Fatal(err)
 	}
 	editApproved(t, filepath.Join(dir, "approved.json"), func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
-		return append(nodes, specgraph.ApprovedNode{ID: id, Removed: new(false), PartlyChecked: new(false),
-			Versions: []specgraph.ApprovedVersion{{Version: 1, At: scenarioApproval, Block: block}}})
+		return append(nodes, specgraph.ApprovedNode{ID: id, Versions: []specgraph.ApprovedVersion{{Version: 1, At: scenarioApproval, Block: block}}})
 	})
 }
 

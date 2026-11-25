@@ -64,7 +64,7 @@ func TestARunOfProductionOrTheGraphCountsForTheCodeThatRanIt(t *testing.T) {
 // run of the job ended with no result that counts reads unknown, and legs whose newest results
 // disagree read unknown. Each row: Q at subject c2 under deploy d2, where c2 differs from c1 outside
 // the tie, or, in a row that carries, at c3, which differs from c2 outside the tie too, so that the
-// results of the test at c2 count there (the test of c2 is the test of c3, CheckStates step 4); the
+// results of the test at c2 count there (the test of c2 is the test of c3, deriveChecks step 4); the
 // runs of legs linux and arm of Q's job ended at c2; the row's runs under d2 at the test of c2, and a
 // failing example that the test at c2 caught; C taken out. A leg that ended with no result at c2
 // counts wherever the results of the test of c2 count.
@@ -72,7 +72,7 @@ func TestEachLegOfAProgramCheckOfProductionKeepsItsResult(t *testing.T) {
 	t.Parallel()
 	q := checkStateProductionProgram
 	run := func(leg string, outcome Outcome, after time.Duration) Result {
-		return Result{Check: q.ID, Kind: ResultRun, Outcome: outcome, Deploy: "d2", Job: q.Test.Job, Leg: new(leg), TestCommit: "c2", At: checkStateRun.Add(after)}
+		return Result{Check: q.ID, Kind: ResultRun, Outcome: outcome, Deploy: "d2", Job: q.Test.Job, Leg: leg, TestCommit: "c2", At: checkStateRun.Add(after)}
 	}
 	for _, row := range []struct {
 		name       string
@@ -107,7 +107,7 @@ func TestEachLegOfAProgramCheckOfProductionKeepsItsResult(t *testing.T) {
 				s.commit("c3", "c2", "docs/x.md")
 				s.Subject.Commit = "c3"
 			}
-			s.JobRuns = []JobRun{{Job: q.Test.Job, Leg: new("linux"), Commit: "c2", Ended: new(true)}, {Job: q.Test.Job, Leg: new("arm"), Commit: "c2", Ended: new(true)}}
+			s.JobRuns = []JobRun{{Job: q.Test.Job, Leg: "linux", Commit: "c2", Ended: true}, {Job: q.Test.Job, Leg: "arm", Commit: "c2", Ended: true}}
 			s.Results = append(append(s.Results, row.runs...), Result{Check: q.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, TestCommit: "c2",
 				At: checkStateRun.Add(5 * time.Minute), FaultAuthor: "author-b", TestAuthors: []string{"author-a"}})
 			want := row.want
