@@ -350,9 +350,9 @@ func publishTakeover(ctx context.Context, cfg listenerDeliveryHandlerConfig, rol
 
 // runTakenRoleDrain is runKeptRoleDrain for a role the claim route has just granted: under the
 // role's guard and the handover's window, it runs the passes of the role's takeover records
-// (passRecords) and then hands its kept lane over (handOverTakenRole), whether or not this
-// listener runs passes. An edge listener runs none (cfg.edge), as it hands no kept lane over
-// (drainKeptRole): a pass writes the kept role lane and the takeover lane, which its grant
+// (passRecords) and then hands its kept lane over, which it does whether or not this listener
+// runs passes (handOverTakenRole). An edge listener runs none (cfg.edge), as it hands no kept lane
+// over (drainKeptRole): a pass writes the kept role lane and the takeover lane, which its grant
 // publishes neither of (natsgrant.Edge).
 func runTakenRoleDrain(cfg listenerDeliveryHandlerConfig, role string) {
 	if cfg.edge != nil {
@@ -381,8 +381,9 @@ func runTakenRoleDrain(cfg listenerDeliveryHandlerConfig, role string) {
 // passRecords is the takeover records this listener runs passes of, for role or for every role
 // when role is empty (bus.Client.TakeoverRecords). A listener whose NATS user holds none of the
 // session consumers' calls (holdsConsumerGrant), Dispatch's and a host's, reads none and runs no
-// pass: a pass's first read is the previous holder's consumer floor, which such a user may not
-// read, so the records are left to the listeners whose users may, which run every pass.
+// pass: it cannot run a record's first copy, or the first after the previous holder came back,
+// since each begins with a read of the previous holder's consumer floor (takeoverStart), which
+// such a user may not make. So it leaves every pass to the listeners whose users may.
 func passRecords(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string) ([]bus.StoredTakeoverRecord, error) {
 	if !cfg.holdsConsumerGrant(ctx) {
 		return nil, nil
@@ -485,12 +486,8 @@ const takeoverRecordRefresh = 15 * time.Minute
 //
 // A read or a copy that failed ends the pass with the record written at the frame it stopped at,
 // under the same rule; a failed read of where to start ends it with nothing written, and the next
-// pass reads again. A record already finished is done with nothing read or written: no pass runs
-// it again, and its write would be refused (bus.ErrTakeoverRecordFinished).
+// pass reads again.
 func runTakeoverPass(ctx context.Context, cfg listenerDeliveryHandlerConfig, stored bus.StoredTakeoverRecord) (bus.StoredTakeoverRecord, bool, error) {
-	if stored.Record.Finished {
-		return stored, true, nil
-	}
 	record := stored.Record
 	started := cfg.now()
 	claimedAt := time.UnixMilli(record.ClaimedAt)

@@ -205,13 +205,6 @@ type consumerGrantAnswer struct {
 	answer atomic.Pointer[func(context.Context) bool]
 }
 
-// answeredBy is a consumerGrantAnswer that answers with holds.
-func answeredBy(holds func(context.Context) bool) *consumerGrantAnswer {
-	a := &consumerGrantAnswer{}
-	a.set(holds)
-	return a
-}
-
 // set makes holds the answer.
 func (a *consumerGrantAnswer) set(holds func(context.Context) bool) { a.answer.Store(&holds) }
 

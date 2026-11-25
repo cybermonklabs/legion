@@ -196,7 +196,9 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 	// A cursor write under a precondition is sent again after a reconnect cuts its answer, and the
 	// stream refuses the resend because the first send already moved the cursor. That refusal is
 	// no ErrCursorMoved, which says the write stored nothing: the error wraps ErrUnacknowledged, so
-	// the listener reads the cursor back (roleKeepLaneCursor.confirm) and finds this write.
+	// the listener reads the cursor back (roleKeepLaneCursor.confirm) and finds this write. The
+	// refusal is read by the one test both conditional writes share (preconditionLost), so this row
+	// holds it for Client.WriteTakeoverRecordAt too.
 	t.Run("a cursor write stored before a reconnect cut its answer is no ErrCursorMoved", func(t *testing.T) {
 		subject := bus.KeptRoleCursorSubject("unacknowledged-cursor-reconnect")
 		proxy := testnats.StartProxy(t, uri)
@@ -241,6 +243,55 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		}
 		if n := storedOn(t, subject); n != 1 {
 			t.Fatalf("the stream holds %d cursor writes on %s, want the one this call stored", n, subject)
+		}
+	})
+
+	// The claim route's write of a takeover record takes no precondition (WriteTakeoverRecord): it
+	// writes a subject of its own, a fresh attempt id's, which no other writer has. So the resend
+	// after a reconnect cut the first send's answer is stored too, and the write returns nil, as it
+	// must for a claim whose record stored. Under a precondition the stream would refuse that
+	// resend, which meets the first send's own copy, and the claim route would answer the claim as
+	// one whose record did not store.
+	t.Run("a takeover record stored before a reconnect cut its answer is written", func(t *testing.T) {
+		const role, previous = "unacknowledged-claim", "ses_unacknowledged_previous"
+		subject := bus.TakeoverSubject(role, previous, id.New())
+		record := bus.TakeoverRecord{Role: role, Previous: previous, ClaimedAt: time.Now().UnixMilli()}
+		proxy := testnats.StartProxy(t, uri)
+		reconnecting, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithReplicas(1))
+		if err != nil {
+			t.Fatalf("connect through the reply gate: %v", err)
+		}
+		t.Cleanup(reconnecting.Close)
+		proxy.FreezeServerReplies()
+		answered := make(chan error, 1)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			answered <- reconnecting.WriteTakeoverRecord(ctx, subject, record)
+		}()
+		testwait.WithinPolling(t, 5*time.Second, time.Millisecond, "the takeover record to be stored before reconnecting",
+			func() bool { return storedOn(t, subject) == 1 })
+		if err := reconnecting.Connection().ForceReconnect(); err != nil {
+			t.Fatalf("force reconnect: %v", err)
+		}
+		proxy.Restore()
+		var got error
+		select {
+		case got = <-answered:
+		case <-time.After(15 * time.Second):
+			t.Fatal("the takeover record write interrupted by reconnect did not return")
+		}
+		if got != nil {
+			t.Fatalf("a takeover record write the stream stored before the reconnect = %v, want nil: the subject holds the record", got)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		records, err := client.TakeoverRecords(ctx, role)
+		if err != nil {
+			t.Fatalf("read %s's takeover records: %v", role, err)
+		}
+		if len(records) != 1 || records[0].Subject != subject || records[0].Record != record {
+			t.Fatalf("%s's takeover records read %+v, want this write's %+v on %s", role, records, record, subject)
 		}
 	})
 

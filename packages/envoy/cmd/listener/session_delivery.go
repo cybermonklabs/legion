@@ -950,7 +950,14 @@ func consumerLimitReached(err error) bool {
 func (m *sessionDelivery) grantRefused() bool {
 	m.grantMu.Lock()
 	defer m.grantMu.Unlock()
-	return !m.noGrantUntil.IsZero() && m.now().Before(m.noGrantUntil)
+	return m.refusingAt(m.now())
+}
+
+// refusingAt reports whether a refusal episode runs at now: a refusal for want of a grant was met
+// less than noGrantBackoff before it (grantRefusal). It is the one test of the episode, which
+// grantRefused and grantKnown both read; the caller holds grantMu.
+func (m *sessionDelivery) refusingAt(now time.Time) bool {
+	return !m.noGrantUntil.IsZero() && now.Before(m.noGrantUntil)
 }
 
 // granted ends a refusal episode once a consumer call succeeds: the grant now carries session
@@ -964,13 +971,13 @@ func (m *sessionDelivery) granted() {
 }
 
 // grantKnown is the grant's answer while one stands, under one hold of grantMu: no while a refusal
-// episode runs (as grantRefused), yes within noGrantBackoff of a consumer call that succeeded;
-// known is false when neither stands and the server must be asked.
+// episode runs (refusingAt), yes within noGrantBackoff of a consumer call that succeeded; known is
+// false when neither stands and the server must be asked.
 func (m *sessionDelivery) grantKnown() (holds, known bool) {
 	m.grantMu.Lock()
 	defer m.grantMu.Unlock()
 	now := m.now()
-	if !m.noGrantUntil.IsZero() && now.Before(m.noGrantUntil) {
+	if m.refusingAt(now) {
 		return false, true
 	}
 	if !m.grantedAt.IsZero() && now.Sub(m.grantedAt) < noGrantBackoff {

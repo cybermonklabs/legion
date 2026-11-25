@@ -113,9 +113,8 @@ func (c *Client) WriteTakeoverRecord(ctx context.Context, subject string, record
 //
 // A stored record that is finished is ErrTakeoverRecordFinished, with nothing sent. A subject
 // whose newest message is another is ErrTakeoverRecordMoved, and nothing is written. A refusal
-// that wraps ErrUnacknowledged is returned as it is, not as moved: it refused a resend after a
-// send nothing answered, and that first send may have stored this write (cursorMoved reads the
-// same case the same way).
+// that is no proof of that (preconditionLost), a resend's after a send nothing answered, is
+// returned as it is, not as moved: that first send may have stored this write.
 //
 // The two make a record's finish terminal: a pass that read the record unfinished and was then
 // held - a stall, a slow read - cannot write that older state over the finish a later pass wrote,
@@ -131,7 +130,7 @@ func (c *Client) WriteTakeoverRecordAt(ctx context.Context, stored StoredTakeove
 	}
 	ack, err := c.publishStoredRaw(ctx, stored.Subject, data, nats.ExpectLastSequencePerSubject(stored.Sequence))
 	if err != nil {
-		if IsCASConflict(err) && !errors.Is(err, ErrUnacknowledged) {
+		if preconditionLost(err) {
 			return 0, fmt.Errorf("%w: %s after %d: %w", ErrTakeoverRecordMoved, stored.Subject, stored.Sequence, err)
 		}
 		return 0, fmt.Errorf("bus: write the takeover record %s: %w", stored.Subject, err)

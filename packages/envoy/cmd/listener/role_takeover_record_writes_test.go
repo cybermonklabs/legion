@@ -53,8 +53,9 @@ func TestATakeoverRecordThatNothingMovesIsWrittenOncePerRefresh(t *testing.T) {
 		latest = stored
 	}
 
-	// The control runs first, inside the record's hour: past it the hour's last pass finishes the
-	// record, and no pass writes a finished record again (bus.ErrTakeoverRecordFinished).
+	// The control runs first, while the record is inside its hour. The row below crosses the hour,
+	// and its last pass finishes the record; a finished record is one no listener runs a pass of
+	// (runTakeoverPasses), so a control after it would show a pass no sweep makes.
 	t.Run("control: a pass that copies writes the record at once", func(t *testing.T) {
 		before, at := writes.Load(), latest.Record.Next
 		rig.lateForward(a, role, "stored after the record's last write")

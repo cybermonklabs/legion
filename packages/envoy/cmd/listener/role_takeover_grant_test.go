@@ -58,6 +58,14 @@ authorization {
 	return server, as("listener"), as("dispatch")
 }
 
+// answeredBy is a consumerGrantAnswer that answers with holds, for a test that builds a
+// configuration (listenerDeliveryHandlerConfig.consumerGrant).
+func answeredBy(holds func(context.Context) bool) *consumerGrantAnswer {
+	a := &consumerGrantAnswer{}
+	a.set(holds)
+	return a
+}
+
 // dispatchListener is a listener of the rig's deployment that connects as the grant hub's dispatch
 // user, on the row's clock and with the rig's takeover seams. Its takeover grant's answer is a
 // session delivery of its own, on that user, as main.go wires it.
@@ -92,8 +100,9 @@ func refusedProbes(server *testnats.Server) int {
 }
 
 // Dispatch's listener connects as a user that holds none of the session consumers' calls
-// (natsgrant.Dispatch), so a takeover pass's first read, the previous holder's floor, is one it may
-// not make; the listeners that hold the calls run each record's first pass, which sets its Next. At
+// (natsgrant.Dispatch), so it cannot run a record's first copy, or the first after the previous
+// holder came back: each begins with a read of the previous holder's floor, which it may not make.
+// The listeners that hold the calls run each record's first copy, which sets its Next. At
 // every sweep pass, Dispatch's listener still read every record, and every previous holder past
 // Next: a 404 each, the third of the burst. Its claim route's handover did the same for the role it
 // granted. Now neither reads a record nor a previous holder: each asks the server whether its user
