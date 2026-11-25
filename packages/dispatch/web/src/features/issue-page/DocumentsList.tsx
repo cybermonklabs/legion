@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from "rea
 import { Link } from "react-router-dom";
 
 import type { Artifact } from "../../api/types";
+import { inputMethodKey } from "../../lib/input-method-key";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   focusVisibleRing,
@@ -33,7 +34,6 @@ import { useListPages } from "./details-leaves";
 import { shortDay } from "./node-time";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, EMPTY_STATE_LINES, FILE_WORDS } from "./page-words";
-import { inputMethodKey } from "./useNodeEditing";
 
 /** The mark Documents' list draws its box with, by which `t a` finds it (`useIssueKeymap.ts`). */
 export const DOCUMENTS_LIST_ATTRIBUTE = "data-documents-list";
