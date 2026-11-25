@@ -165,6 +165,10 @@ func (s *server) tasksAtTheCut(ctx context.Context, keys []string) (map[string]*
 //   - referenced_by_count, which the reference graph gives now (reason G);
 //   - revision, each option's id and the answer's id, the ask's parts as the present tables hold
 //     them, for an ask that changed after the cut (reason P, asof.AsksChangedAfterStatement);
+//   - the question, the options, multiple and the urgency, for an ask whose wording at the cut no
+//     record gives: a restore changed it with no event, at a time no record gives (reason E,
+//     asof.AsksChangedAfterStatement). Such an ask counts as changed, so its parts are left out
+//     too;
 //   - waiting_on_person where the records at the cut give no person: no one handed the ask on,
 //     its issue held nobody, and its project's default assignee is unknown at the cut, which the
 //     projects shadow gives as null (reason D); the read then gives no person;
@@ -179,7 +183,7 @@ func (s *server) leaveOutPastAskFields(ctx context.Context, asks []model.Ask, at
 	for index := range asks {
 		ids[index] = asks[index].ID
 	}
-	changed, err := s.idsReadAtTheCut(ctx, asof.AsksChangedAfterStatement, ids, cut)
+	changed, wordingUnknown, err := s.asksChangedAfterTheCut(ctx, ids, cut)
 	if err != nil {
 		return fmt.Errorf("read which asks changed after the cut: %w", err)
 	}
@@ -188,6 +192,9 @@ func (s *server) leaveOutPastAskFields(ctx context.Context, asks []model.Ask, at
 		leaveOut(ctx, place+"/"+model.ReferencedByCountKey)
 		if changed[ask.ID] {
 			leaveOutAskParts(ctx, place, len(ask.Options), ask.Answer != nil)
+		}
+		if wordingUnknown[ask.ID] {
+			leaveOutAskWording(ctx, place)
 		}
 		if ask.WaitingOnPerson == "" {
 			leaveOut(ctx, place+"/waiting_on_person")

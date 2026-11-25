@@ -87,7 +87,10 @@ func (s *server) idsReadAtTheCut(ctx context.Context, statement string, ids []st
 //     asof.CommentBodiesNotGivenStatement). The shadow gives each of them the empty body;
 //   - the text of the block that the comment replies to and whether it is removed, where the
 //     item that holds the block changed after the cut (replyBlocksAtTheCut);
-//   - the members of each delivery attempt that no event at the cut dates (undatedCommentAttempt).
+//   - the members of each delivery attempt that no event at the cut dates (undatedCommentAttempt);
+//   - whether the mark of the comment's anchor was gone, where the shadow gives the anchor as not
+//     orphaned and a write with no event that dates it may have orphaned the anchor before the cut
+//     (reason E, asof.CommentAnchorsOrphanedNotGivenStatement).
 //
 // A request at no cut leaves out nothing.
 func (s *server) commentsAtTheCut(ctx context.Context, comments []model.Comment, at func(index int) string) error {
@@ -95,7 +98,7 @@ func (s *server) commentsAtTheCut(ctx context.Context, comments []model.Comment,
 	if !atCut || len(comments) == 0 {
 		return nil
 	}
-	var emptied []string
+	var emptied, anchored []string
 	blocks := make([]*model.ReplyBlock, len(comments))
 	for index, comment := range comments {
 		place := at(index)
@@ -107,11 +110,27 @@ func (s *server) commentsAtTheCut(ctx context.Context, comments []model.Comment,
 			// or a body that no record holds. Only such a comment is read again.
 			emptied = append(emptied, comment.ID)
 		}
+		// Only an anchor that the shadow gives as not orphaned can be one that a write with no
+		// event orphaned before the cut: no write sets the flag false with no event.
+		if comment.Anchor != nil && !comment.Anchor.Orphaned {
+			anchored = append(anchored, comment.ID)
+		}
 		blocks[index] = comment.ReplyBlock
 		leaveOutUndatedAttempts(ctx, place, comment.Deliveries, func(attempt model.CommentDelivery) string { return attempt.State }, undatedCommentAttempt)
 	}
 	if err := s.replyBlocksAtTheCut(ctx, cut, blocks, at); err != nil {
 		return err
+	}
+	if len(anchored) > 0 {
+		undated, err := s.idsReadAtTheCut(ctx, asof.CommentAnchorsOrphanedNotGivenStatement, anchored, cut)
+		if err != nil {
+			return fmt.Errorf("read which comments' anchors no record dates at the cut: %w", err)
+		}
+		for index, comment := range comments {
+			if undated[comment.ID] {
+				leaveOut(ctx, at(index)+"/anchor/orphaned")
+			}
+		}
 	}
 	if len(emptied) == 0 {
 		return nil

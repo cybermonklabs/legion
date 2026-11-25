@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
@@ -21,15 +23,20 @@ var shadowedTables = []string{
 	"ask_followers", "comment_deliveries", "message_deliveries",
 }
 
-// column is one column by its name and its type, as pg_type names it (int4, _text, timestamptz).
-type column struct{ name, kind string }
+// column is one column by its name, its type, as pg_type names it (int4, _text, timestamptz),
+// and its collation, as information_schema names it: empty for a type that has none and for the
+// database's default collation.
+type column struct{ name, kind, collation string }
 
 // A route at a cut runs its present statements, which name each column of a table, select * from
-// it, or scan its columns by position. So each shadow answers every column of its table, by name
-// and type and in the table's order: a column a migration adds later fails here by name until its
-// shadow answers it. Each shadow also runs, bound in front of a statement at a cut of now, over a
-// database with a row in every shadowed table written as the writers write them, and at that cut
-// answers each table's rows.
+// it, or scan its columns by position. So each shadow answers every column of its table, by name,
+// type and collation and in the table's order: a column a migration adds later fails here by name
+// until its shadow answers it, and a text column read from a payload takes the database's default
+// collation where the table names another (issues.rank is "C", so that it orders as its digits'
+// bytes), so a statement that orders or compares it at a cut answers in another order. Each
+// shadow also runs, bound in front of a statement at a cut of now, over a database with a row in
+// every shadowed table written as the writers write them, and at that cut answers each table's
+// rows.
 func TestEveryShadowAnswersEveryColumnOfItsTable(t *testing.T) {
 	w := newWorld(t)
 	ctx := context.Background()
@@ -42,14 +49,7 @@ func TestEveryShadowAnswersEveryColumnOfItsTable(t *testing.T) {
 	cut := mustCut(t, "2026-11-10T00:00:00Z")
 	for _, table := range shadowed {
 		t.Run("columns of "+table, func(t *testing.T) {
-			rows, err := w.database.Pool.Query(ctx, `
-				select column_name, udt_name from information_schema.columns
-				where table_schema = 'public' and table_name = $1 order by ordinal_position`, table)
-			live := scanAll(t, rows, err)
-			var want []column
-			for _, row := range live {
-				want = append(want, column{name: row["column_name"].(string), kind: row["udt_name"].(string)})
-			}
+			want := catalogColumns(t, w.database.Pool, "public", table)
 			if len(want) == 0 {
 				t.Fatalf("information_schema holds no column of public.%s", table)
 			}
@@ -97,48 +97,70 @@ func TestEveryShadowAnswersEveryColumnOfItsTable(t *testing.T) {
 	}
 }
 
-// shadowColumns are the columns the shadow of table answers: the field descriptions of a
-// statement that reads it through the WITH list Shadows writes for it.
+// catalogQuerier is what catalogColumns reads the catalog through: the pool, or the transaction
+// that holds a temporary view.
+type catalogQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// catalogColumns are the columns of the relation schema.relation, as information_schema names
+// them, in their order.
+func catalogColumns(t *testing.T, catalog catalogQuerier, schema, relation string) []column {
+	t.Helper()
+	rows, err := catalog.Query(context.Background(), `
+		select column_name, udt_name, coalesce(collation_name, '') as collation_name from information_schema.columns
+		where table_schema = $1 and table_name = $2 order by ordinal_position`, schema, relation)
+	read := scanAll(t, rows, err)
+	columns := make([]column, len(read))
+	for index, row := range read {
+		columns[index] = column{name: row["column_name"].(string), kind: row["udt_name"].(string), collation: row["collation_name"].(string)}
+	}
+	return columns
+}
+
+// shadowColumns are the columns the shadow of table answers: the columns of a temporary view of a
+// statement that reads it through the WITH list Shadows writes for it. PostgreSQL gives a view's
+// column the type and the collation of its expression, which the catalog names as it names a
+// table's, so the shadow's columns are read as the table's are. The view lives in a transaction
+// that the read rolls back.
 func shadowColumns(t *testing.T, w world, cut asof.Cut, table string) []column {
 	t.Helper()
 	ctx := context.Background()
-	rows, err := w.database.Pool.Query(ctx, "with "+asof.Shadows(cut, table)+"\nselect * from "+table+" limit 0")
+	tx, err := w.database.Pool.Begin(ctx)
 	if err != nil {
+		t.Fatalf("begin the read of the %s shadow: %v", table, err)
+	}
+	defer tx.Rollback(ctx)
+	const view = "shadow_columns"
+	if _, err := tx.Exec(ctx, "create temporary view "+view+" as with "+asof.Shadows(cut, table)+"\nselect * from "+table); err != nil {
 		t.Fatalf("read the %s shadow: %v", table, err)
 	}
-	fields := rows.FieldDescriptions()
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		t.Fatalf("read the %s shadow: %v", table, err)
+	var schema string
+	if err := tx.QueryRow(ctx, `select pg_my_temp_schema()::regnamespace::text`).Scan(&schema); err != nil {
+		t.Fatalf("name the temporary schema: %v", err)
 	}
-	got := make([]column, len(fields))
-	for index, field := range fields {
-		var kind string
-		if err := w.database.Pool.QueryRow(ctx, `select typname from pg_type where oid = $1`, field.DataTypeOID).Scan(&kind); err != nil {
-			t.Fatalf("name the type %d of %s.%s: %v", field.DataTypeOID, table, field.Name, err)
-		}
-		got[index] = column{name: field.Name, kind: kind}
-	}
-	return got
+	return catalogColumns(t, tx, schema, view)
 }
 
-// compareColumns names each way got is not want: a column it lacks, one of another type, one
-// the table does not have, and any other order.
+// compareColumns names each way got is not want: a column it lacks, one of another type or
+// another collation, one the table does not have, and any other order.
 func compareColumns(want, got []column) []string {
 	var problems []string
-	answered := map[string]string{}
+	answered := map[string]column{}
 	for _, column := range got {
-		answered[column.name] = column.kind
+		answered[column.name] = column
 	}
 	stored := map[string]bool{}
 	for _, column := range want {
 		stored[column.name] = true
-		kind, ok := answered[column.name]
+		shadow, ok := answered[column.name]
 		switch {
 		case !ok:
 			problems = append(problems, fmt.Sprintf("no column %s (%s)", column.name, column.kind))
-		case kind != column.kind:
-			problems = append(problems, fmt.Sprintf("column %s is %s, want %s", column.name, kind, column.kind))
+		case shadow.kind != column.kind:
+			problems = append(problems, fmt.Sprintf("column %s is %s, want %s", column.name, shadow.kind, column.kind))
+		case shadow.collation != column.collation:
+			problems = append(problems, fmt.Sprintf("column %s has the collation %q, want %q", column.name, shadow.collation, column.collation))
 		}
 	}
 	for _, column := range got {
@@ -671,7 +693,9 @@ func TestTheIssueShadowTakesTheNewestPayloadBySeqAtTheCut(t *testing.T) {
 // The close stamps the issue's closed_at again as its transaction ends (clock_timestamp(),
 // api/issue_patch.go), after its events took the transaction's start. So at a cut that sees the
 // close the row holds, closed_at is the row's; a close the issue was reopened from since, or one
-// a later close replaced, is the closed_at its own payload carried.
+// a later close replaced, is the closed_at its own payload carried. A closed issue's later rank
+// move appends an issue.updated read back from the row, which carries the second stamp: the
+// same cut answers that stamp before the move is written and after it.
 func TestTheShadowClosedAtIsTheRowsForTheSameClose(t *testing.T) {
 	w := newWorld(t)
 	made := when(t, "2026-11-10T09:00:00Z")
@@ -711,6 +735,44 @@ func TestTheShadowClosedAtIsTheRowsForTheSameClose(t *testing.T) {
 	history("ASOF-2", 2, true, true)
 	history("ASOF-3", 3, true, false)
 
+	// ASOF-4 is closed and later moved in rank, which a closed issue takes; ASOF-5 is moved and
+	// then reopened. Each rank move's payload is read back from the row, so it carries the
+	// row's second stamp.
+	laterIssues := map[string]model.Issue{}
+	for number, key := range []string{"ASOF-4", "ASOF-5"} {
+		issue := newIssue(key, "ASOF", number+4, key, made)
+		laterIssues[key] = issue
+		present := issue
+		present.Status, present.ClosedAt, present.Rank = "done", &stamped, "n"
+		if key == "ASOF-5" {
+			present.Status, present.ClosedAt = "todo", nil
+		}
+		w.insertIssue(present)
+		w.issueEvent("issue.created", issue, made)
+		closed := issue
+		closed.Status, closed.ClosedAt = "done", &closedAt
+		w.issueEvent("issue.closed", closed, closedAt)
+	}
+	closedAtTheCut := func(t *testing.T, cut, key string) *time.Time {
+		t.Helper()
+		var got *time.Time
+		if err := w.database.Pool.QueryRow(atCut(t, cut), `select closed_at from issues where key = $1`, key).Scan(&got); err != nil {
+			t.Fatalf("read the issue at the cut: %v", err)
+		}
+		return got
+	}
+	if got := closedAtTheCut(t, "2026-11-10T11:00:00Z", "ASOF-4"); !sameTime(got, &stamped) {
+		t.Errorf("ASOF-4: closed_at = %v at the cut before its rank move is written, want the row's %v", got, stamped)
+	}
+	for _, key := range []string{"ASOF-4", "ASOF-5"} {
+		rankMoved := laterIssues[key]
+		rankMoved.Status, rankMoved.ClosedAt, rankMoved.Rank = "done", &stamped, "n"
+		w.issueEvent("issue.updated", rankMoved, when(t, "2026-11-10T12:00:00Z"))
+	}
+	reopened := laterIssues["ASOF-5"]
+	reopened.Status, reopened.Rank = "todo", "n"
+	w.issueEvent("issue.updated", reopened, when(t, "2026-11-10T12:30:00Z"))
+
 	for _, row := range []struct {
 		cut, key, why string
 		want          *time.Time
@@ -718,19 +780,57 @@ func TestTheShadowClosedAtIsTheRowsForTheSameClose(t *testing.T) {
 		{"2026-11-10T11:00:00Z", "ASOF-1", "the close the row holds", &stamped},
 		{"2026-11-10T11:00:00Z", "ASOF-2", "a close a later close replaced", &closedAt},
 		{"2026-11-10T14:00:00Z", "ASOF-2", "the later close, which the row holds", &stampedAgain},
-		{"2026-11-10T11:00:00Z", "ASOF-3", "a close the issue was reopened from", &closedAt},
+		{"2026-11-10T11:00:00Z", "ASOF-3", "a close the issue was reopened from: the payload's stamp", &closedAt},
 		{"2026-11-10T12:30:00Z", "ASOF-3", "the reopen", nil},
 		{"2026-11-10T09:30:00Z", "ASOF-1", "before the close", nil},
+		{"2026-11-10T11:00:00Z", "ASOF-4", "a close a later rank move read back: the row's second stamp", &stamped},
+		{"2026-11-10T12:15:00Z", "ASOF-4", "the rank move, which carries the second stamp", &stamped},
+		{"2026-11-10T11:00:00Z", "ASOF-5", "a close whose first later write is a rank move, then reopened", &stamped},
+		{"2026-11-10T12:15:00Z", "ASOF-5", "the rank move of a close later reopened", &stamped},
+		{"2026-11-10T12:45:00Z", "ASOF-5", "the reopen", nil},
 	} {
 		t.Run(row.key+" at "+row.cut, func(t *testing.T) {
-			var got *time.Time
-			if err := w.database.Pool.QueryRow(atCut(t, row.cut), `select closed_at from issues where key = $1`, row.key).Scan(&got); err != nil {
-				t.Fatalf("read the issue at the cut: %v", err)
-			}
-			if !sameTime(got, row.want) {
+			if got := closedAtTheCut(t, row.cut, row.key); !sameTime(got, row.want) {
 				t.Errorf("closed_at = %v at the cut, want %v (%s)", got, row.want, row.why)
 			}
 		})
+	}
+}
+
+// issues.rank is text collate "C" (migration 0049): a rank compares its base-62 digits as bytes,
+// 0-9 before A-Z before a-z. The issues shadow reads the rank from the payload, so it names that
+// collation too, and the issue listing's order (issueListOrder, api/issue_queries.go) puts the
+// ranks U, Z and a in the order the present listing does, where the database's default collation
+// would put a first.
+func TestTheIssueListingAtACutOrdersRanksAsThePresentDoes(t *testing.T) {
+	w := newWorld(t)
+	made := when(t, "2026-11-10T09:00:00Z")
+	w.project("ASOF", "carol", made.Add(-time.Hour))
+	for number, rank := range []string{"a", "Z", "U"} {
+		issue := newIssue(fmt.Sprintf("ASOF-%d", number+1), "ASOF", number+1, "Ranked "+rank, made)
+		issue.Rank = rank
+		w.insertIssue(issue)
+		w.issueEvent("issue.created", issue, made)
+	}
+	const listing = `select i.key from issues i order by i.rank asc, i.created_at asc, i.key asc`
+	read := func(ctx context.Context) []string {
+		t.Helper()
+		rows, err := w.database.Pool.Query(ctx, listing)
+		if err != nil {
+			t.Fatalf("list the issues: %v", err)
+		}
+		keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("list the issues: %v", err)
+		}
+		return keys
+	}
+	want := []string{"ASOF-3", "ASOF-2", "ASOF-1"}
+	if present := read(context.Background()); !slices.Equal(present, want) {
+		t.Fatalf("the present listing orders the ranks U, Z, a as %v, want %v", present, want)
+	}
+	if got := read(atCut(t, "2026-11-10T10:00:00Z")); !slices.Equal(got, want) {
+		t.Errorf("the listing at a cut orders the ranks U, Z, a as %v, want %v, the present order", got, want)
 	}
 }
 

@@ -132,6 +132,21 @@ func TestTheShadowsUseTheirIndexes(t *testing.T) {
 			arguments: []any{[]string{"comment-7", "message-7", "ask-7"}, cut.Time()},
 			index:     "events_ask_state",
 		},
+		{
+			// Which asks changed after the cut, and which hold a wording no record gives at it
+			// (api's leaveOutPastAskFields): each ask's events through the index of its types.
+			name:      "the asks changed after the cut, read alone",
+			statement: asof.AsksChangedAfterStatement,
+			arguments: []any{[]string{"ask-7"}, cut.Time()},
+			index:     "events_ask_state",
+		},
+		{
+			// Which comments' anchors no record dates at the cut (api's commentsAtTheCut).
+			name:      "the comment anchors orphaned with no event",
+			statement: asof.CommentAnchorsOrphanedNotGivenStatement,
+			arguments: []any{[]string{"00000000-0000-4000-8000-000000000007"}, cut.Time()},
+			index:     "events_comment_state",
+		},
 	} {
 		t.Run(read.name, func(t *testing.T) {
 			bound, err := asof.Bind(read.statement, cut)

@@ -365,8 +365,9 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 // the mark its anchor names is no longer in the document (docs.ErrAnchorOrphaned). The anchor
 // keeps everything else it carries, so the comment still reads as the one made on that quote,
 // and the write is queued on the caller's own ledger, which both callers of this then end their
-// own way: the accept and the reject arms of commentAction commit the orphaning and answer 409,
-// where deleteComment carries on and deletes the comment.
+// own way: the accept and the reject arms of commentAction commit the orphaning, with the event
+// that dates it (queueOrphanedAnchorEvent), and answer 409, where deleteComment carries on and
+// deletes the comment, whose comment.deleted carries the orphaned anchor.
 //
 // Only the orphaned key is written, the one key this refusal decides: writing the whole anchor
 // would write back every other key of the column as this transaction read it, which is not what
@@ -378,6 +379,27 @@ func recordOrphanedCommentAnchor(ledger *docs.Ledger, comment *model.Comment) er
 	return queueExec(ledger, `
 		update comments set anchor = jsonb_set(anchor, '{orphaned}', to_jsonb(true)) where id = $1
 	`, comment.ID)
+}
+
+// queueOrphanedAnchorEvent queues on ledger the comment.anchor_refreshed that dates the orphaning
+// of comment's anchor, which an accept or a reject records when it finds the mark gone
+// (recordOrphanedCommentAnchor). It is the event an anchor refresh appends for a comment whose
+// mark it finds gone (commentAnchorRefreshEvent): the comment's row as the orphaning leaves it,
+// with its mention and delivery rows, and its anchor document's name, project key and slug. A
+// read at a cut takes the anchor of the comment's newest event at the cut, so without this event
+// a read at a cut after the orphaning and before the comment's next event gave the anchor as not
+// orphaned (asof.CommentAnchorsOrphanedNotGivenStatement). The route publishes the event after
+// its commit.
+func (s *server) queueOrphanedAnchorEvent(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, comment model.Comment, actor model.Actor) (*model.Event, error) {
+	build, err := s.commentAnchorRefreshEvent(ctx, tx, comment, actor, true)
+	if err != nil {
+		return nil, err
+	}
+	event, err := build(*comment.Anchor)
+	if err != nil {
+		return nil, err
+	}
+	return s.queueEvent(ledger, event)
 }
 
 func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action string) {
@@ -494,13 +516,26 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 					s.writeHandlerError(w, markErr)
 					return
 				}
+				// An anchor already orphaned changes nothing, and appends no event, as a refresh
+				// that changes nothing appends none.
+				changed := !comment.Anchor.Orphaned
 				if err := recordOrphanedCommentAnchor(ledger, &comment); err != nil {
 					s.writeHandlerError(w, err)
 					return
 				}
+				var orphaned *model.Event
+				if changed {
+					if orphaned, err = s.queueOrphanedAnchorEvent(r.Context(), tx, ledger, comment, actor); err != nil {
+						s.writeHandlerError(w, err)
+						return
+					}
+				}
 				if err := ledger.Commit(r.Context()); err != nil {
 					s.writeHandlerError(w, err)
 					return
+				}
+				if orphaned != nil {
+					s.publish(r.Context(), *orphaned)
 				}
 				s.writeHandlerError(w, markErr)
 				return

@@ -59,6 +59,21 @@ func issueStateAt(issue, cut string) string {
 			limit 1`
 }
 
+// issueStateAfter is the first whole-issue event of the issue aliased issue after the cut, by
+// seq: its seq and its payload, no row when there is none. As in issueStateAt, the seq is found
+// from events_issue_state alone, which includes created_at, and only the one event that holds it
+// is read from the table.
+func issueStateAfter(issue, cut string) string {
+	return `select e.seq, e.payload from public.events e
+			where e.issue_key = ` + issue + `.key and e.type in ` + issueStateList + `
+				and e.seq = (
+					select sx.seq from public.events sx
+					where sx.issue_key = ` + issue + `.key and sx.type in ` + issueStateList + `
+						and sx.created_at > ` + cut + `
+					order by sx.seq limit 1)
+			limit 1`
+}
+
 // issueClaimAt is the claim of the issue aliased issue at the cut, its newest state at the cut
 // being state: the claim of whichever is newer by seq, that state's payload or the issue's newest
 // issue.claimed or issue.released at the cut, which carries the claim alone; SQL null for no
@@ -106,10 +121,22 @@ func issueActivityAt(aggregate, cut string) string {
 //     and the planner, which takes an issue to hold a few events at an early cut, then read the
 //     state of a busy issue from it and sorted its events.
 //
-//   - closed_at: the row's when the row's close is the close the cut sees, since the close stamps
-//     the row again at its end (clock_timestamp(), api/issue_patch.go) after its events took the
-//     transaction's start; else the payload's. It is the same close when no whole-issue event
-//     after the cut carries another closed_at: a reopen carries null and a new close a new time.
+//   - closed_at: null where the newest payload at the cut carries none. Else the close the cut
+//     sees stamped the row again at its end (clock_timestamp(), api/issue_patch.go), after its
+//     events took the transaction's start, so its payload holds the first stamp and the row the
+//     second. A closed issue takes no other close before a reopen, and every write of it appends
+//     a whole-issue event read back from the row. So the first whole-issue event after the cut
+//     decides (issueStateAfter): with none, the row's closed_at, the same close's second stamp;
+//     one that carries a closed_at read the row after that stamp, so it carries the second stamp
+//     of the same close; one that carries none is a reopen, which nulled the row's stamp, and no
+//     record keeps the second stamp of a close that was undone, so the closed_at is the payload's.
+//     A rule that compared every later payload with the first stamp read a later rank move as
+//     another close, and the same cut then answered the second stamp before the move and the
+//     first one after it.
+//
+//   - rank: the payload's, in the column's collation "C" (migration 0049): rank compares its
+//     base-62 digits as bytes, and a text read from a payload takes the database's default
+//     collation, which orders the ranks U, Z and a as a, U, Z.
 //
 //   - search and title_lexemes: what the issues_search trigger computes, from the title at the
 //     cut and the primary document's newest version at the cut (issue_search_vector, title_lexemes),
@@ -136,20 +163,16 @@ func issuesShadow(cut string) string {
 			(s.payload->>'updated_at')::timestamptz) as updated_at,
 		case
 			when s.payload->>'closed_at' is null then null
-			when i.closed_at is not null and not exists (
-				select from public.events later
-				where later.issue_key = i.key and later.type in ` + issueStateList + `
-					and later.created_at > ` + cut + `
-					and later.payload->>'closed_at' is distinct from s.payload->>'closed_at')
-			then i.closed_at
-			else (s.payload->>'closed_at')::timestamptz
+			else coalesce((
+				select coalesce(n.payload->>'closed_at', s.payload->>'closed_at')::timestamptz
+				from (` + issueStateAfter("i", cut) + `) n), i.closed_at, (s.payload->>'closed_at')::timestamptz)
 		end as closed_at,
 		greatest(s.seq, ` + issueActivityAt("max(e.seq)", cut) + `) as last_seq,
 		public.issue_search_vector(i.key, ` + title + `, (
 			select v.markdown from public.artifacts a join public.artifact_versions v on v.artifact_id = a.id
 			where a.issue_key = i.key and a.is_primary and v.created_at <= ` + cut + `
 			order by v.number desc limit 1)) as search,
-		coalesce(s.payload->>'rank', '') as rank,
+		(coalesce(s.payload->>'rank', '') collate "C") as rank,
 		(s.payload->>'priority')::smallint as priority,
 		s.payload->>'assignee' as assignee,
 		` + issueClaimAt("i", "s", cut) + `->'actor' as claimed_by,

@@ -41,6 +41,12 @@ const (
 		"and only where no other block of that version has the same text. It gives no id of a table row or a table cell."
 	// E, for a check of the Verification document.
 	reasonUnindexedVersion = "No event records this field for a version that document_indexed_versions does not hold."
+	// E, for whether the mark of a comment's anchor was gone.
+	reasonAnchorOrphaned = "No record gives the time at which the mark of this anchor went out of the document. " +
+		"Only an anchor refresh event gives that time."
+	// E, for the wording of an ask.
+	reasonAskWording = "The restore of a decided ask's wording changes this field with no event. " +
+		"No record gives the time of the restore, so no record gives the wording at the cut."
 	// P
 	reasonParts = "Dispatch gives part ids and revisions only for an item that did not change after the cut."
 	// D
@@ -62,18 +68,19 @@ const (
 // past-time answer of the route can leave out. It holds the plan's list "Absent fields, by
 // route", and beside it the members that the list does not name for a field the records at the
 // cut do not give (decision 5): the delivery mode and the session of a delivery attempt and the
-// text of the block that a reply names (commentFields, messageFields), the route's status reason
-// of an ask's reach (routeReachFields), each reply of an ask's thread (commentFields), the
-// documents of an approval request in the inbox (askFields), the place of an anchored block, and
-// of the blocks that the text route gives, the anchored counts and the ids of a table's rows and
-// cells, which the block routes leave out too (blockFields). The list's snippet tree of a search
-// result is not here: a past-time search draws each snippet tree from the headline of the text at
-// the cut, so it never leaves one out. A route that the plan lists with no field has an empty
-// list. A past-time answer names a member in the Dispatch-As-Of-Absent header only when it leaves
-// that member out, and it names only members this table holds for its route (WriteHeaders, which
-// tests check with ValidAbsent).
+// text of the block that a reply names (commentFields, messageFields), whether the mark of a
+// comment's anchor was gone (commentFields), the wording of an ask that a restore changed with no
+// event (askFields), the route's status reason of an ask's reach (routeReachFields), each reply of
+// an ask's thread (commentFields), the documents of an approval request in the inbox (askFields),
+// the place of an anchored block, and of the blocks that the text route gives, the anchored counts
+// and the ids of a table's rows and cells, which the block routes leave out too (blockFields). The
+// list's snippet tree of a search result is not here: a past-time search draws each snippet tree
+// from the headline of the text at the cut, so it never leaves one out. A route that the plan
+// lists with no field has an empty list. A past-time answer names a member in the
+// Dispatch-As-Of-Absent header only when it leaves that member out, and it names only members
+// this table holds for its route (WriteHeaders, which tests check with ValidAbsent).
 var AbsentFields = map[string][]AbsentField{
-	"GET /api/v1/issues/{key}": {
+	"GET /api/v1/issues/{key}": slices.Concat([]AbsentField{
 		{"/route_status", reasonLiveness},
 		{"/route_holder", reasonLiveness},
 		{"/route_status_reason", reasonLiveness},
@@ -91,7 +98,7 @@ var AbsentFields = map[string][]AbsentField{
 		{"/open_asks/*/waiting_on_person", reasonProjectDefault},
 		{"/open_asks/*/approval/documents", reasonMigrationFill},
 		{"/artifacts/*/approval/documents", reasonMigrationFill},
-	},
+	}, askWordingFields("/open_asks/*")),
 	// An unpaged listing is an array of issues; a paged one holds them under issues.
 	"GET /api/v1/issues":         slices.Concat(issueListingFields("/*"), issueListingFields("/issues/*")),
 	"GET /api/v1/issues/resolve": {},
@@ -194,11 +201,13 @@ var (
 
 // commentFields are the fields of a comment at prefix: of a comment route's comment, and of each
 // reply of an ask's thread. Not in the plan's list: the text of the block that the reply names,
-// which an item changed after the cut rewrote as it rewrote whether the block is removed; and the
+// which an item changed after the cut rewrote as it rewrote whether the block is removed; the
 // delivery mode and the session of an attempt, which a send resolves with no event, so for an
-// attempt that no event at the cut dates they are absent too (decision 5).
+// attempt that no event at the cut dates they are absent too (decision 5); and whether the mark
+// of the comment's anchor was gone, where a write with no event that dates it orphaned the anchor
+// (CommentAnchorsOrphanedNotGivenStatement).
 func commentFields(prefix string) []AbsentField {
-	return postFields(prefix, undatedCommentAttempt)
+	return append(postFields(prefix, undatedCommentAttempt), AbsentField{prefix + "/anchor/orphaned", reasonAnchorOrphaned})
 }
 
 // messageFields are the fields of an issue message at prefix, with the block that the reply names
@@ -223,13 +232,25 @@ func postFields(prefix string, attempt []string) []AbsentField {
 
 // askFields are the fields of an ask at prefix.
 func askFields(prefix string) []AbsentField {
-	return []AbsentField{
+	return append([]AbsentField{
 		{prefix + "/referenced_by_count", reasonGraph},
 		{prefix + "/revision", reasonParts},
 		{prefix + "/options/*/id", reasonParts},
 		{prefix + "/answer/id", reasonParts},
 		{prefix + "/waiting_on_person", reasonProjectDefault},
 		{prefix + "/approval/documents", reasonMigrationFill},
+	}, askWordingFields(prefix)...)
+}
+
+// askWordingFields are the wording of an ask at prefix, which is unknown at a cut where a write
+// with no event changed it at a time that no record gives (AsksChangedAfterStatement). Not in the
+// plan's list.
+func askWordingFields(prefix string) []AbsentField {
+	return []AbsentField{
+		{prefix + "/question", reasonAskWording},
+		{prefix + "/options", reasonAskWording},
+		{prefix + "/multiple", reasonAskWording},
+		{prefix + "/urgency", reasonAskWording},
 	}
 }
 

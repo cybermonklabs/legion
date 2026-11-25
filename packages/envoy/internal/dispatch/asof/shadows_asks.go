@@ -17,18 +17,106 @@ var askStateTypes = []string{
 // compares created_at with the cut, as asksShadow and AsksChangedAfterStatement do.
 func AskStateTypes() []string { return slices.Clone(askStateTypes) }
 
-// AsksChangedAfterStatement reads which asks changed after a cut: of the asks whose ids $1 holds
-// (text[]), the id of each one that has an event of its state (AskStateTypes) later than the cut
-// $2 (timestamptz). It names public.events, the events as they are now, by its schema, so that
-// the store's binding at a cut does not read the events shadow in its place (Bind). An ask that
-// no such event changed has the same parts at the cut as now, so a past-time answer gives its
+// AsksChangedAfterStatement reads which asks changed after a cut, and which of them hold a
+// wording at the cut that no record gives. Of the asks whose ids $1 holds (text[]), it answers
+// the id of each ask that changed after the cut $2 (timestamptz), and beside it whether the ask's
+// wording at the cut is unknown (wording_unknown). An ask changed after the cut where an event of
+// its state (AskStateTypes) is later than the cut, or where its wording at the cut is unknown: a
+// write with no event changed that wording, and that write can be later than the cut. An ask
+// that did not change has the same parts at the cut as now, so a past-time answer gives its
 // revision and its part ids from the present tables, and leaves them out for every other ask
-// (reason P). The partial index events_ask_state serves the read.
-var AsksChangedAfterStatement = `select a.id from unnest($1::text[]) as a(id)
-	where exists (
-		select from public.events e
+// (reason P).
+//
+// The wording is the question, the options, multiple and the urgency. The restore of a decided
+// ask's wording (docs' decidedWordingRestore, at boot and at a document's settlement) writes them
+// back to the wording before the ask's first edit after its decision, and no event carries the
+// change. So at each cut after the restore and before the ask's next event, the asks shadow gives
+// the wording that the restore undid. Let w be the wording of the ask's newest state event at the
+// cut, which the shadow gives. The wording just after the cut, by the record, is:
+//   - that of n, the ask's first state event after the cut, when n is an ask.edited whose
+//     previous wording records a question: the previous wording, where each of options, multiple
+//     and urgency that it does not record counts as w's;
+//   - that of any other n, its own: no other state event changes the wording;
+//   - with no n, that of the present row.
+//
+// Where that wording is not w, a write with no event changed the wording after w's event, at a
+// time the records do not give. The wording at the cut is then unknown, and the answer leaves out
+// the four members (reason E), and the parts too, since the present parts are those of another
+// wording. The options are compared with no part id: a payload's options carry each option's part
+// id, and the row's options and an edit's previous options do not.
+//
+// It names public.events and public.asks by their schema, so that the store's binding at a cut
+// does not read a shadow in their place (Bind). The partial index events_ask_state serves each
+// read of an ask's events, and asks_pkey the read of its row. An id that is no uuid names no row.
+var AsksChangedAfterStatement = `select x.id, x.wording_unknown from (
+	select a.id, n.type as later,
+		case
+			when s.payload is null then false
+			when n.type is null then r.id is not null and ` + askWordingDiffers(askWordingAt, askWordingOfTheRow) + `
+			when n.type = 'ask.edited' and n.payload->'previous' ? 'question' then ` + askWordingDiffers(askWordingAt, askWordingBeforeTheEdit) + `
+			else ` + askWordingDiffers(askWordingAt, askWordingOf(`n.payload`)) + `
+		end as wording_unknown
+	from unnest($1::text[]) as a(id)
+	left join lateral (
+		select e.payload from public.events e
 		where e.payload->>'id' = a.id and e.type in ` + askStateList + `
-			and e.created_at > $2::timestamptz)`
+			and e.created_at <= $2::timestamptz
+		order by e.id desc limit 1
+	) s on true
+	left join lateral (
+		select e.type, e.payload from public.events e
+		where e.payload->>'id' = a.id and e.type in ` + askStateList + `
+			and e.created_at > $2::timestamptz
+		order by e.id limit 1
+	) n on true
+	left join public.asks r on n.type is null and s.payload is not null
+		and r.id = (case when pg_input_is_valid(a.id, 'uuid') then a.id::uuid end)
+) x
+where x.later is not null or x.wording_unknown`
+
+// askWording is the wording of an ask as four SQL expressions: its question, its options (a JSON
+// array), whether it takes several options, and its urgency.
+type askWording [4]string
+
+// askWordingOf is the wording that the JSON object payload holds, as the asks shadow gives it:
+// each key that a payload of an older shape lacks reads as the column's default.
+func askWordingOf(payload string) askWording {
+	return askWording{
+		`coalesce(` + payload + `->>'question', '')`,
+		jsonArray(payload + `->'options'`),
+		`coalesce((` + payload + `->>'multiple')::boolean, false)`,
+		`coalesce(` + payload + `->>'urgency', 'med')`,
+	}
+}
+
+// The wordings that AsksChangedAfterStatement compares: the ask's at the cut, of its newest state
+// event at the cut (s), which the asks shadow gives too; its row's (r); and the previous wording
+// of its first edit after the cut (n), where each part that the edit does not record is the
+// wording at the cut's.
+var (
+	askWordingAt            = askWordingOf(`s.payload`)
+	askWordingOfTheRow      = askWording{`r.question`, `r.options`, `r.multiple`, `r.urgency`}
+	askWordingBeforeTheEdit = askWording{
+		`(n.payload->'previous'->>'question')`,
+		`(case when jsonb_typeof(n.payload->'previous'->'options') = 'array' then n.payload->'previous'->'options' else ` + askWordingAt[1] + ` end)`,
+		`coalesce((n.payload->'previous'->>'multiple')::boolean, ` + askWordingAt[2] + `)`,
+		`coalesce(n.payload->'previous'->>'urgency', ` + askWordingAt[3] + `)`,
+	}
+)
+
+// askWordingDiffers is the SQL test that wording a is not wording b, the options of each read
+// with no part id (optionsWithoutIDs).
+func askWordingDiffers(a, b askWording) string {
+	return `((` + a[0] + `, ` + optionsWithoutIDs(a[1]) + `, ` + a[2] + `, ` + a[3] + `) is distinct from (` +
+		b[0] + `, ` + optionsWithoutIDs(b[1]) + `, ` + b[2] + `, ` + b[3] + `))`
+}
+
+// optionsWithoutIDs is the JSON array of options options with no id in any option, in their
+// order.
+func optionsWithoutIDs(options string) string {
+	return `(select coalesce(jsonb_agg(o.value - 'id' order by o.ordinality), '[]'::jsonb)
+		from jsonb_array_elements(` + options + `) with ordinality o)`
+}
 
 // commentCreatedTypes are the events that create a comment: comment.created, and comment.answered,
 // which a delivery callback's reply is created with (api/comment_delivery.go).
@@ -61,16 +149,15 @@ var (
 //     documents, which migration 20261102110100 filled in the row with no event: the field is
 //     absent at such a cut (reason B).
 func asksShadow(cut string) string {
-	question := `coalesce(s.payload->>'question', '')`
-	options := jsonArray(`s.payload->'options'`)
+	question, options := askWordingAt[0], askWordingAt[1]
 	answer := jsonValue(`s.payload->'answer'`)
 	return `select a.id as id,
 		a.issue_key as issue_key,
 		a.author as author,
 		` + question + ` as question,
 		` + options + ` as options,
-		coalesce((s.payload->>'multiple')::boolean, false) as multiple,
-		coalesce(s.payload->>'urgency', 'med') as urgency,
+		` + askWordingAt[2] + ` as multiple,
+		` + askWordingAt[3] + ` as urgency,
 		` + jsonValue(`s.payload->'anchor'`) + ` as anchor,
 		coalesce(s.payload->>'state', 'open') as state,
 		` + answer + ` as answer,

@@ -14,6 +14,37 @@ import (
 // of each reply of an ask's thread what commentsAtTheCut names. A request at no cut leaves out
 // nothing.
 
+// asksChangedAfterTheCut reads, of the asks ids names, the ids of the asks that changed after cut
+// and the ids of those of them whose wording at cut no record gives (asof.AsksChangedAfterStatement).
+func (s *server) asksChangedAfterTheCut(ctx context.Context, ids []string, cut asof.Cut) (changed, wordingUnknown map[string]bool, err error) {
+	rows, err := s.deps.Store.Pool.Query(ctx, asof.AsksChangedAfterStatement, ids, cut.Time())
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	changed, wordingUnknown = map[string]bool{}, map[string]bool{}
+	for rows.Next() {
+		var id string
+		var unknown bool
+		if err := rows.Scan(&id, &unknown); err != nil {
+			return nil, nil, err
+		}
+		changed[id] = true
+		if unknown {
+			wordingUnknown[id] = true
+		}
+	}
+	return changed, wordingUnknown, rows.Err()
+}
+
+// leaveOutAskWording names the wording of the ask at place, which no record gives at the cut
+// where a write with no event changed it at a time no record gives (reason E,
+// asof.AsksChangedAfterStatement): its question, its options, whether it takes several, and its
+// urgency.
+func leaveOutAskWording(ctx context.Context, place string) {
+	leaveOut(ctx, place+"/question", place+"/options", place+"/multiple", place+"/urgency")
+}
+
 // leaveOutRouteReach names, for an item whose route is route, the route's status, its holder and
 // the reason for its status at place (an issue's, the ask read's own place, or a thread's): the
 // roster that gives them now keeps no past state. An item with no route holds none of them at any

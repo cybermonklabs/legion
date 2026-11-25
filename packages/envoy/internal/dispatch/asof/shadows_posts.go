@@ -69,18 +69,72 @@ var CommentBodiesNotGivenStatement = `select c.id::text from public.comments c
 				and f.created_at > $2::timestamptz
 			order by f.id limit 1) < ` + postHistoryBegan
 
+// CommentAnchorsOrphanedNotGivenStatement reads, of the comments whose ids $1 holds (uuid[]), the
+// id of each comment whose anchor at the cut $2 (timestamptz) the comments shadow gives as not
+// orphaned, and whose orphaned flag at the cut no record gives (reason E). The shadow gives the
+// anchor of the comment's newest state event at the cut. An anchor refresh that finds the mark
+// gone writes orphaned true and appends comment.anchor_refreshed, which carries the comment, in
+// its own transaction, and a refresh that changes nothing appends no event. Two writes set the
+// flag true with no event that dates the change: an accept or a reject of a suggestion that found
+// its mark gone, before such a 409 appended a comment.anchor_refreshed of its own (api's
+// recordOrphanedCommentAnchor), and the delete of a suggestion that finds its mark gone, whose
+// comment.deleted carries the flag as true whether the delete set it or a 409 before it did. No
+// write sets the flag false with no event.
+//
+// So the flag just before n, the comment's first state event after the cut, is, by the record:
+//   - with no n, the present row's flag;
+//   - where n is a comment.anchor_refreshed that orphans the anchor, false;
+//   - where n is a comment.anchor_refreshed that leaves the anchor not orphaned with the quote it
+//     had at the cut, true: that refresh changed the flag alone, so it found the mark again;
+//   - where n is any other event, n's own flag: it carries the comment as its write read the row.
+//
+// Where that flag is true, the anchor was orphaned at a time between the newest event at the cut
+// and n that the records do not give, and the answer leaves the flag out. Only a
+// comment.anchor_refreshed dates an orphaning. This costs the deletes that set the flag
+// themselves: at each cut before such a delete the flag is left out, though it was false. A rule
+// that took the delete to date the orphaning would give false at each cut between an old 409 and
+// the delete that followed it, where every read then gave true; a member left out is honest, and
+// false would be wrong. A refresh that found the mark again and also moved its quote reads as a
+// move of the quote alone, so the flag at a cut between an orphaning with no event and such a
+// refresh reads false.
+//
+// The statement names each table by its schema, so the store's binding at a cut does not read a
+// shadow in its place (Bind). It reads each comment's events through events_comment_state.
+var CommentAnchorsOrphanedNotGivenStatement = `select c.id::text from public.comments c
+	cross join lateral (
+		select e.payload->'anchor' as anchor from public.events e
+		where e.payload->>'id' = c.id::text and e.type in ` + commentStateList + `
+			and e.created_at <= $2::timestamptz
+		order by e.id desc limit 1
+	) s
+	left join lateral (
+		select e.type, e.payload->'anchor' as anchor from public.events e
+		where e.payload->>'id' = c.id::text and e.type in ` + commentStateList + `
+			and e.created_at > $2::timestamptz
+		order by e.id limit 1
+	) n on true
+	where c.id = any($1::uuid[])
+		and jsonb_typeof(s.anchor) = 'object' and not coalesce((s.anchor->>'orphaned')::boolean, false)
+		and case
+			when n.type is null then coalesce((c.anchor->>'orphaned')::boolean, false)
+			when n.type = 'comment.anchor_refreshed' then not coalesce((n.anchor->>'orphaned')::boolean, false)
+				and n.anchor->>'quote' is not distinct from s.anchor->>'quote'
+			else coalesce((n.anchor->>'orphaned')::boolean, false)
+		end`
+
 // ItemsChangedAfterStatement reads, of the items whose ids $1 holds (text[]), the id of each item
 // that changed after the cut $2 (timestamptz): a comment or a message with an edit or a delete
-// after the cut, or an ask with an event of its state after the cut (AskStateTypes). Only a change
-// of its item rewrites an item's blocks (refs.PlanItemIndex, refs.PlanAskParts), so the present
-// rows of comment_blocks, message_blocks and ask_blocks give a block's text, and whether it is
-// removed, as they stood at the cut for an item that did not change after it. The block index
-// keeps no earlier state with its time, so for an item that changed, the answer leaves both out.
-// The statement names public.events by its schema, so the store's binding at a cut does not
-// read the events shadow in its place (Bind). It reads each kind of item through the partial
-// index of its types (events_comment_state, events_message_state, events_ask_state), one part of
-// a union each: one list of the types of every kind implies no index's predicate. The union
-// answers each id once.
+// after the cut, or an ask that AsksChangedAfterStatement answers, which is one with an event of
+// its state after the cut or one whose wording at the cut no record gives. Only a change of its
+// item rewrites an item's blocks (refs.PlanItemIndex, refs.PlanAskParts; the restore of a decided
+// ask's wording indexes its parts again), so the present rows of comment_blocks, message_blocks
+// and ask_blocks give a block's text, and whether it is removed, as they stood at the cut for an
+// item that did not change after it. The block index keeps no earlier state with its time, so for
+// an item that changed, the answer leaves both out. The statement names public.events and
+// public.asks by their schema, so the store's binding at a cut does not read a shadow in their
+// place (Bind). It reads each kind of item through the partial index of its types
+// (events_comment_state, events_message_state, events_ask_state), one part of a union each: one
+// list of the types of every kind implies no index's predicate. The union answers each id once.
 var ItemsChangedAfterStatement = `select e.payload->>'id' from public.events e
 	where e.payload->>'id' = any($1::text[]) and e.type in ` + commentRewriteList + `
 		and e.created_at > $2::timestamptz
@@ -89,7 +143,7 @@ var ItemsChangedAfterStatement = `select e.payload->>'id' from public.events e
 	where e.payload->>'id' = any($1::text[]) and e.type in ` + messageRewriteList + `
 		and e.created_at > $2::timestamptz
 	union
-	` + AsksChangedAfterStatement
+	select changed.id from (` + AsksChangedAfterStatement + `) changed`
 
 // CommentHistoryRowsAtCut and MessageHistoryRowsAtCut are SQL expressions for the history read of
 // one post at a cut (decision 17). Each is the number of post_body_history rows that the post had

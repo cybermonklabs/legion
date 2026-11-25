@@ -53,7 +53,8 @@ type pageAsk struct {
 //     history (reason G). A read at a cut reads no count (queueAskDetails);
 //   - of each event of an ask that changed after the cut, the revision of its parts, the id of
 //     each option and the id of the answer, which the present ask_blocks give (reason P,
-//     asof.AsksChangedAfterStatement);
+//     asof.AsksChangedAfterStatement). An ask whose wording at the cut no record gives counts as
+//     changed. An event's own wording is the payload its write stored, so the answer gives it;
 //   - of each event of a comment or a message that its author deleted after the cut, the body,
 //     which attachPostMarks took out with the present delete of the post (reason T, decision 14).
 //     An event of a post deleted at or before the cut gave no body at the cut either, so nothing
@@ -109,7 +110,7 @@ func (s *server) eventPageAtTheCut(ctx context.Context, events []model.Event) er
 	}
 	// A page can hold many events of one ask; the statement reads each ask once.
 	slices.Sort(ids)
-	changed, err := s.idsReadAtTheCut(ctx, asof.AsksChangedAfterStatement, slices.Compact(ids), cut)
+	changed, _, err := s.asksChangedAfterTheCut(ctx, slices.Compact(ids), cut)
 	if err != nil {
 		return fmt.Errorf("read which asks of an event page changed after the cut: %w", err)
 	}
