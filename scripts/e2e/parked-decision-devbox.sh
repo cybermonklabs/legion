@@ -402,11 +402,24 @@ controller_session_file() {
   done
   return 1
 }
-start_message='Legion controller start: follow skill://legion-controller'
-# started_itself FILE: the file's first user message is the controller's start message, and an
-# assistant message follows (stage4b-sandbox-tree.sh's controller_started_itself, on one file).
+# started_itself WINDOW FILE: the file's first user message is the start message the Oh My Pi that
+# WINDOW's `legion controller start` launched holds as LEGION_CONTROLLER_START_MESSAGE in its
+# environment, read from the process itself, and an assistant message follows
+# (stage4b-sandbox-tree.sh's controller_started_itself, on one file). The proof types nothing into
+# the pane, so that message is the one the controller sent itself.
 started_itself() {
-  grep -m1 '"role":"user"' "$1" | grep -qF "$start_message" && grep -q '"role":"assistant"' "$1"
+  local cli omp entry first want=''
+  local -a environ
+  cli=$(recorded_pid "$evidence/logs/$1.pid" "$work/legion") || return 1
+  omp=$(launched "$cli" "$omp_exe") || return 1
+  process_environ "$omp" environ || return 1
+  for entry in "${environ[@]}"; do
+    [ "${entry%%=*}" != LEGION_CONTROLLER_START_MESSAGE ] || want=${entry#*=}
+  done
+  [ -n "$want" ] || return 1
+  first=$(jq -rn 'first(inputs | select(.type == "message" and .message.role == "user") | .message.content
+    | if type == "string" then . else map(select(.type == "text") | .text) | join("") end) // empty' "$2" 2>/dev/null) || return 1
+  [[ $first == *"$want"* ]] && grep -q '"role":"assistant"' "$2"
 }
 # controller_delivered FILE NEEDLE: an Envoy delivery line of FILE holds NEEDLE.
 controller_delivered() { [ "$(controller_deliveries "$1" "$2")" -ge 1 ]; }
@@ -746,7 +759,10 @@ dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "Parked d
 dispatch_human PUT "projects/$project/default-repository" "$(jq -cn --arg repo "$repo" '{repo:$repo}')" >/dev/null
 (cd "$root" && bun install --frozen-lockfile >/dev/null)
 pin=$(<"$root/.omp-pin")
+# The program the controller's Oh My Pi runs: what controller.yaml's omp_invocation, `mise x $pin --
+# omp`, execs, as the kernel records it (launched, lib/process-tree.sh).
 mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
+omp_exe=$(native_program "$(mise where "$pin")/bin/omp") || fail "the pinned Oh My Pi $pin: $omp_exe"
 envoy_manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-envoy --profile "$profile" --home "$omp_home" --dest "$work/pi-envoy" --omp "$pin")
 manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile "$profile" --home "$omp_home" --dest "$work/pi-legion" --omp "$pin")
 cat >"$work/instructions.md" <<'EOF'
@@ -818,7 +834,7 @@ until_true 60 "$session1_file to hold its session header" session_header "$sessi
 session_field=$(session_header "$session1_file" | jq -er --arg s "$session1" 'first(to_entries[] | select(.value == $s) | .key)') ||
   fail "the session header of $session1_file names no field holding $session1: $(session_header "$session1_file")"
 note "session 1's file $session1_file; its header names the session in .$session_field"
-until_true 300 "session 1's first turn to start itself, with nothing typed" started_itself "$session1_file"
+until_true 300 "session 1's first turn to start itself, with nothing typed" started_itself ctl1 "$session1_file"
 note "the first user message is the start message, and an assistant message follows ($(since "$waited"))"
 pass
 done_with controller-up
@@ -1040,7 +1056,7 @@ session2=$(controller_session_id)
 until_true 120 "session 2's file to exist" controller_session_file "$session2"
 session2_file=$(controller_session_file "$session2")
 note "session 2 is $session2, its file $session2_file"
-until_true 300 "session 2's first turn to start itself" started_itself "$session2_file"
+until_true 300 "session 2's first turn to start itself" started_itself ctl2 "$session2_file"
 needle3=$(notice_needle parked-decision "$tree3")
 until_true 900 "session 2 to set $tree3 todo" set_status_after "$session2_file" "$tree3" ""
 ! controller_delivered "$session2_file" "$needle3" || fail "session 2 holds a '$needle3' delivery: the walk, not a notice, must re-admit $tree3"

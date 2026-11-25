@@ -2743,8 +2743,8 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   — a bash call Oh My Pi backgrounds once it outruns its own threshold, since nothing of Legion's turns `bash.autoBackground.enabled` off, so the tester waits on it with the `wait` tool — its claim `working` and the sleep in its pod's process list;
   the proof human commits a different version of the one file the pull request changes to its base branch, and GitHub reports the head `CONFLICTING`.
   The daemon logs `workflow: a confirmed conflict needs no merge yet` for tree 1, and at least two minutes after the commit tree 1 is still in `testing` and the daemon asked no merge forward of it;
-  the implementer holds no task, and its session (kept as `conflict-implementer-session.jsonl`) holds no merge-forward ask;
-  the tester's sleep is still in its process list with the witness file absent, and its session (kept as `conflict-tester-session.jsonl`) holds no hold and no aborted turn, its claim the one it first registered with.
+  the implementer holds no task;
+  the tester's sleep is still in its process list with the witness file absent, and its session (kept as `conflict-tester-session.jsonl`) holds no aborted turn, its claim the one it first registered with.
   A control over a copy of that session with one aborted assistant turn appended must be refused.
   The proof human then tells the implementer to merge the base forward into `legion/<tree 1>` and push, with no handoff and no completion, since the issue stays in `testing`:
   the pull request's head moves off the conflicting head, the witness job runs on and writes the witness file, tree 1 is still in `testing`, and the tester is still on its first session in its first pod, where `tree-reviewed` has it test the new head
@@ -2920,7 +2920,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 - `controller`
 
   `legion controller start` registers with the Sandbox daemon, and the controller's first turn starts itself:
-  its session's first user message is the start message (LEGION_CONTROLLER_START_MESSAGE, cmd/legion/controller.go) that pi-legion's `/legion-controller-start`, the word `legion controller start` puts on Oh My Pi's command line, sends once Oh My Pi's startup is over, that command claiming the controller and sending it once registered, right before the role claim and the live wake subscription a tick could race it on, and the model answers it, with nothing typed into its pane.
+  its session's first user message is the start message, equal to the LEGION_CONTROLLER_START_MESSAGE (cmd/legion/controller.go) read from the environment of the Oh My Pi `legion controller start` launched, which pi-legion's `/legion-controller-start`, the word `legion controller start` puts on Oh My Pi's command line, sends once Oh My Pi's startup is over, that command claiming the controller and sending it once registered, right before the role claim and the live wake subscription a tick could race it on, and the model answers it, with nothing typed into its pane.
   Tree 3's planner is told to plan, and each launch of its implementer is killed once its agent is ready or in a turn with its task outstanding, so every death is charged whatever a relaunch's boot takes;
   the proof's instructions have an implementer run `sleep 300` on its task line (and on a new task after a missed end) before it replies WAITING, so the end lands inside the turn even when the kill takes a minute on a loaded host, where a resumed session's short turn would otherwise end first and the daemon would rightly charge nothing.
   A kill that lands after the task's turn has ended is charged nothing, since the turn's end retired the task:
@@ -2965,7 +2965,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 
   `legion issue status … backlog` from the operator shell moves tree 3, Dispatch shows it, and tree 3's pods are gone.
   With tree 3 out and a slot free, the controller's slot wakes reach it:
-  its Oh My Pi was launched with the daemon's `Design gate steps: none.` line;
+  its Oh My Pi was launched with a system prompt file, the one its `--append-system-prompt` names;
   an unlabelled issue set to `todo` puts `todo on <KEY>` in its session, and the daemon's tick (`controller_wake_interval_seconds: 60`) `tick on LEGSMOKE`;
   a minute later that issue is still unlabelled and unrecorded, since the controller starts no work a person did not hand over (the proof's scope says so too), and it is set `done`;
   tree 3's root issue is claimed by its architect's session, and its events carry the `issue.claimed`
@@ -3280,7 +3280,7 @@ The transcript records the duration of each wait.
 - `controller-up`: The first controller starts.
   `controllerLocator.sessionId` names session 1.
   The profile holds one session file, and its header names that session.
-  Its first user message is the start message, and an assistant message follows.
+  Its first user message is the start message, equal to the LEGION_CONTROLLER_START_MESSAGE in the environment of the Oh My Pi the controller window launched, and an assistant message follows.
 
 - `trees-wait-on-a-person`: The person files trees 1, 2, 4 and 5 and sets each to `todo`.
   Each tree gets to `awaiting_person` with `waitingOn.kind: gate`.
@@ -3340,7 +3340,7 @@ The transcript records the duration of each wait.
   When the tree is phase `done` and its architect is `suspended`, the person answers the question while no controller runs, and the daemon logs the relay.
   The second controller starts.
   The script reads only its session file.
-  Its first user message is the start message.
+  Its first user message is the start message, by the same comparison.
   It holds no notice for tree 3.
   It sets tree 3 to `todo`, and Dispatch records that write as the daemon's.
   Admission takes tree 3, and the task of its architect names the answer.

@@ -771,7 +771,7 @@ stat -c '%n %.9Y' "$pdir"/*.md >"$evidence/prompts-mtime-before.txt"
 cp "$evidence/merger.base.md" "$pdir/merger.md"
 # negative control: the stale part is observably different before the restart
 cmp -s "$pdir/merger.md" "$root/packages/daemon/internal/prompts/go/merger.md" && fail "the planted stale merger.md equals the embedded one"
-note "planted the base ($base_rev) merger.md: $(grep -c 'publish READY yourself' "$pdir/merger.md" || true) line(s) of the retired READY vocabulary, $(wc -c <"$pdir/merger.md") bytes"
+note "planted the base ($base_rev) merger.md: $(wc -c <"$pdir/merger.md") bytes"
 sleep 1.1
 stop_daemon
 start_daemon keep

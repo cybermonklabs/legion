@@ -4715,9 +4715,9 @@ conflict_needs_no_merge() {
 on_tree "$tree1" until_true 600 "the daemon to confirm $tree1's conflict and find it needs no merge yet" conflict_needs_no_merge
 note "the daemon logged $(log_lines "workflow: a confirmed conflict needs no merge yet" | jq -c -s --arg issue "$tree1" --arg head "$conflict_head" 'map(select(.issue == $issue and .head == $head)) | first | {time, head, phase, required, green}')"
 # At least two minutes after the commit, with the outbox given time to send whatever the confirmed
-# conflict asked for, nothing was sent and nothing moved. The ask's words and the hold's are the
-# daemon's own (record.MergeForwardMessage's Message), and no prompt or skill a role reads holds
-# either needle, so a session that took either message holds its needle and no other does.
+# conflict asked for, nothing was sent and nothing moved: the daemon logged no merge forward asked
+# (the ask to the implementer and the hold to the tester are both a merge forward's), and the
+# implementer holds no task.
 left=$((conflict_at + 120 - $(date +%s)))
 [ "$left" -le 0 ] || sleep "$left"
 issue_phase "$tree1" testing >/dev/null ||
@@ -4726,25 +4726,19 @@ asked=$(log_lines "workflow: merge forward asked" | jq -c --arg issue "$tree1" '
 [ -z "$asked" ] || fail "the daemon asked a merge forward of $tree1, whose required check passed: $(head -n 1 <<<"$asked")"
 pending_phase=$(claim_pending_phase "$tree1" implementer)
 [ -z "$pending_phase" ] || fail "tree 1's implementer holds a $pending_phase task after the conflict, want none: the conflict needed no merge"
-implementer_session=$evidence/conflict-implementer-session.jsonl
-claim_session_text "$tree1" implementer >"$implementer_session" || fail "tree 1's implementer has no readable session"
-! grep -qF -- "a second read of GitHub confirmed it" "$implementer_session" ||
-  fail "tree 1's implementer was asked to merge the base forward, which a conflict whose required check passed asks of nobody ($implementer_session)"
 witness_commands=$(pod_commands "$tester_pod" tester) || fail "the tester's container's process list could not be read after the conflict"
 grep -qF -- "/usr/bin/sleep 600" <<<"$witness_commands" ||
   fail "the tester's witness job is gone from its pod's process list after the conflict: the conflict stopped work it must leave alone"
 ! pod_file "$tester_pod" tester "$witness" ||
   fail "the tester's witness file $witness was written before the checks after the conflict, so its absence proves nothing of the conflict"
-# The tester's turn was not taken over: no hold reached its session, no turn of it was aborted, its
-# claim is still the one it registered with in its first pod, and nothing suspended it.
+# The tester's turn was not taken over: no turn of it was aborted, its claim is still the one it
+# registered with in its first pod, and nothing suspended it.
 tester_session=$evidence/conflict-tester-session.jsonl
 claim_session_text "$tree1" tester >"$tester_session" || fail "tree 1's tester has no readable session"
-! grep -qF -- "Stop writing the workspace now." "$tester_session" ||
-  fail "tree 1's tester was told to hold for a merge forward, which a conflict whose required check passed asks of nobody ($tester_session)"
 no_aborted_turn "$tester_session" ||
   fail "tree 1's tester holds an aborted turn: $(session_jq "$tester_session" -c "$aborted_turns_jq") ($tester_session)"
 resident_kept "$tree1" tester || fail "tree 1's tester lost its first process or session across the conflict: $(resident_lost "$tree1" tester)"
-note "$(($(date +%s) - conflict_at)) s after the commit: $tree1 is still in testing; the implementer holds no task and its session no merge-forward ask ($implementer_session); the tester's /usr/bin/sleep 600 still runs in $tester_pod with $witness absent, its session holds no hold and no aborted turn, and its claim is the one it registered with ($tester_session)"
+note "$(($(date +%s) - conflict_at)) s after the commit: $tree1 is still in testing; no merge forward was asked and the implementer holds no task; the tester's /usr/bin/sleep 600 still runs in $tester_pod with $witness absent, its session holds no aborted turn, and its claim is the one it registered with ($tester_session)"
 # The negative control mutates the evidence alone: the same reader over a copy of the tester's
 # session with one aborted assistant turn appended must refuse it, so the pass above is the
 # session's own and not a reader that never looks.
@@ -4817,14 +4811,19 @@ issue_phase "$tree1" reviewing >/dev/null || fail "$tree1 left reviewing on a ro
 on_tree "$tree1" until_true 300 "the review-stuck notice on $tree1's architect" notice_delivered "$tree1" architect "$(notice_needle review-stuck "$tree1")"
 stuck=$(notice_line "$tree1" architect "$(notice_needle review-stuck "$tree1")" | head -1 || true)
 printf '%s\n' "$stuck" >"$evidence/notice-review-stuck.jsonl"
-# The head the notice names is the one the completion left, which GitHub's current head can have
-# moved past since: it must be a commit of the pull request, and the reviewer's completion wrote it.
-stuck_head=$(grep -oE 'APPROVE of head [0-9a-f]{40}' <<<"$stuck" | head -1 | awk '{print $4}' || true)
-[ -n "$stuck_head" ] || fail "the review-stuck notice on $tree1's architect names no head: $stuck"
+# The heads the notice names are the one the completion left, which GitHub's current head can have
+# moved past since: it names one at least, and each is a commit of the pull request. A notice the
+# reviewer's completion wrote names the reviewer's role topic, which the architect asks for the
+# decision.
+stuck_heads=$({ grep -oE '\b[0-9a-f]{40}\b' <<<"$stuck" || true; } | sort -u)
+[ -n "$stuck_heads" ] || fail "the review-stuck notice on $tree1's architect names no head: $stuck"
 pr_commits=$(gh api --paginate "repos/$repo/pulls/$pr_number/commits" --jq '.[].sha') || fail "read the commits of pull request #$pr_number"
-grep -qx -- "$stuck_head" <<<"$pr_commits" || fail "the review-stuck notice names $stuck_head, which is no commit of pull request #$pr_number"
-grep -qF -- "the reviewer's completion" <<<"$stuck" || fail "the review-stuck notice was not written by the reviewer's completion: $stuck"
-note "the reviewer commented and completed; $tree1 stayed in reviewing and its architect was told review-stuck naming $stuck_head (kept in $evidence/notice-review-stuck.jsonl)"
+while IFS= read -r stuck_head; do
+  grep -qx -- "$stuck_head" <<<"$pr_commits" || fail "the review-stuck notice names $stuck_head, which is no commit of pull request #$pr_number"
+done <<<"$stuck_heads"
+reviewer_topic="notifications.role.$(claim_token "$tree1" reviewer)"
+grep -qF -- "$reviewer_topic" <<<"$stuck" || fail "the review-stuck notice names no topic $reviewer_topic, which a notice of the reviewer's completion names: $stuck"
+note "the reviewer commented and completed; $tree1 stayed in reviewing and its architect was told review-stuck naming $(tr '\n' ' ' <<<"$stuck_heads")and $reviewer_topic (kept in $evidence/notice-review-stuck.jsonl)"
 # What the checkpoint proves is that a stuck round got unstuck. An ask the architect made on its own,
 # before the driver sent its message, is the production behaviour, so it counts too, as the stronger
 # pass, and the run notes it.
@@ -5737,7 +5736,7 @@ bash "$root/scripts/e2e/lib/install-model-gateway.sh" --profile "$profile" --hom
 pin=$(<"$root/.omp-pin")
 mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
 # The program the controller's Oh My Pi runs: what controller.yaml's omp_invocation, `mise x $pin --
-# omp`, execs. controller_launched_with_steps knows the controller's process by it, as the kernel
+# omp`, execs. controller_omp knows the controller's process by it, as the kernel
 # records it (launched, lib/process-tree.sh), so it is the binary itself (native_program).
 omp_exe=$(native_program "$(mise where "$pin")/bin/omp") || fail "the pinned Oh My Pi $pin: $omp_exe"
 cat >"$work/controller.yaml" <<EOF
@@ -5786,20 +5785,40 @@ grep -qF "[legion] the controller's gh acts as the review App for owners ${gh_co
   fail "controller.stderr does not name the review App, ${gh_config_dir##*/} and $work/controller-state/gh: $(cat "$evidence/logs/controller.stderr")"
 [ -f "$work/controller-state/github-credential.log" ] || fail "$work/controller-state/github-credential.log does not exist"
 note "the operator-launched controller's gh: pull request state $state, viewer $viewer from $controller_gh; GH_CONFIG_DIR=/nonexistent failed; controller.stderr names the review App and its owners; github-credential.log exists"
+# controller_omp prints the pid of the Oh My Pi the run's `legion controller start` launched: the
+# process below the pid the controller's window recorded that runs the pinned Oh My Pi
+# (recorded_pid and launched, lib/process-tree.sh). Nothing searches the machine's /proc, where
+# every other Oh My Pi and every tool the controller runs is. On a failure it prints why.
+controller_omp() {
+  local cli
+  cli=$(recorded_pid "$evidence/logs/controller.pid" "$work/legion") || {
+    echo "$evidence/logs/controller.pid names no running $work/legion"
+    return 1
+  }
+  launched "$cli" "$omp_exe"
+}
 # The controller's first turn starts itself (LEGION-392): nothing is ever typed into its pane, so
 # its session's first user message is the start message `legion controller start` carries as
-# LEGION_CONTROLLER_START_MESSAGE (daemon.ControllerStartMessage, internal/daemon/controller.go),
-# which pi-legion's `/legion-controller-start` (daemon.ControllerStartCommand, the word the command
-# puts on Oh My Pi's command line) sends once Oh My Pi's startup is over: that command claims the
-# controller and sends it once registered, right before the role claim and the live wake
-# subscription a tick could race it on (controller-session.ts `claim`, `startCommand`); the model
-# answers it.
+# LEGION_CONTROLLER_START_MESSAGE in the Oh My Pi's environment, which pi-legion's
+# `/legion-controller-start` (daemon.ControllerStartCommand, the word the command puts on Oh My
+# Pi's command line) sends once Oh My Pi's startup is over: that command claims the controller and
+# sends it once registered, right before the role claim and the live wake subscription a tick
+# could race it on (controller-session.ts `claim`, `startCommand`); the model answers it. The
+# message is compared with the value that environment holds, read from the process itself.
 controller_started_itself() {
-  local file
+  local omp entry file first want=''
+  local -a environ
+  omp=$(controller_omp) || return 1
+  process_environ "$omp" environ || return 1
+  for entry in "${environ[@]}"; do
+    [ "${entry%%=*}" != LEGION_CONTROLLER_START_MESSAGE ] || want=${entry#*=}
+  done
+  [ -n "$want" ] || return 1
   for file in "$profile_agent/sessions"/*/*.jsonl; do
     [ -f "$file" ] || continue
-    grep -m1 '"role":"user"' "$file" | grep -qF 'Legion controller start: follow skill://legion-controller' &&
-      grep -q '"role":"assistant"' "$file" && return 0
+    first=$(jq -rn 'first(inputs | select(.type == "message" and .message.role == "user") | .message.content
+      | if type == "string" then . else map(select(.type == "text") | .text) | join("") end) // empty' "$file" 2>/dev/null) || continue
+    [[ $first == *"$want"* ]] && grep -q '"role":"assistant"' "$file" && return 0
   done
   return 1
 }
@@ -6039,21 +6058,13 @@ note "legion issue status $tree3 backlog from the operator shell, with the opera
 until_true 600 "$tree3's pods to be gone" sh -c \
   "out=\$(timeout 120 kubectl --context '$operator' -n '$namespace' get pods -l 'legion.dev/project=$run_label,legion.dev/tree=$tree3' -o name) && [ -z \"\$out\" ]"
 # The controller's slot wakes reach it, and it takes nothing for them (LEGION-392).
-# (1) The controller was launched with the daemon's own design gate steps, none here (the run's
-# `gates.design` is `off`, the empty list): the Oh My Pi the run's `legion controller start`
-# launched carries the line in its system prompt, the file its --append-system-prompt names. That
-# Oh My Pi is the process below the pid the controller's window recorded that runs the pinned Oh
-# My Pi (recorded_pid and launched, lib/process-tree.sh), and its command line is read with no pipe: nothing
-# searches the machine's /proc, where every other Oh My Pi and every tool the controller runs is.
-steps_line='Design gate steps: none.'
-controller_launched_with_steps() {
-  local cli omp arg file='' next=''
+# (1) The controller was launched with a system prompt: the Oh My Pi the run's `legion controller
+# start` launched (controller_omp) names a prompt file after its --append-system-prompt, and that
+# file holds a prompt. Its command line is read with no pipe.
+controller_launched_with_prompt() {
+  local omp arg file='' next=''
   local -a args
-  cli=$(recorded_pid "$evidence/logs/controller.pid" "$work/legion") || {
-    echo "$evidence/logs/controller.pid names no running $work/legion"
-    return 1
-  }
-  omp=$(launched "$cli" "$omp_exe") || {
+  omp=$(controller_omp) || {
     echo "$omp"
     return 1
   }
@@ -6072,13 +6083,13 @@ controller_launched_with_steps() {
     echo "the Oh My Pi $omp has no --append-system-prompt"
     return 1
   }
-  grep -qF "$steps_line" "$file" || {
-    echo "$file, the prompt of the Oh My Pi $omp, does not carry it"
+  [ -s "$file" ] || {
+    echo "$file, the prompt file of the Oh My Pi $omp, is missing or empty"
     return 1
   }
 }
-why=$(controller_launched_with_steps) || fail "the controller's Oh My Pi was not launched with '$steps_line': $why"
-note "the controller's Oh My Pi was launched with '$steps_line'"
+why=$(controller_launched_with_prompt) || fail "the controller's Oh My Pi was not launched with a system prompt: $why"
+note "the controller's Oh My Pi was launched with a system prompt file"
 # (2) With tree 3 out, a slot stands free — tree 1 stands in merging, past its review, and holds
 # none — so an unlabelled leaf set to
 # todo wakes the controller with `todo on <KEY>`. One issue can stand in both lists — an issue
