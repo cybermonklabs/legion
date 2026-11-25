@@ -3,7 +3,9 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -270,4 +272,68 @@ func TestAWriteWhoseTreeCannotBeStoredStillSucceeds(t *testing.T) {
 	}
 	// And the read answers the tree all the same, built from the markdown as it always was.
 	requireDisplayTree(t, handler, "/api/v1/issues/"+issue.Key+"/comments", "0.body", "0.body_tree")
+}
+
+// A delete takes a post's text off every read of it, and the text's display tree with it. The
+// stored row of that tree stays, keyed by the text alone (texttrees), as does this process's copy
+// of it (pmdoc's display cache), so each read is made under the header before the delete, which
+// leaves both trees in the table and in the cache and each list's answer kept. After the delete,
+// no read of the comment or of the message - its thread, its issue's list of its kind, and the
+// issue's event log, whose events of the post are read masked (attachPostMarks) - carries a tree
+// of the old text, or any word of it.
+func TestNoReadOfADeletedPostServesTheTreeOfItsOldText(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	const (
+		commentBody = "The **withdrawn** claim about the *rollout*."
+		messageBody = "The **withdrawn** note on the *staging* run."
+		oldWord     = "withdrawn"
+	)
+	issue := createInteractionIssue(t, handler, "TREES", "A deleted post's trees", "# Spec\n\nWritten here.\n")
+	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": commentBody}, "alice")
+	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": messageBody}, "alice")
+	reads := []struct{ name, target, treePath string }{
+		{"the comment's thread", "/api/v1/comments/" + comment.ID, "comment.body_tree"},
+		{"the issue's comment list", "/api/v1/issues/" + issue.Key + "/comments", "0.body_tree"},
+		{"the message's thread", "/api/v1/messages/" + message.ID, "message.body_tree"},
+		{"the issue's message list", "/api/v1/issues/" + issue.Key + "/messages", "0.message.body_tree"},
+	}
+	for _, read := range reads {
+		if _, held := valueAt(t, treesRequest(t, handler, read.target, true), read.treePath); !held {
+			t.Fatalf("%s carries no %s before the delete", read.name, read.treePath)
+		}
+	}
+	eventLog := "/api/v1/issues/" + issue.Key + "/events"
+	treesRequest(t, handler, eventLog, true)
+
+	deleteThreadComment(t, handler, comment.ID, "alice")
+	deleteIssueMessage(t, handler, message.ID, "alice")
+	requireStoredTree(t, database, "the deleted comment's old text", commentBody)
+	requireStoredTree(t, database, "the deleted message's old text", messageBody)
+
+	for _, read := range reads {
+		answer := treesRequest(t, handler, read.target, true)
+		if tree, held := valueAt(t, answer, read.treePath); held {
+			t.Errorf("%s after the delete carries %s = %s, want none", read.name, read.treePath, tree)
+		}
+		if strings.Contains(answer.Body.String(), oldWord) {
+			t.Errorf("%s after the delete carries the old text: %s", read.name, answer.Body.String())
+		}
+	}
+	answer := treesRequest(t, handler, eventLog, true)
+	var events []struct {
+		Type  string                     `json:"type"`
+		Trees map[string]json.RawMessage `json:"trees"`
+	}
+	if err := json.Unmarshal(answer.Body.Bytes(), &events); err != nil {
+		t.Fatalf("decode the event log: %v", err)
+	}
+	for _, event := range events {
+		if tree, held := event.Trees["payload.body"]; held {
+			t.Errorf("the event log's %s after the delete carries trees[payload.body] = %s, want none", event.Type, tree)
+		}
+	}
+	if strings.Contains(answer.Body.String(), oldWord) {
+		t.Errorf("the event log after the delete carries the old text: %s", answer.Body.String())
+	}
 }

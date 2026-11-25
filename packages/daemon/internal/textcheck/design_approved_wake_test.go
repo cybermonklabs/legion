@@ -1,5 +1,9 @@
 package textcheck
 
+//ci:reads packages/daemon/internal/workflow/design_approved_wake_extract.txt TestTheArchitectsInstructionsTakeTheResumeAsTheDesignApprovedWake reads the phrase from it, in place of importing internal/workflow
+//ci:reads skills/legion-architect/references/wake-routing.md TestTheArchitectsInstructionsTakeTheResumeAsTheDesignApprovedWake reads it under ../../../..
+//ci:reads packages/daemon/internal/prompts/roles/architect-root.md TestTheArchitectsInstructionsTakeTheResumeAsTheDesignApprovedWake reads it under ../../../..
+
 import (
 	"errors"
 	"fmt"

@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"slices"
 
 	"github.com/sjawhar/envoy/internal/bus"
@@ -92,37 +91,19 @@ func dropPrivateStreamTopics(sessionID string, roles []string, topics []string) 
 
 // MergedTopics is the topic set an upsert of topics into a row of sessionID holding cur stores:
 // their union (Merge), without a topic reaching a private stream subject that is not the session's
-// own (dropPrivateStreamTopics), sorted. mergeForUpsert stores exactly this, and the listener's
-// registration route filters the session's consumer on it before the write (cmd/listener's
-// subscribeHandler, through Registry.PlanInterest), so the filter and the row it stores name one
-// set: a filter naming a topic the row does not would carry that topic into a session no interest
-// of its own follows, and a row holding one the filter does not would say a session follows a
-// topic its consumer never delivers. roles is the controller roles the session holds, each read
-// from its claim record and not from the role claim copy (Registry.controllerLaneRoles), so the
-// set keeps a controller notice lane exactly while the store gives the session that project's
-// controller role.
+// own (dropPrivateStreamTopics), sorted. mergeForUpsert stores exactly this, less a plan's LeftOut
+// (InterestPlan.LeftOut), and the listener's registration route filters the session's consumer on
+// the same set before the write (cmd/listener's subscribeHandler, through Registry.PlanInterest
+// and planWithoutLeftOut), so the filter and the row it stores name one set: a filter naming a
+// topic the row does not would carry that topic into a session no interest of its own follows,
+// and a row holding one the filter does not would say a session follows a topic its consumer
+// never delivers. roles is the controller roles the session holds, each read from its claim record
+// and not from the role claim copy (Registry.controllerLaneRoles), so the set keeps a controller
+// notice lane exactly while the store gives the session that project's controller role.
 func MergedTopics(sessionID string, roles []string, cur []string, topics []string) []string {
 	merged := dropPrivateStreamTopics(sessionID, roles, Merge(Interest{Topics: cur}, topics).Topics)
 	slices.Sort(merged)
 	return merged
-}
-
-// FollowableTopics is topics, read from sessionID's stored interest row, without each one reaching a
-// private stream subject that is not the session's own (dropPrivateStreamTopics): the rule every
-// write of a row applies (MergedTopics), applied again to what a read finds. A row is a record any
-// writer of the bucket can store, so the one stored under sessionID's own key, naming its key, a
-// machine and a time, can still name another session's inbox or another project's controller
-// notice lane, and a consumer filtered on such a row would hand the session that other session's
-// messages. The controller roles the session holds are read from their claim records
-// (controllerLaneRoles), as a registration reads them, and only when topics name a controller
-// notice lane, waiting no longer than ctx; a read that did not answer or failed is returned, and
-// the caller builds no filter from the row. topics is not changed.
-func (r *Registry) FollowableTopics(ctx context.Context, sessionID string, topics []string) ([]string, error) {
-	roles, err := r.controllerLaneRoles(ctx, sessionID, topics)
-	if err != nil {
-		return nil, err
-	}
-	return dropPrivateStreamTopics(sessionID, roles, slices.Clone(topics)), nil
 }
 
 // InterestPlan is one registration's whole decision about a session's topics: the topics its
@@ -145,6 +126,17 @@ type InterestPlan struct {
 	Roles    []string
 	Topics   []string
 	Withheld []string
+	// LeftOut is topics the plan keeps out of the row although the merge holds them. The
+	// listener's registration route lists there each topic the session's consumer filter leaves
+	// out as no topic it can follow, one that does not begin with the literal notifications. and
+	// a wildcard that fed a merge of the filter reaching another session's subjects (cmd/listener's
+	// planWithoutLeftOut), and names each in its answer, so the row holds no topic the session's
+	// consumer never delivers and no publish counts the session as a recipient for one. The write
+	// takes each out of the row it merges (mergeForUpsert), an earlier build's row that holds one
+	// included. A plan with none leaves the merge as it is. A row or a known-session record that
+	// still holds one, until the session's next registration, counts the session as no recipient
+	// for it (cmd/listener's recipientCounts).
+	LeftOut  []string
 	Revision uint64
 	// read is where the row this plan was built over was read from (interestRead): readLeader for a
 	// plan PlanInterestAfterConflict made over the stream's leader, so UpsertPlanned reads the row it

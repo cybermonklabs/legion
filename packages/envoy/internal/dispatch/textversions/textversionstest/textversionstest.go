@@ -130,7 +130,7 @@ func OneEach(ids ...int64) []Written {
 }
 
 // WriteIssue writes issue ACME-n of Project, which must be there (SeedProject), with its primary
-// document at versions 1 and 2, and fourteen events of it in id order, in one transaction, the
+// document at versions 1 and 2, and seventeen events of it in id order, in one transaction, the
 // events appended through broker as the routes append them: one of every type a rule reads, each
 // changing the text it reads, so each starts one version, and two that start none, an
 // issue.updated that keeps the title and an issue.claimed, a type no rule reads. It answers each
@@ -179,6 +179,9 @@ func writeIssue(t testing.TB, tx pgx.Tx, broker *events.Broker, n int) []Written
 		{post("comment.edited", comment, "The verifiers read the old key until Tuesday."), 1},
 		{post("message.created", message, "Can the rotation wait for the freeze to end?"), 1},
 		{post("message.answered", uuid.NewString(), "It can; the freeze ends Friday."), 1},
+		{post("message.edited", message, "Can the rotation wait until the freeze ends on Friday?"), 1},
+		{post("comment.deleted", comment, ""), 1},
+		{post("message.deleted", message, ""), 1},
 		{askEvent("ask.opened", "Rotate the keys now?", nil), 1},
 		{askEvent("ask.edited", "Rotate the signing keys now?", nil), 1},
 		{askEvent("ask.answered", "Rotate the signing keys now?",

@@ -27,13 +27,15 @@ import (
 // serverDefaultsAnUnsetCap of what the reconnecting connection reports is false, the older
 // server's answer, on a server that caps such a stream.
 func TestAnEnsureHookAcrossAReconnectDecidesNothingOnTheEmptyVersion(t *testing.T) {
+	t.Parallel()
 	server, uri := testnats.Start(t)
 	conn, err := nats.Connect(uri, nats.Name(t.Name()), nats.MaxReconnects(-1), nats.ReconnectWait(50*time.Millisecond))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

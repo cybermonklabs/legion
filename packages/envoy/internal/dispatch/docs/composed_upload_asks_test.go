@@ -51,6 +51,7 @@ var composedUploadAgent = model.Actor{Kind: "session", ID: "session-0123456789ab
 // person's answer stays the issue's one row for the question, and the settlement writes the
 // answer onto the block again.
 func TestAnAgentsComposedUploadLeavesTheAnsweredAskOnItsBlockAndItsRow(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	ask := composedUploadAnsweredAsk(t, service, artifactID, composedUploadDocument)
@@ -101,6 +102,7 @@ func TestAnAgentsComposedUploadLeavesTheAnsweredAskOnItsBlockAndItsRow(t *testin
 // its own, and the answered row stays as the record of the question it was given on. This is
 // where the rule above stops.
 func TestAnAgentsComposedUploadOfAnotherQuestionOpensAnAskOfItsOwn(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	ask := composedUploadAnsweredAsk(t, service, artifactID, composedUploadDocument)
@@ -158,6 +160,7 @@ func TestAnAgentsComposedUploadOfAnotherQuestionOpensAnAskOfItsOwn(t *testing.T)
 // the person's answer stays the issue's one row for the question, and the settlement writes the
 // answer onto the block again.
 func TestAnAgentsComposedUploadKeepsTheAnsweredAskWhenItsNeighboursChange(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	ask := composedUploadAnsweredAsk(t, service, artifactID, composedUploadSurroundedDocument)

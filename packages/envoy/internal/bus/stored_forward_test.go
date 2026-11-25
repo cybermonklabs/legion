@@ -77,6 +77,7 @@ func TestStartRequestStoredToCountsTheStreamsAcknowledgementAlone(t *testing.T) 
 // rather than optional. The refusal is an ErrRefused, which the listener answers at once instead
 // of retrying it for the rest of the send's window (forwardRefused).
 func TestStartRequestStoredToRefusesAForwardWithoutAMsgID(t *testing.T) {
+	t.Parallel()
 	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -113,6 +114,7 @@ func TestStartRequestStoredToRefusesAForwardWithoutAMsgID(t *testing.T) {
 // of the outbox's retry, which is what the Nats-Msg-Id exists to stop. The refusal reaches the
 // caller in the request's own channel, before anything is sent.
 func TestAWindowRequestRefusesAForwardWithoutAMsgID(t *testing.T) {
+	t.Parallel()
 	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)})
 	if err != nil {
 		t.Fatalf("connect: %v", err)

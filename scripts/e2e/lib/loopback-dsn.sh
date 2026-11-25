@@ -18,8 +18,8 @@
 # NAME is the environment variable the caller read DSN from, and it starts that line. WHAT is
 # what the run does on that server, in a few words.
 #
-# Ten call sites read a DSN with this guard before they start anything, because the server must
-# be this machine's. Seven are proofs of their own: plan-pointer-drive.sh,
+# Twelve call sites read a DSN with this guard before they start anything, because the server
+# must be this machine's. Seven are proofs of their own: plan-pointer-drive.sh,
 # verification-results.sh, dispatch-claimant-delivery.sh, clean-session-stop-tmux.sh,
 # envoy-session-states.sh, envoy-session-delivery.sh and dispatch-session-settings.sh. The
 # eighth is lib/two-builds.sh, the harness the two two-builds proofs share, which reads
@@ -28,10 +28,14 @@
 # reads LEGION_TEST_PG_DSN for each proof that makes that run, which is every entry script that
 # sources it. The tenth call site is busy-relaunch-delivery.sh's negative control, which reads
 # LEGION_TEST_PG_DSN with this guard before it builds the base commit's tree, through the copy
-# lib/live-daemon-proof.sh sources. Eight of the ten call sites call this function.
-# envoy-session-delivery.sh and dispatch-session-settings.sh read their DSN with
-# run_database_url alone, which begins with this guard's own check. Every proof that writes a
-# server its caller's DSN names reads that DSN with this guard before it starts anything.
+# lib/live-daemon-proof.sh sources. The eleventh is approved-version-news.sh's arguments check,
+# which reads LEGION_TEST_PG_DSN with this guard before it builds or extracts anything, through
+# that same copy. The twelfth is packages/pi-legion/scripts/skill-scenarios/rig.sh, which reads a
+# batch's SKILL_SCENARIOS_POSTGRES_URL with this guard in services_up and gives each run's
+# Dispatch the string run_database_url rebuilds, in own_dispatch. Ten of the twelve call sites
+# call this function. envoy-session-delivery.sh and dispatch-session-settings.sh read their DSN
+# with run_database_url alone, which begins with this guard's own check. Every proof that writes
+# a server its caller's DSN names reads that DSN with this guard before it starts anything.
 #
 # libpq's own parser answers which host the DSN names, because libpq and a URL parser read
 # different text as the host. libpq ends the user name at the first `@` and starts no query
@@ -103,7 +107,7 @@ require_loopback_dsn() {
 # well. envoy-session-delivery.sh and dispatch-session-settings.sh therefore call it in their
 # setup step as their one read of the DSN, before the builds, the services and the `create
 # database`, so a refused input ends the run where the run's other refusals are. The database's
-# name is only the shell's pid and random bytes, so each has it that early. The three other
+# name is only the shell's pid and random bytes, so each has it that early. The four other
 # callers name a database per run or per attempt, and call this where that name is made.
 #
 # lib/loopback-dsn.py does the work: it rebuilds the connection string from the keywords libpq

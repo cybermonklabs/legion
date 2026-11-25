@@ -12,12 +12,18 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// onClosed is wired as the ClosedCB callback. It reports the connection event (ConnectionChanged)
-// and launches recovery in a background goroutine so the NATS library callback returns
-// immediately.
-func (c *Client) onClosed() {
+// onClosed is wired as the ClosedCB callback, for nc, the connection that closed. It reports the
+// connection event (ConnectionChanged) and launches recovery in a background goroutine so the NATS
+// library callback returns immediately, one eventWork counts (runEventWork), and then records the
+// close as handled (closeHandled), so the close of a failed start waits for that recovery too
+// (closeSettled).
+func (c *Client) onClosed(nc *nats.Conn) {
+	if c.closedHook != nil {
+		c.closedHook()
+	}
 	c.connectionChanged()
-	go c.recover()
+	c.runEventWork(c.recover)
+	c.closeHandled(nc)
 }
 
 // onConnect is the ConnectedCB of a client that connects in the background
@@ -77,7 +83,7 @@ func (c *Client) onReconnect(nc *nats.Conn) {
 		c.subscriptionsMu.Unlock()
 	}
 	c.mu.Unlock()
-	go c.afterReconnect(nc)
+	c.runEventWork(func() { c.afterReconnect(nc) })
 }
 
 // afterReconnect re-subscribes what the reconnect left unbound and runs the reconnect hooks for the
@@ -208,8 +214,8 @@ func (c *Client) onDisconnect() {
 // runs each hook once, in the order they were added, after the delivery subscriptions have drained
 // or run out their share of the timeout, and before the connection's own drain, with ctx ending at
 // Drain's deadline, or as soon as the connection is lost, with ErrConnectionLost as its cause. A
-// drain of a connection that is reconnecting closes it at once and runs no hook, since nothing it
-// sent would reach the server.
+// drain of a connection that is reconnecting runs every hook on a context that has already ended
+// that way, then closes the connection at once, since nothing it sent would reach the server.
 //
 // The connection's own drain cannot end a KV watcher cleanly. nats.go deletes the ordered
 // consumer it created for the watcher once it has removed the watcher's subscription

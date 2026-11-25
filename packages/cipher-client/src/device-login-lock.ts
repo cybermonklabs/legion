@@ -35,7 +35,7 @@
 //   harm.
 
 import { randomUUID } from "node:crypto";
-import { constants, type Stats } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync, type Stats } from "node:fs";
 import {
   type FileHandle,
   link,
@@ -331,6 +331,38 @@ export async function withLoginLock<T>(
   clearInterval(beat);
   await removeOwn(lock, mine, locked);
   return answer;
+}
+
+/**
+ * Whether process `pid` holds the lock of the device login at `path` (`<path>.lock`, whose first
+ * word is its holder's pid, {@link withLoginLock}), read synchronously and opened as {@link look}
+ * opens a lock: never waiting on a named pipe, never following a link, a regular file only, and
+ * at most {@link DEVICE_LOGIN_MOST_BYTES} read. Synchronous for a caller that must act on the
+ * answer before any other task of its process runs: claude-envoy's open-asks hook asks it and
+ * exits in one step, so its own trade cannot take the lock, and start a refresh the exit would
+ * cut, between the two. No lock, and one that cannot be read, is held by no process; no error
+ * leaves it.
+ */
+export function loginLockHeldBy(path: string, pid: number): boolean {
+  let fd: number;
+  try {
+    fd = openSync(`${path}.lock`, LOCK_READ);
+  } catch {
+    return false;
+  }
+  try {
+    if (!fstatSync(fd).isFile()) return false;
+    const bytes = Buffer.alloc(DEVICE_LOGIN_MOST_BYTES);
+    const read = readSync(fd, bytes, 0, bytes.length, 0);
+    return bytes.toString("utf8", 0, read).startsWith(`${pid} `);
+  } catch {
+    return false;
+  } finally {
+    // A close that fails changes nothing read, and must not throw out of the caller's exit.
+    try {
+      closeSync(fd);
+    } catch {}
+  }
 }
 
 /** Whether `name` is `prefix` and a UUID: a file a caller named with a fresh value of its own. */

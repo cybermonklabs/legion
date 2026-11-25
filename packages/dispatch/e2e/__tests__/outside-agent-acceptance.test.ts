@@ -393,6 +393,87 @@ done
       // The shape script, a bounded child under the short bound.
       rowLimit("short")
     );
+
+    // await_child looks at its child every pause and returns once it has ended, or at its bound
+    // (outside-agent-lib.sh, end_within). A child that never ends is the control: its wait must
+    // end at the 2 s bound, so a wait that cannot end there fails here. A child that ends at 0.2 s
+    // ends its wait then, with its own exit status: the wait returns within 3 s of the moment the
+    // child writes as it ends. A wait that looked only every 5 s, the slow wait this change
+    // removes, returns 4.8 s or more after that moment, whatever the load, since load only delays
+    // a look. Measured in a builds pod: 0.01 s unloaded, at most 0.10 s in 20 runs under 8 busy
+    // loops on the test's own two CPUs, and 4.81 s with end_within planted to look every 5 s. And
+    // stop_child's TERM ends the first child well before its 10 s bound, leaving nothing running.
+    test(
+      "await_child ends as its child ends, and at its bound for one that never does",
+      async () => {
+        const base = `9${Math.floor(Math.random() * 1e6)
+          .toString()
+          .padStart(6, "0")}`;
+        const sleep = hostTool("sleep") as string;
+        const directory = scratch("waits");
+        const sevenEnded = join(directory, "seven-ended");
+        const waits = script(
+          join(directory, "waits.sh"),
+          `#!/usr/bin/env bash
+set -u
+. '${join(acceptance, "outside-agent-lib.sh")}'
+background=''
+clock() { printf '%s' "\${EPOCHREALTIME:-$(date +%s.%N)}"; }
+since() { awk -v a="$1" -v b="$(clock)" 'BEGIN { printf "%.2f", b - a }'; }
+listed() { case " $background " in *" $1 "*) echo yes ;; *) echo no ;; esac; }
+'${sleep}' ${base}1 &
+never=$!
+background="$background $never"
+began=$(clock)
+await_child "$never" 2
+echo "never exit=\${child_exit:-none} seconds=$(since "$began") listed=$(listed "$never")"
+( '${sleep}' 0.2; clock >'${sevenEnded}'; exit 7 ) &
+seven=$!
+background="$background $seven"
+await_child "$seven" 30
+echo "seven exit=\${child_exit:-none} late=$(since "$(cat '${sevenEnded}' 2>/dev/null)") listed=$(listed "$seven")"
+began=$(clock)
+stop_child "$never"
+echo "stopped seconds=$(since "$began") left=$(pgrep -f "^${sleep} ${base}1\\$" | wc -l | tr -d ' ')"
+`
+        );
+        const { code, stdout } = await runBounded({
+          argv: ["bash", waits],
+          bound: "short",
+          cwd: scratch("cwd"),
+          env: { PATH: process.env.PATH ?? "" },
+          from: import.meta.url,
+        });
+        const read = (name: string) =>
+          Object.fromEntries(
+            (stdout.split("\n").find((line) => line.startsWith(`${name} `)) ?? "")
+              .split(" ")
+              .slice(1)
+              .map((pair) => pair.split("=") as [string, string])
+          );
+        const never = read("never");
+        const seven = read("seven");
+        const stopped = read("stopped");
+        expect({
+          code,
+          never: { exit: never.exit, listed: never.listed, atTheBound: Number(never.seconds) >= 1 },
+          neverWithin: Number(never.seconds) < 10,
+          seven: { exit: seven.exit, listed: seven.listed },
+          sevenAtItsEnd: Number(seven.late) < 3,
+          stopped: { left: stopped.left, beforeTheKill: Number(stopped.seconds) < 9 },
+          stdout,
+        }).toMatchObject({
+          code: 0,
+          never: { exit: "none", listed: "yes", atTheBound: true },
+          neverWithin: true,
+          seven: { exit: "7", listed: "no" },
+          sevenAtItsEnd: true,
+          stopped: { left: "0", beforeTheKill: true },
+        });
+      },
+      // The script, a bounded child under the short bound.
+      rowLimit("short")
+    );
   }
 );
 

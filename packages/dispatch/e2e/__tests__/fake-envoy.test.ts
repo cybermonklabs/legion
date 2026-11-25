@@ -256,6 +256,48 @@ test("a registry state other than ok refuses all three registry reads, and ok re
   }
 });
 
+// The refilling answer carries the real listener's `Retry-After: 5` (writeListRefilling) unless a
+// test sets its own with the state: a row that waits through several refilling reads waits each
+// one's two retries, and only the row pinning what Dispatch passes on needs the listener's 5. The
+// figure outlives a session reseed, as the state does, and a value no header can carry is refused.
+test("the refilling list answer carries Retry-After 5 unless a test set its own", async () => {
+  const { origin, stop } = await startFakeEnvoy();
+  const reads = () =>
+    Promise.all([Bun.fetch(`${origin}/v1/sessions`), Bun.fetch(`${origin}/v1/interests/`)]);
+  try {
+    expect((await putFixture(origin, "/__fixture/lists", { state: "refilling" })).status).toBe(200);
+    const listener = await reads();
+    expect(listener.map((answer) => answer.status)).toEqual([503, 503]);
+    expect(listener.map((answer) => answer.headers.get("Retry-After"))).toEqual(["5", "5"]);
+    expect(await listener[0].json()).toMatchObject({ code: "refilling" });
+
+    const set = await putFixture(origin, "/__fixture/lists", {
+      retry_after_seconds: 1,
+      state: "refilling",
+    });
+    expect(await set.json()).toEqual({ retry_after_seconds: 1, state: "refilling" });
+    expect((await reads()).map((answer) => answer.headers.get("Retry-After"))).toEqual(["1", "1"]);
+    const sessions: FakeSession[] = [{ session_id: "planner", title: "Planner" }];
+    expect((await putFixture(origin, "/__fixture/sessions", sessions)).status).toBe(200);
+    expect((await reads()).map((answer) => answer.headers.get("Retry-After"))).toEqual(["1", "1"]);
+
+    for (const refused of [0, 1.5, -1, "1"]) {
+      const answer = await putFixture(origin, "/__fixture/lists", {
+        retry_after_seconds: refused,
+        state: "refilling",
+      });
+      expect(answer.status).toBe(400);
+    }
+    expect((await reads()).map((answer) => answer.headers.get("Retry-After"))).toEqual(["1", "1"]);
+
+    // Set back to the listener's own figure by a state that names none.
+    expect((await putFixture(origin, "/__fixture/lists", { state: "refilling" })).status).toBe(200);
+    expect((await reads()).map((answer) => answer.headers.get("Retry-After"))).toEqual(["5", "5"]);
+  } finally {
+    await stop();
+  }
+});
+
 /** A send to `target` as Dispatch's listener client writes one, under `key`, asking for a
  *  session that is running now when `connectedOnly` is set. */
 function send(origin: string, target: string, key: string, connectedOnly = false) {

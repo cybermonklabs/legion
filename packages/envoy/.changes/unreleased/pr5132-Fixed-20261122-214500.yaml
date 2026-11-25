@@ -1,0 +1,18 @@
+kind: Fixed
+body: |-
+  A session's unconditional stop (`DELETE /v1/sessions/<session_id>`) and the delete of a session's
+  interest now read the record from the bucket stream's leader before they delete it, and a
+  conditional stop reads it from the leader when its direct get finds no record, before it keeps a
+  record, and on its retry after the bucket refused its fenced delete. Before, the only read was a
+  direct get, which on a bucket with three copies any copy near enough to current answers. A copy
+  that had not applied a registration made a moment before answered that the record was absent, so
+  the delete deleted nothing (or a conditional stop answered that the entry was deleted) and the
+  record stayed until it expired; a copy still holding another client instance's registration under
+  the session id made a conditional stop of the new instance answer `deleted: false` for another
+  instance; and a copy one write behind answered the record before a heartbeat, the bucket refused
+  both fenced deletes, and a conditional stop answered `deleted: false` while the record stood.
+  `bus.KeyValue.DeleteAtRead` no longer takes a `readable` test: the leader reports every record, a
+  server-written one included, at the sequence it is stored at.
+time: 2026-11-22T21:45:00Z
+custom:
+    Issue: pr5132

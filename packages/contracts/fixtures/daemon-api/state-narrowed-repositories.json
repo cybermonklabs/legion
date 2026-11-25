@@ -7,7 +7,7 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 220,
+    "daemon": 275,
     "caller": 199
   },
   "admission": {
@@ -450,7 +450,7 @@
         "rootRank": "00011",
         "ownRank": "00011",
         "rootKey": "LEGION-211",
-        "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them."
+        "reason": "It has not started. It waits at P1, its own priority. It is 1st of 1 issue at P1 that has not started, by its own Dispatch rank."
       },
       "why": {
         "state": "claim_stopped",
@@ -493,7 +493,7 @@
         "partLength": 1,
         "holdsSlot": true,
         "since": "2026-09-22T09:21:00Z",
-        "reason": "A person answered it, and its work came back at 2026-09-22T09:21:00Z. It is 1st of 1 issue whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
+        "reason": "A person answered it, and its work came back at 2026-09-22T09:21:00Z. It waits at P0, its own priority. It is 1st of 1 issue at P0 whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
       },
       "why": {
         "state": "claim_stopped",
@@ -665,30 +665,6 @@
       "state": "retired"
     }
   ],
-  "wakesWaiting": [
-    {
-      "claim": "legion-legion-legion-207-implementer",
-      "issue": "LEGION-207",
-      "role": "implementer",
-      "kind": "plugin-refresh",
-      "dueAt": "2026-09-22T09:17:56Z"
-    },
-    {
-      "claim": "legion-legion-legion-208-architect",
-      "issue": "LEGION-208",
-      "role": "architect",
-      "kind": "catch-up",
-      "dueAt": "2026-09-22T09:18:03Z"
-    },
-    {
-      "claim": "legion-legion-legion-208-planner",
-      "issue": "LEGION-208",
-      "role": "planner",
-      "kind": "launch",
-      "dueAt": "2026-09-22T09:18:11Z"
-    }
-  ],
-  "claimsToRefresh": 4,
   "paused": {
     "id": 7,
     "since": "2026-09-22T09:09:00Z",
@@ -1192,5 +1168,29 @@
       "unavailable": "read the consumer's info: context deadline exceeded"
     }
   ],
-  "lowestPluginContract": 201
+  "lowestPluginContract": 201,
+  "wakesWaiting": [
+    {
+      "claim": "legion-legion-legion-207-implementer",
+      "issue": "LEGION-207",
+      "role": "implementer",
+      "kind": "plugin-refresh",
+      "dueAt": "2026-09-22T09:17:56Z"
+    },
+    {
+      "claim": "legion-legion-legion-208-architect",
+      "issue": "LEGION-208",
+      "role": "architect",
+      "kind": "catch-up",
+      "dueAt": "2026-09-22T09:18:03Z"
+    },
+    {
+      "claim": "legion-legion-legion-208-planner",
+      "issue": "LEGION-208",
+      "role": "planner",
+      "kind": "launch",
+      "dueAt": "2026-09-22T09:18:11Z"
+    }
+  ],
+  "claimsToRefresh": 4
 }

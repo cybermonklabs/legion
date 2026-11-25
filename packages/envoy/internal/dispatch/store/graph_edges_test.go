@@ -17,6 +17,7 @@ type graphEdgeRow struct {
 // appears exactly once with its kind, anchors that are JSON null or absent produce nothing, and
 // the guard in 0032 leaves well-formed uuid anchors alone.
 func TestGraphEdgesUnionsMentionsWithEveryStructuralRelation(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, latestVersion)
 	var ids struct {
@@ -125,6 +126,7 @@ func TestGraphEdgesUnionsMentionsWithEveryStructuralRelation(t *testing.T) {
 // part_of its document. A block's edges keep their source_seq; its part_of edge, being
 // structural, carries none.
 func TestGraphEdgesCarryBlockMentionsAndPartOf(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, latestVersion)
 	if _, err := store.Pool.Exec(ctx, `
@@ -178,6 +180,7 @@ func TestGraphEdgesCarryBlockMentionsAndPartOf(t *testing.T) {
 // comment block in, so the two kinds are told apart by the node id's prefix: the ask part's
 // reply reaches ask_block and the comment block's reply comment_block.
 func TestItemBlockArmsAreGraphEdges(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, latestVersion)
 	var comment, reply, message, messageReply, ask, askReply string
@@ -271,6 +274,7 @@ func sortGraphEdges(edges []graphEdgeRow) {
 // no-sequential-scan check above cannot see the lookup it makes. The function's own query, planned
 // as the function plans it, finds its target's rows through document_blocks_node_id.
 func TestBlockRefListedFindsItsTargetByTheNodeIDIndex(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, latestVersion)
 	var body string
@@ -327,6 +331,7 @@ func explainWithoutSeqScan(t *testing.T, store *Store, query string, setup ...st
 // 0032 refuses to build graph_edges over an anchor whose artifact_id is not a uuid, because the
 // view casts it on every row and one bad anchor would break every to=artifact read.
 func TestMigrate0032RefusesNonUUIDAnchorArtifactIDs(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, 31)
 	if _, err := store.Pool.Exec(ctx, `

@@ -53,7 +53,8 @@ const poolSizeParam = "pool_max_conns"
 // Open connects to databaseURL and verifies the database is reachable. The pool's size is
 // sharedPoolSize: how many connections Dispatch may hold is a property of Dispatch, not of the
 // string that names its database. Every connection it opens scans timestamptz in UTC
-// (scanTimestampsInUTC), as do the pools Pool.separate copies from its configuration.
+// (scanTimestampsInUTC) and gives back a large statement's encoded arguments when it returns to
+// its pool (argumentReleaser), as do the pools Pool.separate copies from its configuration.
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	declared, err := declaresPoolSize(databaseURL)
 	if err != nil {
@@ -70,6 +71,7 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	}
 	config.MaxConns = sharedPoolSize
 	config.AfterConnect = scanTimestampsInUTC
+	config.ConnConfig.Tracer = withArgumentRelease(config.ConnConfig.Tracer)
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("open Postgres pool: %w", err)
@@ -151,6 +153,25 @@ func (s *Store) Migrate(ctx context.Context) error {
 // through it (cmd/dispatch's supertag node tests).
 func (s *Store) MigrateThrough(ctx context.Context, version int) error {
 	return s.migrateThrough(ctx, migrationFiles, version)
+}
+
+// MigrationText is the whole text of the embedded forward migration numbered version, comments
+// included, as the runner applies it. It refuses a version no embedded forward migration carries,
+// and one that two carry. A caller that names an operator's remedy reads a migration's statement
+// here rather than keeping a second copy of it (graphcensus' refusal without its indexes).
+func MigrationText(version int) (string, error) {
+	names, err := fs.Glob(migrationFiles, fmt.Sprintf("migrations/%d_*.up.sql", version))
+	if err != nil {
+		return "", fmt.Errorf("find migration %d: %w", version, err)
+	}
+	if len(names) != 1 {
+		return "", fmt.Errorf("find migration %d: %d embedded forward migrations carry it, want one", version, len(names))
+	}
+	text, err := migrationFiles.ReadFile(names[0])
+	if err != nil {
+		return "", fmt.Errorf("read migration %d: %w", version, err)
+	}
+	return string(text), nil
 }
 
 // versionTable is the table this runner records each applied migration in.
