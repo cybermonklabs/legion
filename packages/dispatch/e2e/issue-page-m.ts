@@ -59,6 +59,11 @@ const SHOW_MORE = new RegExp(
   "u"
 );
 
+/** Show more's name with `count` entries of its list left to draw: "Show more (25 left)". */
+export function showMoreLeft(count: number): string {
+  return `${CONTROL_LABELS.show_more} (${count} ${CONTROL_LABELS.show_more_left})`;
+}
+
 /** The history's Show more, the one control under its last entry drawn, whatever its count says:
  *  it draws the next entries read, or reads the log's next page where every entry read is drawn. */
 export function historyShowMore(page: Page): Locator {

@@ -2,6 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { assigneeControlName } from "../web/src/features/issue/AssigneeControl";
 import { labelsControlName } from "../web/src/features/issue/IssueLabels";
 import { repoControlName, repoTextControlName } from "../web/src/features/issue/RepoControl";
+import { LIST_PAGE } from "../web/src/features/issue-page/details-leaves";
 import {
   blockedByControlName,
   referencedByControlName,
@@ -39,7 +40,6 @@ import {
   COMPONENT_TITLE,
   detailsRow,
   filesList,
-  LIST_PAGE,
   marginSection,
   marginSectionDisclosure,
   marginSlot,
@@ -58,6 +58,7 @@ import {
   TWENTY_LABELS,
   UNPINNED_COMMENT,
 } from "./issue-page-h";
+import { showMoreLeft } from "./issue-page-m";
 import { expect, type Locator, type Page, type Request, test } from "./test";
 import { assertWhole } from "./unclipped";
 
@@ -802,7 +803,7 @@ test("every property with a value is visible in Details at every width @phone", 
     await page.setViewportSize(viewportAt(390));
     await gotoIssue(page, `/issues/${one}`);
     await openDetails(page);
-    const oneLeft = `${CONTROL_LABELS.show_more} (${ONE_PAST_PAGE - LIST_PAGE} ${CONTROL_LABELS.show_more_left})`;
+    const oneLeft = showMoreLeft(ONE_PAST_PAGE - LIST_PAGE);
     const blocking = detailsRow(page, PROPERTY_LABELS.blocks).getByRole("link");
     await expect(blocking).toHaveCount(LIST_PAGE);
     await detailsRow(page, PROPERTY_LABELS.blocks).getByRole("button", { name: oneLeft }).click();

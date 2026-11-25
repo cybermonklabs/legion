@@ -28,7 +28,7 @@ import { seedFakeGithub } from "./fake-github-helpers";
 
 /**
  * What the browser rows of `issue-page-h.e2e.ts` read of Details: the locators of its panel and
- * the one seed its rows open. No other row reads this file.
+ * the one seed its rows open. The rows of `issue-page-m.e2e.ts` read its locators too.
  *
  * `e2e/issue-page.ts` opens the new page and Details (`phase`, `gotoIssue`, `openDetails`,
  * `closeDetails`); this file adds what reads the panel inside it.
@@ -112,7 +112,6 @@ export const QUESTION = "Which width does Details open at?";
 export const PINNED_FIRST_LINE = "The pinned comment's first line.";
 /** The reason bob gave for the changes he asked of THREE's spec. */
 export const CHANGES_REASON = "Name the limits";
-export { LIST_PAGE };
 /** How many issues wait on ONE, and how many documents ONE holds: one more than Details draws
  *  of a list before the Show more under it (`LIST_PAGE`). */
 export const ONE_PAST_PAGE = LIST_PAGE + 1;
@@ -218,11 +217,11 @@ export async function seedDetailsIssue(): Promise<DetailsSeed> {
   const blockTitles: string[] = [];
   for (let index = 1; index <= ONE_PAST_PAGE; index += 1) {
     const waiter = await createIssue({
+      blocked_by: [one.key],
       force: true,
       project: PROJECT,
       title: `Waits on ONE (${index})`,
     });
-    await patchIssue(waiter.key, { blocked_by: [one.key] });
     blocks.push(waiter.key);
     blockTitles.push(waiter.title);
   }

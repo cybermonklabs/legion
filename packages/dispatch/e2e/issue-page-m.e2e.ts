@@ -10,6 +10,7 @@ import { type LegionRole, roleToken } from "@legion/contracts";
 
 import type { DispatchEvent, IssueSteps } from "../web/src/api/types";
 import { conversationItemId, pinnedItemMarker } from "../web/src/features/issue/pins";
+import { LIST_PAGE } from "../web/src/features/issue-page/details-leaves";
 import { KEY_REPORTS, PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
 import {
   ANSWER_LINES,
@@ -100,7 +101,6 @@ import {
 import {
   detailsRow,
   filesList,
-  LIST_PAGE,
   marginSection,
   marginSectionDisclosure,
   pinsList,
@@ -123,6 +123,7 @@ import {
   olderPageAnswered,
   rowFacts,
   seededHistoryEntry,
+  showMoreLeft,
   stepRun,
   stepsSection,
   stepsUnread,
@@ -2005,8 +2006,6 @@ test("the history draws 20 entries at a time and its control says how many are l
   const { issue, newest } = await seedMessages("Twenty at a time", 44);
   const created = (await allEvents(issue.key)).find((event) => event.type === "issue.created");
   if (created === undefined) throw new Error(`${issue.key} recorded no issue.created`);
-  const left = (count: number) =>
-    `${CONTROL_LABELS.show_more} (${count} ${CONTROL_LABELS.show_more_left})`;
 
   const context = await reader(browser, "alice");
   try {
@@ -2015,7 +2014,9 @@ test("the history draws 20 entries at a time and its control says how many are l
     const entries = historyEntries(page);
     await expect(entries, "the history drew 45 entries, not 20").toHaveCount(HISTORY_DRAWS);
     const more = historyShowMore(page);
-    await expect(more, "Show more does not say that 25 entries are left").toHaveText(left(25));
+    await expect(more, "Show more does not say that 25 entries are left").toHaveText(
+      showMoreLeft(25)
+    );
 
     await more.click();
     await expect(entries, "a press of Show more did not draw the next 20").toHaveCount(40);
@@ -2023,7 +2024,9 @@ test("the history draws 20 entries at a time and its control says how many are l
       entries.first(),
       "a press of Show more took the first entries away"
     ).toHaveAttribute("data-history-entry", `thread:${newest.id}`);
-    await expect(more, "Show more does not say that 5 entries are left").toHaveText(left(5));
+    await expect(more, "Show more does not say that 5 entries are left").toHaveText(
+      showMoreLeft(5)
+    );
 
     await more.click();
     await expect(entries, "a second press of Show more did not draw the last 5").toHaveCount(45);
@@ -3287,14 +3290,12 @@ test("a pin's link to an agents' turn lands the outline on its nearest drawn anc
       "the outline's landing did not say at its row that the thread is in the history"
     ).toHaveText(KEY_REPORTS.agents_thread);
     // Read once the outline has landed for this address, so it has drawn its rows for it.
-    await expect(nodeRow(page, seeded.message), "the outline drew the daemon's turn").toHaveCount(
-      0
-    );
+    await expect(nodeRow(page, seeded.message), "the outline drew the agents' turn").toHaveCount(0);
 
     // Details, left open by the link, is at the history with the turn marked and on screen.
     await expect(marginShell(page), "the pin's link closed Details").toBeVisible();
     const turn = historyItem(page, seeded.message);
-    await expect(turn, "the pin's link did not mark the daemon's turn").toHaveAttribute(
+    await expect(turn, "the pin's link did not mark the agents' turn").toHaveAttribute(
       "aria-current",
       "true"
     );
@@ -4426,12 +4427,47 @@ function longCitingLines(reference: string): string[] {
   );
 }
 
+/** What the page draws of one element of words: its text with the whitespace collapsed, its line
+ *  clamp, how many pixels of it a box hides, and how many lines it takes. */
+interface DrawnWords {
+  readonly clamp: string;
+  readonly hidden: number;
+  readonly lines: number;
+  readonly text: string;
+}
+
+/** Measures every element `words` finds, in one read of the page. */
+function measureWords(words: Locator): Promise<DrawnWords[]> {
+  return words.evaluateAll((elements) =>
+    elements.map((element) => {
+      const style = getComputedStyle(element);
+      return {
+        clamp: style.webkitLineClamp,
+        hidden: element.scrollHeight - element.clientHeight,
+        lines: element.getBoundingClientRect().height / Number.parseFloat(style.lineHeight),
+        text: (element.textContent ?? "").replace(/\s+/gu, " ").trim(),
+      };
+    })
+  );
+}
+
+/** Fails unless `drawn`, the words of `what`, are whole on the screen: more than five lines
+ *  drawn, no clamp, and nothing hidden under a box. */
+function expectWordsWhole(drawn: DrawnWords | undefined, what: string): void {
+  if (drawn === undefined) throw new Error(`${what} draws no words`);
+  expect(drawn.lines, `${what} is drawn in five lines or fewer`).toBeGreaterThan(5);
+  expect(drawn.clamp, `${what} is clamped`).toBe("none");
+  expect(drawn.hidden, `${what} hides some of its words`).toBeLessThanOrEqual(1);
+}
+
 // "What references this row" is read only when pressed, with
 // Details open, and lists each comment that cites the focused statement by the page's word for a
 // comment and the comment's words whole - a comment longer than five lines whole too, with no
 // clamp and no control that cuts it - a link that focuses the comment's row; no row is named by
 // an address, a slug or "spec block"; the issue draws no control; the focus moving closes the
 // list; and a failed read says so, with Retry, after at most three requests.
+// SLOW(>=2s): a statement cited by two comments, one load of the issue and the list opened, read
+// and failed once more with the read answered 500.
 test("what references the focused row opens from its facts, and each row leads to the citing node", async ({
   browser,
 }) => {
@@ -4444,14 +4480,15 @@ test("what references the focused row opens from its facts, and each row leads t
         spec: ":::requirement{#r-cited}\nThe history is drawn in Details.\n:::\n",
         title: "What references a statement",
       });
+      const reference = `dispatch://${issue.key}/spec#b-r-cited`;
       const comment = await createComment(
         issue.key,
-        { body: `Bob checks dispatch://${issue.key}/spec#b-r-cited against the page.` },
+        { body: `Bob checks ${reference} against the page.` },
         { login: "bob" }
       );
       await createComment(
         issue.key,
-        { body: longCitingLines(`dispatch://${issue.key}/spec#b-r-cited`).join("\n\n") },
+        { body: longCitingLines(reference).join("\n\n") },
         { login: "bob" }
       );
       const spec = ((await getIssue(issue.key)).artifacts ?? []).find(
@@ -4461,7 +4498,7 @@ test("what references the focused row opens from its facts, and each row leads t
       return {
         comment: comment.id,
         key: issue.key,
-        reference: `dispatch://${issue.key}/spec#b-r-cited`,
+        reference,
         specSlug: spec.slug,
         statement: blockNode(spec.slug, "r-cited"),
       };
@@ -4517,17 +4554,8 @@ test("what references the focused row opens from its facts, and each row leads t
       );
       // Whole on the screen too: more than five lines drawn, nothing hidden under a clamp, and no
       // control that cuts it.
-      const drawn = await long.getByRole("link").evaluate((words) => {
-        const style = getComputedStyle(words);
-        return {
-          clamp: style.webkitLineClamp,
-          hidden: words.scrollHeight - words.clientHeight,
-          lines: words.getBoundingClientRect().height / Number.parseFloat(style.lineHeight),
-        };
-      });
-      expect(drawn.lines, "the long comment's row draws five lines or fewer").toBeGreaterThan(5);
-      expect(drawn.clamp, "the long comment's row is clamped").toBe("none");
-      expect(drawn.hidden, "the long comment's row hides some of its words").toBeLessThanOrEqual(1);
+      const [drawn] = await measureWords(long.getByRole("link"));
+      expectWordsWhole(drawn, "the long comment's row");
       await expect(rows.getByRole("button"), "a row draws a control that cuts it").toHaveCount(0);
       // The list's rows are drawn and settled: their count and the long comment's words were read
       // above, so one read of their text is the state the row means to check.
@@ -4604,7 +4632,7 @@ const factsFollower = { id: "e2e-facts-follower", kind: "session" as const };
 // target, each with its copy control. The question's thread is its own read, which the page sends
 // only once Details is open, and once: the page holds no read of the issue's questions with their
 // threads.
-// SLOW(>=2s): a question written, reworded and followed, and two loads of the issue.
+// SLOW(>=2s): a question written, reworded and followed, and one load of the issue.
 test("the facts of a focused ask hold its edit history, its recipients and its copy handles", async ({
   browser,
 }) => {
@@ -4621,7 +4649,7 @@ test("the facts of a focused ask hold its edit history, its recipients and its c
       await editAsk(ask.id, { question: "Which store holds a reply's drafts?" }, factsAsker);
       await followAsk(ask.id, factsFollower.id, factsFollower);
       await setLiveSessions([
-        { session_id: factsAsker.actor.id, title: "Facts asker (e2e)" },
+        { session_id: factsAsker.actor.id, title: factsAsker.actor.origin.session_title },
         { session_id: factsFollower.id, title: "Facts follower (e2e)" },
       ]);
       return { ask: ask.id, key: issue.key };
@@ -4648,7 +4676,7 @@ test("the facts of a focused ask hold its edit history, its recipients and its c
 
       // Opened at the question's facts, the page reads the question once.
       const opened = watchApiRequests(page);
-      const facts = await askFacts(page, seeded.key, seeded.ask);
+      const facts = await focusedRowFacts(page, seeded.ask);
       await expect(facts.getByText(/^Edited /), "the ask's edit is not in its facts").toBeVisible();
       await facts.getByText("Show 1 previous version", { exact: true }).click();
       await expect(facts.getByText("Which store holds the drafts?", { exact: true })).toBeVisible();
@@ -4660,17 +4688,18 @@ test("the facts of a focused ask hold its edit history, its recipients and its c
       );
       await recipients.getByRole("button", { name: /^Reaches/ }).click();
       const followers = recipients.getByRole("list", { name: "Followers" });
-      await expect(followers).toContainText("Facts asker (e2e)");
+      await expect(followers).toContainText(factsAsker.actor.origin.session_title);
       await expect(followers).toContainText("Facts follower (e2e)");
 
       // The asker's name opens its copy handles.
       const writtenBy = facts
         .locator("dl > div")
         .filter({ has: page.getByText(`${CONTROL_LABELS.written_by}:`, { exact: true }) });
+      const { session_title: askerTitle, tmux: askerTmux } = factsAsker.actor.origin;
       const handles = [
         `Copy session ID ${factsAsker.actor.id}`,
-        "Copy session title Facts asker (e2e)",
-        "Copy tmux target facts:2.1",
+        `Copy session title ${askerTitle}`,
+        `Copy tmux target ${askerTmux}`,
       ];
       for (const name of handles) {
         await expect(facts.getByRole("button", { exact: true, name })).toHaveCount(0);
@@ -4692,8 +4721,9 @@ test("the facts of a focused ask hold its edit history, its recipients and its c
 /** The architecture repository of the row below, whose model holds `MANY_COMPONENTS`. */
 const LISTS_ARCHITECTURE = "acme/lists-architecture";
 
-/** How many entries each list of the row below holds: five past the 20 Details draws at first. */
-const LONG_LIST = 25;
+/** How many entries each list of the row below holds: five past the `LIST_PAGE` Details draws at
+ *  first. */
+const LONG_LIST = LIST_PAGE + 5;
 
 /** The ids of the components of the row below's model, one file each: `part-01` and on. */
 const MANY_COMPONENTS = Array.from(
@@ -4719,61 +4749,72 @@ function citingNoteLines(key: string, number: number): string[] {
  * server holds no more than 20 of each.
  */
 async function seedLongLists() {
-  await createProject({ key: "CORE", name: "Core" });
-  await seedFakeGithub({
-    [LISTS_ARCHITECTURE]: {
-      contents: "read",
-      files: Object.fromEntries(
-        MANY_COMPONENTS.map((id) => [`${id}.md`, `---\ntitle: Component ${id}\n---\nA part.\n`])
-      ),
-      installation_id: 421,
-    },
-  });
+  await Promise.all([
+    createProject({ key: "CORE", name: "Core" }),
+    seedFakeGithub({
+      [LISTS_ARCHITECTURE]: {
+        contents: "read",
+        files: Object.fromEntries(
+          MANY_COMPONENTS.map((id) => [`${id}.md`, `---\ntitle: Component ${id}\n---\nA part.\n`])
+        ),
+        installation_id: 421,
+      },
+    }),
+  ]);
   await putArchitectureSource("CORE", { branch: "main", repo: LISTS_ARCHITECTURE });
   const source = await syncArchitectureSource("CORE", LISTS_ARCHITECTURE);
   if (source.last_error !== null) {
     throw new Error(`the component model did not import: ${source.last_error}`);
   }
   const issue = await createIssue({
+    components: { ids: MANY_COMPONENTS, mode: "explicit" },
     project: "CORE",
     spec: ":::requirement{#r-cited}\nEvery list draws 20 entries at a time.\n:::\n",
     title: "An issue whose lists run past 20",
   });
-  await patchIssue(issue.key, { components: { ids: MANY_COMPONENTS, mode: "explicit" } });
-  for (let index = 1; index < LONG_LIST; index += 1) {
-    await createIssueArtifact(issue.key, {
-      content: `Notes ${index}.\n`,
-      name: `notes-${String(index).padStart(2, "0")}.md`,
-    });
-  }
-  for (let index = 1; index <= LONG_LIST; index += 1) {
-    // `force`: the titles are alike on purpose, and the duplicate check would refuse them.
-    const waiter = await createIssue({
-      force: true,
-      project: "CORE",
-      title: `Waits on the issue (${index})`,
-    });
-    await patchIssue(waiter.key, { blocked_by: [issue.key] });
-  }
-  for (let index = 1; index <= LONG_LIST; index += 1) {
-    await createComment(
-      issue.key,
-      { body: `Citing comment ${index} reads dispatch://${issue.key}/spec#b-r-cited.` },
-      { login: "bob" }
-    );
-  }
+  // Each list is written at once: its writes are independent, and the row reads no creation order.
+  await Promise.all(
+    Array.from({ length: LONG_LIST - 1 }, (_, index) =>
+      createIssueArtifact(issue.key, {
+        content: `Notes ${index + 1}.\n`,
+        name: `notes-${String(index + 1).padStart(2, "0")}.md`,
+      })
+    )
+  );
+  await Promise.all(
+    Array.from({ length: LONG_LIST }, (_, index) =>
+      // `force`: the titles are alike on purpose, and the duplicate check would refuse them.
+      createIssue({
+        blocked_by: [issue.key],
+        force: true,
+        project: "CORE",
+        title: `Waits on the issue (${index + 1})`,
+      })
+    )
+  );
+  await Promise.all(
+    Array.from({ length: LONG_LIST }, (_, index) =>
+      createComment(
+        issue.key,
+        { body: `Citing comment ${index + 1} reads dispatch://${issue.key}/spec#b-r-cited.` },
+        { login: "bob" }
+      )
+    )
+  );
   const other = await createIssue({
     force: true,
     project: "CORE",
     title: "Another issue, whose comments cite the first",
   });
-  for (let index = 1; index <= LONG_LIST; index += 1) {
-    await createComment(
-      other.key,
-      { body: citingNoteLines(issue.key, index).join("\n") },
-      { login: "bob" }
-    );
-  }
+  await Promise.all(
+    Array.from({ length: LONG_LIST }, (_, index) =>
+      createComment(
+        other.key,
+        { body: citingNoteLines(issue.key, index + 1).join("\n") },
+        { login: "bob" }
+      )
+    )
+  );
   const spec = ((await getIssue(issue.key)).artifacts ?? []).find((artifact) => artifact.primary);
   if (spec === undefined) throw new Error(`${issue.key} holds no spec`);
   return { key: issue.key, statement: blockNode(spec.slug, "r-cited") };
@@ -4782,20 +4823,21 @@ async function seedLongLists() {
 /**
  * Presses `more`, the Show more under a list of Details of `total` entries, until it goes: each
  * press keeps the entries drawn and draws the next 20, or the rest, and moves the focus to the
- * first entry it drew, which `focused(index)` finds by its place in the list. Before each press
- * the list draws the entries drawn so far, and `more` says how many are left.
+ * first entry it drew, which `focused(index)` finds by its place in the list: by default, the
+ * focus on or inside entry `index` of `entries`. Before each press the list draws the entries
+ * drawn so far, and `more` says how many are left.
  */
 async function showEveryEntry(
   entries: Locator,
   more: Locator,
   total: number,
-  focused: (index: number) => Promise<boolean>,
-  what: string
+  what: string,
+  focused: (index: number) => Promise<boolean> = (index) => focusInside(entries.nth(index))
 ): Promise<void> {
   for (let drawn = LIST_PAGE; drawn < total; drawn += LIST_PAGE) {
     await expect(entries, `${what} drew another count than ${drawn}`).toHaveCount(drawn);
     await expect(more, `${what}'s Show more does not say ${total - drawn} are left`).toHaveText(
-      `${CONTROL_LABELS.show_more} (${total - drawn} ${CONTROL_LABELS.show_more_left})`
+      showMoreLeft(total - drawn)
     );
     await more.click();
     await expect(entries, `${what}'s Show more did not draw the next entries`).toHaveCount(
@@ -4806,11 +4848,6 @@ async function showEveryEntry(
       .toBe(true);
   }
   await expect(more, `${what}'s Show more stayed with every entry drawn`).toHaveCount(0);
-}
-
-/** Whether the focus is on `entry` or inside it. */
-function focusOnOrIn(entry: Locator): Promise<boolean> {
-  return entry.evaluate((element) => element.contains(document.activeElement));
 }
 
 // Each list of unbounded length that Details draws shows its first 20 entries and, under them,
@@ -4835,7 +4872,6 @@ test("each list of Details shows 20 entries and a control for the next 20", asyn
       blocking,
       blocks.getByRole("button", { name: CONTROL_LABELS.show_more }),
       LONG_LIST,
-      (index) => focusOnOrIn(blocking.nth(index)),
       "Blocks"
     );
 
@@ -4851,7 +4887,6 @@ test("each list of Details shows 20 entries and a control for the next 20", asyn
       chips,
       components.getByRole("button", { name: CONTROL_LABELS.show_more }),
       LONG_LIST,
-      (index) => focusOnOrIn(chips.nth(index)),
       "Components"
     );
 
@@ -4860,21 +4895,22 @@ test("each list of Details shows 20 entries and a control for the next 20", asyn
       documents,
       filesList(page).locator("xpath=..").getByRole("button", { name: CONTROL_LABELS.show_more }),
       LONG_LIST,
-      (index) => focusOnOrIn(documents.nth(index)),
       "Files and documents"
     );
 
     // Referenced by, once read, counts every row of its list: the issues the issue blocks, then
     // the other issue's comments.
     const referencedBy = marginSection(page, "references").getByRole("button", {
-      name: /^Referenced by/,
+      name: new RegExp(`^${PROPERTY_LABELS.referenced_by}`, "u"),
     });
     await referencedBy.click();
     await expect(referencedBy).toHaveAttribute("aria-expanded", "true");
     const panel = page.locator(`[id="${await referencedBy.getAttribute("aria-controls")}"]`);
     const referenceRows = panel.locator("[data-reference-rows]");
-    await expect(referencedBy).toHaveText(/^Referenced by \(\d+\)$/);
-    const listed = Number(/\((\d+)\)/.exec((await referencedBy.textContent()) ?? "")?.[1]);
+    const counted = new RegExp(`^${PROPERTY_LABELS.referenced_by} \\((\\d+)\\)$`, "u");
+    await expect(referencedBy).toHaveText(counted);
+    // The count appears only once the list has been read, so the first count drawn is the final one.
+    const listed = Number(counted.exec((await referencedBy.textContent()) ?? "")?.[1]);
     expect(
       listed,
       "Referenced by does not count the issues the issue blocks and the comments that cite it"
@@ -4883,6 +4919,7 @@ test("each list of Details shows 20 entries and a control for the next 20", asyn
       referenceRows,
       panel.getByRole("button", { name: CONTROL_LABELS.show_more }),
       listed,
+      "Referenced by",
       // The first row a press drew takes the focus, or, where it is the first row of its card,
       // the card does, whose link names its source.
       (index) =>
@@ -4890,37 +4927,22 @@ test("each list of Details shows 20 entries and a control for the next 20", asyn
           const card =
             row.parentElement?.firstElementChild === row ? row.parentElement?.parentElement : row;
           return card?.contains(document.activeElement) === true;
-        }),
-      "Referenced by"
+        })
     );
+    // The list is drawn and settled: every row was counted and pressed down above, so one read of
+    // its paragraphs is the state the row checks.
+    const paragraphs = await measureWords(panel.locator("p"));
     for (let number = 1; number <= LONG_LIST; number += 1) {
       const lines = citingNoteLines(seeded.key, number);
-      const excerpt = panel.locator("p", { hasText: lines[1] ?? "" });
-      await expect(excerpt, `Referenced by draws no citing comment ${number}`).toHaveCount(1);
-      for (const line of [(lines[0] ?? "").replace(/ dispatch:.*$/u, ""), ...lines.slice(1)]) {
-        await expect(excerpt, `Referenced by cut citing comment ${number}`).toContainText(line);
+      const excerpts = paragraphs.filter((paragraph) => paragraph.text.includes(lines[1] ?? ""));
+      expect(excerpts, `Referenced by draws no citing comment ${number}`).toHaveLength(1);
+      for (const excerpt of excerpts) {
+        for (const line of [(lines[0] ?? "").replace(/ dispatch:.*$/u, ""), ...lines.slice(1)]) {
+          expect(excerpt.text, `Referenced by cut citing comment ${number}`).toContain(line);
+        }
+        expectWordsWhole(excerpt, `citing comment ${number}`);
       }
-      const drawn = await excerpt.evaluate((words) => {
-        const style = getComputedStyle(words);
-        return {
-          clamp: style.webkitLineClamp,
-          hidden: words.scrollHeight - words.clientHeight,
-          lines: words.getBoundingClientRect().height / Number.parseFloat(style.lineHeight),
-        };
-      });
-      expect(drawn.clamp, `citing comment ${number} is clamped`).toBe("none");
-      expect(drawn.hidden, `citing comment ${number} hides some of its words`).toBeLessThanOrEqual(
-        1
-      );
-      expect(
-        drawn.lines,
-        `citing comment ${number} is drawn in five lines or fewer`
-      ).toBeGreaterThan(5);
     }
-    await expect(
-      panel.getByRole("button", { exact: true, name: CONTROL_LABELS.show_more }),
-      "a citing comment in Referenced by is cut behind a Show more of its own"
-    ).toHaveCount(0);
 
     // What references the statement, from its facts.
     const facts = await focusedRowFacts(page, seeded.statement);
@@ -4933,7 +4955,6 @@ test("each list of Details shows 20 entries and a control for the next 20", asyn
       rows,
       references.getByRole("button", { name: CONTROL_LABELS.show_more }),
       LONG_LIST,
-      (index) => focusOnOrIn(rows.nth(index)),
       "What references the statement"
     );
   });
