@@ -12,6 +12,7 @@ import (
 // the daemon's boot closes it; the phase constraints then admit accepting and refuse
 // production_check.
 func TestTheOldPostMergePhaseMigratesToMergingAndTheConstraintsSwap(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 48)
@@ -66,6 +67,7 @@ func TestTheOldPostMergePhaseMigratesToMergingAndTheConstraintsSwap(t *testing.T
 // existed, and the production check its table: a row per closed issue the constraint admits with
 // a known outcome and refuses with any other, and the outbox admits the check's three kinds.
 func TestTheMergeCommitAndTheProductionCheckArriveWith0049(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 48)

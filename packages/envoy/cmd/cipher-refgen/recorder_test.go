@@ -31,6 +31,8 @@ func writePageRefusal(w http.ResponseWriter, status int, code, msg, approveURL s
 	writeError(w, status, code, msg)
 }
 
+func writeHoldRefusal(w http.ResponseWriter, status int, code, msg string) { writeJSON(w, status) }
+
 func writeJSON(w http.ResponseWriter, status int) { w.WriteHeader(status) }
 
 func served(w http.ResponseWriter) {

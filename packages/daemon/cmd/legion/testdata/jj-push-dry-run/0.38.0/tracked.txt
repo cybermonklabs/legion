@@ -1,0 +1,8 @@
+jj git push --dry-run --ignore-working-copy --color=never --tracked
+Warning: Refusing to push deleted bookmark gone
+Hint: Push deleted bookmarks with --deleted or forget the bookmark to suppress this warning.
+Changes to push to origin:
+  Move backward bookmark backward from 82c89dd0bcca to bacdb9e98ea0
+  Move forward bookmark forward from bacdb9e98ea0 to 82c89dd0bcca
+  Move sideways bookmark sideways from bacdb9e98ea0 to 2b90beefa6c7
+Dry-run requested, not pushing.

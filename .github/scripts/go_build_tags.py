@@ -179,11 +179,13 @@ def compiled(module: Path, goos: str, goarch: str, tags: list, dirs: list) -> se
     not a pattern, so a directory whose every file is excluded is still listed) for goos/goarch
     under `tags`: a package's files and its test files, which a vet reads too. `-find` keeps go
     list from loading the packages these import; in module mode go still resolves each import,
-    so a module the cache lacks is downloaded through GOPROXY as it is without `-find`."""
+    which would download every module a cold runner's cache lacks. So it runs with GOPROXY=off:
+    such an import is then a load error -e keeps, and the file lists, which go reads off each
+    directory under the build context, are the same."""
     base = module.resolve()
     patterns = ["." if d.resolve() == base else f"./{d.resolve().relative_to(base).as_posix()}" for d in dirs]
     out = go(module, ["list", "-e", "-find", f"-json=Dir,{','.join(LISTED)}", "-tags", ",".join(tags), *patterns],
-             GOOS=goos, GOARCH=goarch)
+             GOOS=goos, GOARCH=goarch, GOPROXY="off")
     return {str((Path(package["Dir"]) / name).resolve())
             for package in decode_stream(out) for field in LISTED for name in package.get(field) or []}
 
