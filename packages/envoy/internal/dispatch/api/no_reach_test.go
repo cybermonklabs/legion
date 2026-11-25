@@ -1232,9 +1232,20 @@ func olderBuildReadsTheGraph(t *testing.T) {
 // holds it: a read that gained a join, lost an index or started reading the store would name a
 // different set. They are pinned rather than derived, because a derivation from the same
 // statement would move with it.
+//
+// The comment read also reads issues and artifacts: a comment holds no project of its own, so its
+// project clause reads its owner's (access.ItemOwnerClause, from private projects), one keyed probe
+// of the issue or document the comment hangs from. Nothing else the read touches changed.
+//
+// The block read also reads graph_nodes: where meaning search stands on each block is read only
+// while the reader may see the document (refs.BlockEmbeddingStates binds the registry's artifact
+// predicate, from private projects), one keyed probe of the document's node. It reads issues too:
+// a block's counts count each anchored comment and ask only where the reader may read it
+// (access.ItemOwnerClause over its own owner, from private projects), one keyed probe of the
+// issue each anchored row hangs from. Nothing else the read touches changed.
 var readRelations = map[string][]string{
-	"GET /api/v1/comments/{id}":         {"comment_deliveries", "comment_mentions", "comments", "doc_updates"},
-	"GET /api/v1/artifacts/{id}/blocks": {"artifacts", "asks", "comments", "doc_updates", "embeddings"},
+	"GET /api/v1/comments/{id}":         {"artifacts", "comment_deliveries", "comment_mentions", "comments", "doc_updates", "issues"},
+	"GET /api/v1/artifacts/{id}/blocks": {"artifacts", "asks", "comments", "doc_updates", "embeddings", "graph_nodes", "issues"},
 }
 
 // readAnswerPaths are the fields each of the two reads answers for the seed readsUnchanged
