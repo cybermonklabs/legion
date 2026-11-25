@@ -262,6 +262,25 @@ func TestAConnectDeadlineKeepsTheQuerysOtherPairsByteForByte(t *testing.T) {
 	}
 }
 
+// noDeadline is a testing.TB with no Deadline method, as a benchmark's *testing.B and a fuzz
+// target's *testing.F are at Go 1.27.3: the interface it embeds carries no Deadline, so the
+// *testing.T inside does not lend it one.
+type noDeadline struct{ testing.TB }
+
+// A caller that names no deadline keeps a real connect bound, pgxpool's two minutes, for its
+// pools and its plain pgx.Connect alike, rather than the longest connect_timeout pgx holds, which
+// is no bound at all. Control: connectTimeout's old answer for such a caller,
+// math.MaxInt64/int64(time.Second), sets connect_timeout=9223372036 and fails this.
+func TestAConnectWithNoTestDeadlineIsBoundedByTwoMinutes(t *testing.T) {
+	if _, bounded := ConnectEnd(noDeadline{t}); bounded {
+		t.Fatal("ConnectEnd named a deadline for a testing.TB with no Deadline method")
+	}
+	got := WithConnectDeadline(noDeadline{t}, "postgres://u@h:5432/db?sslmode=disable&connect_timeout=3")
+	if want := "postgres://u@h:5432/db?sslmode=disable&connect_timeout=120"; got != want {
+		t.Fatalf("WithConnectDeadline for a caller with no deadline =\n  %s\nwant\n  %s", got, want)
+	}
+}
+
 // A test's database on a server URL whose options pair holds an escaped space connects, with the
 // option in force. The option is work_mem, which bounds nothing in time: the admin URL carries it
 // too, so a statement_timeout there would also bound the create database, which a loaded server

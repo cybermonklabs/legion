@@ -13,7 +13,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"math"
 	"net/url"
 	"slices"
 	"strconv"
@@ -121,8 +120,8 @@ func otherPairs(rawQuery string, names ...string) []string {
 // never answers fails it on pgx's own error with the margin left for the failure and the test's
 // cleanups, as a testwait wait gives up, before go test's alarm would end the binary with neither.
 // A shorter connect_timeout in the URL would make the test depend on load again, so it is
-// replaced. Where t names no deadline (-timeout 0, or a testing.TB with no Deadline method) it is
-// the longest connect_timeout pgx holds. Every other pair of the query is kept byte for byte
+// replaced. Where t names no deadline (ConnectEnd says which callers) it is
+// NoDeadlineConnectTimeout, two minutes. Every other pair of the query is kept byte for byte
 // (otherPairs), as databaseURL keeps them, so an options pair still connects. A failure prints
 // only what url.Parse wraps, since the URL carries a credential.
 func WithConnectDeadline(t testing.TB, databaseURL string) string {
@@ -148,19 +147,27 @@ func serverKey(adminURL string) string {
 }
 
 // connectTimeout is the connect_timeout WithConnectDeadline sets for t, in whole seconds
-// (TimeoutUntil of ConnectEnd), and the longest pgx holds where t names no deadline.
+// (TimeoutUntil of ConnectEnd), and NoDeadlineConnectTimeout where t names no deadline.
 func connectTimeout(t testing.TB) string {
 	end, bounded := ConnectEnd(t)
 	if !bounded {
-		return strconv.FormatInt(math.MaxInt64/int64(time.Second), 10)
+		return strconv.FormatInt(int64(NoDeadlineConnectTimeout/time.Second), 10)
 	}
 	return strconv.FormatInt(int64(TimeoutUntil(end)/time.Second), 10)
 }
 
+// NoDeadlineConnectTimeout is the connect bound of a connect that no test deadline bounds: two
+// minutes, pgxpool's own default (pgxpool/pool.go:291-292 at pgx v5.13.0), which a plain
+// pgx.Connect would otherwise not have. A caller with no deadline (ConnectEnd) gets it; the
+// longest connect_timeout pgx holds, 9,223,372,036 s, would leave it no bound at all.
+const NoDeadlineConnectTimeout = 2 * time.Minute
+
 // ConnectEnd is the moment every connect a test of t's binary makes must end by: the binary's
 // deadline (go test's -timeout, the one t.Deadline names for every test of the binary) less
-// testwait.Margin. It is false where t names no deadline (-timeout 0, or a testing.TB with no
-// Deadline method).
+// testwait.Margin. It is false where t names no deadline: a *testing.T under -timeout 0, or inside
+// a synctest bubble (testing's T.Deadline), and every testing.TB that is not a *testing.T, since
+// at Go 1.27.3 only *testing.T has a Deadline method: a benchmark's *testing.B and a fuzz
+// target's *testing.F have none.
 func ConnectEnd(t testing.TB) (time.Time, bool) {
 	named, ok := t.(interface{ Deadline() (time.Time, bool) })
 	if !ok {

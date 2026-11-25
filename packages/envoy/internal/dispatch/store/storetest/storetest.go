@@ -263,7 +263,7 @@ func Run(run func() int) int {
 	}
 	templates.Unlock()
 	for _, name := range names {
-		if _, err := shared.admin.Exec(context.Background(), "drop database "+name); err != nil {
+		if _, err := shared.admin.Exec(teardown, "drop database "+name); err != nil {
 			fmt.Fprintf(os.Stderr, "storetest: drop template database %s: %v\n", name, err)
 			if code == 0 {
 				code = 1
@@ -279,6 +279,15 @@ const (
 	dropWindow = 15 * time.Second
 	dropPause  = 200 * time.Millisecond
 )
+
+// teardownKey marks teardown, the context of every drop: dropDatabase's, which a test's cleanup
+// starts and Run waits for after the tests, and Run's template drops. A connection the admin pool
+// makes for a statement under it takes testdb.NoDeadlineConnectTimeout, not the tests' bound
+// (openAdmin). pgxpool hands BeforeConnect a context with the values of the call that asked for
+// the connection (puddle's constructor context, at pgx v5.13.0 and puddle v2.2.3).
+type teardownKey struct{}
+
+var teardown = context.WithValue(context.Background(), teardownKey{}, true)
 
 // dropDatabase drops name without waiting for it; Main waits for every drop. Drops in flight
 // together share one checkpoint.
@@ -296,7 +305,7 @@ func dropDatabase(name string) {
 		deadline := time.Now().Add(dropWindow)
 		var err error
 		for {
-			if _, err = shared.admin.Exec(context.Background(), "drop database "+name); err == nil {
+			if _, err = shared.admin.Exec(teardown, "drop database "+name); err == nil {
 				return
 			}
 			var pgError *pgconn.PgError
@@ -305,7 +314,7 @@ func dropDatabase(name string) {
 			}
 			time.Sleep(dropPause)
 		}
-		_, forced := shared.admin.Exec(context.Background(), "drop database "+name+" with (force)")
+		_, forced := shared.admin.Exec(teardown, "drop database "+name+" with (force)")
 		if forced == nil {
 			return
 		}
@@ -321,10 +330,14 @@ func dropDatabase(name string) {
 // openAdmin opens the admin pool, on the server raw names, that every database and template is
 // created and dropped through, and keeps raw as the server's URL (shared.server), with no bound of
 // this package's. The pool outlives the test that opens it and makes connections for later tests,
-// so a connection's connect timeout is not one fixed when the pool opened: each new connection
-// takes the seconds left until end as it is made (testdb.TimeoutUntil), so one made late ends on
-// pgx's own error with testwait's margin left, not after go test's alarm. Without bounded (no
-// deadline) raw's stands.
+// so a connection's connect timeout is not one fixed when the pool opened: each new connection a
+// test's statement asks for takes the seconds left until end as it is made (testdb.TimeoutUntil),
+// so one made late ends on pgx's own error with testwait's margin left, not after go test's alarm.
+// A connection a drop asks for (teardown) takes testdb.NoDeadlineConnectTimeout instead, as at
+// main: Run waits for the drops after the tests, when go test's alarm has stopped, and once end
+// has passed the tests' bound is a second (TimeoutUntil's floor), which a loaded server's login
+// outlasts, failing the run and leaving the database and its template on the server. Without
+// bounded (no deadline) raw's bound stands, pgxpool's two minutes where raw names none.
 func openAdmin(raw string, end time.Time, bounded bool) error {
 	server, err := url.Parse(raw)
 	if err != nil {
@@ -343,7 +356,11 @@ func openAdmin(raw string, end time.Time, bounded bool) error {
 	// machine the packages testing against one server at once would exceed its connection limit.
 	config.MaxConns = 4
 	if bounded {
-		config.BeforeConnect = func(_ context.Context, connection *pgx.ConnConfig) error {
+		config.BeforeConnect = func(asked context.Context, connection *pgx.ConnConfig) error {
+			if asked.Value(teardownKey{}) != nil {
+				connection.ConnectTimeout = testdb.NoDeadlineConnectTimeout
+				return nil
+			}
 			connection.ConnectTimeout = testdb.TimeoutUntil(end)
 			return nil
 		}
