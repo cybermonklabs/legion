@@ -3,8 +3,8 @@
 // The basebuild tag holds per-change tools, not standing tests. Each is run at a child's head
 // against a base its Verification document names, never on its own as a check of main: this
 // file's TestTheStoreCensusReadsZeroDifferences, and the predicate-and-lens read cost of the
-// INFRA-1098 tree's branches (predicate_lens_read_cost_test.go, which only those branches carry,
-// and which runs only where LEGION_SCALE_TEST=1 is set).
+// INFRA-1098 tree's branches (predicate_lens_read_cost_test.go, which only those branches carry).
+// That read cost runs only where LEGION_SCALE_TEST=1 is set.
 // Each builds the server at the commit BASELINE_SHA names (baseBuild, testbaseline.Commit) and
 // compares it with this build, so it needs a checkout that holds that commit, and takes from 2 to
 // 45 minutes on an issue pod. graph_cost_test.go holds the two arms, the clock and the order
