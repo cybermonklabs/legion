@@ -1555,7 +1555,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("Identity() = %q, want the endpoint's host", embedder.Identity())
 			}
 			refusedWith(t, azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_ENDPOINT": ""}), "DISPATCH_AZURE_EMBED_ENDPOINT is required")
-			refusedWith(t, azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_ENDPOINT": "http://embed.example/models"}), "DISPATCH_AZURE_EMBED_ENDPOINT=")
+			refusedWith(t, azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_ENDPOINT": "http://embed.example/models"}), "DISPATCH_AZURE_EMBED_ENDPOINT (expected an absolute https URL")
 			refusedWith(t, map[string]string{"DISPATCH_AZURE_EMBED_ENDPOINT": "https://embed.example/models"}, "DISPATCH_AZURE_EMBED_ENDPOINT set, but DISPATCH_EMBEDDER is unset")
 		},
 		"DISPATCH_AZURE_EMBED_DEPLOYMENT": func(t *testing.T) {
@@ -1658,7 +1658,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("Endpoint = %q, want the trimmed URL", boot.Answerer.Endpoint)
 			}
 			refusedWith(t, azureChatEnvironment(map[string]string{"DISPATCH_AZURE_CHAT_ENDPOINT": ""}), "DISPATCH_AZURE_CHAT_ENDPOINT is required")
-			refusedWith(t, azureChatEnvironment(map[string]string{"DISPATCH_AZURE_CHAT_ENDPOINT": "http://chat.example/models"}), "DISPATCH_AZURE_CHAT_ENDPOINT=")
+			refusedWith(t, azureChatEnvironment(map[string]string{"DISPATCH_AZURE_CHAT_ENDPOINT": "http://chat.example/models"}), "DISPATCH_AZURE_CHAT_ENDPOINT (expected an absolute https URL")
 			refusedWith(t, map[string]string{"DISPATCH_AZURE_CHAT_ENDPOINT": "https://chat.example/models"}, "DISPATCH_AZURE_CHAT_ENDPOINT set, but DISPATCH_ANSWERER is unset")
 			refusedWith(t, endpointChatEnvironment(map[string]string{"DISPATCH_AZURE_CHAT_ENDPOINT": "https://chat.example/models"}), "DISPATCH_AZURE_CHAT_ENDPOINT set, but DISPATCH_ANSWERER is endpoint")
 		},
@@ -1700,7 +1700,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("Endpoint = %q, want the trimmed URL", boot.Answerer.Endpoint)
 			}
 			refusedWith(t, endpointChatEnvironment(map[string]string{"DISPATCH_CHAT_ENDPOINT": ""}), "DISPATCH_CHAT_ENDPOINT is required")
-			refusedWith(t, endpointChatEnvironment(map[string]string{"DISPATCH_CHAT_ENDPOINT": "http://chat.example/v1"}), "DISPATCH_CHAT_ENDPOINT=")
+			refusedWith(t, endpointChatEnvironment(map[string]string{"DISPATCH_CHAT_ENDPOINT": "http://chat.example/v1"}), "DISPATCH_CHAT_ENDPOINT (expected an absolute https URL")
 			refusedWith(t, map[string]string{"DISPATCH_CHAT_ENDPOINT": "https://chat.example/v1"}, "DISPATCH_CHAT_ENDPOINT set, but DISPATCH_ANSWERER is unset")
 			refusedWith(t, azureChatEnvironment(map[string]string{"DISPATCH_CHAT_ENDPOINT": "https://chat.example/v1"}), "DISPATCH_CHAT_ENDPOINT set, but DISPATCH_ANSWERER is azure")
 		},

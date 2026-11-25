@@ -147,15 +147,24 @@ func (c IssuerConfig) configured() bool {
 
 // validate refuses an issuer that is named but not complete: half a configuration would register
 // a token type whose tokens could not be checked, which is worse than not accepting that kind of
-// caller at all. where names the issuer in the refusal.
+// caller at all. where names the issuer in the refusal, which says which parts are set and never
+// their values: an issuer or an audience as written is where a credential would be.
 func (c IssuerConfig) validate(where string) error {
 	if !c.configured() {
 		return nil
 	}
 	if c.Issuer == "" || c.Audience == "" || c.Keys == nil {
-		return fmt.Errorf("oauth: the %s subject token issuer is configured in part (issuer %q, audience %q, keys %t); it needs all three or none", where, c.Issuer, c.Audience, c.Keys != nil)
+		return fmt.Errorf("oauth: the %s subject token issuer is configured in part (issuer %s, audience %s, keys %s); it needs all three or none", where, setOrMissing(c.Issuer != ""), setOrMissing(c.Audience != ""), setOrMissing(c.Keys != nil))
 	}
 	return nil
+}
+
+// setOrMissing is how validate's refusal names a part of an issuer's configuration.
+func setOrMissing(set bool) string {
+	if set {
+		return "set"
+	}
+	return "missing"
 }
 
 // ExchangeConfig is what the RFC 8693 token exchange decides and verifies with. None of it is the

@@ -1,7 +1,7 @@
 {
   "about": "The inventory packages/envoy/scripts/check-redact-remote-text.sh and cmd/redact-gate run: each row a requirement of the redaction of remote text, a test, and for a print-site row its function, the name its test captures the production output under, and its mutation. A Go row's package is relative to packages/envoy; a Bun row's file and every mutation's file are relative to the repository root, and a Bun row's test is its full name in Bun's JUnit report.",
   "gate": {
-    "about": "cmd/redact-gate's configuration. base is the ref whose merge base with HEAD is the change's base. rule and printers are the Go functions (types.Func.FullName) and ts_rule the TypeScript declarations (file#name) whose every call the change adds a row's mutation must name; exempt_files are the rule's own definition, which the fixture and control (1) hold; exempt are calls that print nothing. The box's and the answer's own printers - (redact.Answer).Words, redact.Header, (cipheraddr.Address).WordsOf and a RemoteText printed - are not in rule: each prints the rule's reading and holds no text a call of it could hand out raw, so no one replacement of such a call leaks, and a mutation row could bind none of them; a site that prints through them is held by its print-site row and by its holder's print row instead. row_timeout, in whole seconds, is the time the test of one row may take, its own budget: twice the longest correct row the gate measured on the shared box under its load, 24s (daemon-answer-words-rate-limit) in the full check of 2026-11-21 at 20:21Z-21:05Z, load about 900-1000 on 288 CPUs. No run is bounded by it alone: each run's bound adds four times its start-up run, which the same run measures (cmd/redact-gate's runTest for a row; check-redact-remote-text.sh for a package, whose budget is row_timeout once per top-level test it runs).",
+    "about": "cmd/redact-gate's configuration. base is the ref whose merge base with HEAD is the change's base. rule and printers are the Go functions (types.Func.FullName) and ts_rule the TypeScript declarations (file#name) whose every call the change adds a row's mutation must name; exempt_files are the rule's own definition, which the fixture and control (1) hold; exempt are calls that print nothing. The box's and the answer's own printers - (redact.Answer).Words, redact.Header, (cipheraddr.Address).WordsOf and a RemoteText printed - are not in rule: each prints the rule's reading and holds no text a call of it could hand out raw, so no one replacement of such a call leaks, and a mutation row could bind none of them; a site that prints through them is held by its print-site row and by its holder's print row instead. row_timeout, in whole seconds, is the time the test of one row may take, its own budget: twice the longest correct row the gate measured on the shared box under its load, 24s (daemon-answer-words-rate-limit) in the full check of 2026-11-21 at 20:21Z-21:05Z, load about 900-1000 on 288 CPUs. No Go run is bounded by it alone: each Go run's bound adds four times its start-up run, which the same run measures (cmd/redact-gate's runTest for a row and its -verify for a package, whose budget is row_timeout once per top-level test it runs; runBound derives both); a Bun row's run is bounded by row_timeout alone. leaks are the leak rows: each names its row, the base its leak is at (a commit's full name), the capture its test fails at there, files - the head's files copied onto the base whole, the row's own test file and files that hold no test - and declarations: for a test file other tests share, the file and the top-level declarations of it (types.Func.FullName, or pkg.Name for a type, constant or variable) whose head text control (19) puts in place of the base's, so no other test of that file reaches the base's run.",
     "base": "origin/main",
     "rule": [
       "github.com/sjawhar/envoy/internal/redact.Remote",
@@ -88,8 +88,8 @@
         "test": "print-agent-secrets.apiError"
       },
       {
-        "holder": "(*github.com/sjawhar/envoy/cmd/cipher.client).doStatus struct{Code redact.RemoteText \"json:\\\"code\\\"\"; Error redact.RemoteText \"json:\\\"error\\\"\"; AnswerID redact.RemoteText \"json:\\\"answer_id\\\"\"}",
-        "test": "print-agent-secrets.client.doStatus.envelope"
+        "holder": "(*github.com/sjawhar/envoy/cmd/cipher.client).send struct{Code redact.RemoteText \"json:\\\"code\\\"\"; Error redact.RemoteText \"json:\\\"error\\\"\"; AnswerID redact.RemoteText \"json:\\\"answer_id\\\"\"}",
+        "test": "print-agent-secrets.client.send.envelope"
       },
       {
         "holder": "github.com/sjawhar/envoy/cmd/cipher.RequestResult",
@@ -134,6 +134,10 @@
       {
         "holder": "github.com/sjawhar/envoy/cmd/cipher.GrantValues",
         "test": "print-agent-secrets.GrantValues"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/cmd/cipher.leftOut",
+        "test": "print-agent-secrets.leftOut"
       },
       {
         "holder": "github.com/sjawhar/envoy/cmd/cipher.Reread",
@@ -600,11 +604,16 @@
       {
         "row": "leak-launcher-exchange-failed",
         "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
-        "files": [
-          "packages/daemon/internal/launcher/metadata_redact_test.go",
-          "packages/daemon/internal/launcher/metadata_test.go",
-          "packages/envoy/redirects/redirects.go",
-          "packages/daemon/internal/launcher/metadata_launcher_test.go"
+        "files": ["packages/daemon/internal/launcher/metadata_redact_test.go"],
+        "declarations": [
+          {
+            "file": "packages/daemon/internal/launcher/metadata_test.go",
+            "names": [
+              "github.com/sjawhar/legion/daemon/internal/launcher.fakeSTS",
+              "(*github.com/sjawhar/legion/daemon/internal/launcher.fakeSTS).ServeHTTP",
+              "(*github.com/sjawhar/legion/daemon/internal/launcher.fakeSTS).refuseWith"
+            ]
+          }
         ],
         "capture": "launcher.exchange-failed"
       },
@@ -1786,12 +1795,7 @@
       {
         "row": "launcher-exchange-echo",
         "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
-        "files": [
-          "packages/daemon/internal/launcher/metadata_redact_test.go",
-          "packages/daemon/internal/launcher/metadata_test.go",
-          "packages/envoy/redirects/redirects.go",
-          "packages/daemon/internal/launcher/metadata_launcher_test.go"
-        ],
+        "files": ["packages/daemon/internal/launcher/metadata_redact_test.go"],
         "capture": "launcher.exchange-echo"
       },
       {
@@ -3057,99 +3061,132 @@
       {
         "row": "leakguard-tar-member-whole",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": [
-          "packages/daemon/internal/leakguard/tar_member_echo_test.go",
-          "packages/daemon/internal/leakguard/source_test.go"
+        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "declarations": [
+          {
+            "file": "packages/daemon/internal/leakguard/source_test.go",
+            "names": ["github.com/sjawhar/legion/daemon/internal/leakguard.sourceToken"]
+          }
         ],
         "capture": "leakguard.tar-member/whole"
       },
       {
         "row": "leakguard-tar-member-run",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": [
-          "packages/daemon/internal/leakguard/tar_member_echo_test.go",
-          "packages/daemon/internal/leakguard/source_test.go"
+        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "declarations": [
+          {
+            "file": "packages/daemon/internal/leakguard/source_test.go",
+            "names": ["github.com/sjawhar/legion/daemon/internal/leakguard.sourceToken"]
+          }
         ],
         "capture": "leakguard.tar-member/run"
       },
       {
         "row": "leakguard-tar-member-escape",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": [
-          "packages/daemon/internal/leakguard/tar_member_echo_test.go",
-          "packages/daemon/internal/leakguard/source_test.go"
+        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "declarations": [
+          {
+            "file": "packages/daemon/internal/leakguard/source_test.go",
+            "names": ["github.com/sjawhar/legion/daemon/internal/leakguard.sourceToken"]
+          }
         ],
         "capture": "leakguard.tar-member/escape"
       },
       {
         "row": "leakguard-served-body-below",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": [
-          "packages/daemon/internal/leakguard/tar_member_echo_test.go",
-          "packages/daemon/internal/leakguard/source_test.go"
+        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "declarations": [
+          {
+            "file": "packages/daemon/internal/leakguard/source_test.go",
+            "names": ["github.com/sjawhar/legion/daemon/internal/leakguard.sourceToken"]
+          }
         ],
         "capture": "leakguard.served-body/below"
       },
       {
         "row": "leakguard-served-body-twice",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": [
-          "packages/daemon/internal/leakguard/tar_member_echo_test.go",
-          "packages/daemon/internal/leakguard/source_test.go"
+        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "declarations": [
+          {
+            "file": "packages/daemon/internal/leakguard/source_test.go",
+            "names": ["github.com/sjawhar/legion/daemon/internal/leakguard.sourceToken"]
+          }
         ],
         "capture": "leakguard.served-body/twice"
       },
       {
         "row": "leakguard-served-unpack-below",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": [
-          "packages/daemon/internal/leakguard/tar_member_echo_test.go",
-          "packages/daemon/internal/leakguard/source_test.go"
+        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "declarations": [
+          {
+            "file": "packages/daemon/internal/leakguard/source_test.go",
+            "names": ["github.com/sjawhar/legion/daemon/internal/leakguard.sourceToken"]
+          }
         ],
         "capture": "leakguard.served-unpack/below"
       },
       {
         "row": "leakguard-served-unpack-escape",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": [
-          "packages/daemon/internal/leakguard/tar_member_echo_test.go",
-          "packages/daemon/internal/leakguard/source_test.go"
+        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "declarations": [
+          {
+            "file": "packages/daemon/internal/leakguard/source_test.go",
+            "names": ["github.com/sjawhar/legion/daemon/internal/leakguard.sourceToken"]
+          }
         ],
         "capture": "leakguard.served-unpack/escape"
       },
       {
         "row": "leakguard-served-unpack-link",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": [
-          "packages/daemon/internal/leakguard/tar_member_echo_test.go",
-          "packages/daemon/internal/leakguard/source_test.go"
+        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "declarations": [
+          {
+            "file": "packages/daemon/internal/leakguard/source_test.go",
+            "names": ["github.com/sjawhar/legion/daemon/internal/leakguard.sourceToken"]
+          }
         ],
         "capture": "leakguard.served-unpack/link"
       },
       {
         "row": "repocache-tar-echo-stream",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": [
-          "packages/daemon/internal/repocache/tar_echo_test.go",
-          "packages/daemon/internal/repocache/server_test.go"
+        "files": ["packages/daemon/internal/repocache/tar_echo_test.go"],
+        "declarations": [
+          {
+            "file": "packages/daemon/internal/repocache/server_test.go",
+            "names": ["github.com/sjawhar/legion/daemon/internal/repocache.testProvisioningToken"]
+          }
         ],
         "capture": "repocache.tar-echo/stream"
       },
       {
         "row": "repocache-tar-echo-ref-file",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": [
-          "packages/daemon/internal/repocache/tar_echo_test.go",
-          "packages/daemon/internal/repocache/server_test.go"
+        "files": ["packages/daemon/internal/repocache/tar_echo_test.go"],
+        "declarations": [
+          {
+            "file": "packages/daemon/internal/repocache/server_test.go",
+            "names": ["github.com/sjawhar/legion/daemon/internal/repocache.testProvisioningToken"]
+          }
         ],
         "capture": "repocache.tar-echo/ref-file"
       },
       {
         "row": "repocache-tar-echo-ref-dir",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": [
-          "packages/daemon/internal/repocache/tar_echo_test.go",
-          "packages/daemon/internal/repocache/server_test.go"
+        "files": ["packages/daemon/internal/repocache/tar_echo_test.go"],
+        "declarations": [
+          {
+            "file": "packages/daemon/internal/repocache/server_test.go",
+            "names": ["github.com/sjawhar/legion/daemon/internal/repocache.testProvisioningToken"]
+          }
         ],
         "capture": "repocache.tar-echo/ref-dir"
       },
@@ -4261,6 +4298,168 @@
         "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
         "files": ["packages/envoy/loadtest/loop_listener_url_test.go"],
         "capture": "loadtest.loop-listener-url/driver-line"
+      },
+      {
+        "row": "legion-cli-fork-curl-stderr",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/daemon/cmd/legion/fork_curl_said_test.go"],
+        "capture": "legion-cli.fork-curl-stderr"
+      },
+      {
+        "row": "config-public-url-path",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/internal/cipher/config/public_url_words_test.go"],
+        "capture": "config.public-url/path"
+      },
+      {
+        "row": "config-signin-issuer-plain-http",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/internal/cipher/config/signin_issuer_words_test.go"],
+        "capture": "config.signin-issuer/plain-http"
+      },
+      {
+        "row": "config-signin-issuer-other-scheme",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/internal/cipher/config/signin_issuer_words_test.go"],
+        "capture": "config.signin-issuer/other-scheme"
+      },
+      {
+        "row": "config-signin-issuer-no-host",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/internal/cipher/config/signin_issuer_words_test.go"],
+        "capture": "config.signin-issuer/no-host"
+      },
+      {
+        "row": "config-edge-url-path",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/internal/cipher/config/edge_url_words_test.go"],
+        "capture": "config.edge-url/path"
+      },
+      {
+        "row": "dispatch-model-endpoint-chat-query",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/cmd/dispatch/endpoint_words_test.go"],
+        "capture": "dispatch.model-endpoint/chat-query"
+      },
+      {
+        "row": "dispatch-model-endpoint-chat-user-info",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/cmd/dispatch/endpoint_words_test.go"],
+        "capture": "dispatch.model-endpoint/chat-user-info"
+      },
+      {
+        "row": "dispatch-model-endpoint-azure-chat-query",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/cmd/dispatch/endpoint_words_test.go"],
+        "capture": "dispatch.model-endpoint/azure-chat-query"
+      },
+      {
+        "row": "dispatch-model-endpoint-embed-query",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/cmd/dispatch/endpoint_words_test.go"],
+        "capture": "dispatch.model-endpoint/embed-query"
+      },
+      {
+        "row": "dispatch-agent-secrets-url-path",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/cmd/dispatch/agent_secrets_url_words_test.go"],
+        "capture": "dispatch.agent-secrets-url/path"
+      },
+      {
+        "row": "dispatch-envoy-url-other-scheme",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/cmd/dispatch/envoy_url_words_test.go"],
+        "capture": "dispatch.envoy-url/other-scheme"
+      },
+      {
+        "row": "dispatch-envoy-url-no-host",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/cmd/dispatch/envoy_url_words_test.go"],
+        "capture": "dispatch.envoy-url/no-host"
+      },
+      {
+        "row": "dispatch-envoy-url-dev-remote",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/cmd/dispatch/envoy_url_words_test.go"],
+        "capture": "dispatch.envoy-url/dev-remote"
+      },
+      {
+        "row": "oauth-issuer-in-part-issuer",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/internal/cipher/oauth/issuer_in_part_words_test.go"],
+        "capture": "oauth.issuer-in-part/issuer"
+      },
+      {
+        "row": "oauth-issuer-in-part-audience",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/internal/cipher/oauth/issuer_in_part_words_test.go"],
+        "capture": "oauth.issuer-in-part/audience"
+      },
+      {
+        "row": "dispatchconfig-override-server-url",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/internal/dispatch/config/override_words_test.go"],
+        "capture": "dispatchconfig.override/server-url"
+      },
+      {
+        "row": "dispatchconfig-override-nats-urls",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/internal/dispatch/config/override_words_test.go"],
+        "capture": "dispatchconfig.override/nats-urls"
+      },
+      {
+        "row": "agentloop-redirect-error-decide-unparsed",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/agentloop/redirect_location_test.go"],
+        "capture": "agentloop.redirect-error/decide-unparsed"
+      },
+      {
+        "row": "agentloop-redirect-error-decide-elsewhere",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/agentloop/redirect_location_test.go"],
+        "capture": "agentloop.redirect-error/decide-elsewhere"
+      },
+      {
+        "row": "agentloop-redirect-error-decide-host",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/agentloop/redirect_location_test.go"],
+        "capture": "agentloop.redirect-error/decide-host"
+      },
+      {
+        "row": "agentloop-redirect-error-anthropic-messages-unparsed",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/agentloop/redirect_location_test.go"],
+        "capture": "agentloop.redirect-error/anthropic-messages-unparsed"
+      },
+      {
+        "row": "agentloop-redirect-error-anthropic-messages-elsewhere",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/agentloop/redirect_location_test.go"],
+        "capture": "agentloop.redirect-error/anthropic-messages-elsewhere"
+      },
+      {
+        "row": "agentloop-redirect-error-openai-responses-unparsed",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/agentloop/redirect_location_test.go"],
+        "capture": "agentloop.redirect-error/openai-responses-unparsed"
+      },
+      {
+        "row": "agentloop-redirect-error-openai-responses-elsewhere",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/agentloop/redirect_location_test.go"],
+        "capture": "agentloop.redirect-error/openai-responses-elsewhere"
+      },
+      {
+        "row": "agentloop-redirect-error-openai-chat-unparsed",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/agentloop/redirect_location_test.go"],
+        "capture": "agentloop.redirect-error/openai-chat-unparsed"
+      },
+      {
+        "row": "agentloop-redirect-error-openai-chat-elsewhere",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/agentloop/redirect_location_test.go"],
+        "capture": "agentloop.redirect-error/openai-chat-elsewhere"
       }
     ],
     "boundary_fields": {
@@ -4475,7 +4674,11 @@
         "encoding/json.Unmarshal",
         "(*encoding/json.Decoder).Decode",
         "encoding/xml.Unmarshal",
-        "(*encoding/xml.Decoder).Decode"
+        "(*encoding/xml.Decoder).Decode",
+        "github.com/sjawhar/envoy/internal/redact.Unmarshal",
+        "github.com/sjawhar/envoy/internal/redact.UnmarshalData",
+        "github.com/sjawhar/envoy/oauth2call.Unmarshal",
+        "github.com/sjawhar/envoy/oauth2call.UnmarshalData"
       ]
     }
   },
@@ -6830,14 +7033,14 @@
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
       "test": "TestARenewalRefusalPrintsNoCredentialItsAnswerEchoes/502-page-echoes-body",
-      "production": "agent-secrets client.doStatus: a page that is no envelope, through the record (redact.Carried)"
+      "production": "agent-secrets client.send: a page that is no envelope, through the record (redact.Carried)"
     },
     {
       "id": "agentsecrets-answer-echo-proof",
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
       "test": "TestARenewalRefusalPrintsNoCredentialItsAnswerEchoes/401-envelope-echoes-proof",
-      "production": "agent-secrets client.doStatus and apiError: the envelope's words, through the record (redact.Carried)"
+      "production": "agent-secrets client.send and apiError: the envelope's words, through the record (redact.Carried)"
     },
     {
       "id": "agentsecrets-answer-echo-terminal-proof",
@@ -6970,7 +7173,7 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/intake",
       "test": "TestAnEventLogThatEchoesTheBearerPrintsItInNoDecodersOutput",
-      "production": "daemon dispatch HTTPClient.EventsAfter (eventPage) reads each event's created_at as Dispatch's words held with the request's record and refuses one that is not a time naming the member, and intake's LabelSetter, StatusChangeOf, DecodeDispatchEvent and the stream's decoder name a decode failure and an unread member in fixed text (oauth2call.DecodeError), never a value"
+      "production": "daemon dispatch HTTPClient.EventsAfter (eventPage) reads each event's created_at as Dispatch's words held with the request's record and refuses one that is not a time naming the member, and intake's LabelSetter, StatusChangeOf, DecodeDispatchEvent and the stream's decoder name a decode failure and an unread member in fixed text (oauth2call.UnmarshalData), never a value"
     },
     {
       "id": "dispatch-event-log-decode-echo",
@@ -7040,7 +7243,7 @@
       "requirement": "r1-fail-closed",
       "package": "./cmd/cipher",
       "test": "TestARenewalRefusalPrintsNoCredentialItsPagesReferencesHide",
-      "production": "redact.Remote's step 0 (decodeSeparators) through agent-secrets client.doStatus's page, apiError and renewLoop"
+      "production": "redact.Remote's step 0 (decodeSeparators) through agent-secrets client.send's page, apiError and renewLoop"
     },
     {
       "id": "record-interleaved",
@@ -7237,13 +7440,6 @@
       "package": "./cmd/cipher",
       "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.apiError",
       "production": "github.com/sjawhar/envoy/cmd/cipher.apiError: every printer at every placement"
-    },
-    {
-      "id": "print-agent-secrets.client.doStatus.envelope",
-      "requirement": "r2-held",
-      "package": "./cmd/cipher",
-      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.client.doStatus.envelope",
-      "production": "(*github.com/sjawhar/envoy/cmd/cipher.client).doStatus struct{Code redact.RemoteText \"json:\\\"code\\\"\"; Error redact.RemoteText \"json:\\\"error\\\"\"; AnswerID redact.RemoteText \"json:\\\"answer_id\\\"\"}: every printer at every placement"
     },
     {
       "id": "redact-answer-decode-box-member",
@@ -7502,7 +7698,7 @@
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
       "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/grant-list",
-      "production": "agent-secrets grantRow: each cell's field held as redact.RemoteText with the list's record; a cell of one field printed through fieldCell (cipheraddr.Address.WordsOf), the grant id through idWordsOf, and a cell of several fields (the secrets, the session) and the expiry through cipheraddr.Address.Words of their readings joined"
+      "production": "agent-secrets grantRow: each cell's field held as redact.RemoteText with the list's record; a cell of one field printed through fieldCell (cipheraddr.Address.WordsOf), the grant id through idWordsOf, and a cell of several fields (the secrets, the session) through cipheraddr.Address.Words of their readings joined; the expiry, this CLI's own words, as grantExpiry writes it"
     },
     {
       "id": "agentsecrets-answer-words-machine-list",
@@ -7663,7 +7859,7 @@
       "requirement": "r3-each-site",
       "package": "./internal/cipher/projectrepos",
       "test": "TestARefusedRepositoryAnswerNamesDispatchsWordsAsTheRuleReadsThem",
-      "production": "projectrepos readAnswer and Repositories: a key, a value and a refusal code Dispatch answers are named as the rule reads them (dispatchread.Answer.Said, RefusalCode)"
+      "production": "projectrepos readAnswer and Repositories: a key, a value and a refusal code Dispatch answers are named as the rule reads them, cut to dispatchread.MaxQuoted bytes (dispatchread.Quoted of redact.Answer.Said and of dispatchread.RefusalCode)"
     },
     {
       "id": "listener-edge-repositories-answer-words",
@@ -7908,13 +8104,13 @@
       "requirement": "r3-each-site",
       "package": "./agentloop",
       "test": "TestAProviderAnswerNamesItsStatusWithNoPhraseItWrote/redirect",
-      "production": "agentloop modelTransport.client: a refused redirect names the status by its code and standard phrase (redact.StatusLine)",
-      "function": "(*github.com/sjawhar/envoy/agentloop.modelTransport).client",
+      "production": "agentloop modelTransport.RoundTrip: a redirect the transport refuses by its status names the status by its code and standard phrase (redact.StatusLine)",
+      "function": "(*github.com/sjawhar/envoy/agentloop.modelTransport).RoundTrip",
       "capture": "agentloop.status-line/redirect",
       "mutation": {
         "file": "packages/envoy/agentloop/transport.go",
-        "preimage": "redact.StatusLine(req.Response.StatusCode)",
-        "replacement": "req.Response.Status"
+        "preimage": "redact.StatusLine(resp.StatusCode)",
+        "replacement": "resp.Status"
       }
     },
     {
@@ -9160,7 +9356,7 @@
       "mutation": {
         "file": "packages/daemon/internal/daemon/base_rules.go",
         "preimage": "\"/rules/branches/\"+shown",
-        "replacement": "\"\""
+        "replacement": "\"/rules/branches/\"+path"
       }
     },
     {
@@ -10057,14 +10253,14 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/cmd/legion",
       "test": "TestAForkReadAnswerPrintsNoTokenItEchoes/message",
-      "production": "legion git-credential readForkAnswer: GitHub's message prints only as plain words (gitHubWords), and is named as more than words otherwise"
+      "production": "legion git-credential readForkAnswer: GitHub's message prints only as plain words (githubrest.PlainMessage), and is named as more than words otherwise"
     },
     {
       "id": "legion-cli-fork-location-echo",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/cmd/legion",
       "test": "TestAForkReadAnswerPrintsNoTokenItEchoes/location",
-      "production": "legion git-credential readForkAnswer: a redirect's Location prints only as a repository by its id on api.github.com (gitHubRedirect)"
+      "production": "legion git-credential readForkAnswer: a redirect's Location prints only as a repository by its id on api.github.com (githubrest.RepositoryRedirect); the stand-in echoes the token into the Location's path, which stderr's URL rule keeps, and its query"
     },
     {
       "id": "legion-cli-fork-full-name-echo",
@@ -10245,22 +10441,22 @@
       "id": "check-prints-probe-markers",
       "requirement": "r1-fail-closed",
       "package": "./cmd/redact-gate",
-      "test": "TestAcceptanceTheGatePrintsTheProbeMarkersItTested",
-      "production": "cmd/redact-gate report: the printed bound names the probe markers a mutant's captured output is read for (MARKERS)"
+      "test": "TestTheGatesReportNamesEveryProbeMarkerItsEvidenceReads",
+      "production": "cmd/redact-gate report: the printed bound's MARKERS line names exactly the probe markers a mutant's captured output is read for (result.marked)"
     },
     {
       "id": "check-holds-device-sign-in-rows",
       "requirement": "r1-fail-closed",
       "package": "./cmd/redact-gate",
-      "test": "TestAcceptanceTheInventoryHoldsTheDeviceSignInEchoRows",
+      "test": "TestTheInventoryHoldsTheDeviceSignInEchoRows",
       "production": "redact-check.json: the device sign-in's Wait and Refresh echo rows the verification names"
     },
     {
       "id": "check-states-its-bound",
       "requirement": "r1-fail-closed",
       "package": "./cmd/redact-gate",
-      "test": "TestAcceptanceTheCheckStatesTheBoundTheVerificationNames",
-      "production": "check-redact-remote-text.sh: the statement of what its results do not establish names go-oidc, a library call made through reflection and both known-residual forms"
+      "test": "TestTheChecksStatementNamesWhatItsResultsDoNotEstablish",
+      "production": "check-redact-remote-text.sh: the statement of what its results do not establish names go-oidc, a library call made through reflection, both known-residual forms, a credential cut into pieces shorter than redact.TokenPiece, and a public name's route match reading the whole escaped path"
     },
     {
       "id": "gate-guarded-package-refusals",
@@ -10995,49 +11191,35 @@
       "requirement": "r3-each-site",
       "package": "./agentloop",
       "test": "TestADecisionsFailedCallNamesNoLocationOfIt/unparsed",
-      "production": "agentloop Decide: a decision call whose Location does not parse is said in the Detail as the endpoint's address allows (redact.Cause), never by net/http's text",
-      "function": "github.com/sjawhar/envoy/agentloop.Decide",
-      "capture": "agentloop.decide-redirect/unparsed",
-      "mutation": {
-        "file": "packages/envoy/agentloop/decide.go",
-        "preimage": "redact.Cause(err, req.Model.Endpoint.BaseURL)",
-        "replacement": "err"
-      }
+      "production": "agentloop Decide: a decision call whose Location does not parse is refused by its status in the transport (redirects.Status) before net/http parses the Location, and is said by that status, never by net/http's text"
     },
     {
       "id": "agentloop-decide-redirect-elsewhere",
       "requirement": "r3-each-site",
       "package": "./agentloop",
       "test": "TestADecisionsFailedCallNamesNoLocationOfIt/elsewhere",
-      "production": "agentloop Decide: a redirect to another host, which the client refuses and Go's *url.Error names in full, is said by its status (redact.Masked under redact.Cause), never by the Location"
+      "production": "agentloop Decide: a redirect to another host, which the transport refuses by its status before net/http reads the Location, is said by its status (redact.Masked under redact.Cause), never by the Location"
     },
     {
       "id": "agentloop-decide-redirect-host",
       "requirement": "r3-each-site",
       "package": "./agentloop",
       "test": "TestADecisionsFailedCallNamesNoLocationOfIt/host",
-      "production": "agentloop modelTransport.client: the redirect check's refusal names the status alone, never the Location's host, which an answering party can write the bearer into"
+      "production": "agentloop modelTransport.RoundTrip: the transport's refusal of a redirect names the status alone, never the Location's host, which an answering party can write the bearer into"
     },
     {
       "id": "agentloop-run-failure-anthropic-messages-unparsed",
       "requirement": "r3-each-site",
       "package": "./agentloop",
       "test": "TestARunsProviderFailureNamesNoLocationOrAnswerOfIt/anthropic-messages-unparsed",
-      "production": "agentloop providerFailure: a run's stream error for a Location that does not parse is said as the endpoint's address allows (redact.Cause), never by net/http's text that the SDK hands on",
-      "function": "github.com/sjawhar/envoy/agentloop.providerFailure",
-      "capture": "agentloop.run-failure/anthropic-messages-unparsed",
-      "mutation": {
-        "file": "packages/envoy/agentloop/run.go",
-        "preimage": "redact.Cause(err, endpoint.BaseURL)",
-        "replacement": "err"
-      }
+      "production": "agentloop providerFailure: a run's redirect whose Location does not parse is refused by its status in the transport before net/http parses it, so the stream error the SDK hands on names no Location, and the run is said by that status"
     },
     {
       "id": "agentloop-run-failure-anthropic-messages-elsewhere",
       "requirement": "r3-each-site",
       "package": "./agentloop",
       "test": "TestARunsProviderFailureNamesNoLocationOrAnswerOfIt/anthropic-messages-elsewhere",
-      "production": "agentloop providerFailure: a refused redirect to another host on anthropic-messages is said by its status, never by the *url.Error's Location"
+      "production": "agentloop providerFailure: a redirect to another host on anthropic-messages, which the transport refuses by its status before net/http reads the Location, is said by its status, never by the Location"
     },
     {
       "id": "agentloop-run-failure-anthropic-messages-refused",
@@ -11051,7 +11233,7 @@
       "requirement": "r3-each-site",
       "package": "./agentloop",
       "test": "TestARunsProviderFailureNamesNoLocationOrAnswerOfIt/openai-responses-unparsed",
-      "production": "agentloop providerFailure: on openai-responses, a Location that does not parse, inside the ai-sdk's APICallError, is said by its class (redact.Cause)"
+      "production": "agentloop providerFailure: on openai-responses, a Location that does not parse is refused by its status in the transport before net/http parses it, and the run is said by that status"
     },
     {
       "id": "agentloop-run-failure-openai-responses-elsewhere",
@@ -11072,7 +11254,7 @@
       "requirement": "r3-each-site",
       "package": "./agentloop",
       "test": "TestARunsProviderFailureNamesNoLocationOrAnswerOfIt/openai-chat-unparsed",
-      "production": "agentloop providerFailure: on openai-chat, a Location that does not parse, in openai-compatible's 'HTTP request failed' error, is said by its class (redact.Cause)"
+      "production": "agentloop providerFailure: on openai-chat, a Location that does not parse is refused by its status in the transport before net/http parses it, and the run is said by that status"
     },
     {
       "id": "agentloop-run-failure-openai-chat-elsewhere",
@@ -12950,7 +13132,7 @@
       "capture": "mcpbridge.relative-endpoint/elsewhere",
       "mutation": {
         "file": "packages/envoy/internal/mcpbridge/http_server.go",
-        "preimage": "endpoint.Scheme == base.Scheme && strings.EqualFold(endpoint.Host, base.Host)",
+        "preimage": "redirects.SameOriginURL(endpoint, base)",
         "replacement": "true"
       }
     },
@@ -12964,7 +13146,7 @@
       "capture": "mcpbridge.relative-endpoint/elsewhere-absolute",
       "mutation": {
         "file": "packages/envoy/internal/mcpbridge/http_server.go",
-        "preimage": "endpoint.Scheme == base.Scheme && strings.EqualFold(endpoint.Host, base.Host)",
+        "preimage": "redirects.SameOriginURL(endpoint, base)",
         "replacement": "true"
       }
     },
@@ -15128,7 +15310,7 @@
       "requirement": "r3-each-site",
       "package": "./internal/cipher/approval",
       "test": "TestAPublicURLThePageRefusesPrintsNoCredentialOfIt/refused",
-      "production": "approval New: a BROKER_PUBLIC_URL of another scheme is refused naming the URL as the rule reads it (redact.URL), never as written, as config.Load's own refusal of that variable names it",
+      "production": "approval New: a BROKER_PUBLIC_URL of another scheme is refused naming the URL as the rule reads it (redact.URL), never as written",
       "function": "github.com/sjawhar/envoy/internal/cipher/approval.New",
       "capture": "approval.public-url/refused",
       "mutation": {
@@ -17931,6 +18113,699 @@
       "package": "./loadtest",
       "test": "TestAListingNamesEachArtifactByAnIDInDispatchsShape/no-id-absent",
       "production": "loadtest readListing: a listing whose entry has no id member is refused for naming an artifact by no id"
+    },
+    {
+      "id": "agentsecrets-grant-cells-twin",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestAGrantCellOfSeveralFieldsPrintsNothingBesideAnAddressThatIsNotClean/twin",
+      "production": "the probe of the grant-cells rows: the address, a token in its path after '=', is not clean, and a field holding that token reads as the token (RemoteText.String), so the rows can see it printed"
+    },
+    {
+      "id": "agentsecrets-grant-cells-secrets",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestAGrantCellOfSeveralFieldsPrintsNothingBesideAnAddressThatIsNotClean/secrets",
+      "production": "agent-secrets grantRow: the SECRETS cell, the readings of the grant's names joined, prints through cipheraddr.Address.Words, so beside an address that is not clean it is cipheraddr.WordsNotPrinted, never a name that echoes a credential the address carries where no request's record lists it (a token in its path)",
+      "function": "github.com/sjawhar/envoy/cmd/cipher.grantRow",
+      "capture": "agent-secrets.grant-cells/secrets",
+      "mutation": {
+        "file": "packages/envoy/cmd/cipher/grant.go",
+        "preimage": "base.Words(strings.Join(names, \",\"))",
+        "replacement": "strings.Join(names, \",\")"
+      }
+    },
+    {
+      "id": "agentsecrets-grant-cells-session",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestAGrantCellOfSeveralFieldsPrintsNothingBesideAnAddressThatIsNotClean/session",
+      "production": "agent-secrets grantRow: the SESSION cell, the readings of the enrollment's kind, runtime id and slot joined, prints through cipheraddr.Address.Words, so beside an address that is not clean it is cipheraddr.WordsNotPrinted, never a field that echoes a credential the address carries where no request's record lists it",
+      "function": "github.com/sjawhar/envoy/cmd/cipher.grantRow",
+      "capture": "agent-secrets.grant-cells/session",
+      "mutation": {
+        "file": "packages/envoy/cmd/cipher/grant.go",
+        "preimage": "base.Words(session)",
+        "replacement": "session"
+      }
+    },
+    {
+      "id": "agentsecrets-grant-cells-expires",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestAGrantCellOfSeveralFieldsPrintsNothingBesideAnAddressThatIsNotClean/expires",
+      "production": "agent-secrets grantRow: the EXPIRES cell is this CLI's own words (grantExpiry: a time the answer decoded into, formatted here, or session-end) and prints whatever the address, as machineRow's times do, where it was read by the rule for the broker's words and printed cipheraddr.WordsNotPrinted beside an address that is not clean"
+    },
+    {
+      "id": "helper-broker-request-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/helper",
+      "test": "TestABrokerRequestWhoseJoinedURLDoesNotParsePrintsNoneOfIt/twin",
+      "production": "the probe of the reparsed broker-request row: url.Parse takes the address, and http.NewRequest's error for the URL joined from it quotes its user information and its access token, so the row can see them printed"
+    },
+    {
+      "id": "helper-broker-request-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/helper",
+      "test": "TestABrokerRequestWhoseJoinedURLDoesNotParsePrintsNoneOfIt/reparsed",
+      "production": "agent-secrets-helper Broker.request: an address url.Parse takes whose joined URL, as url.URL.String writes it, url.Parse refuses (an IPv6 zone escape) fails in http.NewRequestWithContext and prints through the Address's Error, the URL as redact.NotPrinted and the class, never net/http's error, which quotes that URL whole, its user information and query included",
+      "function": "(*github.com/sjawhar/envoy/internal/cipher/helper.Broker).request",
+      "capture": "helper.broker-request/reparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/helper/broker.go",
+        "preimage": "return nil, \"\", b.URL.Error(err)",
+        "replacement": "return nil, \"\", err"
+      }
+    },
+    {
+      "id": "print-agent-secrets.client.send.envelope",
+      "requirement": "r2-held",
+      "package": "./cmd/cipher",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.client.send.envelope",
+      "production": "(*github.com/sjawhar/envoy/cmd/cipher.client).send struct{Code redact.RemoteText \"json:\\\"code\\\"\"; Error redact.RemoteText \"json:\\\"error\\\"\"; AnswerID redact.RemoteText \"json:\\\"answer_id\\\"\"}: every printer at every placement"
+    },
+    {
+      "id": "print-agent-secrets.leftOut",
+      "requirement": "r2-held",
+      "package": "./cmd/cipher",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.leftOut",
+      "production": "github.com/sjawhar/envoy/cmd/cipher.leftOut: every printer at every placement"
+    },
+    {
+      "id": "legion-cli-fork-curl-stderr-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAFailedForkReadPrintsNoRunOfTheTokenCurlSaid/twin",
+      "production": "the probe of the fork read's curl row: the stand-in curl's own standard error, as leakguard's CurlGet hands it back (CurlResponse.Stderr), holds the token the read carried"
+    },
+    {
+      "id": "legion-cli-fork-curl-stderr",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAFailedForkReadPrintsNoRunOfTheTokenCurlSaid/stderr",
+      "production": "legion git-credential readForkAnswer: a curl that heard an answer and then failed, or exited for a reason of its own, is named with what curl said as the rule reads it (leakguard CurlResponse.Said: shownSaid, oauth2call.Tokens then oauth2call.Field), never its standard error as it came",
+      "function": "github.com/sjawhar/legion/daemon/cmd/legion.readForkAnswer",
+      "capture": "legion-cli.fork-curl-stderr",
+      "mutation": {
+        "file": "packages/daemon/cmd/legion/gitcredential_fork.go",
+        "preimage": "response.Said()",
+        "replacement": "strings.TrimSpace(response.Stderr)"
+      }
+    },
+    {
+      "id": "leakguard-curl-said-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestACurlAnswerSaysCurlsWordsAsTheRuleReadsThem/twin",
+      "production": "the probe of the CurlResponse.Said row: the stand-in curl's standard error (CurlResponse.Stderr) holds the read's token"
+    },
+    {
+      "id": "leakguard-curl-said-stderr",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestACurlAnswerSaysCurlsWordsAsTheRuleReadsThem/stderr",
+      "production": "leakguard CurlResponse.Said: curl's standard error as a refusal quotes it, on one line, every run of the read's token redacted and the whole read by the rule (shownSaid: oauth2call.Tokens then oauth2call.Field), curl's own words kept",
+      "function": "(github.com/sjawhar/legion/daemon/internal/leakguard.CurlResponse).Said",
+      "capture": "leakguard.curl-said/stderr",
+      "mutation": {
+        "file": "packages/daemon/internal/leakguard/visibility_transport.go",
+        "preimage": "return shownSaid(r.Stderr, r.token)",
+        "replacement": "return strings.TrimSpace(r.Stderr)"
+      }
+    },
+    {
+      "id": "redact-unmarshal-data-time-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestUnmarshalDataNamesBytesThatDoNotDecodeWithoutQuotingThem/time-twin",
+      "production": "the probe of the UnmarshalData rows: encoding/json's own error for bytes whose time quotes a credential's URL quotes the URL's token"
+    },
+    {
+      "id": "redact-unmarshal-data-time",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestUnmarshalDataNamesBytesThatDoNotDecodeWithoutQuotingThem/time",
+      "production": "github.com/sjawhar/envoy/internal/redact.UnmarshalData (oauth2call.UnmarshalData): bytes no answer holds (a stream message, a payload member) whose time quotes a credential's URL fail in DecodeError's fixed text, naming the member, quoting no value and unwrapping to nothing; the one decode of such bytes, where each site wrote json.Unmarshal and then DecodeError of the same arguments"
+    },
+    {
+      "id": "redact-unmarshal-data-map-key-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestUnmarshalDataNamesBytesThatDoNotDecodeWithoutQuotingThem/map-key-twin",
+      "production": "the probe of the UnmarshalData rows: encoding/json's own error for an object key that quotes a credential's URL quotes the URL's token"
+    },
+    {
+      "id": "redact-unmarshal-data-map-key",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestUnmarshalDataNamesBytesThatDoNotDecodeWithoutQuotingThem/map-key",
+      "production": "github.com/sjawhar/envoy/internal/redact.UnmarshalData: bytes whose object key quotes a credential's URL fail in DecodeError's fixed text, naming the member by a fixed word, never encoding/json's path, which holds the key"
+    },
+    {
+      "id": "oauth2call-unmarshal-forms-twin",
+      "requirement": "r3-each-site",
+      "package": "./oauth2call",
+      "test": "TestTheUnmarshalFormsNameADecodeFailureWithoutQuotingIt/twin",
+      "production": "the probe of the oauth2call Unmarshal rows: encoding/json's own error for bytes whose time quotes a credential's URL quotes the URL's token"
+    },
+    {
+      "id": "oauth2call-unmarshal-forward",
+      "requirement": "r3-each-site",
+      "package": "./oauth2call",
+      "test": "TestTheUnmarshalFormsNameADecodeFailureWithoutQuotingIt/unmarshal",
+      "production": "github.com/sjawhar/envoy/oauth2call.Unmarshal forwards redact.Unmarshal: an answer's data that does not decode, its time quoting a credential's URL, is DecodeError's fixed text naming the member and no value"
+    },
+    {
+      "id": "oauth2call-unmarshal-data-forward",
+      "requirement": "r3-each-site",
+      "package": "./oauth2call",
+      "test": "TestTheUnmarshalFormsNameADecodeFailureWithoutQuotingIt/unmarshal-data",
+      "production": "github.com/sjawhar/envoy/oauth2call.UnmarshalData forwards redact.UnmarshalData, the daemon's decode of a stream message and of a payload member (intake's payload decodes, leakguard's curl body): bytes whose time quotes a credential's URL fail in DecodeError's fixed text naming the member and no value"
+    },
+    {
+      "id": "config-public-url-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/config",
+      "test": "TestABrokerPublicURLThatLoadRefusesPrintsNoneOfIt/twin",
+      "production": "the probe of the config public-URL rows: a BROKER_PUBLIC_URL with the token in its path is still refused naming BROKER_PUBLIC_URL, and the rule's reading of it (redact.URL), which the refusal quoted, holds the token, so the rows can see one printed"
+    },
+    {
+      "id": "config-public-url-path",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/config",
+      "test": "TestABrokerPublicURLThatLoadRefusesPrintsNoneOfIt/path",
+      "production": "config Load: a BROKER_PUBLIC_URL with a path is refused naming the setting and the form it must have and never the URL, where the refusal quoted the URL as the rule reads it (redact.URL), which prints a plain path as written",
+      "function": "github.com/sjawhar/envoy/internal/cipher/config.Load",
+      "capture": "config.public-url/path",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/config/config.go",
+        "preimage": "errors.New(\"BROKER_PUBLIC_URL must be an absolute URL with no user information, path, query or fragment\")",
+        "replacement": "fmt.Errorf(\"BROKER_PUBLIC_URL must be an absolute URL with no user information, path, query or fragment: %q\", redact.URL(cfg.PublicURL))"
+      }
+    },
+    {
+      "id": "config-public-url-user-info",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/config",
+      "test": "TestABrokerPublicURLThatLoadRefusesPrintsNoneOfIt/user-info",
+      "production": "config Load: a BROKER_PUBLIC_URL with user information is refused naming the setting alone, where Load took it and the authorization server metadata published the credential as the issuer",
+      "function": "github.com/sjawhar/envoy/internal/cipher/config.Load",
+      "capture": "config.public-url/user-info",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/config/config.go",
+        "preimage": "errors.New(\"BROKER_PUBLIC_URL must be an absolute URL with no user information, path, query or fragment\")",
+        "replacement": "fmt.Errorf(\"BROKER_PUBLIC_URL must be an absolute URL with no user information, path, query or fragment: %q\", cfg.PublicURL)"
+      }
+    },
+    {
+      "id": "config-public-url-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/config",
+      "test": "TestABrokerPublicURLThatLoadRefusesPrintsNoneOfIt/query",
+      "production": "config Load: a BROKER_PUBLIC_URL with a query is refused naming the setting alone, where Load took it and the authorization server metadata published it as the issuer, which RFC 8414 section 2 holds to no query",
+      "function": "github.com/sjawhar/envoy/internal/cipher/config.Load",
+      "capture": "config.public-url/query",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/config/config.go",
+        "preimage": "errors.New(\"BROKER_PUBLIC_URL must be an absolute URL with no user information, path, query or fragment\")",
+        "replacement": "fmt.Errorf(\"BROKER_PUBLIC_URL must be an absolute URL with no user information, path, query or fragment: %q\", cfg.PublicURL)"
+      }
+    },
+    {
+      "id": "config-public-url-fragment",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/config",
+      "test": "TestABrokerPublicURLThatLoadRefusesPrintsNoneOfIt/fragment",
+      "production": "config Load: a BROKER_PUBLIC_URL with a fragment is refused naming the setting alone, where Load took it and the authorization server metadata published it as the issuer, which RFC 8414 section 2 holds to no fragment",
+      "function": "github.com/sjawhar/envoy/internal/cipher/config.Load",
+      "capture": "config.public-url/fragment",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/config/config.go",
+        "preimage": "errors.New(\"BROKER_PUBLIC_URL must be an absolute URL with no user information, path, query or fragment\")",
+        "replacement": "fmt.Errorf(\"BROKER_PUBLIC_URL must be an absolute URL with no user information, path, query or fragment: %q\", cfg.PublicURL)"
+      }
+    },
+    {
+      "id": "config-signin-issuer-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/config",
+      "test": "TestABrokerSignInIssuerThatLoadRefusesPrintsNoneOfIt/twin",
+      "production": "the probe of the config sign-in issuer rows: each issuer as written holds the user name, the password and the token, and is still refused naming BROKER_SIGNIN_ISSUER, so the rows can see one printed"
+    },
+    {
+      "id": "config-signin-issuer-plain-http",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/config",
+      "test": "TestABrokerSignInIssuerThatLoadRefusesPrintsNoneOfIt/plain-http",
+      "production": "config parseSignIn: a BROKER_SIGNIN_ISSUER that is plain http to a host that is not a loopback one is refused naming the setting and the form it must have, never the issuer, where the refusal quoted the issuer as written, user information and query included",
+      "function": "github.com/sjawhar/envoy/internal/cipher/config.parseSignIn",
+      "capture": "config.signin-issuer/plain-http",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/config/config.go",
+        "preimage": "fmt.Errorf(\"%s must be an absolute https URL, or http to a loopback host\", signInIssuerSetting)",
+        "replacement": "fmt.Errorf(\"%s must be an absolute https URL, or http to a loopback host, got %q\", signInIssuerSetting, signIn.Issuer)"
+      }
+    },
+    {
+      "id": "config-signin-issuer-other-scheme",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/config",
+      "test": "TestABrokerSignInIssuerThatLoadRefusesPrintsNoneOfIt/other-scheme",
+      "production": "config parseSignIn: a BROKER_SIGNIN_ISSUER of another scheme is refused naming the setting alone, where the refusal quoted the issuer as written",
+      "function": "github.com/sjawhar/envoy/internal/cipher/config.parseSignIn",
+      "capture": "config.signin-issuer/other-scheme",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/config/config.go",
+        "preimage": "fmt.Errorf(\"%s must be an absolute https URL, or http to a loopback host\", signInIssuerSetting)",
+        "replacement": "fmt.Errorf(\"%s must be an absolute https URL, or http to a loopback host, got %q\", signInIssuerSetting, signIn.Issuer)"
+      }
+    },
+    {
+      "id": "config-signin-issuer-no-host",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/config",
+      "test": "TestABrokerSignInIssuerThatLoadRefusesPrintsNoneOfIt/no-host",
+      "production": "config parseSignIn: a BROKER_SIGNIN_ISSUER with no host is refused naming the setting alone, where the refusal quoted the issuer as written",
+      "function": "github.com/sjawhar/envoy/internal/cipher/config.parseSignIn",
+      "capture": "config.signin-issuer/no-host",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/config/config.go",
+        "preimage": "fmt.Errorf(\"%s must be an absolute https URL, or http to a loopback host\", signInIssuerSetting)",
+        "replacement": "fmt.Errorf(\"%s must be an absolute https URL, or http to a loopback host, got %q\", signInIssuerSetting, signIn.Issuer)"
+      }
+    },
+    {
+      "id": "config-edge-url-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/config",
+      "test": "TestABrokerEdgeURLThatLoadRefusesPrintsNoneOfIt/twin",
+      "production": "the probe of the config edge-URL rows: a BROKER_EDGE_URL with the token in its path is still refused naming BROKER_EDGE_URL, and the rule's reading of it (redact.URL), which the refusal quoted, holds the token, so the rows can see one printed"
+    },
+    {
+      "id": "config-edge-url-path",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/config",
+      "test": "TestABrokerEdgeURLThatLoadRefusesPrintsNoneOfIt/path",
+      "production": "config loadEdge: a BROKER_EDGE_URL with a path is refused naming the setting and the form it must have and never the URL, where the refusal quoted the URL as the rule reads it (redact.URL), which prints a plain path as written",
+      "function": "github.com/sjawhar/envoy/internal/cipher/config.loadEdge",
+      "capture": "config.edge-url/path",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/config/edge.go",
+        "preimage": "fmt.Errorf(\"BROKER_EDGE_URL must be an absolute http or https URL with no user information, path, query or fragment\")",
+        "replacement": "fmt.Errorf(\"BROKER_EDGE_URL must be an absolute http or https URL with no user information, path, query or fragment: %q\", redact.URL(cfg.EdgeURL))"
+      }
+    },
+    {
+      "id": "config-edge-url-user-info",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/config",
+      "test": "TestABrokerEdgeURLThatLoadRefusesPrintsNoneOfIt/user-info",
+      "production": "config loadEdge: a BROKER_EDGE_URL with user information is refused naming the setting alone, where Load took it and the edge served its routes under it (api.RegisterEdge gives the edge's Deps the URL as PublicURL)",
+      "function": "github.com/sjawhar/envoy/internal/cipher/config.loadEdge",
+      "capture": "config.edge-url/user-info",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/config/edge.go",
+        "preimage": "fmt.Errorf(\"BROKER_EDGE_URL must be an absolute http or https URL with no user information, path, query or fragment\")",
+        "replacement": "fmt.Errorf(\"BROKER_EDGE_URL must be an absolute http or https URL with no user information, path, query or fragment: %q\", cfg.EdgeURL)"
+      }
+    },
+    {
+      "id": "config-edge-url-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/config",
+      "test": "TestABrokerEdgeURLThatLoadRefusesPrintsNoneOfIt/query",
+      "production": "config loadEdge: a BROKER_EDGE_URL with a query is refused naming the setting alone, where Load took it and every route and DPoP htu the edge names was joined onto it",
+      "function": "github.com/sjawhar/envoy/internal/cipher/config.loadEdge",
+      "capture": "config.edge-url/query",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/config/edge.go",
+        "preimage": "fmt.Errorf(\"BROKER_EDGE_URL must be an absolute http or https URL with no user information, path, query or fragment\")",
+        "replacement": "fmt.Errorf(\"BROKER_EDGE_URL must be an absolute http or https URL with no user information, path, query or fragment: %q\", cfg.EdgeURL)"
+      }
+    },
+    {
+      "id": "config-edge-url-fragment",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/config",
+      "test": "TestABrokerEdgeURLThatLoadRefusesPrintsNoneOfIt/fragment",
+      "production": "config loadEdge: a BROKER_EDGE_URL with a fragment is refused naming the setting alone, where Load took it and every route and DPoP htu the edge names was joined onto it",
+      "function": "github.com/sjawhar/envoy/internal/cipher/config.loadEdge",
+      "capture": "config.edge-url/fragment",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/config/edge.go",
+        "preimage": "fmt.Errorf(\"BROKER_EDGE_URL must be an absolute http or https URL with no user information, path, query or fragment\")",
+        "replacement": "fmt.Errorf(\"BROKER_EDGE_URL must be an absolute http or https URL with no user information, path, query or fragment: %q\", cfg.EdgeURL)"
+      }
+    },
+    {
+      "id": "dispatch-model-endpoint-twin",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dispatch",
+      "test": "TestAModelEndpointTheBootRefusesPrintsNoneOfIt/twin",
+      "production": "the probe of the model-endpoint rows: each chat or embeddings endpoint as written holds a credential, in its query or its user information, and is still refused naming its setting, so the rows can see one printed"
+    },
+    {
+      "id": "dispatch-model-endpoint-chat-query",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dispatch",
+      "test": "TestAModelEndpointTheBootRefusesPrintsNoneOfIt/chat-query",
+      "production": "dispatch chatEndpoint: a DISPATCH_CHAT_ENDPOINT with a query is refused naming the setting and the form it must have, never the endpoint, where the refusal quoted the endpoint as written, a key in its query included",
+      "function": "github.com/sjawhar/envoy/cmd/dispatch.chatEndpoint",
+      "capture": "dispatch.model-endpoint/chat-query",
+      "mutation": {
+        "file": "packages/envoy/cmd/dispatch/answerer.go",
+        "preimage": "fmt.Errorf(\"%s (expected an absolute https URL with a host and no query or fragment, the base URL the chat completions route is appended to)\", name)",
+        "replacement": "fmt.Errorf(\"%s=%q (expected an absolute https URL with a host and no query or fragment, the base URL the chat completions route is appended to)\", name, endpoint)"
+      }
+    },
+    {
+      "id": "dispatch-model-endpoint-chat-user-info",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dispatch",
+      "test": "TestAModelEndpointTheBootRefusesPrintsNoneOfIt/chat-user-info",
+      "production": "dispatch chatEndpoint: a plain-http DISPATCH_CHAT_ENDPOINT with user information is refused naming the setting alone, where the refusal quoted the endpoint as written, user name and password included",
+      "function": "github.com/sjawhar/envoy/cmd/dispatch.chatEndpoint",
+      "capture": "dispatch.model-endpoint/chat-user-info",
+      "mutation": {
+        "file": "packages/envoy/cmd/dispatch/answerer.go",
+        "preimage": "fmt.Errorf(\"%s (expected an absolute https URL with a host and no query or fragment, the base URL the chat completions route is appended to)\", name)",
+        "replacement": "fmt.Errorf(\"%s=%q (expected an absolute https URL with a host and no query or fragment, the base URL the chat completions route is appended to)\", name, endpoint)"
+      }
+    },
+    {
+      "id": "dispatch-model-endpoint-azure-chat-query",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dispatch",
+      "test": "TestAModelEndpointTheBootRefusesPrintsNoneOfIt/azure-chat-query",
+      "production": "dispatch chatEndpoint: a DISPATCH_AZURE_CHAT_ENDPOINT with a query is refused naming the setting alone, where the refusal quoted the endpoint as written",
+      "function": "github.com/sjawhar/envoy/cmd/dispatch.chatEndpoint",
+      "capture": "dispatch.model-endpoint/azure-chat-query",
+      "mutation": {
+        "file": "packages/envoy/cmd/dispatch/answerer.go",
+        "preimage": "fmt.Errorf(\"%s (expected an absolute https URL with a host and no query or fragment, the base URL the chat completions route is appended to)\", name)",
+        "replacement": "fmt.Errorf(\"%s=%q (expected an absolute https URL with a host and no query or fragment, the base URL the chat completions route is appended to)\", name, endpoint)"
+      }
+    },
+    {
+      "id": "dispatch-model-endpoint-embed-query",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dispatch",
+      "test": "TestAModelEndpointTheBootRefusesPrintsNoneOfIt/embed-query",
+      "production": "dispatch resolveAzureEmbedder: a DISPATCH_AZURE_EMBED_ENDPOINT with a query is refused naming the setting alone, where the refusal quoted the endpoint as written, a key in its query included",
+      "function": "github.com/sjawhar/envoy/cmd/dispatch.resolveAzureEmbedder",
+      "capture": "dispatch.model-endpoint/embed-query",
+      "mutation": {
+        "file": "packages/envoy/cmd/dispatch/embedder.go",
+        "preimage": "errors.New(\"DISPATCH_AZURE_EMBED_ENDPOINT (expected an absolute https URL with a host and no query or fragment, the base URL the embeddings route is appended to)\")",
+        "replacement": "fmt.Errorf(\"DISPATCH_AZURE_EMBED_ENDPOINT=%q (expected an absolute https URL with a host and no query or fragment, the base URL the embeddings route is appended to)\", endpoint)"
+      }
+    },
+    {
+      "id": "dispatch-agent-secrets-url-twin",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dispatch",
+      "test": "TestADispatchAgentSecretsURLTheBootRefusesPrintsNoneOfIt/twin",
+      "production": "the probe of the agent-secrets-URL rows: a DISPATCH_AGENT_SECRETS_URL with the token in its path is still refused naming the setting, and the rule's reading of it (redact.URL), which the refusal quoted, holds the token, so the rows can see one printed"
+    },
+    {
+      "id": "dispatch-agent-secrets-url-path",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dispatch",
+      "test": "TestADispatchAgentSecretsURLTheBootRefusesPrintsNoneOfIt/path",
+      "production": "dispatch resolveBootConfig: a DISPATCH_AGENT_SECRETS_URL with a path is refused naming the setting and the form it must have and never the URL, where the refusal quoted the URL as the rule reads it (redact.URL), which prints a plain path as written",
+      "function": "github.com/sjawhar/envoy/cmd/dispatch.resolveBootConfig",
+      "capture": "dispatch.agent-secrets-url/path",
+      "mutation": {
+        "file": "packages/envoy/cmd/dispatch/main.go",
+        "preimage": "errors.New(\"DISPATCH_AGENT_SECRETS_URL (expected an absolute http(s) URL with no user information, path, query or fragment)\")",
+        "replacement": "fmt.Errorf(\"DISPATCH_AGENT_SECRETS_URL=%q (expected an absolute http(s) URL with no user information, path, query or fragment)\", redact.URL(agentSecretsURL))"
+      }
+    },
+    {
+      "id": "dispatch-agent-secrets-url-user-info",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dispatch",
+      "test": "TestADispatchAgentSecretsURLTheBootRefusesPrintsNoneOfIt/user-info",
+      "production": "dispatch resolveBootConfig: a DISPATCH_AGENT_SECRETS_URL with user information is refused naming the setting alone, as the broker refuses it in BROKER_PUBLIC_URL, where the boot took it and Dispatch's broker client and token verifier joined each route onto it",
+      "function": "github.com/sjawhar/envoy/cmd/dispatch.resolveBootConfig",
+      "capture": "dispatch.agent-secrets-url/user-info",
+      "mutation": {
+        "file": "packages/envoy/cmd/dispatch/main.go",
+        "preimage": "errors.New(\"DISPATCH_AGENT_SECRETS_URL (expected an absolute http(s) URL with no user information, path, query or fragment)\")",
+        "replacement": "fmt.Errorf(\"DISPATCH_AGENT_SECRETS_URL=%q (expected an absolute http(s) URL with no user information, path, query or fragment)\", agentSecretsURL)"
+      }
+    },
+    {
+      "id": "dispatch-agent-secrets-url-query",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dispatch",
+      "test": "TestADispatchAgentSecretsURLTheBootRefusesPrintsNoneOfIt/query",
+      "production": "dispatch resolveBootConfig: a DISPATCH_AGENT_SECRETS_URL with a query is refused naming the setting alone, as the broker refuses it in BROKER_PUBLIC_URL, where the boot took it and Dispatch's broker client and token verifier joined each route onto it",
+      "function": "github.com/sjawhar/envoy/cmd/dispatch.resolveBootConfig",
+      "capture": "dispatch.agent-secrets-url/query",
+      "mutation": {
+        "file": "packages/envoy/cmd/dispatch/main.go",
+        "preimage": "errors.New(\"DISPATCH_AGENT_SECRETS_URL (expected an absolute http(s) URL with no user information, path, query or fragment)\")",
+        "replacement": "fmt.Errorf(\"DISPATCH_AGENT_SECRETS_URL=%q (expected an absolute http(s) URL with no user information, path, query or fragment)\", agentSecretsURL)"
+      }
+    },
+    {
+      "id": "dispatch-agent-secrets-url-fragment",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dispatch",
+      "test": "TestADispatchAgentSecretsURLTheBootRefusesPrintsNoneOfIt/fragment",
+      "production": "dispatch resolveBootConfig: a DISPATCH_AGENT_SECRETS_URL with a fragment is refused naming the setting alone, as the broker refuses it in BROKER_PUBLIC_URL, where the boot took it and Dispatch's broker client and token verifier joined each route onto it",
+      "function": "github.com/sjawhar/envoy/cmd/dispatch.resolveBootConfig",
+      "capture": "dispatch.agent-secrets-url/fragment",
+      "mutation": {
+        "file": "packages/envoy/cmd/dispatch/main.go",
+        "preimage": "errors.New(\"DISPATCH_AGENT_SECRETS_URL (expected an absolute http(s) URL with no user information, path, query or fragment)\")",
+        "replacement": "fmt.Errorf(\"DISPATCH_AGENT_SECRETS_URL=%q (expected an absolute http(s) URL with no user information, path, query or fragment)\", agentSecretsURL)"
+      }
+    },
+    {
+      "id": "dispatch-envoy-url-twin",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dispatch",
+      "test": "TestAnEnvoyURLTheBootRefusesPrintsNoneOfIt/twin",
+      "production": "the probe of the ENVOY_URL rows: each URL as written holds the user name, the password and the token, and is still refused naming ENVOY_URL, so the rows can see one printed"
+    },
+    {
+      "id": "dispatch-envoy-url-other-scheme",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dispatch",
+      "test": "TestAnEnvoyURLTheBootRefusesPrintsNoneOfIt/other-scheme",
+      "production": "dispatch resolveBootConfig: an ENVOY_URL of another scheme is refused naming the setting alone, where the refusal quoted the URL as written, user information and query included",
+      "function": "github.com/sjawhar/envoy/cmd/dispatch.resolveBootConfig",
+      "capture": "dispatch.envoy-url/other-scheme",
+      "mutation": {
+        "file": "packages/envoy/cmd/dispatch/main.go",
+        "preimage": "errors.New(\"ENVOY_URL (expected an absolute http(s) URL)\")",
+        "replacement": "fmt.Errorf(\"ENVOY_URL=%q (expected an absolute http(s) URL)\", envoyURL)"
+      }
+    },
+    {
+      "id": "dispatch-envoy-url-no-host",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dispatch",
+      "test": "TestAnEnvoyURLTheBootRefusesPrintsNoneOfIt/no-host",
+      "production": "dispatch resolveBootConfig: an ENVOY_URL with no host is refused naming the setting alone, where the refusal quoted the URL as written",
+      "function": "github.com/sjawhar/envoy/cmd/dispatch.resolveBootConfig",
+      "capture": "dispatch.envoy-url/no-host",
+      "mutation": {
+        "file": "packages/envoy/cmd/dispatch/main.go",
+        "preimage": "errors.New(\"ENVOY_URL (expected an absolute http(s) URL)\")",
+        "replacement": "fmt.Errorf(\"ENVOY_URL=%q (expected an absolute http(s) URL)\", envoyURL)"
+      }
+    },
+    {
+      "id": "dispatch-envoy-url-dev-remote",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dispatch",
+      "test": "TestAnEnvoyURLTheBootRefusesPrintsNoneOfIt/dev-remote",
+      "production": "dispatch devSignInFence: with DISPATCH_DEV_SIGNIN=1, an ENVOY_URL on another machine is refused naming the setting alone, where the refusal quoted the URL as written, user information and query included",
+      "function": "github.com/sjawhar/envoy/cmd/dispatch.devSignInFence",
+      "capture": "dispatch.envoy-url/dev-remote",
+      "mutation": {
+        "file": "packages/envoy/cmd/dispatch/main.go",
+        "preimage": "errors.New(\"DISPATCH_DEV_SIGNIN=1 delivers through this machine's Envoy listener only: ENVOY_URL must name 127.0.0.1, [::1] or localhost\")",
+        "replacement": "fmt.Errorf(\"DISPATCH_DEV_SIGNIN=1 delivers through this machine's Envoy listener only: ENVOY_URL=%q must name 127.0.0.1, [::1] or localhost\", boot.EnvoyURL)"
+      }
+    },
+    {
+      "id": "oauth-issuer-in-part-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/oauth",
+      "test": "TestASubjectTokenIssuerConfiguredInPartPrintsNoneOfIt/twin",
+      "production": "the probe of the issuer-in-part rows: the issuer or audience value holds the user name, the password and the token, and New still refuses the issuer as configured in part, so the rows can see one printed"
+    },
+    {
+      "id": "oauth-issuer-in-part-issuer",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/oauth",
+      "test": "TestASubjectTokenIssuerConfiguredInPartPrintsNoneOfIt/issuer",
+      "production": "oauth IssuerConfig.validate: a subject token issuer configured in part whose issuer carries a credential is refused naming the issuer by where it comes from (Kubernetes) and which parts are set, never their values, where the refusal quoted the issuer and the audience as written",
+      "function": "(github.com/sjawhar/envoy/internal/cipher/oauth.IssuerConfig).validate",
+      "capture": "oauth.issuer-in-part/issuer",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/oauth/exchange.go",
+        "preimage": "fmt.Errorf(\"oauth: the %s subject token issuer is configured in part (issuer %s, audience %s, keys %s); it needs all three or none\", where, setOrMissing(c.Issuer != \"\"), setOrMissing(c.Audience != \"\"), setOrMissing(c.Keys != nil))",
+        "replacement": "fmt.Errorf(\"oauth: the %s subject token issuer is configured in part (issuer %q, audience %q, keys %t); it needs all three or none\", where, c.Issuer, c.Audience, c.Keys != nil)"
+      }
+    },
+    {
+      "id": "oauth-issuer-in-part-audience",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/oauth",
+      "test": "TestASubjectTokenIssuerConfiguredInPartPrintsNoneOfIt/audience",
+      "production": "oauth IssuerConfig.validate: a subject token issuer configured in part whose audience carries a credential is refused naming the issuer by where it comes from (GitHub) and which parts are set, never their values, where the refusal quoted the issuer and the audience as written",
+      "function": "(github.com/sjawhar/envoy/internal/cipher/oauth.IssuerConfig).validate",
+      "capture": "oauth.issuer-in-part/audience",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/oauth/exchange.go",
+        "preimage": "fmt.Errorf(\"oauth: the %s subject token issuer is configured in part (issuer %s, audience %s, keys %s); it needs all three or none\", where, setOrMissing(c.Issuer != \"\"), setOrMissing(c.Audience != \"\"), setOrMissing(c.Keys != nil))",
+        "replacement": "fmt.Errorf(\"oauth: the %s subject token issuer is configured in part (issuer %q, audience %q, keys %t); it needs all three or none\", where, c.Issuer, c.Audience, c.Keys != nil)"
+      }
+    },
+    {
+      "id": "dispatchconfig-override-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/config",
+      "test": "TestAnEnvironmentOverrideLoadRefusesPrintsNoneOfIt/twin",
+      "production": "the probe of the environment-override rows: each value as written holds the user name, the password and the token, and is still refused naming its variable, so the rows can see one printed"
+    },
+    {
+      "id": "dispatchconfig-override-server-url",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/config",
+      "test": "TestAnEnvironmentOverrideLoadRefusesPrintsNoneOfIt/server-url",
+      "production": "dispatch config applyEnvironmentOverrides: a DISPATCH_SERVER_URL with user information and a query is refused naming the variable and the form it must have, never the value, where the refusal quoted the value as written",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/config.applyEnvironmentOverrides",
+      "capture": "dispatchconfig.override/server-url",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/config/config.go",
+        "preimage": "errors.New(\"DISPATCH_SERVER_URL (expected an absolute http(s) URL with no user information, path, query or fragment)\")",
+        "replacement": "fmt.Errorf(\"DISPATCH_SERVER_URL=%q (expected an absolute http(s) URL with no user information, path, query or fragment)\", raw)"
+      }
+    },
+    {
+      "id": "dispatchconfig-override-nats-urls",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/config",
+      "test": "TestAnEnvironmentOverrideLoadRefusesPrintsNoneOfIt/nats-urls",
+      "production": "dispatch config applyEnvironmentOverrides: a NATS_URLS with an empty element is refused naming the variable alone, where the refusal quoted the whole value as written, every URL's user information (a NATS server's user and password or token) included",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/config.applyEnvironmentOverrides",
+      "capture": "dispatchconfig.override/nats-urls",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/config/config.go",
+        "preimage": "errors.New(\"NATS_URLS (expected a comma-separated list of NATS URLs, none of them empty)\")",
+        "replacement": "fmt.Errorf(\"NATS_URLS=%q (expected a comma-separated list of NATS URLs, none of them empty)\", raw)"
+      }
+    },
+    {
+      "id": "agentloop-redirect-error-decide-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestAModelCallsOwnErrorNamesNoLocationOfARedirect/decide-unparsed",
+      "production": "agentloop modelTransport.RoundTrip: a decision's redirect, with a Location that does not parse, is refused by its status (redirects.Status) before net/http's client reads the Location, so the error the decision's client returns names the status and no Location; net/http's own error names it (quoted whole where it does not parse, as the *url.Error's URL where a policy refused it)"
+    },
+    {
+      "id": "agentloop-redirect-error-decide-elsewhere",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestAModelCallsOwnErrorNamesNoLocationOfARedirect/decide-elsewhere",
+      "production": "agentloop modelTransport.RoundTrip: a decision's redirect, with a Location that names another host, the credential in its query, is refused by its status (redirects.Status) before net/http's client reads the Location, so the error the decision's client returns names the status and no Location; net/http's own error names it (quoted whole where it does not parse, as the *url.Error's URL where a policy refused it)"
+    },
+    {
+      "id": "agentloop-redirect-error-decide-host",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestAModelCallsOwnErrorNamesNoLocationOfARedirect/decide-host",
+      "production": "agentloop modelTransport.RoundTrip: a decision's redirect, with a Location whose host is the bearer, is refused by its status (redirects.Status) before net/http's client reads the Location, so the error the decision's client returns names the status and no Location; net/http's own error names it (quoted whole where it does not parse, as the *url.Error's URL where a policy refused it)"
+    },
+    {
+      "id": "agentloop-redirect-error-anthropic-messages-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestAModelCallsOwnErrorNamesNoLocationOfARedirect/anthropic-messages-unparsed",
+      "production": "agentloop modelTransport.RoundTrip: a run's redirect on anthropic-messages, with a Location that does not parse, is refused by its status (redirects.Status) before net/http's client reads the Location, so anthropic-sdk-go's own stream error, which wraps the client's, names the status and no Location"
+    },
+    {
+      "id": "agentloop-redirect-error-anthropic-messages-elsewhere",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestAModelCallsOwnErrorNamesNoLocationOfARedirect/anthropic-messages-elsewhere",
+      "production": "agentloop modelTransport.RoundTrip: a run's redirect on anthropic-messages, with a Location that names another host, the credential in its query, is refused by its status (redirects.Status) before net/http's client reads the Location, so anthropic-sdk-go's own stream error, which wraps the client's, names the status and no Location"
+    },
+    {
+      "id": "agentloop-redirect-error-openai-responses-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestAModelCallsOwnErrorNamesNoLocationOfARedirect/openai-responses-unparsed",
+      "production": "agentloop modelTransport.RoundTrip: a run's redirect on openai-responses, with a Location that does not parse, is refused by its status (redirects.Status) before net/http's client reads the Location, so the ai-sdk's openai provider's (openai-go) own stream error, which wraps the client's, names the status and no Location"
+    },
+    {
+      "id": "agentloop-redirect-error-openai-responses-elsewhere",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestAModelCallsOwnErrorNamesNoLocationOfARedirect/openai-responses-elsewhere",
+      "production": "agentloop modelTransport.RoundTrip: a run's redirect on openai-responses, with a Location that names another host, the credential in its query, is refused by its status (redirects.Status) before net/http's client reads the Location, so the ai-sdk's openai provider's (openai-go) own stream error, which wraps the client's, names the status and no Location"
+    },
+    {
+      "id": "agentloop-redirect-error-openai-chat-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestAModelCallsOwnErrorNamesNoLocationOfARedirect/openai-chat-unparsed",
+      "production": "agentloop modelTransport.RoundTrip: a run's redirect on openai-chat, with a Location that does not parse, is refused by its status (redirects.Status) before net/http's client reads the Location, so openai-compatible's own stream error, which wraps the client's, names the status and no Location"
+    },
+    {
+      "id": "agentloop-redirect-error-openai-chat-elsewhere",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestAModelCallsOwnErrorNamesNoLocationOfARedirect/openai-chat-elsewhere",
+      "production": "agentloop modelTransport.RoundTrip: a run's redirect on openai-chat, with a Location that names another host, the credential in its query, is refused by its status (redirects.Status) before net/http's client reads the Location, so openai-compatible's own stream error, which wraps the client's, names the status and no Location"
+    },
+    {
+      "id": "agentloop-header-line-decide",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestAFailedCallNamesNoneOfAHeaderLineItCannotRead/decide",
+      "production": "agentloop Decide: a decision whose answer holds a header line net/http cannot parse, which net/http's error quotes whole, is said by its class (redact.Cause), never by net/http's text",
+      "function": "github.com/sjawhar/envoy/agentloop.Decide",
+      "capture": "agentloop.header-line/decide",
+      "mutation": {
+        "file": "packages/envoy/agentloop/decide.go",
+        "preimage": "redact.Cause(err, req.Model.Endpoint.BaseURL)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "agentloop-header-line-anthropic-messages",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestAFailedCallNamesNoneOfAHeaderLineItCannotRead/anthropic-messages",
+      "production": "agentloop providerFailure: a run on anthropic-messages whose answer holds a header line net/http cannot parse, whose error anthropic-sdk-go hands on with the line quoted whole, is said by its class (redact.Cause), never by net/http's text",
+      "function": "github.com/sjawhar/envoy/agentloop.providerFailure",
+      "capture": "agentloop.header-line/anthropic-messages",
+      "mutation": {
+        "file": "packages/envoy/agentloop/run.go",
+        "preimage": "redact.Cause(err, endpoint.BaseURL)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "agentloop-header-line-openai-responses",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestAFailedCallNamesNoneOfAHeaderLineItCannotRead/openai-responses",
+      "production": "agentloop providerFailure: a run on openai-responses whose answer holds a header line net/http cannot parse, whose error the ai-sdk's openai provider hands on with the line quoted whole, is said by its class (redact.Cause)"
+    },
+    {
+      "id": "agentloop-header-line-openai-chat",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestAFailedCallNamesNoneOfAHeaderLineItCannotRead/openai-chat",
+      "production": "agentloop providerFailure: a run on openai-chat whose answer holds a header line net/http cannot parse, whose error openai-compatible hands on with the line quoted whole, is said by its class (redact.Cause)"
     }
   ],
   "bun": [
@@ -21390,6 +22265,86 @@
       "site": "loadtest readListing: an artifact listing's ids were checked by hand after its decode (listingInShape), beside the dispatchID type the rest of the fetch decodes ids into",
       "source": "round 7's quality review of #4368, finding 11",
       "guard": "loadtest-answer-members-listing-shape-out-of-shape"
+    },
+    {
+      "site": "legion git-credential readForkAnswer: a curl that failed after it heard an answer, or exited for a reason of its own, was named with curl's standard error as it came, which can hold the token the read carried",
+      "source": "the round-9 decisions of #4368",
+      "guard": "legion-cli-fork-curl-stderr"
+    },
+    {
+      "site": "packages/daemon/internal/intake/decode.go decodeDispatchEvent (issue, resolved_repo, artifact, artifact.version, comment, claim payloads), issueEventClaim and decodeAskPayload: json.Unmarshal and then oauth2call.DecodeError of the same arguments, now oauth2call.UnmarshalData",
+      "source": "the round-9 decisions of #4368",
+      "guard": "oauth2call-unmarshal-data-forward"
+    },
+    {
+      "site": "packages/daemon/internal/intake/event_log.go walkIssueEvents: an issue payload decoded by json.Unmarshal and then oauth2call.DecodeError of the same arguments, now oauth2call.UnmarshalData",
+      "source": "the round-9 decisions of #4368",
+      "guard": "oauth2call-unmarshal-data-forward"
+    },
+    {
+      "site": "packages/daemon/internal/intake/status_change.go StatusChangeOf: an issue.updated payload decoded by json.Unmarshal and then oauth2call.DecodeError of the same arguments, now oauth2call.UnmarshalData",
+      "source": "the round-9 decisions of #4368",
+      "guard": "oauth2call-unmarshal-data-forward"
+    },
+    {
+      "site": "packages/daemon/internal/leakguard/visibility_transport.go curlAnswer: the body curl printed decoded by json.Unmarshal and then oauth2call.DecodeError of the same arguments, now oauth2call.UnmarshalData",
+      "source": "the round-9 decisions of #4368",
+      "guard": "oauth2call-unmarshal-data-forward"
+    },
+    {
+      "site": "packages/envoy/internal/dispatch/legion/client.go State: the kept members read by StreamTo into a buffer, json.Unmarshal and redact.DecodeError of the same arguments, now redact.Unmarshal",
+      "source": "the round-9 decisions of #4368",
+      "guard": "redact-unmarshal-data-time"
+    },
+    {
+      "site": "config Load's refusal of BROKER_PUBLIC_URL quoted the URL as the rule reads it, which prints a plain path as written, and Load took a URL with user information, a query or a fragment, which the authorization server metadata then published as the issuer",
+      "source": "the round-9 decisions of #4368",
+      "guard": "config-public-url-path"
+    },
+    {
+      "site": "config parseSignIn's refusal of BROKER_SIGNIN_ISSUER quoted the issuer as written, user information and query included",
+      "source": "the round-9 decisions of #4368",
+      "guard": "config-signin-issuer-plain-http"
+    },
+    {
+      "site": "config loadEdge's refusal of BROKER_EDGE_URL quoted the URL as the rule reads it, which prints a plain path as written, and Load took a URL with user information, a query or a fragment, under which the edge serves its routes",
+      "source": "the round-9 decisions of #4368",
+      "guard": "config-edge-url-path"
+    },
+    {
+      "site": "dispatch chatEndpoint's refusal of DISPATCH_CHAT_ENDPOINT and DISPATCH_AZURE_CHAT_ENDPOINT quoted the endpoint as written, a key in its query or the user information included",
+      "source": "the round-9 decisions of #4368",
+      "guard": "dispatch-model-endpoint-chat-query"
+    },
+    {
+      "site": "dispatch resolveAzureEmbedder's refusal of DISPATCH_AZURE_EMBED_ENDPOINT quoted the endpoint as written, a key in its query included",
+      "source": "the round-9 decisions of #4368",
+      "guard": "dispatch-model-endpoint-embed-query"
+    },
+    {
+      "site": "dispatch resolveBootConfig's refusal of DISPATCH_AGENT_SECRETS_URL quoted the URL as the rule reads it, which prints a plain path as written, and the boot took a URL with user information, a query or a fragment, which BROKER_PUBLIC_URL may no longer hold",
+      "source": "the round-9 decisions of #4368",
+      "guard": "dispatch-agent-secrets-url-path"
+    },
+    {
+      "site": "dispatch resolveBootConfig's refusal of ENVOY_URL and devSignInFence's refusal of a remote listener quoted ENVOY_URL as written, user information and query included",
+      "source": "the round-9 decisions of #4368",
+      "guard": "dispatch-envoy-url-other-scheme"
+    },
+    {
+      "site": "oauth IssuerConfig.validate's refusal of a subject token issuer configured in part quoted its issuer and its audience as written",
+      "source": "the round-9 decisions of #4368",
+      "guard": "oauth-issuer-in-part-issuer"
+    },
+    {
+      "site": "dispatch config applyEnvironmentOverrides' refusals of DISPATCH_SERVER_URL and NATS_URLS quoted the value as written, a NATS URL's user and password or token included",
+      "source": "the round-9 decisions of #4368",
+      "guard": "dispatchconfig-override-nats-urls"
+    },
+    {
+      "site": "agentloop's model client: its own redirect policy (a CheckRedirect that failed the call) let net/http name the Location, an echo of the credential, in the decision client's error and in each SDK's stream error",
+      "source": "the round-8 quality review",
+      "guard": "agentloop-redirect-error-decide-elsewhere"
     }
   ]
 }

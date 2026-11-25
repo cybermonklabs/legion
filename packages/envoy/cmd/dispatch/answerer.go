@@ -87,7 +87,8 @@ func resolveAnswerer(env settingValues, embedderPlace string) (answererConfig, e
 
 // chatEndpoint is the base URL /chat/completions is appended to, as the row name names it: it is
 // required, and an absolute https URL with a host and no query or fragment, since the client
-// builds the route and the query itself.
+// builds the route and the query itself. Its refusal names the setting alone: the endpoint as
+// written is where a key or a token would be.
 func chatEndpoint(env settingValues, name, place string) (string, error) {
 	endpoint := strings.TrimSpace(env.get(name))
 	if endpoint == "" {
@@ -95,7 +96,7 @@ func chatEndpoint(env settingValues, name, place string) (string, error) {
 	}
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || strings.ContainsAny(endpoint, "?#") {
-		return "", fmt.Errorf("%s=%q (expected an absolute https URL with a host and no query or fragment, the base URL the chat completions route is appended to)", name, endpoint)
+		return "", fmt.Errorf("%s (expected an absolute https URL with a host and no query or fragment, the base URL the chat completions route is appended to)", name)
 	}
 	return endpoint, nil
 }

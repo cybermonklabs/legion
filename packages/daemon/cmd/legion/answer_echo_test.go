@@ -433,8 +433,11 @@ func TestAForkReadAnswerPrintsNoTokenItEchoes(t *testing.T) {
 		{"message", "the status 301", func(t *testing.T) string {
 			return echoForkRead(t, "moved.http", `"message": "Moved Permanently"`, `"message": "Moved Permanently, see `+echoProbe+`"`)
 		}},
+		// The echo is in the Location's path as well as its query: stderr's URL rule (newRoot's
+		// redact.Writer) drops a URL's query, so an echo there alone would print nothing even
+		// where the helper printed every Location.
 		{"location", "a redirect the helper does not follow", func(t *testing.T) string {
-			return echoForkRead(t, "moved.http", "location: https://api.github.com/repositories/1146927990", "location: https://api.github.com/repositories/1146927990?access_token="+echoProbe)
+			return echoForkRead(t, "moved.http", "location: https://api.github.com/repositories/1146927990", "location: https://api.github.com/repositories/1146927990/"+echoProbe+"?access_token="+echoProbe)
 		}},
 		{"full-name", "GitHub answered the read of " + slug, func(t *testing.T) string {
 			return echoForkRead(t, "fork-of-a-served-repository.http", `"full_name": "`+slug+`"`, `"full_name": "`+echoProbe+`"`)

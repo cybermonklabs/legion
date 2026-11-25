@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  The daemon's read of an issue's plan no longer hands a plan block's id, steps or needs on as
+  Dispatch, or whatever answers in its place, wrote them, and `register_plan`'s answer no longer
+  prints them back. A `plan_task` or `plan_role` block whose id is outside the task-id grammar
+  `[a-z][a-z0-9-]*` (`plan.TaskIDGrammar`, which Dispatch does not enforce), or whose id, steps or a
+  needs value holds a run of the read's bearer, is refused, and the plan route answers it as a
+  refused plan that names the block by its place, its type and the rule (`typed block 3 of the
+  document, a plan_task block, ...`). A bad word of `steps` is named by its place (`the 2nd word of
+  steps`), and an unsupported `needs` without its values. The configuration loader still quotes a
+  `default_steps` entry, which is the operator's own text. The architect's prompt states the task-id
+  grammar.
+time: 2026-11-24T05:17:03Z
+custom:
+    Issue: pr4368

@@ -277,11 +277,11 @@ func endsRead(ctx context.Context, err error) bool {
 
 // pushActivity is the kinds of GitHub's activity of a branch that are its pushes, whose push
 // webhook carries the same two commits: a push, a force push, and the push that created the branch.
-var pushActivity = map[string]bool{"push": true, "force_push": true, "branch_creation": true}
+var pushActivity = []string{"push", "force_push", "branch_creation"}
 
 // activityTypes is every activity_type GitHub documents for an entry of a branch's activity
-// (githubrest.Activity).
-var activityTypes = []string{"push", "force_push", "branch_creation", "branch_deletion", "pr_merge", "merge_queue_merge"}
+// (githubrest.Activity): its pushes (pushActivity), the branch's deletion, and the two merges.
+var activityTypes = slices.Concat(pushActivity, []string{"branch_deletion", "pr_merge", "merge_queue_merge"})
 
 // followActivity is the entries of activity, GitHub's activity of a branch newest first, that took
 // the branch from from to to, oldest first: from the newest entry that left the branch at to, each
@@ -302,7 +302,7 @@ func followActivity(activity []githubrest.Activity, from, to string) ([]githubre
 		switch {
 		case entry.After != at:
 			return nil, fmt.Sprintf("the branch's activity before it reached %s left it at %s", githubrest.ShownSHA(at), githubrest.ShownSHA(entry.After))
-		case !pushActivity[entry.Type]:
+		case !slices.Contains(pushActivity, entry.Type):
 			return nil, fmt.Sprintf("the branch's activity reached %s by a %s, not a push", githubrest.ShownSHA(at), githubrest.ShownWord(entry.Type, activityTypes...))
 		}
 		chain = append(chain, entry)

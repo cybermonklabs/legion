@@ -73,7 +73,7 @@ func (c *Client) Repositories(ctx context.Context, project string) ([]string, er
 		return nil, fmt.Errorf("projectrepos: read %s's repositories: %w", project, err)
 	}
 	if answer.Status != http.StatusOK {
-		return nil, fmt.Errorf("projectrepos: dispatch answered %d with the code %q about %s", answer.Status, dispatchread.Clip(dispatchread.RefusalCode(answer.Body).String()), project)
+		return nil, fmt.Errorf("projectrepos: dispatch answered %d with the code %q about %s", answer.Status, dispatchread.Quoted(dispatchread.RefusalCode(answer.Body)), project)
 	}
 	return readAnswer(answer, project)
 }
@@ -84,12 +84,12 @@ func (c *Client) Repositories(ctx context.Context, project string) ([]string, er
 // "owner/name" strings sorted byte-wise, each once; each key in its own case and once, and no
 // other key. encoding/json alone would read a key in any case and the last of a key written twice,
 // so the object is read key by key, from the answer's bytes (StreamTo); a key or a value the error
-// names is Dispatch's words, named as the rule reads them (redact.Answer.Said).
+// names is Dispatch's words, named as the rule reads them (dispatchread.Quoted).
 func readAnswer(answer dispatchread.Answer, project string) ([]string, error) {
 	refused := func(why string) error {
 		return fmt.Errorf("projectrepos: dispatch's answer about %s %s", project, why)
 	}
-	quoted := func(text string) string { return dispatchread.Clip(answer.Body.Said(text).String()) }
+	quoted := func(text string) string { return dispatchread.Quoted(answer.Body.Said(text)) }
 	var body bytes.Buffer
 	if _, err := answer.Body.StreamTo(&body); err != nil {
 		return nil, refused("could not be read")

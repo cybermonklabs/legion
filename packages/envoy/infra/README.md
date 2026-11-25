@@ -1485,8 +1485,9 @@ broker credential or App key ever enters the component or its Pulumi state. Both
 without.
 
 `agentSecretsUrl` with `agentSecretsAudience` (both plain) turns on Dispatch's secrets-broker
-relay: the URL must be absolute http(s) with a host and no path, as Dispatch requires of
-`DISPATCH_AGENT_SECRETS_URL` (a trailing slash is trimmed, as Dispatch trims it), and is rendered
+relay: the URL must be absolute http(s) with a host and no user information, path, query or
+fragment, as Dispatch requires of `DISPATCH_AGENT_SECRETS_URL` (a trailing slash is trimmed, as
+Dispatch trims it), and is rendered
 as that plain env var. Dispatch calls the broker as its own Kubernetes ServiceAccount,
 `system:serviceaccount:<namespace>:<hostname>`, never with a bearer it shares with the broker: the
 app pod gets a projected volume of its own, `agent-secrets-account-token`, whose one source is a
@@ -1654,7 +1655,7 @@ inputs or with an entry Dispatch would refuse, an
 others (each missing input named), an `appId` that is not digits or is 0, an
 `appPrivateKeySecretName` that is not a DNS subdomain, an `appPrivateKeySecretKey` that is no
 Secret's key (as `seedSecretKey`'s rule above), a `verdictAppId` without the App, blank, or not a
-GitHub App id (a whole number above 0 with no leading zero), and an `agentSecretsUrl` that is not an absolute http(s) URL with no path; and,
+GitHub App id (a whole number above 0 with no leading zero), and an `agentSecretsUrl` that is not an absolute http(s) URL with no user information, path, query or fragment; and,
 of the Azure embedder's group, any `azureEmbed` input without `azureEmbedEndpoint`, an endpoint
 without `azureEmbedTokensPerMinute` or with one below 1, both credential forms or neither,
 `azureTenantId` or `azureClientId` without the other, an `azureFederationAudience` without them or

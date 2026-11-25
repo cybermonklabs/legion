@@ -3,7 +3,6 @@ package leakguard
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -361,7 +360,7 @@ func (g *Guard) CurlGet(ctx context.Context, path, token string) (CurlResponse, 
 // guard's own parse of that output, the one curlAnswer reads the visibility read's answer with.
 //
 // token is the token the read was sent with, kept so that what this quotes of curl's words
-// redacts every run of it (Unreached): whatever answers in GitHub's place can echo the token
+// redacts every run of it (Unreached, Said): whatever answers in GitHub's place can echo the token
 // back in the body, and curl prints the body. Nothing else reads it, and it is no part of what a
 // caller decides on: Exit, Stdout and Stderr are the answer as it came.
 type CurlResponse struct {
@@ -400,6 +399,12 @@ func (r CurlResponse) Unreached() error {
 	quoted := shownSaid(strings.TrimSpace(strings.TrimSpace(r.Body())+" "+strings.TrimSpace(r.Stderr)), r.token)
 	return &transportError{program: "curl", said: fmt.Sprintf("exit %d: %s", r.Exit, quoted)}
 }
+
+// Said is what curl printed on its standard error (Stderr) as a refusal quotes it: on one line,
+// every run of the read's token redacted, and the whole read by the rule (shownSaid). Stderr is
+// curl's words as they came, which can hold the token whatever answers in GitHub's place echoed,
+// so a caller that names a failure of curl's quotes this, never Stderr.
+func (r CurlResponse) Said() string { return shownSaid(r.Stderr, r.token) }
 
 // curlInherits is which names of the caller's environment the curl read keeps: those a program
 // carrying a GitHub token keeps (TokenChildKeeps), which hold neither GH_TOKEN nor GITHUB_TOKEN,
@@ -483,8 +488,8 @@ func curlAnswer(status int, stdout, stderr, slug, token string) (Visibility, err
 	var answer struct {
 		Visibility string `json:"visibility"`
 	}
-	if err := json.Unmarshal([]byte(body), &answer); err != nil {
-		return "", fmt.Errorf("curl's read of repos/%s answered a body that is not JSON: %w", masked, oauth2call.DecodeError(err, []byte(body), &answer))
+	if err := oauth2call.UnmarshalData([]byte(body), &answer); err != nil {
+		return "", fmt.Errorf("curl's read of repos/%s answered a body that is not JSON: %w", masked, err)
 	}
 	switch visibility := Visibility(strings.ToLower(strings.TrimSpace(answer.Visibility))); visibility {
 	case Public, Private, Internal:

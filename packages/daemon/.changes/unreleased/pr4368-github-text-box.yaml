@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  A status check context or a pull request's base branch that GitHub answered, which the daemon
+  decides on as it came, now prints only as the daemon's lines name it, GitHub's words as the rule
+  reads them, by every printer: each fmt verb, a `slog` field and `json.Marshal`. Before, the member
+  as it came was a plain exported field of the value, which any printer of the whole value would
+  print, a token echoed in its place included.
+time: 2026-11-24T23:28:24Z
+custom:
+    Issue: pr4368

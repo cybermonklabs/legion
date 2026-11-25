@@ -101,6 +101,16 @@ func ContainsFold(body []byte, phrase string) bool { return redact.ContainsFold(
 // unwrapping to nothing, for a decode of bytes no answer's Decode reads whose error prints.
 func DecodeError(err error, data []byte, into any) error { return redact.DecodeError(err, data, into) }
 
+// Unmarshal is redact.Unmarshal: a's body decoded by encoding/json as the answer's data, for a
+// destination Answer.Decode refuses (a json.RawMessage), its error DecodeError's fixed text.
+// Nothing it fills holds the request's record, so nothing it fills may print.
+func Unmarshal(a Answer, into any) error { return redact.Unmarshal(a, into) }
+
+// UnmarshalData is redact.UnmarshalData: data decoded by encoding/json, for bytes no answer's
+// Decode reads (a message a stream carries, a member an answer carried as data), its error
+// DecodeError's fixed text, which quotes no value.
+func UnmarshalData(data []byte, into any) error { return redact.UnmarshalData(data, into) }
+
 // Unanswered is redact.Unanswered: err, the failure of an HTTP request that got no answer
 // (http.Client.Do's error, or http.NewRequest's with request nil), as a message may print it:
 // net/http's operation, the request named shown or, where shown is "", by the URL it asked as

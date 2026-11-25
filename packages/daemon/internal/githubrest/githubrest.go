@@ -213,7 +213,7 @@ func GetPages[T any](ctx context.Context, c Client, path, shown string) ([]T, er
 		all = append(all, page...)
 		if next != "" {
 			nextURL, err := url.Parse(next)
-			if err != nil || nextURL.Scheme != first.Scheme || !strings.EqualFold(nextURL.Host, first.Host) {
+			if err != nil || !redirects.SameOriginURL(nextURL, first) {
 				return nil, fmt.Errorf("GitHub named a next page that is not on %s://%s, the only origin sent the token", first.Scheme, first.Host)
 			}
 		}

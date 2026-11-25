@@ -8,12 +8,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/programbound"
 )
@@ -151,23 +151,24 @@ type forkUpstream struct {
 
 // readForkAnswer is GitHub's answer to the fork read of repo, where it is a 200 that says repo is
 // a fork, and an error naming the answer otherwise. In order: a curl that got no answer
-// (CurlResponse.Unreached) or that failed after it heard one, a rate limit, with its reset or its
-// wait (CurlResponse.RateLimit), any status but 200, with GitHub's message and, for a redirect,
-// where it points, since curl follows none; and, of a 200, a body that is not JSON, an answer for
-// another repository than repo (a full_name that differs from it beyond case), and an answer
-// with no "fork" field or a false one.
+// (CurlResponse.Unreached) or that failed after it heard one, quoting what curl said as the rule
+// reads it (CurlResponse.Said), a rate limit, with its reset or its wait (CurlResponse.RateLimit),
+// any status but 200, with GitHub's message and, for a redirect, where it points, since curl
+// follows none; and, of a 200, a body that is not JSON, an answer for another repository than
+// repo (a full_name that differs from it beyond case), and an answer with no "fork" field or a
+// false one.
 //
 // Each value of GitHub's answer an error names is GitHub's word, read with no record of the
 // token the read carried, so it prints only in a shape that holds no credential: a message of
-// plain words (gitHubWords), a redirect to a repository by its id (gitHubRedirect), a full name
-// that is `owner/name` as GitHub names one (ghrepo.Parse). A value of any other shape is named by
-// what it is and not printed.
+// plain words (githubrest.PlainMessage), a redirect to a repository by its id
+// (githubrest.RepositoryRedirect), a full name that is `owner/name` as GitHub names one
+// (ghrepo.Parse). A value of any other shape is named by what it is and not printed.
 func readForkAnswer(response leakguard.CurlResponse, repo ghrepo.Repository) (forkAnswer, error) {
 	if response.Exit != 0 {
 		if unreached := response.Unreached(); unreached != nil {
 			return forkAnswer{}, fmt.Errorf("the read of %s failed: %w", repo, unreached)
 		}
-		return forkAnswer{}, fmt.Errorf("curl's read of %s exited %d: %s", repo, response.Exit, strings.TrimSpace(response.Stderr))
+		return forkAnswer{}, fmt.Errorf("curl's read of %s exited %d: %s", repo, response.Exit, response.Said())
 	}
 	if limited := response.RateLimit(); limited != nil {
 		return forkAnswer{}, fmt.Errorf("GitHub refused the read of %s: %w", repo, limited)
@@ -181,13 +182,13 @@ func readForkAnswer(response leakguard.CurlResponse, repo ghrepo.Repository) (fo
 	if status != http.StatusOK {
 		said := fmt.Sprintf("GitHub answered the read of %s with the status %d", repo, status)
 		switch {
-		case gitHubWords.MatchString(answer.Message):
+		case githubrest.PlainMessage(answer.Message):
 			said += " (" + answer.Message + ")"
 		case answer.Message != "":
 			said += " (with a message that is more than plain words, which the helper does not print)"
 		}
 		switch location := headers["location"]; {
-		case gitHubRedirect.MatchString(location):
+		case githubrest.RepositoryRedirect(location):
 			said += ", pointing at " + location + ", a redirect the helper does not follow"
 		case location != "":
 			said += ", pointing at an address that names no repository by its id, a redirect the helper does not follow"
@@ -209,16 +210,6 @@ func readForkAnswer(response leakguard.CurlResponse, repo ghrepo.Repository) (fo
 	}
 	return answer, nil
 }
-
-// gitHubWords is a message of GitHub's that is plain words: letters, spaces and a sentence's
-// punctuation, at most 200 characters, the shape of each message GitHub's REST API writes for a
-// read it refuses ("Not Found", "Bad credentials", "Moved Permanently"). A digit, a slash, a colon
-// or an underscore is none of it, so no URL and no token GitHub mints has the shape.
-var gitHubWords = regexp.MustCompile(`^[A-Za-z][A-Za-z ,.'()-]{0,199}$`)
-
-// gitHubRedirect is where GitHub's redirect for a repository that moved points: the repository
-// by its id on api.github.com, with no user information, query or fragment.
-var gitHubRedirect = regexp.MustCompile(`^https://api\.github\.com/repositories/[0-9]+$`)
 
 // dir is the gh directory that answers for the fork repo, by R2's rule: where the bundle holds a
 // directory for the owner of the fork's parent, the nearer of the two repositories it comes from,

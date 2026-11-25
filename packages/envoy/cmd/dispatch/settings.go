@@ -142,7 +142,7 @@ var settings = []setting{
 	{Name: "DISPATCH_OIDC_AUDIENCE", Required: "when `DISPATCH_OIDC_ISSUER` is set",
 		Description: "Audience those service-account tokens must carry."},
 	{Name: "DISPATCH_AGENT_SECRETS_URL", Required: "no",
-		Description: "Base URL of the secrets broker's API, an absolute http(s) URL with no path; set, the credential-request pages are on."},
+		Description: "Base URL of the secrets broker's API, an absolute http(s) URL with no user information, path, query or fragment, as the broker's `BROKER_PUBLIC_URL` is; set, the credential-request pages are on."},
 	{Name: "DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", Required: "when `DISPATCH_AGENT_SECRETS_URL` is set",
 		Description: "File holding Dispatch's own projected Kubernetes service-account token, which every call to the secrets broker presents; the broker verifies it and reads the caller from `BROKER_API_ACCOUNTS`. In the cluster it is the projected-token volume's path (`/var/run/secrets/…/token`), which the kubelet rewrites in place; the file is read at call time, so a rotation needs no restart, and a local run writes a token into a file of its own and names that."},
 	{Name: "DISPATCH_SEARCH_FILL", Default: "`on`", Required: "no",

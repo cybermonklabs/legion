@@ -14,7 +14,7 @@ import (
 // the nats-server's own client listener behind it (Start), a handshake hold's proxy (StartProxy)
 // and the hold's own relay between that proxy and the server (StartHandshakeHold), and a gate
 // (StartGate). Each listens on a loopback address of its own (testport.LoopbackIP). A container's
-// published port (StartImageConfig) is chosen by testport.LoopbackPorts and is no row here: this
+// published port (StartImageConfig) is on testport.LoopbackPorts' address and is no row here: this
 // package's untagged tests start no container. The stray client dials as a leftover bus client
 // does, every 200 ms; each listener's control is the same client at the listener's own address,
 // which reaches the server.

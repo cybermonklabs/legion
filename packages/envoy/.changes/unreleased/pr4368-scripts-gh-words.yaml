@@ -1,0 +1,32 @@
+kind: Fixed
+body: |-
+  The release and check scripts no longer print what gh or docker wrote: whatever answers their
+  calls in GitHub's or a registry's place holds gh's token or docker's login and can write it there.
+
+  `scripts/daemon-release-gate.sh` keeps a failed gh or docker call's words in a file of a directory
+  `daemon-release-gate-words.<random>` under `TMPDIR`, removed when the run kept none, and its line
+  names that file and, for gh, the three digits of its `(HTTP nnn)`. An answer the gate does not
+  take is named by its field and kind, an archive member or a tree entry by its place and kind, and
+  every line the gate prints passes a filter that writes each run of 8 characters of gh's token as
+  `[redacted]` (`scripts/lib/token-filter.sh`). Verdicts and exits are as before.
+
+  `scripts/legacy-subjects-gate.sh` prints of a compare only GitHub's four statuses and a
+  `behind_by` that is a count, and keeps any other answer, and a failed compare's words, in a file
+  `<record>.compare.XXXXXX` beside the record, which the verdict names.
+
+  `scripts/airlock-check.sh` keeps gh's words from its fetches in files of the work directory, and
+  writes of k7's gh step only the three digits of its `(HTTP nnn)`. It unpacks the old CLI's tarball
+  member by member: a member it refuses or cannot write is named by its place and kind, a member
+  whose path leaves the directory or that is neither a directory nor a regular file is refused, and
+  a failed unpack fails the fetch, where tar's failure was ignored. It prints a compare's status
+  only when it is one of GitHub's four, and a failed consumer fetch no longer ends k7 on an unbound
+  `K7_FETCHED`.
+
+  `loadtest/cluster/cluster.sh up` keeps gh's answers and words in `gh-words.<random>` under
+  `LOADTEST_CLUSTER_ROOT`, prints an answer only as the commit or the Postgres major version it
+  holds it to, and refuses, in its own words, a listener image from gh's answer that is no reference
+  or does not resolve. Its apply of a manifest prints kubectl's refusal through the token filter,
+  and keeps kubectl's own words in the run's `apply-<name>.err`.
+time: 2026-11-24T22:01:50Z
+custom:
+    Issue: pr4368

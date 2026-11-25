@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+  Three requests now join their route onto the configured URL's path, with its query kept, where a
+  configured query took the route in. `DispatchClient` asked `/api/v1/...` on the bare host for a
+  Dispatch URL with a query (`http://host/dispatch?key=v`), losing both its path and its query; it
+  now asks `/dispatch/api/v1/...?key=v`, the configured query ahead of the request's own. A client
+  made with a Dispatch URL that does not parse fails each request with `the configured Dispatch URL
+  is not an absolute URL with a host (not printed)`, where the URL parser's `TypeError` kept the URL
+  whole, its user information and query included, for `JSON.stringify` and an inspection to print.
+  `slack_post` posts to `chat.postMessage` joined onto `SLACK_POST_API_URL`'s path, where
+  `https://host/api?team=T1` asked `/api`. The listener relay's socket (`relaySocketUrl`) opens
+  `v1/sessions/<session>/relay` under the listener URL's path, where a listener URL with a query had
+  the upgrade ask that URL's own path; the socket's proof still names the URL less its query as its
+  `htu`, as RFC 9449 says. A URL without a query is asked as before.
+time: 2026-11-24T22:40:04Z
+custom:
+    Issue: pr4368

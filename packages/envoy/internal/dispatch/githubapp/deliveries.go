@@ -361,7 +361,7 @@ type limitEntryWords struct {
 }
 
 // spent is whether the entry says the App's GraphQL budget is spent: its type is RATE_LIMITED.
-func (e limitEntry) spent() bool { return e.Type == "RATE_LIMITED" }
+func (e limitEntry) spent() bool { return e.Type == graphQLRateLimited }
 
 // secondaryWording is whether message, an entry's or the envelope's own, holds GitHub's wording of
 // a secondary limit.
@@ -440,9 +440,10 @@ var limitHeaders = []string{"X-RateLimit-Remaining", "X-RateLimit-Reset", "Retry
 const (
 	rateLimitPhrase          = "rate limit"
 	secondaryRateLimitPhrase = "secondary rate limit"
+	graphQLRateLimited       = "RATE_LIMITED"
 )
 
-var graphQLRateLimitedType = []byte("RATE_LIMITED")
+var graphQLRateLimitedType = []byte(graphQLRateLimited)
 
 // rateLimitWait is how long GitHub asks for before the next request under a limit it answered
 // with, read now through serverwait.Read, else the one minute GitHub asks for when the answer

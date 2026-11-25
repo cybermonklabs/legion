@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -345,11 +347,9 @@ func (res *result) scan(text string) {
 // line longer than its buffer across several output events, and a REDACT-CAPTURE line of a long
 // page is one, so a capture read event by event would be cut short.
 //
-// The bound is derived as check-redact-remote-text.sh derives each package's, whose comment says
-// why: the start-up run, `go test -json -count=1 -run '^$'` of the row's package in the copy,
-// timed, builds and links its test binary and runs it with no test under the box's load of that
-// moment; the bound is row_timeout, the row's own budget, plus four times that time. A start-up
-// run that fails is not read: the run after it fails the same way, and that run is read.
+// A Go row's bound is runBound's for the one top-level test, after the start-up run of the row's
+// package in the copy (startUp); a Bun row's is row_timeout alone (runBun). A start-up run that
+// fails is not read: the run after it fails the same way, and that run is read.
 func (g *gate) runTest(copyDir string, r *row) result {
 	res := result{captures: map[string][]string{}}
 	start := time.Now()
@@ -361,11 +361,8 @@ func (g *gate) runTest(copyDir string, r *row) result {
 		res.compileError, res.note = true, err.Error()
 		return res
 	}
-	startup := exec.Command("go", "test", "-json", "-count=1", "-run", "^$", r.Package)
-	startup.Dir = filepath.Join(copyDir, mod)
-	_ = startup.Run()
-	res.startup = ceilSecond(time.Since(start))
-	res.bound = g.rowTimeout + 4*res.startup
+	res.startup, _ = startUp(filepath.Join(copyDir, mod), r.Package, nil, nil)
+	res.bound = runBound(g.rowTimeout, 1, res.startup)
 	start = time.Now()
 	cmd := exec.Command("go", "test", "-json", "-count=1", "-v", "-timeout", res.bound.String(), "-run", "^"+regexp.QuoteMeta(r.Test)+"$", r.Package)
 	cmd.Dir = filepath.Join(copyDir, mod)
@@ -389,10 +386,6 @@ func (g *gate) runTest(copyDir string, r *row) result {
 		}
 		if e.Action == "output" {
 			printed.WriteString(e.Output)
-		}
-		// The binary's own panic at its -timeout, or the go command's kill a minute after it.
-		if strings.Contains(e.Output, "panic: test timed out") || strings.Contains(e.Output, "*** Test killed with quit: ran too long") {
-			res.timedOut = true
 		}
 		if e.Action == "build-output" {
 			built.WriteString(e.Output)
@@ -434,10 +427,39 @@ func (g *gate) runTest(copyDir string, r *row) result {
 	if res.compileError && res.note == "" {
 		res.note = compilerError(built.String())
 	}
-	if res.timedOut {
-		res.stall = stall(printed.String())
+	text := printed.String()
+	if res.timedOut = ranPast(text); res.timedOut {
+		res.stall = stall(text)
 	}
 	return res
+}
+
+// startUp is the start-up run of a package's tests in dir: `go test -json -count=1 -run '^$'`,
+// which builds and links the package's test binary and runs it with no test (its TestMain's start
+// and end) under the box's load of that moment, writing its events to stdout and the go command's
+// stderr to stderr (nil discards either). It answers the run's time, in whole seconds rounded up,
+// and the go command's error. Its own bound is go test's default, ten minutes.
+func startUp(dir, pkg string, stdout, stderr io.Writer) (time.Duration, error) {
+	start := time.Now()
+	cmd := exec.Command("go", "test", "-json", "-count=1", "-run", "^$", pkg)
+	cmd.Dir, cmd.Stdout, cmd.Stderr = dir, stdout, stderr
+	err := cmd.Run()
+	return ceilSecond(time.Since(start)), err
+}
+
+// runBound is the bound of a go test run of tops top-level tests whose package's start-up run
+// took startup: row_timeout, the time the test of one row may take, once for each test, plus four
+// times the start-up run, so the tests' budget is its floor. go test's -timeout counts from the
+// first test, but the go command kills the binary one minute past it counted from the binary's
+// start, so the bound holds the binary's start and end as well as its tests: twice the start-up
+// run holds that start and end (the start-up run made them once, with no test; a run's end also
+// drops what its tests made, each database they cloned among it), and twice that again holds the
+// load moving between the two runs. Each bound is derived in its own run, not set ahead, because
+// the box's load moves from one run to the next: on 2026-11-22 the one row of
+// daemon/internal/workflow took 46s at 14:06Z and 1.5s at 15:31Z. Stages 4 and 5 bound each Go
+// row's run by it, and -verify each Go package's (verify.go).
+func runBound(rowTimeout time.Duration, tops int, startup time.Duration) time.Duration {
+	return time.Duration(tops)*rowTimeout + 4*startup
 }
 
 func ceilSecond(d time.Duration) time.Duration {
@@ -474,10 +496,34 @@ var (
 	testFrame = regexp.MustCompile(`\.(Test(?:[A-Z0-9_]\w*)?)[.(]`)
 )
 
+// A run past its bound prints one of these at the start of a line: the test binary's own panic at
+// its -timeout, or the go command's kill a minute after it (it kills the binary with SIGQUIT, and
+// the binary prints every goroutine). go test -json carries the binary's stderr among its output
+// events.
+const (
+	timeoutPanic = "panic: test timed out after "
+	quitKill     = "*** Test killed with quit: ran too long"
+)
+
+// ranPast reports whether a run's output says it went past its bound: a line that starts with
+// timeoutPanic or quitKill, where the testing package and the go command print them. A line that
+// holds one past its start - a test's t.Log line quoting it, indented and led by the test's file -
+// says nothing of the run. A panic printed after a test's own output that did not end its line is
+// missed, so that run reads as failed, not UNKNOWN: either is no pass. stall finds the lines the
+// same way, so a run read as past its bound always shows them.
+func ranPast(text string) bool {
+	for line := range strings.SplitSeq(text, "\n") {
+		if strings.HasPrefix(line, timeoutPanic) || strings.HasPrefix(line, quitKill) {
+			return true
+		}
+	}
+	return false
+}
+
 // stall is what a run past its bound printed of it: the timeout's panic line with the tests it was
 // running, the go command's kill line, and the goroutines of the dump that run a test - each with
 // a frame of a test function other than TestMain - or, where none does, those in TestMain (a start
-// or an end past the bound). check-redact-remote-text.sh prints the same for a package.
+// or an end past the bound). -verify prints the same for a package (verify.go).
 func stall(text string) string {
 	lines := strings.Split(text, "\n")
 	var shown []string
@@ -486,7 +532,7 @@ func stall(text string) string {
 	panicked := false
 	for i, line := range lines {
 		switch {
-		case !panicked && strings.HasPrefix(line, "panic: test timed out after "):
+		case !panicked && strings.HasPrefix(line, timeoutPanic):
 			panicked = true
 			shown = append(shown, line)
 			for _, next := range lines[i+1:] {
@@ -495,7 +541,7 @@ func stall(text string) string {
 				}
 				shown = append(shown, next)
 			}
-		case strings.HasPrefix(line, "*** Test killed with quit: ran too long"):
+		case strings.HasPrefix(line, quitKill):
 			shown = append(shown, line)
 		}
 		switch {
@@ -568,7 +614,7 @@ func (g *gate) runBun(copyDir string, r *row, res result, start time.Time) resul
 		res.compileError, res.note = true, lastLines(text, 3)
 	}
 	xml, _ := os.ReadFile(report)
-	state := junitState(string(xml), r.Test)
+	state := junitStates(string(xml))[r.Test]
 	res.ran = state != ""
 	res.failed = state == "failed"
 	if state == "skipped" {
@@ -580,56 +626,61 @@ func (g *gate) runBun(copyDir string, r *row, res result, start time.Time) resul
 	return res
 }
 
-// junitState is "passed", "failed", "skipped" or "" (not in the report) for the testcase whose
-// full name is name.
-func junitState(xml, name string) string {
-	tag := regexp.MustCompile(`<(/?)(testsuite|testcase|failure|error|skipped)\b([^>]*?)(/?)>`)
-	attr := regexp.MustCompile(`\bname="([^"]*)"`)
+var (
+	junitTag  = regexp.MustCompile(`<(/?)(testsuite|testcase|failure|error|skipped)\b([^>]*?)(/?)>`)
+	junitName = regexp.MustCompile(`\bname="([^"]*)"`)
+)
+
+// junitStates reads a Bun JUnit report: "passed", "failed" or "skipped" for each testcase, by its
+// full name - the names of the describe blocks around it and its own, joined by " > ", as Bun
+// prints them. A testcase with a failure or an error child failed, one with a skipped child was
+// skipped, and of testcases that share a full name the first that did not pass decides.
+func junitStates(xml string) map[string]string {
+	states := map[string]string{}
 	var suites []string
-	state, open := "", ""
-	var current string
-	for _, m := range tag.FindAllStringSubmatch(xml, -1) {
+	open, state, inCase := "", "", false // the open testcase's full name and state
+	closeCase := func() {
+		if before, seen := states[open]; !seen || before == "passed" {
+			states[open] = state
+		}
+		inCase = false
+	}
+	for _, m := range junitTag.FindAllStringSubmatch(xml, -1) {
 		closing, kind, attrs, self := m[1] == "/", m[2], m[3], m[4] == "/"
-		n := ""
-		if a := attr.FindStringSubmatch(attrs); a != nil {
-			n = unescape(a[1])
+		name := ""
+		if a := junitName.FindStringSubmatch(attrs); a != nil {
+			name = html.UnescapeString(a[1])
 		}
 		switch kind {
 		case "testsuite":
 			if closing {
 				suites = suites[:max(0, len(suites)-1)]
 			} else if !self {
-				suites = append(suites, n)
+				suites = append(suites, name)
 			}
 		case "testcase":
 			if closing {
-				if current == name && (state == "" || state == "passed") {
-					state = open
+				if inCase {
+					closeCase()
 				}
-				current = ""
 				continue
 			}
-			full := strings.Join(append(append([]string{}, suites[min(1, len(suites)):]...), n), " > ")
-			current, open = full, "passed"
-			if self && full == name {
-				state = "passed"
-				current = ""
+			open = strings.Join(append(append([]string{}, suites[min(1, len(suites)):]...), name), " > ")
+			state, inCase = "passed", true
+			if self {
+				closeCase()
 			}
 		default:
-			if current != "" && !closing {
+			if inCase && !closing {
 				if kind == "skipped" {
-					open = "skipped"
+					state = "skipped"
 				} else {
-					open = "failed"
+					state = "failed"
 				}
 			}
 		}
 	}
-	return state
-}
-
-func unescape(s string) string {
-	return strings.NewReplacer("&apos;", "'", "&quot;", `"`, "&lt;", "<", "&gt;", ">", "&amp;", "&").Replace(s)
+	return states
 }
 
 func lastLines(text string, n int) string {

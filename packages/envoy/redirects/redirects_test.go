@@ -3,6 +3,7 @@ package redirects
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync/atomic"
 	"testing"
 )
@@ -82,6 +83,29 @@ func TestASameOriginClientFollowsARedirectOnlyOnItsOwnOrigin(t *testing.T) {
 	}
 	if n := asked.Load(); n != 0 {
 		t.Errorf("the target on another host was asked %d times, want none", n)
+	}
+}
+
+// TestSameOriginURLIsTheSchemeAndTheHostWithItsPort: a URL is on an origin when its scheme and
+// its host with its port are the origin's, the host in any case; its user information, path and
+// query are not compared.
+func TestSameOriginURLIsTheSchemeAndTheHostWithItsPort(t *testing.T) {
+	origin := &url.URL{Scheme: "https", Host: "mcp.example:8443", Path: "/sse"}
+	for raw, want := range map[string]bool{
+		"https://mcp.example:8443/message?session_id=1": true,
+		"https://someone@MCP.Example:8443/":             true,
+		"https://mcp.example:8444/sse":                  false,
+		"https://mcp.example/sse":                       false,
+		"http://mcp.example:8443/sse":                   false,
+		"https://other.example:8443/sse":                false,
+	} {
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatalf("url.Parse(%q) = %v", raw, err)
+		}
+		if got := SameOriginURL(u, origin); got != want {
+			t.Errorf("SameOriginURL(%s, %s) = %v, want %v", raw, origin, got, want)
+		}
 	}
 }
 

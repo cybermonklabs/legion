@@ -83,8 +83,8 @@ type Config struct {
 	// host.
 	DatabaseIAM bool
 	// BROKER_PUBLIC_URL: the broker's own address as its callers reach it, an absolute http or
-	// https URL with no path. Required. Every signed proof and request object names it, so a client's
-	// AGENT_SECRETS_URL must be exactly this.
+	// https URL with no user information, path, query or fragment. Required. Every signed proof and
+	// request object names it, so a client's AGENT_SECRETS_URL must be exactly this.
 	PublicURL string
 	// BROKER_MACHINE_LOGIN_URL: the absolute http(s) URL of the page where a person types a
 	// machine login's code (Dispatch's /credentials/machine). Optional. The device grant's
@@ -116,14 +116,14 @@ type Config struct {
 	// serves, and BROKER_SIGNIN_DOMAIN, the Workspace it refuses.
 	EdgeListenAddr string
 	// BROKER_EDGE_URL: the broker's own address as a caller of its edge reaches it, an absolute
-	// http or https URL with no path, whose origin is not BROKER_PUBLIC_URL's: the two are
-	// compared as a DPoP proof's htu is, the scheme and the host without regard to case and the
-	// scheme's default port the same as none, so https://secrets.example:443 is refused beside
-	// https://secrets.example. A machine login's request object made at the edge names it as its
-	// audience and every DPoP proof sent there names it and the route's path, as one made on
-	// BROKER_PUBLIC_URL names that, so neither is spendable at the other. Set with
-	// BROKER_EDGE_LISTEN_ADDR. cmd/cipherd refuses an http one unless BROKER_FAKE_SECRETS_FILE is
-	// set.
+	// http or https URL with no user information, path, query or fragment, whose origin is not
+	// BROKER_PUBLIC_URL's: the two are compared as a DPoP proof's htu is, the scheme and the host
+	// without regard to case and the scheme's default port the same as none, so
+	// https://secrets.example:443 is refused beside https://secrets.example. A machine login's
+	// request object made at the edge names it as its audience and every DPoP proof sent there
+	// names it and the route's path, as one made on BROKER_PUBLIC_URL names that, so neither is
+	// spendable at the other. Set with BROKER_EDGE_LISTEN_ADDR. cmd/cipherd refuses an http one
+	// unless BROKER_FAKE_SECRETS_FILE is set.
 	EdgeURL string
 	// BROKER_EDGE_MACHINE_LOGIN_URL: the absolute http(s) URL of the page a person decides a
 	// machine login made at the edge on, which that login's verification_uri names in place of
@@ -2423,6 +2423,14 @@ func httpURLSetting(name, value string) error {
 	return nil
 }
 
+// originAlone reports whether u names a host and nothing after it: no user information, path,
+// query or fragment. BROKER_PUBLIC_URL and BROKER_EDGE_URL are held to it: the broker serves its
+// routes under each, and its authorization server metadata publishes BROKER_PUBLIC_URL as the
+// issuer, which RFC 8414 section 2 holds to no query or fragment.
+func originAlone(u *url.URL) bool {
+	return u.Host != "" && u.User == nil && u.Path == "" && u.RawQuery == "" && u.Fragment == ""
+}
+
 func Load(getenv func(string) string) (Config, error) {
 	for _, removed := range removedVars {
 		if getenv(removed.name) != "" {
@@ -2544,11 +2552,12 @@ func Load(getenv func(string) string) (Config, error) {
 	if cfg.DatabaseIAM, err = databaseIAM(cfg.DatabaseURL); err != nil {
 		return Config{}, err
 	}
-	// publicURL is BROKER_PUBLIC_URL parsed, held to an absolute URL with no path here and to an
-	// http or https scheme by Load's last check.
+	// publicURL is BROKER_PUBLIC_URL parsed, held to an absolute URL that names its origin alone
+	// here and to an http or https scheme by Load's last check. The refusal names the setting
+	// alone: the URL as written is where a credential would be.
 	publicURL, parseErr := url.Parse(cfg.PublicURL)
-	if parseErr != nil || publicURL.Scheme == "" || publicURL.Host == "" || publicURL.Path != "" {
-		return Config{}, fmt.Errorf("BROKER_PUBLIC_URL must be an absolute URL with no path: %q", redact.URL(cfg.PublicURL))
+	if parseErr != nil || publicURL.Scheme == "" || !originAlone(publicURL) {
+		return Config{}, errors.New("BROKER_PUBLIC_URL must be an absolute URL with no user information, path, query or fragment")
 	}
 	// Optional, and still held to its form when it is given: a page the broker cannot build an
 	// absolute URL for is a verification_uri no machine could follow, which is worse than the
@@ -3126,7 +3135,8 @@ func parseGitHubAppField(value string) (bool, error) {
 // all four of the client's settings are required, since a broker that signs people in and that
 // nobody can sign in to is a broker on which no secret request is ever approved. It refuses: any
 // of them missing, naming each one; an issuer that is not an absolute https URL, or http to a
-// loopback host; and an unreadable or blank secret file. No refusal carries the secret.
+// loopback host, naming the setting alone, since the URL as written is where a credential would
+// be; and an unreadable or blank secret file. No refusal carries the secret.
 func parseSignIn(getenv func(string) string, sessionLifetime time.Duration) (approval.SignIn, error) {
 	signIn := approval.SignIn{SessionLifetime: sessionLifetime}
 	// One destination per SignInSettings entry, read in that order, so the missing ones are named
@@ -3145,7 +3155,7 @@ func parseSignIn(getenv func(string) string, sessionLifetime time.Duration) (app
 		return approval.SignIn{}, fmt.Errorf("the broker's approval page needs %s; missing %s", strings.Join(SignInSettings, ", "), strings.Join(missing, ", "))
 	}
 	if !signInIssuerOK(signIn.Issuer) {
-		return approval.SignIn{}, fmt.Errorf("%s must be an absolute https URL, or http to a loopback host, got %q", signInIssuerSetting, signIn.Issuer)
+		return approval.SignIn{}, fmt.Errorf("%s must be an absolute https URL, or http to a loopback host", signInIssuerSetting)
 	}
 	var err error
 	if signIn.ClientSecret, err = secretFile(signInClientSecretSetting, secretPath); err != nil {

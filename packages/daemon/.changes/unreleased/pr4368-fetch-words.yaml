@@ -1,0 +1,20 @@
+kind: Fixed
+body: |-
+  The workspace's fetch prints no run of a token it holds in more of its words. Every line Fetch
+  logs and `git fsck`'s stderr over what the repository cache streamed now pass the one filter the
+  git runs use, for each provisioning token the fetch has read and for the cache's bearer: the token
+  whole, each run of it, its runs percent-decoded and the Basic credential git sends with it, and
+  then the URL rule; `fsck`'s stderr is then read by the fail-closed rule as well. A tar entry's
+  name in the unpack's errors passes the same filter for the cache's bearer. Before, a fetch with no
+  cache logged with no filter, and a fetch from the cache filtered the cache's bearer alone and only
+  as written, in its log lines, `fsck`'s stderr and a tar entry's name. So a ref or an entry name
+  that wrote a token as `%XX` escapes, or the branch GitHub's HEAD named, printed it, and a URL with
+  user information in a ref's name printed whole.
+
+  A failed delta transfer now names its argv word by word through that filter, the refusal of a HEAD
+  that names no branch names its target through it, and the removal of a ref the cache streamed and
+  HEAD's move to the branch GitHub's HEAD names print their argv and stderr through it. Each named
+  GitHub's or the cache's words as they came.
+time: 2026-11-24T10:32:36Z
+custom:
+    Issue: pr4368

@@ -7,8 +7,6 @@ import (
 	"go/types"
 	"path/filepath"
 	"reflect"
-	"slices"
-	"sort"
 	"strings"
 )
 
@@ -41,7 +39,7 @@ import (
 // function that answers the body's bytes lets a client print them as a method would.
 
 // reference is the full name of the reader or maker n names, an identifier or a selector, where n
-// is not the function a call calls, and whether it is one.
+// is not the function a call calls, and whether it is one; n of any other kind is none.
 func (a *answerReader) reference(n ast.Node, parents []ast.Node) (string, bool) {
 	var obj types.Object
 	switch n := n.(type) {
@@ -115,7 +113,7 @@ func (a *answerReader) decodedIntoBox(call *ast.CallExpr, function string) strin
 		}
 	}
 	for _, arg := range into {
-		if t := a.info.TypeOf(arg); t != nil && a.holdsBox(t, map[types.Type]bool{}) {
+		if t := a.info.TypeOf(arg); t != nil && holdsBox(t, a.boxPkg, a.boxName, map[types.Type]bool{}) {
 			return fmt.Sprintf("%s fills a %s, which holds the box, outside %s.Decode: a box filled so holds no record of the request its answer answers; decode the answer with Answer.Decode",
 				shortName(name), types.TypeString(t, func(p *types.Package) string { return p.Name() }), shortName(a.cfg.Answer))
 		}
@@ -129,148 +127,42 @@ func unmarshalMethod(name string) bool {
 	return strings.HasPrefix(name, "(") && (strings.HasSuffix(name, ").UnmarshalJSON") || strings.HasSuffix(name, ").UnmarshalText"))
 }
 
-// holdsBox reports whether a value of t holds the box anywhere: the box itself, or through a
-// pointer, a field, a slice, an array, a map's key or value, or a channel.
-func (a *answerReader) holdsBox(t types.Type, seen map[types.Type]bool) bool {
-	if seen[t] {
-		return false
-	}
-	seen[t] = true
-	switch t := types.Unalias(t).(type) {
-	case *types.Named:
-		if t.Obj().Pkg() != nil && t.Obj().Pkg().Path() == a.boxPkg && t.Obj().Name() == a.boxName {
-			return true
-		}
-		return a.holdsBox(t.Underlying(), seen)
-	case *types.Pointer:
-		return a.holdsBox(t.Elem(), seen)
-	case *types.Slice:
-		return a.holdsBox(t.Elem(), seen)
-	case *types.Array:
-		return a.holdsBox(t.Elem(), seen)
-	case *types.Map:
-		return a.holdsBox(t.Key(), seen) || a.holdsBox(t.Elem(), seen)
-	case *types.Chan:
-		return a.holdsBox(t.Elem(), seen)
-	case *types.Struct:
-		for i := range t.NumFields() {
-			if a.holdsBox(t.Field(i).Type(), seen) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // readsNoRequest reports whether call is net/http.ReadResponse given no request.
 func (a *answerReader) readsNoRequest(call *ast.CallExpr) bool {
 	return a.calleeName(call) == "net/http.ReadResponse" && len(call.Args) == 2 && isNil(call.Args[1])
 }
 
 // holdsResponse reports whether a printer that walks a value of t by reflection reaches a response
-// (responseType) in it, as fmt or encoding/json does, whichever reaches further:
-//
-//   - fmt (and log, slog's text handler and an error's %+v) prints every field, exported or not,
-//     every element of a slice or an array and every key and value of a map, and follows a pointer
-//     only at the top, to a struct, an array, a slice or a map (&{...}): one deeper it prints as an
-//     address (fmtReaches);
-//   - encoding/json (and slog's JSON handler, text/template and YAML) follows every pointer and
-//     prints the exported fields, the fields an embedded struct promotes, and every element and map
-//     value; a field tagged json:"-" it leaves out (jsonReaches).
-//
-// A method a type prints itself by (Error, String, MarshalJSON) is not assumed: fmt's %d or %#v
-// prints the fields past Error and String. A field of interface type holds a value made an
-// interface where it was set, which the census reads there. A named type is walked once in each
-// walk, so a recursive type ends it.
+// (responseType) in it, as fmt or encoding/json does, whichever reaches further (fmtEdges,
+// jsonEdges). A method a type prints itself by (Error, String, MarshalJSON) is not assumed: fmt's
+// %d or %#v prints the fields past Error and String. A field of interface type holds a value made
+// an interface where it was set, which the census reads there.
 func (a *answerReader) holdsResponse(t types.Type) bool {
-	return a.fmtReaches(t, true, &[]*types.Named{}) || a.jsonReaches(t, &[]*types.Named{})
+	return fmtEdges.reaches(t, a.responseType, map[types.Type]bool{}) || jsonEdges.reaches(t, a.responseType, map[types.Type]bool{})
 }
 
-// once reports whether t is in seen, and adds it where it is not.
-func once(t *types.Named, seen *[]*types.Named) bool {
-	for _, s := range *seen {
-		if types.Identical(s, t) {
-			return true
-		}
-	}
-	*seen = append(*seen, t)
-	return false
-}
+// fmtEdges are what fmt (and log, slog's text handler and an error's %+v) prints of a value: every
+// field, exported or not, every element of a slice or an array and every key and value of a map,
+// and a pointer only at the top, to a struct, an array, a slice or a map (&{...}): one deeper it
+// prints as an address. A channel it prints as an address.
+var fmtEdges = edges{topPointer: true}
 
-// fmtReaches reports whether fmt, printing a value of t whole, prints a response's fields: top is
-// whether the value is the one handed to it, whose pointer it follows.
-func (a *answerReader) fmtReaches(t types.Type, top bool, seen *[]*types.Named) bool {
-	switch t := types.Unalias(t).(type) {
-	case *types.Named:
-		if a.responseType(t) {
-			return true
-		}
-		if !top && once(t, seen) {
-			return false
-		}
-		return a.fmtReaches(t.Underlying(), top, seen)
-	case *types.Pointer:
-		return top && a.fmtReaches(t.Elem(), false, seen)
-	case *types.Slice:
-		return a.fmtReaches(t.Elem(), false, seen)
-	case *types.Array:
-		return a.fmtReaches(t.Elem(), false, seen)
-	case *types.Map:
-		return a.fmtReaches(t.Key(), false, seen) || a.fmtReaches(t.Elem(), false, seen)
-	case *types.Struct:
-		if a.responseType(t) {
-			return true
-		}
-		for i := range t.NumFields() {
-			if a.fmtReaches(t.Field(i).Type(), false, seen) {
-				return true
-			}
-		}
+// jsonEdges are what encoding/json (and slog's JSON handler, text/template and YAML) writes of a
+// value: it follows every pointer and writes the exported fields, the fields an embedded struct
+// promotes, every element and every map value, but no map key, which it writes as a string; a
+// field tagged json:"-" it leaves out, and a channel it refuses.
+var jsonEdges = edges{skipMapKeys: true, field: func(s *types.Struct, i int) bool {
+	f := s.Field(i)
+	switch {
+	case reflect.StructTag(s.Tag(i)).Get("json") == "-":
+		return false
+	case f.Exported():
+		return true
 	}
-	return false
-}
-
-// jsonReaches reports whether encoding/json, marshalling a value of t, writes a response's fields.
-func (a *answerReader) jsonReaches(t types.Type, seen *[]*types.Named) bool {
-	switch t := types.Unalias(t).(type) {
-	case *types.Named:
-		if a.responseType(t) {
-			return true
-		}
-		if once(t, seen) {
-			return false
-		}
-		return a.jsonReaches(t.Underlying(), seen)
-	case *types.Pointer:
-		return a.jsonReaches(t.Elem(), seen)
-	case *types.Slice:
-		return a.jsonReaches(t.Elem(), seen)
-	case *types.Array:
-		return a.jsonReaches(t.Elem(), seen)
-	case *types.Map:
-		return a.jsonReaches(t.Elem(), seen)
-	case *types.Struct:
-		if a.responseType(t) {
-			return true
-		}
-		for i := range t.NumFields() {
-			f := t.Field(i)
-			if reflect.StructTag(t.Tag(i)).Get("json") == "-" {
-				continue
-			}
-			if !f.Exported() {
-				// An embedded struct's exported fields are promoted, whatever its own name.
-				if _, isStruct := derefType(f.Type()).Underlying().(*types.Struct); !f.Embedded() || !isStruct {
-					continue
-				}
-			}
-			if a.jsonReaches(f.Type(), seen) {
-				return true
-			}
-		}
-	}
-	return false
-}
+	// An embedded struct's exported fields are promoted, whatever its own name.
+	_, isStruct := derefType(f.Type()).Underlying().(*types.Struct)
+	return f.Embedded() && isStruct
+}}
 
 // conversion is a value Go makes an interface value or a type parameter's value of: expr, whose
 // type is from, handed to to, which names where; pass is why the census passes it, or "".
@@ -460,43 +352,14 @@ func paramAt(sig *types.Signature, i int, spread bool) types.Type {
 
 // holdsTypeParam reports whether t, a parameter's type as its function declares it, holds a type
 // parameter: is one, or holds one as a type argument, an element, a field or a function's
-// parameter or result.
+// parameter or result. A signature names no type declared over its function's type parameters, so
+// a named type in it holds one only as a type argument, and the walk reads those, not its
+// underlying type.
 func holdsTypeParam(t types.Type) bool {
-	switch t := types.Unalias(t).(type) {
-	case *types.TypeParam:
-		return true
-	case *types.Named:
-		for i := range t.TypeArgs().Len() {
-			if holdsTypeParam(t.TypeArgs().At(i)) {
-				return true
-			}
-		}
-	case *types.Pointer:
-		return holdsTypeParam(t.Elem())
-	case *types.Slice:
-		return holdsTypeParam(t.Elem())
-	case *types.Array:
-		return holdsTypeParam(t.Elem())
-	case *types.Chan:
-		return holdsTypeParam(t.Elem())
-	case *types.Map:
-		return holdsTypeParam(t.Key()) || holdsTypeParam(t.Elem())
-	case *types.Struct:
-		for i := range t.NumFields() {
-			if holdsTypeParam(t.Field(i).Type()) {
-				return true
-			}
-		}
-	case *types.Signature:
-		for _, tuple := range []*types.Tuple{t.Params(), t.Results()} {
-			for i := range tuple.Len() {
-				if holdsTypeParam(tuple.At(i).Type()) {
-					return true
-				}
-			}
-		}
-	}
-	return false
+	return edges{chans: true, signatures: true, typeArgs: true}.reaches(t, func(t types.Type) bool {
+		_, ok := t.(*types.TypeParam)
+		return ok
+	}, map[types.Type]bool{})
 }
 
 // enclosingSignature is the signature of the innermost function among parents, a declaration or a
@@ -581,54 +444,16 @@ func (g *gate) answerFunctions(c *census, dir string, fset *token.FileSet, pkg *
 			}
 		}
 	}
-	sort.Strings(got)
-	want := slices.Clone(cfg.Functions)
-	sort.Strings(want)
 	p := fset.Position(answer.Pos())
 	rel, _ := filepath.Rel(dir, p.Filename)
-	f := finding{File: filepath.ToSlash(rel), Line: p.Line, Function: cfg.Answer, What: strings.Join(got, ", "), Kind: "functions"}
-	if slices.Equal(got, want) {
-		f.OK, f.Why = true, "the exported functions that take it are exactly "+strings.Join(want, ", ")
-	} else {
-		f.Why = "the exported functions that take it are " + strings.Join(got, ", ") + ", not exactly " + strings.Join(want, ", ") + ": a function that answers the body's bytes lets a client print them"
-	}
-	c.Answers = append(c.Answers, f)
+	c.Answers = append(c.Answers, exactly(finding{File: filepath.ToSlash(rel), Line: p.Line, Function: cfg.Answer, Kind: "functions"}, got, cfg.Functions, "the exported functions that take it are", "a function"))
 }
 
 // mentions reports whether t is the named type of name, or reaches it through a pointer, a slice,
 // an array, a map, a channel, a struct's field or a function's parameter or result.
 func mentions(t types.Type, name *types.TypeName, seen map[types.Type]bool) bool {
-	if seen[t] {
-		return false
-	}
-	seen[t] = true
-	switch t := types.Unalias(t).(type) {
-	case *types.Named:
-		return t.Obj() == name || mentions(t.Underlying(), name, seen)
-	case *types.Pointer:
-		return mentions(t.Elem(), name, seen)
-	case *types.Slice:
-		return mentions(t.Elem(), name, seen)
-	case *types.Array:
-		return mentions(t.Elem(), name, seen)
-	case *types.Map:
-		return mentions(t.Key(), name, seen) || mentions(t.Elem(), name, seen)
-	case *types.Chan:
-		return mentions(t.Elem(), name, seen)
-	case *types.Struct:
-		for i := range t.NumFields() {
-			if mentions(t.Field(i).Type(), name, seen) {
-				return true
-			}
-		}
-	case *types.Signature:
-		for _, tuple := range []*types.Tuple{t.Params(), t.Results()} {
-			for i := range tuple.Len() {
-				if mentions(tuple.At(i).Type(), name, seen) {
-					return true
-				}
-			}
-		}
-	}
-	return false
+	return edges{chans: true, signatures: true}.reaches(t, func(t types.Type) bool {
+		n, ok := t.(*types.Named)
+		return ok && n.Obj() == name
+	}, seen)
 }

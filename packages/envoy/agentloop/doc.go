@@ -26,23 +26,26 @@
 // the header above this package's HTTP client, so the token is read once per model call and the
 // retry below the middleware resends the first attempt's token. A redirect is never followed, in
 // a run or in a decision, so the token reaches the endpoint the caller named and no other
-// server: the client's redirect check fails the call, above the transport and its retry, with
-// an error naming the redirecting status, so the run ends in FaultProviderError.
+// server: the client follows none (redirects.Refused), and the transport fails the call on a
+// redirect's status (redirects.Status), after its retry, which never retries one, with an error
+// naming that status, so the run ends in FaultProviderError.
 //
 // # What a Detail says of a failed call
 //
 // Whoever answers in the endpoint's place can echo the call's credential in its own words: in a
-// Location, in an error body and in an error message. So a call that got no answer is said as the
-// endpoint's address allows (redact.Cause): a transport failure's own text, the redirect's
-// status, or the failure's class, and never in net/http's words. Go parses a Location before the
-// redirect check and fails the call with net/http's error quoting one that does not parse, and
-// its *url.Error names a refused redirect's Location in full; neither prints, nor does the
-// Location's host. A run's answer the SDK refused is named by its status alone
-// (redact.StatusLine), since the SDK's error quotes the error body or its message. A decision's
-// refusal names its status and its words as the rule for remote text reads them, with the call's
-// credential redacted (redact.Answer). A call whose Endpoint.Token failed never went out, so no
-// one answered it: it is said in the caller's words for that failure alone, after "reading the
-// <kind> token", and none of net/http's or the SDK's words around them prints.
+// Location, in a header line, in an error body and in an error message. So a call that got no
+// answer is said as the endpoint's address allows (redact.Cause): a transport failure's own text,
+// the redirect's status, or the failure's class, and never in net/http's words, which quote a
+// header line net/http cannot parse as it came. Go parses a Location before a client's redirect
+// policy is asked, and its error names it: one that does not parse quoted whole, one the policy
+// refused as its *url.Error's URL. The transport refuses a redirect before the client reads the
+// Location, so no error of the call holds it, the SDK's own included. A run's answer the SDK
+// refused is named by its status alone (redact.StatusLine), since the SDK's error quotes the error
+// body or its message. A decision's refusal names its status and its words as the rule for remote
+// text reads them, with the call's credential redacted (redact.Answer). A call whose
+// Endpoint.Token failed never went out, so no one answered it: it is said in the caller's words
+// for that failure alone, after "reading the <kind> token", and none of net/http's or the SDK's
+// words around them prints.
 //
 // # The retry
 //

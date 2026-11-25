@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  `agentloop` names a call whose `Endpoint.Token` failed in the caller's own words, `reading the
+  <kind> token: ` and the caller's error, in a run's and a decision's `Detail`, for every provider
+  and for the Azure provider's credential callback, and never by the wrappers above it, whose URL
+  keeps the user information of the endpoint's address. Such a call never went out, so no server's
+  words are in it; every other failure still prints through `redact.Cause` or `redact.StatusLine`.
+  So the judge's audit row says why the mint of its identity token was refused, as the mint's reader
+  prints that refusal.
+time: 2026-11-24T11:09:56Z
+custom:
+    Issue: pr4368

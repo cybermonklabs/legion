@@ -47,7 +47,6 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
-	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -513,9 +512,9 @@ func TestResolveBootConfigRejectsAgentSecretsURLWithPathOrBadScheme(t *testing.T
 	}
 }
 
-// Both DISPATCH_AGENT_SECRETS_URL refusals - a shape refusal (a path, or a value that does not
-// parse) and the dev sign-in's refusal of a remote broker - name a clean URL as it is and any
-// other value as redact.NotPrinted: user info, a query, escapes, a control byte.
+// The DISPATCH_AGENT_SECRETS_URL shape refusal (user information, a path, a query, a fragment, or
+// a value that does not parse) names the setting alone, never the value, clean or not; the dev
+// sign-in's refusal of a remote broker comes after it, so the URL it names is an origin alone.
 func TestResolveBootConfigRefusesAgentSecretsURLWithoutNamingItsCredential(t *testing.T) {
 	t.Parallel()
 	shape := func(brokerURL string) settingValues {
@@ -534,26 +533,30 @@ func TestResolveBootConfigRefusesAgentSecretsURLWithoutNamingItsCredential(t *te
 			"DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE": "/var/run/secrets/broker/token",
 		})
 	}
+	const refused = "DISPATCH_AGENT_SECRETS_URL (expected an absolute http(s) URL with no user information, path, query or fragment)"
+	// withUser is rest after a made-up user name and password, in two parts so no line of this
+	// test reads as a credential to a scanner.
+	withUser := func(rest string) string { return "https://tokuser9f3:hunter2pw" + "@" + rest }
 	for name, row := range map[string]struct {
 		env  settingValues
 		want string
 	}{
-		"a clean path":                     {shape("https://broker.example.com/v1"), `DISPATCH_AGENT_SECRETS_URL="https://broker.example.com/v1"`},
+		"a clean path":                     {shape("https://broker.example.com/v1"), refused},
 		"a clean remote broker":            {remote("https://broker.example.com"), `DISPATCH_AGENT_SECRETS_URL="https://broker.example.com"`},
-		"a path":                           {shape("https://tokuser9f3:hunter2pw@broker.example.com/v1?token=qtok77"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
-		"a remote broker":                  {remote("https://tokuser9f3:hunter2pw@broker.example.com?token=qtok77"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
-		"an '@' in a query value":          {shape("https://broker.example.com/?password=hunter@2pwSECRET"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
-		"a remote broker, '@' in a query":  {remote("https://broker.example.com?a=1&token=qtok@77SECRET&b=2"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
-		"a literal '@' and an escaped one": {shape("https://ada@corp.example:hunter2pw%40127.0.0.1:1"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
-		"a double-escaped '@'":             {shape("https://tokuser9f3:hunter2pw%2540broker.example.com"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
-		"a newline forging a line":         {shape("https://broker.example.com\nFORGED"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
+		"a path":                           {shape(withUser("broker.example.com/v1?token=qtok77")), refused},
+		"a remote broker":                  {remote(withUser("broker.example.com?token=qtok77")), refused},
+		"an '@' in a query value":          {shape("https://broker.example.com/?password=hunter@2pwSECRET"), refused},
+		"a remote broker, '@' in a query":  {remote("https://broker.example.com?a=1&token=qtok@77SECRET&b=2"), refused},
+		"a literal '@' and an escaped one": {shape("https://ada@corp.example:hunter2pw%40127.0.0.1:1"), refused},
+		"a double-escaped '@'":             {shape("https://tokuser9f3:hunter2pw%2540broker.example.com"), refused},
+		"a newline forging a line":         {shape("https://broker.example.com\nFORGED"), refused},
 	} {
 		_, err := resolveBootConfig(row.env)
 		if err == nil || !strings.Contains(err.Error(), row.want) {
 			t.Errorf("%s: err = %v, want a refusal naming %s", name, err, row.want)
 			continue
 		}
-		for _, secret := range []string{"tokuser9f3", "hunter2pw", "qtok", "2pwSECRET", "77SECRET", "ada@corp", "2540", "FORGED"} {
+		for _, secret := range []string{"tokuser9f3", "hunter2pw", "qtok", "2pwSECRET", "77SECRET", "ada@corp", "2540", "FORGED", "/v1"} {
 			if strings.Contains(err.Error(), secret) {
 				t.Errorf("%s: refusal %q names %q", name, err, secret)
 			}

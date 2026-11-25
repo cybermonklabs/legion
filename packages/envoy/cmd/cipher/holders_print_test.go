@@ -143,7 +143,7 @@ type rereadTwin struct {
 func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 	code, words := redact.NewRemoteText(redacttest.Code), redact.NewRemoteText(redacttest.Words)
 	answerID := redact.NewRemoteText(redacttest.FragmentWords)
-	type doStatusTwin = struct {
+	type envelopeTwin = struct {
 		Code     string `json:"code"`
 		Error    string `json:"error"`
 		AnswerID string `json:"answer_id"`
@@ -180,15 +180,15 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 			Exported: &apiErrorExported{403, redacttest.Code, redacttest.Words, redacttest.FragmentWords, false},
 		},
 		{
-			Name: "agent-secrets.client.doStatus.envelope",
+			Name: "agent-secrets.client.send.envelope",
 			Kind: "fields",
 			Boxed: struct {
 				Code     redact.RemoteText `json:"code"`
 				Error    redact.RemoteText `json:"error"`
 				AnswerID redact.RemoteText `json:"answer_id"`
 			}{code, words, answerID},
-			Same:     doStatusTwin{redacttest.Code, redacttest.Words, redacttest.FragmentWords},
-			Exported: doStatusTwin{redacttest.Code, redacttest.Words, redacttest.FragmentWords},
+			Same:     envelopeTwin{redacttest.Code, redacttest.Words, redacttest.FragmentWords},
+			Exported: envelopeTwin{redacttest.Code, redacttest.Words, redacttest.FragmentWords},
 		},
 		{
 			Name:     "agent-secrets.RequestResult",
@@ -241,6 +241,13 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 				LeftOut: []leftOutTwin{{Profile: "APP", Account: probe, Entries: []string{probe}}}},
 			Exported: grantValuesTwin{GitHubLeftOut: map[string]map[string][]string{"APP": {"acme": {probe}}},
 				LeftOut: []leftOutTwin{{Profile: "APP", Account: probe, Entries: []string{probe}}}},
+		},
+		{
+			Name:     "agent-secrets.leftOut",
+			Kind:     "fields",
+			Boxed:    leftOut{Profile: "APP", Account: words, Entries: []redact.RemoteText{words}},
+			Same:     leftOutTwin{Profile: "APP", Account: probe, Entries: []string{probe}},
+			Exported: leftOutTwin{Profile: "APP", Account: probe, Entries: []string{probe}},
 		},
 		{
 			Name:     "agent-secrets.Reread",
