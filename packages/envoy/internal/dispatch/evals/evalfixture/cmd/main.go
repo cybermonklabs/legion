@@ -18,7 +18,8 @@
 //
 //	-legion       legiontest's Legion history, at least -issues finished issues, observed from
 //	              partway through, and the project's legion_settings row (this head's schema)
-//	-base         the same history into a database of the base head 02a7b3c6 (k14); alone
+//	-base         the same history into a database of the base, main at the commit this head
+//	              merges (k14); alone
 //	-attribution  k15's case under -project, -project+"B" and -project+"C"; not with -delivery,
 //	              since both write the one delivery_settings row
 //	-delivery     -days days of deliverytest's delivery history, seeded by -seed
@@ -72,7 +73,7 @@ func main() {
 	flag.StringVar(&o.database, "database", "", "the Postgres URL to write into; it must hold Dispatch's schema")
 	flag.StringVar(&o.project, "project", "", "the project every mode writes into; required by every mode but -merge-pr, which writes no project's rows")
 	flag.BoolVar(&o.legion, "legion", false, "write the Legion history and the project's legion_settings row")
-	flag.BoolVar(&o.base, "base", false, "write the Legion history into a database of the base head 02a7b3c6")
+	flag.BoolVar(&o.base, "base", false, "write the Legion history into a database of the base: main at the commit this head merges (git merge-base <head> origin/main)")
 	flag.BoolVar(&o.attribution, "attribution", false, "write k15's attribution case")
 	flag.BoolVar(&o.delivery, "delivery", false, "write -days days of delivery rows for the project")
 	flag.StringVar(&o.mergePR, "merge-pr", "", "merge the pull request <owner>/<repo>#<n> at -now")
@@ -178,7 +179,7 @@ func check(o options) error {
 	case !o.legion && !o.base && !o.attribution && !o.delivery && o.mergePR == "":
 		return errors.New("name at least one mode: -legion, -base, -attribution, -delivery or -merge-pr")
 	case o.base && (o.legion || o.attribution || o.delivery || o.mergePR != ""):
-		return errors.New("-base writes the Legion history alone, into a database of the base head")
+		return errors.New("-base writes the Legion history alone, into a database of the base")
 	case o.attribution && o.delivery:
 		return errors.New("-attribution and -delivery each write the one delivery_settings row: load them into two databases")
 	}

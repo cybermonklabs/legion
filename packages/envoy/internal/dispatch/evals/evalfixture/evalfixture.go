@@ -1,8 +1,8 @@
 // Package evalfixture loads the histories the eval registry's checks read (dispatch://INFRA-2916,
 // k6, k12, k14, k15 and k17) into a database that already holds Dispatch's schema: the local
-// stack's, which migrates its database when it starts, or the base head's for k14. Each mode adds
-// to one project and writes that project's row only where it has none, so modes combine; cmd is
-// the command a checker types.
+// stack's, which migrates its database when it starts, or the base's for k14, main at the commit
+// this head merges. Each mode adds to one project and writes that project's row only where it has
+// none, so modes combine; cmd is the command a checker types.
 //
 // The modes:
 //
@@ -11,11 +11,11 @@
 //     project's legion_settings row, which names the project's daemon.
 //     It answers the two day-aligned windows k6 reads (Windows): one that starts before the
 //     project's first observation and one that starts after it.
-//   - Base (-base): the same history into a database of the base head 02a7b3c6, for k14's
-//     base binary. The Legion history is written into the same tables in both, since every table
-//     it writes is one the base has; what this head adds (BaseLacks) this head derives from those
-//     rows and the fixture never writes, so the mode differs from Legion only in the schema it
-//     requires of the database.
+//   - Base (-base): the same history into a database of the base, main at the commit this head
+//     merges (git merge-base <head> origin/main), for k14's base binary. The Legion history is
+//     written into the same tables in both, since every table it writes is one main has; the
+//     tables this head derives from those rows (DerivedTables) the fixture never writes, so the
+//     mode differs from Legion only in the schema it requires of the database.
 //   - Attribution (-attribution): k15's case of D1 (Attribution).
 //   - Delivery (-delivery): deliverytest's delivery history of the project over the days its
 //     caller names (the command's -days, a week by default), or deliverytest's own default of
@@ -67,20 +67,21 @@ const (
 	DefaultIssues = 240
 )
 
-// LegionTables are the tables the Legion history is written into; the base head 02a7b3c6 has
-// every one of them, with the columns the history writes (delivery_pull_requests the merged pull
-// requests of legiontest.Spec.Merged).
+// LegionTables are the tables the Legion history is written into; main has every one of them at
+// the commit this head merges, with the columns the history writes (delivery_pull_requests the
+// merged pull requests of legiontest.Spec.Merged).
 var LegionTables = []string{"projects", "issues", "events", "handoffs", "legion_observations", "delivery_pull_requests", "legion_settings"}
 
-// BaseLacks are the tables of this head's Legion evals that the base head 02a7b3c6 does not have
-// (its migrations stop below 20261117100005, the registry's): the filings, the session titles, the
-// registry, its day rows with their members, owed days and owner keys, the published default
-// repositories, the refresher's state, its rebuilds' staging and the rows' stored figures. This
-// head derives every one of them from LegionTables' rows (the session titles by a trigger on
-// events, the owner keys by the trigger on eval_days, the rest by the server's facts consumer and
-// refresher), so the fixture writes none of them in any mode, and a database holding eval_days is
-// this head's.
-var BaseLacks = []string{
+// DerivedTables are the tables of this head's Legion evals that this head derives from
+// LegionTables' rows: the filings, the session titles, the registry, its day rows with their
+// members, owed days and owner keys, the published default repositories, the refresher's state,
+// its rebuilds' staging and the rows' stored figures (the session titles by a trigger on events,
+// the owner keys by the trigger on eval_days, the rest by the server's facts consumer and
+// refresher). The fixture writes none of them in any mode. The Legion mode needs every one of
+// them. The base, main at the commit this head merges, lacks those its catalog does not hold,
+// which a caller reads from the database (ExistingTables) rather than from a list here, since a
+// merge of main can bring some of them; it never holds HeadTable.
+var DerivedTables = []string{
 	"issue_filings", "session_titles", "session_titles_backfill", "eval_versions", "eval_series",
 	"eval_readings", "eval_days", "eval_day_members", "eval_days_owed", "eval_day_owners", "eval_days_defaults",
 	"eval_days_cursor", "eval_days_walks", "eval_days_serving", "eval_days_settings",
@@ -88,6 +89,10 @@ var BaseLacks = []string{
 	"eval_rebuild_range_figures", "eval_rebuild_day_figures", "eval_rebuild_reverify",
 	"eval_range_figures", "eval_day_figures", "eval_figures_built", "eval_figure_cuts_stale",
 }
+
+// HeadTable is the table that tells a database of this head from one of the base: the registry's
+// day rows, which only this head's migrations create.
+const HeadTable = "eval_days"
 
 // LegionSpec is the Legion history of project the Legion mode writes: enough trees for at least
 // issues finished issues, ending at now, with the older half of the trees unobserved and every
@@ -168,7 +173,7 @@ type LegionResult struct {
 	To            time.Time `json:"history_to"`
 	Windows       Windows   `json:"windows"`
 	// Tables is the tables the mode wrote, and DerivedByThisHead this head's tables derived from
-	// them, which the base lacks and no mode writes.
+	// them (DerivedTables), which no mode writes.
 	Tables            []string `json:"tables"`
 	DerivedByThisHead []string `json:"derived_by_this_head"`
 	// History is the history as legiontest answered it, for a caller that asserts against its
@@ -179,24 +184,25 @@ type LegionResult struct {
 // WriteLegion is the Legion mode: LegionSpec's history of project into the database pool is on,
 // which must hold this head's schema, and the project's legion_settings row.
 func WriteLegion(ctx context.Context, pool *store.Pool, project string, issues int, now time.Time) (LegionResult, error) {
-	if err := requireTables(ctx, pool, append(slices.Clone(LegionTables), BaseLacks...)); err != nil {
-		return LegionResult{}, fmt.Errorf("-legion writes into this head's schema: %w (a database of the base head takes -base)", err)
+	if err := requireTables(ctx, pool, append(slices.Clone(LegionTables), DerivedTables...)); err != nil {
+		return LegionResult{}, fmt.Errorf("-legion writes into this head's schema: %w (a database of the base takes -base)", err)
 	}
 	return writeLegion(ctx, pool, project, issues, now)
 }
 
 // WriteBase is the Base mode: the Legion mode's history and settings row into a database of the
-// base head's schema, refused for one that holds this head's eval_days.
+// base's schema, main's at the commit this head merges, refused for one that holds this head's
+// day rows (HeadTable).
 func WriteBase(ctx context.Context, pool *store.Pool, project string, issues int, now time.Time) (LegionResult, error) {
 	if err := requireTables(ctx, pool, LegionTables); err != nil {
-		return LegionResult{}, fmt.Errorf("-base writes into the base head's schema: %w", err)
+		return LegionResult{}, fmt.Errorf("-base writes into the base's schema: %w", err)
 	}
-	held, err := ExistingTables(ctx, pool, []string{"eval_days"})
+	held, err := ExistingTables(ctx, pool, []string{HeadTable})
 	if err != nil {
 		return LegionResult{}, err
 	}
 	if len(held) > 0 {
-		return LegionResult{}, errors.New("-base writes into the base head's schema, and this database holds eval_days, which is this head's: load it with -legion")
+		return LegionResult{}, fmt.Errorf("-base writes into the base's schema, and this database holds %s, which is this head's: load it with -legion", HeadTable)
 	}
 	return writeLegion(ctx, pool, project, issues, now)
 }
@@ -223,7 +229,7 @@ func writeLegion(ctx context.Context, pool *store.Pool, project string, issues i
 		Trees: spec.Trees, Unobserved: spec.Unobserved,
 		FirstObserved: history.FirstObserved, FirstFinished: history.FirstFinished,
 		From: history.From, To: history.To, Windows: windows,
-		Tables: LegionTables, DerivedByThisHead: BaseLacks, History: history,
+		Tables: LegionTables, DerivedByThisHead: DerivedTables, History: history,
 	}, nil
 }
 

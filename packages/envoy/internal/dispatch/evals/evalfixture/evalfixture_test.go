@@ -187,9 +187,9 @@ func TestWindowsOfRefusesAFirstFinishedDayThatStartsAtTheFirstObservationOrAfter
 }
 
 // TestTheBaseModeWritesTheSameHistoryIntoTheBaseSchema: -base refuses a database of this head,
-// writes into one without this head's tables (this head's database with them dropped, which is
-// the base's Legion schema) exactly the rows -legion writes into this head's with the same -now,
-// and -legion refuses that database.
+// writes into one without this head's derived tables (this head's database with them dropped,
+// which holds the Legion tables main has) exactly the rows -legion writes into this head's with
+// the same -now, and -legion refuses that database.
 func TestTheBaseModeWritesTheSameHistoryIntoTheBaseSchema(t *testing.T) {
 	ctx := t.Context()
 	head, base := storetest.Open(t), storetest.Open(t)
@@ -197,7 +197,7 @@ func TestTheBaseModeWritesTheSameHistoryIntoTheBaseSchema(t *testing.T) {
 		t.Fatalf("-base into this head's database answered %v, want a refusal naming eval_days", err)
 	}
 	if _, err := base.Pool.Exec(ctx, `drop trigger events_session_title on events; drop function events_session_title(); drop table `+
-		strings.Join(evalfixture.BaseLacks, ", ")+` cascade`); err != nil {
+		strings.Join(evalfixture.DerivedTables, ", ")+` cascade`); err != nil {
 		t.Fatalf("drop this head's tables: %v", err)
 	}
 	if _, err := evalfixture.WriteLegion(ctx, base.Pool, "LEGK", 240, now); err == nil || !strings.Contains(err.Error(), "-base") {
@@ -231,7 +231,7 @@ func TestTheBaseModeWritesTheSameHistoryIntoTheBaseSchema(t *testing.T) {
 			t.Errorf("%s differs between -legion's database (%s) and -base's (%s)", table, mine, theirs)
 		}
 	}
-	t.Logf("-base wrote the %d tables %v as -legion does, into a database without %v", len(evalfixture.LegionTables), evalfixture.LegionTables, evalfixture.BaseLacks)
+	t.Logf("-base wrote the %d tables %v as -legion does, into a database without %v", len(evalfixture.LegionTables), evalfixture.LegionTables, evalfixture.DerivedTables)
 }
 
 // TestTheAttributionModeWritesK15sCase: -attribution writes k15's case (verification version 26):

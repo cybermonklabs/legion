@@ -33,14 +33,19 @@ type heads struct {
 	events, observations, changes int64
 }
 
-// consumerState is what one poll read of the consumers and their feeds: at this head, the
-// refresher's cursors (its two feeds' and the stored figures' own, by name), its walks, the
-// serving records of its day rows (eval_days_serving), how many of its rebuilds are building, its
-// day rows' builds, the projects that hold day rows, how far each project's stored figures are
-// built (eval_figures_built) and the keyword fill's cursor (search_text_versions_fill.event_id, 0
-// before the fill writes its row), which is nil at the base head, which has no keyword fill.
+// consumerState is what one poll read of the consumers and their feeds: whether the server runs
+// the Legion facts consumer (legionFacts) and, where it does, its cursors and project marks; the
+// keyword fill's cursor (search_text_versions_fill.event_id, 0 before the fill writes its row),
+// nil where the server runs no keyword fill; and at this head the refresher's cursors (its two
+// feeds' and the stored figures' own, by name), its walks, the serving records of its day rows
+// (eval_days_serving), how many of its rebuilds are building, its day rows' builds, the projects
+// that hold day rows and how far each project's stored figures are built (eval_figures_built).
+// This head runs every one of these consumers. The base, main at the commit this head merges,
+// runs no refresher and runs the facts consumer and the fill where its catalog holds their tables
+// (readConsumers), which a merge of main can change.
 type consumerState struct {
 	heads       heads
+	legionFacts bool
 	facts       map[string]int64
 	projects    []string
 	computed    map[string]string
@@ -86,11 +91,12 @@ func serverBuild(ctx context.Context, url string) (string, error) {
 }
 
 // wait polls until the consumers have caught up (consumerState.caughtUp) on two polls in a row,
-// and fails once o.timeout has passed. At this head it prints, at the first poll that finds the
-// keyword fill's cursor at the newest event, how long the fill took to get there: the time from
-// the wait's start, which is the moment the server first served, to that poll, so it is long by at
-// most one poll (pollEvery). evalbench's load writes the cursor at the newest loaded event, so the
-// fill has only the events the server wrote since to follow.
+// and fails once o.timeout has passed. Where the server runs the keyword fill (this head, and the
+// base where its catalog holds the fill's table) it prints, at the first poll that finds the
+// fill's cursor at the newest event, how long the fill took to get there: the time from the wait's
+// start, which is the moment the server first served, to that poll, so it is long by at most one
+// poll (pollEvery). evalbench's load writes the cursor at the newest loaded event, so the fill has
+// only the events the server wrote since to follow.
 func wait(ctx context.Context, r *report, o options) error {
 	database, err := store.Open(ctx, o.database)
 	if err != nil {
@@ -136,7 +142,9 @@ func wait(ctx context.Context, r *report, o options) error {
 	}
 }
 
-// readConsumers reads the feeds' heads and the consumers' cursors, marks and walks.
+// readConsumers reads the feeds' heads and the consumers' cursors, marks and walks. At the base it
+// first reads which of the Legion facts consumer and the keyword fill the server runs, by whether
+// the catalog holds their cursor tables, and reads those alone.
 func readConsumers(ctx context.Context, pool *store.Pool, mode string) (consumerState, error) {
 	state := consumerState{facts: map[string]int64{}, computed: map[string]string{}, days: map[string]int64{}, builtBy: map[string]int64{}}
 	if err := pool.QueryRow(ctx, `
@@ -145,8 +153,13 @@ func readConsumers(ctx context.Context, pool *store.Pool, mode string) (consumer
 	`).Scan(&state.heads.events, &state.heads.observations, &state.heads.changes); err != nil {
 		return consumerState{}, fmt.Errorf("read the feeds' heads: %w", err)
 	}
-	if err := collectPairs(ctx, pool, `select name, position from issue_facts_cursor`, state.facts); err != nil {
-		return consumerState{}, err
+	state.legionFacts = true
+	fill := true
+	if mode == "base" {
+		if err := pool.QueryRow(ctx, `select to_regclass('issue_facts_cursor') is not null, to_regclass('search_text_versions_fill') is not null`).
+			Scan(&state.legionFacts, &fill); err != nil {
+			return consumerState{}, fmt.Errorf("read which consumers the base runs: %w", err)
+		}
 	}
 	rows, err := pool.Query(ctx, `select distinct project from legion_observations order by project`)
 	if err != nil {
@@ -155,25 +168,32 @@ func readConsumers(ctx context.Context, pool *store.Pool, mode string) (consumer
 	if state.projects, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
 		return consumerState{}, fmt.Errorf("read the projects Legion works: %w", err)
 	}
-	marks, err := pool.Query(ctx, `select project_key, coalesce(computed_build, '') from issue_facts_computed`)
-	if err != nil {
-		return consumerState{}, fmt.Errorf("read the Legion facts' marks: %w", err)
-	}
 	var project, build string
-	if _, err := pgx.ForEachRow(marks, []any{&project, &build}, func() error {
-		state.computed[project] = build
-		return nil
-	}); err != nil {
-		return consumerState{}, fmt.Errorf("read the Legion facts' marks: %w", err)
-	}
-	if mode == "base" {
-		return state, nil
+	if state.legionFacts {
+		if err := collectPairs(ctx, pool, `select name, position from issue_facts_cursor`, state.facts); err != nil {
+			return consumerState{}, err
+		}
+		marks, err := pool.Query(ctx, `select project_key, coalesce(computed_build, '') from issue_facts_computed`)
+		if err != nil {
+			return consumerState{}, fmt.Errorf("read the Legion facts' marks: %w", err)
+		}
+		if _, err := pgx.ForEachRow(marks, []any{&project, &build}, func() error {
+			state.computed[project] = build
+			return nil
+		}); err != nil {
+			return consumerState{}, fmt.Errorf("read the Legion facts' marks: %w", err)
+		}
 	}
 	// Read after the heads, so a cursor at or past the events' head read above stands at or past
 	// every event committed before that read.
-	state.fill = new(int64)
-	if err := pool.QueryRow(ctx, `select coalesce((select event_id from search_text_versions_fill where id = 1), 0)`).Scan(state.fill); err != nil {
-		return consumerState{}, fmt.Errorf("read the keyword fill's cursor: %w", err)
+	if fill {
+		state.fill = new(int64)
+		if err := pool.QueryRow(ctx, `select coalesce((select event_id from search_text_versions_fill where id = 1), 0)`).Scan(state.fill); err != nil {
+			return consumerState{}, fmt.Errorf("read the keyword fill's cursor: %w", err)
+		}
+	}
+	if mode == "base" {
+		return state, nil
 	}
 	if err := collectPairs(ctx, pool, `select name, position from eval_days_cursor`, state.days); err != nil {
 		return consumerState{}, err
@@ -254,51 +274,54 @@ func collectPairs(ctx context.Context, pool *store.Pool, query string, into map[
 	return err
 }
 
-// caughtUp is what the consumers still owe, none once they have caught up: every project Legion
-// works read whole under build; each cursor at or past previous, where its feed stood lagPolls
-// polls before (a feed the server's own sweeps keep writing is never still, so a cursor is held
-// to a head it has had a whole sweep to reach), the stored figures' own cursor among them; and at
-// this head every walk done (walkDone), whichever build's process last moved it, the delivery rows
-// and the Legion rows of every project Legion works served by build (eval_days_serving: its walk
-// built them, or its rebuild's flip made them its own), no rebuild building, a day row, every
-// project that holds day rows with its stored figures built through the last end day of today
-// (eval_figures_built, the mark the stored figures' read reads), since a first paint measured
-// before that would read the day rows, which the stored figures are there to spare it; and the
-// keyword fill's cursor at the newest event this poll read (filled). A day row keeps the build
-// that last moved its values, so a release whose rules move no value leaves them as they were.
-// Production serves with the fill caught up once its one backfill, at the deploy, is done, so
-// evalbench's load writes the cursor as caught up with the loaded log, and this waits for the fill
-// to follow the events the server wrote after the load: a paint measured while the fill still
-// writes its batches would share the database with them.
+// caughtUp is what the consumers still owe, none once they have caught up: where the server runs
+// the Legion facts consumer, every project Legion works read whole under build; each cursor at or
+// past previous, where its feed stood lagPolls polls before (a feed the server's own sweeps keep
+// writing is never still, so a cursor is held to a head it has had a whole sweep to reach), the
+// stored figures' own cursor among them; where the server runs the keyword fill, its cursor at the
+// newest event this poll read (filled); and at this head every walk done (walkDone), whichever
+// build's process last moved it, the delivery rows and the Legion rows of every project Legion
+// works served by build (eval_days_serving: its walk built them, or its rebuild's flip made them
+// its own), no rebuild building, a day row, and every project that holds day rows with its stored
+// figures built through the last end day of today (eval_figures_built, the mark the stored
+// figures' read reads), since a first paint measured before that would read the day rows, which
+// the stored figures are there to spare it. A day row keeps the build that last moved its values,
+// so a release whose rules move no value leaves them as they were. Production serves with the fill
+// caught up once its one backfill, at the deploy, is done, so evalbench's load writes the cursor
+// as caught up with the loaded log, and this waits for the fill to follow the events the server
+// wrote after the load: a paint measured while the fill still writes its batches would share the
+// database with them.
 func (s consumerState) caughtUp(mode, build string, previous *heads) []string {
 	var missing []string
 	if previous == nil {
 		missing = append(missing, fmt.Sprintf("%d polls, the heads the cursors are held to", lagPolls+1))
-	}
-	if len(s.projects) == 0 {
-		missing = append(missing, "a project with Legion observations")
-	}
-	for _, project := range s.projects {
-		if s.computed[project] != build {
-			missing = append(missing, fmt.Sprintf("the Legion facts of %s read whole under %s (marked %q)", project, build, s.computed[project]))
-		}
 	}
 	behind := func(consumer string, cursors map[string]int64, name string, head int64) {
 		if previous != nil && cursors[name] < head {
 			missing = append(missing, fmt.Sprintf("%s's %s cursor at %d, behind %d", consumer, name, cursors[name], head))
 		}
 	}
-	if previous != nil {
-		behind("the Legion facts consumer", s.facts, "events", previous.events)
-		behind("the Legion facts consumer", s.facts, "legion_observations", previous.observations)
-		behind("the Legion facts consumer", s.facts, "delivery_changes", previous.changes)
+	if s.legionFacts {
+		if len(s.projects) == 0 {
+			missing = append(missing, "a project with Legion observations")
+		}
+		for _, project := range s.projects {
+			if s.computed[project] != build {
+				missing = append(missing, fmt.Sprintf("the Legion facts of %s read whole under %s (marked %q)", project, build, s.computed[project]))
+			}
+		}
+		if previous != nil {
+			behind("the Legion facts consumer", s.facts, "events", previous.events)
+			behind("the Legion facts consumer", s.facts, "legion_observations", previous.observations)
+			behind("the Legion facts consumer", s.facts, "delivery_changes", previous.changes)
+		}
+	}
+	if s.fill != nil && !s.filled() {
+		missing = append(missing, fmt.Sprintf("the keyword fill's cursor (search_text_versions_fill.event_id) at %d, behind the newest event %d",
+			*s.fill, s.heads.events))
 	}
 	if mode == "base" {
 		return missing
-	}
-	if !s.filled() {
-		missing = append(missing, fmt.Sprintf("the keyword fill's cursor (search_text_versions_fill.event_id) at %d, behind the newest event %d",
-			*s.fill, s.heads.events))
 	}
 	if previous != nil {
 		behind("the refresher", s.days, "events", previous.events)
@@ -363,24 +386,30 @@ func walkDone(family string, today time.Time) time.Time {
 }
 
 // filled is whether the keyword fill's cursor stands at or past the newest event the poll read,
-// so every event committed before the poll has its keyword rows. It is false at the base head,
-// which has no keyword fill.
+// so every event committed before the poll has its keyword rows. It is false where the server runs
+// no keyword fill.
 func (s consumerState) filled() bool {
 	return s.fill != nil && *s.fill >= s.heads.events
 }
 
 // summary is one line of the state.
 func (s consumerState) summary(build string) string {
-	marked := 0
-	for _, project := range s.projects {
-		if s.computed[project] == build {
-			marked++
+	line := fmt.Sprintf("heads events=%d observations=%d changes=%d legion_projects=%d", s.heads.events, s.heads.observations, s.heads.changes, len(s.projects))
+	if s.legionFacts {
+		marked := 0
+		for _, project := range s.projects {
+			if s.computed[project] == build {
+				marked++
+			}
 		}
+		line += fmt.Sprintf(" facts_cursors=%v read_whole=%d", s.facts, marked)
+	} else {
+		line += " legion_facts=none"
 	}
-	line := fmt.Sprintf("heads events=%d observations=%d changes=%d facts_cursors=%v legion_projects=%d read_whole=%d",
-		s.heads.events, s.heads.observations, s.heads.changes, s.facts, len(s.projects), marked)
 	if s.fill != nil {
 		line += fmt.Sprintf(" keyword_fill_cursor=%d", *s.fill)
+	} else {
+		line += " keyword_fill=none"
 	}
 	if s.days == nil || len(s.walks) == 0 && len(s.days) == 0 {
 		return line
