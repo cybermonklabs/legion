@@ -1,0 +1,20 @@
+kind: Added
+body: |-
+  The secrets broker records the Google account behind each credential a person makes: a sign-in
+  on a machine records the issuer and `sub` of the person's own Google identity token, a machine
+  login records the account that approved it (`approver_issuer` and `approver_subject` in the
+  approve), and an approval-page session records the account that signed in (migration
+  `0045_person_subjects`). A recorded account never changes (`0046_recorded_accounts_unchanged`),
+  and the guards that hold these tables run under a `search_path` of their own
+  (`0047_guards_search_path`). Introspection answers `account_issuer`, `account_subject` and
+  `credential_created_at` beside a token whose credential records them. `POST
+  /v1/person-subjects/revoke` takes an address, the account another account replaced there and the
+  replacement's session generation: it ends every sign-in, machine login and approval-page session
+  that account made under the address, with the tokens each holds, and every one that records no
+  account, and from then on refuses that account's sign-in trade `invalid_grant`, its approval
+  `403 APPROVER_REPLACED` and its approval-page sign-in `403`. A sign-in made before this release,
+  which records no account, is ended by its next trade, which records its own. `GET /v1/settings`
+  answers `approver_fields: true`. Dispatch does not call the revoke yet.
+time: 2026-11-25T20:48:36Z
+custom:
+    Issue: pr5557
