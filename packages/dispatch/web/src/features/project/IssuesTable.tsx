@@ -68,12 +68,15 @@ const fuzzy: FilterFn<Item> = (row, _id, query: string) => matchesSearch(row.ori
  * A table of issues: a project's, or the work advancing one priority. Its groups, in this order,
  * each on a line of its own: Notices (a read that failed, the closed issues loading), Statuses
  * (`IssueTableStatus`: the counts and the status bar), Narrowed (the chip of a table showing only
- * some rows), Toolbar (`IssueTableToolbar`: search, filters, columns), Table (the rows, in their
- * own box that scrolls sideways with its key columns pinned at the left, the data-table exception
- * of the layout rule, then the pager) and, while rows are ticked, Selection
- * (`IssueTableSelection`, over the page rather than in it). The action dialogs open over it. Each
- * group lays out its own entries; which rows' labels the reader opened is the table's
- * (`OpenedLabelsContext`), since a row the window stops drawing loses its own state.
+ * some rows), Toolbar (`IssueTableToolbar`: search, filters, columns), Feedback (the line that
+ * says how a table action went; an interrupted action's Finish and Dismiss; the warning that an
+ * epic's creation got no answer, with Dismiss; and the warning that an epic of that title exists,
+ * with Create anyway and Cancel new epic), Table (the rows, in their own box that scrolls
+ * sideways with its key columns pinned at the left, the data-table exception of the layout rule,
+ * then the pager) and, while rows are ticked, Selection (`IssueTableSelection`, over the page
+ * rather than in it). The action dialogs open over it. Each group lays out its own entries; which
+ * rows' labels the reader opened is the table's (`OpenedLabelsContext`), since a row the window
+ * stops drawing loses its own state.
  */
 export function IssuesTable({
   empty,

@@ -159,15 +159,22 @@ function IssueCard({ issue, unread }: { issue: IssueSummary; unread: boolean }):
       {...listeners}
     >
       {/* Below `xl` every anchor is `inline-flex` with centred items (the 44 px touch rule in
-          styles.css), so the key and title are stacked and start-aligned explicitly. */}
+          styles.css), so the key and title are stacked and start-aligned explicitly, and bounded
+          to the card: a title with no break in it wraps inside the card rather than past it. */}
       <Link
-        className={`flex flex-col text-sm ${linkText} ${linkHoverText}`}
+        className={`flex max-w-full flex-col text-sm ${linkText} ${linkHoverText}`}
         data-issue-link
         to={buildIssuePath({ key: issue.key, kind: "issue" })}
         {...referenceTriggerProps({ key: issue.key, kind: "issue" })}
       >
-        <span className="self-start font-semibold">{issue.key}</span>
-        <span className={`mt-1 self-start ${textPrimaryOnSurface}`}>{issue.title}</span>
+        <span className="max-w-full self-start font-semibold [overflow-wrap:anywhere]">
+          {issue.key}
+        </span>
+        <span
+          className={`mt-1 max-w-full self-start [overflow-wrap:anywhere] ${textPrimaryOnSurface}`}
+        >
+          {issue.title}
+        </span>
       </Link>
       <div className="mt-3 flex flex-wrap items-center gap-2">
         {unread ? <UnreadDot /> : null}

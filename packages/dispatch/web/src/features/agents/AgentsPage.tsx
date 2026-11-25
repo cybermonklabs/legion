@@ -728,16 +728,18 @@ function AgentRow({
         </span>
         {(agent.roles ?? []).length === 0 ? null : (
           <CappedGroup
-            className="flex min-w-0 max-w-full flex-wrap items-center gap-1"
+            className="flex min-w-0 max-w-full flex-wrap items-center gap-1 [&>span]:min-w-0 [&>span]:max-w-full"
             label="roles"
             name="roles"
             onOpenChange={onRolesOpen}
             open={rolesOpen}
           >
             {(agent.roles ?? []).map((role) => (
-              <span className="min-w-0 max-w-full" key={role}>
-                <LabelPill>{role}</LabelPill>
-              </span>
+              <LabelPill key={role}>
+                <TruncatedText className="min-w-0" title={role}>
+                  {role}
+                </TruncatedText>
+              </LabelPill>
             ))}
           </CappedGroup>
         )}

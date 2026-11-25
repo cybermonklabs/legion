@@ -415,6 +415,36 @@ test("board cards carry the unread dot the project list shows", async ({ browser
   }
 });
 
+// INFRA-5200's layout rule, point 2: a card's title with no break in it - a pasted address -
+// wraps inside the card, so neither it nor the card runs past the column.
+test("a board card's title with no break in it wraps inside the card", async ({ browser }) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const title = `https://example.com/${"platform".repeat(9)}`;
+  const issue = await createIssue({ project: "CORE", title });
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  try {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto("/projects/CORE");
+    await page.getByRole("button", { name: "Board" }).click();
+    const cardOf = page.locator(`[data-board-card="${issue.key}"]`);
+    const words = cardOf.getByText(title, { exact: true });
+    await expect(words).toBeVisible();
+    const read = await words.evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      const holder = element.closest("[data-board-card]");
+      const edge = holder?.getBoundingClientRect();
+      return {
+        cardFits: holder !== null && holder.scrollWidth <= holder.clientWidth + 1,
+        inside: edge !== undefined && box.right <= edge.right + 0.5,
+      };
+    });
+    expect(read).toEqual({ cardFits: true, inside: true });
+  } finally {
+    await context.close();
+  }
+});
+
 test("project list rows and board cards set an issue's priority in place", async ({
   browser,
 }, testInfo) => {

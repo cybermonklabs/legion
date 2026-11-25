@@ -94,7 +94,8 @@ test("each session's checkbox is named by its agent, with its live link beside t
   try {
     const checkbox = screen.getByRole("checkbox", { name: "Planner one" });
     const label = checkbox.closest("label");
-    expect(label?.getAttribute("title")).toBe("s1");
+    // The name shortens to an ellipsis in a narrow editor, so its whole shown name is the title.
+    expect(label?.getAttribute("title")).toBe("Planner one");
     const live = screen.getByRole("link", { name: "Open live conversation with Planner one" });
     expect(live).toHaveAttribute("href", "/agents/s1/live");
     expect(label?.contains(live)).toBe(false);

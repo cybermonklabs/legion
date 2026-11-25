@@ -316,7 +316,10 @@ export function SessionGroupsEditor({
                 <AgentName
                   className="flex min-w-0 flex-1 basis-40 items-center"
                   control={(agentName) => (
-                    <label className="flex min-w-0 flex-1 items-center gap-2" title={session}>
+                    <label
+                      className="flex min-w-0 flex-1 items-center gap-2"
+                      title={text.sessionShown(session, storedTitle(session))}
+                    >
                       <input
                         checked={selected.includes(session)}
                         onChange={() => toggle(session)}

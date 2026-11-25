@@ -735,6 +735,37 @@ test("on a phone the top bar keeps its counts on one line, and New replies opens
   }
 });
 
+// INFRA-5200's layout rule, point 2: a role with no break in it shortens to an ellipsis inside
+// its own pill, with the whole role as its title, so it never runs past its row at 360 px.
+test("a role with no break in it ends in an ellipsis inside its pill and stays inside its row at 360 px", async ({
+  browser,
+}) => {
+  const role = `legion-${"infrastructure".repeat(6)}`;
+  await setLiveSessions([{ ...planner, roles: [role] }]);
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.setViewportSize({ width: 360, height: 800 });
+    await page.goto("/agents");
+    const row = page.locator(`[data-agent-row="${planner.session_id}"]`);
+    const words = row.getByText(role, { exact: true });
+    await expect(words).toBeVisible();
+    const read = await words.evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      const card = element.closest("[data-agent-row]")?.getBoundingClientRect();
+      return {
+        cut: element.scrollWidth > element.clientWidth,
+        inside: card !== undefined && box.right <= card.right + 0.5,
+        sideways: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      };
+    });
+    expect(read).toEqual({ cut: true, inside: true, sideways: false });
+    await expect(words).toHaveAttribute("title", role);
+  } finally {
+    await alice.close();
+  }
+});
+
 test("the header checkbox selects and clears only the rows the filters match, by pointer and by Space", async ({
   browser,
 }) => {

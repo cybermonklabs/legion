@@ -149,7 +149,9 @@ function RailRow({
           ) : (
             <>
               <span className="shrink-0 font-medium whitespace-nowrap">{label}</span>
-              <span className={`min-w-0 flex-1 ${railSecondaryText}`}>{detail}</span>
+              <span className={`min-w-0 flex-1 [overflow-wrap:anywhere] ${railSecondaryText}`}>
+                {detail}
+              </span>
             </>
           )}
         </span>

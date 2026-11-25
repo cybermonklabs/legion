@@ -79,3 +79,29 @@ test("sidebar shows Inbox, Pinned, one row per project with its open-ask badge, 
     await context.close();
   }
 });
+
+// INFRA-5200's layout rule, point 2: a project's name with no break in it wraps inside its rail
+// entry, so the rail never scrolls sideways and the entry's count keeps its place.
+test("a project name with no break in it wraps inside its rail entry", async ({ browser }) => {
+  const name = `Platform${"Infrastructure".repeat(5)}`;
+  await createProject({ key: "LONG", name });
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  try {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto("/");
+    const navigation = page.getByRole("navigation", { name: "Navigation" });
+    const words = navigation.locator('a[href="/projects/LONG"]').getByText(name, { exact: true });
+    await expect(words).toBeVisible();
+    const read = await words.evaluate((element) => ({
+      fits: element.scrollWidth <= element.clientWidth + 1,
+      railFits: (() => {
+        const rail = element.closest("nav");
+        return rail !== null && rail.scrollWidth <= rail.clientWidth + 1;
+      })(),
+    }));
+    expect(read).toEqual({ fits: true, railFits: true });
+  } finally {
+    await context.close();
+  }
+});

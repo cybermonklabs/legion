@@ -241,13 +241,14 @@ export function ProjectsSection(): ReactNode {
             <label className={settingsFieldLabel} htmlFor="project-name">
               Name
               <input
-                className={`rounded-md px-3 py-2 ${inputClasses(false)} ${textPrimaryOnSurface}`}
+                className={`rounded-md px-3 py-2 text-ellipsis ${inputClasses(false)} ${textPrimaryOnSurface}`}
                 disabled={createProject.isPending}
                 id="project-name"
                 maxLength={PROJECT_NAME_MAX}
                 onChange={(event) => setProjectName(event.target.value)}
                 placeholder="Core"
                 required
+                title={projectName === "" ? undefined : projectName}
                 value={projectName}
               />
             </label>
