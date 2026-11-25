@@ -237,8 +237,7 @@ func (s *Source) readFailure(ctx context.Context, tag string, bound time.Duratio
 // on only to a redirect on the read's own origin (keepTokenOnOrigin). net/http copies the read's
 // Authorization onto a redirect's request wherever its host name is the API's or a name under it,
 // whatever its scheme and port (shouldCopyHeaderOnRedirect, net/http/client.go of go1.27.3, lines
-// 700-705 and 1017-1039), so a redirect to another port of the API's host, or to plain http on
-// it, was sent the token. GitHub's redirect to its download host needs none: its URL carries the
+// 700-705 and 1017-1039). GitHub's redirect to its download host needs none: its URL carries the
 // download's own token. A renamed repository's 301 to /repositories/<id> on the API's origin
 // needs it to read a private repository. A copy, as redirects.Refused makes: the caller's client
 // is its own.
