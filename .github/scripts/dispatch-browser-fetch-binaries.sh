@@ -71,22 +71,35 @@ retransmitted() {
        END { if (!found) print "unknown" }' /proc/net/snmp 2>/dev/null || echo unknown
 }
 
-# The artifact this run uploaded under the name: its address, size and digest. One read of the
-# run's artifact list, with curl's own retries for a refused connection or a 5xx.
+# The artifact actions/download-artifact reads under the name: the one with the highest id among
+# the run's artifacts of that name. A re-run uploads the binaries again under the same name, and
+# the first read, given a name and no run id, lists the run's artifacts of that name and takes
+# the highest id (@actions/artifact's getArtifactInternal, "returning newest"); run 45306887784
+# held three by its attempt 3. This read takes that same artifact, and its address, size and
+# digest all come from that one selection. One read of the run's artifact list, with curl's own
+# retries for a refused connection or a 5xx.
 curl -sS --fail --connect-timeout 10 --max-time 30 --retry 3 --retry-all-errors \
   -H @"$work/auth" -H 'Accept: application/vnd.github+json' \
   -o "$work/artifacts.json" \
   "$api/repos/$repository/actions/runs/$run/artifacts?name=$name&per_page=100"
-found=$(jq --arg name "$name" '[.artifacts[] | select(.name == $name and .expired == false)] | length' "$work/artifacts.json")
-if [ "$found" != 1 ]; then
-  echo "::error::run $run holds $found unexpired artifacts named $name, not one, so there is nothing" \
-    "to read again; the binaries job uploads exactly one"
+jq --arg name "$name" '[.artifacts[] | select(.name == $name)] | sort_by(.id) | last // empty' \
+  "$work/artifacts.json" > "$work/artifact.json"
+if [ ! -s "$work/artifact.json" ]; then
+  echo "::error::run $run holds no artifact named $name, so there is nothing to read again"
   exit 1
 fi
-url=$(jq -r --arg name "$name" '.artifacts[] | select(.name == $name and .expired == false) | .archive_download_url' "$work/artifacts.json")
-size=$(jq -r --arg name "$name" '.artifacts[] | select(.name == $name and .expired == false) | .size_in_bytes' "$work/artifacts.json")
-digest=$(jq -r --arg name "$name" '.artifacts[] | select(.name == $name and .expired == false) | .digest // ""' "$work/artifacts.json")
-echo "artifact $name: $size bytes, digest ${digest:-none given}"
+held=$(jq --arg name "$name" '[.artifacts[] | select(.name == $name)] | length' "$work/artifacts.json")
+id=$(jq -r '.id' "$work/artifact.json")
+if [ "$(jq -r '.expired' "$work/artifact.json")" != false ]; then
+  echo "::error::the newest artifact named $name in run $run, id $id, has expired, so there is" \
+    "nothing to read again"
+  exit 1
+fi
+url=$(jq -r '.archive_download_url' "$work/artifact.json")
+size=$(jq -r '.size_in_bytes' "$work/artifact.json")
+digest=$(jq -r '.digest // ""' "$work/artifact.json")
+echo "artifact $name, id $id, the highest of the $held the run holds under that name: $size bytes," \
+  "digest ${digest:-none given}"
 
 zip="$work/$name.zip"
 done=false

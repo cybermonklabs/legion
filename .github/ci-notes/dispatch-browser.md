@@ -421,7 +421,10 @@ slow. Its first read stays actions/download-artifact, which reads in seconds on 
 one leg in a thousand. The script runs in the step's 2 minutes, with the same directory of
 its own as the action's attempt, and reads the artifact the action reads, `<job>-binaries`,
 given the calling job's id (`${{ inputs.job }}`): a pull request labelled full-ci runs both
-callers in one run, and each reads only its own build's binaries.
+callers in one run, and each reads only its own build's binaries. A re-run uploads them again
+under the same name, and the action takes the highest id of the run's artifacts of that name
+(run 45306887784 held three by its attempt 3, and the highest id was not the newest by
+`created_at`), so the script takes that same one and reads its address, size and digest from it.
 
 ## What the shard job places, and what its budget leaves for it
 

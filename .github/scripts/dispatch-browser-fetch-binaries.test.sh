@@ -5,9 +5,11 @@
 # does, and answers a `name=` query with the artifacts of that name, as the REST API does; the
 # artifact's API address, which redirects to a blob address on another host name (localhost);
 # and the blob, which serves a fixture zip and honours a byte range. A case's mode makes the blob
-# stall partway through its first answer, serve bytes whose digest is not the artifact's, or the
-# list hold only the other caller's artifact. The script runs against it as the step runs it,
-# for the caller dispatch-browser-pr, with the low-speed bound shortened to the stand-in's scale.
+# stall partway through its first answer, serve bytes whose digest is not the artifact's, the list
+# hold only the other caller's artifact, hold this caller's three times as a re-run does (out of
+# id order, the lower ids serving an older build), or hold it expired. The script runs against it
+# as the step runs it, for the caller dispatch-browser-pr, with the low-speed bound shortened to
+# the stand-in's scale.
 #
 # The stall case has a control: the same stall with a low-speed bound longer than the case's
 # limit never completes, which shows the stand-in really stalls and the bound is what ends it.
@@ -25,17 +27,22 @@ work=$(mktemp -d)
 server=""
 trap '[ -z "$server" ] || kill "$server" 2>/dev/null || true; rm -rf "$work"' EXIT
 
-# The fixture: four files of random bytes, zipped as upload-artifact zips them (deflate).
+# The fixture: four files of random bytes, zipped as upload-artifact zips them (deflate), and an
+# older build's zip of the same four names with other bytes, which a re-run case's lower-id
+# artifacts serve.
 python3 - "$work" <<'PY'
 import os, sys, zipfile
 work = sys.argv[1]
 os.makedirs(f"{work}/files")
+os.makedirs(f"{work}/old-files")
 for name, size in (("broker", 400_000), ("dispatch", 300_000), ("dev-oidc-issuer", 90_000), ("requestseed", 80_000)):
-    with open(f"{work}/files/{name}", "wb") as f:
-        f.write(os.urandom(size))
-with zipfile.ZipFile(f"{work}/fixture.zip", "w", zipfile.ZIP_DEFLATED) as z:
-    for name in sorted(os.listdir(f"{work}/files")):
-        z.write(f"{work}/files/{name}", name)
+    for directory in ("files", "old-files"):
+        with open(f"{work}/{directory}/{name}", "wb") as f:
+            f.write(os.urandom(size))
+for directory, zip_name in (("files", "fixture.zip"), ("old-files", "old.zip")):
+    with zipfile.ZipFile(f"{work}/{zip_name}", "w", zipfile.ZIP_DEFLATED) as z:
+        for name in sorted(os.listdir(f"{work}/{directory}")):
+            z.write(f"{work}/{directory}/{name}", name)
 PY
 
 cat > "$work/server.py" <<'PY'
@@ -44,6 +51,8 @@ import hashlib, http.server, json, sys, time, urllib.parse
 mode, zip_path, port_file, log_path = sys.argv[1:5]
 blob = open(zip_path, "rb").read()
 digest = "sha256:" + hashlib.sha256(blob).hexdigest()
+old = open(zip_path.replace("fixture.zip", "old.zip"), "rb").read()
+old_digest = "sha256:" + hashlib.sha256(old).hexdigest()
 served = blob if mode != "corrupt" else blob[:100] + bytes([blob[100] ^ 0xFF]) + blob[101:]
 STALL_AT = 65_536
 blob_reads = 0
@@ -67,11 +76,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if self.headers.get("Authorization") != "Bearer test-token":
                 return self.send_error(401)
             # The other caller's binaries, whose address serves nothing: a read of them fails.
-            held = [{"name": "dispatch-browser-binaries", "expired": False, "size_in_bytes": 4,
+            held = [{"id": 900, "name": "dispatch-browser-binaries", "expired": False, "size_in_bytes": 4,
+                     "created_at": "2026-11-24T02:00:00Z",
                      "digest": "sha256:" + hashlib.sha256(b"none").hexdigest(),
                      "archive_download_url": f"http://127.0.0.1:{port}/other-zip"}]
-            if mode != "missing":
-                held.append({"name": "dispatch-browser-pr-binaries", "expired": False, "size_in_bytes": len(blob),
+            if mode == "rerun":
+                # A re-run's attempts, each holding this caller's binaries under the same name,
+                # listed out of id order. The highest id is the one actions/download-artifact
+                # takes, though its created_at is not the newest, as in run 45306887784; the two
+                # others serve an older build whose bytes are not the fixture's.
+                for id_, at, path in ((1001, "2026-11-24T01:47:58Z", "/old-zip"),
+                                      (1003, "2026-11-24T02:03:33Z", "/zip"),
+                                      (1002, "2026-11-24T02:14:39Z", "/old-zip")):
+                    held.append({"id": id_, "name": "dispatch-browser-pr-binaries", "expired": False,
+                                 "created_at": at,
+                                 "size_in_bytes": len(blob) if path == "/zip" else len(old),
+                                 "digest": digest if path == "/zip" else old_digest,
+                                 "archive_download_url": f"http://127.0.0.1:{port}{path}"})
+            elif mode != "missing":
+                held.append({"id": 1001, "name": "dispatch-browser-pr-binaries", "expired": mode == "expired",
+                             "created_at": "2026-11-24T01:47:58Z", "size_in_bytes": len(blob),
                              "digest": digest, "archive_download_url": f"http://127.0.0.1:{port}/zip"})
             asked = urllib.parse.parse_qs(url.query).get("name")
             artifacts = [a for a in held if asked is None or a["name"] in asked]
@@ -81,14 +105,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             return self.wfile.write(body)
-        if self.path == "/zip":
-            self.note("zip")
+        if self.path in ("/zip", "/old-zip"):
+            self.note(self.path[1:])
             if self.headers.get("Authorization") != "Bearer test-token":
                 return self.send_error(401)
             self.send_response(302)
-            self.send_header("Location", f"http://localhost:{port}/blob")
+            self.send_header("Location", f"http://localhost:{port}/{'blob' if self.path == '/zip' else 'old-blob'}")
             self.send_header("Content-Length", "0")
             return self.end_headers()
+        if self.path == "/old-blob":
+            self.note("old-blob")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Length", str(len(old)))
+            self.end_headers()
+            return self.wfile.write(old)
         if self.path == "/blob":
             self.note("blob")
             blob_reads += 1
@@ -206,7 +237,30 @@ echo "A run that holds only the other caller's binaries: refused, naming this ca
 start missing
 fetch_as_step 30
 check "exits 1 ($status)" "$(is "$status" 1)"
-check "names the artifact it found none of" "$(contains "$output" 'holds 0 unexpired artifacts named dispatch-browser-pr-binaries')"
+check "names the artifact it found none of" "$(contains "$output" 'holds no artifact named dispatch-browser-pr-binaries')"
+stop
+
+# A re-run uploads the binaries again under the same name. actions/download-artifact, given a
+# name and no run id, takes the highest id of the run's artifacts of that name, so the second
+# read must take that one too, and its address, size and digest from it alone.
+echo "A re-run that holds this caller's binaries three times: the highest id is read, as the action reads it"
+start rerun
+fetch_as_step 30
+check "exits 0 ($status)" "$(is "$status" 0)"
+check "unzips the highest id's four files, byte for byte" "$(same_files)"
+check "says which of the three it read" \
+  "$(contains "$output" '^artifact dispatch-browser-pr-binaries, id 1003, the highest of the 3 the run holds under that name')"
+check "reads the highest id's address alone, never an older attempt's" \
+  "$(is "$(grep -c '^zip auth=yes' "$log"):$(grep -c '^old-zip' "$log")" '1:0')"
+check "reads in one attempt, held to that artifact's own size and digest" "$(is "$(grep -c '^attempt ' <<<"$output")" 1)"
+stop
+
+echo "A run whose only artifact of the name has expired: refused, naming it"
+start expired
+fetch_as_step 30
+check "exits 1 ($status)" "$(is "$status" 1)"
+check "names the expired artifact by its id" "$(contains "$output" 'dispatch-browser-pr-binaries in run 7, id 1001, has expired')"
+check "reads no blob" "$(is "$(grep -c '^\(zip\|blob\)' "$log")" 0)"
 stop
 
 echo "Called without the calling job's id: refused"
