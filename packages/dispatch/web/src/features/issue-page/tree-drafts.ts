@@ -96,6 +96,8 @@ export interface Draft {
   readonly id: string;
   /** The child issue this node is, as the issue read carries it (`TreeNode.child`). */
   child?: IssueChild;
+  /** The person whose Change this decision waits on (`TreeNode.changedBy`). */
+  changedBy?: Actor;
   /** The person who kept this decision as it reads now (`TreeNode.keptBy`). */
   keptBy?: Actor;
   /** Whether this ask takes more than one of its options (`TreeNode.multiple`). */

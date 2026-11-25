@@ -302,13 +302,17 @@ function ChangeComposer({
     method: "POST",
     // A comment on an issue's document is the issue's own write: the artifact route refuses it,
     // naming the issue route (`send-request.ts` follows the same rule for a thread's replies).
-    // The anchor names the decision node's own block beside its words: the server finds the
-    // quote inside that block alone, so words the decision shares with another place in the
-    // document still name the decision, and it refuses a block that does not hold the quote.
+    // The anchor names the decision node's own block beside its words, and the first of their
+    // matches there (`occurrence` 0): the server finds the quote inside that block alone and
+    // takes its first match, which is the decision's first paragraph itself, so words the
+    // decision shares with another place in the document, or that come again inside its block,
+    // still name the decision; it refuses a block that does not hold the quote. No match is
+    // counted over the document here.
     write: (input: { body: string }, bounds) => {
       const anchor: AnchorInput = {
         artifact: documentId,
         block_id: decision.block_id,
+        occurrence: 0,
         quote: decision.heading,
       };
       return api.createComment(issueKey, { anchor, body: input.body }, bounds);

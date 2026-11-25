@@ -136,10 +136,12 @@ export const BLOCK_TYPE_NAMES = freeze({
  * agent's decision that waits for a person's review, `kept` one a person kept as it reads now -
  * the row draws the name of who kept it after the word - and `replaced` one a later decision
  * replaced (`decisions.go`'s `replaced`, `waiting_review` and `kept`, read by
- * `decision-review.ts`' `reviewState`). `change_requested` is a decision the reader sent a Change
+ * `decision-review.ts`' `reviewState`). `change_requested` is a decision a person sent a Change
  * on since it last changed, which waits on its agent and no longer on the reader
- * (`decision-review.ts`). A decision in none of them - an agent's that nobody has reviewed and
- * nothing replaced, or a person's own section - draws no state.
+ * (`decision-review.ts`): the page draws it as "Changed by" and the name of that person
+ * (`DECISIONS_WORDS.changed_by`), and its word here stays as it is, since a file the Dashboard
+ * chunk loads takes additions only (root R33). A decision in none of them - an agent's that
+ * nobody has reviewed and nothing replaced, or a person's own section - draws no state.
  */
 export const NODE_STATE_WORDS = freeze({
   ask: {
@@ -357,13 +359,19 @@ export const SPEC_WORDS = freeze({
  * `NODE_STATE_WORDS.decision`, which the outline draws too.
  */
 export const DECISIONS_WORDS = freeze({
-  /** The fourth part's heading, which is the control that unfolds it, after the count of the
-   *  decisions it holds; the words agree with the count (R2: "folded at the foot, the agents'
-   *  decisions that no statement rests on"). */
+  /** The fourth part's heading, which is the control that folds and unfolds it, after the count
+   *  of the decisions it holds; the words agree with the count (R2: "at the foot and unfolded,
+   *  the agents' decisions no statement rests on, which the page folds only when the reader
+   *  folds them"). */
   agents_many: "agent decisions that no statement rests on",
   agents_one: "agent decision that no statement rests on",
   /** Before the reader's words of a Change they sent on a decision, under that decision. */
   change: "change asked for",
+  /** What a decision with a Change reads in place of its state's own word
+   *  (`NODE_STATE_WORDS.decision.change_requested`), wherever the page draws it, the outline's
+   *  row as much as this view: then the name of the person whose Change it waits on, the
+   *  reader's own where they asked (R2, R3). */
+  changed_by: "Changed by",
   /** After the name of the person who declined a question, so the row reads as a question that
    *  person declined and never as an answer (R2). */
   declined: "declined to answer",

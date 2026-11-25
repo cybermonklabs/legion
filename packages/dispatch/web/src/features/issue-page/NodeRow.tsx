@@ -60,6 +60,7 @@ import {
   type AuthorKind,
   BLOCK_TYPE_NAMES,
   CONTROL_LABELS,
+  DECISIONS_WORDS,
   GAP_LINES,
   GAP_WORDS,
   GLYPH_TOKENS,
@@ -755,6 +756,9 @@ export function RowMargin({
   const time = node.at === undefined ? "" : shortDay(node.at);
   const authored = author.kind !== "unknown";
   const agentText = useAgentText();
+  // A decision a person asked to change reads "Changed by" and their name where the model names
+  // them, in place of its state's own word (R2, R3).
+  const changer = node.state === "change_requested" ? node.changedBy : undefined;
   if (node.child !== undefined) {
     // A child issue's tag is its key, a link to its own page; its row names no author, no time
     // and no state, which its facts after its title say (ruling 5, the prototype's `.kr`).
@@ -843,8 +847,9 @@ export function RowMargin({
                 <NodeGlyph className="size-3 shrink-0" token={stateGlyph} />
               )}
               <span data-node-state={node.state} {...pageChrome}>
-                {nodeStateWord(node.state)}
-                {/* "Kept by" names the person who kept it, by the page's one name for them (R2). */}
+                {changer === undefined ? nodeStateWord(node.state) : DECISIONS_WORDS.changed_by}
+                {/* "Kept by" names the person who kept it, and "Changed by" the person whose
+                    Change it waits on, by the page's one name for them (R2, R3). */}
                 {node.state === "kept" && node.keptBy !== undefined ? (
                   <>
                     {" "}
@@ -853,6 +858,14 @@ export function RowMargin({
                     </span>
                   </>
                 ) : null}
+                {changer === undefined ? null : (
+                  <>
+                    {" "}
+                    <span data-changed-by="" {...authorText}>
+                      {agentText.author(changer)}
+                    </span>
+                  </>
+                )}
               </span>
             </span>
           )}

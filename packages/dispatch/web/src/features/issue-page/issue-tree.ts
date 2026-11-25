@@ -234,6 +234,10 @@ export interface TreeNode {
    *  title as its words, how it stands, what blocks it and who holds it, and its key as the tag
    *  (R12, `IssueChildren.tsx`). Absent for every other node. */
   readonly child?: IssueChild;
+  /** The person whose Change this decision waits on (the first author of the newest Change the
+   *  tree read hangs under it, `decision-review.ts`' `decisionNodeChanges`), whose name the row
+   *  draws after "Changed by" (R2, R3); absent for every other node. */
+  readonly changedBy?: Actor;
   /** The person who kept this decision as it reads now (`DecisionKeep.kept_by`), whose name the
    *  row draws after "Kept by" (R2); absent for every other node. */
   readonly keptBy?: Actor;
@@ -856,6 +860,7 @@ export function assemble(
       held: heldBy(children),
       id: draft.id,
       ...(draft.child === undefined ? {} : { child: draft.child }),
+      ...(draft.changedBy === undefined ? {} : { changedBy: draft.changedBy }),
       ...(draft.keptBy === undefined ? {} : { keptBy: draft.keptBy }),
       ...(draft.multiple === undefined ? {} : { multiple: draft.multiple }),
       ...(draft.options === undefined ? {} : { options: draft.options }),

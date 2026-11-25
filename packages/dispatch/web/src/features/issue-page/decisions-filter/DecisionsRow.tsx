@@ -412,10 +412,11 @@ export function DecisionsRow({
         </div>
         {/* The outline's own margin (`NodeRow.tsx`), given how the entry stands as its node's
             state: the token of the one reading `entryStanding` gives the row and the panel alike.
-            So a decision shows its standing with the reader, not the tree's state, and "Kept
-            by" with the keeper this list holds. A decision waits on the reader where it is an
-            entry of the review list, which draws its state in the decisions' violet: one rule
-            decides the list, and a second decides the mark on a row. An ask waits as the
+            So a decision shows its standing with the reader, not the tree's state, "Kept by"
+            with the keeper this list holds, and "Changed by" with the person whose Change it
+            waits on. A decision waits on the reader where it is an entry of the review list,
+            which draws its state in the decisions' violet: one rule decides the list, and a
+            second decides the mark on a row. An ask waits as the
             conversation says. The node an address names stands in no state here and is drawn
             for its context: in its grey, with no reader's ink on its author, and a child issue
             by its key, as the outline's row draws one. */}
@@ -424,6 +425,7 @@ export function DecisionsRow({
           context={tone === "context"}
           node={{
             ...node,
+            changedBy: entry.kind === "decision" ? entry.change?.by : undefined,
             keptBy: entry.kind === "decision" ? entry.keptBy : undefined,
             state: standing?.token,
             waiting: entry.kind === "decision" ? review : node.waiting,

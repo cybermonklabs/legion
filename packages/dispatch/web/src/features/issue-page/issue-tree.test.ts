@@ -2770,7 +2770,7 @@ test("an open question waits on the reader only where its turn is theirs", () =>
 // (`api/anchors.go`'s `resolveAnchor`) inside the decision's paragraph, so the tree read hangs it
 // under the decision's node, which the read answers with the members
 // the decisions read stored for it. A Change newer than the decision's words makes the decision
-// read Change requested and wait on its agent, not on the reader; one older than its words still
+// read Changed by and wait on its agent, not on the reader; one older than its words still
 // stands under it and is no Change, and the decision waits for the reader's review.
 test("a Change is drawn under its decision, which then waits on its agent", () => {
   // As the reads send them: the spec as the issue read lists it, the decision as the decisions
@@ -3120,7 +3120,7 @@ test("every Change newer than a decision's words is drawn under it", () => {
 // R3: a decision node's Change is the comment the read hangs under it - a comment anchored inside
 // a decision's words hangs under that decision's node - here the second decision's, though the
 // first decision holds the same words too. So the Change lands on
-// the decision the person changed, which reads Change requested and leaves the review list,
+// the decision the person changed, which reads Changed by and leaves the review list,
 // and not on the first that holds its words, which still waits on them.
 test("a Change anchored in one decision is drawn under it, though another decision holds its words", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);

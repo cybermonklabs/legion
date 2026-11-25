@@ -2913,11 +2913,16 @@ test("a decision the reader sent a Change on says so, leaves the review list and
     await user.click(view.getByRole("button", { name: CONTROL_LABELS.send_change }));
     await waitFor(() => expect(create).toHaveBeenCalled());
     // The comment is anchored to the decision's own block and words in the spec, the document
-    // the decision is a block of.
+    // the decision is a block of, at the first match of those words in that block.
     expect(create.mock.calls[0]?.slice(0, 2)).toEqual([
       KEY,
       {
-        anchor: { artifact: SPEC_DOCUMENT.id, block_id: "second", quote: "The decision second." },
+        anchor: {
+          artifact: SPEC_DOCUMENT.id,
+          block_id: "second",
+          occurrence: 0,
+          quote: "The decision second.",
+        },
         body: "Name the read, please.",
       },
     ]);
@@ -2931,9 +2936,11 @@ test("a decision the reader sent a Change on says so, leaves the review list and
     expect(rowsOfPart(view, "yours")[0]).toBe(D("second"));
     const row = rowOf(view, D("second"));
     expect(row.getAttribute("data-node-state")).toBe("change_requested");
+    // It reads "Changed by" with the reader's name, where it read "Change requested" (R2, R3).
     expect(words(row.querySelector("[data-node-margin] [data-node-state]"))).toBe(
-      NODE_STATE_WORDS.decision.change_requested
+      `${DECISIONS_WORDS.changed_by} alice`
     );
+    expect(row.querySelector("[data-changed-by][data-author-text]")?.textContent).toBe("alice");
     expect(row.querySelectorAll("button[data-row-action]").length).toBe(0);
     expect(row.querySelector("[data-change-words]")?.textContent).toBe("Name the read, please.");
     const link = row.querySelector("a[data-change-link]");

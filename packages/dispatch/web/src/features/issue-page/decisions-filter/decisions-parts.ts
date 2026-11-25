@@ -38,9 +38,13 @@ import { type DecisionState, isReader, NODE_TYPE_NAMES } from "../page-words";
  *    the third part "his own decisions", and Dispatch has several readers: another person's
  *    answer is no decision of the reader's, and it is still an ask the filter draws (R2:
  *    "Decisions the asks and the decisions"), so it stands under a heading that says whose it is.
- * 5. **The agents' decisions that no statement rests on**, folded at the foot: an agent
- *    decision no `shaped` tie names a statement for, and a replaced one, which no statement
- *    stands on any longer (R5: "A replaced decision draws no line").
+ * 5. **The agents' decisions that no statement rests on**, at the foot and unfolded, which the
+ *    page folds only when the reader folds them: an agent decision no `shaped` tie names a
+ *    statement for, whether a person kept it, asked to change it or neither, and a replaced one,
+ *    which no statement stands on any longer (R5: "A replaced decision draws no line").
+ *
+ * An overtaken decision or question, a node the read answers `overtaken`, stands in the part its
+ * kind puts it in, and waits on nobody (`waitingOrder`, R2).
  *
  * Before the five parts stands the node the address names where it is neither an ask nor a
  * decision - a comment, a statement, a check: the address outranks the filter (`presets.ts`),
@@ -154,6 +158,9 @@ export interface DecisionEntry extends EntryBase {
   /** The person who kept it (`DecisionKeep.kept_by`), where it stands kept. */
   readonly keptBy?: Actor;
   readonly kind: "decision";
+  /** Whether the read answers the decision's node `overtaken` (R2): it stands in its part, and
+   *  is no entry of what waits (`waitingOrder`). */
+  readonly overtaken?: true;
   /** How it stands, where the model gives it a state (`NODE_STATE_WORDS.decision`), by the one
    *  rule the outline reads too (`decision-review.ts`' `reviewState`). */
   readonly standing?: DecisionState;
@@ -203,12 +210,14 @@ export function conversationPath(node: Pick<TreeNode, "reference">): string | un
 /**
  * Every entry that waits on the reader, in the filter's order: each open question whose turn
  * is the reader's, then each decision of the review list. It is what the header's count of
- * what waits walks: each press goes to the next of them (R13, the tester's F12).
+ * what waits walks: each press goes to the next of them (R13, the tester's F12). An overtaken
+ * one waits on nobody (R2): its question's node does not wait (`tree-read/tree-nodes.ts`'
+ * `draftAsk`), and its decision says it is overtaken.
  */
 export function waitingOrder(parts: DecisionsParts): readonly string[] {
   return [
     ...parts.open_questions.filter((entry) => entry.node.waiting).map((entry) => entry.node.id),
-    ...parts.review.map((entry) => entry.node.id),
+    ...parts.review.filter((entry) => entry.overtaken !== true).map((entry) => entry.node.id),
   ];
 }
 
@@ -330,19 +339,21 @@ export function decisionsParts({
             },
           }),
       ...(keptBy === undefined ? {} : { keptBy }),
+      ...(row.node.state === "overtaken" ? { overtaken: true as const } : {}),
       kind: "decision",
       shapes,
       ...(standing === undefined ? {} : { standing }),
     };
     if (row.replaced) {
       agents.push(entry);
-    } else if (asked !== undefined) {
-      // The reader asked for a change: the decision waits on its agent, and stands with the
-      // decisions of whoever asked, by the time they did.
+    } else if (asked !== undefined && shapes.length > 0) {
+      // A person asked for a change of a decision a statement rests on: it waits on its agent,
+      // and stands with the decisions of whoever asked, by the time they did.
       decidedBy(asked.author).push({ ...entry, ...timeOf(asked.created_at) });
-    } else if (inReviewList(row, isStatement)) {
+    } else if (inReviewList(row, isStatement, asked !== undefined)) {
       review.push(entry);
     } else if (shapes.length === 0) {
+      // No statement rests on it, whether a person kept it, asked to change it or neither.
       agents.push(entry);
     } else {
       // An agent's decision a statement rests on that does not wait: a person kept it as it

@@ -372,6 +372,7 @@ test("Change anchors to the node's document and quotes its first paragraph", asy
         anchor: {
           artifact: document_.id,
           block_id: ONE.block_id ?? ONE.id,
+          occurrence: 0,
           quote: "One tree, five presets",
         },
         body: "Say where.",
@@ -414,6 +415,46 @@ test("Change anchors to the node's document and block", async () => {
   } finally {
     unmount();
     createComment.mockRestore();
+  }
+});
+
+// R3 and root R42: the Change's anchor carries its `occurrence`, 0, beside the block and the
+// quote, so the server takes the first match of the quote inside the decision's own block, which
+// is its first paragraph itself, though those words come again further down the block: with no
+// occurrence it refuses such a Change (`409 TARGET_AMBIGUOUS`). No client counts the occurrence
+// over a document, so the send reads no document's text.
+test("a Change's anchor carries occurrence 0 inside its block", async () => {
+  const createComment = spyOn(api, "createComment").mockImplementation(
+    () => new Promise<never>(() => {})
+  );
+  const text = spyOn(api, "getArtifactText");
+  const repeated = decisionNode(
+    "d1",
+    "One tree, five presets\n\nThe presets are queries over the one tree.\n\nOne tree, five presets"
+  );
+  const user = userEvent.setup();
+  const { unmount } = renderActions([repeated]);
+  try {
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Say where.");
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.send_change }));
+    await waitFor(() =>
+      expect(createComment, "the Change was never sent").toHaveBeenCalledTimes(1)
+    );
+    expect(
+      createComment.mock.calls[0]?.[1]?.anchor,
+      "the Change's anchor names its block, its quote and the quote's first match there"
+    ).toEqual({
+      artifact: document_.id,
+      block_id: repeated.block_id ?? repeated.id,
+      occurrence: 0,
+      quote: "One tree, five presets",
+    });
+    expect(text, "the send read the document's text").not.toHaveBeenCalled();
+  } finally {
+    unmount();
+    createComment.mockRestore();
+    text.mockRestore();
   }
 });
 

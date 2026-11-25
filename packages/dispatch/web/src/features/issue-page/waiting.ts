@@ -1,6 +1,6 @@
 import type { IssueDetails } from "../../api/types";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
-import { decisionsOfAnswer } from "./decision-nodes/decision-nodes";
+import { askOfNode, decisionsOfAnswer } from "./decision-nodes/decision-nodes";
 import {
   type ChangeComment,
   decisionNodeChanges,
@@ -38,6 +38,11 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * count matches no quote and reads no block of a document. A Change its author deleted asks
  * nothing any more, as in the outline: `comments`, the page's comments read, says which were
  * (`deletedPostIds`), since the tree read answers a deleted comment with no mark of the delete.
+ *
+ * An overtaken decision or question, a node the tree read answers `overtaken`, counts in no
+ * count of what waits (R2), as the outline marks it waiting on nobody (`draftDecision`,
+ * `draftAsk`): neither a decision whose node is, nor an open ask whose node is, each ask found by
+ * the one rule the outline finds an ask node's row by (`askOfNode`).
  */
 export interface WaitingOnReader {
   /** The open asks other than an approval request whose turn is the reader's. */
@@ -59,11 +64,12 @@ export function waitingOnReader(
   tree: TreeAnswer | undefined,
   comments?: readonly Pick<ChangeComment, "deleted_at" | "id">[]
 ): WaitingOnReader {
+  const overtaken = overtakenAsks(issue, viewer === undefined ? undefined : tree);
   const open =
     viewer === undefined
       ? []
       : waitingOnHuman((issue.open_asks ?? []).filter((ask) => ask.state === "open")).filter(
-          (ask) => ask.waiting_on_person === viewer
+          (ask) => ask.waiting_on_person === viewer && !overtaken.has(ask.id)
         );
   const approvals = open
     .filter((ask) => ask.kind === "approval")
@@ -81,11 +87,29 @@ export function waitingOnReader(
   let reviewing = 0;
   if (viewer !== undefined && tree !== undefined) {
     const changes = decisionNodeChanges(tree, undefined, deletedPostIds(comments));
-    reviewing = [...decisionsOfAnswer(tree, issue.key).values()].filter((decision) =>
-      inReviewList(decision, isCoverageStatement, changes.has(decision.node.id))
+    reviewing = [...decisionsOfAnswer(tree, issue.key).values()].filter(
+      (decision) =>
+        decision.node.state !== "overtaken" &&
+        inReviewList(decision, isCoverageStatement, changes.has(decision.node.id))
     ).length;
   }
   return { approvals, asks, decisions: reviewing, total: asks + reviewing + approvals.length };
+}
+
+/** The ids of the issue's open asks whose tree-read node is overtaken (R2), each ask found by the
+ *  one rule the outline finds an ask node's row by (`askOfNode`); none without a tree. */
+function overtakenAsks(
+  issue: Pick<IssueDetails, "artifacts" | "key" | "open_asks" | "primary_artifact_id">,
+  tree: TreeAnswer | undefined
+): ReadonlySet<string> {
+  if (tree === undefined) return new Set();
+  const askOf = askOfNode({ issue });
+  return new Set(
+    (tree.nodes ?? []).flatMap((node) => {
+      const ask = node.supertag === "ask" && node.state === "overtaken" ? askOf(node) : undefined;
+      return ask === undefined ? [] : [ask.id];
+    })
+  );
 }
 
 /** What the count leaves in the address's history entry, which the Decisions filter reads to put

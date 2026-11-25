@@ -593,7 +593,8 @@ function draftResult(
  * the person or the session its `decided_by` tuple names, which the read answers as context
  * (`deciderOf`), since the node's `decision` names no decider; none where the read answers no
  * such tuple. A person's Change the read hangs under it says it waits on its agent
- * (`decisionNodeChanges`).
+ * (`decisionNodeChanges`), and names who asked for it: the first author of the newest Change
+ * (`changedBy`), whose name the row draws after "Changed by".
  *
  * Whether its agent was unsure and whether it waits on the reader are read off the decision as
  * every other reader of a decision reads it (`decisionNodes`), so the row, the header's count
@@ -603,7 +604,8 @@ function draftResult(
  * is handed too (`coverageStatements`, `TreeDraftContext.isCoverageStatement`). A decision node
  * that carries no `decision`, or that no document holds, is no decision of `decisionNodes` - the
  * one has no review state, the other no address and no document a Keep could be written against
- * - so it waits on nobody, and is unsure only where the read says so.
+ * - so it waits on nobody, and is unsure only where the read says so. Nor does one the read
+ * answers `overtaken` wait on anybody (R2), as the header's count does not count it.
  */
 function draftDecision(
   node: TreeAnswerNode,
@@ -627,8 +629,11 @@ function draftDecision(
     ...chip,
     stale: stale.has(context.nodeIdOf(chip.ref) ?? chip.ref),
   }));
-  const changed = context.changes.has(draft.id);
+  const change = context.changes.get(draft.id);
+  const changed = change !== undefined;
   draft.state = reviewState(decision, changed);
+  const changer = change?.author?.[0];
+  if (draft.state === "change_requested" && changer !== undefined) draft.changedBy = changer;
   if (decision.kept != null && decision.waiting_review !== true) {
     draft.keptBy = { id: decision.kept.kept_by, kind: "user" };
   }
@@ -636,6 +641,7 @@ function draftDecision(
   const decided = context.decisions.get(node);
   if (decided?.unsure ?? decision.unsure === true) draft.unsure = true;
   draft.waiting =
+    node.state !== "overtaken" &&
     decided !== undefined &&
     context.viewer !== undefined &&
     inReviewList(decided, context.isCoverageStatement, changed);
@@ -649,7 +655,8 @@ function draftDecision(
  * with the ask as the record its words are, kept by the tree read's reading of them, else by the
  * node (`stableSourceOf`). An approval request belongs to the document it reviews and is no node
  * of the tree, as in the outline. An ask the asks read has not answered for yet is open, as the
- * outline drew an ask block before that read answered.
+ * outline drew an ask block before that read answered. A question the read answers `overtaken`
+ * waits on nobody (R2), as the header's count does not count it.
  *
  * An `ask` block of a document is drawn by its question as the asks read holds it, with that
  * read's reading of it, as the outline drew an ask: the read's reading of the block is of its
@@ -691,6 +698,7 @@ function draftAsk(
   // An open question is what the fold unfolds the path to, whatever its depth (R6).
   draft.question = ask.state === "open";
   draft.waiting =
+    node.state !== "overtaken" &&
     ask.state === "open" &&
     ask.waiting_on === "human" &&
     context.viewer !== undefined &&

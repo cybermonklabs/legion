@@ -840,7 +840,7 @@ test("another issue's block keeps the read's id where its document has this issu
 });
 
 // R3: a person's comment the read hangs under a decision node, made after the decision's words
-// last changed, is its Change: the decision reads Change requested and waits on its agent, not
+// last changed, is its Change: the decision reads Changed by and waits on its agent, not
 // on the reader. A person's comment older than its words, and an agent's, stand under it too,
 // and neither is a Change, so without the newer one the decision waits for the reader's review.
 test("a Change is the comment the read hangs under its decision", () => {
@@ -883,6 +883,47 @@ test("a Change is the comment the read hangs under its decision", () => {
     state: "waiting_review",
     waiting: true,
   });
+});
+
+// R2, R3: a decision with a Change reads "Changed by" and the name of the person whose Change it
+// waits on, the first author of the newest Change the read hangs under it: bob's here, though
+// alice asked before him. A decision whose only comment is older than its words has no Change,
+// waits for the reader's review and names nobody who asked.
+test("a changed decision names who asked to change it", () => {
+  const decision = block("d1", "decision", KEY, SPEC, 1, {
+    decision: {
+      changed_at: "2026-11-05T00:00:00Z",
+      links: [linkTo(`dispatch://${KEY}/spec#b-r1`)],
+      waiting_review: true,
+    },
+  });
+  const drawnDecision = blockNodeId("spec", "d1");
+  const reads: IssueTreeReads = {
+    coverage: coverage([requirement("r1")]),
+    issue: issueDetails(),
+    viewer: "alice",
+  };
+  const bob = { id: "bob", kind: "user" as const };
+  const changed = answer([
+    block("r1", "requirement", KEY, SPEC, 0),
+    decision,
+    personsComment("c-alice", "d1", "2026-11-06T00:00:00Z"),
+    node("c-bob", "comment", "d1", { author: [bob], made_at: "2026-11-07T00:00:00Z" }),
+  ]);
+  expect(nodeOf(drawn(changed, reads).root, drawnDecision)).toMatchObject({
+    changedBy: bob,
+    state: "change_requested",
+    waiting: false,
+  });
+
+  const older = answer([
+    block("r1", "requirement", KEY, SPEC, 0),
+    decision,
+    personsComment("c-older", "d1", "2026-11-04T00:00:00Z"),
+  ]);
+  const unchanged = nodeOf(drawn(older, reads).root, drawnDecision);
+  expect(unchanged).toMatchObject({ state: "waiting_review", waiting: true });
+  expect(unchanged?.changedBy).toBeUndefined();
 });
 
 // R2's second difference: an ask block carrying `shaped` ties draws them as chips on its row in
