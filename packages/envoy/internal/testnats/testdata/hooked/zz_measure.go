@@ -8,6 +8,7 @@ package server
 import (
 	"encoding/json"
 	"sync/atomic"
+	"time"
 )
 
 // MeasureEvent is one instrumented point inside the server.
@@ -42,7 +43,8 @@ type MeasureEvent struct {
 	// Subject is the request's subject at api.worker, the message's at client.publish and
 	// stream.apply.
 	Subject string
-	// Stream is the stream's name at stream.apply, meta.apply and msgget.timeSelected.
+	// Stream is the stream's name at stream.apply, meta.apply, msgget.timeSelected and the
+	// duplicate-window points (dedupe.reset, dedupe.purged).
 	Stream string
 	// Client is the publishing connection's name at client.publish, and Kind its kind (CLIENT,
 	// JETSTREAM, SYSTEM, ACCOUNT).
@@ -50,6 +52,13 @@ type MeasureEvent struct {
 	Kind   string
 	// Recovering is set at stream.apply and meta.apply while the server replays its log at start.
 	Recovering bool
+	// Window is the duplicate window the duplicate-window points read: at dedupe.reset the one
+	// being replaced, which a purge running there measures the remembered ids against, and at
+	// dedupe.purged the one the purge did measure them against. NewWindow is the window the
+	// update will store, at dedupe.reset alone.
+	Window, NewWindow time.Duration
+	// Remembered is the number of duplicate ids the stream still remembers at dedupe.purged.
+	Remembered int
 }
 
 // MeasureHook is called synchronously at each instrumented point. A hook that blocks holds

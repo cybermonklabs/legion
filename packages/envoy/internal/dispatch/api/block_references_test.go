@@ -811,7 +811,7 @@ func TestAPinnedReferenceShowsItsVersionsText(t *testing.T) {
 	}
 
 	cited := graphEdges(t, handler, url.Values{"from": {"dispatch://" + issue.Key + "/comment/" + comment.ID}}).Edges
-	if len(cited) != 1 || cited[0].Node.Text != "" || cited[0].Excerpt == nil || *cited[0].Excerpt != (model.GraphExcerpt{BlockID: paragraphID, Text: text.HeadRunes(changed, refs.BlockExcerptRunes)}) {
+	if len(cited) != 1 || cited[0].Node.Text != "" || cited[0].Excerpt == nil || *cited[0].Excerpt != (model.GraphExcerpt{BlockID: paragraphID, Text: refs.BlockExcerpt(changed, testServerURL)}) {
 		t.Fatalf("the comment's link = %#v, want the block with its 480-rune excerpt", cited)
 	}
 }

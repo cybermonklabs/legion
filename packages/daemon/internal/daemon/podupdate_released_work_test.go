@@ -23,6 +23,7 @@ import (
 // At the end the reviewer's set is unknown, but the implementer's known set contains only the
 // pod in P's place. The end names the implementer only because it reads P's kept-volume mark.
 func TestARestartBetweenTheKeptPodRecordAndTheRoundsEndStillNamesTheRoles(t *testing.T) {
+	t.Parallel()
 	implementer, tester, reviewer := claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer
 	rig := newPodUpdateRig(t, podUpdateRole{role: implementer, state: supervise.StateQueued},
 		podUpdateRole{role: tester, state: supervise.StateQueued}, podUpdateRole{role: reviewer, state: supervise.StateQueued})
