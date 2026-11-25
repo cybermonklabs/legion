@@ -414,11 +414,6 @@ func statedAttributes(tuples int, tuple func(index int) Tuple) map[baseAttribute
 // (nodeMarks): what a node write's statements state nothing of for that node.
 func ownedAttributes(own map[baseAttribute]struct{}, kind, id string) int32 {
 	var bits int32
-	// An attribute's skip bit is its place in baseAttributes, and the append clears that bit from
-	// the mark's (markVisibility, markState, markProject, markParties), so baseAttributes lists
-	// the four in mark order: visibility, state, project, parties. Nothing else holds the two lists
-	// in step: a reorder of either would have a write skip an attribute the writer does not state
-	// itself and state again one it does.
 	for bit, attribute := range baseAttributes {
 		if _, held := own[baseAttribute{kind, id, attribute}]; held {
 			bits |= 1 << bit

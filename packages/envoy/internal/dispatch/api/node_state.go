@@ -301,13 +301,14 @@ func (s *server) writeNodeStateAs(w http.ResponseWriter, r *http.Request, suppli
 		s.writeHandlerError(w, err)
 		return
 	}
-	found, end, err := findWrittenNode(ctx, tx, proving.Recorded(), key, id)
+	reader := proving.Recorded()
+	found, end, err := findWrittenNode(ctx, tx, reader, key, id)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	target := stateTarget{kind: found.Kind, address: cmp.Or(found.Ref, id), end: end.stored()}
-	if err := askHoldsState(ctx, tx, proving.Recorded(), target); err != nil {
+	if err := askHoldsState(ctx, tx, reader, target); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
