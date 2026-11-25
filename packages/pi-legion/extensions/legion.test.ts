@@ -537,14 +537,14 @@ function hostModel(selector: string): HostModel {
   return { provider: provider ?? "", id: id ?? "" };
 }
 
-function createPi(
+async function createPi(
   options: {
     readonly bindEnvoy?: boolean;
     readonly agentsExposed?: boolean;
     /** The Envoy entry the pane binds; the one this file loaded unless a test loads another. */
     readonly envoyEntry?: typeof envoyExtension;
   } = {}
-): {
+): Promise<{
   readonly commands: RegisteredCommand[];
   readonly handlers: Map<string, Handler>;
   /** The handlers each bound extension registered for one event, in the order they bound: the
@@ -563,7 +563,7 @@ function createPi(
   readonly title: HostTitle;
   readonly models: HostModels;
   readonly pi: TestPi;
-} {
+}> {
   const commands: RegisteredCommand[] = [];
   const handlers = new Map<string, Handler>();
   const registeredHandlers = new Map<string, Handler[]>();
@@ -678,7 +678,7 @@ function createPi(
   };
   // `bindEnvoy: false` lets a test bind legion.ts before envoy.ts, so the two extensions'
   // handlers for one session event run in the opposite order to the manifest's.
-  if (options.bindEnvoy !== false) (options.envoyEntry ?? envoyExtension)(pi as never);
+  if (options.bindEnvoy !== false) await (options.envoyEntry ?? envoyExtension)(pi as never);
   return {
     commands,
     handlers,
@@ -1056,7 +1056,7 @@ async function claimPane(options: {
   setLegionCapabilityHostForTests(options.capabilityHost ?? (() => fakeCapabilityHost()));
   const intervals: (() => void)[] = [];
   const timers: { readonly callback: () => void | Promise<void>; readonly delayMs: number }[] = [];
-  const fixture = createPi({
+  const fixture = await createPi({
     bindEnvoy: options.bindEnvoy,
     agentsExposed: options.agentsExposed,
     envoyEntry: options.envoyEntry,
@@ -1281,7 +1281,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     process.env.LEGION_DAEMON_URL = "http://daemon.test";
     delete process.env.LEGION_CONTROLLER;
     delete process.env.LEGION_CONTROLLER_SECRET;
-    const fixture = createPi();
+    const fixture = await createPi();
 
     legionExtension(fixture.pi);
     const claimCommand = fixture.commands.find(
@@ -1408,7 +1408,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     });
 
     test("a person's own session is untouched: no Legion environment, no check, no exit", async () => {
-      const fixture = createPi({ bindEnvoy: false });
+      const fixture = await createPi({ bindEnvoy: false });
       const exits: number[] = [];
       setLegionBootstrapExitForTests((code) => {
         exits.push(code);
@@ -1436,7 +1436,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         requests.push(new URL(input.toString()).pathname);
         return Response.json({});
       }) as typeof fetch;
-      const fixture = createPi({ bindEnvoy: false });
+      const fixture = await createPi({ bindEnvoy: false });
       const exits: number[] = [];
       setLegionBootstrapExitForTests((code) => {
         exits.push(code);
@@ -1603,7 +1603,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         ...deliveryFor(url.pathname, body, "ses_plain"),
       });
     }) as typeof fetch;
-    const fixture = createPi();
+    const fixture = await createPi();
     legionExtension(fixture.pi);
     const sessionStart = fixture.handlers.get("session_start");
     if (sessionStart === undefined) throw new Error("session_start handler was not registered");
@@ -1665,7 +1665,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
 
     // The root runs a `task`: a fresh extension instance binds in the same process and its
     // subagent session starts with a different transcript path and the inherited environment.
-    const subagent = createPi();
+    const subagent = await createPi();
     legionExtension(subagent.pi);
     const subagentStart = subagent.handlers.get("session_start");
     if (subagentStart === undefined) throw new Error("subagent handlers were not registered");
@@ -1915,8 +1915,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       order.indexOf("fetch:/legion/v1/claims/register")
     );
   });
-  test("registers no legion tool until a session's claim boots", () => {
-    const fixture = createPi();
+  test("registers no legion tool until a session's claim boots", async () => {
+    const fixture = await createPi();
 
     legionExtension(fixture.pi);
 
@@ -3055,7 +3055,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
 
     test("a session with no Legion environment is never reminded", async () => {
       const requests = listenerOnly("ses_plain");
-      const fixture = createPi();
+      const fixture = await createPi();
       legionExtension(fixture.pi);
       const context = sessionContext("ses_plain");
       await hook(fixture.handlers, "session_start")({}, context);
@@ -4280,9 +4280,9 @@ async function launchedController(options: {
     exits.push(code);
     throw new Error("process would exit");
   });
-  const fixture = createPi({ bindEnvoy: options.order !== "legion.ts" });
+  const fixture = await createPi({ bindEnvoy: options.order !== "legion.ts" });
   legionExtension(fixture.pi);
-  if (options.order === "legion.ts") envoyExtension(fixture.pi as never);
+  if (options.order === "legion.ts") await envoyExtension(fixture.pi as never);
   return {
     token,
     registration,
@@ -6050,7 +6050,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     // A task-spawned subagent inside the pane loads its own instance of this module with the
     // pane's environment; its switch events must never take the controller role.
     const { childFile } = await createSubagentTranscriptPaths();
-    const subagent = createPi();
+    const subagent = await createPi();
     legionExtension(subagent.pi);
     await subagent.handlers.get("session_switch")?.(
       { reason: "new" },
@@ -6097,7 +6097,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       // The pane runs a `task`: a fresh pair of extension instances binds in this process and
       // the subagent's session starts.
       const { childFile } = await createSubagentTranscriptPaths();
-      const subagent = createPi();
+      const subagent = await createPi();
       legionExtension(subagent.pi);
       const subagentTicks: (() => void)[] = [];
       await subagent.handlers.get("session_start")?.(
@@ -6253,7 +6253,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     // A later `legion controller start`: a second session registers and takes the role. It is
     // another process, so this one's record of the session it bootstrapped does not apply to it.
     envoyPluginInterface().bootstrappedSession.file = undefined;
-    const second = createPi();
+    const second = await createPi();
     legionExtension(second.pi);
     const secondContext = first.context("ses_controller_second");
     await startOperatorController(second, secondContext);
@@ -6286,7 +6286,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     await startOperatorController(first, first.context("ses_controller_first"));
     // A later `legion controller start` takes the role, in another process.
     envoyPluginInterface().bootstrappedSession.file = undefined;
-    const second = createPi();
+    const second = await createPi();
     legionExtension(second.pi);
     await startOperatorController(second, first.context("ses_controller_second"));
     replaced = true;
@@ -6297,7 +6297,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     // Only the resumed instance registers from here on; the first instance's registrations came
     // before this point.
     const requestsBeforeResume = first.requests.length;
-    const resumed = createPi();
+    const resumed = await createPi();
     legionExtension(resumed.pi);
     const context = first.context("ses_controller_first");
     const { notices } = await startRefusedController(resumed, {
@@ -6388,7 +6388,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     const resume = async (first: LaunchedController, sessionId: string, channels: string) => {
       envoyPluginInterface().bootstrappedSession.file = undefined;
       process.env.LEGION_SLACK_CHANNELS = channels;
-      const resumed = createPi();
+      const resumed = await createPi();
       legionExtension(resumed.pi);
       const context = first.context(sessionId);
       await resumed.handlers.get("session_start")?.(
@@ -6436,7 +6436,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
 
       // Another session takes the controller role, and this one's next heartbeat is refused.
       envoyPluginInterface().bootstrappedSession.file = undefined;
-      const second = createPi();
+      const second = await createPi();
       legionExtension(second.pi);
       await second.handlers.get("session_start")?.({}, controller.context("ses_controller_other"));
       for (const tick of ticks) tick();
@@ -6547,7 +6547,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       const requestsBefore = first.requests.length;
       const ticks: (() => void)[] = [];
       const refused = Promise.withResolvers<void>();
-      const resumed = createPi();
+      const resumed = await createPi();
       legionExtension(resumed.pi);
       const context = first.context("ses_controller_slack_owned");
       await resumed.handlers.get("session_start")?.(
@@ -6587,7 +6587,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       ]);
 
       envoyPluginInterface().bootstrappedSession.file = undefined;
-      const second = createPi();
+      const second = await createPi();
       legionExtension(second.pi);
       await second.handlers.get("session_start")?.({}, first.context("ses_controller_slack_other"));
       const requestsBeforeEnd = first.requests.length;
@@ -6688,7 +6688,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     // While the subscription waits, a later `legion controller start` takes the role, and the
     // first session's heartbeat is refused.
     envoyPluginInterface().bootstrappedSession.file = undefined;
-    const second = createPi();
+    const second = await createPi();
     legionExtension(second.pi);
     await startOperatorController(second, first.context("ses_controller_second"));
     for (const tick of ticks) tick();
@@ -6732,7 +6732,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       // A later `legion controller start` takes the role, and the first session's heartbeat is
       // refused: the lane goes back to the listener.
       envoyPluginInterface().bootstrappedSession.file = undefined;
-      const second = createPi();
+      const second = await createPi();
       legionExtension(second.pi);
       await startOperatorController(second, first.context("ses_controller_second"));
       for (const tick of ticks) tick();
@@ -6801,7 +6801,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       // A later `legion controller start` takes the role, and this session's heartbeat is
       // refused: the lane goes back to the listener.
       envoyPluginInterface().bootstrappedSession.file = undefined;
-      const second = createPi();
+      const second = await createPi();
       legionExtension(second.pi);
       await startOperatorController(second, first.context("ses_controller_second"));
       replaced = true;
@@ -6871,7 +6871,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       envoyPluginInterface().bootstrappedSession.file = undefined;
       const requestsBeforeResume = first.requests.length;
 
-      const resumed = createPi();
+      const resumed = await createPi();
       legionExtension(resumed.pi);
       const context = first.context("ses_controller_first");
       const { notices } = await startRefusedController(resumed, {
@@ -7238,7 +7238,7 @@ describe.skipIf(skip)("the recreated-workspace notice", () => {
   // launcher sets it, beside the role variables, and pi-legion is inert outside a Legion session.
   test("a session that is no Legion session saves no notice", async () => {
     process.env.LEGION_WORKSPACE_RECREATED = "true";
-    const fixture = createPi({ bindEnvoy: false });
+    const fixture = await createPi({ bindEnvoy: false });
     legionExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_person"));
     expect(fixture.sentMessages).toEqual([]);
@@ -7541,7 +7541,7 @@ describe("the model fallback", () => {
   // Legion role's, and an entry of this plugin's in its transcript is one nothing there asked
   // for.
   test("a person's own session on a fallback takes no arming of this plugin's", async () => {
-    const fixture = createPi({ bindEnvoy: false });
+    const fixture = await createPi({ bindEnvoy: false });
     legionExtension(fixture.pi);
     const sessionStart = fixture.handlers.get("session_start");
     if (sessionStart === undefined) throw new Error("session_start handler was not registered");

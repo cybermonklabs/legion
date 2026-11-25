@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // takeOverRoute is a listener route a take-over listener's script names: the registry read, the
@@ -189,12 +190,13 @@ func TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce(t *testing.T) {
 		envoyURL: listener.server.URL, envoyTimeout: 300 * time.Millisecond, takeoverWindow: 3 * time.Second,
 	})
 
-	lateAnswer := func(l *takeOverListener, w http.ResponseWriter, _ *http.Request, send resumeSend) {
-		// The listener publishes before it answers, and this answer misses the client's window.
+	lateAnswer := func(l *takeOverListener, w http.ResponseWriter, r *http.Request, send resumeSend) {
+		// The listener publishes before it answers, and answers only once the client has given up
+		// on the call, so this answer misses the client's window however late its timer fires.
 		l.mu.Lock()
 		l.sends = append(l.sends, send)
 		l.mu.Unlock()
-		time.Sleep(600 * time.Millisecond)
+		<-r.Context().Done()
 		_, _ = w.Write([]byte(`{"event_id":"takeover-late","recipient":"s1"}`))
 	}
 	for _, tc := range []struct {
@@ -277,12 +279,18 @@ func TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce(t *testing.T) {
 	}
 }
 
-// With no listener configured there is no take-over to wait out: the send settles failed at once,
-// well inside the production window the server runs.
-func TestASendWithNoListenerConfiguredSettlesAtOnce(t *testing.T) {
+// With no listener configured there is no take-over to wait out: the send settles on its first
+// try, failed with the failure no take-over ends (retryableDeliveryFailure), and the sender never
+// waits out a backoff of the production window the server runs. A sender tries again only after
+// such a backoff, and only once it has renewed its claim of the attempt (takeoverRetry.retry,
+// renewMessageDeliveryClaim), so the claims written on the attempt are its tries: one, the claim
+// it took before its first try, with no renewal. It says nothing of how soon that try runs: the
+// product records the attempt's times but states no bound on how soon an attempt with no listener
+// settles, so a delay before the first try is not this test's to see.
+func TestASendWithNoListenerConfiguredSettlesOnItsFirstTry(t *testing.T) {
 	t.Parallel()
-	handler, _, _ := newTestServer(t, testServerOptions{takeoverWindow: listenerTakeoverWindow})
-	started := time.Now()
+	handler, database, _ := newTestServer(t, testServerOptions{takeoverWindow: listenerTakeoverWindow})
+	claims := countAttemptClaims(t, database)
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/agents/s1/messages",
 		map[string]any{"body": "Nobody listens", "delivery": "steer"}, "alice")
 	if response.Code != http.StatusCreated {
@@ -292,8 +300,48 @@ func TestASendWithNoListenerConfiguredSettlesAtOnce(t *testing.T) {
 	if len(message.Deliveries) != 1 || message.Deliveries[0].State != "failed" {
 		t.Fatalf("deliveries = %#v, want attempt 1 failed", message.Deliveries)
 	}
-	if took := time.Since(started); took > 3*time.Second {
-		t.Fatalf("the send took %v to fail, want it settled at once: no listener is no take-over", took)
+	failure := message.Deliveries[0].Error
+	if failure == nil {
+		t.Fatalf("attempt 1 failed with no error recorded, want %q", listenerNotConfiguredText)
+	}
+	if *failure != listenerNotConfiguredText || retryableDeliveryFailure(*failure) {
+		t.Fatalf("attempt 1 failed with %q, want %q, which no take-over ends: no listener is no take-over", *failure, listenerNotConfiguredText)
+	}
+	if tries := claims(); tries != 1 {
+		t.Fatalf("the sender claimed its attempt %d times, want once: each claim after the first is a try after a take-over's backoff, and no listener is no take-over", tries)
+	}
+}
+
+// countAttemptClaims has database count every claim written on a targeted message's attempt, a
+// write of message_deliveries.claimed_at that sets it - a sender's claim before its first try
+// (recordPendingMessageDelivery) and its renewal before each try after a take-over's backoff
+// (renewMessageDeliveryClaim) - with a trigger of the test's own, and answers the function that
+// reads how many it has counted. A try runs only under a claim, so the count is the tries the
+// senders made, however their last try ended.
+func countAttemptClaims(t *testing.T, database *store.Store) func() int {
+	t.Helper()
+	for _, statement := range []string{
+		`create table dispatch_test_attempt_claims (attempt int not null)`,
+		`create function dispatch_test_count_attempt_claim() returns trigger language plpgsql as $$
+		begin
+			insert into dispatch_test_attempt_claims (attempt) values (new.attempt);
+			return null;
+		end
+		$$`,
+		`create trigger dispatch_test_count_attempt_claim after insert or update of claimed_at on message_deliveries
+			for each row when (new.claimed_at is not null) execute function dispatch_test_count_attempt_claim()`,
+	} {
+		if _, err := database.Pool.Exec(context.Background(), statement); err != nil {
+			t.Fatalf("count the claims of message attempts: %v", err)
+		}
+	}
+	return func() int {
+		t.Helper()
+		var claims int
+		if err := database.Pool.QueryRow(context.Background(), `select count(*) from dispatch_test_attempt_claims`).Scan(&claims); err != nil {
+			t.Fatalf("read the claims of message attempts: %v", err)
+		}
+		return claims
 	}
 }
 
@@ -370,20 +418,19 @@ func TestASenderWaitingOutAListenerTakeOverRenewsItsClaimBeforeEachTry(t *testin
 				handler.ServeHTTP(response, request)
 				answered <- response
 			}()
-			// Two tries the sender made while holding the attempt.
-			deadline := time.Now().Add(10 * time.Second)
-			for {
+			// Two tries the sender made while holding the attempt. A direct message's request that
+			// answered first settled without them, and no try is left to come. A mention's request
+			// answers its attempt pending once it commits, and its lane's tries come after, so its
+			// answer says nothing about them.
+			testwait.UntilPolling(t, 20*time.Millisecond, "two tries of the sender that found its attempt held (the tries seen)", func() (int, bool) {
 				claimsMu.Lock()
 				seen := len(claims)
 				claimsMu.Unlock()
-				if seen >= 2 {
-					break
+				if seen < 2 && !tc.answersPending && len(answered) > 0 {
+					t.Fatalf("the request answered after %d tries holding its attempt, want 2 during the take-over", seen)
 				}
-				if time.Now().After(deadline) {
-					t.Fatalf("the sender made %d tries holding its attempt within 10s of the take-over, want 2", seen)
-				}
-				time.Sleep(20 * time.Millisecond)
-			}
+				return seen, seen >= 2
+			})
 
 			// The attempt is old enough for the delivery sweep, and only its live claim keeps it
 			// the waiting sender's.
@@ -405,12 +452,7 @@ func TestASenderWaitingOutAListenerTakeOverRenewsItsClaimBeforeEachTry(t *testin
 			}
 
 			listener.refuse(false)
-			var response *httptest.ResponseRecorder
-			select {
-			case response = <-answered:
-			case <-time.After(15 * time.Second):
-				t.Fatal("the request never answered after the take-over ended")
-			}
+			response := testwait.Receive(t, "the request's answer once the take-over ended", answered)
 			if response.Code != http.StatusCreated {
 				t.Fatalf("send: status=%d body=%s", response.Code, response.Body.String())
 			}

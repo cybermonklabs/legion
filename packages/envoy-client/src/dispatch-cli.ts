@@ -254,6 +254,8 @@ export async function runDispatchCli(
   }
   // `dispatch login` logs the machine in, before any session of it exists: a person runs it in a
   // terminal, so it reads no host, no session and no envoy.json (`dispatch-commands/login.ts`).
+  // It refuses while either token file is set, after its own `--help`; `tokenFilesTarget` in
+  // `dispatch-config.ts` says when a call below runs on the files.
   if (argv[0] === "login") {
     return await loginCommand(argv.slice(1), env, {
       print,
@@ -373,7 +375,13 @@ export async function runDispatchCli(
     const settings =
       file.path === null
         ? null
-        : sessionDispatchSettings(file, env, { cwd: io.cwd, session: sessionId }).dispatch;
+        : (
+            await sessionDispatchSettings(file, env, {
+              cwd: io.cwd,
+              session: sessionId,
+              tokenFiles: true,
+            })
+          ).dispatch;
     const { problems } = await checkDispatchCall({
       tool: parsed.tool,
       args: parsed.args,
@@ -391,10 +399,12 @@ export async function runDispatchCli(
     return refuse(`dispatch: ${file.error}`, USAGE, parsed.tool);
   }
   // The session this call acts as is the session a broker trade writes under, so the token this
-  // call presents names it rather than naming none or another of this machine's.
-  const { dispatch: resolution, warnings } = sessionDispatchSettings(file, env, {
+  // call presents names it rather than naming none or another of this machine's. The command is
+  // the one caller that takes the token files (`tokenFilesTarget`, dispatch-config.ts).
+  const { dispatch: resolution, warnings } = await sessionDispatchSettings(file, env, {
     cwd: io.cwd,
     session: sessionId,
+    tokenFiles: true,
   });
   // A call whose whole output is one JSON object (`printsJson`) prints the CLI's own lines on
   // standard error, so its standard output is the object alone.
@@ -552,7 +562,7 @@ export async function runDispatchCli(
   let topics: Promise<readonly string[] | null> | undefined;
   const readTopics = async (): Promise<readonly string[] | null> => {
     try {
-      const envoy = sessionEnvoySettings(file, env, {
+      const envoy = await sessionEnvoySettings(file, env, {
         cwd: io.cwd,
         nats: false,
         session: sessionId,

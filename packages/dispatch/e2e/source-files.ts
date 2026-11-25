@@ -1,12 +1,12 @@
-/** The one recursive walk the suite's two source scans read their files with: `suiteFiles` of
- *  `e2e/fixed-waits.ts` and `specFiles` of `e2e/no-browser-rows.ts`.
+/** The one recursive walk that the suite's source scans read their files with. A new scan of
+ *  the suite's own files calls `sourceFiles` here rather than writing a walk of its own.
  *
- * The two differ in which directories they go down and which names they keep, and in nothing
+ * The scans differ in which directories they go down and which names they keep, and in nothing
  * else, so each passes its own pair of predicates and the walk itself is written once here. It
- * is a module of its own rather than a function either scan exports, because neither should
- * have to import the other: `e2e/fixed-waits.ts` reads the file system and is otherwise pure
- * over its arguments, so any process may call it, and `e2e/no-browser-rows.ts` builds a
- * `ts.Program`.
+ * is a module of its own rather than a function one scan exports, because no scan should have
+ * to import another: a scan that reads only the file system stays pure over its arguments, so
+ * any process may call it, and a scan that builds a `ts.Program` loads TypeScript, which the
+ * others need not load.
  *
  * This module reads directories and nothing else: no environment, no network and no server.
  */

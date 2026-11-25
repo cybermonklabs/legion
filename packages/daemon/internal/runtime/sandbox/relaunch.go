@@ -405,6 +405,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			if s, err = r.annotate(bounded, s, map[string]*string{secretsReleasedAnnotation: nil}); err != nil {
 				return fail("remove the release's record that its secrets are deleted", err)
 			}
+			r.forgetTaken(s.Name)
 		}
 		if err := l.kind.provision(bounded, r, &l, s); err != nil {
 			return runtime.Locator{}, fmt.Errorf("launch %s: %w", spec.Claim, boundRanOut(ctx, bounded, r.launchBound, err))

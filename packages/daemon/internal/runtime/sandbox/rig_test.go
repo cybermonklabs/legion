@@ -677,6 +677,95 @@ func (h hookedSandboxes) Get(ctx context.Context, name string, opts metav1.GetOp
 	return u, err
 }
 
+// withHeldSandboxEvents holds the runtime's Sandbox watch at the first event hold picks until
+// release is closed, and every event behind it with it, as a watch the API server is slow to
+// deliver holds them: meanwhile the API answers the write that event carries and the runtime's
+// store still holds the Sandbox as it last heard of it. Only the informers' watch goes through it;
+// every request reads the tracker.
+func withHeldSandboxEvents(release <-chan struct{}, hold func(watch.Event) bool) rigOption {
+	return func(g *rig, _ *Options) {
+		g.dyn.PrependWatchReactor("sandboxes", func(a k8stesting.Action) (bool, watch.Interface, error) {
+			inner, err := sandboxTrackerWatch(g, a)
+			if err != nil {
+				return true, nil, err
+			}
+			return true, holdEvents(inner, release, hold), nil
+		})
+	}
+}
+
+// sandboxTrackerWatch is the tracker's watch of Sandboxes for the informers' watch action a, with
+// the list options a carries: the watch a reactor that reshapes the informers' feed wraps.
+func sandboxTrackerWatch(g *rig, a k8stesting.Action) (watch.Interface, error) {
+	var opts metav1.ListOptions
+	if w, ok := a.(k8stesting.WatchActionImpl); ok {
+		opts = w.ListOptions
+	}
+	return g.dyn.Tracker().Watch(sandboxGVR, a.GetNamespace(), opts)
+}
+
+// heldDeletion picks a Sandbox's deletion (withHeldSandboxEvents).
+func heldDeletion(event watch.Event) bool { return event.Type == watch.Deleted }
+
+// heldReleaseRecord picks the write of a release's record that a kept Sandbox's Secrets are
+// deleted (withHeldSandboxEvents, secretsReleasedAnnotation).
+func heldReleaseRecord(event watch.Event) bool {
+	u, ok := event.Object.(*unstructured.Unstructured)
+	return ok && event.Type == watch.Modified && recordsRelease(u, u.GetUID())
+}
+
+// heldEvents is a watch whose events are inner's, in inner's order, the first event hold picks and
+// every one after it held until release is closed (withHeldSandboxEvents). inner is read at once
+// into a queue, so the tracker's bounded fake watcher never fills while the events wait.
+type heldEvents struct {
+	inner   watch.Interface
+	events  chan watch.Event
+	done    chan struct{}
+	stopped sync.Once
+}
+
+func holdEvents(inner watch.Interface, release <-chan struct{}, hold func(watch.Event) bool) *heldEvents {
+	h := &heldEvents{inner: inner, events: make(chan watch.Event), done: make(chan struct{})}
+	queue := make(chan watch.Event, 1<<12)
+	go func() {
+		defer close(queue)
+		for event := range inner.ResultChan() {
+			select {
+			case queue <- event:
+			case <-h.done:
+				return
+			}
+		}
+	}()
+	go func() {
+		defer close(h.events)
+		for event := range queue {
+			if hold(event) {
+				select {
+				case <-release:
+				case <-h.done:
+					return
+				}
+			}
+			select {
+			case h.events <- event:
+			case <-h.done:
+				return
+			}
+		}
+	}()
+	return h
+}
+
+func (h *heldEvents) ResultChan() <-chan watch.Event { return h.events }
+
+func (h *heldEvents) Stop() {
+	h.stopped.Do(func() {
+		close(h.done)
+		h.inner.Stop()
+	})
+}
+
 func newRig(t *testing.T, objects []k8sruntime.Object, options ...rigOption) *rig {
 	t.Helper()
 	ctx, stop := context.WithCancel(context.Background())
@@ -1531,11 +1620,7 @@ func modePatched(t *testing.T, body, mode string) bool {
 func withLaggingSandboxInformer(delay time.Duration) rigOption {
 	return func(g *rig, _ *Options) {
 		g.dyn.PrependWatchReactor("sandboxes", func(a k8stesting.Action) (bool, watch.Interface, error) {
-			var opts metav1.ListOptions
-			if w, ok := a.(k8stesting.WatchActionImpl); ok {
-				opts = w.ListOptions
-			}
-			upstream, err := g.dyn.Tracker().Watch(sandboxGVR, a.GetNamespace(), opts)
+			upstream, err := sandboxTrackerWatch(g, a)
 			if err != nil {
 				return true, nil, err
 			}

@@ -228,6 +228,18 @@ type Runtime struct {
 	// its record would read the same before a strand and after its unstrand; a write for another
 	// issue's name costs a read of this one an Uncertain, answered again a tick later.
 	strandedGen uint64
+	// taken is, by Sandbox name, what one of this runtime's own writes took from a Sandbox before
+	// the informer's store shows it (sandboxTaken): a delete (deleteSandbox, deleteFenced), or a
+	// release's record that it deleted the Secrets of a Sandbox it kept (secretsReleasedAnnotation,
+	// endIssuePod). Each is written once the API has answered the write, while the store still
+	// holds that object as it was before it, and dropped at the first informer event that finds the
+	// store holding the write's outcome or no object of that uid (notify), or by a launch that
+	// takes the release's record off again (forgetTaken). The API answers a write before the watch
+	// carries it to the store, so for a moment the store holds the Sandbox as it was; IssueSandbox
+	// reads this to answer such a Sandbox absent in that gap, so the release of a pod no claim owns
+	// does not release the same pod a second time (INFRA-3149). It names an object by uid, so a
+	// Sandbox made again under the same name answers present. Every read and write under mu.
+	taken map[string]sandboxTaken
 	// occupiedCaches are the cache names RepositoryCache found held by another repository's cache and
 	// has logged, so each is logged once.
 	occupiedCaches map[string]bool
@@ -453,6 +465,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		gitHubDirs: opts.GitHubDirs,
 		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
 		changed: make(chan struct{}), watch: map[claim.Token]runtime.Locator{}, podTurns: map[string]chan struct{}{}, stranded: map[string]string{},
+		taken:       map[string]sandboxTaken{},
 		sessions:    map[claim.Token]launchedSession{},
 		cacheConfig: opts.RepositoryCache, cacheRepositories: opts.CacheRepositories,
 		cacheDial: (&net.Dialer{}).DialContext, occupiedCaches: map[string]bool{}, cacheBearers: map[string]string{},
@@ -691,24 +704,31 @@ func (r *Runtime) synced() bool {
 }
 
 // notify wakes every wait and marks every watched claim whose Sandbox or pod changed for the
-// running Observe. A pod is named after its Sandbox, so one name finds both.
+// running Observe. A pod is named after its Sandbox, so one name finds both. An event of a Sandbox
+// drops what is kept of this runtime's write to that name once the store shows it (dropCaughtUp):
+// the informer writes its store before it hands the event on, so the store read there is never
+// older than the event.
 func (r *Runtime) notify(obj any) {
 	if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
 		obj = tombstone.Obj
 	}
 	var name string
+	var event *unstructured.Unstructured
 	switch o := obj.(type) {
 	case *corev1.Pod:
 		name = o.Name
 	case *corev1.Service:
 		name = o.Name
 	case *unstructured.Unstructured:
-		name = o.GetName()
+		name, event = o.GetName(), o
 	default:
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if event != nil {
+		r.dropCaughtUp(name, event)
+	}
 	close(r.changed)
 	r.changed = make(chan struct{})
 	if r.observer == nil {
@@ -1382,7 +1402,8 @@ func (r *Runtime) controllerOwned(ctx context.Context, name string) (bool, error
 }
 
 // deleteFenced deletes s once, fenced to the object the caller read, and
-// forgets its launchers' credentials. Its caller holds the pod's launch turn.
+// forgets its launchers' credentials and keeps that this runtime's delete
+// took it (noteTaken). Its caller holds the pod's launch turn.
 // One already gone is gone; a conflict keeps its replacement for the next
 // orphan sweep. Deletion is foreground, so a Sandbox and the volume it owns
 // remain until garbage collection has removed the volume. The session-volume
@@ -1399,9 +1420,11 @@ func (r *Runtime) deleteFenced(ctx context.Context, s *sandbox, msg string, attr
 	switch {
 	case err == nil:
 		r.forgetLauncherCredentials(name)
+		r.noteTaken(name, sandboxTaken{uid: uid})
 		r.log.Info(msg, append([]any{"sandbox", name, "uid", uid}, attrs...)...)
 	case apierrors.IsNotFound(err):
 		r.forgetLauncherCredentials(name)
+		r.noteTaken(name, sandboxTaken{uid: uid})
 	case apierrors.IsConflict(err):
 		r.log.Info("sandbox runtime: kept a sandbox written since its delete was decided; the orphan sweep decides it again",
 			append([]any{"sandbox", name, "uid", uid, "error", err}, attrs...)...)
