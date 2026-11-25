@@ -15,6 +15,7 @@ import (
 // nothing of the code (fenceEndsEmptyAttr, lines.go). Keeping it would store a trailing line feed
 // a person never wrote and render a blank line into the block.
 func TestAFencedBlockEndingAtTheDocumentsOwnWhitespaceLineHoldsNoneOfIt(t *testing.T) {
+	t.Parallel()
 	doc, err := ParseForWrite("  ~~~\nx\n ", nil)
 	if err != nil {
 		t.Fatalf("write: %v", err)
@@ -44,6 +45,7 @@ func TestAFencedBlockEndingAtTheDocumentsOwnWhitespaceLineHoldsNoneOfIt(t *testi
 // Each document below holds its line in the code, and the item the typed block stands in is
 // tight, as that parser reads it; the fenced form is first, then the indented one.
 func TestCodesHeldLinesInATypedBlockSpaceNoItem(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct{ name, markdown string }{
 		{"a fenced block ending at the document's own whitespace line", "-\n\n- a\n  :::callout{#c1 kind=\"note\" title=\"T\"}\n  ```\n  x\n\t"},
 		{"indented code holding a whitespace line", "-\n\n- a\n  :::callout{#c1 kind=\"note\" title=\"T\"}\n      code\n      \n  :::\n"},

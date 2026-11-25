@@ -14,13 +14,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// stopLimit is how long the shim may take to return once its context ends. The whole stop is the
-// command's SIGTERM to its process group, the moment the group needs to go, the agent's own
-// SIGTERM and its exit: tens of milliseconds, with the rest for a loaded machine. The requests
-// below carry a budget far past it (farBudget), counted from when the shim reads the request, so a
-// command still running when the shim is stopped can only be one the stop did not reach, however
-// long a loaded machine took to start the command's group before the stop.
-const stopLimit = 5 * time.Second
+// commandBudget is the budget the requests below carry. It ends a minute past the moment every
+// wait of the test gives up (testwait.Remaining), so no command here is ended by its budget while
+// the test waits: a jj that records SIGTERM was signalled by the stop, and a shim that returns did
+// not wait out the budget. A jj the stop did not reach runs until the test's cleanup releases it
+// (hangingJJ), so it does not outlive its test.
+func commandBudget(t *testing.T) time.Duration { return testwait.Remaining(t) + time.Minute }
 
 // A shim command ends with the shim itself. Under the tmux runtime a `kill-pane` gives every
 // process of the pane SIGHUP (internal/runtime/tmux's stop), and the jj of a read or an adoption
@@ -73,33 +72,29 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 			workspace: func(t *testing.T) string { return t.TempDir() },
 			request: shimwire.AdoptWorkingCopy{
 				ID: "adopt-1", JJUser: "legion-implementer[bot]", JJEmail: "implementer@example.test",
-				TimeoutMs: farBudget(t),
+				TimeoutMs: int(commandBudget(t).Milliseconds()),
 			},
 		},
 		{
 			name:      "the workspace read",
 			workspace: func(t *testing.T) string { return t.TempDir() },
 			request: shimwire.WorkspaceWork{
-				ID: "read-1", Issue: workIssue, TimeoutMs: farBudget(t),
+				ID: "read-1", Issue: workIssue, TimeoutMs: int(commandBudget(t).Milliseconds()),
 			},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, _, record, _ := shimRunningACommand(t, tc.workspace(t), tc.request)
 
-			started := time.Now()
 			r.cancel()
-			select {
-			case <-r.done:
-			case <-time.After(stopLimit):
-				t.Fatalf("the shim was still running %v after its stop: its jj outlives the stop and ends only at the request's own budget, far past it; log:\n%s",
-					stopLimit, r.log)
-			}
-			t.Logf("the shim returned %v after its stop", time.Since(started))
+			// A jj the stop did not reach would end only at the request's own budget, and the shim
+			// waits for its commands before it returns.
+			r.awaitExit(t)
 			for _, want := range []string{"the jj caught SIGTERM\n", "its child caught SIGTERM\n"} {
-				if !testwait.Holds(stopLimit, testwait.Poll, func() bool { return strings.Contains(recorded(t, record), want) }) {
-					t.Errorf("the request's jj recorded\n%swant a line %q: the stop signals the command's whole process group", recorded(t, record), want)
-				}
+				testwait.Until(t, "the request's jj to record "+strings.TrimSpace(want)+": the stop signals the command's whole process group", func() (string, bool) {
+					got := recorded(t, record)
+					return "recorded: " + got, strings.Contains(got, want)
+				})
 			}
 		})
 	}
@@ -107,18 +102,13 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 	t.Run("the daemon's shutdown, which reaches the shim as a frame and not as a signal", func(t *testing.T) {
 		r, p, record, _ := shimRunningACommand(t, t.TempDir(), shimwire.AdoptWorkingCopy{
 			ID: "adopt-2", JJUser: "legion-implementer[bot]", JJEmail: "implementer@example.test",
-			TimeoutMs: farBudget(t),
+			TimeoutMs: int(commandBudget(t).Milliseconds()),
 		})
 
-		started := time.Now()
 		p.send(t, shimwire.Shutdown{})
-		select {
-		case <-r.done:
-		case <-time.After(stopLimit):
-			t.Fatalf("the shim was still running %v after the daemon's shutdown: its jj outlives that stop and ends only at the request's own budget, far past it; log:\n%s",
-				stopLimit, r.log)
-		}
-		t.Logf("the shim returned %v after the daemon's shutdown", time.Since(started))
+		// A jj that outlived that stop would end only at the request's own budget, and the shim
+		// waits for its commands before it returns.
+		r.awaitExit(t)
 		for _, want := range []string{"the jj caught SIGTERM\n", "its child caught SIGTERM\n"} {
 			if !strings.Contains(recorded(t, record), want) {
 				t.Errorf("the request's jj recorded\n%swant a line %q by the time the shim returned: the stop of the command's whole process group is this process's own to send, and after it has returned there is nobody left to send it",
@@ -135,10 +125,9 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 		// SIGTERM this case reads and well past the step below that reads the bound.
 		r, p, record, clock := shimRunningACommand(t, t.TempDir(), shimwire.AdoptWorkingCopy{
 			ID: "adopt-3", JJUser: "legion-implementer[bot]", JJEmail: "implementer@example.test",
-			TimeoutMs: farBudget(t),
+			TimeoutMs: int(commandBudget(t).Milliseconds()),
 		}, "FAKE_OMP_IGNORE_SIGTERM=1", "HANGING_JJ_IGNORE_SIGTERM=1")
 
-		started := time.Now()
 		p.send(t, shimwire.Shutdown{})
 		p.expectRaw(t, "fake_sigterm")
 		// terminate ends the commands the daemon asked for before it signals the agent, so every
@@ -149,15 +138,14 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 		// the next step of this test, so everything read before it happened while the agent ran.
 		expired := clock.next(t, grace)
 		for _, want := range []string{"the jj caught SIGTERM\n", "its child caught SIGTERM\n"} {
-			if !testwait.Holds(stopLimit, testwait.Poll, func() bool { return strings.Contains(recorded(t, record), want) }) {
-				t.Errorf("the request's jj recorded\n%swant a line %q while the agent was still in its grace: the command is ended when the agent is told to stop, not when it has been reaped, and the whole of that grace is time its jj would otherwise spend against the clone every role of the issue shares; log:\n%s",
-					recorded(t, record), want, r.log)
-			}
+			testwait.Until(t, "the request's jj to record "+strings.TrimSpace(want)+" while the agent is still in its grace: the command is ended when the agent is told to stop, not when it has been reaped", func() (string, bool) {
+				got := recorded(t, record)
+				return "recorded: " + got + "; log: " + r.log.String(), strings.Contains(got, want)
+			})
 		}
 		if r.exited() {
 			t.Fatalf("the shim returned before the agent's grace ran out; log:\n%s", r.log)
 		}
-		t.Logf("the jj's record was read %v after the daemon's shutdown, with the agent still in its %v grace and not yet killed", time.Since(started), grace)
 
 		ended := time.Since(terminated)
 		expired.elapse()
@@ -177,11 +165,7 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 				drain.d, left, span, ended, r.log)
 		}
 		drain.elapse()
-		select {
-		case <-r.done:
-		case <-time.After(stopLimit):
-			t.Fatalf("the shim was still running %v after the agent was killed at the end of its grace; log:\n%s", stopLimit, r.log)
-		}
+		r.awaitExit(t)
 		// The drain's bound ran out with the command's jj still ignoring its SIGTERM, so the shim
 		// left it running, and the pane's last lines are where a person reads that it did.
 		if n := r.log.count("a command the daemon asked for is still running"); n != 1 {
@@ -192,7 +176,7 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 	t.Run("the daemon's shutdown, with the commands' whole stop span spent inside the agent's grace", func(t *testing.T) {
 		r, p, _, clock := shimRunningACommand(t, t.TempDir(), shimwire.AdoptWorkingCopy{
 			ID: "adopt-4", JJUser: "legion-implementer[bot]", JJEmail: "implementer@example.test",
-			TimeoutMs: farBudget(t),
+			TimeoutMs: int(commandBudget(t).Milliseconds()),
 		}, "FAKE_OMP_IGNORE_SIGTERM=1")
 
 		p.send(t, shimwire.Shutdown{})
@@ -227,11 +211,7 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 			time.Sleep(left)
 		}
 		clock.next(t, grace).elapse()
-		select {
-		case <-r.done:
-		case <-time.After(stopLimit):
-			t.Fatalf("the shim was still running %v after the agent was killed at the end of its grace; log:\n%s", stopLimit, r.log)
-		}
+		r.awaitExit(t)
 
 		// Run has returned, so every wait it took is on the clock by now: a drain whose commands
 		// have all returned takes none, and a wait of 0 — which is the whole of the bound left

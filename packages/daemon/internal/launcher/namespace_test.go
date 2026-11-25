@@ -220,14 +220,16 @@ func TestPIDOneLauncherReapsOrphansWhileRoleStaysResident(t *testing.T) {
 	g := namespaceRig(t, 2*time.Second)
 	marker := filepath.Join(t.TempDir(), "orphan")
 	resultFile := filepath.Join(t.TempDir(), "reaped")
+	// The role waits for the orphan to be reaped rather than for a count of its own: a loop of
+	// 500 × 0.01 s read a slow machine as a launcher that never reaped (the orphan still there
+	// after 5 s), and the wait for the marker this writes is the test binary's own
+	// (published → beforeDeadline). A launcher that never reaps leaves the marker unwritten, and
+	// that wait fails by name.
 	script := `/bin/sh -c '/usr/bin/setsid /bin/sh -c '\''/bin/sleep 0.1; printf "%s ready\n" "$$" > "$ORPHAN"; exit 0'\'' &' 
 while [ ! -s "$ORPHAN" ]; do /bin/sleep 0.01; done
 read pid unused < "$ORPHAN"
-for n in $(/usr/bin/seq 1 500); do
-  if ! kill -0 "$pid" 2>/dev/null; then printf '1 gone\n' > "$RESULT"; exec /bin/sleep 600; fi
-  /bin/sleep 0.01
-done
-printf '1 zombie\n' > "$RESULT"
+while kill -0 "$pid" 2>/dev/null; do /bin/sleep 0.01; done
+printf '1 gone\n' > "$RESULT"
 exec /bin/sleep 600
 `
 	if result := g.start(shimwire.LauncherStart{ID: "resident", Generation: 1, Argv: []string{"/bin/sh", "-c", script},
@@ -263,16 +265,14 @@ while :; do /bin/sleep 600 & wait; done
 			}
 			published(t, ready)
 			g.cancel()
-			select {
-			case err, ok := <-g.result:
-				if !ok {
-					t.Fatal("the launcher's result was taken before this test read it")
-				}
-				if err != nil {
-					t.Fatalf("launcher exit: %v", err)
-				}
-			case <-time.After(5 * time.Second):
-				t.Fatal("launcher exceeded its shutdown budget")
+			// No span of the case's own on the launcher's exit, as namespaceRig's cleanup has none: a
+			// launcher that does not stop after its context ended is ended by its own -test.timeout
+			// (reentry), and this read then takes that exit's error. A fixed 5 s read a slow
+			// machine's shutdown as a launcher over its budget.
+			if err, ok := <-g.result; !ok {
+				t.Fatal("the launcher's result was taken before this test read it")
+			} else if err != nil {
+				t.Fatalf("launcher exit: %v", err)
 			}
 			body, err := os.ReadFile(finished)
 			if tc.graceful {

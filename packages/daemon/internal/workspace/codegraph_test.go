@@ -12,8 +12,10 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/envlisting"
@@ -138,16 +140,12 @@ esac
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	dir := t.TempDir()
 
-	returned := make(chan struct{})
-	go func() {
+	// The stub holds its init until the release below, so a call that waited on the build never
+	// returns and this wait fails.
+	testwait.Receive(t, "WarmCodegraphIndexInBackground to return while codegraph init still runs", inFlight(func() struct{} {
 		WarmCodegraphIndexInBackground(dir)
-		close(returned)
-	}()
-	select {
-	case <-returned:
-	case <-time.After(time.Second):
-		t.Fatal("WarmCodegraphIndexInBackground blocked for over 1s; it must return at once")
-	}
+		return struct{}{}
+	}))
 	waitFor(t, func() bool {
 		calls, _ := os.ReadFile(callLog)
 		return strings.Contains(string(calls), "init")
@@ -169,12 +167,12 @@ esac
 	}
 }
 
-// waitFor waits for done, asking every 20 ms, within a minute or what is left of the test binary's
-// deadline less a second when that is sooner (testwait.Bounded): what each caller waits for is a
-// process or a heartbeat a loaded machine can make slow, and no caller's span is what it tests.
+// waitFor waits for done until the test binary's deadline (testwait.Eventually): what each caller
+// waits for is a process or a heartbeat a loaded machine can make slow, and no caller's span is
+// what it tests.
 func waitFor(t *testing.T, done func() bool, what string) {
 	t.Helper()
-	testwait.WithinPolling(t, testwait.Bounded(t, time.Minute, time.Second), 20*time.Millisecond, what, done)
+	testwait.Eventually(t, what, done)
 }
 
 // TestWarmCodegraphIndexNeverFailsWhenTheCliIsMissing proves the acceptance criterion directly:
@@ -851,67 +849,76 @@ func TestAStalledHoldersReleaseLeavesItsSuccessorsLeaseAtTheSameInode(t *testing
 // The heartbeat knows its lease by the token it wrote, as the release does: the first tick that
 // reads the successor's token ends it, and the successor's lease ages as if the stalled holder
 // were gone. The control comes first: a heartbeat on its own lease does move the mtime forward.
+// The row runs in a synctest bubble, whose clock the heartbeat's ticker and every mtime it writes
+// read, and which does no network I/O: each sleep is a known number of ticks, and synctest.Wait
+// returns once the heartbeat has handled them. The heartbeat is also released by a cleanup of the
+// bubble (sync.OnceFunc, since release closes its stop), which runs inside the bubble before
+// synctest.Test returns: a row that fails before its own release ends with its heartbeat stopped,
+// not with the runtime's panic for a bubble whose blocked goroutines outlive its main one, which
+// would end the package's test binary and every row after this one.
 func TestAStalledHoldersHeartbeatLeavesItsSuccessorsLeaseAtTheSameInode(t *testing.T) {
-	dir := t.TempDir()
-	lease := filepath.Join(dir, ".codegraph", warmLeaseName)
-	if err := os.Mkdir(filepath.Dir(lease), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	const heartbeat = 10 * time.Millisecond
-	past := time.Now().Add(-30 * time.Second)
-	if err := os.WriteFile(lease, []byte("A"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chtimes(lease, past, past); err != nil {
-		t.Fatal(err)
-	}
-	release := holdWarmLease(lease, "A", heartbeat)
-	waitFor(t, func() bool {
-		info, err := os.Stat(lease)
-		return err == nil && info.ModTime().After(past)
-	}, "A's heartbeat to refresh its own lease")
+	synctest.Test(t, func(t *testing.T) {
+		dir := t.TempDir()
+		lease := filepath.Join(dir, ".codegraph", warmLeaseName)
+		if err := os.Mkdir(filepath.Dir(lease), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		past := time.Now().Add(-30 * time.Second)
+		if err := os.WriteFile(lease, []byte("A"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(lease, past, past); err != nil {
+			t.Fatal(err)
+		}
+		release := sync.OnceFunc(holdWarmLease(lease, "A", warmLeaseHeartbeat))
+		t.Cleanup(release)
+		time.Sleep(warmLeaseHeartbeat)
+		synctest.Wait()
+		if info, err := os.Stat(lease); err != nil || !info.ModTime().After(past) {
+			t.Fatalf("A's lease after a tick of its own heartbeat: %v (%v), want its mtime past %s", info, err, past)
+		}
 
-	// A stalls past the stale threshold and B takes over: B's fresh lease at the path, another
-	// token in it, the inode A's file had. Its mtime is then set 30 s back, so the only thing
-	// that could bring it forward is A's heartbeat refreshing a lease that is not its own.
-	kept := lease + ".kept"
-	for _, err := range []error{os.Link(lease, kept), os.Remove(lease), os.Link(kept, lease), os.Remove(kept)} {
+		// A stalls past the stale threshold and B takes over: B's fresh lease at the path, another
+		// token in it, the inode A's file had. Its mtime is then set 30 s back, so the only thing
+		// that could bring it forward is A's heartbeat refreshing a lease that is not its own. No
+		// tick runs meanwhile: the heartbeat handled its last one before synctest.Wait returned.
+		kept := lease + ".kept"
+		for _, err := range []error{os.Link(lease, kept), os.Remove(lease), os.Link(kept, lease), os.Remove(kept)} {
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(lease, []byte("the-successors-token"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(lease, past, past); err != nil {
+			t.Fatal(err)
+		}
+		successor, err := os.Stat(lease)
 		if err != nil {
 			t.Fatal(err)
 		}
-	}
-	if err := os.WriteFile(lease, []byte("the-successors-token"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	// A tick that read A's token just before that write may still be about to set the mtime; a
-	// few ticks later every tick has read the successor's token instead and the heartbeat is over.
-	time.Sleep(3 * heartbeat)
-	if err := os.Chtimes(lease, past, past); err != nil {
-		t.Fatal(err)
-	}
-	successor, err := os.Stat(lease)
-	if err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(10 * heartbeat)
-	current, err := os.Stat(lease)
-	if err != nil {
-		t.Fatalf("the successor's lease after ten of the stalled holder's ticks: %v, want it in place", err)
-	}
-	if !os.SameFile(successor, current) {
-		t.Fatal("the lease at the path is not the successor's after the stalled holder's ticks")
-	}
-	if !current.ModTime().Before(time.Now().Add(-20 * time.Second)) {
-		t.Fatalf("the stalled holder's heartbeat refreshed its successor's lease (mtime %s), want it left as old as it was", current.ModTime())
-	}
-	if body, err := os.ReadFile(lease); err != nil || string(body) != "the-successors-token" {
-		t.Fatalf("the successor's lease reads %q (%v) after the stalled holder's ticks, want its token untouched", body, err)
-	}
+		time.Sleep(10 * warmLeaseHeartbeat)
+		synctest.Wait()
+		current, err := os.Stat(lease)
+		if err != nil {
+			t.Fatalf("the successor's lease after ten of the stalled holder's ticks: %v, want it in place", err)
+		}
+		if !os.SameFile(successor, current) {
+			t.Fatal("the lease at the path is not the successor's after the stalled holder's ticks")
+		}
+		if !current.ModTime().Before(past.Add(time.Second)) {
+			t.Fatalf("the stalled holder's heartbeat refreshed its successor's lease (mtime %s), want it left as old as it was, %s", current.ModTime(), past)
+		}
+		if body, err := os.ReadFile(lease); err != nil || string(body) != "the-successors-token" {
+			t.Fatalf("the successor's lease reads %q (%v) after the stalled holder's ticks, want its token untouched", body, err)
+		}
 
-	release()
-	if body, err := os.ReadFile(lease); err != nil || string(body) != "the-successors-token" {
-		t.Fatalf("the successor's lease reads %q (%v) after the stalled holder's release, want it still in place with its token", body, err)
-	}
+		release()
+		if body, err := os.ReadFile(lease); err != nil || string(body) != "the-successors-token" {
+			t.Fatalf("the successor's lease reads %q (%v) after the stalled holder's release, want it still in place with its token", body, err)
+		}
+	})
 }
 
 // TestALiveHoldersHeartbeatOutlivesAnUnreadableLease: a tick that cannot read the lease must not
@@ -920,49 +927,58 @@ func TestAStalledHoldersHeartbeatLeavesItsSuccessorsLeaseAtTheSameInode(t *testi
 // six missed heartbeats before a lease is stale (warmLeaseStale). A heartbeat ended for good at
 // the first such tick would let a running build's lease age past the minute, a sibling take it
 // over and a second `codegraph init` run on the same workspace. Here the lease is moved away for
-// three ticks and moved back 30 s old: a heartbeat still alive brings its mtime forward again, and
-// the release that follows removes the lease, which carried this holder's token throughout. The
-// control comes first: the heartbeat does refresh the lease before it is moved away.
+// three ticks and moved back 30 s old: a heartbeat still alive brings its mtime forward again at
+// its next tick, and the release that follows removes the lease, which carried this holder's
+// token throughout. The control comes first: the heartbeat does refresh the lease before it is
+// moved away. The row runs in a synctest bubble, and releases its heartbeat in a cleanup of the
+// bubble, as the one above does.
 func TestALiveHoldersHeartbeatOutlivesAnUnreadableLease(t *testing.T) {
-	dir := t.TempDir()
-	lease := filepath.Join(dir, ".codegraph", warmLeaseName)
-	if err := os.Mkdir(filepath.Dir(lease), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	const heartbeat = 10 * time.Millisecond
-	past := time.Now().Add(-30 * time.Second)
-	if err := os.WriteFile(lease, []byte("A"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chtimes(lease, past, past); err != nil {
-		t.Fatal(err)
-	}
-	release := holdWarmLease(lease, "A", heartbeat)
-	refreshed := func() bool {
-		info, err := os.Stat(lease)
-		return err == nil && info.ModTime().After(past)
-	}
-	waitFor(t, refreshed, "A's heartbeat to refresh its own lease")
+	synctest.Test(t, func(t *testing.T) {
+		dir := t.TempDir()
+		lease := filepath.Join(dir, ".codegraph", warmLeaseName)
+		if err := os.Mkdir(filepath.Dir(lease), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		past := time.Now().Add(-30 * time.Second)
+		if err := os.WriteFile(lease, []byte("A"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(lease, past, past); err != nil {
+			t.Fatal(err)
+		}
+		release := sync.OnceFunc(holdWarmLease(lease, "A", warmLeaseHeartbeat))
+		t.Cleanup(release)
+		refreshedAfterATick := func(what string) {
+			t.Helper()
+			time.Sleep(warmLeaseHeartbeat)
+			synctest.Wait()
+			if info, err := os.Stat(lease); err != nil || !info.ModTime().After(past) {
+				t.Fatalf("%s: the lease is %v (%v), want its mtime past %s", what, info, err, past)
+			}
+		}
+		refreshedAfterATick("A's heartbeat on its own lease")
 
-	// The lease is unreadable for three ticks — each finds no file at the path — and then back,
-	// 30 s old again, so the only thing that could bring its mtime forward is A's heartbeat.
-	away := lease + ".away"
-	if err := os.Rename(lease, away); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(3 * heartbeat)
-	if err := os.Rename(away, lease); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chtimes(lease, past, past); err != nil {
-		t.Fatal(err)
-	}
-	waitFor(t, refreshed, "A's heartbeat to refresh its lease again after three ticks that could not read it")
+		// The lease is unreadable for three ticks — each finds no file at the path — and then back,
+		// 30 s old again, so the only thing that could bring its mtime forward is A's heartbeat.
+		away := lease + ".away"
+		if err := os.Rename(lease, away); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(3 * warmLeaseHeartbeat)
+		synctest.Wait()
+		if err := os.Rename(away, lease); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(lease, past, past); err != nil {
+			t.Fatal(err)
+		}
+		refreshedAfterATick("A's heartbeat after three ticks that could not read the lease")
 
-	release()
-	if _, err := os.Stat(lease); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("stat after the release of a lease carrying this holder's token: %v, want it gone", err)
-	}
+		release()
+		if _, err := os.Stat(lease); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("stat after the release of a lease carrying this holder's token: %v, want it gone", err)
+		}
+	})
 }
 
 // TestRefreshWarmLease table-tests the heartbeat's one tick: a lease carrying this holder's token

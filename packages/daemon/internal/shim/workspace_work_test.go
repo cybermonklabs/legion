@@ -186,7 +186,7 @@ func TestAWorkspaceWorkFailureWithAnErrorOverOneLineReachesTheDaemon(t *testing.
 	p.open(t)
 
 	p.send(t, shimwire.WorkspaceWork{ID: "read-2", Issue: workIssue, TimeoutMs: farBudget(t)})
-	got, ok := p.answer(t).(shimwire.WorkspaceWorkResult)
+	got, ok := p.next(t).(shimwire.WorkspaceWorkResult)
 	if !ok || got.ID != "read-2" || got.OK {
 		t.Fatalf("the shim answered %#v, want the refusal of read-2", got)
 	}
@@ -270,7 +270,7 @@ func (f *workFixture) read() shimwire.WorkspaceWorkResult {
 	p := daemon.accept(f.t)
 	p.open(f.t)
 	p.send(f.t, shimwire.WorkspaceWork{ID: "read-1", Issue: workIssue, TimeoutMs: farBudget(f.t)})
-	got, ok := p.answer(f.t).(shimwire.WorkspaceWorkResult)
+	got, ok := p.next(f.t).(shimwire.WorkspaceWorkResult)
 	if !ok || got.ID != "read-1" {
 		f.t.Fatalf("the shim answered %#v, want the result of read-1", got)
 	}

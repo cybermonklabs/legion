@@ -538,15 +538,13 @@ func TestSettlementRecordsMalformedAskAndRepairsIt(t *testing.T) {
 		tree.Children[0].Children[1].Children[0].Children[0].Children = nil
 		return tree
 	})
-	waitFor(t, time.Second, "malformed update persisted", func() bool {
-		var updates int
-		if err := service.store.Pool.QueryRow(context.Background(), `
-			select count(*) from doc_updates where artifact_id = $1
-		`, artifactID).Scan(&updates); err != nil {
-			t.Fatalf("count malformed updates: %v", err)
-		}
-		return updates > 1
-	})
+	// The edit reaches the store as a room append, so the wait is the room's own idle signal and
+	// the count is read once it has landed (docs/testing.md, "A document test that waits for a
+	// room's appends").
+	waitForLandedAppends(t, service, artifactID)
+	if updates := storedUpdateCount(t, service.store, artifactID); updates <= 1 {
+		t.Fatalf("the malformed edit left %d stored updates, want more than the seed's one", updates)
+	}
 	waitForDocumentVersion(t, service.store, artifactID, 3)
 	state := service.room(artifactID)
 	state.mu.Lock()
@@ -595,12 +593,7 @@ func TestSettlementRecordsMalformedAskAndRepairsIt(t *testing.T) {
 		t.Fatalf("malformed-block event = block=%q version=%q reason=%q", eventBlockID, eventVersion, eventReason)
 	}
 
-	var updatesBeforeRepair int
-	if err := service.store.Pool.QueryRow(context.Background(), `
-		select count(*) from doc_updates where artifact_id = $1
-	`, artifactID).Scan(&updatesBeforeRepair); err != nil {
-		t.Fatalf("count updates before repair: %v", err)
-	}
+	updatesBeforeRepair := storedUpdateCount(t, service.store, artifactID)
 	editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
 		tree.Children[0].Children[0].Children[0].Text = "Should we release after review?"
 		tree.Children[0].Children[1].Children[0].Children[0].Children = []*pmdoc.Node{{
@@ -609,15 +602,10 @@ func TestSettlementRecordsMalformedAskAndRepairsIt(t *testing.T) {
 		}}
 		return tree
 	})
-	waitFor(t, time.Second, "repaired update persisted", func() bool {
-		var updates int
-		if err := service.store.Pool.QueryRow(context.Background(), `
-			select count(*) from doc_updates where artifact_id = $1
-		`, artifactID).Scan(&updates); err != nil {
-			t.Fatalf("count repaired updates: %v", err)
-		}
-		return updates > updatesBeforeRepair
-	})
+	waitForLandedAppends(t, service, artifactID)
+	if updates := storedUpdateCount(t, service.store, artifactID); updates <= updatesBeforeRepair {
+		t.Fatalf("the repairing edit left %d stored updates, want more than the %d before it", updates, updatesBeforeRepair)
+	}
 	waitForDocumentVersion(t, service.store, artifactID, 4)
 	if _, exists := liveTree(t, service, artifactID).Children[0].Attrs["invalid"]; exists {
 		t.Fatal("repaired ask still has an invalid attribute")
@@ -5276,8 +5264,9 @@ func TestShutdownDrainsPendingUpdateBeforeSettling(t *testing.T) {
 	if _, err := namedVersion(t, service, artifactID, "checkpoint", model.Actor{Kind: "user", ID: "alice"}); err != nil {
 		t.Fatalf("write named version before shutdown: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+	// Shutdown drains the room's pending update before it settles, which takes as long as the
+	// store and the machine take: the bound is the test binary's deadline, not a span of its own.
+	ctx := testwait.Context(t)
 	if err := service.Shutdown(ctx); err != nil {
 		t.Fatalf("shutdown with pending document update: %v", err)
 	}
@@ -5337,8 +5326,12 @@ func TestImmediateSettlementTimerUnregistersAfterFiring(t *testing.T) {
 	if timer == nil {
 		t.Fatal("immediate settlement did not schedule a timer")
 	}
-	waitFor(t, time.Second, "expired immediate settlement timer to unregister", func() bool {
-		return !service.isSettleTimerArmed(timer)
+	// The settlement's own goroutine unregisters the timer once it has run, which a loaded
+	// machine puts off as it pleases: the wait ends on the register, bounded by the test
+	// binary's deadline alone.
+	testwait.Until(t, "the fired settlement timer to leave the service's register", func() (string, bool) {
+		armed := service.isSettleTimerArmed(timer)
+		return fmt.Sprintf("the timer is armed: %t", armed), !armed
 	})
 }
 
@@ -5490,33 +5483,16 @@ func TestShutdownContextDoesNotWaitForBlockedSettlement(t *testing.T) {
 		t.Fatalf("lock document issue: %v", err)
 	}
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
-	locked := false
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		waiting, err := storetest.CountLockWaits(context.Background(), service.store, "%")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if waiting > 0 {
-			locked = true
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if !locked {
-		t.Fatal("settlement did not wait on the document lock")
-	}
+	waitForDatabaseLock(t, service.store)
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	result := make(chan error, 1)
 	go func() { result <- service.Shutdown(ctx) }()
-	select {
-	case err := <-result:
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("shutdown error = %v, want deadline exceeded", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("shutdown waited on the blocked settlement")
+	// A Shutdown that waited on the blocked settlement would return only when this test's
+	// blocker rolls back, after the test body: the wait for its answer ends on the answer, with
+	// the test binary's deadline as its only bound.
+	if err := testwait.Receive(t, "Shutdown to answer at its own 50 ms deadline", result); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("shutdown error = %v, want deadline exceeded", err)
 	}
 }
 
@@ -5689,31 +5665,36 @@ func TestSettleCapturesAuthorsAtSnapshotTime(t *testing.T) {
 	if err := blocker.Commit(context.Background()); err != nil {
 		t.Fatalf("release document lock: %v", err)
 	}
-	select {
-	case <-settled:
-	case <-time.After(time.Second):
-		t.Fatal("settlement did not complete")
-	}
+	testwait.Receive(t, "the settlement the released lock let through to end", settled)
 	version := waitForDocumentVersion(t, service.store, artifactID, 2)
 	if len(version.Authors) != 2 || version.Authors[0] != first || version.Authors[1] != second {
 		t.Fatalf("settled version authors = %#v, want %v and %v", version.Authors, first, second)
 	}
 }
 
+// waitForDatabaseLock waits until a backend of this test's own database waits on a lock, which
+// is how a settlement held behind another transaction's document lock shows itself. The
+// settlement must warm the room and reach that lock first, which takes as long as the machine
+// takes, so the wait sets no span of its own and the test binary's deadline bounds it.
 func waitForDatabaseLock(t *testing.T, database *store.Store) {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		waiting, err := storetest.CountLockWaits(context.Background(), database, "%")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if waiting > 0 {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
+	testwait.Until(t, "a transaction of the test's database to wait on a lock", func() (string, bool) {
+		return databaseLockWaiters(t, database)
+	})
+}
+
+// databaseLockWaiters reads how many backends of database's own database wait on a lock, as the
+// reading of a wait for one: the tests beside this one hold the same tables and lock keys in
+// databases cloned from one template, so the predicate names this database (docs/testing.md). It
+// reads the wait through lockwaittest (storetest.CountLockWaits), as every lock wait of the three
+// modules is read.
+func databaseLockWaiters(t *testing.T, database *store.Store) (string, bool) {
+	t.Helper()
+	waiting, err := storetest.CountLockWaits(context.Background(), database, "%")
+	if err != nil {
+		t.Fatalf("inspect database locks: %v", err)
 	}
-	t.Fatal("settlement did not wait on the document lock")
+	return fmt.Sprintf("%d transactions wait on a lock", waiting), waiting > 0
 }
 
 // failingOnceVersionedStore fails the first load of the stored document, of either kind: a room's
@@ -6158,18 +6139,17 @@ func persistedProofTree(t *testing.T, database *store.Store, artifactID string) 
 	return tree
 }
 
+// waitForPersistedProofText waits until the document the store holds renders as want. What it
+// waits for is a room append, which queues behind every other room's on the service's
+// room-appends pool, so it sets no span of its own: its bound is the test binary's deadline, and
+// its failure prints the text the store held when it last read (docs/testing.md, "A document
+// test that waits for a room's appends").
 func waitForPersistedProofText(t *testing.T, database *store.Store, artifactID, want string) {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
+	testwait.Until(t, fmt.Sprintf("the stored document to read %q", want), func() (string, bool) {
 		markdown, err := renderTree(persistedProofTree(t, database, artifactID))
-		if err == nil && markdown == want {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	markdown, err := renderTree(persistedProofTree(t, database, artifactID))
-	t.Fatalf("persisted document = %q (%v), want %q", markdown, err, want)
+		return fmt.Sprintf("%q (%v)", markdown, err), err == nil && markdown == want
+	})
 }
 
 // editLiveTree writes a browser-style tree change through the live Yjs room.
@@ -6668,9 +6648,12 @@ func TestQuoteMarkSettlesLegacyTableWithoutCanonicalizing(t *testing.T) {
 		t.Fatalf("mark quote: %v", err)
 	}
 	settleCurrentGeneration(t, service, artifactID)
-	waitFor(t, time.Second, "quote mark removed", func() bool {
+	// The first settlement records the unrecorded mark and re-arms itself for the mark's TTL;
+	// the settlement that timer runs sweeps it, behind the room's appends, so the wait ends on
+	// the swept mark and the test binary's deadline bounds it alone.
+	testwait.Until(t, "the settlement after the mark's TTL to sweep the quote mark", func() (string, bool) {
 		_, _, found := pmdoc.FindMark(liveTree(t, service, artifactID), "proofComment", "mark-1")
-		return !found
+		return fmt.Sprintf("the live document holds the mark: %t", found), !found
 	})
 	assertTableCellPipeVersionAndEventCounts(t, service.store, artifactID, 1, 0)
 }
