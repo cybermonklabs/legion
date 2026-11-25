@@ -116,6 +116,9 @@ type workflowRuntime struct {
 	// totalsRead is plan.totalsRead, a test's seam after each fact's reads (readTotals). nil runs
 	// nothing.
 	totalsRead func(agents []claim.Token, reads workflow.FactReads)
+	// taskConfirmedApplied is plan.taskConfirmedApplied, a test's seam after each confirmation of
+	// a task has been applied (taskConfirmed). nil runs nothing.
+	taskConfirmedApplied func(claim.Token, error)
 	// pauses is the project's pause (projectPause, dispatch://INFRA-3759): the pause service the
 	// API's routes are handed, with the stop transaction, the let-out stamp and the after-commit
 	// steps the machines and the service call. run builds it once this runtime is open and before
@@ -2736,8 +2739,12 @@ func (w *workflowRuntime) taskConfirmed(c supervise.Claim) {
 		if p := c.Pending; p != nil {
 			id = fmt.Sprintf("task-confirmed:%s:%s", c.Token, p.ID)
 		}
-		if _, err := intake.ApplyFact(ctx, w.pool, "supervise", id, fact, w.handlers...); err != nil {
+		_, err := intake.ApplyFact(ctx, w.pool, "supervise", id, fact, w.handlers...)
+		if err != nil {
 			w.log.Warn("apply the confirmation of a task", "claim", c.Token, "error", err)
+		}
+		if w.taskConfirmedApplied != nil {
+			w.taskConfirmedApplied(c.Token, err)
 		}
 	}()
 }

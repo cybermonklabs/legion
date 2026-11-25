@@ -304,6 +304,11 @@ type overrides struct {
 	// streamDrainBound and stamps when each answer came. nil is clock, the machines' own. A test
 	// gives it a clock of its own, whose bound it fires.
 	totalsClock supervise.Clock
+	// taskConfirmedApplied runs once the fact that a role's agent took its work has been applied, on
+	// that fact's own goroutine (workflowRuntime.taskConfirmed). It names the claim and the error
+	// the fact met, nil where it applied. nil, in production, is nothing. The fact reads its
+	// agents' totals first, so it is the seam a test waits on before it holds those reads.
+	taskConfirmedApplied func(claim.Token, error)
 }
 
 // Run is the daemon. It refuses what it cannot run on before it touches anything — the
@@ -504,8 +509,9 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		workflow.outboxSweep = o.outboxSweep
 		workflow.catchUpRetryDelay = o.catchUpRetry
 		// The reads of the agents' totals before each fact run on their own clock, and a test's
-		// seam sees them. Nothing applies a fact before this line.
+		// seams see them and each confirmation of a task. Nothing applies a fact before this line.
 		workflow.totalsClock, workflow.totalsRead = plan.totalsClock, plan.totalsRead
+		workflow.taskConfirmedApplied = plan.taskConfirmedApplied
 		plan.identity = workflow.identity
 		plan.repository, plan.launchRepository = workflow.issueRepository, workflow.launchRepository
 		plan.ensureWorkspace = workflow.ensureWorkspace
@@ -1067,6 +1073,8 @@ type plan struct {
 	// totalsClock is overrides.totalsClock, and clock where that is nil: the clock of each read of
 	// an agent's totals (workflowRuntime.readTotals).
 	totalsClock supervise.Clock
+	// taskConfirmedApplied is overrides.taskConfirmedApplied, and nil runs nothing.
+	taskConfirmedApplied func(claim.Token, error)
 }
 
 // appOwners is, for a daemon of runtimeName, the owner accounts the addressing of every launch
@@ -1195,7 +1203,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
 		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision, streamListen: o.streamListen,
-		totalsRead: o.totalsRead, totalsClock: totalsClock,
+		totalsRead: o.totalsRead, totalsClock: totalsClock, taskConfirmedApplied: o.taskConfirmedApplied,
 	}
 	if cfg.Runtime.Name == "kubernetes" {
 		err = prepareSandbox(cfg, o, reads.sandbox, &p)

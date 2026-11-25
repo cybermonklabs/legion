@@ -81,6 +81,36 @@ type stepRecordsRig struct {
 	// spawnHold is the hold holdSpawns arms, which each boot's fake runtime runs at the start of
 	// every Spawn (fake.Runtime.OnSpawn). It is nil while none is armed.
 	spawnHold atomic.Pointer[func(ctx context.Context) error]
+	// confirmations is each fact that a role's agent took its work, once a boot of the daemon has
+	// applied it (overrides.taskConfirmedApplied), which startTurn waits on.
+	confirmations taskConfirmations
+}
+
+// taskConfirmations counts, by claim, each fact that a role's agent took its work that the daemon
+// has applied, and keeps the error the last such fact of each claim met.
+type taskConfirmations struct {
+	mu      sync.Mutex
+	applied map[claim.Token]int
+	failed  map[claim.Token]error
+}
+
+// add records one confirmation of token's task that the daemon applied, and the error it met.
+func (c *taskConfirmations) add(token claim.Token, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.applied == nil {
+		c.applied, c.failed = map[claim.Token]int{}, map[claim.Token]error{}
+	}
+	c.applied[token]++
+	c.failed[token] = err
+}
+
+// read is how many confirmations of token's tasks the daemon has applied, and the error the last
+// one met.
+func (c *taskConfirmations) read(token claim.Token) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.applied[token], c.failed[token]
 }
 
 // heldAnswer is the answer heldRequest holds: the feed of token's claim stops before its machine
@@ -268,6 +298,7 @@ func (r *stepRecordsRig) boot() {
 			(*hook)(agents, reads)
 		}
 	}
+	o.taskConfirmedApplied = r.confirmations.add
 	o.totalsClock = r.readClock
 	logger := slog.New(slog.NewMultiHandler(r.log().Handler(), slog.NewJSONHandler(r.logs, nil)))
 	r.d = startDaemonWithin(r.t, r.cfg, o, logger, stepRecordsWait)
@@ -1152,8 +1183,7 @@ func (c *stepClaimant) take() shimwire.Prompt {
 	c.r.t.Helper()
 	prompt := c.receive()
 	c.answer()
-	c.send(shimwire.AgentStart{DeliveryID: prompt.DeliveryID})
-	c.waitState(supervise.StateWorking)
+	c.startTurn(prompt)
 	return prompt
 }
 
@@ -1161,9 +1191,34 @@ func (c *stepClaimant) take() shimwire.Prompt {
 func (c *stepClaimant) takeQuietly() shimwire.Prompt {
 	c.r.t.Helper()
 	prompt := c.receive()
+	c.startTurn(prompt)
+	return prompt
+}
+
+// startTurn starts the turn that works prompt's delivery. It returns once the daemon holds the
+// claim working and has applied the fact that the agent took that delivery. The claim shows
+// working before that fact applies, on a goroutine of its own (workflowRuntime.taskConfirmed).
+// The fact first reads the calls of its issue's agents. So a read a test holds after take is the
+// read of a later fact, never of this one. The controller's turns confirm no fact.
+func (c *stepClaimant) startTurn(prompt shimwire.Prompt) {
+	c.r.t.Helper()
+	before, _ := c.r.confirmations.read(c.token)
 	c.send(shimwire.AgentStart{DeliveryID: prompt.DeliveryID})
 	c.waitState(supervise.StateWorking)
-	return prompt
+	if c.role == claim.RoleController {
+		return
+	}
+	var applied int
+	var err error
+	if !testwait.Holds(stepRecordsWait, 20*time.Millisecond, func() bool {
+		applied, err = c.r.confirmations.read(c.token)
+		return applied > before
+	}) {
+		c.r.t.Fatalf("the daemon applied no fact that %s took delivery %s within %s of the turn's start", c.token, prompt.DeliveryID, stepRecordsWait)
+	}
+	if err != nil {
+		c.r.t.Fatalf("the fact that %s took delivery %s failed: %v", c.token, prompt.DeliveryID, err)
+	}
 }
 
 // receive waits for the daemon's next task of this claim, the prompt the pane has acknowledged
