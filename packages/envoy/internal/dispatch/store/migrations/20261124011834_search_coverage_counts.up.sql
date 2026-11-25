@@ -3,8 +3,8 @@
 --
 -- Why it exists. The coverage route counted every item of the five covered kinds and every row
 -- of the not-indexed tables in one statement (main's statement: coverageQuery at df18d9be, kept as
--- mainRouteCoverageStatement in embedqueue/coverage_main_statement_test.go), which reads every
--- window row of embeddings and so grows with the corpus: from 2026-11-21T08:19Z to
+-- mainRouteCoverageStatement in embedqueue/testdata/main_route_coverage_statement.sql), which reads
+-- every window row of embeddings and so grows with the corpus: from 2026-11-21T08:19Z to
 -- 2026-11-22T00:30Z, 10 of 65 probe calls reached its 10 s bound. Postgres keeps no exact count of
 -- a table's rows, so the exact answer that does not grow is a count that each write keeps in its
 -- own transaction. This migration makes the tables that hold those counts and the triggers that
@@ -27,9 +27,9 @@
 --     (done_at). The migration inserts no row, so a table that holds none says the counts are not
 --     filled yet.
 --
--- A class is (kind, model, matched, dead), each as main's statement reads it
--- (mainRouteCoverageStatement, embedqueue/coverage_main_statement_test.go, main at df18d9be). A
--- row of embeddings is an item of its kind when the kind is a window kind and its text has
+-- A class is (kind, model, matched, dead), each as main's statement reads it (main at df18d9be:
+-- mainRouteCoverageStatement, embedqueue/testdata/main_route_coverage_statement.sql). A row of
+-- embeddings is an item of its kind when the kind is a window kind and its text has
 -- something to embed (embedqueue's windowItems, word for word: a change to the window kinds or to
 -- the blank test owes a migration that replaces search_coverage_count_embeddings); matched is
 -- embedding is not null and embedded_hash = content_hash; dead is the row's. An issue is an item
@@ -203,10 +203,11 @@ $$;
 -- written with, and TestTheRefreshAndTheRecountRenderAnIssuesInputsAlike
 -- (embedqueue/coverage_counts_test.go) holds the two renderings equal; the text test and the hash
 -- are those of the issue arm of main's statement (mainRouteCoverageStatement,
--- embedqueue/coverage_main_statement_test.go, main at df18d9be). The loop takes the state row's
--- lock: a row another transaction inserted after the select's snapshot is not seen by it, so the
--- insert meets that row and does nothing and the loop selects it again under a new snapshot; a row
--- another transaction deleted while the select waited for it is gone, so the insert makes it again.
+-- embedqueue/testdata/main_route_coverage_statement.sql, main at df18d9be). The loop takes the
+-- state row's lock: a row another transaction inserted after the select's snapshot is not seen by
+-- it, so the insert meets that row and does nothing and the loop selects it again under a new
+-- snapshot; a row another transaction deleted while the select waited for it is gone, so the
+-- insert makes it again.
 create function public.search_coverage_issue_refresh(p_key text) returns void
 language plpgsql as $$
 begin

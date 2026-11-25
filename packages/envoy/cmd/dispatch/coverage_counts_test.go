@@ -1,15 +1,17 @@
 package main
 
+//ci:reads packages/envoy/internal/dispatch/embedqueue/testdata/main_coverage_query.sql readCoverageOracles reads it (os.ReadFile through ../../internal/dispatch/embedqueue/testdata) for requireCoverageIsMains, which TestTheServerFillsTheCoverageCountsAfterItListens, TestAFillCutOffByAStopFillsAgainAtTheNextStart, TestAFilledStartListensBeforeItsRecountEnds, TestAFailedFillKeepsServingAndRefusesUntilAFillEnds and TestAFillPastItsTimeoutIsAFailedFill call
+//ci:reads packages/envoy/internal/dispatch/embedqueue/testdata/main_route_coverage_statement.sql readCoverageOracles reads it (os.ReadFile through ../../internal/dispatch/embedqueue/testdata) for requireCoverageIsMains, which TestTheServerFillsTheCoverageCountsAfterItListens, TestAFillCutOffByAStopFillsAgainAtTheNextStart, TestAFilledStartListensBeforeItsRecountEnds, TestAFailedFillKeepsServingAndRefusesUntilAFillEnds and TestAFillPastItsTimeoutIsAFailedFill call
+//ci:reads packages/envoy/internal/dispatch/embedqueue/testdata/main_route_coverage_settings.sql readCoverageOracles reads it (os.ReadFile through ../../internal/dispatch/embedqueue/testdata) for requireCoverageIsMains, which TestTheServerFillsTheCoverageCountsAfterItListens, TestAFillCutOffByAStopFillsAgainAtTheNextStart, TestAFilledStartListensBeforeItsRecountEnds, TestAFailedFillKeepsServingAndRefusesUntilAFillEnds and TestAFillPastItsTimeoutIsAFailedFill call
+
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"io"
 	"net/http"
-	"strconv"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -30,13 +32,12 @@ const (
 	coverageFillFailedLine = `level=ERROR msg="dispatch embedqueue: coverage counts fill failed; it runs again later"`
 )
 
-// The files of embedqueue's tests that hold its frozen coverage statements: the statement before
-// the kept counts (mainCoverageQuery), and main's route statement (mainRouteCoverageStatement)
-// with the settings main ran it under (mainRouteCoverageSettings).
-const (
-	coverageOracleSource        = "../../internal/dispatch/embedqueue/coverage_oracle_test.go"
-	coverageMainStatementSource = "../../internal/dispatch/embedqueue/coverage_main_statement_test.go"
-)
+// embedqueueTestdata is the directory of embedqueue's tests that holds its frozen coverage texts,
+// each a file those tests embed: the statement before the kept counts (main_coverage_query.sql,
+// mainCoverageQuery there), main's route statement (main_route_coverage_statement.sql,
+// mainRouteCoverageStatement) and the settings main ran it under
+// (main_route_coverage_settings.sql, mainRouteCoverageSettings).
+const embedqueueTestdata = "../../internal/dispatch/embedqueue/testdata"
 
 // coverageOracles are embedqueue's two frozen coverage statements, which every answer of the
 // route is compared with: before, the statement before the kept counts (mainCoverageQuery); route,
@@ -46,51 +47,23 @@ type coverageOracles struct {
 	before, route, routeSettings string
 }
 
-// readCoverageOracles reads the two frozen statements and the route's settings from embedqueue's
-// test source (frozenConstant).
+// readCoverageOracles reads the two frozen statements and the route's settings from the files
+// embedqueue's tests embed (embedqueueTestdata), so the server's answers are held to the one
+// frozen text the package's own tests hold the report to, and not to a second copy.
 func readCoverageOracles(t *testing.T) coverageOracles {
 	t.Helper()
+	read := func(name string) string {
+		text, err := os.ReadFile(filepath.Join(embedqueueTestdata, name))
+		if err != nil {
+			t.Fatalf("read embedqueue's frozen coverage text: %v", err)
+		}
+		return string(text)
+	}
 	return coverageOracles{
-		before:        frozenConstant(t, coverageOracleSource, "mainCoverageQuery"),
-		route:         frozenConstant(t, coverageMainStatementSource, "mainRouteCoverageStatement"),
-		routeSettings: frozenConstant(t, coverageMainStatementSource, "mainRouteCoverageSettings"),
+		before:        read("main_coverage_query.sql"),
+		route:         read("main_route_coverage_statement.sql"),
+		routeSettings: read("main_route_coverage_settings.sql"),
 	}
-}
-
-// frozenConstant reads the string constant name from source, a file of embedqueue's tests, so the
-// server's answers are held to the one frozen text the package's own tests hold the report to, and
-// not to a second copy: Go shares no test code across packages.
-func frozenConstant(t *testing.T, source, name string) string {
-	t.Helper()
-	file, err := parser.ParseFile(token.NewFileSet(), source, nil, 0)
-	if err != nil {
-		t.Fatalf("parse %s: %v", source, err)
-	}
-	for _, declaration := range file.Decls {
-		constants, ok := declaration.(*ast.GenDecl)
-		if !ok || constants.Tok != token.CONST {
-			continue
-		}
-		for _, spec := range constants.Specs {
-			value := spec.(*ast.ValueSpec)
-			for position, constant := range value.Names {
-				if constant.Name != name {
-					continue
-				}
-				literal, ok := value.Values[position].(*ast.BasicLit)
-				if !ok || literal.Kind != token.STRING {
-					t.Fatalf("%s in %s is no string literal", name, source)
-				}
-				text, err := strconv.Unquote(literal.Value)
-				if err != nil {
-					t.Fatalf("read %s's text: %v", name, err)
-				}
-				return text
-			}
-		}
-	}
-	t.Fatalf("%s holds no %s", source, name)
-	return ""
 }
 
 // coverageDatabase is a database of the test's own holding an item of the issue and window kinds
@@ -186,12 +159,11 @@ func (s coverageServer) coverage(t *testing.T) httpAnswer {
 	return httpAnswer{status: response.StatusCode, header: response.Header, body: body}
 }
 
-// coverageNotFilledMessage is the error the route answers SEARCH_COVERAGE_NOT_FILLED with.
-const coverageNotFilledMessage = "the search coverage counts are not filled yet; try again later"
-
-// requireCoverageRefused fails the test unless the route answers 503 with code and, as its error,
-// exactly message.
-func requireCoverageRefused(t *testing.T, server coverageServer, code, message string) {
+// requireCoverageRefused fails the test unless the route answers 503 with code and an error that
+// is not empty and contains mention, the value the spec names in it ("" when it names none beyond
+// the code), as api's requireSearchTimedOut holds SEARCH_TIMEOUT: the code and that value are
+// what a client reads, and the sentence around them may be reworded.
+func requireCoverageRefused(t *testing.T, server coverageServer, code, mention string) {
 	t.Helper()
 	answer := server.coverage(t)
 	var refusal struct {
@@ -199,8 +171,12 @@ func requireCoverageRefused(t *testing.T, server coverageServer, code, message s
 		Error string `json:"error"`
 	}
 	if err := json.Unmarshal(answer.body, &refusal); err != nil || answer.status != http.StatusServiceUnavailable ||
-		refusal.Code != code || refusal.Error != message {
-		t.Fatalf("the coverage route answers %s, want 503 %s with the error %q", answer, code, message)
+		refusal.Code != code || refusal.Error == "" || !strings.Contains(refusal.Error, mention) {
+		want := "a non-empty error"
+		if mention != "" {
+			want = fmt.Sprintf("an error naming %q", mention)
+		}
+		t.Fatalf("the coverage route answers %s, want 503 %s with %s", answer, code, want)
 	}
 }
 
@@ -348,9 +324,9 @@ var devEmbedderOptions = dispatchOptions{Env: map[string]string{
 // TestTheServerFillsTheCoverageCountsAfterItListens holds R7k: a server started on counts no
 // fill has filled (done_at unset), its fill held where it runs, listens - its listening line
 // names since_start_ms - and serves: /healthz answers, and the coverage route answers 503
-// SEARCH_COVERAGE_NOT_FILLED whose error is exactly coverageNotFilledMessage. Once the hold ends
-// the log holds `coverage counts filled` and the route answers the kept counts, equal to both of
-// main's statements' (requireCoverageIsMains). With no embedder and with the dev embedder.
+// SEARCH_COVERAGE_NOT_FILLED with an error that is not empty. Once the hold ends the log holds
+// `coverage counts filled` and the route answers the kept counts, equal to both of main's
+// statements' (requireCoverageIsMains). With no embedder and with the dev embedder.
 func TestTheServerFillsTheCoverageCountsAfterItListens(t *testing.T) {
 	for _, run := range []struct {
 		name, host string
@@ -367,7 +343,7 @@ func TestTheServerFillsTheCoverageCountsAfterItListens(t *testing.T) {
 			}
 			requireHeld(t, hold, "fill")
 			requireHealthy(t, process)
-			requireCoverageRefused(t, server, "SEARCH_COVERAGE_NOT_FILLED", coverageNotFilledMessage)
+			requireCoverageRefused(t, server, "SEARCH_COVERAGE_NOT_FILLED", "")
 			if process.logged(coverageFilledLine) || filled(t, database) {
 				t.Fatal("the fill ended while it was held")
 			}
@@ -448,7 +424,7 @@ func TestAFailedFillKeepsServingAndRefusesUntilAFillEnds(t *testing.T) {
 	process.waitHealthy(t)
 	process.waitForLog(t, 30*time.Second, coverageFillFailedLine, "fill was made to fail")
 	requireHealthy(t, process)
-	requireCoverageRefused(t, coverageServer{dispatchProcess: process}, "SEARCH_COVERAGE_NOT_FILLED", coverageNotFilledMessage)
+	requireCoverageRefused(t, coverageServer{dispatchProcess: process}, "SEARCH_COVERAGE_NOT_FILLED", "")
 
 	endHold(t, hold)
 	process.waitForLog(t, 30*time.Second, coverageFilledLine)
@@ -469,7 +445,7 @@ func TestAFillPastItsTimeoutIsAFailedFill(t *testing.T) {
 	held := time.Now()
 	process.waitForLog(t, 30*time.Second, coverageFillFailedLine, "timed_out=true")
 	requireHealthy(t, process)
-	requireCoverageRefused(t, coverageServer{dispatchProcess: process}, "SEARCH_COVERAGE_NOT_FILLED", coverageNotFilledMessage)
+	requireCoverageRefused(t, coverageServer{dispatchProcess: process}, "SEARCH_COVERAGE_NOT_FILLED", "")
 	time.Sleep(time.Until(held.Add(3 * time.Second)))
 
 	endHold(t, hold)
@@ -502,8 +478,7 @@ func TestTheCoverageRouteAnswersFoldBehindPastTheBound(t *testing.T) {
 		from generate_series(1, 100001) g`); err != nil {
 		t.Fatalf("leave 100,001 delta rows unfolded: %v", err)
 	}
-	requireCoverageRefused(t, coverageServer{dispatchProcess: process}, "SEARCH_COVERAGE_FOLD_BEHIND",
-		"more than 100,000 rows of writes are not folded into the search coverage counts yet; try again later")
+	requireCoverageRefused(t, coverageServer{dispatchProcess: process}, "SEARCH_COVERAGE_FOLD_BEHIND", "100,000")
 }
 
 // TestTheCoverageRouteAnswersItsTimeoutAt503 holds R7p's server row: a server whose route's
@@ -518,6 +493,5 @@ func TestTheCoverageRouteAnswersItsTimeoutAt503(t *testing.T) {
 	process.waitHealthy(t)
 	process.waitForLog(t, 30*time.Second, coverageFilledLine)
 	coverageHold(t, database, "search_coverage_counts")
-	requireCoverageRefused(t, coverageServer{dispatchProcess: process}, "SEARCH_COVERAGE_TIMEOUT",
-		"the search coverage statement ran past its 200ms bound, so nothing was counted; try again later")
+	requireCoverageRefused(t, coverageServer{dispatchProcess: process}, "SEARCH_COVERAGE_TIMEOUT", "200ms")
 }

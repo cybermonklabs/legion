@@ -1,0 +1,1 @@
+set local enable_seqscan = off; set local enable_sort = off; set local max_parallel_workers_per_gather = 0; set local jit = off; set local work_mem = '128MB'

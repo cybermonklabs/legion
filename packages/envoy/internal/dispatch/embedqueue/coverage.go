@@ -767,8 +767,9 @@ var ErrCoverageFoldBehind = errors.New(message.NewPrinter(language.English).Spri
 // A covered kind's items are the sum of its classes; current, of those matched under the
 // identity's model; failed, of the dead ones not current; lacking is computed in Go. A not-indexed
 // kind's count is its one class. Each kind's row answers the six columns main's coverage
-// statement answered (mainRouteCoverageStatement in this package's tests), after two that every
-// row carries: how many delta rows the statement read, and whether the counts are filled.
+// statement answered (mainRouteCoverageStatement in this package's tests, the text of
+// testdata/main_route_coverage_statement.sql), after two that every row carries: how many delta
+// rows the statement read, and whether the counts are filled.
 //
 // What it reads does not grow with the corpus: a base row for each class, the bounded delta rows,
 // one index entry for each probe, and route_roster's row. Under planCoverage's settings no other
