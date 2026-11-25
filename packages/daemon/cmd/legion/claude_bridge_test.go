@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claudebridge"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -99,7 +100,7 @@ func TestClaudeBridgeOutlivesTheShimItsPaneTookWithIt(t *testing.T) {
 	until := time.Now().Add(within)
 	for runs := 1; ; runs++ {
 		pidFile := filepath.Join(t.TempDir(), "claude.pid")
-		p := startClaudeBridge(t, "echo $$ >'"+pidFile+"'\ntrap 'kill $!; cat "+toolCall+"; exit 0' TERM\n"+
+		p := startClaudeBridge(t, "echo $$ >"+shellprefix.Literal(pidFile)+"\nTOOL_CALL="+shellprefix.Literal(toolCall)+"\ntrap 'kill $!; cat \"$TOOL_CALL\"; exit 0' TERM\n"+
 			"sleep 86400 >/dev/null &\ntouch \"$CLAUDE_STANDIN_READY\"\nwait\n", goneShim(t))
 		// The stand-in writes its pid before it marks itself ready, which startClaudeBridge awaits.
 		raw, err := os.ReadFile(pidFile)

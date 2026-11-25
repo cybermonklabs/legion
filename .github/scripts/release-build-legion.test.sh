@@ -3,12 +3,14 @@
 # it packs one archive per legion target of .github/go-release-targets.json, each holding that
 # target's static binary, built with the target's CGO_ENABLED=0, GOOS and GOARCH, and the
 # THIRD_PARTY_NOTICES the notices script writes under the same environment, and it stops, packing
-# nothing, when release-push.sh legion-targets refuses the list. Its modes, which
-# check-legion-release-paths.sh asks: `list`, go list over ./cmd/legion in packages/daemon with a
-# target's environment; `env`, go env with that environment; and `modules`, the go.mod of each
-# main module.
-# The modes read none of the build's variables, and a mode it does not know, one without its
-# target, or one given more than it takes, is refused.
+# nothing, when release-push.sh legion-targets refuses the list. It links in the stamp
+# $LEGION_CONTRACT_ORDER, and refuses to start, writing nothing, when the stamp is unset or empty.
+# Its modes, which check-legion-release-paths.sh asks: `list`, go list over ./cmd/legion in
+# packages/daemon with a target's environment; `env`, go env with that environment; and
+# `modules`, the go.mod of each main module.
+# The modes read none of the build's variables, the stamp among them, so they run with none of
+# them set, as lint runs them; and a mode it does not know, one without its target, or one given
+# more than it takes, is refused.
 #
 # Each case builds a miniature repository under a temporary directory: a daemon module with a
 # legion command, the target list, and a stand-in scripts/go-third-party-notices.sh that writes
@@ -57,26 +59,38 @@ SH
   echo "$root"
 }
 
-# run_build <root>: the build, from <root>, with the five variables release.yaml's step gives it.
-# Leaves its exit code in status and its output in out.
+# The stamp the build cases give, in the form scripts/daemon-contract-order.sh --stamp prints.
+stamp='v1:entry-one,entry-two'
+
+# run_build <root> [<stamp>]: the build, from <root>, with the six variables release.yaml's step
+# gives it. <stamp> is $LEGION_CONTRACT_ORDER: $stamp when it is omitted, and the variable is not
+# set at all when it is the word unset. Leaves its exit code in status and its output in out.
 run_build() {
   local root=$1
+  local -a order=("LEGION_CONTRACT_ORDER=$stamp")
+  if [ $# -ge 2 ]; then
+    if [ "$2" = unset ]; then
+      order=(-u LEGION_CONTRACT_ORDER)
+    else
+      order=("LEGION_CONTRACT_ORDER=$2")
+    fi
+  fi
   set +e
-  out=$(cd "$root" && VERSION=1.2.3 PI_LEGION_VERSION=0.4.0 PI_ENVOY_VERSION=0.5.0 \
+  out=$(cd "$root" && env "${order[@]}" VERSION=1.2.3 PI_LEGION_VERSION=0.4.0 PI_ENVOY_VERSION=0.5.0 \
     GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_WORKSPACE="$root" \
     .github/scripts/release-build-legion.sh 2>&1)
   status=$?
   set -e
 }
 
-# run_mode <root> <arg>...: the script with <arg>..., from <root>, with none of the build's five
+# run_mode <root> <arg>...: the script with <arg>..., from <root>, with none of the build's six
 # variables set. Leaves its exit code in status, its stdout in out and its stderr in err.
 run_mode() {
   local root=$1
   shift
   set +e
   out=$(cd "$root" && env -u VERSION -u PI_LEGION_VERSION -u PI_ENVOY_VERSION -u GITHUB_SHA -u GITHUB_WORKSPACE \
-    .github/scripts/release-build-legion.sh "$@" 2>"$work/err")
+    -u LEGION_CONTRACT_ORDER .github/scripts/release-build-legion.sh "$@" 2>"$work/err")
   status=$?
   set -e
   err=$(<"$work/err")
@@ -93,10 +107,22 @@ for target in linux/amd64 darwin/arm64; do
   info=$(go version -m "$root/out/$dir/legion" 2>&1)
   check "$target: the binary is built for $os/$arch without cgo" \
     "$(is "$(contains "$info" "GOOS=$os$")|$(contains "$info" "GOARCH=$arch$")|$(contains "$info" 'CGO_ENABLED=0$')" 'true|true|true')"
-  check "$target: the binary carries the release's version and its plugin pair" \
-    "$(contains "$info" '-X main.revision=0123456789abcdef0123456789abcdef01234567 -X main.release=v1.2.3 -X main.piLegionVersion=0.4.0 -X main.piEnvoyVersion=0.5.0')"
+  check "$target: the binary carries the release's version, its plugin pair and the contract-order stamp" \
+    "$(contains "$info" "-X main.revision=0123456789abcdef0123456789abcdef01234567 -X main.release=v1.2.3 -X main.piLegionVersion=0.4.0 -X main.piEnvoyVersion=0.5.0 -X github.com/sjawhar/legion/daemon/internal/api.contractOrder=$stamp")"
   check "$target: the notices are written in packages/daemon for ./cmd/legion with the same environment" \
     "$(is "$(cat "$root/out/$dir/THIRD_PARTY_NOTICES")" "dir=daemon CGO_ENABLED=0 GOOS=$os GOARCH=$arch args=./cmd/legion")"
+done
+
+# The stamp numbers the daemon's contract entries; an unstamped binary numbers them by id instead,
+# so the build must not start without one, and must not pack the archives before it says so.
+for order in unset ''; do
+  echo "case: the build refuses to start when the contract-order stamp is ${order:-empty}"
+  root=$(fixture "build-no-stamp-${order:-empty}")
+  run_build "$root" "$order"
+  check "exits non-zero" "$([ "$status" -ne 0 ] && echo true || echo false)"
+  check "names the variable and the command that prints it" \
+    "$(contains "$out" 'LEGION_CONTRACT_ORDER: is unset or empty: set it to the stamp scripts/daemon-contract-order.sh --stamp prints for this commit')"
+  check "writes neither out/ nor assets/" "$([ ! -e "$root/out" ] && [ ! -e "$root/assets" ] && echo true || echo false)"
 done
 
 echo "case: the build stops when it cannot read the targets"

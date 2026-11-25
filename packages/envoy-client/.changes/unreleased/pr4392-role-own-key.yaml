@@ -1,0 +1,11 @@
+kind: Changed
+custom:
+  Issue: pr4392
+body: |-
+  A session in a pod trades at the secrets broker with its role's own agent-secrets key. Where
+  `AGENT_SECRETS_MACHINE_IDENTITY` is `kubernetes` and `AGENT_SECRETS_KEY_DIR` names the role's
+  directory, the broker credential (`brokerTokenClient` of `@legion/cipher-client`) proves the
+  `key.pem` that `agent-secrets keygen` wrote there. That is the key the role's pod-session
+  registration names, so the broker no longer refuses the role's own trade. When that file cannot
+  be read, the call fails naming its path, and no fresh key takes its place. Every other machine
+  proves a key that its own process makes, as before.

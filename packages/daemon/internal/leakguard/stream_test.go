@@ -518,8 +518,8 @@ func TestADiffReadEndsWithItsBoundThoughAnEscapedProcessHoldsThePipe(t *testing.
 	hold := holdUntilEnd(t)
 	started := filepath.Join(t.TempDir(), "started")
 	guard := gitFirst(t, "case \" $* \" in\n"+
-		"*\" --unified=0 \"*) : > "+shQuote(started)+"\n  setsid sh -c \""+strings.ReplaceAll(hold, "\"", "\\\"")+"\" 2>/dev/null &\n  '"+git+"' \"$@\"\n  "+hold+" ;;\n"+
-		"*) exec '"+git+"' \"$@\" ;;\nesac\n")
+		"*\" --unified=0 \"*) : > "+shQuote(started)+"\n  setsid sh -c \""+strings.ReplaceAll(hold, "\"", "\\\"")+"\" 2>/dev/null &\n  "+shQuote(git)+" \"$@\"\n  "+hold+" ;;\n"+
+		"*) exec "+shQuote(git)+" \"$@\" ;;\nesac\n")
 	ctx := deadlinePassedOnceStarted(t, 4*time.Second, started)
 	var err error
 	answered(t, "the push whose diff an escaped process holds", func() { err = guard.Push(ctx, push.req) })

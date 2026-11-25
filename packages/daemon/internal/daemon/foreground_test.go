@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testkernel"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -217,9 +218,10 @@ func TestATerminalAttemptRecordsACtrlCTheLaunchExitsZeroOn(t *testing.T) {
 		dir := t.TempDir()
 		ready, release := filepath.Join(dir, "ready"), filepath.Join(dir, "release")
 		// The launch ignores SIGINT and finishes normally, exit 0: the case no exit status carries.
-		// It runs until the test writes its release, or until this test process is gone.
-		launch := fmt.Sprintf(`exec sh -c 'trap "" INT; : >"%s"; while [ ! -e "%s" ] && kill -0 %d 2>/dev/null; do sleep 0.01; done; exit 0'`,
-			ready, release, os.Getpid())
+		// It runs until the test writes its release, or until this test process is gone. Its paths
+		// reach it as arguments, quoted once (shellprefix.Literal).
+		launch := fmt.Sprintf(`exec sh -c 'trap "" INT; : >"$1"; while [ ! -e "$2" ] && kill -0 %d 2>/dev/null; do sleep 0.01; done; exit 0' sh %s %s`,
+			os.Getpid(), shellprefix.Literal(ready), shellprefix.Literal(release))
 		cmd := exec.Command("sh", "-c", job.script(launch))
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		if err := cmd.Start(); err != nil {
