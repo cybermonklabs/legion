@@ -506,7 +506,7 @@ func settleBoundItems(t *testing.T, database *store.Store) {
 				if owed.kind == refs.ItemAsk {
 					_, err = refs.IndexItemIfOwed(ctx, tx, refs.ItemAsk, item.id, testServerURL)
 				} else {
-					_, err = refs.IndexItem(ctx, tx, owed.kind, item.id, item.body, item.at, text.ExtractAt(item.body, testServerURL), nil)
+					_, err = refs.IndexItem(ctx, tx, owed.kind, item.id, item.body, testServerURL, item.at, text.ExtractAt(item.body, testServerURL), nil)
 				}
 				if err != nil {
 					_ = tx.Rollback(ctx)
