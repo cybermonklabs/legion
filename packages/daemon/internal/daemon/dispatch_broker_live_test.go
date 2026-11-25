@@ -153,10 +153,11 @@ func (k rigToken) expiry() time.Time {
 }
 
 // newDispatchBrokerRig starts the broker with access tokens that live lifetime, Dispatch behind
-// the proxy, and the projects and issues. A prerequisite that is missing fails the test, never
-// skips it: ciphertest.NewRig skips without BROKER_TEST_DATABASE_URL and testdb without
-// LEGION_TEST_PG_DSN, and a skip reads as a pass.
-func newDispatchBrokerRig(t *testing.T, lifetime time.Duration) *dispatchBrokerRig {
+// the proxy, and the projects and issues. env is settings of the caller's own for Dispatch, each
+// NAME=value, set after the rig's own (scratchDispatchOptions.env). A prerequisite that is
+// missing fails the test, never skips it: ciphertest.NewRig skips without BROKER_TEST_DATABASE_URL
+// and testdb without LEGION_TEST_PG_DSN, and a skip reads as a pass.
+func newDispatchBrokerRig(t *testing.T, lifetime time.Duration, env ...string) *dispatchBrokerRig {
 	t.Helper()
 	for _, name := range []string{"BROKER_TEST_DATABASE_URL", "LEGION_TEST_PG_DSN"} {
 		if os.Getenv(name) == "" {
@@ -194,7 +195,7 @@ func newDispatchBrokerRig(t *testing.T, lifetime time.Duration) *dispatchBrokerR
 	t.Cleanup(listener.Close)
 	github := httptest.NewServer(http.HandlerFunc(rigGitHub))
 	t.Cleanup(github.Close)
-	r.dispatch = startScratchDispatchOn(t, scratchDispatchOptions{root: root, env: []string{
+	r.dispatch = startScratchDispatchOn(t, scratchDispatchOptions{root: root, env: append([]string{
 		"DISPATCH_SERVER_URL=" + rigServerURL,
 		"DISPATCH_AGENT_SECRETS_URL=" + r.broker.URL,
 		// UIToken is the token of the account the rig's BROKER_API_ACCOUNTS lists as the caller
@@ -205,7 +206,7 @@ func newDispatchBrokerRig(t *testing.T, lifetime time.Duration) *dispatchBrokerR
 		"DISPATCH_APP_CLIENT_ID=Iv1.rig",
 		"DISPATCH_APP_PEM_B64=" + rigAppKey(t),
 		"DISPATCH_GITHUB_API_BASE=" + github.URL,
-	}})
+	}, env...)})
 	r.proxy.forward(r.dispatch.base)
 	r.registrar = r.file("daemon-account-token", r.broker.MintAccountToken(t, ciphertest.DaemonAccount, time.Hour))
 	r.setUp()
@@ -1644,6 +1645,42 @@ func (r *dispatchBrokerRig) daemonScript(client *dispatch.HTTPClient, refs *daem
 	return writes
 }
 
+// statusScopeScript is R26's control through the daemon's client: on the daemon's issue of P, a
+// Legion issue, each write R26 judges, each status one the issue does not hold as it is sent:
+// SetStatus to todo, SetStatusAt to backlog, ChangeStatus to todo under a request key of its own
+// and fenced at the read before it, and PutRoleHolders, with the reads that fence them. It
+// answers the writes and the issue as the client read it before the first write and after the
+// last.
+func (r *dispatchBrokerRig) statusScopeScript(client *dispatch.HTTPClient) ([]rigWrite, dispatch.Issue, dispatch.Issue) {
+	r.t.Helper()
+	ctx := context.Background()
+	var writes []rigWrite
+	call := func(name string, read bool, do func() error) {
+		r.t.Helper()
+		writes = append(writes, r.daemonCall(name, read, do))
+	}
+	var issue dispatch.Issue
+	readIssue := func() error {
+		var err error
+		issue, err = client.GetIssue(ctx, r.pDaemon)
+		return err
+	}
+	call("GetIssue", true, readIssue)
+	before := issue
+	call("SetStatus", false, func() error { _, err := client.SetStatus(ctx, r.pDaemon, "todo"); return err })
+	call("GetIssue", true, readIssue)
+	call("SetStatusAt", false, func() error { _, err := client.SetStatusAt(ctx, issue, "backlog"); return err })
+	call("GetIssue", true, readIssue)
+	call("ChangeStatus", false, func() error {
+		_, err := client.ChangeStatus(ctx, r.pDaemon, dispatch.StatusChange{Status: "todo", ExpectedSequence: issue.LastSeq,
+			IdempotencyKey: "rig-k4-scope-" + uuid.NewString()})
+		return err
+	})
+	call("PutRoleHolders", false, func() error { return client.PutRoleHolders(ctx, r.pDaemon, []dispatch.RoleHolder{}) })
+	call("GetIssue", true, readIssue)
+	return writes, before, issue
+}
+
 // TestARoleWritesEveryKindWithItsOwnToken is K4: with a role's broker token for P, one write of
 // each kind R8 names, through the dispatch command and through the pi-envoy plugin's client, on
 // an issue of P - handoff-write, result, comment, message, comment --reply-to-ask on an ask the
@@ -1659,8 +1696,25 @@ func (r *dispatchBrokerRig) daemonScript(client *dispatch.HTTPClient, refs *daem
 // that names no issue, which this control cannot tell apart: the conversation file's upload to the
 // caller's own session among them, whose upload to the role of P's session a token of another
 // session is refused 403 SESSION_SCOPE instead, which the control shows too.
+//
+// R26 of dispatch://INFRA-3320: the rig's Dispatch runs with DISPATCH_LEGION_STATUS_SCOPE on, and
+// the daemon's issue of P is a Legion issue, which the person labels before the daemon's script
+// runs. So Dispatch judges each status write the daemon's client makes on it (SetStatus,
+// SetStatusAt, HandOver and ChangeStatus) and its role-holder publication (PutRoleHolders) by R26,
+// and takes each only from a token that holds legion-status. The broker grants that scope to the
+// token of the daemon's own entry, DaemonExchangeAccount's, which names P and fixes the session
+// legion-daemon:<P> (isLegionDaemon in packages/envoy/internal/cipher/exchange/exchange.go), so
+// each of those rows must be 2xx and carry the daemon's DPoP token.
+//
+// R26's control: the four writes R26 judges through the daemon's client under
+// dispatch_token_file, the shared token, which can hold no legion-status (statusScopeScript). With
+// the setting on, each status write is refused 403 LEGION_STATUS_SCOPE_REQUIRED and the
+// publication 403 ROLE_HOLDER_FORBIDDEN, and Dispatch shows the issue as it stood. Then Dispatch
+// restarts with the setting off, and the same writes are each taken: the refusals are the
+// setting's.
 func TestARoleWritesEveryKindWithItsOwnToken(t *testing.T) {
-	r := newDispatchBrokerRig(t, 15*time.Minute)
+	r := newDispatchBrokerRig(t, 15*time.Minute, legionStatusScope+"=on")
+	r.call(http.MethodPatch, "/api/v1/issues/"+r.pDaemon, true, map[string]any{"labels": []string{"legion"}}, http.StatusOK, nil)
 	since := time.Now()
 	role := r.registeredRole("k4")
 	env := r.environment(role, "")
@@ -1717,11 +1771,24 @@ func TestARoleWritesEveryKindWithItsOwnToken(t *testing.T) {
 	})
 	scoped.ok, scoped.outcome = intoP.OK, intoP.outcome()
 
+	// R26's control, after every write of the tables above.
+	bearer := r.sharedDaemonClient(r.file("dispatch-shared-token", r.dispatch.token))
+	scopeOn, onBefore, onAfter := r.statusScopeScript(bearer)
+	r.dispatch.stop()
+	r.dispatch.env = append(slices.Clone(r.dispatch.env), legionStatusScope+"=off")
+	r.dispatch.start()
+	scopeOff, offBefore, offAfter := r.statusScopeScript(bearer)
+
 	report := r.report("K4: a role writes every kind with its own token")
 	report.say("Every write on %s, the issue of %s the role %s's session addresses, and on %s, the daemon's issue of %s. The role is a registered session of an ExchangeRolesAccount pod of %s; the daemon's identity is the rig's DaemonExchangeAccount; the control's is OtherProjectAccount, whose entry fixes the session %s of %s. A row whose names column says no issue is one this control cannot tell apart.", r.pIssue, rigP, role.session, r.pDaemon, rigP, rigP, other.session, rigQ)
+	report.say("Dispatch runs with %s=on, and %s carries the legion label, so R26 judges each status write of the daemon's client on it and its role-holder publication.", legionStatusScope, r.pDaemon)
 	report.writes("With the tokens of "+rigP, withP, time.Time{})
 	report.writes("The control: the same script with tokens of "+rigQ, withQ, time.Time{})
 	report.writes("The control's conversation file in another session's conversation", []rigWrite{scoped}, time.Time{})
+	report.say("R26's control on %s: the daemon's client under dispatch_token_file, the shared token, which holds no legion-status. With %s=on Dispatch showed the issue %s at %d before these writes and %s at %d after them. Restarted with %s=off, it showed %s at %d before the same writes and %s at %d after them.",
+		r.pDaemon, legionStatusScope, onBefore.Status, onBefore.LastSeq, onAfter.Status, onAfter.LastSeq, legionStatusScope, offBefore.Status, offBefore.LastSeq, offAfter.Status, offAfter.LastSeq)
+	report.writes("R26's control with "+legionStatusScope+"=on", scopeOn, time.Time{})
+	report.writes("R26's control with "+legionStatusScope+"=off", scopeOff, time.Time{})
 	report.write("k4")
 
 	for _, write := range withP {
@@ -1733,11 +1800,12 @@ func TestARoleWritesEveryKindWithItsOwnToken(t *testing.T) {
 			t.Errorf("with the token of %s, %s's %s = %s; the proxy recorded %+v: every row of the P table must be 2xx, and this one is a defect to report", rigP, write.client, write.write, write.outcome, write.records)
 		}
 	}
-	// The daemon's status change and its role-holder publication are the two writes the daemon makes
-	// only as its own session, so under the broker each must carry the daemon's DPoP token, not only
-	// be answered 2xx.
+	// Each status write of the daemon's issue, a Legion issue, and its role-holder publication are
+	// the writes Dispatch takes only from the daemon's own broker token (R26), so under the broker
+	// each must carry the daemon's DPoP token, not only be answered 2xx.
+	judged := []string{"SetStatus", "SetStatusAt", "HandOver", "ChangeStatus", "PutRoleHolders"}
 	for _, write := range withP {
-		if write.client != "the daemon's client" || (write.write != "ChangeStatus" && write.write != "PutRoleHolders") {
+		if write.client != "the daemon's client" || !slices.Contains(judged, write.write) {
 			continue
 		}
 		if len(write.records) == 0 {
@@ -1748,6 +1816,39 @@ func TestARoleWritesEveryKindWithItsOwnToken(t *testing.T) {
 				t.Errorf("with the daemon's token of %s, %s %s %s went %q; the proxy recorded %+v: want DPoP, the daemon's own broker token", rigP, write.write, record.Method, record.Route, record.Scheme, write.records)
 			}
 		}
+	}
+	for _, write := range scopeOn {
+		if write.read {
+			if !write.ok {
+				t.Errorf("R26's control: the shared token's %s of %s with %s=on = %s, want it read", write.write, r.pDaemon, legionStatusScope, write.outcome)
+			}
+			continue
+		}
+		want := statusScopeCode
+		if write.write == "PutRoleHolders" {
+			want = roleHolderForbiddenCode
+		}
+		status, code := refusal(write.err)
+		mutations := write.mutations()
+		if status != http.StatusForbidden || code != want || len(mutations) != 1 || mutations[0].Scheme != "Bearer" ||
+			mutations[0].Status != http.StatusForbidden || mutations[0].Code != want {
+			t.Errorf("R26's control: the shared token's %s on %s with %s=on = %s; the proxy recorded %+v: want one Bearer request refused 403 %s", write.write, r.pDaemon, legionStatusScope, write.outcome, write.records, want)
+		}
+	}
+	if onAfter.Status != onBefore.Status || onAfter.LastSeq != onBefore.LastSeq {
+		t.Errorf("R26's control: Dispatch showed %s %s at %d before the shared token's refused writes and %s at %d after them, want it unchanged", r.pDaemon, onBefore.Status, onBefore.LastSeq, onAfter.Status, onAfter.LastSeq)
+	}
+	for _, write := range scopeOff {
+		bad := !write.ok || len(write.records) == 0
+		for _, record := range write.records {
+			bad = bad || record.Scheme != "Bearer" || record.Status/100 != 2
+		}
+		if bad {
+			t.Errorf("R26's control: the shared token's %s on %s with %s=off = %s; the proxy recorded %+v: want it taken, so the refusal with the setting on is the setting's", write.write, r.pDaemon, legionStatusScope, write.outcome, write.records)
+		}
+	}
+	if offAfter.Status != "todo" {
+		t.Errorf("R26's control: Dispatch shows %s %s after the shared token's writes with %s=off, want the todo its status change wrote", r.pDaemon, offAfter.Status, legionStatusScope)
 	}
 	for _, write := range withQ {
 		if write.read {
