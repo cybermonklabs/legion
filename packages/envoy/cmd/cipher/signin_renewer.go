@@ -747,13 +747,10 @@ func (c credentialKeep) wait(now time.Time, renewAfter time.Duration) time.Durat
 func (r *signInRenewer) keepCredential(ctx context.Context, record cipherclient.SignInRecord, key *ecdsa.PrivateKey, lease time.Duration, c credentialKeep) credentialKeep {
 	expires, err := r.trade(ctx, record, key)
 	now := r.now()
-	if err == nil && !expires.After(now) {
-		err = noLiveExpiry(expires)
-	}
 	switch {
 	case ctx.Err() != nil:
 		return c
-	case err == nil:
+	case err == nil && expires.After(now):
 		c.expires, c.next = expires, now.Add(leasetime.RenewAfter(expires.Sub(now)))
 		return c
 	case errors.Is(err, errSignInUnrenewable):
@@ -770,6 +767,9 @@ func (r *signInRenewer) keepCredential(ctx context.Context, record cipherclient.
 		retry = min(retry, leasetime.RenewAfter(c.expires.Sub(now)))
 	}
 	c.next = now.Add(max(retry, leasetime.RenewBackoffMax))
+	if err == nil {
+		return c
+	}
 	if c.expires.IsZero() {
 		r.logf("the trade of the person's identity failed (%v); trying again in %s", err, c.next.Sub(now).Round(time.Second))
 	} else {
