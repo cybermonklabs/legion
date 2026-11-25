@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -56,6 +57,29 @@ func socketDeadline(t *testing.T) time.Time {
 // failing test to report in and run its cleanups, the margin testwait's own waits leave.
 const socketDeadlineMargin = 30 * time.Second
 
+// awaitServerClose reads connection, discarding every frame, until the server ends the socket,
+// and fails the test, naming what, when the read ended on socketDeadline instead. The two ends
+// are different facts, and a read loop that stops at the first error cannot tell them apart: a
+// server that never closed the socket would end the loop at the deadline as surely as one that
+// closed it at once. The server's end is any error that is not a timeout - a close frame
+// (*websocket.CloseError), or the connection closed under the read - and the error it ended on is
+// returned for a row that wants a particular one.
+func awaitServerClose(t *testing.T, connection *gws.Conn, what string) error {
+	t.Helper()
+	connection.SetReadDeadline(socketDeadline(t))
+	for {
+		_, _, err := connection.ReadMessage()
+		if err == nil {
+			continue
+		}
+		var timeout net.Error
+		if errors.As(err, &timeout) && timeout.Timeout() {
+			t.Fatalf("%s: the socket was still open at the read deadline (%v); the server never closed it", what, err)
+		}
+		return err
+	}
+}
+
 func TestIssueCloseClosesOpenDocumentConnection(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
@@ -75,12 +99,7 @@ func TestIssueCloseClosesOpenDocumentConnection(t *testing.T) {
 	}
 	service.issueOpenChanged(context.Background(), "DOC-1")
 	waitForNoLiveDocument(t, service, artifactID)
-	connection.SetReadDeadline(socketDeadline(t))
-	for {
-		if _, _, err := connection.ReadMessage(); err != nil {
-			break
-		}
-	}
+	awaitServerClose(t, connection, "the issue's close closing the browser's socket")
 	if err := service.srv.Apply(context.Background(), artifactID, func(_ *crdt.Doc, _ func(func(*crdt.Transaction))) {}); !errors.Is(err, ErrIssueClosed) {
 		t.Fatalf("server write after issue close = %v, want ErrIssueClosed", err)
 	}
@@ -727,13 +746,8 @@ func TestShutdownClosesDocumentPeers(t *testing.T) {
 	})
 	shutdown := make(chan error, 1)
 	go func() { shutdown <- service.Shutdown(context.Background()) }()
-	connection.SetReadDeadline(socketDeadline(t))
-	for {
-		if _, _, err := connection.ReadMessage(); err != nil {
-			break
-		}
-	}
-	if err := <-shutdown; err != nil {
+	awaitServerClose(t, connection, "Shutdown closing the browser's socket")
+	if err := testwait.Receive(t, "Shutdown to answer once it closed the browser's socket", shutdown); err != nil {
 		t.Fatalf("shutdown with document peer: %v", err)
 	}
 	if got, err := service.Text(context.Background(), artifactID); err != nil || got != "before\n" {
@@ -824,12 +838,7 @@ func TestAppendFailureClosesDocumentConnectionAndReloadsRoom(t *testing.T) {
 	testcleanup.Add(t, func() { _ = connection.Close() })
 
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
-	connection.SetReadDeadline(socketDeadline(t))
-	for {
-		if _, _, err := connection.ReadMessage(); err != nil {
-			break
-		}
-	}
+	awaitServerClose(t, connection, "the failed append closing the browser's socket")
 	_ = connection.Close()
 	waitForNoLiveDocument(t, service, artifactID)
 	if got, err := service.Text(context.Background(), artifactID); err != nil || got != "before\n" {

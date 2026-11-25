@@ -47,8 +47,8 @@ func TestConditionalDocumentEditDoesNotOverwriteWriterDuringTableAnchorCheck(t *
 			service := New(Deps{Store: database, Settle: time.Hour})
 			testcleanup.Add(t, func() {
 				// The shutdown drains the room's appends and runs what the rooms owe, which takes
-				// as long as the machine takes: roomWait is what the test binary's deadline
-				// leaves, not a span of its own.
+				// as long as the machine takes: roomWait is the smaller of what the test binary's
+				// deadline leaves and roomWaitCap's two minutes, far past any run measured.
 				shutdown, cancel := context.WithTimeout(context.Background(), roomWait(t))
 				defer cancel()
 				if err := service.Shutdown(shutdown); err != nil {

@@ -331,6 +331,13 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 // the machine's speed; a slower machine only holds it longer. The row proves that rather than
 // trusting it: a settlement whose commit the budget refused leaves the document owing its
 // settlement, so the check below fails by name if the render did not outlast the budget.
+//
+// The held render sits inside the settlement's own transaction, on a pooled connection, and the
+// database's cleanup waits for every connection to come back (Pool.Close). So the hold is let go
+// on every path, a failure included: its release is registered as a cleanup the moment it is
+// made, which runs before the database's own. And whether Shutdown answered while the render was
+// still held is read in Shutdown's goroutine at the moment it answers, not sampled from the test's
+// side some time later.
 func TestShutdownReturnsNilForARenderStillRunningPastItsDrainBudget(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -344,30 +351,45 @@ func TestShutdownReturnsNilForARenderStillRunningPastItsDrainBudget(t *testing.T
 
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	var once sync.Once
+	var enteredOnce, releaseOnce sync.Once
+	letGo := func() { releaseOnce.Do(func() { close(release) }) }
+	testcleanup.Add(t, letGo)
 	service.afterSettleReconcile = func(room string) {
 		if room != artifactID {
 			return
 		}
-		once.Do(func() { close(entered) })
+		enteredOnce.Do(func() { close(entered) })
 		<-release
 	}
 
-	shutdown := make(chan error, 1)
-	go func() { shutdown <- service.Shutdown(testwait.Context(t)) }()
+	type answer struct {
+		err error
+		// held is whether the render was still held when Shutdown answered.
+		held bool
+	}
+	shutdown := make(chan answer, 1)
+	shutdownCtx := testwait.Context(t)
+	go func() {
+		err := service.Shutdown(shutdownCtx)
+		select {
+		case <-release:
+			shutdown <- answer{err: err}
+		default:
+			shutdown <- answer{err: err, held: true}
+		}
+	}()
 	testwait.Receive(t, "the settlement to reach its reconcile hook", entered)
 	// Real time the product itself spends: the render has to outlast the budget, and nothing but
 	// the budget says when that is. It is a floor, not a bound on the machine.
 	time.Sleep(ShutdownDrainBudget)
-	select {
-	case err := <-shutdown:
-		t.Fatalf("Shutdown answered %v while the render was still running: its wait for the per-room workers ran under the drain budget, not its whole deadline", err)
-	default:
-	}
-	close(release)
+	letGo()
 
-	if err := testwait.Receive(t, "Shutdown to answer once the render finished", shutdown); err != nil {
-		t.Errorf("Shutdown returned %v, want nil: a render already running when the budget ends should still let its worker return in time", err)
+	got := testwait.Receive(t, "Shutdown to answer once the render finished", shutdown)
+	if got.held {
+		t.Fatalf("Shutdown answered %v while the render was still held: its wait for the per-room workers ran under the drain budget, not its whole deadline", got.err)
+	}
+	if got.err != nil {
+		t.Errorf("Shutdown returned %v, want nil: a render already running when the budget ends should still let its worker return in time", got.err)
 	}
 	// The control on the hold: a settlement the expired budget refused at its commit leaves the
 	// document owing one. A render let go before the budget ended would have committed, and this
