@@ -66,10 +66,10 @@
  *   deploymentImages  (optional) `{repository, dockerfile}`: an image the deployment repository
  *                  builds on a worker image: `repository` the image's reference without tag or
  *                  digest, `dockerfile` the path in the deployment repository of the Dockerfile it
- *                  is built from. build.ts takes such an image's worker commit from the base that
- *                  Dockerfile names, once the images confirm it, else from the stage its final
- *                  stage copies the worker's packages from, once the image's version label names
- *                  that stage's commit (LEGION_IMAGE_RULE).
+ *                  is built from. build.ts takes such an image's worker commit from the stage
+ *                  that Dockerfile's final stage copies the worker's packages from, once the
+ *                  image's version label names that stage's commit, else, where it copies none,
+ *                  from the base it names, once the images confirm it (LEGION_IMAGE_RULE).
  *
  * A file that is not JSON, or that misses a key, holds a key not above or holds a value of the
  * wrong shape, is refused with one line per fault, each naming the key.

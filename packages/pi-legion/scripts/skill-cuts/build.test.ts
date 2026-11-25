@@ -5757,13 +5757,14 @@ test("build-tasks with no bound writes the pinned bytes: the tasks, the summary,
   // summary counts a subagents.sql query for each of the two session tasks, read before its
   // profile is built (sessionQueries 2); one query of their store after both was counted before.
   // The profiles summary quotes LEGION_IMAGE_RULE, which now states the deployment-built image's
-  // step, and the step of an image whose final stage copies the worker's packages from a stage.
+  // steps: the stage its final stage copies the worker's packages from (by COPY, an ADD into one
+  // a write of it too), else the base it is on.
   expect(digests).toEqual({
     "model tasks": "7065771b7768b39f531ae513e501837a0837349affe5672950558cdaf8230f9e",
     "model summary": "830ba5a3c2d161a489386c91ee25396de33d21df9deabfb10e8e915059c49c48",
     "model printed": "8d8a65fe70015b199ecc51a86a5803ef39c5cacbddbe124b22460e6d36a2971b",
     "profiles tasks": "c29cedaadf7a508a1449548b98da93ab14b079a002eb834365c81cc2f70e79f6",
-    "profiles summary": "cbeb5167bd24ab57c4622069444de237084ce1e06dc08aecdc84c2e92a5f4274",
+    "profiles summary": "d6e16579467c56a74bd8d04d3fbb19db0a1858cba24f75ab84e2964594a7ab25",
     "profiles printed": "9ceae9fd265f889f404904ada8fe26a18ca2cbde3e9141337bd67b87b1aa1b0b",
     "profiles profiles": "26bf1079e50926d2c9e1bdc9482bca041b0a71392fb091f4352c437ab81932c4",
   });
@@ -7241,10 +7242,11 @@ function attestationOf(commit: string): string {
  *  sources of its evidence items of the worker image's and the daemon image's commits. `labels`
  *  are the OCI config labels the registry gives each image (no config when undefined, as for an
  *  image it does not hold), `images` the whole config it gives an image it names, over `labels`,
- *  and `registryReads` the images asked; `deploymentImages` the configuration's key of that name
- *  (the suite's configuration when undefined); `copies` the copies output (the suite's when
- *  undefined); `gh` answers a route it knows before the suite's answers; `refused` says the build
- *  is expected to leave the case out (exit 1) instead of writing it. */
+ *  `refusing` the images whose registry refuses the token of its tokenCommand (HTTP 403), which
+ *  fails their read, and `registryReads` the images asked; `deploymentImages` the configuration's
+ *  key of that name (the suite's configuration when undefined); `copies` the copies output (the
+ *  suite's when undefined); `gh` answers a route it knows before the suite's answers; `refused`
+ *  says the build is expected to leave the case out (exit 1) instead of writing it. */
 async function reprofiledLegion(
   name: string,
   answers: {
@@ -7253,6 +7255,7 @@ async function reprofiledLegion(
     readonly attested: Readonly<Record<string, string>>;
     readonly labels?: Readonly<Record<string, string>>;
     readonly images?: Readonly<Record<string, ImageConfig>>;
+    readonly refusing?: readonly string[];
     readonly deploymentImages?: readonly {
       readonly repository: string;
       readonly dockerfile: string;
@@ -7293,6 +7296,13 @@ async function reprofiledLegion(
       ...standin,
       imageConfig: async (image) => {
         registryReads.push(image);
+        // A configured registry's 401 or 403 fails the read (pod-image.ts's registryImageConfig).
+        if (answers.refusing?.includes(image)) {
+          const host = image.split("/")[0];
+          throw new Error(
+            `reading ${image}: ${host} refused the token of its tokenCommand (HTTP 403)`
+          );
+        }
         const own = answers.images?.[image];
         if (own !== undefined) return own;
         return answers.labels === undefined
@@ -7553,7 +7563,7 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
     });
     expect(result.said).toContain(`${notKnown}${own}; ${labelled}`);
     expect(result.said).toContain(
-      `); ${recipe}, but the 3 rootfs.diff_ids of ${BASE} are not the first 3 of the 5 of ${IMAGE} (entry 2 differs), so ${IMAGE} is not built on the base the Dockerfile names; failing that, the stage the final stage copies the worker's packages from decides: the final stage does not copy each of the profile's packages (the prefix-table.tsv rows under /opt/legion/) from one stage: /opt/legion/pi-acme not at all${rule}`
+      `); ${recipe}, but the 3 rootfs.diff_ids of ${BASE} are not the first 3 of the 5 of ${IMAGE} (entry 2 differs), so ${IMAGE} is not built on the base the Dockerfile names${rule}`
     );
   }, 120_000);
 
@@ -7594,21 +7604,32 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
 // Catches: an image the deployment built on a toolchain image, whose final stage is FROM that
 // toolchain and COPYs the worker's packages from a stage FROM the worker image, left out as not
 // measurable: the toolchain was read for the worker, and it names no commit of the worker's
-// repository (10 saved cases on 4 such digests lost the commit their pin comment gave them). And
+// repository (10 saved cases on 4 such digests lost the commit their pin comment gave them); and
+// the same 10 cases left out once the COPY step came after the built-on step, as the toolchain's
+// registry refuses the token of its tokenCommand (HTTP 403) and the toolchain was read first. And
 // such a COPY taken on the Dockerfile's word alone, though a build can pass the stage another
 // worker image than its ARG default: the image's own version label must name the stage's commit.
+// And an image built on an older worker image that copies the packages from a newer one read at
+// the base's commit, though the COPY wrote the newer packages over the base's; and one whose
+// final stage writes into a copied package after its COPY read at the stage's commit. And a RUN
+// that writes into a copied package through a directory above it (rm -rf /opt/legion/*) missed,
+// one that names a sibling of it (/opt/legion/pi-acme.bak) taken for it, and an ADD into a
+// package taken as no write of it: the image read at the stage's commit, or at its base's.
 describe("build-cases --reprofile of a Legion pane whose image the deployment built on a toolchain image, copying the worker's packages from a stage built on the worker image", () => {
   const REPOSITORY = "registry.example.test/acme/deploy/worker-lean";
   const A = "c".repeat(64);
   const B = "b".repeat(64);
+  const D = "d".repeat(64);
   const T = "e".repeat(64);
   const IMAGE = `${REPOSITORY}@sha256:${A}`;
   const WORKER = `ghcr.io/acme/worker@sha256:${B}`;
+  /** An older worker image, whose digest's build provenance names SHA. */
+  const OLDER = `ghcr.io/acme/worker@sha256:${D}`;
+  /** A toolchain image, whose registry refuses the token of its tokenCommand (HTTP 403), as the
+   *  saved cases' toolchain registry does. */
   const TOOLCHAIN = `registry.example.test/acme/toolchain@sha256:${T}`;
   /** The commit of acme/infra (the suite's deployment) the image was built at. */
   const REVISION = "de".repeat(20);
-  /** The toolchain image's own commit, of no repository the build reads. */
-  const TOOLCHAIN_SHA = "70".repeat(20);
   const DOCKERFILE = "images/worker-lean.Dockerfile";
   const LAYERS = [1, 2, 3, 4, 5].map((n) => `sha256:${String(n).repeat(64)}`);
   /** The release tags of acme/skills the stand-in lists, each at its commit: the worker's release
@@ -7619,7 +7640,7 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
   };
   /** The final stage's COPY lines: the worker's packages, the profile's pi-acme and pi-legion
    *  among them, from the stage legion. The image's Dockerfile at REVISION has two stages FROM
-   *  the worker image, and a final stage FROM the toolchain image with such lines. */
+   *  the worker image, and a final stage FROM the toolchain image (or another) with such lines. */
   const COPIES = [
     "COPY --from=legion /opt/omp /opt/omp",
     "COPY --from=legion --chown=0:0 /opt/legion/pi-envoy /opt/legion/pi-envoy",
@@ -7649,11 +7670,16 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
   const own = (version?: string) =>
     `acme/infra:legion/projects/10-ACME.yaml at ${SHA} gives the project ACME the image ${IMAGE}, whose digest has no build provenance that names a commit (gh api repos/acme/skills/attestations/sha256:${A}), and the OCI config of ${IMAGE}, read from its registry by digest, labels org.opencontainers.image.revision ${REVISION}${version === undefined ? "" : ` and org.opencontainers.image.version ${version}`}, which name no commit or release tag of acme/skills`;
   const labelled = `the configuration's deploymentImages names ${REPOSITORY}, an image acme/infra builds on a worker image: the OCI config of ${IMAGE} labels org.opencontainers.image.source https://github.com/acme/infra and org.opencontainers.image.revision ${REVISION}, a commit of acme/infra (gh api repos/acme/infra/commits?sha=${REVISION}&until=`;
-  /** The built-on step, which the toolchain fails: its diff ids start the image's, but it names
-   *  no commit of acme/skills; then the COPY step. */
-  const toolchain = `); acme/infra:${DOCKERFILE} at ${REVISION} (gh api repos/acme/infra/contents/${DOCKERFILE}?ref=${REVISION}) builds its final stage on ${TOOLCHAIN}; the 2 rootfs.diff_ids of ${TOOLCHAIN} are the first 2 of the 5 of ${IMAGE}, so the image is built on it, but the base's digest has no build provenance that names a commit (gh api repos/acme/skills/attestations/sha256:${T}), and the OCI config of ${TOOLCHAIN}, read from its registry by digest, labels org.opencontainers.image.revision ${TOOLCHAIN_SHA}, which name no commit or release tag of acme/skills; failing that, the stage the final stage copies the worker's packages from decides: `;
+  /** The Dockerfile, read at REVISION. */
+  const recipe = `); acme/infra:${DOCKERFILE} at ${REVISION} (gh api repos/acme/infra/contents/${DOCKERFILE}?ref=${REVISION})`;
+  /** The COPY step, which decides where the final stage, FROM `base`, copies into the profile's
+   *  packages: the base is not read. */
+  const copying = (base = `${TOOLCHAIN} (the default of the ARG TOOLCHAIN)`) =>
+    `${recipe}, whose final stage copies into the profile's packages: a COPY writes the copied files over whatever the final stage's base holds at those paths, so where it copies them from decides, and its base, FROM ${base}, is not read; `;
   const packages = "the profile's packages (the prefix-table.tsv rows under /opt/legion/)";
-  const fromLegion = `${toolchain}the final stage copies /opt/legion/pi-acme, /opt/legion/pi-legion, ${packages}, from the stage legion, FROM ${WORKER} (the default of the ARG LEGION_WORKER); gh api repos/acme/skills/attestations/sha256:${B} names git+https://github.com/acme/skills@refs/heads/main at ${IMAGE_SHA}`;
+  const fromStage = `the final stage copies /opt/legion/pi-acme, /opt/legion/pi-legion, ${packages}, from the stage legion, FROM ${WORKER} (the default of the ARG LEGION_WORKER)`;
+  const fromLegion = (base?: string) =>
+    `${copying(base)}${fromStage}; gh api repos/acme/skills/attestations/sha256:${B} names git+https://github.com/acme/skills@refs/heads/main at ${IMAGE_SHA}`;
   const BY_LABEL = "the COPY is confirmed by the image's version label, not by layer content";
   /** The version label's release tag `tag` of acme/skills, up to the time of its read. */
   const release = (tag: string) =>
@@ -7662,22 +7688,31 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
     "pod profile not measurable: the worker image's commit of acme/skills is not known, and the repository's default branch is a guess, so the profile is not built: ";
   const rule = ": a Legion pod runs the worker image";
 
-  /** The legion case built again with ACME's project file naming IMAGE, the registry giving
-   *  IMAGE's config (its version label `version`, none when undefined) and TOOLCHAIN's, WORKER's
-   *  digest's build provenance naming IMAGE_SHA, acme/infra holding REVISION and at it the
-   *  Dockerfile whose final stage holds `copyLines`, and the configuration's deploymentImages
-   *  naming REPOSITORY. */
+  /** The legion case built again with ACME's project file naming IMAGE; the registry giving
+   *  IMAGE's config (its version label `version`, none when undefined), WORKER's and OLDER's, each
+   *  with the image's first 3 diff ids, and refusing TOOLCHAIN's read; WORKER's digest's build
+   *  provenance naming IMAGE_SHA and OLDER's SHA; acme/infra holding REVISION and at it the
+   *  Dockerfile whose final stage is FROM `final` and holds `copyLines`, then `later`; and the
+   *  configuration's deploymentImages naming REPOSITORY. */
   const copied = (
     name: string,
     {
       version,
+      final = `\${TOOLCHAIN}`,
       copyLines = COPIES,
+      later = [],
       refused,
-    }: { version?: string; copyLines?: readonly string[]; refused?: true }
+    }: {
+      version?: string;
+      final?: string;
+      copyLines?: readonly string[];
+      later?: readonly string[];
+      refused?: true;
+    }
   ) =>
     reprofiledLegion(`copied-${name}`, {
       project: `key: ACME\ninstructions: acme.md\nimage: ${IMAGE}\n`,
-      attested: { [B]: IMAGE_SHA },
+      attested: { [B]: IMAGE_SHA, [D]: SHA },
       images: {
         [IMAGE]: {
           env: [],
@@ -7688,12 +7723,10 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
           },
           diffIds: LAYERS,
         },
-        [TOOLCHAIN]: {
-          env: [],
-          labels: { "org.opencontainers.image.revision": TOOLCHAIN_SHA },
-          diffIds: LAYERS.slice(0, 2),
-        },
+        [WORKER]: { env: [], labels: {}, diffIds: LAYERS.slice(0, 3) },
+        [OLDER]: { env: [], labels: {}, diffIds: LAYERS.slice(0, 3) },
       },
+      refusing: [TOOLCHAIN],
       deploymentImages: [{ repository: REPOSITORY, dockerfile: DOCKERFILE }],
       copies,
       gh: (route, args) => {
@@ -7702,7 +7735,7 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
           return ok(`${REVISION}\n`);
         if (route === `repos/acme/infra/contents/${DOCKERFILE}` && args.includes(`ref=${REVISION}`))
           return ok(
-            `ARG LEGION_WORKER=${WORKER}\nARG TOOLCHAIN=${TOOLCHAIN}\nFROM \${LEGION_WORKER} AS legion\nFROM \${LEGION_WORKER} AS chrome\nFROM \${TOOLCHAIN}\n${copyLines.join("\n")}\n`
+            `ARG LEGION_WORKER=${WORKER}\nARG TOOLCHAIN=${TOOLCHAIN}\nFROM \${LEGION_WORKER} AS legion\nFROM \${LEGION_WORKER} AS chrome\nFROM ${final}\n${[...copyLines, ...later].join("\n")}\n`
           );
         const listed = /^repos\/acme\/skills\/git\/matching-refs\/tags\/(.+)$/.exec(route)?.[1];
         const tag = decodeURIComponent(listed ?? "");
@@ -7714,12 +7747,13 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
       ...(refused === undefined ? {} : { refused }),
     });
 
-  test("an image whose final stage is FROM a toolchain image and copies the profile's packages from one stage FROM the worker image takes that stage's commit, by its digest's build provenance, once the image's version label is the release whose tag is at that commit", async () => {
-    const result = await copied("release", { version: "20.25.1" });
+  test("an image whose final stage is FROM a toolchain image and copies the profile's packages from one stage FROM the worker image takes that stage's commit, by its digest's build provenance, once the image's version label is the release whose tag is at that commit: the toolchain, whose registry refuses its token, is not read, and a later RUN that names no package changes nothing", async () => {
+    const result = await copied("release", { version: "20.25.1", later: ["RUN apt-get update"] });
     expect(result.skills).toEqual(imaged);
     expect(result.plugins).toContain(`pi-acme ${IMAGE_SHA} packages/pi-acme`);
+    expect(result.registryReads).not.toContain(TOOLCHAIN);
     expect(result.worker).toStartWith(`${own("20.25.1")}; ${labelled}`);
-    expect(result.worker).toContain(`${fromLegion}; ${release("skills-v20.25.1")}`);
+    expect(result.worker).toContain(`${fromLegion()}; ${release("skills-v20.25.1")}`);
     expect(result.worker).toContain(
       ` is ${IMAGE_SHA}, so the label confirms the stage's commit: ${BY_LABEL}, so the image's units of acme/skills are read at ${IMAGE_SHA}${rule}`
     );
@@ -7731,7 +7765,7 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
     expect(result.skills).toEqual(imaged);
     expect(result.worker).toStartWith(`${own(version)}; ${labelled}`);
     expect(result.worker).toContain(
-      `${fromLegion}; the OCI config of ${IMAGE} labels org.opencontainers.image.version ${version}, whose ${IMAGE_SHA.slice(0, 12)} starts the stage's commit ${IMAGE_SHA}, so the label confirms the stage's commit: ${BY_LABEL}, so the image's units of acme/skills are read at ${IMAGE_SHA}${rule}`
+      `${fromLegion()}; the OCI config of ${IMAGE} labels org.opencontainers.image.version ${version}, whose ${IMAGE_SHA.slice(0, 12)} starts the stage's commit ${IMAGE_SHA}, so the label confirms the stage's commit: ${BY_LABEL}, so the image's units of acme/skills are read at ${IMAGE_SHA}${rule}`
     );
   }, 120_000);
 
@@ -7774,7 +7808,7 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
         written: false,
       });
       expect(result.said).toContain(`${notKnown}${own(version)}; ${labelled}`);
-      expect(result.said).toContain(`${fromLegion}${said[0]}`);
+      expect(result.said).toContain(`${fromLegion()}${said[0]}`);
       expect(result.said).toContain(`${said.at(-1)}: ${BY_LABEL}${rule}`);
     },
     120_000
@@ -7807,11 +7841,169 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
       });
       expect(result.said).toContain(`${notKnown}${own("20.25.1")}; ${labelled}`);
       expect(result.said).toContain(
-        `${toolchain}the final stage does not copy each of ${packages} from one stage: /opt/legion/pi-acme from the stage legion, ${where}${rule}`
+        `${copying()}the final stage does not copy each of ${packages} from one stage: /opt/legion/pi-acme from the stage legion, ${where}${rule}`
       );
     },
     120_000
   );
+
+  test("an image whose final stage is FROM an older worker image, which the image is built on, and copies the profile's packages from a stage FROM a newer one takes the newer one's commit: the COPY step decides, and the base is not read", async () => {
+    const result = await copied("built-on-and-copied", { version: "20.25.1", final: OLDER });
+    expect(result.skills).toEqual(imaged);
+    expect(result.registryReads).not.toContain(OLDER);
+    expect(result.worker).toStartWith(`${own("20.25.1")}; ${labelled}`);
+    expect(result.worker).toContain(`${fromLegion(OLDER)}; ${release("skills-v20.25.1")}`);
+    expect(result.worker).toContain(
+      ` is ${IMAGE_SHA}, so the label confirms the stage's commit: ${BY_LABEL}, so the image's units of acme/skills are read at ${IMAGE_SHA}${rule}`
+    );
+  }, 120_000);
+
+  test("an image whose final stage is FROM an older worker image, which the image is built on, and copies one of the profile's packages from a stage FROM a newer one and the other not leaves the case out, naming the package not copied: the base is not read", async () => {
+    const result = await copied("built-on-and-partly-copied", {
+      version: "20.25.1",
+      final: OLDER,
+      copyLines: COPIES.filter((line) => !line.includes("pi-legion")),
+      refused: true,
+    });
+    expect({ code: result.code, written: result.written, skills: result.skills }).toEqual({
+      code: EXIT.failed,
+      written: false,
+      skills: [],
+    });
+    expect(result.registryReads).not.toContain(OLDER);
+    expect(result.said).toContain(`${notKnown}${own("20.25.1")}; ${labelled}`);
+    expect(result.said).toContain(
+      `${copying(OLDER)}the final stage does not copy each of ${packages} from one stage: /opt/legion/pi-acme from the stage legion, /opt/legion/pi-legion not at all${rule}`
+    );
+  }, 120_000);
+
+  test("an image whose final stage is FROM the worker image and copies none of the profile's packages takes the commit of that base, once its diff ids are the first of the image's", async () => {
+    const result = await copied("built-on", {
+      final: `\${LEGION_WORKER}`,
+      copyLines: COPIES.filter((line) => !line.includes("/opt/legion/pi-")),
+    });
+    expect(result.skills).toEqual(imaged);
+    expect(result.registryReads).toContain(WORKER);
+    expect(result.worker).toStartWith(`${own()}; ${labelled}`);
+    expect(result.worker).toContain(
+      `${recipe} builds its final stage on ${WORKER}; the 3 rootfs.diff_ids of ${WORKER} are the first 3 of the 5 of ${IMAGE}, so the image is built on it; gh api repos/acme/skills/attestations/sha256:${B} names git+https://github.com/acme/skills@refs/heads/main at ${IMAGE_SHA}, so the image's units of acme/skills are read at ${IMAGE_SHA}${rule}`
+    );
+  }, 120_000);
+
+  /** A RUN longer than the evidence shows of a step. */
+  const LONG_RUN =
+    "RUN set -eux; apt-get update; apt-get install -y --no-install-recommends jq ripgrep; rm -rf /var/lib/apt/lists/* /opt/legion/pi-legion/dist/skills/alpha";
+  test.each([
+    [
+      "a RUN that names a path in a copied package",
+      "RUN rm -rf /opt/legion/pi-acme/dist/skills/alpha",
+      "RUN rm -rf /opt/legion/pi-acme/dist/skills/alpha",
+      "/opt/legion/pi-acme",
+    ],
+    [
+      "a long RUN that names a path in a copied package",
+      LONG_RUN,
+      `${LONG_RUN.slice(0, 120)}…`,
+      "/opt/legion/pi-legion",
+    ],
+    [
+      "a RUN that names the copied packages' directory by a glob",
+      "RUN rm -rf /opt/legion/*",
+      "RUN rm -rf /opt/legion/*",
+      "/opt/legion/pi-acme",
+    ],
+    [
+      "a RUN that names a directory above the copied packages",
+      "RUN chown -R 0:0 /opt",
+      "RUN chown -R 0:0 /opt",
+      "/opt/legion/pi-acme",
+    ],
+  ] as const)(
+    "%s after the final stage's COPY lines leaves the case out, naming the step, cut short, and the package",
+    async (name, step, shown, pkg) => {
+      const result = await copied(`later-${name.replaceAll(" ", "-")}`, {
+        version: "20.25.1",
+        later: [step],
+        refused: true,
+      });
+      expect({ code: result.code, written: result.written }).toEqual({
+        code: EXIT.failed,
+        written: false,
+      });
+      expect(result.said).toContain(`${notKnown}${own("20.25.1")}; ${labelled}`);
+      expect(result.said).toContain(
+        `${copying()}${fromStage}, but its step "${shown}", after its last COPY of ${pkg}, names it, a path in it or a directory above it, so the image's ${pkg} need not be the stage's${rule}`
+      );
+    },
+    120_000
+  );
+
+  test("a RUN after the final stage's COPY lines that names a sibling of a copied package, another path or / alone changes nothing: paths are compared name by name", async () => {
+    const result = await copied("later-sibling", {
+      version: "20.25.1",
+      later: [
+        "RUN rm -rf /opt/legion/pi-acme.bak /opt/legion/pi-acme-old /var/lib/apt/lists/* && ls /",
+      ],
+    });
+    expect(result.skills).toEqual(imaged);
+    expect(result.worker).toContain(`${fromLegion()}; ${release("skills-v20.25.1")}`);
+    expect(result.worker).toContain(
+      ` is ${IMAGE_SHA}, so the label confirms the stage's commit: ${BY_LABEL}, so the image's units of acme/skills are read at ${IMAGE_SHA}${rule}`
+    );
+  }, 120_000);
+
+  test.each([
+    [
+      "an ADD from the build context into the packages' directory after the COPY lines",
+      [...COPIES, "ADD --chown=0:0 patch.tar /opt/legion/"],
+      "/opt/legion/pi-acme from the stage legion and the build context by ADD, /opt/legion/pi-legion from the stage legion and the build context by ADD",
+    ],
+    [
+      "an ADD of a URL into a copied package before its COPY",
+      ["ADD https://example.test/acme/skills.tar /opt/legion/pi-legion/dist/skills/", ...COPIES],
+      "/opt/legion/pi-acme from the stage legion, /opt/legion/pi-legion from the stage legion and https://example.test/acme/skills.tar by ADD",
+    ],
+  ] as const)(
+    "%s leaves the case out, naming where the final stage writes each package from",
+    async (name, copyLines, where) => {
+      const result = await copied(`added-${name.replaceAll(" ", "-")}`, {
+        version: "20.25.1",
+        copyLines,
+        refused: true,
+      });
+      expect({ code: result.code, written: result.written }).toEqual({
+        code: EXIT.failed,
+        written: false,
+      });
+      expect(result.said).toContain(`${notKnown}${own("20.25.1")}; ${labelled}`);
+      expect(result.said).toContain(
+        `${copying()}the final stage does not copy each of ${packages} from one stage: ${where}${rule}`
+      );
+    },
+    120_000
+  );
+
+  test("an image whose final stage is FROM the worker image, copies none of the profile's packages and ADDs into one leaves the case out, naming the ADD: the built-on step does not decide, and the base is not read", async () => {
+    const result = await copied("built-on-and-added", {
+      version: "20.25.1",
+      final: `\${LEGION_WORKER}`,
+      copyLines: [
+        ...COPIES.filter((line) => !line.includes("/opt/legion/pi-")),
+        "ADD https://example.test/acme/pi-acme.tar /opt/legion/pi-acme",
+      ],
+      refused: true,
+    });
+    expect({ code: result.code, written: result.written, skills: result.skills }).toEqual({
+      code: EXIT.failed,
+      written: false,
+      skills: [],
+    });
+    expect(result.registryReads).not.toContain(WORKER);
+    expect(result.said).toContain(`${notKnown}${own("20.25.1")}; ${labelled}`);
+    expect(result.said).toContain(
+      `${copying(`${WORKER} (the default of the ARG LEGION_WORKER)`)}the final stage does not copy each of ${packages} from one stage: /opt/legion/pi-acme from https://example.test/acme/pi-acme.tar by ADD, /opt/legion/pi-legion not at all${rule}`
+    );
+  }, 120_000);
 });
 
 // Catches: a SKILL.md read GitHub refused for its primary rate limit ("API rate limit exceeded

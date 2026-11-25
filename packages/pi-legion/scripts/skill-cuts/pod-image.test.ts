@@ -415,8 +415,11 @@ test("sessionPodImage of a pin file with no line that starts with its key says s
 
 // Catches: a deployment's Dockerfile whose final stage COPYs the worker's packages from a stage
 // read as if its final stage were built on the worker image: the stage a COPY names, the image
-// that stage is FROM (an ARG default resolved) and where the COPY writes must each be read.
-test("dockerfileStages reads each stage, its ARG default resolved, and the final stage's COPY lines with their flags, a continued line read whole", () => {
+// that stage is FROM (an ARG default resolved) and where the COPY writes must each be read. And a
+// later step of the final stage that writes into a copied package missed: each instruction is
+// read in its order, a heredoc's lines (a FROM among them) as part of the RUN that opens it, and
+// an ADD's sources, a URL among them, are read as where it adds from.
+test("dockerfileStages reads each stage, its ARG default resolved, and the final stage's instructions in order, a COPY or ADD with its flags, sources and destination, a continued line and a heredoc read whole", () => {
   const worker = `ghcr.io/acme/worker@sha256:${"b".repeat(64)}`;
   const toolchain = `registry.example.test/acme/toolchain@sha256:${"e".repeat(64)}`;
   const read = dockerfileStages(
@@ -435,6 +438,15 @@ test("dockerfileStages reads each stage, its ARG default resolved, and the final
       'COPY ["start.sh", "/opt/legion/bin/"]',
       "COPY --link --from=1 /opt/omp/ /opt/omp/",
       "RUN echo done",
+      "add --chown=0:0 https://example.test/acme/patch.tar extra.tar /opt/legion/",
+      "RUN <<EOF",
+      "set -eux",
+      "rm -rf /opt/legion/pi-legion/dist",
+      "EOF",
+      "RUN cat <<'INNER' >/etc/inner.Dockerfile",
+      "FROM scratch",
+      "INNER",
+      "RUN echo $((1<<2))",
       "",
     ].join("\n")
   );
@@ -444,10 +456,52 @@ test("dockerfileStages reads each stage, its ARG default resolved, and the final
       { name: "tools", from: "$TOOLCHAIN", base: toolchain, arg: "TOOLCHAIN" },
       { name: undefined, from: `\${UNSET}`, base: undefined, arg: "UNSET" },
     ],
-    copies: [
-      { from: "legion", dest: "/opt/legion/pi-legion" },
-      { from: undefined, dest: "/opt/legion/bin/" },
-      { from: "1", dest: "/opt/omp/" },
+    steps: [
+      {
+        keyword: "ARG",
+        text: "ARG LEGION_WORKER=ghcr.io/acme/other@sha256:0",
+        copy: undefined,
+      },
+      {
+        keyword: "COPY",
+        text: "COPY --from=legion --chown=0:0 /opt/legion/pi-legion /opt/legion/pi-legion",
+        copy: {
+          from: "legion",
+          sources: ["/opt/legion/pi-legion"],
+          dest: "/opt/legion/pi-legion",
+        },
+      },
+      {
+        keyword: "COPY",
+        text: 'COPY ["start.sh", "/opt/legion/bin/"]',
+        copy: { from: undefined, sources: ["start.sh"], dest: "/opt/legion/bin/" },
+      },
+      {
+        keyword: "COPY",
+        text: "COPY --link --from=1 /opt/omp/ /opt/omp/",
+        copy: { from: "1", sources: ["/opt/omp/"], dest: "/opt/omp/" },
+      },
+      { keyword: "RUN", text: "RUN echo done", copy: undefined },
+      {
+        keyword: "ADD",
+        text: "add --chown=0:0 https://example.test/acme/patch.tar extra.tar /opt/legion/",
+        copy: {
+          from: undefined,
+          sources: ["https://example.test/acme/patch.tar", "extra.tar"],
+          dest: "/opt/legion/",
+        },
+      },
+      {
+        keyword: "RUN",
+        text: "RUN <<EOF set -eux rm -rf /opt/legion/pi-legion/dist",
+        copy: undefined,
+      },
+      {
+        keyword: "RUN",
+        text: "RUN cat <<'INNER' >/etc/inner.Dockerfile FROM scratch",
+        copy: undefined,
+      },
+      { keyword: "RUN", text: "RUN echo $((1<<2))", copy: undefined },
     ],
   });
 });
