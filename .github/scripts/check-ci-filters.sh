@@ -495,21 +495,13 @@
 #                    .github/scripts/check-ci-filters.sh generate "$RUNNER_TEMP/ci-filters.yaml"
 # CI runs it in ci.yaml's ci-filters job, and its tests in ci.yaml's test job.
 #
-# On a machine whose `go` is a bootstrap that switches to a toolchain in the module cache - every
-# Legion worker pod is one - every closure above fails with `toolchain not available`, because the
-# go commands run over an emptied GOMODCACHE and so cannot reach the toolchain module either. The
-# real findings then sit among those, where a reader judging this by its tail or its exit status
-# sees nothing. Run it on the binary of the toolchain go.work pins instead: the engine starts from
-# the go this script's PATH resolves (CI_FILTERS_GO below), so it then answers as CI does. go
-# itself names that toolchain's root: the go PATH finds, where it already is go.work's version (as
-# setup-go and mise install it), else the toolchain module in this machine's module cache, fetched
-# there once if it is not. Where go can have neither, it says why, and the recipe stops there.
-#   v=$(sed -n 's/^go //p' go.work)
-#   goroot=$(env -u GOROOT GOTOOLCHAIN="go$v" go env GOROOT) &&
-#     env -u GOROOT PATH="$goroot/bin:$PATH" GOTOOLCHAIN=local .github/scripts/check-ci-filters.sh
-# Either way, read its output by grepping for the problem rather than by its last line.
+# A machine whose `go` is a bootstrap that switches to a toolchain in the module cache - every
+# Legion worker pod is one - needs no recipe of its own: the engine resolves the toolchain go.work
+# pins with that go, under this machine's own module cache (above), before any closure runs over
+# the empty one. Where go cannot have that toolchain, the run fails naming the version go could
+# not have. Either way, read its output by grepping for the problem rather than by its last line.
 #
-# No other Go setting of the caller's changes the answer. Before it runs Go the engine, and
+# No Go setting of the caller's changes the answer. Before it runs Go the engine, and
 # go_build_tags.py, which reads each module's build tags before the engine runs, drop every
 # variable the go command reads but those that say where it keeps or fetches files, and the
 # user's `go env -w` file with them (GOENV=off: go_build_tags.go_environment), and the engine starts

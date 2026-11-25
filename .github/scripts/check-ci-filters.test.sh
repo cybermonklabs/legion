@@ -41,8 +41,8 @@
 # may run it, a workflow several jobs of ci.yaml call runs each job of it named for a caller under
 # that caller alone, a run that changes a file of the tree, but those its mode writes (the
 # PUSH_WORKFLOWS workflows, generate's output and its .inputs file), fails naming each, as one does
-# that cannot read the tree through git, and the header's run recipe runs the check, or says why it
-# stops.
+# that cannot read the tree through git, and a bare run over a module cache that holds no
+# toolchain runs the check, or says why it stops.
 #
 # Each case builds a miniature repository under a temporary directory - a go.work binding one
 # module, a ci.yaml whose `changes` job gates one job, the gate of that job and two excluded
@@ -5823,33 +5823,32 @@ check "fails" "$(is "$status" 1)"
 check "says the reading was empty rather than passing over it" \
   "$(contains "$out" '^::error::this check could not read the files of the tree it checks (git lists none), so whether this run changed one is unknown')"
 
-# The header's run recipe, run as the header writes it, from a fixture's root and over a module
-# cache that holds no toolchain, with GOPROXY=off so that go can fetch none. Where the go PATH
+# A bare run, from a fixture's root and over a module cache that holds no toolchain, with
+# GOPROXY=off so that go can fetch none: the run a machine with no recipe makes. Where the go PATH
 # finds already is the version go.work names - the state setup-go or mise leaves when it installs
-# that version itself - the recipe runs the check on that go. Where go cannot have that version,
-# the recipe stops and go says why, rather than stopping without a word.
-recipe=$(sed -n '/^#   v=/,/check-ci-filters\.sh$/s/^#   //p' "$script_dir/check-ci-filters.sh")
-run_recipe() {
+# that version itself - the check runs on that go. Where go cannot have that version, the check
+# fails naming the version go.work requires and the go it ran instead (Session.toolchain), rather
+# than stopping without a word.
+run_bare() {
   set +e
-  out=$(cd "$1" && env -u GOROOT GOMODCACHE="$1.modcache" GOPROXY=off bash -c "$recipe" 2>&1)
+  out=$(cd "$1" && env GOMODCACHE="$1.modcache" GOPROXY=off "$1/.github/scripts/check-ci-filters.sh" 2>&1)
   status=$?
   set -e
 }
 
-echo "case: the header's recipe runs the check on the go PATH finds where that go is go.work's version"
-check "the header holds a recipe that runs the check" "$(contains "$recipe" 'check-ci-filters\.sh$')"
-root=$(fixture recipe-local-go)
+echo "case: a bare run runs the check on the go PATH finds where that go is go.work's version"
+root=$(fixture bare-local-go)
 version=$(cd "$root" && env -u GOROOT GOTOOLCHAIN=local go env GOVERSION)
 printf 'go %s\n\nuse ./mod\n' "${version#go}" > "$root/go.work"
-run_recipe "$root"
+run_bare "$root"
 check "exits 0" "$(is "$status" 0)"
 check "says what it checked" "$(contains "$out" 'every ci.yaml filter is computed from what its job reads (1 gates)')"
 
-echo "case: the header's recipe says why it stops where go cannot have go.work's version"
-root=$(fixture recipe-missing-go)
+echo "case: a bare run says why it stops where go cannot have go.work's version"
+root=$(fixture bare-missing-go)
 printf 'go 1.999.0\n\nuse ./mod\n' > "$root/go.work"
-run_recipe "$root"
+run_bare "$root"
 check "fails" "$(is "$status" 1)"
-check "names the version it could not have" "$(contains "$out" 'go1\.999\.0')"
+check "names the version it could not have" "$(contains "$out" 'go\.work requires go >= 1\.999\.0 (running go ')"
 
 summary "check-ci-filters.sh computes each filter from its job's Go closure and reads, and holds its table to ci.yaml"

@@ -19,9 +19,8 @@ already. What surrounds a go command is read over the steps whose writes may rea
 step the steps before it, a claimed simple command the steps up to and including its own
 (job_up_to), and a script's go command every step of each job that may run the script
 (around_job), since which step starts a script is nothing this check can prove.
-check-ci-filters.sh's header says why, gives the remedies - the step's own script line, or
-ENV_ALLOWED for a name with which go compiles the same files and runs the same tests - and gives
-the recipe that runs it as CI does, GOROOT unset.
+check-ci-filters.sh's header says why and gives the remedies - the step's own script line, or
+ENV_ALLOWED for a name with which go compiles the same files and runs the same tests.
 """
 
 from __future__ import annotations
