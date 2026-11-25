@@ -13,6 +13,7 @@ import { compareTimestamps } from "../../lib/timestamps";
 import { activityDescription, dateKey, dayLabel } from "../activity/activity-model";
 import type { AgentPart } from "../refs/AgentName";
 import { askResolutionReason } from "../refs/actor";
+import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import {
   buildIssuePath,
   buildReferencePath,
@@ -29,9 +30,10 @@ import { plainWords } from "./tree-drafts";
  * first, by day.
  *
  * It holds the issue's status moves, its claims and releases, its handoffs, its documents added
- * and removed, every other event of the issue itself, and the threads of `agents-only.ts` - each
- * thread the Legion daemon began, whoever wrote in it, and each comment thread tied to no text
- * that only agents wrote in - each thread with its text, its replies and their reply controls.
+ * and removed, every other event of the issue itself, and the threads the history holds
+ * (`agents-only.ts`) - each thread the Legion daemon began, whoever wrote in it, and each
+ * agents' post, a comment thread tied to no text that no person wrote in - each thread with its
+ * text, its replies and their reply controls.
  * It holds no event that writes a post: a thread it holds is drawn from its comments and
  * messages, and every other thread is the outline's. It leaves out each event of a row the
  * outline draws - an ask asked, answered, resolved, edited or handed on, what happened to a
@@ -48,22 +50,20 @@ export interface HistoryDay {
   readonly date: string;
   /** What the day is headed, in the page's words: Today, Yesterday, or the date written out. */
   readonly label: string;
-  /** Whether the day is the one the oldest event read so far was made in, or one before it,
-   *  while older pages of the log are still to be read (`HistoryInput.loadedFrom`): its earlier
-   *  events can be on a page not read yet, so how many entries it holds is not known until that
-   *  page lands. */
-  readonly partial: boolean;
-  readonly today: boolean;
   /** The day's entries, newest first, with the reader's read mark among them where it falls. */
   readonly entries: readonly HistoryEntry[];
 }
 
-/** One turn of a thread the history holds (`agents-only.ts`). */
+/** One turn of a thread the history holds (`agents-only.ts`), with the marks of a post its author
+ *  corrected: when its author last edited it, and its deletion, which stands in place of its
+ *  words (`post-marks.ts`). */
 export interface HistoryTurn {
   readonly at: string;
   readonly author: Actor;
   readonly body: string;
   readonly bodyTree?: DisplayTree;
+  readonly deleted: PostDeletion | null;
+  readonly editedAt: string | null;
   readonly id: string;
   readonly kind: "comment" | "message";
 }
@@ -147,9 +147,7 @@ export interface HistoryInput {
   readonly lastReadSeq: number;
   /** When the oldest event the log has read so far was made, while older pages of the log are
    *  still to be read; undefined once the whole log is in. A thread that began before it is
-   *  left out until its page is read: its place among events not read yet is not known, and a
-   *  day drawn with that thread alone would count one entry where it holds many. The day it was
-   *  made in is partial (`HistoryDay.partial`). */
+   *  left out until its page is read: its place among events not read yet is not known. */
   readonly loadedFrom?: string;
   readonly messages: readonly MessageRead[] | undefined;
   /** Local YYYY-MM-DD. */
@@ -310,8 +308,7 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
   const days: { date: string; entries: HistoryEntry[] }[] = [];
   for (const entry of entries) {
     // The line that says what is new stands after the oldest unread entry, in that entry's own
-    // day: where the reader last read through an earlier day, it closes today's list, which is
-    // open, rather than heading a day the list folds.
+    // day, which it closes where the reader last read through an earlier day.
     if (!marked && entry.seq > 0 && entry.seq <= input.lastReadSeq) {
       days.at(-1)?.entries.push({ id: "unread", kind: "unread" });
       marked = true;
@@ -330,11 +327,6 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
   const noon = new Date(`${input.today}T12:00:00`);
   noon.setDate(noon.getDate() - 1);
   const yesterday = dateKey(noon.toISOString());
-  // While older pages of the log remain, the day the oldest event read so far was made in holds
-  // the events of the pages read and none of the next one's - only a thread waits for its page
-  // (`threadsOf`) - so how many entries it holds is not known yet; nor is it for a day before it,
-  // which only an event dated earlier than its place in the log draws.
-  const cut = input.loadedFrom === undefined ? undefined : dateKey(input.loadedFrom);
   return days.map((day) => ({
     date: day.date,
     entries: day.entries,
@@ -344,9 +336,94 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
         : day.date === yesterday
           ? CONTROL_LABELS.history_yesterday
           : dayLabel(day.date, input.today),
-    partial: cut !== undefined && day.date <= cut,
-    today: day.date === input.today,
   }));
+}
+
+/** How many entries the history draws at first, and how many more each press of its control
+ *  draws: a thread with every turn of it is one entry, a run of uploads is one, and the line that
+ *  says what is new is none (`historyDownTo`). */
+export const HISTORY_PAGE = 20;
+
+/** Where an entry stands in the history, newest first: when it happened, and for one instant its
+ *  place in the log (`buildHistory`). The panel draws the history down to the place of the last
+ *  entry it draws, so an entry that arrives above that place is drawn and takes none of the
+ *  entries drawn out. */
+export interface HistoryPlace {
+  readonly at: string;
+  readonly seq: number;
+}
+
+/** How `one` stands to `other` in the history: above it (more than 0) where it is newer, at the
+ *  same place (0), or under it (less than 0). */
+export function comparePlaces(one: HistoryPlace, other: HistoryPlace): number {
+  return compareTimestamps(one.at, other.at) || one.seq - other.seq;
+}
+
+/** The entries of `days` in the order the history draws them, newest first, with no read mark. */
+function datedIn(days: readonly HistoryDay[]): Dated[] {
+  return days.flatMap((day) =>
+    day.entries.filter((entry): entry is Dated => entry.kind !== "unread")
+  );
+}
+
+function placeOf(entry: Dated): HistoryPlace {
+  return { at: entry.at, seq: entry.seq };
+}
+
+/**
+ * The place of the entry `count` entries under `from` in `days`, the entry at `from` not counted,
+ * or of the history's `count`th entry where `from` is undefined: of its last entry where fewer
+ * stand there, and `from` itself where none does. Undefined only where `days` holds no entry and
+ * `from` is undefined.
+ */
+export function placeUnder(
+  days: readonly HistoryDay[],
+  from: HistoryPlace | undefined,
+  count: number
+): HistoryPlace | undefined {
+  const under = datedIn(days).filter(
+    (entry) => from === undefined || comparePlaces(placeOf(entry), from) < 0
+  );
+  const last = under.slice(0, count).at(-1);
+  return last === undefined ? from : placeOf(last);
+}
+
+/** The place of the entry of the thread that holds the turn `id`, its root or a reply, where
+ *  `days` holds that thread. */
+export function turnPlace(days: readonly HistoryDay[], id: string): HistoryPlace | undefined {
+  const entry = datedIn(days).find(
+    (one) =>
+      one.kind === "thread" && (one.root.id === id || one.replies.some((reply) => reply.id === id))
+  );
+  return entry === undefined ? undefined : placeOf(entry);
+}
+
+/**
+ * The history as the panel draws it down to `end`: each day with its entries that stand at `end`
+ * or above it, and with the line that says what is new where the entry under that line is drawn
+ * too; a day with none of its entries drawn is left out, and nothing is drawn where `end` is
+ * undefined. `left` is how many entries stand under `end`, which the panel's control draws next.
+ */
+export function historyDownTo(
+  days: readonly HistoryDay[],
+  end: HistoryPlace | undefined
+): { readonly days: readonly HistoryDay[]; readonly left: number } {
+  const dated = datedIn(days);
+  // The history is newest first, so the entries at `end` or above it are its first ones.
+  const under =
+    end === undefined ? 0 : dated.findIndex((entry) => comparePlaces(placeOf(entry), end) < 0);
+  const count = under === -1 ? dated.length : under;
+  let seen = 0;
+  const drawn: HistoryDay[] = [];
+  for (const day of days) {
+    const entries = day.entries.filter((entry) => {
+      if (entry.kind === "unread") return seen < count;
+      seen += 1;
+      return seen <= count;
+    });
+    if (entries.length > 0) drawn.push({ ...day, entries });
+  }
+  return { days: drawn, left: dated.length - count };
 }
 
 /**
@@ -443,9 +520,9 @@ function threadsOf(
   }
   // A thread stands at its first turn's time (`threadEntry`), so one whose first turn is older
   // than every event read so far is left out whole, its replies too however recent, until the
-  // page that reaches back to that turn is read: drawn before, it would stand among days the log
-  // has not read, and a day drawn with it alone would count one entry where it holds many. The
-  // address of one of its turns reads the log on until it is in (`IssueHistory.tsx`).
+  // page that reaches back to that turn is read: drawn before, it would stand among entries the
+  // log has not read. The address of one of its turns reads the log on until it is in
+  // (`IssueHistory.tsx`).
   const from = input.loadedFrom;
   return from === undefined
     ? threads
@@ -638,6 +715,8 @@ function commentTurn(comment: Comment & Pick<CommentWithTrees, "body_tree">): Hi
     author: comment.author,
     body: comment.body,
     ...(comment.body_tree === undefined ? {} : { bodyTree: comment.body_tree }),
+    deleted: postDeletion(comment),
+    editedAt: comment.edited_at,
     id: comment.id,
     kind: "comment",
   };
@@ -649,6 +728,8 @@ function messageTurn(message: MessageRead["message"]): HistoryTurn {
     author: message.author,
     body: message.body,
     ...(message.body_tree === undefined ? {} : { bodyTree: message.body_tree }),
+    deleted: postDeletion(message),
+    editedAt: message.edited_at,
     id: message.id,
     kind: "message",
   };

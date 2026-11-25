@@ -48,7 +48,7 @@ export function historyHeading(page: Page): Locator {
 
 /** The history's Load older control, which reads the log's next page. */
 export function historyLoadOlder(page: Page): Locator {
-  return historyPanel(page).getByRole("button", { exact: true, name: CONTROL_LABELS.load_older });
+  return historyPanel(page).getByRole("button", { exact: true, name: CONTROL_LABELS.show_more });
 }
 
 /** The answer to the history's read of a page of issue `key`'s log older than the first, the

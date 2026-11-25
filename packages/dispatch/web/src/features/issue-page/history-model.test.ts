@@ -7,18 +7,22 @@ import { dayLabel } from "../activity/activity-model";
 import { buildIssuePath, buildReferencePath, parseNodeReference } from "../refs/routes";
 import {
   buildHistory,
+  HISTORY_PAGE,
   type HistoryBlock,
   type HistoryDay,
   type HistoryEntry,
   type HistoryInput,
   historyBlocks,
+  historyDownTo,
+  placeUnder,
+  turnPlace,
 } from "./history-model";
 import { CONTROL_LABELS, DECLARED_WORDS, wordsIn } from "./page-words";
 
 /**
  * The issue's history as the panel draws it: every event that is no row of the outline, newest
  * first, by day, with a run of one author's uploads - the newest and those made at most a minute
- * before it - as one entry and the threads agents wrote among themselves drawn whole.
+ * before it - as one entry and the threads the history holds drawn whole.
  */
 
 const KEY = "CORE-1";
@@ -603,11 +607,7 @@ test("each day is headed, newest first, and the read mark falls between read and
     today: "2026-11-15",
   });
 
-  expect(days.map((day) => [day.date, day.today])).toEqual([
-    ["2026-11-15", true],
-    ["2026-11-14", false],
-    ["2026-11-13", false],
-  ]);
+  expect(days.map((day) => day.date)).toEqual(["2026-11-15", "2026-11-14", "2026-11-13"]);
   // Today and Yesterday are the page's own words, each a word it declares; an
   // older day is its date, written out in the reader's locale.
   expect(
@@ -619,8 +619,8 @@ test("each day is headed, newest first, and the read mark falls between read and
     CONTROL_LABELS.history_yesterday,
     dayLabel("2026-11-13", "2026-11-15"),
   ]);
-  // The line that says what is new closes the day of the oldest unread entry - today's list,
-  // which is open - and never heads an earlier day, which the list folds.
+  // The line that says what is new closes the day of the oldest unread entry, and never heads
+  // the next day under that day's own line.
   expect(days[0]?.entries.map((entry) => entry.kind)).toEqual(["event", "unread"]);
   expect(days[1]?.entries.map((entry) => entry.kind)).toEqual(["event"]);
 });
@@ -646,7 +646,7 @@ test("the read mark falls inside a day where that day holds read and unread entr
 
 // Threads come from the whole comment list and events from the pages of the log read so far, so
 // a thread older than the oldest event read waits for its page: drawn before it, it would stand
-// in a day of its own that counts that thread alone.
+// among entries the log has not read.
 test("a thread that began before the oldest event read so far waits for its page", () => {
   seq = 0;
   const old = comment("old", "2026-11-10T09:00:00Z", AGENT);
@@ -671,43 +671,144 @@ test("a thread that began before the oldest event read so far waits for its page
   expect(roots(undefined)).toEqual(["recent", "old"]);
 });
 
-// Only a thread waits for the page that reaches back to it, so the day the pages read so far end
-// in holds as many of its entries as those pages do: a day of five claims, two of them on the
-// first page, was counted two until Load older counted it five. That day is partial while older
-// pages remain, and a day after it is whole.
-test("the day the pages of the log read so far end in is partial until the log is in", () => {
-  seq = 0;
-  const older = [1, 2, 3].map((minute) => event("issue.claimed", november(13, 12, minute), {}));
-  const read = [
-    event("issue.claimed", november(13, 12, 4), {}),
-    event("issue.claimed", november(13, 12, 5), {}),
-    event("issue.claimed", november(14, 12), {}),
-  ];
-  const days = (events: readonly DispatchEvent[], loadedFrom: string | undefined) =>
-    buildHistory({
-      artifacts: [],
-      asks: [],
-      blocks: new Map(),
-      comments: [],
-      events,
-      lastReadSeq: 0,
-      ...(loadedFrom === undefined ? {} : { loadedFrom }),
-      messages: [],
-      today: "2026-11-15",
-    }).map((day) => [day.date, day.partial, day.entries.length]);
+/** `count` claims of the issue, oldest first, one a minute up to 2026-11-15 11:59 UTC, each
+ *  later in the log than the one before. */
+function claims(count: number): DispatchEvent[] {
+  return Array.from({ length: count }, (_, index) =>
+    event("issue.claimed", new Date(Date.UTC(2026, 10, 15, 12, index - count)).toISOString(), {})
+  );
+}
 
+/** The history of `events`, `comments` and `messages`, the reader's mark at `lastReadSeq`. */
+function daysOf(
+  events: readonly DispatchEvent[],
+  lastReadSeq = 0,
+  comments: readonly Comment[] = [],
+  messages: readonly MessageRead[] = []
+): HistoryDay[] {
+  return buildHistory({
+    artifacts: [],
+    asks: [],
+    blocks: new Map(),
+    comments,
+    events,
+    lastReadSeq,
+    messages,
+    today: "2026-11-15",
+  });
+}
+
+/** How many entries `days` draws, the line that says what is new not counted. */
+function entriesIn(days: readonly HistoryDay[]): number {
+  return flat(days).filter((entry) => entry.kind !== "unread").length;
+}
+
+// The history draws its first 20 entries, and each press of its control the next 20, where a
+// thread with every turn of it is one entry, a run of uploads one entry, and the line that says
+// what is new none. The control says how many entries are left to draw.
+test("the history is drawn 20 entries at a time, a thread and a run of uploads one entry each", () => {
+  seq = 0;
+  const thread = comment("post", "2026-11-15T12:00:30Z", AGENT);
+  const replies = ["first", "second"].map((id, index) =>
+    comment(id, `2026-11-15T12:00:4${index}Z`, REVIEWER, { answers: "post", reply_to: "post" })
+  );
+  const events = [
+    ...claims(41),
+    ...["09:00:10", "09:00:20", "09:00:30"].map((time, index) => shot(time, `run-${index}`)),
+  ];
+  // Read through the claim of 11:50, so the line that says what is new stands among the first 20.
+  const days = daysOf(events, 32, [thread, ...replies]);
+  expect(entriesIn(days), "the history holds 41 claims, a thread and a run").toBe(43);
+
+  const first = historyDownTo(days, placeUnder(days, undefined, HISTORY_PAGE));
+  expect(entriesIn(first.days)).toBe(HISTORY_PAGE);
   expect(
-    days(read, november(13, 12, 4)),
-    "the day the first page ends in is drawn as whole"
-  ).toEqual([
-    ["2026-11-14", false, 1],
-    ["2026-11-13", true, 2],
-  ]);
-  // The whole log is in: no day is partial.
-  expect(days([...older, ...read], undefined)).toEqual([
-    ["2026-11-14", false, 1],
-    ["2026-11-13", false, 5],
-  ]);
+    flat(first.days).some((entry) => entry.kind === "unread"),
+    "the line that says what is new is not drawn among the first entries"
+  ).toBe(true);
+  expect(flat(first.days)[0]?.kind, "the thread is not the newest entry").toBe("thread");
+  expect(first.left).toBe(23);
+
+  const second = historyDownTo(
+    days,
+    placeUnder(days, placeUnder(days, undefined, HISTORY_PAGE), HISTORY_PAGE)
+  );
+  expect(entriesIn(second.days)).toBe(2 * HISTORY_PAGE);
+  expect(second.left).toBe(3);
+
+  const end = placeUnder(days, placeUnder(days, undefined, 2 * HISTORY_PAGE), HISTORY_PAGE);
+  const whole = historyDownTo(days, end);
+  expect(entriesIn(whole.days)).toBe(43);
+  expect(whole.left).toBe(0);
+  expect(flat(whole.days).at(-1)?.kind, "the run of three uploads is not the last entry").toBe(
+    "uploads"
+  );
+  expect(placeUnder(days, end, HISTORY_PAGE), "no entry is left under the last one").toEqual(end);
+});
+
+// The history is drawn down to the place of the last entry drawn: an entry that arrives above
+// it is drawn too, and takes none of the entries drawn out from under the reader.
+test("an entry that arrives above the entries drawn is drawn, and every entry drawn stays", () => {
+  seq = 0;
+  const events = claims(30);
+  const end = placeUnder(daysOf(events), undefined, HISTORY_PAGE);
+  const arrived = event("issue.claimed", "2026-11-15T12:00:00Z", {});
+
+  const drawn = historyDownTo(daysOf([...events, arrived]), end);
+  expect(entriesIn(drawn.days)).toBe(HISTORY_PAGE + 1);
+  expect(flat(drawn.days)[0]?.id).toBe(`event:${arrived.id}`);
+  expect(drawn.left).toBe(10);
+});
+
+// The line that says what is new stands between two entries, so it is drawn only where the entry
+// under it is drawn too: under the last entry drawn, it would say nothing of what follows.
+test("the line that says what is new is drawn only with the entry under it", () => {
+  seq = 0;
+  const events = claims(25);
+  // Read through the fifth claim: the line stands under the twentieth entry.
+  const days = daysOf(events, 5);
+  const first = historyDownTo(days, placeUnder(days, undefined, HISTORY_PAGE));
+  expect(flat(first.days).map((entry) => entry.kind)).not.toContain("unread");
+  const next = historyDownTo(days, placeUnder(days, undefined, HISTORY_PAGE + 1));
+  expect(flat(next.days).at(-2)?.kind).toBe("unread");
+});
+
+// The address of a turn draws the history down to that turn's thread, which can stand under the
+// entries drawn: a reply's place is its thread's.
+test("a turn's place is its thread's, and the history drawn down to it draws its thread", () => {
+  seq = 0;
+  const root = message("daemon", "2026-11-15T09:00:00Z", DAEMON);
+  const reply = message("reply", "2026-11-15T12:00:00Z", PERSON, { in_reply_to: "daemon" });
+  const days = daysOf(claims(30), 0, [], [{ message: root, replies: [reply] }]);
+  const first = historyDownTo(days, placeUnder(days, undefined, HISTORY_PAGE));
+  expect(threadsIn(flat(first.days)), "the thread is among the first entries").toEqual([]);
+
+  const toTurn = historyDownTo(days, turnPlace(days, "reply"));
+  expect(threadsIn(flat(toTurn.days))).toEqual([{ replies: ["reply"], root: "daemon" }]);
+  expect(toTurn.left).toBe(0);
+  expect(turnPlace(days, "no-such-turn")).toBeUndefined();
+});
+
+// A turn carries the marks of a post its author corrected, as the outline's rows do: when its
+// author edited it, and its deletion, by whom and when, which stands in place of its words.
+test("a turn carries when its author edited it, and its deletion", () => {
+  seq = 0;
+  const root = message("daemon", "2026-11-15T09:00:00Z", DAEMON, {
+    edited_at: "2026-11-15T09:30:00Z",
+  });
+  const reply = message("reply", "2026-11-15T09:10:00Z", PERSON, {
+    body: "",
+    deleted_at: "2026-11-15T09:20:00Z",
+    deleted_by: PERSON,
+    in_reply_to: "daemon",
+  });
+  const [thread] = flat(daysOf([], 0, [], [{ message: root, replies: [reply] }]));
+  if (thread?.kind !== "thread") throw new Error("the daemon's thread is no entry");
+  expect(thread.root).toMatchObject({ deleted: null, editedAt: "2026-11-15T09:30:00Z" });
+  expect(thread.replies[0]).toMatchObject({
+    deleted: { at: "2026-11-15T09:20:00Z", by: PERSON },
+    editedAt: null,
+  });
 });
 
 // What happened to a thread agents wrote among themselves is no row's of the outline, so it is

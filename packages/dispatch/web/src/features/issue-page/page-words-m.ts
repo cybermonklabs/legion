@@ -32,8 +32,8 @@ export default {
     },
     ANSWER_LINES: {
       /** What the history in Details says while the issue's log is read, which Details opening
-       *  asks for, and when it could not be; and what its Load older says while the next page is
-       *  out (`IssueHistory.tsx`): the Activity tab's words. */
+       *  asks for, and when it could not be; and what its Show more says while the next page of
+       *  the log, which its press reads, is out (`IssueHistory.tsx`): the Activity tab's words. */
       loading_history: "Loading activity…",
       history_unreadable: "Could not load the activity.",
       loading_older: "Loading…",
@@ -117,9 +117,12 @@ export default {
         running: "running",
         stopped: "stopped",
       },
-      /** Adds the next page of the issue's log under the history, until none is left
+      /** Draws the next entries of the history under the last one drawn, which reads the next
+       *  page of the issue's log first where every entry read is drawn; and the word after the
+       *  count of the entries read and not drawn that it says in brackets, "Show more (25 left)"
        *  (`IssueHistory.tsx`). */
-      load_older: "Load older",
+      show_more: "Show more",
+      show_more_left: "left",
       /** What the list of keys says of `t v` and `t o`, which open Details at the history and at
        *  the collaborators (`details-more.tsx`): each a whole phrase, so
        *  the list reads it as written. */

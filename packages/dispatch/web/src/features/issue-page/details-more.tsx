@@ -25,7 +25,7 @@ import { DETAILS_ROW_ATTRIBUTE, type DetailsRow, useOpenDetailsAt } from "./deta
 import { FocusedNodeFacts } from "./FocusedNodeFacts";
 import { type FocusedNode, useFocusedNode } from "./focused-node";
 import { IssueCollaboratorList } from "./IssueCollaboratorList";
-import { HISTORY_HEADING_LANDED_EVENT, IssueHistory } from "./IssueHistory";
+import { type AddressedTurn, HISTORY_HEADING_LANDED_EVENT, IssueHistory } from "./IssueHistory";
 import { type IssueAddress, issueAddress } from "./issue-address";
 import { DETAILS_ATTRIBUTE, useMarginDrawer } from "./margin-slot";
 import { useOutlineReads } from "./outline-reads";
@@ -251,9 +251,9 @@ export function DetailsFocusedNode({ issue, state }: DetailsMoreProps): ReactNod
 /**
  * The issue's history, under Pinned, and the addresses and keys that open Details at it.
  *
- * `/issues/<key>/activity`, and the address of a comment or a message of a thread agents wrote
- * among themselves, open Details at the history - its heading brought into view, or that turn
- * marked; `/issues/<key>/collaborators` opens Details at the collaborators' row of the People
+ * `/issues/<key>/activity`, and the address of a turn of a thread the history holds, open
+ * Details at the history - its heading brought into view, or that turn marked, drawn and brought
+ * into view; `/issues/<key>/collaborators` opens Details at the collaborators' row of the People
  * section (`useOpenDetailsAt`), whose list `DetailsPeople` opens. Each address opens Details once
  * per following of it (`useFollowing`), and the reader's own Close is the later word for as long
  * as they stay there. This place is drawn outside every section Details can collapse, so it is
@@ -281,12 +281,13 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
     addressed !== undefined &&
     outlineItemRoute(route, search, addressed) !== undefined;
   // A turn of a thread the history holds (`agents-only.ts`) is no row of the outline: it is an
-  // entry of the history, which Details opens at, with the entry marked. The
-  // entry is the turn `AgentsOnlyTurn` told for the following the reader is at; until it tells,
-  // the one it told for the following before - at another address, maybe a row's, or at this one
-  // under another fragment - is no answer here.
-  const [turn, setTurn] = useState<AgentsTurn | undefined>(undefined);
-  const item = namesItem && turn?.following === following ? turn.id : undefined;
+  // entry of the history, which Details opens at, with the turn marked and brought into view once
+  // for each following of its address. The turn is the one `AgentsOnlyTurn` told for the
+  // following the reader is at; until it tells, the one it told for the following before - at
+  // another address, maybe a row's, or at this one under another fragment or key - is no answer
+  // here.
+  const [turn, setTurn] = useState<AddressedTurn | undefined>(undefined);
+  const item = namesItem && turn?.following === following ? turn : undefined;
   const opensHistory = route?.kind === "activity" || item !== undefined;
   const opensCollaborators = route?.kind === "collaborators";
   const opensPanel = opensCollaborators || opensHistory;
@@ -390,15 +391,8 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
   );
 }
 
-/** The turn of a thread only agents wrote in that one following of an address names
- *  (`AgentsOnlyTurn`), with that following (`useFollowing`). */
-interface AgentsTurn {
-  readonly following: string;
-  readonly id: string;
-}
-
 /**
- * Tells `onTurn` the turn of a thread only agents wrote in that `address` names, for the
+ * Tells `onTurn` the turn of a thread the history holds that `address` names, for the
  * following the reader is at (`useFollowing`), as the outline lands on it: the outline's own
  * decision (`address-target.ts`'s `useAddressFallback`, its `agents-only` kind), over the tree
  * and the reads `slots/body.tsx` hands it (`useOutlineReads`), so it is told once every read the
@@ -418,7 +412,7 @@ function AgentsOnlyTurn({
 }: {
   address: IssueAddress;
   issue: IssueDetails;
-  onTurn: (turn: AgentsTurn | undefined) => void;
+  onTurn: (turn: AddressedTurn | undefined) => void;
   route: IssueRoute;
   search: string;
 }): null {

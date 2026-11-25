@@ -38,6 +38,7 @@ import { issueDetails } from "./decisions-filter/decisions-fixtures";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { DETAILS_ROW_ATTRIBUTE } from "./details-rows";
 import { type FocusedNode, FocusedNodeProvider, useSetFocusedNode } from "./focused-node";
+import { HISTORY_PAGE } from "./history-model";
 import { DETAILS_ATTRIBUTE, type MarginDrawer, MarginSlotProvider } from "./margin-slot";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 import { PROPERTY_LABELS } from "./page-structure";
@@ -1480,6 +1481,106 @@ test("an agents' turn's address opens Details at it once every read the outline 
   }
 });
 
+// The address of a turn of a thread the history holds draws the history's entries down to that
+// turn, past the first 20, and brings the turn into view once for each following of the
+// address: the same address followed a second time while Details is open brings it into view
+// again. The landing once happened once for each turn the history drew, so a second following
+// of the address left the turn wherever the reader had scrolled it.
+test("an agents' turn's address draws the history down to it, and each following of it brings it into view again", async () => {
+  // Twenty-five claims newer than the agents' thread, a minute old: its entry is the 26th.
+  const log = Array.from({ length: 25 }, (_, index) => claimMade(25 - index, index + 1));
+  const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue(log);
+  const { client, getIssueCoverage, names } = agentsThreadClient();
+  // Each element the page brings into view.
+  const intoView: Element[] = [];
+  const scrolls = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+    this: Element
+  ) {
+    intoView.push(this);
+  });
+  const id = AGENTS_THREAD.message.id;
+  const landings = () =>
+    intoView.filter((element) => element.getAttribute("data-history-item") === id).length;
+  const hold: DrawerHold = {};
+  const address = buildIssuePath({ id, key: KEY, kind: "message" });
+  const view = render(
+    <MemoryRouter initialEntries={[address]}>
+      <QueryClientProvider client={client}>
+        <HistoryInDrawer hold={hold} of={{ ...issueDetails(), artifacts: [] }} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    await waitFor(() => {
+      expect(turnMarked(id), "the agents' turn's address marked no turn").toBe(true);
+      expect(landings(), "the agents' turn's address did not bring the turn into view").toBe(1);
+    });
+    expect(
+      document.querySelectorAll("[data-history-day] > ol > [data-history-entry]"),
+      "the history is not drawn down to the turn the address names"
+    ).toHaveLength(26);
+    expect(hold.isOpen).toBe(true);
+
+    act(() => hold.navigate?.(address));
+    await waitFor(() =>
+      expect(
+        landings(),
+        "the agents' turn's address followed again did not bring the turn into view again"
+      ).toBe(2)
+    );
+    expect(turnMarked(id)).toBe(true);
+  } finally {
+    view.unmount();
+    for (const spy of [getIssueCoverage, getIssueEvents, names, scrolls]) spy.mockRestore();
+  }
+});
+
+// An agent's note to the issue's people is no turn of a thread the history holds: Threads opens
+// its address, and Details opens for it no more than for any row of the outline. The daemon's
+// thread beside it is the history's, and its address opens Details at its turn.
+test("the address of an agent's note opens no Details, and that of the daemon's thread beside it does", async () => {
+  const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
+  const { client, getIssueCoverage, names } = agentsThreadClient();
+  const note: MessageRead = {
+    message: {
+      ...AGENTS_THREAD.message,
+      author: { id: "planner-session", kind: "session" },
+      body: "The planner's note to the issue's people.",
+      id: "message-note",
+    },
+    replies: [],
+  };
+  client.setQueryData(["issue-messages", KEY], [AGENTS_THREAD, note]);
+  const hold: DrawerHold = {};
+  const view = render(
+    <MemoryRouter
+      initialEntries={[buildIssuePath({ id: note.message.id, key: KEY, kind: "message" })]}
+    >
+      <QueryClientProvider client={client}>
+        <HistoryInDrawer hold={hold} of={{ ...issueDetails(), artifacts: [] }} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    // Every read the outline lands by is held or answers at once, so these turns of the loop and
+    // two frames are past the outline's landing on the note's row, where an open asked for has run.
+    await act(async () => {});
+    await nextFrames(2);
+    expect(hold.isOpen, "the address of an agent's note opened Details").toBe(false);
+    expect(screen.queryByTestId("issue-history")).toBeNull();
+
+    const id = AGENTS_THREAD.message.id;
+    act(() => hold.navigate?.(buildIssuePath({ id, key: KEY, kind: "message" })));
+    await waitFor(() => {
+      expect(hold.isOpen, "the address of the daemon's thread left Details shut").toBe(true);
+      expect(turnMarked(id)).toBe(true);
+    });
+  } finally {
+    view.unmount();
+    for (const spy of [getIssueCoverage, getIssueEvents, names]) spy.mockRestore();
+  }
+});
+
 /** Whether the history marks the turn `id`, as the address of that turn has it. */
 function turnMarked(id: string): boolean {
   return (
@@ -1739,7 +1840,7 @@ const READ_THROUGH_TWO = readTo(2);
  *  `HISTORY_UNITS`. */
 const ENTRY_HEIGHT = 50;
 /** How tall each line is that the history draws outside its entries and that holds words: its
- *  heading, a day's line, the loading line, Load older. */
+ *  heading, a day's line, the loading line, Show more. */
 const HISTORY_LINE = 20;
 /** The history's block in Details. */
 const HISTORY_BLOCK = '[data-testid="issue-history"]';
@@ -1792,7 +1893,7 @@ interface DetailsDrawn {
   /** The answer to the history's read of the issue's log, an empty log at once unless a case
    *  holds it back. */
   log?: Promise<DispatchEvent[]>;
-  /** The answer to each read of a next page of the log, which Load older sends. */
+  /** The answer to each read of a next page of the log, which Show more sends. */
   older?: () => Promise<DispatchEvent[]>;
 }
 
@@ -2216,7 +2317,7 @@ test("t o pressed again at /collaborators with Details read far below a collabor
   });
   try {
     await page.focused("a load of /collaborators");
-    await page.historyDrawn(log.length);
+    await page.historyDrawn(HISTORY_PAGE);
     // The list the address opened, drawn under the control, makes its row taller than the view.
     page.grow("collaborators", 2 * BOX_HEIGHT);
     page.heightsChanged();
@@ -2331,7 +2432,7 @@ test("t v pressed again at /activity with Details read far down lands the histor
     log: Promise.resolve(log),
   });
   try {
-    await page.historyDrawn(log.length);
+    await page.historyDrawn(HISTORY_PAGE);
     const history = screen.getByTestId("issue-history");
     const heading = history.querySelector<HTMLElement>("h2");
     if (heading === null) throw new Error("the history drew no heading");
@@ -2573,6 +2674,19 @@ function claimsNewestFirst(count: number): DispatchEvent[] {
   return Array.from({ length: count }, (_, index) => claimMade(count - index, (index + 1) * 9));
 }
 
+/** A full first page of the log, 200 events, whose entries in the history are `entries` claims
+ *  (`claimsNewestFirst`) and the agents' thread: the rest are moves of a child's status, which
+ *  the outline draws and the history leaves out. With no more entries than one press of Show
+ *  more draws, every entry read is drawn, and Show more reads the log's next page. */
+function fullPageOfFewEntries(entries: number): DispatchEvent[] {
+  const left = Array.from(
+    { length: 200 - entries },
+    (_, index) =>
+      ({ ...claimMade(1000 + index, 1), payload: {}, type: "child.status" }) as DispatchEvent
+  );
+  return [...left, ...claimsNewestFirst(entries)];
+}
+
 /** How long the case lets pass for a scroll not to be taken for the reader's own: past the
  *  window after a wheel turn, a key or a press in which `ViewportAnchor` still takes one for
  *  theirs (`READER_SCROLL_MS`, 500 ms). */
@@ -2598,15 +2712,16 @@ type EarlierPlace = "older" | "pin" | "pointer" | "scroll";
 /**
  * Draws Details with the history of `place`'s case open in it, and the reader's place left in
  * that history by `place`: a log of 30 claims and the agents' thread, or, where the reader
- * pressed Load older, of 200, a full page with older ones left to read, whose next page is never
- * answered while the case runs. The box anchors its scroll as the browser does while its own
- * scroll anchoring is on, and the clock the reader's acts are read by stands still until a case
- * moves it on. Returns the page, the entry the reader's place names, and the point of the page
- * the reader looked at: that entry's middle.
+ * pressed Show more to read the log's next page, a full page of 200 events that holds 19 claims
+ * and the thread, with older pages left to read, whose next page is never answered while the case
+ * runs. The box anchors its scroll as the browser does while its own scroll anchoring is on, and
+ * the clock the reader's acts are read by stands still until a case moves it on. Returns the
+ * page, the entry the reader's place names, and the point of the page the reader looked at: that
+ * entry's middle.
  */
 async function readerLeftAPlace(place: EarlierPlace) {
   const { client, getIssueCoverage, names } = agentsThreadClient();
-  const log = claimsNewestFirst(place === "older" ? 200 : 30);
+  const log = place === "older" ? fullPageOfFewEntries(HISTORY_PAGE - 1) : claimsNewestFirst(30);
   const older = Promise.withResolvers<DispatchEvent[]>();
   const reads = [
     getIssueCoverage,
@@ -2635,16 +2750,16 @@ async function readerLeftAPlace(place: EarlierPlace) {
   };
   try {
     act(() => page.hold.open?.(true));
-    // Each claim is an entry, and so is the agents' thread.
-    await page.historyDrawn(log.length + 1);
+    // Each claim is an entry, and so is the agents' thread: the first of them are drawn.
+    await page.historyDrawn(HISTORY_PAGE);
     const entries = [...page.box.querySelectorAll<HTMLElement>("[data-history-entry]")];
     const entry =
       place === "older"
         ? entries.at(-1)
         : page.box.querySelectorAll<HTMLElement>(HISTORY_UNITS).item(READER_ENTRY);
     if (entry === undefined || entry === null) throw new Error("the history drew no such entry");
-    // The reader turns the wheel down the history: to the middle of it, or to its end, where Load
-    // older is.
+    // The reader turns the wheel down the history: to the middle of it, or to its end, where Show
+    // more is.
     const to = place === "older" ? page.box.scrollHeight - BOX_HEIGHT : READER_SCROLLED_TO;
     act(() => {
       page.box.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: to }));
@@ -2659,7 +2774,7 @@ async function readerLeftAPlace(place: EarlierPlace) {
       await userEvent.keyboard("{Enter}");
       await waitFor(() => expect(api.putIssueState).toHaveBeenCalledTimes(1));
     } else if (place === "older") {
-      const loadOlder = screen.getByRole("button", { name: CONTROL_LABELS.load_older });
+      const loadOlder = screen.getByRole("button", { name: CONTROL_LABELS.show_more });
       act(() => loadOlder.focus());
       await userEvent.keyboard("{Enter}");
       await waitFor(() => expect(loadOlder).toHaveAttribute("aria-busy", "true"));
@@ -2687,7 +2802,7 @@ const SWEEP_LANDINGS: readonly (readonly [Landing, string])[] = [
 ];
 const SWEEP_PLACES: readonly (readonly [EarlierPlace, string])[] = [
   ["pin", "a history line's Pin pressed by keyboard"],
-  ["older", "Load older pressed"],
+  ["older", "Show more pressed to read the log's next page"],
   ["scroll", "a scroll of Details with the pointer resting on nothing"],
   ["pointer", "the pointer resting on an entry"],
 ];
@@ -2855,7 +2970,7 @@ for (const [reader, readerName] of READER_ON_ENTRY) {
       });
       try {
         act(() => page.hold.open?.(true));
-        await page.historyDrawn(log.length);
+        await page.historyDrawn(HISTORY_PAGE);
         await userEvent.keyboard("tv");
         const history = screen.getByTestId("issue-history");
         await waitFor(() =>
@@ -2886,7 +3001,7 @@ for (const [reader, readerName] of READER_ON_ENTRY) {
 
         if (above === "arrives") {
           act(() => prependEventToLog(client, claimMade(log.length + 1, 1)));
-          await page.historyDrawn(log.length + 1);
+          await page.historyDrawn(HISTORY_PAGE + 1);
         } else {
           growEntryAbove(page, entry);
         }
@@ -2912,7 +3027,7 @@ test("after t o and the pointer resting on an entry of the history, the reader's
   const page = drawPeopleInDrawer(`/issues/${KEY}`, { heldClock: true, log: Promise.resolve(log) });
   try {
     act(() => page.hold.open?.(true));
-    await page.historyDrawn(log.length);
+    await page.historyDrawn(HISTORY_PAGE);
     await userEvent.keyboard("to");
     await page.focused("t o");
     page.frame();

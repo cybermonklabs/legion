@@ -237,7 +237,7 @@ test("the conversation is the outline and the history is in the panel", async ({
     for (let presses = 1; await older.isVisible(); presses += 1) {
       expect(
         presses,
-        `${CONTROL_LABELS.load_older} is still offered past the log's last page`
+        `${CONTROL_LABELS.show_more} is still offered past the log's last page`
       ).toBeLessThanOrEqual(Math.floor(events.length / 200));
       const answered = olderPageAnswered(page, seeded.key);
       await older.click();
@@ -1150,7 +1150,7 @@ test("loading older history entries keeps the reader anchor", async ({ browser }
     // Every write of this issue is an agent's message, which the outline draws no row for, so
     // the tree is drawn with no row in it.
     await expectIssuePageDrawn(page);
-    await expect(page.getByRole("button", { name: CONTROL_LABELS.load_older })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: CONTROL_LABELS.show_more })).toHaveCount(0);
 
     await gotoIssue(page, `/issues/${issue.key}/activity`);
     // The browser's own scroll anchoring is turned off, as in the row of an arrival above, so
@@ -3691,7 +3691,7 @@ async function pressLoadOlderUntilGone(
   for (let presses = 1; await loadOlder.isVisible(); presses += 1) {
     expect(
       presses,
-      `${CONTROL_LABELS.load_older} is still offered past the log's last page`
+      `${CONTROL_LABELS.show_more} is still offered past the log's last page`
     ).toBeLessThan(3);
     const answered = olderPageAnswered(page, key);
     await press(loadOlder);
@@ -3700,7 +3700,7 @@ async function pressLoadOlderUntilGone(
   }
   await expect(
     loadOlder,
-    `${CONTROL_LABELS.load_older} is still offered once the whole log is read`
+    `${CONTROL_LABELS.show_more} is still offered once the whole log is read`
   ).toHaveCount(0);
 }
 
@@ -3718,7 +3718,7 @@ async function readDownByLoadOlder(page: Page, key: string): Promise<number> {
     await nextFrames(page);
     await page.keyboard.press("Enter");
   });
-  await detailsStandStill(page, `the last ${CONTROL_LABELS.load_older}`);
+  await detailsStandStill(page, `the last ${CONTROL_LABELS.show_more}`);
   return historyScrollTop(page);
 }
 

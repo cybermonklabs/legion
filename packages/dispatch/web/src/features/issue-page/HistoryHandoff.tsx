@@ -30,15 +30,16 @@ interface FieldRow extends HandoffField {
 }
 
 /**
- * The disclosure on a handoff's line in the issue's history, which took over the conversation's
- * handoff cards: Show fields opens the
- * version's body under the line - each top-level field a labelled row, the `proof` list one row
- * per entry, as the old conversation's handoff card drew it - and Hide fields closes it. The
- * body is read when the reader opens it, and a version never changes once written, so the read
- * is kept for the page's life: it is never stale, and closing the fields never lets it go.
+ * The fields of a handoff's line in the issue's history, which took over the conversation's
+ * handoff cards: drawn open under the line - each top-level field of the version's body a
+ * labelled row, the `proof` list one row per entry, as the old conversation's handoff card drew
+ * it - with no press. Only the reader folds them, by Hide fields on the handoff's line, and Show
+ * fields opens them again. The body is read as the handoff's line is drawn, and a version never
+ * changes once written, so the read is kept for the page's life: it is never stale, and folding
+ * the fields never lets it go.
  */
 export function HistoryHandoff({ handoffId }: { handoffId: string }): ReactNode {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(true);
   const fieldsId = useId();
   return (
     <span className="basis-full">
