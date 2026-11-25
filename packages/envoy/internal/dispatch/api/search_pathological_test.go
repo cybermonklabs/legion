@@ -578,6 +578,14 @@ func ladderCounts(counted func(size int) uint64) string {
 // package that ran fewer statements in a rung's run than in the run that replaced none fails the
 // row, naming the package: work that differed between the two runs beside the replacement then
 // outweighed the replacement's own.
+//
+// What the row costs every run of this package's tests that reaches it, a race run included: a
+// second build of the package's test binary, which Go's build cache serves only where an earlier
+// run on the machine made it, and four runs of that binary with the collector off, each holding
+// all it allocates until it exits. On a machine of 2 CPUs the row took 15 s to 93 s in a plain run
+// and 107 s to 190 s in a race run, whose step's -timeout counts it, and its build alone needs
+// more than 2 GiB of memory, so a run held to less is killed in the build before the row judges
+// anything.
 func countReplacements(t *testing.T) map[int]countedReplacement {
 	t.Helper()
 	goCmd, err := exec.LookPath("go")
