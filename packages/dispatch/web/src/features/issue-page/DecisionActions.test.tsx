@@ -9,7 +9,13 @@ import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { heldNotDisabled } from "../../__tests__/held-press";
 import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/client";
+import {
+  ApiError,
+  api,
+  NetworkError,
+  REQUEST_DEADLINE_MS,
+  RequestTimeoutError,
+} from "../../api/client";
 import type { Artifact, ArtifactText, Decision, IssueDecisions } from "../../api/types";
 import {
   borderDefault,
@@ -26,7 +32,7 @@ import { SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { ChangeDraftsProvider, DecisionActions } from "./DecisionActions";
 import { NoTooltips } from "./NoTooltips";
-import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
+import { ANSWER_LINES, CONTROL_LABELS, STATE_LINES } from "./page-words";
 
 /**
  * The two controls a decision's node draws (R7). The tree is one tab stop,
@@ -652,11 +658,18 @@ test("a Change's send reads the decisions document once and counts its quote's p
   }
 });
 
+/** The lines the form says as alerts, in the order it draws them. */
+function alertLines(): (string | null)[] {
+  return screen.queryAllByRole("alert").map((line) => line.textContent);
+}
+
 // With no reading of the document - its text read failed - the Change names no place: Dispatch
 // takes it where the quote stands once, and refuses it where the quote stands more than once,
 // which the form says in the page's words with the draft kept, rather than land it on a place
-// counted without the document.
-test("a Change whose document read fails names no place, and its refusal keeps the draft", async () => {
+// counted without the document. Beside Send change the form says the document could not be
+// loaded, and no more: the read's refusal is in the server's words, which the page never shows
+// (decision 92).
+test("a Change whose document read fails names no place, says the document could not be loaded, and its refusal keeps the draft", async () => {
   const createComment = spyOn(api, "createComment").mockRejectedValue(
     ambiguousQuote("Draw it once.", 2)
   );
@@ -669,13 +682,19 @@ test("a Change whose document read fails names no place, and its refusal keeps t
     await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
     await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Say where.");
     await user.click(screen.getByRole("button", { name: CONTROL_LABELS.send_change }));
-    const alert = await screen.findByRole("alert");
+    await screen.findByText(ANSWER_LINES.change_not_sent);
     expect(text).toHaveBeenCalledTimes(1);
     expect(createComment).toHaveBeenCalledTimes(1);
     const anchor = createComment.mock.calls[0]?.[1]?.anchor;
     expect(anchor?.quote).toBe("Draw it once.");
     expect(anchor?.occurrence, "a Change with no reading named a place").toBeUndefined();
-    expect(alert.textContent).toBe(ANSWER_LINES.change_not_sent);
+    expect(alertLines()).toEqual([
+      STATE_LINES.decisions_document_unreadable,
+      ANSWER_LINES.change_not_sent,
+    ]);
+    expect(document.body.textContent, "the row draws the server's own words").not.toContain(
+      "the store is not reachable"
+    );
     const field = screen.getByLabelText(CONTROL_LABELS.your_change);
     expect(field instanceof HTMLTextAreaElement ? field.value : "").toBe("Say where.");
   } finally {
@@ -884,6 +903,170 @@ test("a Change whose document read has not answered by the request deadline says
     expect(createComment).toHaveBeenCalledTimes(1);
   } finally {
     realClock();
+    unmount();
+    createComment.mockRestore();
+  }
+});
+
+// A read the bound ended may fail later, as a read whose body trickles in past the client's
+// deadline does: the line that said why it had not settled then says why it failed, since the
+// change it sent still named no place.
+test("a document read the request deadline ended that then fails says why it failed beside Send change", async () => {
+  const answer = Promise.withResolvers<ArtifactText>();
+  const createComment = spyOn(api, "createComment").mockRejectedValue(
+    ambiguousQuote("Draw it once.", 2)
+  );
+  const { text, unmount } = renderActions(
+    { ...read, decisions: [ABOVE, OWN] },
+    twoDecisionsText("The decisions this issue made.")
+  );
+  text.mockReturnValue(answer.promise);
+  const unread = STATE_LINES.decisions_document_unreadable;
+  try {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Say where.");
+    const send = screen.getByRole<HTMLButtonElement>("button", {
+      name: CONTROL_LABELS.send_change,
+    });
+    jest.useFakeTimers();
+    await userOnFakeClock().click(send);
+    await tick(REQUEST_DEADLINE_MS);
+    expect(createComment).toHaveBeenCalledTimes(1);
+    expect(alertLines()).toEqual([
+      `${unread} Dispatch did not answer within 30 seconds.`,
+      ANSWER_LINES.change_not_sent,
+    ]);
+
+    await act(async () => answer.reject(new NetworkError(TEXT_PATH, new TypeError("network"))));
+    await tick(0);
+    expect(alertLines(), "the read's failure left no line").toEqual([
+      `${unread} Dispatch could not be reached.`,
+      ANSWER_LINES.change_not_sent,
+    ]);
+  } finally {
+    realClock();
+    unmount();
+    createComment.mockRestore();
+  }
+});
+
+/** The path of the decisions document's text read, which the error of a read that failed names. */
+const TEXT_PATH = `/api/v1/artifacts/${document_.id}/text`;
+
+// A document read Dispatch never answers fails at the API client's own deadline
+// (`REQUEST_DEADLINE_MS`), which the client sets as the read starts, before the send's bound
+// (`readWithinBound`) is set: the read rejects with a `RequestTimeoutError` while that bound still
+// runs. The change goes with no place counted, Send change lets go, and the form says why beside
+// Send change, in the words the page says for a read of the decisions document that failed and
+// then the timeout's own. The quote stands twice, so Dispatch refuses the change, and the line
+// stays beside the refusal: it is the press's own.
+test("a Change whose document read times out says why beside Send change, and still does once the change is refused", async () => {
+  const answer = Promise.withResolvers<ArtifactText>();
+  const createComment = spyOn(api, "createComment").mockRejectedValue(
+    ambiguousQuote("Draw it once.", 2)
+  );
+  const { text, unmount } = renderActions(
+    { ...read, decisions: [ABOVE, OWN] },
+    twoDecisionsText("The decisions this issue made.")
+  );
+  text.mockReturnValue(answer.promise);
+  try {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Say where.");
+    const send = screen.getByRole<HTMLButtonElement>("button", {
+      name: CONTROL_LABELS.send_change,
+    });
+    await user.click(send);
+    expect(heldNotDisabled(send, CONTROL_LABELS.send_change)).toBe(true);
+    expect(createComment).not.toHaveBeenCalled();
+
+    await act(async () => answer.reject(new RequestTimeoutError(TEXT_PATH, REQUEST_DEADLINE_MS)));
+    await screen.findByText(ANSWER_LINES.change_not_sent);
+    expect(createComment).toHaveBeenCalledTimes(1);
+    const anchor = createComment.mock.calls[0]?.[1]?.anchor;
+    expect(anchor?.quote).toBe("Draw it once.");
+    expect(anchor?.occurrence, "a send with no reading named a place").toBeUndefined();
+    expect(heldNotDisabled(send, CONTROL_LABELS.send_change)).toBe(false);
+    expect(alertLines(), "the form does not say why the change named no place").toEqual([
+      `${STATE_LINES.decisions_document_unreadable} Dispatch did not answer within 30 seconds.`,
+      ANSWER_LINES.change_not_sent,
+    ]);
+  } finally {
+    unmount();
+    createComment.mockRestore();
+  }
+});
+
+// A document read that fails at the network - as one does at once offline, since the send reads
+// the text straight through the API client - gives the change no place either, and the form says
+// why beside Send change in the network error's own words, while the change is out.
+test("a Change whose document read fails at the network says beside Send change that Dispatch could not be reached", async () => {
+  // Dispatch never answers the change.
+  const createComment = spyOn(api, "createComment").mockImplementation(
+    () => new Promise<never>(() => {})
+  );
+  const { unmount } = renderActions(
+    read,
+    new NetworkError(TEXT_PATH, new TypeError("Failed to fetch"))
+  );
+  try {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Keep one preset.");
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.send_change }));
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+    expect(createComment.mock.calls[0]?.[1]?.anchor?.occurrence).toBeUndefined();
+    expect(alertLines(), "the form does not say why the change named no place").toEqual([
+      `${STATE_LINES.decisions_document_unreadable} Dispatch could not be reached.`,
+    ]);
+  } finally {
+    unmount();
+    createComment.mockRestore();
+  }
+});
+
+// The line is the press's own: the next press of Send change takes it away as that press reads
+// the document again, and a read that answers says nothing. Dispatch refuses each change here, so
+// the form stays drawn with its refusal, and only the read's line has gone.
+test("the line a failed document read draws beside Send change goes at the next press, whose read answers", async () => {
+  const createComment = spyOn(api, "createComment").mockRejectedValue(
+    ambiguousQuote("Draw it once.", 2)
+  );
+  const { text, unmount } = renderActions(
+    { ...read, decisions: [ABOVE, OWN] },
+    new NetworkError(TEXT_PATH, new TypeError("Failed to fetch"))
+  );
+  const failed = `${STATE_LINES.decisions_document_unreadable} Dispatch could not be reached.`;
+  try {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Say where.");
+    const send = screen.getByRole<HTMLButtonElement>("button", {
+      name: CONTROL_LABELS.send_change,
+    });
+    await user.click(send);
+    await screen.findByText(ANSWER_LINES.change_not_sent);
+    expect(alertLines()).toEqual([failed, ANSWER_LINES.change_not_sent]);
+
+    // The next press reads the document again, and the line goes as it does.
+    const answer = Promise.withResolvers<ArtifactText>();
+    text.mockReturnValue(answer.promise);
+    await user.click(send);
+    expect(text).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(failed), "the failed read's line outlived the next press").toBeNull();
+
+    // That read answers: the change names its place, and the form says nothing of the read.
+    const markdown = twoDecisionsText("The decisions this issue made.");
+    await act(async () =>
+      answer.resolve({ markdown, markdown_tree: displayTree(markdown), token: "token", version: 1 })
+    );
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
+    expect(createComment.mock.calls[1]?.[1]?.anchor?.occurrence).toBe(1);
+    await waitFor(() => expect(heldNotDisabled(send, CONTROL_LABELS.send_change)).toBe(false));
+    expect(alertLines()).toEqual([ANSWER_LINES.change_not_sent]);
+  } finally {
     unmount();
     createComment.mockRestore();
   }

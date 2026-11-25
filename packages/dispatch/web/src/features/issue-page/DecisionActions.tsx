@@ -10,7 +10,7 @@ import {
   useState,
 } from "react";
 
-import { api } from "../../api/client";
+import { api, NetworkError, RequestTimeoutError } from "../../api/client";
 import { readWithinBound, useUnsettledRead } from "../../api/read-bound";
 import type { Artifact, Decision, DisplayTree, IssueDecisions } from "../../api/types";
 import { heldPress } from "../../components/held-press";
@@ -309,6 +309,14 @@ function ChangeComposer({
   // here, since its hold on the press's hand-off would end with the read, before the comment the
   // press sends has answered.
   const [unsettled, keepUnsettled] = useUnsettledRead();
+  // What the form says of the latest press's document read that failed, which left the change it
+  // sent no place: one that failed before its bound, and one the bound ended that failed after,
+  // which says so in the place of why it had not settled. The line is the press's own: it goes at
+  // the next press of Send change and with the form, and a refusal of the comment leaves it.
+  const [readFailed, setReadFailed] = useState<string>();
+  // How many presses of Send change read the document: a read that fails after its bound says
+  // so only while its press is still the latest.
+  const presses = useRef(0);
   // Whether this press has spent `SEND_DEADLINE_MS` across its document read and its comment
   // together: a read that runs to its own deadline followed by an offline comment must not hold
   // Send for a second one. The timer is the press's, and goes once the write settles.
@@ -394,27 +402,45 @@ function ChangeComposer({
         // deadline, and `readWithinBound` ensures the press proceeds once even if the read does
         // not settle in time, so a late read can never post a second comment. `changeAnchor`
         // walks every decision above this one, which no render of a row pays for (decision 92).
-        // With no reading - the read failed or timed out - the anchor names no place: Dispatch
-        // takes it where the quote stands once, and refuses it where the quote stands more than
-        // once, which the form says in the page's words with the draft kept. A read the bound
-        // ended is said beside Send change too, in the words the page says for a read of the
-        // decisions document that failed and then why it has not settled (`unsettled`).
+        // With no reading - the read failed, or the bound ended it - the anchor names no place:
+        // Dispatch takes it where the quote stands once, and refuses it where the quote stands
+        // more than once, which the form says in the page's words with the draft kept. Beside
+        // Send change the form then says why, in the words the page says for a read of the
+        // decisions document that failed. A read that failed adds its `RequestTimeoutError`'s or
+        // `NetworkError`'s message, and nothing for any other failure, whose text is the server's
+        // (`readFailed`): the client sets its own deadline (`REQUEST_DEADLINE_MS`) as the read
+        // starts, before the bound, so a read Dispatch never answers fails as a timeout. A read
+        // the bound ended adds why it has not settled, until it does (`unsettled`); if it then
+        // fails, the line says why it failed in that place (`readFailed`).
         readingRef.current = true;
         setReading(true);
         setPressLate(false);
+        setReadFailed(undefined);
+        presses.current += 1;
+        const press = presses.current;
         clearTimeout(pressDeadline.current);
         pressDeadline.current = setTimeout(() => setPressLate(true), SEND_DEADLINE_MS);
         let tree: DisplayTree | undefined;
+        let failed: string | undefined;
+        let boundEnded = false;
         const read = api.getArtifactText(documentId).then(
           (text) => {
             tree = text.markdown_tree;
           },
-          () => undefined
+          (error: unknown) => {
+            failed =
+              error instanceof RequestTimeoutError || error instanceof NetworkError
+                ? `${STATE_LINES.decisions_document_unreadable} ${error.message}.`
+                : STATE_LINES.decisions_document_unreadable;
+            if (boundEnded && press === presses.current) setReadFailed(failed);
+          }
         );
         void readWithinBound(read).then((reason) => {
+          boundEnded = reason !== undefined;
           readingRef.current = false;
           setReading(false);
           keepUnsettled(read, reason);
+          setReadFailed(failed);
           const anchor = changeAnchor(
             decision,
             queryClient.getQueryData<IssueDecisions>(issueDecisionsQuery(issueKey, true).queryKey)
@@ -447,9 +473,11 @@ function ChangeComposer({
         rows={3}
         value={body}
       />
-      {unsettled === undefined ? null : (
+      {/* One line says why a change named no place: the latest press's failed read, else why a
+          read the bound ended has not settled. */}
+      {(readFailed ?? unsettled) === undefined ? null : (
         <p className={`text-xs ${tones.failed}`} role="alert" {...pageChrome}>
-          {`${STATE_LINES.decisions_document_unreadable} ${unsettled}.`}
+          {readFailed ?? `${STATE_LINES.decisions_document_unreadable} ${unsettled}.`}
         </p>
       )}
       {send.error === null ? null : (
