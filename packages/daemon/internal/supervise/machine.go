@@ -4768,8 +4768,11 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 //
 // Such a verdict clears what was charged for that process's death with it (Claim.DeathCharged),
 // and reports that it did so, for judge to write: the process is running, so the death a later
-// report of it finds is a death of its own. Here and letGo clear both records of a running
-// machine, and NormalizeClaim clears the charge of a claim read back recording no process.
+// report of it finds is a death of its own. That holds for a death died charged. It leaves the
+// record of an end from outside the pod (EndedWork.FromOutside) as it stands, because no running
+// verdict follows such an end for the launch the claim records (recordedFromOutside says why).
+// Here and letGo clear both records of a running machine, and NormalizeClaim clears the charge
+// of a claim read back recording no process.
 func (m *Machine) reportedProcess(observation runtime.Observation) (clearedCharge bool) {
 	switch processReadOf(observation.Kind) {
 	case ProcessGone:

@@ -155,7 +155,13 @@ const displacedMidTurn = "the process was displaced mid-turn, its pod replaced b
 // it stands (recordDisplaced), finds nothing confirmed to take back and replaces the process,
 // but records none of the three things below again and writes nothing for them. The claim
 // reads working while its relaunch waits, so the end of the turn, which operators are shown
-// (Claim.LastTurnEnd), would otherwise move to the moment of each such report.
+// (Claim.LastTurnEnd), would otherwise move to the moment of each such report. A process died
+// decided first (a report read neither way) is no end decided from outside the pod: its record
+// is a death's, and a later report of the same pod read as outside, from a restarted daemon or
+// over a relaunch the lifecycle refused, comes here with the end not yet decided as one from
+// outside. It records the end as from outside and writes the claim, and leaves the end of the
+// turn where died put it, so the first decision of the process, died's or this one, writes it
+// once.
 //
 // With the task back it records three things, before the relaunch, because a parked relaunch
 // writes nothing until its turn; a write the store would not take is owed and the relaunch goes
@@ -164,11 +170,14 @@ const displacedMidTurn = "the process was displaced mid-turn, its pod replaced b
 //   - the end of the turn the end cut off (Claim.LastTurnEnd), as a charged death records it
 //     (chargeDeath), for the reason chargeDeath gives: the agent that turn belonged to is gone
 //     and never ends it, so without that record a later death of the relaunched agent, idle with
-//     nothing pending, would find the dead turn open and be charged against it;
+//     nothing pending, would find the dead turn open and be charged against it. It is written
+//     only where the process was not charged already (Claim.DeathCharged false on entry), since
+//     died writes it where it charged the process first;
 //   - that the ended process is decided (Claim.DeathCharged), the record died keeps for one dead
 //     process, so a later report of that same process — the orphan sweep's, over a claim whose
-//     relaunch the lifecycle refused or the wake pacing parked, or a restarted daemon's first —
-//     comes back here, finds the end decided and decides nothing again (decidedFromOutside);
+//     relaunch the lifecycle refused, or a restarted daemon's first — comes back here, finds the
+//     end decided and decides nothing again (decidedFromOutside). A relaunch the wake pacing
+//     parks brings no such report back: judge drops each while it waits (launchWaits);
 //   - that the end was from outside the pod, in the record of what that end ended
 //     (EndedWork.FromOutside, markFromOutside). A daemon restart while the relaunch waits
 //     restores the claim standing over its decided process, and the boot raises the relaunch the
@@ -188,7 +197,7 @@ const displacedMidTurn = "the process was displaced mid-turn, its pod replaced b
 // claim is decided and names every role the end ended, so this line, one per claim, is what says
 // what each role got.
 func (m *Machine) endedFromOutside(ctx context.Context, observation runtime.Observation) error {
-	decided := m.decidedFromOutside()
+	decided, charged := m.decidedFromOutside(), m.claim.DeathCharged
 	m.log.Info(continuedFromOutsideLine, "starting", slices.Contains(unready, m.claim.State), "detail", observation.Detail)
 	m.recordDisplaced(ctx, observation, endFromOutside, true)
 	if err := m.interrupted(ctx, displacedMidTurn, observation.OutOfMemory); err != nil {
@@ -197,7 +206,7 @@ func (m *Machine) endedFromOutside(ctx context.Context, observation runtime.Obse
 	var written error
 	if !decided {
 		m.claim.DeathCharged = true
-		if m.turnOpen() {
+		if !charged && m.turnOpen() {
 			m.claim.LastTurnEnd = m.deps.Clock.Now()
 		}
 		m.markFromOutside()
@@ -246,7 +255,11 @@ func (m *Machine) markFromOutside() {
 // store can refuse, and before the decision, and it goes into the store with any write of the
 // claim. judge sends every report of the process to endedFromOutside where it holds, however the
 // runtime read that report, so the one end is continued charged nothing on one daemon, and after
-// a restart wherever the record reached the store.
+// a restart wherever the record reached the store. A running verdict (reportedProcess) leaves the
+// record standing, and cannot follow such an end for the launch the claim records: the end is a
+// pod deleted or terminal, the locator names that pod by uid, and the runtime never answers a pod
+// running after it answered it gone. The next launch is another generation, whose record this
+// does not read.
 func (m *Machine) recordedFromOutside() bool {
 	e := m.claim.EndedWork
 	return e.FromOutside && e.Generation == m.claim.Generation
