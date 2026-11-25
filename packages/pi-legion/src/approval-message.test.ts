@@ -12,7 +12,13 @@ import {
   type SessionAnswersRequest,
   withSessionAnswers,
 } from "../../pi-envoy/src/session-answers-context";
-import { APPROVAL_SENT_ENTRY, type ApprovalSent, createApprovalMessage } from "./approval-message";
+import {
+  APPROVAL_SENT_ENTRY,
+  APPROVAL_TOP_LEVEL_ENTRY,
+  type ApprovalSent,
+  type ApprovalTopLevel,
+  createApprovalMessage,
+} from "./approval-message";
 
 // The approval message's state table (rows S1 to S23 of the plan), each row driven on the
 // requests the pinned Oh My Pi made in a real root architect's pane (fixture F1,
@@ -21,8 +27,11 @@ import { APPROVAL_SENT_ENTRY, type ApprovalSent, createApprovalMessage } from ".
 // the module the `context` event's messages, the branch, the live compaction state and the
 // `message_end` messages each fixture's timeline recorded, and, for the date reminder, the wire
 // body `before_provider_request` saw, with the host's per-call marks put back from the flags the
-// recorder wrote beside each wire message. The daemon's route is a stand-in whose answer each row
-// sets, its words the daemon's own golden (packages/contracts/fixtures/daemon-api).
+// recorder wrote beside each wire message. The rows of a model that takes no system message inside
+// the conversation (S16 and S24 to S33) hand it the wire bodies Oh My Pi itself sent to such
+// models (fixture F4, test/fixtures/approval-context/top-level/). The daemon's route is a
+// stand-in whose answer each row sets, its words the daemon's own golden
+// (packages/contracts/fixtures/daemon-api).
 
 const FIXTURES = path.join(import.meta.dir, "..", "test", "fixtures", "approval-context");
 const DAEMON_FIXTURES = path.join(
@@ -205,18 +214,29 @@ interface Pane {
    *  module appended. */
   readonly entries: readonly Record<string, unknown>[];
   readonly records: () => ApprovalSent[];
+  /** Every mark entry (`APPROVAL_TOP_LEVEL_ENTRY`) the module appended. */
+  readonly marks: () => ApprovalTopLevel[];
   /** Oh My Pi's `session_start` for the pane's session. */
   readonly start: () => Promise<void>;
   /** The fixture's `context` event at `index`: its messages handed to the module at a clock just
    *  past the newest of them. */
   readonly request: (name: string, index: number, options?: RequestOptions) => Promise<Request>;
-  /** The fixture's `message_end` at `index`. */
-  readonly end: (name: string, index: number) => void;
+  /** The fixture's `message_end` at `index`, on the model `model` where a row names one. */
+  readonly end: (name: string, index: number, model?: Model) => void;
   /** The fixture's `session_compact` at `index`. */
   readonly compact: (name: string, index: number) => void;
   /** The module's `before_provider_request` on `body`, as the fixture's request at `index` made
    *  it, on the model it recorded. */
   readonly wire: (name: string, index: number, body: Record<string, unknown>) => unknown;
+  /** The module's `before_provider_request` on a copy of `body`, a request to `model`, made by
+   *  the architect's own agent or, with `agent`, another. */
+  readonly send: (
+    body: Record<string, unknown>,
+    model: Model,
+    agent?: { readonly kind: "main" | "sub"; readonly id: string }
+  ) => unknown;
+  /** A saved answer `message` of the model `model`: the module's `message_end`. */
+  readonly answer: (message: unknown, model: Model) => void;
 }
 
 /** A root architect's pane over one fixture's session: the module, the stand-in route, the
@@ -306,7 +326,7 @@ function pane(options: {
     setTimeout: () => undefined,
     ui: { notify: () => undefined },
   });
-  const MAIN = { kind: "main", id: "Main" };
+  const MAIN = { kind: "main", id: "Main" } as const;
   return {
     lines,
     reads: () => reads,
@@ -315,6 +335,10 @@ function pane(options: {
       entries
         .filter((entry) => entry.customType === APPROVAL_SENT_ENTRY)
         .map((entry) => entry.data as ApprovalSent),
+    marks: () =>
+      entries
+        .filter((entry) => entry.customType === APPROVAL_TOP_LEVEL_ENTRY)
+        .map((entry) => entry.data as ApprovalTopLevel),
     start: async () => {
       clock = 1;
       await approval.sessionStart(contextOf(options.session, MAIN, []));
@@ -343,9 +367,9 @@ function pane(options: {
       );
       return { messages, original, changed };
     },
-    end: (name, index) => {
+    end: (name, index, model) => {
       const item = recorded(name, index, "message_end");
-      approval.messageEnd(item.message, contextOf(String(item.session), item.agent, []));
+      approval.messageEnd(item.message, contextOf(String(item.session), item.agent, [], model));
     },
     compact: (name, index) => {
       const item = recorded(name, index, "session_compact");
@@ -363,6 +387,13 @@ function pane(options: {
         })
       );
     },
+    send: (body, model, agent = MAIN) =>
+      approval.beforeProviderRequest(
+        structuredClone(body),
+        contextOf(options.session, agent, [], model)
+      ),
+    answer: (message, model) =>
+      approval.messageEnd(message, contextOf(options.session, MAIN, [], model)),
   };
 }
 
@@ -392,6 +423,55 @@ function answerKey(name: string, index: number): string {
 function copyBefore(messages: readonly unknown[], answer: string, copy: unknown): boolean {
   const at = messages.findIndex((message) => messageKey(message) === answer);
   return at > 0 && JSON.stringify(messages[at - 1]) === JSON.stringify(copy);
+}
+
+/** claude-opus-5-5: the catalogue sets its flag, so Oh My Pi sends a plugin's message to it as a
+ *  `system` message inside the conversation. */
+const OPUS: Model = {
+  provider: "anthropic",
+  id: "claude-opus-5-5",
+  api: "anthropic-messages",
+  compat: { supportsMidConversationSystem: true },
+};
+
+/** What fixture F4 holds for one model whose flag is off: the wire body Oh My Pi itself sent to it
+ *  (`before_provider_request`, the second prompt of a session that loads no plugin), and the model
+ *  as the host names it. */
+interface TopLevelFixture {
+  readonly model: Model;
+  readonly payload: Record<string, unknown>;
+}
+
+function topLevelFixture(name: string): TopLevelFixture {
+  const parsed = record(
+    JSON.parse(readFileSync(path.join(FIXTURES, "top-level", `${name}.json`), "utf8")),
+    `top-level/${name}.json`
+  );
+  const model = record(parsed.model, `top-level/${name}.json's model`);
+  return {
+    model: {
+      provider: String(model.provider),
+      id: String(model.id),
+      api: String(model.api),
+      compat: { supportsMidConversationSystem: model.supportsMidConversationSystem === true },
+    },
+    payload: record(parsed.payload, `top-level/${name}.json's payload`),
+  };
+}
+
+/** How many times `text` appears in `body`, as a JSON string's content. */
+function occurrences(body: unknown, text: string): number {
+  return JSON.stringify(body).split(JSON.stringify(text).slice(1, -1)).length - 1;
+}
+
+/** A saved assistant answer with one text block, stamped `timestamp`. */
+function assistantAnswer(timestamp: number): Record<string, unknown> {
+  return {
+    role: "assistant",
+    timestamp,
+    stopReason: "stop",
+    content: [{ type: "text", text: "ready" }],
+  };
 }
 
 test("S1: the first request with no record has the message last, and nothing is recorded yet", async () => {
@@ -875,25 +955,28 @@ test("with pi-envoy's handler first, a remote compaction that keeps no tail gets
   expect(own.messages.at(-1)).toEqual(own.original.at(-1));
 });
 
-test("S16: on a model whose flag is off the message is placed, and one log line names the session's model, with no second line", async () => {
+test("S16: on a model whose flag is off the message is neither placed nor held among the messages, and the top-level system prompt holds it", async () => {
   const name = "task-prompt";
+  const sonnet = topLevelFixture("claude-sonnet-5");
+  expect(sonnet.model.compat?.supportsMidConversationSystem).toBe(false);
   const p = pane({ session: sessionOf(name), route: { answer: GOLDEN } });
   await p.start();
-  const sonnet: Model = {
-    provider: "anthropic",
-    id: "claude-sonnet-5",
-    compat: { supportsMidConversationSystem: false },
-  };
 
-  const first = await p.request(name, 4, { model: sonnet });
-  expect(isApprovalMessage(first.messages.at(-1))).toBe(true);
-  p.end(name, 8);
-  const next = await p.request(name, 13, { model: sonnet });
-  expect(approvalsIn(next.messages)).toHaveLength(1);
+  const first = await p.request(name, 4, { model: sonnet.model });
+  expect(first.changed).toBe(false);
+  expect(first.messages).toEqual([...first.original]);
+  p.end(name, 8, sonnet.model);
+  const next = await p.request(name, 13, { model: sonnet.model });
+  expect(next.changed).toBe(false);
+  expect(next.messages).toEqual([...next.original]);
+  expect(approvalsIn(next.messages)).toEqual([]);
+  expect(p.records()).toEqual([]);
 
-  const named = p.lines.filter((line) => line.includes("anthropic/claude-sonnet-5"));
-  expect(named).toHaveLength(1);
-  expect(named[0]).toContain(sessionOf(name));
+  const sent = p.send(sonnet.payload, sonnet.model);
+  expect(occurrences(sent, GOLDEN_TEXT)).toBe(1);
+  expect(wireMessages(sent)).toEqual(wireMessages(sonnet.payload));
+  // The log line that named the model, which this case once read, is gone.
+  expect(p.lines.filter((line) => line.includes("takes no system message"))).toEqual([]);
 });
 
 test("S17: a task subagent's request is returned unchanged", async () => {
@@ -1114,4 +1197,333 @@ test("S23: a relaunch into a session that holds a copy of the standing version w
   expect(approvalsIn(request.messages)).toHaveLength(1);
   expect(request.messages.at(-1)).toEqual(request.original.at(-1));
   expect(relaunched.records()).toEqual(life1.records());
+});
+
+test("S24: a chat completion to gemini-4-neon or kimi-k3.1-pro ends its last leading system message with the message, holds it nowhere else, and no placement is recorded", async () => {
+  for (const name of ["gemini-4-neon", "kimi-k3.1-pro"]) {
+    const fixture = topLevelFixture(name);
+    const messages = list(fixture.payload.messages, "the messages");
+    const system = record(messages[0], "the system prompt");
+    expect(system.role).toBe("system");
+    const p = pane({ session: sessionOf("task-prompt"), route: { answer: GOLDEN } });
+    await p.start();
+
+    const sent = p.send(fixture.payload, fixture.model);
+
+    expect(sent).toEqual({
+      ...fixture.payload,
+      messages: [
+        { ...system, content: `${String(system.content)}\n\n${GOLDEN_TEXT}` },
+        ...messages.slice(1),
+      ],
+    });
+    expect(occurrences(sent, GOLDEN_TEXT)).toBe(1);
+    const request = await p.request("task-prompt", 4, { model: fixture.model });
+    expect(request.changed).toBe(false);
+    expect(approvalsIn(request.messages)).toEqual([]);
+    expect(p.records()).toEqual([]);
+  }
+});
+
+test("S25: a Responses request to gpt-6.2-sol ends its instructions, or its last leading developer item, with the message, and holds it nowhere else", async () => {
+  const route: Route = { answer: GOLDEN };
+  const withInstructions = topLevelFixture("gpt-6.2-sol-instructions");
+  const p = pane({ session: sessionOf("task-prompt"), route });
+  await p.start();
+  const sentInstructions = p.send(withInstructions.payload, withInstructions.model);
+  expect(sentInstructions).toEqual({
+    ...withInstructions.payload,
+    instructions: `${String(withInstructions.payload.instructions)}\n\n${GOLDEN_TEXT}`,
+  });
+  expect(occurrences(sentInstructions, GOLDEN_TEXT)).toBe(1);
+
+  // Oh My Pi sends the system prompt as leading developer items where the model's
+  // `compat.supportsDeveloperRole` is set, one item for each part of it.
+  const asItems = topLevelFixture("gpt-6.2-sol-developer");
+  const input = list(asItems.payload.input, "the input");
+  const last = record(input[1], "the last developer item");
+  expect(record(input[0], "the first developer item").role).toBe("developer");
+  expect(last.role).toBe("developer");
+  expect(record(input[2], "the first conversation item").role).toBe("user");
+  expect(asItems.payload.instructions).toBeUndefined();
+  const sentItems = p.send(asItems.payload, asItems.model);
+  expect(sentItems).toEqual({
+    ...asItems.payload,
+    input: [
+      input[0],
+      { ...last, content: `${String(last.content)}\n\n${GOLDEN_TEXT}` },
+      ...input.slice(2),
+    ],
+  });
+  expect(occurrences(sentItems, GOLDEN_TEXT)).toBe(1);
+});
+
+test("S26: an Anthropic request to claude-sonnet-5 gets a new last text block of system that holds the message, and holds it nowhere else", async () => {
+  const fixture = topLevelFixture("claude-sonnet-5");
+  const system = list(fixture.payload.system, "the system prompt");
+  const p = pane({ session: sessionOf("task-prompt"), route: { answer: GOLDEN } });
+  await p.start();
+
+  const sent = p.send(fixture.payload, fixture.model);
+
+  expect(sent).toEqual({
+    ...fixture.payload,
+    system: [...system, { type: "text", text: GOLDEN_TEXT }],
+  });
+  expect(occurrences(sent, GOLDEN_TEXT)).toBe(1);
+});
+
+test("S27: after a fallback to gemini-4-neon the copy a claude-opus-5-5 answer holds is not in the messages, a request built before the switch included, and the top-level text holds v24", async () => {
+  const name = "task-prompt";
+  const gemini = topLevelFixture("gemini-4-neon");
+  const messages = list(gemini.payload.messages, "the messages");
+  const system = record(messages[0], "the system prompt");
+  const topped = {
+    ...gemini.payload,
+    messages: [
+      { ...system, content: `${String(system.content)}\n\n${GOLDEN_TEXT}` },
+      ...messages.slice(1),
+    ],
+  };
+  // A request built before the switch: the copy, as Oh My Pi sends a plugin's message to a chat
+  // completion, a user message before the answer it precedes.
+  const withCopy = (text: string): Record<string, unknown> => ({
+    ...gemini.payload,
+    messages: [
+      messages[0],
+      messages[1],
+      { role: "user", content: [{ type: "text", text }] },
+      ...messages.slice(2),
+    ],
+  });
+  const p = pane({ session: sessionOf(name), route: { answer: GOLDEN } });
+  await p.start();
+  const placed = (await p.request(name, 4, { model: OPUS })).messages.at(-1);
+  p.end(name, 8, OPUS);
+  expect(p.records()).toHaveLength(1);
+
+  const next = await p.request(name, 13, { model: gemini.model });
+  expect(next.changed).toBe(false);
+  expect(approvalsIn(next.messages)).toEqual([]);
+  expect(p.send(gemini.payload, gemini.model)).toEqual(topped);
+  const built = p.send(withCopy(textOf(placed)), gemini.model);
+  expect(built).toEqual(topped);
+  expect(occurrences(built, GOLDEN_TEXT)).toBe(1);
+
+  // The same for a placement still waiting for its answer.
+  const waiting = pane({ session: sessionOf(name), route: { answer: GOLDEN } });
+  await waiting.start();
+  const pendingText = textOf((await waiting.request(name, 4, { model: OPUS })).messages.at(-1));
+  expect(waiting.records()).toEqual([]);
+  expect(waiting.send(withCopy(pendingText), gemini.model)).toEqual(topped);
+});
+
+test("S28: back on claude-opus-5-5 the v24 copy is rebuilt at its place with the same bytes, and nothing new is placed", async () => {
+  const name = "compaction-remote";
+  const gemini = topLevelFixture("gemini-4-neon");
+  const p = pane({ session: sessionOf(name), route: { answer: GOLDEN } });
+  await p.start();
+  const placed = (await p.request(name, 4, { model: OPUS })).messages.at(-1);
+  p.end(name, 8, OPUS);
+  const records = p.records();
+  await p.request(name, 13, { model: gemini.model });
+  expect(p.send(gemini.payload, gemini.model)).toBeDefined();
+  p.end(name, 17, gemini.model);
+
+  const back = await p.request(name, 22, { model: OPUS });
+
+  expect(copyBefore(back.messages, answerKey(name, 8), placed)).toBe(true);
+  expect(approvalsIn(back.messages)).toHaveLength(1);
+  expect(back.messages.at(-1)).toEqual(back.original.at(-1));
+  expect(p.records()).toEqual(records);
+});
+
+test("a placement whose request a model that takes no system message inside the conversation answered is not recorded against that answer, and the message is placed last on the return", async () => {
+  const name = "task-prompt";
+  const gemini = topLevelFixture("gemini-4-neon");
+  const p = pane({ session: sessionOf(name), route: { answer: GOLDEN } });
+  await p.start();
+  // The request to claude-opus-5-5 that placed the message fails; the retry goes to gemini-4-neon.
+  await p.request(name, 4, { model: OPUS });
+  await p.request(name, 4, { model: gemini.model });
+  p.end(name, 8, gemini.model);
+  expect(p.records()).toEqual([]);
+
+  const back = await p.request(name, 13, { model: OPUS });
+
+  expect(approvalsIn(back.messages)).toHaveLength(1);
+  expect(isApprovalMessage(back.messages.at(-1))).toBe(true);
+  expect(back.messages.slice(0, -1)).toEqual([...back.original]);
+  expect(p.records()).toEqual([]);
+});
+
+test("S29: the answer of gemini-4-neon to its first request with v24's text is marked once for the version and model, and the mark rebuilds nothing", async () => {
+  const name = "task-prompt";
+  const gemini = topLevelFixture("gemini-4-neon");
+  const kimi = topLevelFixture("kimi-k3.1-pro");
+  const p = pane({ session: sessionOf(name), route: { answer: GOLDEN } });
+  await p.start();
+
+  expect(p.send(gemini.payload, gemini.model)).toBeDefined();
+  expect(p.marks()).toEqual([]);
+  // An answer that Oh My Pi's transform drops answers nothing.
+  p.answer({ role: "assistant", timestamp: 1000, stopReason: "error", content: [] }, gemini.model);
+  expect(p.marks()).toEqual([]);
+  p.answer(assistantAnswer(2000), gemini.model);
+  expect(p.marks()).toEqual([
+    { version: 24, model: "model-gateway/gemini-4-neon", answer: "assistant@2000" },
+  ]);
+
+  // A second request and answer add none.
+  expect(p.send(gemini.payload, gemini.model)).toBeDefined();
+  p.answer(assistantAnswer(3000), gemini.model);
+  expect(p.marks()).toHaveLength(1);
+
+  // Another model has a mark of its own.
+  expect(p.send(kimi.payload, kimi.model)).toBeDefined();
+  p.answer(assistantAnswer(4000), kimi.model);
+  expect(p.marks().map((mark) => `${mark.version} ${mark.model}`)).toEqual([
+    "24 model-gateway/gemini-4-neon",
+    "24 model-gateway/kimi-k3.1-pro",
+  ]);
+
+  // The marks rebuild nothing, and are no placement record.
+  expect(p.records()).toEqual([]);
+  const flagOff = await p.request(name, 4, { model: gemini.model });
+  expect(flagOff.changed).toBe(false);
+  const flagOn = await p.request(name, 13, { model: OPUS });
+  expect(flagOn.messages.slice(0, -1)).toEqual([...flagOn.original]);
+  expect(approvalsIn(flagOn.messages)).toHaveLength(1);
+  expect(isApprovalMessage(flagOn.messages.at(-1))).toBe(true);
+});
+
+test("S30: after a changes request no top-level text stands, and a later approval's text is v26's", async () => {
+  const name = "task-prompt";
+  const gemini = topLevelFixture("gemini-4-neon");
+  const route: Route = { answer: GOLDEN };
+  const p = pane({ session: sessionOf(name), route });
+  await p.start();
+  expect(occurrences(p.send(gemini.payload, gemini.model), GOLDEN_TEXT)).toBe(1);
+
+  // A person's changes request ends the approval.
+  route.answer = NONE;
+  await p.request(name, 4, { model: gemini.model });
+  expect(p.send(gemini.payload, gemini.model)).toBeUndefined();
+
+  // A later approval puts the later version's text in its place.
+  route.answer = V26;
+  await p.request(name, 13, { model: gemini.model });
+  const sent = p.send(gemini.payload, gemini.model);
+  expect(occurrences(sent, V26_TEXT)).toBe(1);
+  expect(occurrences(sent, GOLDEN_TEXT)).toBe(0);
+  const messages = list(gemini.payload.messages, "the messages");
+  const system = record(messages[0], "the system prompt");
+  expect(sent).toEqual({
+    ...gemini.payload,
+    messages: [
+      { ...system, content: `${String(system.content)}\n\n${V26_TEXT}` },
+      ...messages.slice(1),
+    ],
+  });
+});
+
+test("S31: a task subagent's body is unchanged, and a side turn's and a compaction's own request to gemini-4-neon hold the top-level text", async () => {
+  const gemini = topLevelFixture("gemini-4-neon");
+  const messages = list(gemini.payload.messages, "the messages");
+  const system = record(messages[0], "the system prompt");
+  const topped = (rest: readonly unknown[], prompt = system) => ({
+    ...gemini.payload,
+    messages: [{ ...prompt, content: `${String(prompt.content)}\n\n${GOLDEN_TEXT}` }, ...rest],
+  });
+
+  // Even where a claim answered for the subagent's session, its `agent.kind` is `sub`.
+  const sub = pane({ session: sessionOf("side-turn"), route: { answer: GOLDEN } });
+  await sub.start();
+  expect(sub.send(gemini.payload, gemini.model, { kind: "sub", id: "Sub" })).toBeUndefined();
+
+  // A side turn (`/btw`): the `context` handler leaves it alone and waits on no read.
+  const p = pane({ session: sessionOf("side-turn"), route: { answer: GOLDEN } });
+  await p.start();
+  const reads = p.reads();
+  const side = await p.request("side-turn", 13, { model: gemini.model });
+  expect(side.changed).toBe(false);
+  expect(p.reads()).toBe(reads);
+  expect(p.send(gemini.payload, gemini.model)).toEqual(topped(messages.slice(1)));
+
+  // A compaction's summary request, which the host's `before_provider_request` does reach.
+  const summary = {
+    role: "system",
+    content: "Summarize the conversation below for another instance of yourself.",
+  };
+  const conversation = { role: "user", content: [{ type: "text", text: "<conversation/>" }] };
+  expect(p.send({ ...gemini.payload, messages: [summary, conversation] }, gemini.model)).toEqual(
+    topped([conversation], summary)
+  );
+});
+
+test("S32: a compaction's summary request that reaches no payload hook holds no text of the plugin, and the next conversation request ends its top-level system prompt with v24's text", async () => {
+  // OpenAI remote compaction (V1, `/responses/compact`, and V2, a `compaction_trigger` item in a
+  // Responses stream) converts the session's messages itself and sends `remoteSystemPrompt` as its
+  // instructions, with no `onPayload`: neither body reaches this plugin. What of the plugin a
+  // compaction can reach is the `context` handler, where such a model changes nothing.
+  const name = "compaction-remote";
+  for (const fixture of [
+    topLevelFixture("gpt-6.2-sol-instructions"),
+    topLevelFixture("gemini-4-neon"),
+  ]) {
+    const p = pane({ session: sessionOf(name), route: { answer: GOLDEN } });
+    await p.start();
+    for (const index of [30, 31]) {
+      const own = await p.request(name, index, { model: fixture.model });
+      expect(own.changed).toBe(false);
+      expect(own.messages).toEqual([...own.original]);
+      expect(approvalsIn(own.messages)).toEqual([]);
+    }
+    p.compact(name, 33);
+
+    const next = await p.request(name, 39, { model: fixture.model });
+    expect(next.changed).toBe(false);
+    expect(approvalsIn(next.messages)).toEqual([]);
+    const sent = record(p.send(fixture.payload, fixture.model), "the body sent");
+    expect(occurrences(sent, GOLDEN_TEXT)).toBe(1);
+    const prompt =
+      fixture.model.api === "openai-responses"
+        ? sent.instructions
+        : record(list(sent.messages, "the messages")[0], "the system prompt").content;
+    expect(String(prompt).endsWith(`\n\n${GOLDEN_TEXT}`)).toBe(true);
+  }
+});
+
+test("S33: on a model that takes a system message inside the conversation a compaction's own request holds each copy through the context handler, and the next request holds each copy whose answer it keeps at its place with the same bytes", async () => {
+  const name = "compaction-remote";
+  const route: Route = { answer: GOLDEN };
+  const p = pane({ session: sessionOf(name), route });
+  await p.start();
+  const v24 = (await p.request(name, 4, { model: OPUS })).messages.at(-1);
+  p.end(name, 8, OPUS);
+  await p.request(name, 13, { model: OPUS });
+  p.end(name, 17, OPUS);
+  route.answer = V26;
+  const v26 = (await p.request(name, 22, { model: OPUS })).messages.at(-1);
+  expect(textOf(v26)).toBe(V26_TEXT);
+  p.end(name, 26, OPUS);
+  expect(p.records()).toHaveLength(2);
+
+  // The compaction's own conversions: up to its cut, then the whole conversation.
+  const cut = await p.request(name, 30, { model: OPUS });
+  expect(copyBefore(cut.messages, answerKey(name, 8), v24)).toBe(true);
+  expect(approvalsIn(cut.messages)).toHaveLength(1);
+  const whole = await p.request(name, 31, { model: OPUS });
+  expect(copyBefore(whole.messages, answerKey(name, 8), v24)).toBe(true);
+  expect(copyBefore(whole.messages, answerKey(name, 26), v26)).toBe(true);
+  expect(approvalsIn(whole.messages).map(textOf)).toEqual([GOLDEN_TEXT, V26_TEXT]);
+  expect(whole.messages.at(-1)).toEqual(whole.original.at(-1));
+
+  // The compaction summarized the answers of 8 and 17 and kept the answer of 26.
+  p.compact(name, 33);
+  const after = await p.request(name, 39, { model: OPUS });
+  expect(copyBefore(after.messages, answerKey(name, 26), v26)).toBe(true);
+  expect(approvalsIn(after.messages).map(textOf)).toEqual([V26_TEXT]);
+  expect(after.messages.at(-1)).toEqual(after.original.at(-1));
+  expect(p.records()).toHaveLength(2);
 });

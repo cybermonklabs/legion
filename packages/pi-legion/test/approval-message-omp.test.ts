@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, describe, test } from "bun:test";
 import { CHECKOUT_PLUGINS, type Cleanup, ompNatsGuard } from "@legion/pi-shared/test/omp-harness";
-import { approvalWords, captureCases, runCase, type Words } from "./approval-message-capture";
+import { approvalWords, captureCases, type Words } from "./approval-message-capture";
 
 // The cases of check e4b07a29 in CI (plan task t-13): the driver scripts/e2e/approval-message.sh
 // runs on the pod's own model route, run here on the pinned Oh My Pi with this checkout's two
@@ -40,7 +40,7 @@ for (const { title, reverse, model } of runs) {
         one.name,
         async () => {
           const { binary, nats } = guard.setup();
-          await runCase(one, {
+          await one.run({
             binary,
             nats,
             route: { kind: "standin" },
@@ -51,7 +51,6 @@ for (const { title, reverse, model } of runs) {
             note: () => undefined,
             sent: [],
             model,
-            panes: [],
           });
         },
         CASE_MS

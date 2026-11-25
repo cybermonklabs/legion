@@ -14,7 +14,14 @@ import {
 import { customEntries } from "@legion/pi-shared/custom-entry";
 import type { LegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
-import type { SessionContext } from "@legion/pi-shared/pi-types";
+import type {
+  AnthropicRequestBody,
+  AnthropicSystemBlock,
+  ChatCompletionMessage,
+  ChatCompletionRequestBody,
+  ResponsesRequestBody,
+  SessionContext,
+} from "@legion/pi-shared/pi-types";
 
 /**
  * The approval message: while a person's approval of a root's spec stands, a root architect's own
@@ -39,6 +46,23 @@ import type { SessionContext } from "@legion/pi-shared/pi-types";
  * - **No new placement** in a side turn, the handoff prompt or a compaction's own request; each of
  *   those rebuilds the copies whose answers it holds, so a remote compaction's two conversions
  *   count the same messages before its cut.
+ * - **A model that takes no system message inside the conversation** (its
+ *   `compat.supportsMidConversationSystem` is not set, which each handler reads from `ctx.model`:
+ *   in `before_provider_request`, the model of that provider request): the `context` handler
+ *   places no message and rebuilds no copy. The `before_provider_request` handler takes out any
+ *   message whose text equals a text this plugin placed or stands for (a request built before a
+ *   fallback switch still holds a copy), then puts the standing version's text at the end of the
+ *   top-level system prompt: a new last text block of an Anthropic request's `system`; `\n\n` and
+ *   the text at the end of the last leading `system` or `developer` message of a chat completion;
+ *   `\n\n` and the text at the end of a Responses request's `instructions`, or of its last leading
+ *   `developer` item. Every request of the architect's own session to such a model gets it, a side
+ *   turn's and a compaction's summary request among them where they reach the handler; a `task`
+ *   subagent's does not. A server-side compaction request reaches no payload hook and holds none:
+ *   the next request of the conversation does. A placement is made and recorded only on a model
+ *   that takes one, and a return to it rebuilds each earlier copy at its place.
+ * - **The mark.** When such a model's answer to the first request that carried a version's text is
+ *   saved, one entry `APPROVAL_TOP_LEVEL_ENTRY` records the version, the model and the answer's
+ *   key, once for each version and model. It rebuilds nothing.
  *
  * The route is read at `session_start`, and again before the next request of the loop after an
  * entry that is not the model's or a tool's entered the session (a daemon task, an Envoy card, a
@@ -65,6 +89,20 @@ export interface ApprovalSent {
   readonly answer: string;
 }
 
+/** The custom type of the mark entry (`ApprovalTopLevel`) that says when the architect got the
+ *  message at the end of a top-level system prompt. A change to the data's shape takes a new
+ *  custom type: a reader passes over an entry it cannot read. */
+export const APPROVAL_TOP_LEVEL_ENTRY = "legion-approval-top-level";
+
+/** The mark of one version on one model that takes no system message inside the conversation: the
+ *  version whose text the request held, the model (`provider/id`) and the `messageKey` of the
+ *  assistant message that answered the first request that held it. */
+export interface ApprovalTopLevel {
+  readonly version: number;
+  readonly model: string;
+  readonly answer: string;
+}
+
 export interface ApprovalMessageLog {
   readonly info: (message: string, fields?: Record<string, unknown>) => void;
   readonly warn: (message: string, fields?: Record<string, unknown>) => void;
@@ -77,7 +115,7 @@ export interface ApprovalMessageDeps {
   /** The pane's daemon client, built lazily by the entry that owns it. */
   readonly daemon: () => Pick<LegionDaemonClient, "approval">;
   /** `pi.appendEntry`. */
-  readonly appendEntry: (customType: string, data: ApprovalSent) => void;
+  readonly appendEntry: (customType: string, data: ApprovalSent | ApprovalTopLevel) => void;
   /** The host's roster of live sessions (`host.AgentRegistry`), for the test of a remote
    *  compaction's own whole conversion (`sessionCompacting`). */
   readonly registry: HostAgentRegistry;
@@ -89,17 +127,22 @@ export interface ApprovalMessage {
   /** `session_start`: reads the route for a root architect's own session. */
   readonly sessionStart: (context: SessionContext) => Promise<void>;
   /** A `context` handler's work on `messages`, the array the host or the handler before handed
-   *  on, edited in place: every copy rebuilt, and a new placement where one is due. True when it
-   *  changed the array. */
+   *  on, edited in place: every copy rebuilt, and a new placement where one is due, on a model
+   *  that takes a system message inside the conversation; none of that on any other model. True
+   *  when it changed the array. */
   readonly context: (messages: unknown[], context: SessionContext) => Promise<boolean>;
-  /** `message_end`: records a new placement once its answer is saved, and marks the route's
-   *  answer stale when an entry that is not the model's or a tool's entered the session. */
+  /** `message_end`: records a new placement once its answer is saved, marks a model's answer that
+   *  carried the text at the end of a top-level system prompt (`APPROVAL_TOP_LEVEL_ENTRY`), and
+   *  marks the route's answer stale when an entry that is not the model's or a tool's entered the
+   *  session. */
   readonly messageEnd: (message: unknown, context: SessionContext) => void;
   /** `session_compact`: a compaction summary entered the session. */
   readonly sessionCompact: (context: SessionContext) => void;
-  /** `before_provider_request`: the wire body of the one request whose new placement Oh My Pi's
-   *  date reminder follows, with the reminder moved where the next request has it; undefined for
-   *  every other body. */
+  /** `before_provider_request`: on a model that takes a system message inside the conversation,
+   *  the wire body of the one request whose new placement Oh My Pi's date reminder follows, with
+   *  the reminder moved where the next request has it; on any other model, the body with the
+   *  standing version's text at the end of its top-level system prompt and no copy among its
+   *  messages. Undefined for every other body. */
   readonly beforeProviderRequest: (payload: unknown, context: SessionContext) => object | undefined;
 }
 
@@ -210,6 +253,173 @@ function withRole(message: unknown, role: string): unknown {
   return typeof message === "object" && message !== null ? { ...message, role } : message;
 }
 
+/** What goes between a top-level system prompt and the text put at its end. */
+const SEPARATOR = "\n\n";
+
+type Body = Record<string, unknown>;
+
+function isBody(value: unknown): value is Body {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** A model the request names, as the host gives it. */
+type HostRequestModel = NonNullable<SessionContext["model"]>;
+
+/**
+ * Whether `model` takes no `system` message inside the conversation: it is known, and the
+ * catalogue does not set its `compat.supportsMidConversationSystem`. A context that names no model
+ * is none of these, as the placement always read it.
+ */
+function refusesMidConversationSystem(model: SessionContext["model"]): model is HostRequestModel {
+  return model !== undefined && model.compat?.supportsMidConversationSystem !== true;
+}
+
+function isApprovalTopLevel(data: unknown): data is ApprovalTopLevel {
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    "version" in data &&
+    Number.isInteger(data.version) &&
+    "model" in data &&
+    typeof data.model === "string" &&
+    "answer" in data &&
+    typeof data.answer === "string"
+  );
+}
+
+/** `prompt` with `text` at its end after a blank line, or `prompt` itself where it ends so. */
+function endingWith(prompt: string, text: string): string {
+  return prompt === text || prompt.endsWith(`${SEPARATOR}${text}`)
+    ? prompt
+    : `${prompt}${SEPARATOR}${text}`;
+}
+
+/** Whether `message` is a conversation message whose whole text is one of `texts`. */
+function holdsCopy(message: unknown, texts: ReadonlySet<string>): boolean {
+  const role = roleOf(message);
+  if (role !== "user" && role !== "developer" && role !== "system") return false;
+  const text = wireText(message);
+  return text !== undefined && texts.has(text);
+}
+
+/** `entries` without the messages after its first `lead` (the top-level system prompt) that hold
+ *  a text of `texts`; `entries` itself where none does. */
+function withoutCopies<T>(
+  entries: readonly T[],
+  lead: number,
+  texts: ReadonlySet<string>
+): readonly T[] {
+  const kept = entries.filter((entry, at) => at < lead || !holdsCopy(entry, texts));
+  return kept.length === entries.length ? entries : kept;
+}
+
+/** How many entries at the start of `entries` have one of `roles`. */
+function leadingRoles(entries: readonly unknown[], roles: readonly string[]): number {
+  let count = 0;
+  while (count < entries.length && roles.includes(String(roleOf(entries[count])))) count += 1;
+  return count;
+}
+
+/** What a body's rewrite gives: the body with the copies in `texts` out of its conversation and
+ *  `add`, where given, at the end of its top-level system prompt; the body itself where that
+ *  changes nothing; undefined where the body is not the shape the API has. */
+type TopLevelRewrite = (body: Body, texts: ReadonlySet<string>, add?: string) => Body | undefined;
+
+function isAnthropicBody(body: Body): body is AnthropicRequestBody {
+  return Array.isArray(body.messages) && (body.system === undefined || Array.isArray(body.system));
+}
+
+/** An Anthropic request: a new last text block of `system`. */
+const anthropicTopLevel: TopLevelRewrite = (body, texts, add) => {
+  if (!isAnthropicBody(body)) return undefined;
+  const messages = withoutCopies(body.messages, 0, texts);
+  const blocks = body.system ?? [];
+  const last = blocks.at(-1);
+  const lastText = isBody(last) && typeof last.text === "string" ? last.text : undefined;
+  const block: AnthropicSystemBlock | undefined =
+    add === undefined || lastText === add ? undefined : { type: "text", text: add };
+  if (messages === body.messages && block === undefined) return body;
+  const system = block === undefined ? body.system : [...blocks, block];
+  return { ...body, messages, ...(system === undefined ? {} : { system }) };
+};
+
+function isChatBody(body: Body): body is ChatCompletionRequestBody {
+  return (
+    Array.isArray(body.messages) &&
+    body.messages.every((message) => isBody(message) && typeof message.role === "string")
+  );
+}
+
+/** A chat completion: the end of the last of the leading `system` or `developer` messages, or a
+ *  `system` message of its own where the request has none. */
+const chatTopLevel: TopLevelRewrite = (body, texts, add) => {
+  if (!isChatBody(body)) return undefined;
+  const lead = leadingRoles(body.messages, ["system", "developer"]);
+  let messages: readonly ChatCompletionMessage[] = withoutCopies(body.messages, lead, texts);
+  if (add !== undefined && lead === 0) {
+    messages = [{ role: "system", content: add }, ...messages];
+  } else if (add !== undefined) {
+    const prompt = messages[lead - 1];
+    if (typeof prompt.content !== "string") return undefined;
+    const content = endingWith(prompt.content, add);
+    if (content !== prompt.content) {
+      messages = messages.map((message, at) =>
+        at === lead - 1 ? { ...message, content } : message
+      );
+    }
+  }
+  return messages === body.messages ? body : { ...body, messages };
+};
+
+function isResponsesBody(body: Body): body is ResponsesRequestBody {
+  return (
+    Array.isArray(body.input) &&
+    (body.instructions === undefined ||
+      body.instructions === null ||
+      typeof body.instructions === "string")
+  );
+}
+
+/** A Responses request: the end of its `instructions`, or of its last leading `developer` item
+ *  where Oh My Pi sends the system prompt as `developer` items, or `instructions` of their own
+ *  where the request has no system prompt. */
+const responsesTopLevel: TopLevelRewrite = (body, texts, add) => {
+  if (!isResponsesBody(body)) return undefined;
+  const lead = leadingRoles(body.input, ["developer"]);
+  let input = withoutCopies(body.input, lead, texts);
+  let instructions = body.instructions;
+  if (add !== undefined && typeof instructions === "string") {
+    instructions = endingWith(instructions, add);
+  } else if (add !== undefined && lead === 0) {
+    instructions = add;
+  } else if (add !== undefined) {
+    const prompt = input[lead - 1];
+    if (typeof prompt.content !== "string") return undefined;
+    const content = endingWith(prompt.content, add);
+    if (content !== prompt.content) {
+      input = input.map((item, at) => (at === lead - 1 ? { ...item, content } : item));
+    }
+  }
+  if (input === body.input && instructions === body.instructions) return body;
+  return { ...body, input, ...(instructions === body.instructions ? {} : { instructions }) };
+};
+
+/** The rewrite of each wire API that a model that takes no mid-conversation system message
+ *  speaks. */
+const TOP_LEVEL: Readonly<Record<string, TopLevelRewrite>> = {
+  "anthropic-messages": anthropicTopLevel,
+  "openai-completions": chatTopLevel,
+  "openai-responses": responsesTopLevel,
+};
+
+/** The first request of one session that carried a version's text at the end of a top-level system
+ *  prompt to one model (`provider/id`), whose answer is not saved yet. */
+interface Carrying {
+  readonly session: string;
+  readonly version: number;
+  readonly model: string;
+}
+
 export function createApprovalMessage(deps: ApprovalMessageDeps): ApprovalMessage {
   /** The route's last answer: null where no approval stands or no read has answered. */
   let standing: Standing | null = null;
@@ -222,8 +432,7 @@ export function createApprovalMessage(deps: ApprovalMessageDeps): ApprovalMessag
   let failing = false;
   let pending: Pending | undefined;
   const conversions = new Map<string, Conversion>();
-  /** The sessions and models a request carried the message on as a user message, each logged. */
-  const userRole = new Set<string>();
+  let carrying: Carrying | undefined;
 
   /** The claim of a root architect's own session, never a `task` subagent's event. */
   const rootClaim = (context: SessionContext): ClaimCapability | undefined => {
@@ -405,18 +614,75 @@ export function createApprovalMessage(deps: ApprovalMessageDeps): ApprovalMessag
     return true;
   };
 
-  /** One log line for each session and model a request carries the message on as a user message:
-   *  a model whose `compat.supportsMidConversationSystem` is not set. */
-  const tellUserRole = (context: SessionContext, session: string): void => {
+  /** Marks `message`, the saved answer of a model that takes no system message inside the
+   *  conversation, as the first answer to a request that carried the standing version's text
+   *  there: one mark for each version and model. */
+  const markTopLevel = (message: unknown, context: SessionContext): void => {
+    const carried = carrying;
     const model = context.model;
-    if (model === undefined || model.compat?.supportsMidConversationSystem === true) return;
-    const name = `${model.provider}/${model.id}`;
-    const seen = `${session} ${name}`;
-    if (userRole.has(seen)) return;
-    userRole.add(seen);
-    deps.log.warn(
-      `legion: session ${session} runs on ${name}, which takes no system message inside the conversation, so Oh My Pi sends the approval message as a user message`
+    if (carried === undefined || model === undefined || !survives(message)) return;
+    if (carried.session !== context.sessionManager.getSessionId()) return;
+    if (`${model.provider}/${model.id}` !== carried.model) return;
+    carrying = undefined;
+    const marks = customEntries(
+      context.sessionManager.getBranch?.() ?? [],
+      APPROVAL_TOP_LEVEL_ENTRY
+    ).filter(isApprovalTopLevel);
+    if (marks.some((mark) => mark.version === carried.version && mark.model === carried.model)) {
+      return;
+    }
+    try {
+      deps.appendEntry(APPROVAL_TOP_LEVEL_ENTRY, {
+        version: carried.version,
+        model: carried.model,
+        answer: messageKey(message),
+      });
+    } catch (error) {
+      deps.log.warn(
+        `legion: the mark of the approval message at the end of ${carried.model}'s system prompt could not be recorded (${messageFor(error)})`
+      );
+    }
+  };
+
+  /**
+   * The body of a request to `model`, which takes no system message inside the conversation:
+   * without any message that holds a text this plugin placed (a record of the branch, or the
+   * placement waiting for its answer) or stands for, and with the standing version's text at the
+   * end of the top-level system prompt. Undefined where the body is already so, or is none of the
+   * shapes of the three wire APIs.
+   */
+  const topLevel = (
+    payload: unknown,
+    context: SessionContext,
+    model: HostRequestModel
+  ): object | undefined => {
+    // Only the newest request of such a model counts: the answer that is saved next answers it.
+    carrying = undefined;
+    const rewrite =
+      model.api !== undefined && Object.hasOwn(TOP_LEVEL, model.api)
+        ? TOP_LEVEL[model.api]
+        : undefined;
+    if (rewrite === undefined || !isBody(payload)) return undefined;
+    const session = context.sessionManager.getSessionId();
+    const branch = context.sessionManager.getBranch?.() ?? [];
+    const now = standing;
+    const texts = new Set(
+      customEntries(branch, APPROVAL_SENT_ENTRY)
+        .filter(isApprovalSent)
+        .map((sent) => sent.text)
     );
+    if (now !== null) texts.add(now.text);
+    if (pending?.session === session) texts.add(pending.text);
+    const rewritten = rewrite(payload, texts, now?.text);
+    if (rewritten === undefined) return undefined;
+    if (now !== null) {
+      const name = `${model.provider}/${model.id}`;
+      const marked = customEntries(branch, APPROVAL_TOP_LEVEL_ENTRY)
+        .filter(isApprovalTopLevel)
+        .some((mark) => mark.version === now.version && mark.model === name);
+      if (!marked) carrying = { session, version: now.version, model: name };
+    }
+    return rewritten === payload ? undefined : rewritten;
   };
 
   return {
@@ -433,6 +699,14 @@ export function createApprovalMessage(deps: ApprovalMessageDeps): ApprovalMessag
       const outside = outsideLoop(messages, before, session);
       const reads = !outside && readDue(messages);
       if (reads) await read(claim);
+      // A model that takes no system message inside the conversation gets the text at the end of
+      // its top-level system prompt, from `beforeProviderRequest`: nothing is placed or rebuilt
+      // here, and a placement still waiting for its answer is given up, for no answer of this
+      // model records it.
+      if (refusesMidConversationSystem(context.model)) {
+        if (pending?.session === session) pending = undefined;
+        return false;
+      }
       // The host can move to another session while the read waits: the request is the session's
       // it was built from, decided from that session's branch as it began, with nothing new.
       // Without a read nothing came between, so the branch read first is the branch.
@@ -456,7 +730,6 @@ export function createApprovalMessage(deps: ApprovalMessageDeps): ApprovalMessag
         rebuild(messages, keys, present);
       }
       const placed = !outside && !moved && place(messages, session, present);
-      if (present.length > 0 || placed) tellUserRole(context, session);
       return present.length > 0 || placed;
     },
 
@@ -465,6 +738,10 @@ export function createApprovalMessage(deps: ApprovalMessageDeps): ApprovalMessag
       const role = roleOf(message);
       if (role !== "assistant") {
         if (role !== "toolResult" && !isApprovalMessage(message)) stale = true;
+        return;
+      }
+      if (refusesMidConversationSystem(context.model)) {
+        markTopLevel(message, context);
         return;
       }
       const waiting = pending;
@@ -493,10 +770,16 @@ export function createApprovalMessage(deps: ApprovalMessageDeps): ApprovalMessag
      * messages are then the next request's before the answer. The `cache_control` marks Oh My Pi
      * set inside `buildParams` stay as they are, and none sits on a per-call message. The same
      * body gives the same result each time the provider rebuilds it.
+     *
+     * On a model that takes no system message inside the conversation, the handler does something
+     * else (`topLevel`): the text at the end of the top-level system prompt of any request.
      */
     beforeProviderRequest: (payload, context) => {
+      if (rootClaim(context) === undefined) return undefined;
+      const model = context.model;
+      if (refusesMidConversationSystem(model)) return topLevel(payload, context, model);
       const waiting = pending;
-      if (waiting === undefined || rootClaim(context) === undefined) return undefined;
+      if (waiting === undefined) return undefined;
       if (waiting.session !== context.sessionManager.getSessionId()) return undefined;
       if (
         typeof payload !== "object" ||

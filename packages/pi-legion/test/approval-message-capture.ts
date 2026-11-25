@@ -25,6 +25,10 @@
 // requests on either route. A case drives all its steps first and then checks what the recorder
 // wrote, so a failed check still leaves every step's requests in the record.
 //
+// On claude-sonnet-5, which takes no system message inside the conversation, the same cases read
+// the approval message where pi-legion puts it on such a model: the last block of the request's
+// `system`, with no message of the conversation holding it.
+//
 //   bun packages/pi-legion/test/approval-message-capture.ts --omp <binary> --nats <url> \
 //     --envoy <plugin> --legion <plugin> --models <models.yml> --overlay <overlay.yml> \
 //     [--entries every|each-path] [--evidence <dir>] [--negative-control]
@@ -48,15 +52,7 @@
 // `ok <session>` or `FAIL <session>: <why>`, and ends with
 // `approval message capture: top-level capture PASS` or names the first session that failed.
 import { createHash, randomUUID } from "node:crypto";
-import {
-  closeSync,
-  existsSync,
-  openSync,
-  readdirSync,
-  readFileSync,
-  readSync,
-  statSync,
-} from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import {
   copyFile,
   mkdir,
@@ -134,10 +130,6 @@ export const HANDOFF_PROMPT = "Write a handoff document for another instance of 
 
 /** How pi-envoy's people's-answers message begins (`session-answers-context.ts`). */
 const ANSWERS_MESSAGE = "[Dispatch: what people wrote to this session";
-
-/** What pi-legion logs once for each session and model that takes no system message inside the
- *  conversation (`tellUserRole`, src/approval-message.ts). */
-const USER_ROLE_LINE = "which takes no system message inside the conversation";
 
 // The trees the entries name, as the daemon's approval-path test names them
 // (packages/daemon/internal/workflow/approval_route_paths_test.go): OWN_ROOT is a root with its own
@@ -426,8 +418,6 @@ export interface CaptureSetup {
   readonly sent: Sent[];
   /** The model every pane of the case runs. */
   readonly model: ModelName;
-  /** The case's panes, as each opens: `runCase` reads their logs. */
-  readonly panes: Pane[];
 }
 
 /** A wire message as the recorder wrote it. */
@@ -460,6 +450,8 @@ export interface Sent {
   /** What the request is (`requestKind`), or a task subagent's (`sub`). */
   readonly kind: RequestKind | "sub";
   readonly messages: readonly WireMessage[];
+  /** The text of each block of its top-level system prompt, an Anthropic request's `system`. */
+  readonly system: readonly string[];
   readonly perCall: readonly boolean[];
 }
 
@@ -544,6 +536,7 @@ function recordReader(file: string, pane: string): () => readonly Sent[] {
             ? "sub"
             : requestKind({ path: "/anthropic/v1/messages", body: payload }),
         messages: (Array.isArray(payload.messages) ? payload.messages : []) as WireMessage[],
+        system: systemTexts(payload.system),
         perCall: (Array.isArray(event.perCall) ? event.perCall : []).map((flag) => flag === true),
       });
     }
@@ -561,17 +554,49 @@ function approvalsIn(messages: readonly unknown[], words: Words): number[] {
   return messages.flatMap((message, at) => (texts.has(textOf(message)) ? [at] : []));
 }
 
+/** The text of each block of a request's top-level system prompt (an Anthropic `system`). */
+function systemTexts(system: unknown): string[] {
+  return (Array.isArray(system) ? system : []).map((block) => textOf({ content: [block] }));
+}
+
+/** How many approval messages `request` holds: those among its messages, and one where the last
+ *  block of its top-level system prompt is the approval message. */
+function approvalsHeld(request: Sent, words: Words): number {
+  const texts = new Set([...words.values()].map((answer) => answer.message));
+  return (
+    approvalsIn(request.messages, words).length + (texts.has(request.system.at(-1) ?? "") ? 1 : 0)
+  );
+}
+
+/** `request` ends its top-level system prompt with `words` as a block of its own, which nothing
+ *  else of the request holds. */
+function endsSystemWith(request: Sent, words: string, label: string): void {
+  const last = request.system.at(-1);
+  if (last !== words) {
+    fail(
+      `${label}: request #${request.index} ends its system prompt with ${JSON.stringify(last?.slice(0, 80))}, not the approval message`
+    );
+  }
+  if (
+    request.system.slice(0, -1).includes(words) ||
+    request.messages.some((message) => textOf(message) === words)
+  ) {
+    fail(`${label}: request #${request.index} holds the approval message elsewhere too`);
+  }
+}
+
 function mains(requests: readonly Sent[]): Sent[] {
   return requests.filter((request) => request.kind === "main");
 }
 
-/** The role a placement has: `system` where the model takes a system message inside the
- *  conversation (claude-opus-5-5), a user message where it takes none (claude-sonnet-5). */
-type Role = "system" | "user";
+/** How a placement reaches the model: as a `system` message inside the conversation where the
+ *  model takes one (claude-opus-5-5), or as the last block of the top-level system prompt, with no
+ *  message of the conversation holding it, where it takes none (claude-sonnet-5). */
+type Role = "system" | "top-level";
 
-/** The role a placement has on the case's model. */
+/** How a placement reaches the case's model. */
 function roleOf(setup: CaptureSetup): Role {
-  return setup.model === "sonnet" ? "user" : "system";
+  return setup.model === "sonnet" ? "top-level" : "system";
 }
 
 /** A placement, once the request after it showed its answer. */
@@ -585,10 +610,10 @@ interface Placement {
   readonly place: number;
 }
 
-/** Every request of `requests` holds `count` approval messages. */
+/** Every request of `requests` holds `count` approval messages (`approvalsHeld`). */
 function holdsCount(requests: readonly Sent[], count: number, words: Words, label: string): void {
   for (const request of requests) {
-    const held = approvalsIn(request.messages, words).length;
+    const held = approvalsHeld(request, words);
     if (held !== count) {
       fail(`${label}: request #${request.index} holds ${held} approval messages, want ${count}`);
     }
@@ -598,6 +623,10 @@ function holdsCount(requests: readonly Sent[], count: number, words: Words, labe
 /** `request` holds `placement`'s copy with the same bytes and role, right before the assistant
  *  message that answered it (and, with `atPlace`, where it sat before). */
 function kept(request: Sent, placement: Placement, label: string, atPlace = false): void {
+  if (placement.place < 0) {
+    endsSystemWith(request, placement.words, label);
+    return;
+  }
   const at = request.messages.findIndex((message) => textOf(message) === placement.words);
   if (at < 0) {
     fail(`${label}: request #${request.index} holds no copy of the approval message it placed`);
@@ -634,6 +663,14 @@ function placedLast(
   label: string,
   before: readonly Placement[] = []
 ): Placement {
+  if (role === "top-level") {
+    const requests = mains(after);
+    if (requests.length === 0)
+      fail(`${label}: no request of the conversation came after the entry`);
+    for (const request of requests) endsSystemWith(request, words, label);
+    holdsCount(requests, 1, all, label);
+    return { words, copy: "", answer: "", place: -1 };
+  }
   const conversation = mains(after);
   const first =
     conversation[0] ?? fail(`${label}: no request of the conversation came after the entry`);
@@ -718,8 +755,6 @@ interface Pane {
   /** Every model request the stand-in served: the stand-in model's, or, on the pod's route, those
    *  it recorded and forwarded to the gateway. Each holds its body alone, never a header. */
   readonly modelRequests: () => readonly Request[];
-  /** The lines of every Oh My Pi log under the pane's home. */
-  readonly logs: () => string[];
   readonly sessions: string;
   readonly relaunch: (life: (life: Life) => Promise<void>) => Promise<void>;
 }
@@ -1029,7 +1064,6 @@ async function openPane(
   const lane = `${ROLE_TOPIC_PREFIX}legion-${PANE}-${spec.tree.toLowerCase()}-architect`;
   const legionFirst = setup.reverse !== (spec.reverse === true);
 
-  let root = "";
   let sessionID = "";
   const modelRequests: Request[] = [];
   const gateway = route.kind === "pod" ? route.gateway : undefined;
@@ -1104,9 +1138,6 @@ async function openPane(
               );
             },
           }),
-      prepare: async ({ workspace }) => {
-        root = path.dirname(workspace);
-      },
       onFrame: driver.onFrame,
       answer: (url, body, headers) => {
         if (url.pathname === "/anthropic/v1/messages") {
@@ -1146,21 +1177,12 @@ async function openPane(
   const opened: Pane = {
     sent,
     modelRequests: () => modelRequests,
-    logs: () => {
-      const logs = path.join(root, "home", ".omp", "logs");
-      if (!existsSync(logs)) return [];
-      return readdirSync(logs, { recursive: true })
-        .map((file) => path.join(logs, String(file)))
-        .filter((file) => statSync(file).isFile())
-        .flatMap((file) => readFileSync(file, "utf8").split("\n"));
-    },
     sessions: pane.sessions,
     relaunch: (life) =>
       pane.resume([], [], async (rpc) => {
         await life(await lifeOf(rpc));
       }),
   };
-  setup.panes.push(opened);
   return opened;
 }
 
@@ -1216,15 +1238,16 @@ async function laterRequest(life: Life, mark: number): Promise<void> {
 /** One line of what a placement's requests showed. */
 function noteOf(after: readonly Sent[], placement: Placement, role: Role): string {
   const conversation = mains(after);
-  return `request #${conversation[0]?.index} holds the approval message last as ${role}; ${conversation.length - 1} later requests hold it at ${placement.place}, right before its answer`;
+  const later = conversation.length - 1;
+  return role === "top-level"
+    ? `request #${conversation[0]?.index} ends its system prompt with the approval message, and none of its messages holds it; ${later} later requests do too`
+    : `request #${conversation[0]?.index} holds the approval message last as ${role}; ${later} later requests hold it at ${placement.place}, right before its answer`;
 }
 
 /** One case of the check. */
 export interface CaptureCase {
   readonly name: string;
   readonly run: (setup: CaptureSetup) => Promise<void>;
-  /** No approval stands in the case, so no process of it logs the line `runCase` reads. */
-  readonly placesNone?: boolean;
 }
 
 /** `file`'s entry to a session that is idle after a turn of its own, or that is in a turn after a
@@ -1415,20 +1438,31 @@ function compactionCase(summarizes: boolean): CaptureCase {
             ? request.body.messages
             : []) as WireMessage[],
           perCall: [],
+          system: systemTexts(request.body.system),
         };
         if (isSummarization(request)) {
           holdsCount([conversation], 0, setup.words, "the compaction's summary request");
           return;
         }
         remote += 1;
+        // A model that takes no system message inside the conversation gets no text of the plugin
+        // in this request: it reaches no payload hook, and the `context` handler places nothing.
+        if (roleOf(setup) === "top-level") {
+          holdsCount([conversation], 0, setup.words, "the compaction's own request");
+          return;
+        }
         holdsCount([conversation], 1, setup.words, "the compaction's own request");
         kept(conversation, placement, "the compaction's own request");
       });
       // A route whose compaction makes no remote request (its method order compacts with a
       // summary, `soft`) exercises no remote compaction's own request, and the run says so.
+      const holding =
+        roleOf(setup) === "top-level"
+          ? "none holding a text of the plugin"
+          : "each holding the copy at its place";
       setup.note(
         remote > 0
-          ? `the compaction's own requests: ${remote} remote, each holding the copy at its place, and ${own.length - remote} summary requests, holding no approval message`
+          ? `the compaction's own requests: ${remote} remote, ${holding}, and ${own.length - remote} summary requests, holding no approval message`
           : `the compaction made no remote request, so a remote compaction's own request was not exercised on this route; its ${own.length} summary requests hold no approval message`
       );
     },
@@ -1596,14 +1630,27 @@ const relaunches: CaptureCase = {
       setup.words,
       "the approval"
     );
-    for (const [label, from, to] of [
-      ["after the relaunch", marks.relaunch, marks.changes],
-      ["after the changes request", marks.changes, marks.relaunchAfterChanges],
-      ["after the relaunch after the changes request", marks.relaunchAfterChanges, marks.later],
+    const topLevel = roleOf(setup) === "top-level";
+    // Where no message of the conversation holds the text, a changes request takes it out of the
+    // system prompt, as no approval stands, and the later approval's text takes the earlier one's
+    // place.
+    for (const [label, from, to, holds] of [
+      ["after the relaunch", marks.relaunch, marks.changes, true],
+      ["after the changes request", marks.changes, marks.relaunchAfterChanges, !topLevel],
+      [
+        "after the relaunch after the changes request",
+        marks.relaunchAfterChanges,
+        marks.later,
+        !topLevel,
+      ],
     ] as const) {
       const after = segment(from, to);
       if (after.length === 0) fail(`${label}: no request of the conversation came`);
-      holdsCount(after, 1, setup.words, label);
+      holdsCount(after, holds ? 1 : 0, setup.words, label);
+      if (!holds) {
+        setup.note(`${label}, ${after.length} requests hold no approval message`);
+        continue;
+      }
       for (const request of after) kept(request, first, label, true);
       setup.note(`${label}, ${after.length} requests hold the one copy at ${first.place}`);
     }
@@ -1618,12 +1665,16 @@ const relaunches: CaptureCase = {
     setup.note(`the later approval: ${noteOf(requests.slice(marks.later), second, roleOf(setup))}`);
     const last = segment(marks.relaunchAfterLater);
     if (last.length === 0) fail("after the last relaunch: no request of the conversation came");
-    holdsCount(last, 2, setup.words, "after the relaunch after the later approval");
+    holdsCount(last, topLevel ? 1 : 2, setup.words, "after the relaunch after the later approval");
     for (const request of last) {
-      kept(request, first, "after the relaunch after the later approval", true);
+      if (!topLevel) kept(request, first, "after the relaunch after the later approval", true);
       kept(request, second, "after the relaunch after the later approval", true);
     }
-    setup.note(`after the last relaunch, ${last.length} requests hold both copies at their places`);
+    setup.note(
+      topLevel
+        ? `after the last relaunch, ${last.length} requests end the system prompt with the later approval alone`
+        : `after the last relaunch, ${last.length} requests hold both copies at their places`
+    );
   },
 };
 
@@ -1704,14 +1755,22 @@ const dateReminder: CaptureCase = {
         `request #${first.index} holds the date reminder as ${describe(first.messages[reminder])}`
       );
     }
+    if (!first.messages.some((message) => textOf(message).startsWith(ANSWERS_MESSAGE))) {
+      fail(`request #${first.index} holds no people's-answers message`);
+    }
+    // A model that takes no system message inside the conversation has no placement for the
+    // reminder to follow, so Oh My Pi's own order of the two stands.
+    if (roleOf(setup) === "top-level") {
+      setup.note(
+        `request #${first.index}: the reminder a user message at ${reminder}; the people's-answers message; the approval message the last block of the system prompt, none of its ${first.messages.length} messages`
+      );
+      return;
+    }
     const anchor = first.perCall.lastIndexOf(false);
     if (reminder !== anchor + 1) {
       fail(
         `request #${first.index} holds the date reminder at ${reminder}, not right after ${anchor}, the last message that is not per-call`
       );
-    }
-    if (!first.messages.some((message) => textOf(message).startsWith(ANSWERS_MESSAGE))) {
-      fail(`request #${first.index} holds no people's-answers message`);
     }
     for (let at = 0; at < first.messages.length; at += 1) {
       if (normalized(first.messages[at]) !== normalized(next.messages[at])) {
@@ -1733,7 +1792,6 @@ const dateReminder: CaptureCase = {
  *  with no approval standing, go as a user message. */
 const wordsAsCard: CaptureCase = {
   name: "R1's words sent as a card that wakes an idle session",
-  placesNone: true,
   run: async (setup) => {
     const words = answerFor(setup, own(3)).message;
     let mark = 0;
@@ -1776,29 +1834,6 @@ export function captureCases(entries: "every" | "each-path"): CaptureCase[] {
     sideCase("handoff"),
     wordsAsCard,
   ];
-}
-
-/** Runs `one` on `setup`; on claude-sonnet-5, a case that places the message then reads
- *  pi-legion's log line: each process of the case that carried the message logs one line, which
- *  names the model. */
-export async function runCase(one: CaptureCase, setup: CaptureSetup): Promise<void> {
-  await one.run(setup);
-  if (setup.model !== "sonnet" || one.placesNone === true) return;
-  const lines = setup.panes
-    .flatMap((pane) => pane.logs())
-    .filter((line) => line.includes("anthropic/claude-sonnet-5") && line.includes(USER_ROLE_LINE));
-  const processes = new Map<unknown, number>();
-  for (const line of lines) {
-    const { pid } = JSON.parse(line) as { readonly pid?: unknown };
-    processes.set(pid, (processes.get(pid) ?? 0) + 1);
-  }
-  if (processes.size === 0) fail("pi-legion logged no line naming claude-sonnet-5");
-  for (const [pid, count] of processes) {
-    if (count !== 1) fail(`process ${String(pid)} logged ${count} lines naming claude-sonnet-5`);
-  }
-  setup.note(
-    `pi-legion logged one line naming the model in each of ${processes.size} processes: ${lines[0]?.slice(0, 160)}`
-  );
 }
 
 /** The checkout's root, written over in each body of the top-level capture. */
@@ -2390,7 +2425,7 @@ async function main(args: readonly string[]): Promise<number> {
       const began = Date.now();
       const cleanup: Cleanup = [];
       try {
-        await runCase(one, { ...base, cleanup, model, panes: [] });
+        await one.run({ ...base, cleanup, model });
         console.log(`ok ${name} (${Math.round((Date.now() - began) / 1000)}s)`);
       } catch (error) {
         failed.push(`${name}: ${error instanceof Error ? error.message : String(error)}`);
@@ -2409,7 +2444,7 @@ async function main(args: readonly string[]): Promise<number> {
     // The negative control's verdict is its own check alone: its placing cases fail by design, at
     // their first placement.
     console.log("== negative control: no request holds the approval message");
-    const holding = sent.filter((request) => approvalsIn(request.messages, base.words).length > 0);
+    const holding = sent.filter((request) => approvalsHeld(request, base.words) > 0);
     const why =
       sent.length === 0
         ? "the run's sessions sent no request"

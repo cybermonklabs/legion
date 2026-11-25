@@ -411,10 +411,13 @@ export default function legionExtension(pi: PiApi): void {
 
   // The approval message a root architect's own session carries while a person's approval of its
   // spec stands (`src/approval-message.ts`): the route is read at session_start and before the next
-  // request after an entry that is not the model's or a tool's, each request places or rebuilds
-  // the message in the `context` handler below, a saved answer records the copy it answered, and
-  // the `before_provider_request` handler moves Oh My Pi's date reminder off a new placement. The
-  // host's roster tells a remote compaction's own conversions apart.
+  // request after an entry that is not the model's or a tool's. On a model that takes a system
+  // message inside the conversation (`ctx.model.compat.supportsMidConversationSystem`), each
+  // request places or rebuilds the message in the `context` handler below, a saved answer records
+  // the copy it answered, and the `before_provider_request` handler moves Oh My Pi's date reminder
+  // off a new placement. On any other model, the `before_provider_request` handler puts the text
+  // at the end of the request's top-level system prompt, and a saved answer marks it. The host's
+  // roster tells a remote compaction's own conversions apart.
   const approvalMessage = createApprovalMessage({
     claim: (sessionID) => claimSession.capability(sessionID),
     daemon: roleDaemon,
@@ -809,8 +812,9 @@ export default function legionExtension(pi: PiApi): void {
   // context, so once it is sent again every later request of this process would carry it twice:
   // the first copy, where the history put it, is the one each request keeps.
   //
-  // Last, a root architect's approval message (`src/approval-message.ts`): every copy rebuilt
-  // before its answer, and a new placement after every other message. It edits the array it is
+  // Last, a root architect's approval message (`src/approval-message.ts`): on a model that takes a
+  // system message inside the conversation, every copy rebuilt before its answer and a new
+  // placement after every other message, and on any other model nothing. It edits the array it is
   // handed and hands that same array on, so a later copy of pi-envoy still finds the request it
   // decided; only the notice's removal makes a new one.
   pi.on("context", async (event, context) => {
@@ -824,9 +828,9 @@ export default function legionExtension(pi: PiApi): void {
     return withoutNotice !== undefined || placed ? { messages } : undefined;
   });
 
-  // A saved answer records the approval message's new placement it answered, and an entry that is
-  // not the model's or a tool's has the route read again before the next request; so does a
-  // compaction's summary.
+  // A saved answer records the approval message's new placement it answered, or marks the text at
+  // the end of a top-level system prompt that it answered; an entry that is not the model's or a
+  // tool's has the route read again before the next request; so does a compaction's summary.
   pi.on("message_end", async (event, context) => {
     approvalMessage.messageEnd(event.message, context);
   });
@@ -834,8 +838,10 @@ export default function legionExtension(pi: PiApi): void {
     approvalMessage.sessionCompact(context);
   });
 
-  // The one request whose new approval message Oh My Pi's date reminder follows: the reminder goes
-  // where the next request has it, so the approval message stays last and `system`.
+  // On a model that takes a system message inside the conversation, the one request whose new
+  // approval message Oh My Pi's date reminder follows: the reminder goes where the next request has
+  // it, so the approval message stays last and `system`. On any other model, every request of the
+  // architect's session: the text at the end of its top-level system prompt, no copy elsewhere.
   pi.on("before_provider_request", async (event, context) =>
     approvalMessage.beforeProviderRequest(event.payload, context)
   );

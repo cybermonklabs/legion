@@ -150,13 +150,17 @@ export interface SessionContext {
   /**
    * The host's `ctx.model` (`Model | undefined`, `extensibility/extensions/types.ts:825` at the
    * pinned tag), as far as this package reads it: in a `context` handler the session's current
-   * model, and in a `before_provider_request` handler the request's own model
-   * (`extensibility/extensions/runner.ts:2533`, `:2605`). `compat.supportsMidConversationSystem`
-   * says whether the model takes a `system` message inside the conversation: where it is not set,
-   * Oh My Pi's Anthropic conversion sends an extension's custom message as a user message
-   * (`ai/src/providers/anthropic.ts:6255`). Undefined where the session has no model.
+   * model, and in a `before_provider_request` handler the model of that provider request, which a
+   * fallback can have made another than the one the request's `context` handler saw
+   * (`extensibility/extensions/runner.ts:2533`, `:2598-2605`).
+   * `compat.supportsMidConversationSystem` says whether the model takes a `system` message inside
+   * the conversation: where it is not set, Oh My Pi sends an extension's custom message as a user
+   * message (`ai/src/providers/anthropic.ts:6255`, `openai-completions.ts:2536-2590`,
+   * `openai-shared.ts:2325-2374`). `api` is the wire API the model speaks (`Model.api`), which says
+   * what shape the request body has. Undefined where the session has no model.
    */
   readonly model?: HostModel & {
+    readonly api?: string;
     readonly compat?: { readonly supportsMidConversationSystem?: boolean };
   };
   /**
@@ -492,6 +496,59 @@ export interface ContextEvent {
  */
 export interface BeforeProviderRequestEvent {
   readonly payload: unknown;
+}
+
+/** A text block of an Anthropic request's `system`. */
+export interface AnthropicSystemBlock {
+  readonly type: "text";
+  readonly text: string;
+  readonly cache_control?: unknown;
+}
+
+/** The wire body of a request on `anthropic-messages`, as far as a `before_provider_request`
+ *  handler reads it: the top-level system prompt as the text blocks of `system`, and the
+ *  conversation as `messages` (`buildParams`, `ai/src/providers/anthropic.ts:5513` at the pinned
+ *  tag). */
+export interface AnthropicRequestBody {
+  readonly system?: readonly unknown[];
+  readonly messages: readonly unknown[];
+  readonly [field: string]: unknown;
+}
+
+/** One message of a chat completion: the system prompt's as a string, a conversation message's as
+ *  a string or a list of parts. */
+export interface ChatCompletionMessage {
+  readonly role: string;
+  readonly content: unknown;
+  readonly [field: string]: unknown;
+}
+
+/** The wire body of a request on `openai-completions`: the top-level system prompt is its leading
+ *  `system` or `developer` messages, one for each part of it, or one that joins them where the
+ *  model takes no second system message (`ai/src/providers/openai-completions.ts:2500-2516` at the
+ *  pinned tag); the conversation follows. */
+export interface ChatCompletionRequestBody {
+  readonly messages: readonly ChatCompletionMessage[];
+  readonly [field: string]: unknown;
+}
+
+/** One item of a Responses request's `input`: a message has a `role`, and its content is a string
+ *  (a system prompt's `developer` item) or a list of parts. */
+export interface ResponsesInputItem {
+  readonly type?: string;
+  readonly role?: string;
+  readonly content?: unknown;
+  readonly [field: string]: unknown;
+}
+
+/** The wire body of a request on `openai-responses`: the top-level system prompt is
+ *  `instructions`, or, for a reasoning model whose `compat.supportsDeveloperRole` is set, the
+ *  leading `developer` items of `input`, one for each part of it
+ *  (`ai/src/providers/openai-responses.ts:1887-1916` at the pinned tag). */
+export interface ResponsesRequestBody {
+  readonly instructions?: string | null;
+  readonly input: readonly ResponsesInputItem[];
+  readonly [field: string]: unknown;
 }
 
 /** Replacement messages for that one request; Oh My Pi stores none of them in the session. */
