@@ -16,7 +16,7 @@ import { type DrawnRow, nodeRows, parentOfRow, tree } from "./issue-page-g";
  *
  * - **The tree** `role="tree"` named `CONTROL_LABELS.tree` (`issue-page-g.ts`'s `tree`), its
  *   rows `treeitem`s carrying `aria-level`, and the one row with `tabindex="0"`, its tab stop. A
- *   row of the outline carries `data-row-key` and stands in no Verification or Decisions body:
+ *   row of the outline stands in the body's box, `[data-issue-body]`, which no view draws:
  *   every view draws a tree of its own, so a tree is no sign that the outline is drawn.
  * - **The stage** the outline is drawn in: the column `[data-testid="issue-column"]` that holds
  *   the stage and the foot (`IssueOutlinePage.tsx`).
@@ -56,8 +56,7 @@ const SELECTORS = {
   nodeRow: "[data-node-row]",
   nodeTag: "[data-node-margin] [data-node-tag]",
   /** A row of the outline, and of no view's tree. */
-  outlineRow:
-    "[data-node-row][data-row-key]:not([data-verification-body] *, [data-decisions-body] *)",
+  outlineRow: "[data-issue-body] [data-node-row][data-row-key]",
   presetRow: '[data-testid="issue-presets"]',
   stage: '[data-testid="issue-column"]',
   tree: '[role="tree"]',
@@ -124,7 +123,7 @@ export function pageStatus(page: Page): Locator {
   return tree(page).locator("[data-row-report]");
 }
 
-/** The outline's own rows, the `data-row-key` rows outside the Verification and Decisions bodies: a
+/** The outline's own rows, standing in the body's box, `[data-issue-body]`, which no view draws: a
  *  view's tree is named as the outline's is, so the tree alone does not say which is drawn. */
 export function outlineRows(page: Page): Locator {
   return issuePage(page).locator(SELECTORS.outlineRow);

@@ -329,7 +329,7 @@ export function sendOnEnter(
 /** The line above the box's line on the issue page that names its target - the entry a reply
  *  answers, the statement a comment is on, the comment an edit changes (`OutlineLook.target`) -
  *  cut to the line's width, and the control that ends the target, which `clearLabel` names. */
-function OutlineTargetLine({
+export function OutlineTargetLine({
   children,
   clearLabel,
   onClear,

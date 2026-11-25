@@ -1089,9 +1089,7 @@ test("a node is edited in place in each filter", async ({ browser }) => {
 // without needing a control to open their text: each is as tall as its words, draws no
 // `CONTROL_LABELS.read_more`, and draws every word written. The height is read first: `innerText`
 // reads every word of words cut short, so only the height tells a cut from words drawn whole.
-// Each row is brought into view as a reader scrolls to it (`scrollInAsReader`), through the band
-// below the view where a cut is measured: on a phone the long rows mount screens down, and a jump
-// straight into view would leave a cut put back unmeasured, so the row could not fail.
+// Each row comes into view as a reader scrolls (`scrollInAsReader`), so a cut put back is measured.
 // SLOW(>=2s): seeds the whole issue, appends two blocks and waits for them to be indexed before
 // opening Verification.
 test("the Verification view draws a long statement and a long check whole @phone", async ({

@@ -4,13 +4,14 @@ import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState }
 
 import type { Actor } from "../../api/types";
 import { RefusableButton } from "../../components/RefusableButton";
-import { pageComposer, pageComposerControl } from "../../theme/classes";
+import { pageComposer } from "../../theme/classes";
 import { useHeldSend } from "../conversation/held-sends";
 import {
   keepFocusOnPress,
   MentionComposer,
   type OutlineKind,
   type OutlineLook,
+  OutlineTargetLine,
   sendOnEnter,
 } from "../conversation/MentionComposer";
 import { MentionField } from "../conversation/MentionField";
@@ -91,7 +92,7 @@ export interface BoxPlace {
  * an edit, which a row's Reply or Edit sets there or in Details - or holds a send of the line's
  * own that is out or was refused. So a press is never answered by nothing, and a refusal is never
  * out of sight. An answer the writer holds draws nothing here: the ask's own body answers it.
- * A criterion the writer holds, which a row's Write a criterion sets, is such an ask as well.
+ * A criterion the writer holds, set by a row's Write a criterion, draws the box as a reply does.
  * The box reads it for itself, and the slot for the reach its wrapper publishes (`useFootInset`).
  */
 export function useComposerShown({ documentOpen, viewOn }: BoxPlace): boolean {
@@ -598,13 +599,13 @@ function CriterionForm({
       {/* Held while the write is out: the node it names is the criterion's parent, fixed once
           the send is out. */}
       <fieldset className="flex min-w-0 flex-col gap-[3px] border-0 p-0" disabled={line.pending}>
-        <CriterionTargetLine onClear={back}>
+        <OutlineTargetLine clearLabel={CONTROL_LABELS.write_on_issue} onClear={back}>
           <TargetNamed
             author={target.author}
             doing={CONTROL_LABELS.criterion_target}
             kind={target.kind}
           />
-        </CriterionTargetLine>
+        </OutlineTargetLine>
         {/* The line wraps only for what asks a row of its own, as the write line does: the open
             picker's list, and on a phone Send under the field while it holds the caret. */}
         <div className={`${pageComposer.line} flex-wrap`}>
@@ -648,33 +649,6 @@ function CriterionForm({
   );
 }
 
-/** The criterion line's target line, drawn as the box's own target line is (`MentionComposer`'s,
- *  which that file keeps to itself): what names the target, cut to the line's width, and the
- *  control that ends the aim (`CONTROL_LABELS.write_on_issue`), whose press leaves the focus
- *  where it is. */
-function CriterionTargetLine({
-  children,
-  onClear,
-}: {
-  readonly children: ReactNode;
-  readonly onClear: () => void;
-}): ReactNode {
-  return (
-    <div className={pageComposer.target} data-composer-target="">
-      <span className="min-w-0 truncate">{children}</span>
-      <button
-        aria-label={CONTROL_LABELS.write_on_issue}
-        className={`${pageComposer.targetClear} ${pageComposerControl}`}
-        onClick={onClear}
-        onMouseDown={keepFocusOnPress}
-        type="button"
-      >
-        <span aria-hidden="true">×</span>
-      </button>
-    </div>
-  );
-}
-
 /**
  * What a target line says of its target (R3, R5, R11): what the line does to it - "Replying to:"
  * or "Editing:" - the target's author, where the line knows one, named as the page names an
@@ -682,6 +656,7 @@ function CriterionTargetLine({
  * names them, and the page's word for its kind, with a middle dot between the two. It draws none
  * of the target's words: the entry stands whole in its own row, and an edited comment's words
  * stand whole in the field.
+ * The criterion line names the node a criterion goes under the same way, after "Criterion under:".
  */
 function TargetNamed({
   author,
