@@ -1027,7 +1027,7 @@ func (r *setupRig) mktemp(template string) {
 		r.t.Fatal(err)
 	}
 	script := fmt.Sprintf("#!/bin/sh\n[ \"$*\" = -d ] || exec %[1]s \"$@\"\nexec %[1]s -d \"${TMPDIR:-/tmp}\"/%[2]s\n", shellQuote(real), shellQuote(template))
-	if err := os.WriteFile(filepath.Join(r.bin, "mktemp"), []byte(script), 0o700); err != nil {
+	if err := testexec.WriteFile(filepath.Join(r.bin, "mktemp"), []byte(script), 0o700); err != nil {
 		r.t.Fatal(err)
 	}
 }
