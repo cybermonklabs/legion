@@ -59,7 +59,7 @@ func TestReadyForUpdateTakesTheOpenRoundsAnswerAndRefusesAnother(t *testing.T) {
 	}
 
 	foreign := answer
-	foreign.Round = supervise.PluginRoundPrefix + strconv.Itoa(DaemonAPIVersion)
+	foreign.Round = supervise.PluginRoundPrefix + strconv.Itoa(DaemonAPIVersion())
 	wantRefusal(t, h.readyForUpdate(foreign), http.StatusConflict,
 		"ready_for_update refused: the answer names an update round this claim is not in. "+
 			"It answers \""+foreign.Round+"\", and this claim is in \""+testUpdateRound+"\". "+
@@ -107,7 +107,7 @@ func TestReadyForUpdateForAPluginRoundThisBootEndedIsRefusedAndRecordsNothing(t 
 		t.Fatalf("ready: %v", err)
 	}
 	// The round an earlier daemon opened over this claim, and the end this boot posts for it.
-	round := supervise.PluginRoundPrefix + strconv.Itoa(DaemonAPIVersion)
+	round := supervise.PluginRoundPrefix + strconv.Itoa(DaemonAPIVersion())
 	if err := machine.Handle(h.ctx, supervise.PodUpdateOpen{Claim: token, Round: round, Reasons: "plugin"}); err != nil {
 		t.Fatalf("open the plugin round: %v", err)
 	}

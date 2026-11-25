@@ -86,6 +86,7 @@ var goingMutatingRoutesWithNoTool = []string{
 	"PUT /api/v1/issues/{key}/plans/{id}",
 	"PUT /api/v1/issues/{key}/role-holders",
 	"PUT /api/v1/issues/{key}/steps/{id}",
+	"PUT /api/v1/issues/{key}/steps/{id}/experiment",
 	"PUT /api/v1/issues/{key}/steps/{id}/rating",
 	"PUT /api/v1/me/agents/{session_id}/state",
 	"PUT /api/v1/me/asks/{id}/snooze",
@@ -347,6 +348,39 @@ func TestAGoingActionTheCatalogueDoesNotHoldIsRefusedWithNoRequestMade(t *testin
 		sent := doer.requests[0]
 		if sent.Method != http.MethodDelete || sent.URL.Path != "/api/v1/issues/INFRA-1042/claim" {
 			t.Fatalf("the caller sent %s %s", sent.Method, sent.URL.Path)
+		}
+	})
+
+	// Each option of the status change is the argument that picks its route: the PATCH takes no
+	// option and would drop it. A status change with no option still takes the PATCH.
+	t.Run("an option of the status change picks its route, and a call with none the PATCH", func(t *testing.T) {
+		for _, option := range []string{optionIncludeChildren, optionUnlinkChildren, optionIncludeParent} {
+			doer := &countingDoer{}
+			caller := GoingCaller{Catalogue: catalogue, BaseURL: "https://dispatch.invalid", Doer: doer}
+			arguments := map[string]any{"issue": "INFRA-1042", "status": "in_progress", option: true}
+			if _, err := caller.Do(context.Background(), "dispatch_issue_update", arguments); err != nil {
+				t.Fatalf("a status change with %s: %v", option, err)
+			}
+			sent := doer.requests[0]
+			if sent.Method != http.MethodPost || sent.URL.Path != "/api/v1/issues/INFRA-1042/status-change" {
+				t.Fatalf("a status change with %s was sent as %s %s", option, sent.Method, sent.URL.Path)
+			}
+			var body map[string]any
+			if err := json.NewDecoder(sent.Body).Decode(&body); err != nil {
+				t.Fatalf("read the body of a status change with %s: %v", option, err)
+			}
+			if want := map[string]any{"status": "in_progress", option: true}; !reflect.DeepEqual(body, want) {
+				t.Fatalf("a status change with %s sent %v, want %v", option, body, want)
+			}
+		}
+		doer := &countingDoer{}
+		caller := GoingCaller{Catalogue: catalogue, BaseURL: "https://dispatch.invalid", Doer: doer}
+		if _, err := caller.Do(context.Background(), "dispatch_issue_update", map[string]any{"issue": "INFRA-1042", "status": "in_progress"}); err != nil {
+			t.Fatalf("a status change with no option: %v", err)
+		}
+		sent := doer.requests[0]
+		if sent.Method != http.MethodPatch || sent.URL.Path != "/api/v1/issues/INFRA-1042" {
+			t.Fatalf("a status change with no option was sent as %s %s", sent.Method, sent.URL.Path)
 		}
 	})
 

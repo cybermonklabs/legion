@@ -1,0 +1,13 @@
+kind: Added
+custom:
+  Issue: pr4392
+body: |-
+  `dispatch api --path <route>` reads one route under `/api/v1` that no other command reads. It
+  sends one GET with the session's own credential (the broker token under
+  `DISPATCH_TOKEN_BROKER=1`, else the bearer) and prints Dispatch's JSON answer for `jq`. It takes
+  no method and no body. Before it sends anything, it refuses a path that does not begin `/api/v1`,
+  a path that holds a space, a backslash, a `#` or a character outside printable ASCII, and a path
+  with a `.` or `..` segment, plain or percent-encoded. When Dispatch refuses the read, the command
+  prints Dispatch's error with its code and, where Dispatch gives one, its hint, and exits 1; a path
+  Dispatch has no route for is answered at once, not sent again. `dispatch api --path /api/v1`
+  lists every route.

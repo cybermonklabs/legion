@@ -3,7 +3,7 @@ import { type RefCallback, type RefObject, useRef } from "react";
 
 import type { Issue, IssueDetails, UpdateIssueInput } from "../../api/types";
 import { useFocusHandOff } from "../../hooks/useFocusHandOff";
-import { addPriorityControlName } from "../priorities/IssuePriorityLine";
+import { priorityTriggerName } from "../priorities/IssuePriorityLine";
 import type { KeyedPress } from "../writes/useKeyedWrite";
 import { firstUsable } from "./usable-control";
 
@@ -52,14 +52,15 @@ function sameMembers<T>(a: readonly T[], b: readonly T[], same: (x: T, y: T) => 
  * reread after a refusal, a read that draws the very set it sent is handed on, since the line
  * cannot tell that set from its own write's.
  *
- * Out of the place beside Add the focus goes to the Advances row's add control: the add control
- * beside Add is where the focus is once an add lands, so the reader stays on the control of that
- * name, whose next press adds another, with Remove of what they added just before it. An add from
- * beside Add sends one priority, under the cap, so the row draws that control; where the read
- * after it also draws the issue closed, which disables it, the focus goes to the link of the
- * priority they added. Out of the Advances row it goes to the add control beside Add, the one
- * control the line draws there, and where a close drawn in the same read disables that, to
+ * Out of the place beside Add the focus goes to the Advances row's picker trigger, "Edit
+ * priorities": the trigger beside Add is where the focus is once an add lands, as the picker gives
+ * it back as it closes, so the reader stays on the line's one control, whose next press adds
+ * another or takes one off. Where the read after the add also draws the issue closed, which
+ * disables that trigger, the focus goes to the link of the priority they added. Out of the
+ * Advances row it goes to the trigger beside Add, "Add a priority to CORE-1", the one control the
+ * line draws there, and where a close drawn in the same read disables that, to
  * `developmentHeading`, the button that opens and closes the section these rows are in. Each
+ * trigger is found by the name `priorityTriggerName` gives it in that place, and each hand-off
  * passes over a control that takes no press (`usableControl`).
  *
  * Answers the refs that take the box of the Advances row's value (`advancesValue`) and the row the
@@ -77,11 +78,12 @@ export function usePriorityHandOffs(
   const queryClient = useQueryClient();
   const advancesValue = useRef<HTMLDivElement>(null);
   const addRow = useRef<HTMLDivElement>(null);
-  // The line's add control in `box`, found by its name. Only a hand-off reads it, so the name is
+  // The line's picker trigger in `box`, found by the name it carries there: the add name beside
+  // Add (`adds`), "Edit priorities" in the Advances row. Only a hand-off reads it, so the name is
   // escaped then rather than in every render.
-  const addControlIn = (box: HTMLDivElement | null) =>
+  const triggerIn = (box: HTMLDivElement | null, adds: boolean) =>
     box?.querySelector<HTMLElement>(
-      `[aria-label="${CSS.escape(addPriorityControlName(issue.key))}"]`
+      `[aria-label="${CSS.escape(priorityTriggerName(issue.key, adds))}"]`
     );
   const movedByOwnWrite = (): boolean => {
     const newest = queryClient
@@ -115,13 +117,15 @@ export function usePriorityHandOffs(
   const besideAddLeft = useFocusHandOff(() =>
     movedByOwnWrite()
       ? firstUsable(
-          addControlIn(advancesValue.current),
+          triggerIn(advancesValue.current, false),
           advancesValue.current?.querySelector<HTMLElement>("a[href]")
         )
       : null
   );
   const rowLeft = useFocusHandOff(() =>
-    movedByOwnWrite() ? firstUsable(addControlIn(addRow.current), developmentHeading.current) : null
+    movedByOwnWrite()
+      ? firstUsable(triggerIn(addRow.current, true), developmentHeading.current)
+      : null
   );
   return { addRow, advancesValue, besideAddLeft, rowLeft };
 }

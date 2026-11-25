@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { daemonContract } from "@legion/contracts/daemon-contract";
 import { activeDispatchSettings } from "@legion/envoy-client/dispatch-config";
 import { resolveIssueDocumentId } from "@legion/envoy-client/dispatch-execute";
 import { DispatchClient } from "@legion/envoy-client/dispatch-http";
@@ -86,6 +87,12 @@ import {
   workspaceRecreatedMessage,
   workspaceRecreatedNotice,
 } from "../src/workspace-recreated";
+
+// The daemon API contract this build speaks, read once as the module loads (`daemonContract`):
+// the manifest of the module this process loaded names it once a pack has written it, and a
+// checkout's own fixtures decide it for a plugin run from the checkout. A bundle installed with
+// neither refuses to load here rather than speak a number it guessed.
+const PLUGIN_CONTRACT = daemonContract(pkg, import.meta.dir);
 
 // Fatal bootstrap failures call this instead of `process.exit` directly, so a
 // test can substitute a throwing stand-in without killing the test runner. The stall watch's
@@ -241,26 +248,25 @@ export default function legionExtension(pi: PiApi): void {
   // The Envoy listener this entry's own notices go to — the architect's reminder notice, and the
   // stall watch's notice of a stuck call — built once and only when a notice is due: this entry
   // reaches no listener of its own otherwise. Envoy off for the session leaves it undefined, and
-  // the reminder keeps coming without a notice.
-  let noticePublisher: { readonly publish: EnvoyPublish | undefined } | undefined;
-  const publisher = (): EnvoyPublish | undefined => {
-    if (noticePublisher === undefined) {
-      const envoy = sessionEnvoySettings(sessionConfigFile("omp", process.env), process.env, {
-        cwd: process.cwd(),
-        nats: false,
-        session: currentSessionID,
+  // the reminder keeps coming without a notice. The build is kept as it starts, so two notices
+  // due together wait for one; a build that failed is dropped, and the next notice tries again.
+  let noticePublisher: Promise<EnvoyPublish | undefined> | undefined;
+  const publisher = (): Promise<EnvoyPublish | undefined> => {
+    noticePublisher ??= sessionEnvoySettings(sessionConfigFile("omp", process.env), process.env, {
+      cwd: process.cwd(),
+      nats: false,
+      session: currentSessionID,
+    })
+      .then((envoy) =>
+        envoy.enabled
+          ? createEnvoyClient({ baseUrl: envoy.url, credential: envoy.credential, fetch }).publish
+          : undefined
+      )
+      .catch((error: unknown) => {
+        noticePublisher = undefined;
+        throw error;
       });
-      noticePublisher = {
-        publish: envoy.enabled
-          ? createEnvoyClient({
-              baseUrl: envoy.url,
-              credential: envoy.credential,
-              fetch,
-            }).publish
-          : undefined,
-      };
-    }
-    return noticePublisher.publish;
+    return noticePublisher;
   };
   const phaseReminder = createPhaseReminder({
     sendReminder: (reminder) =>
@@ -375,12 +381,11 @@ export default function legionExtension(pi: PiApi): void {
 
   let daemonClient: LegionDaemonClient | undefined;
   const roleDaemon = (): LegionDaemonClient => {
-    // This build's own `legion.daemonApiVersion`, read from the manifest of the module this
-    // process loaded, as the claim's registration reads it. The daemon serves each answer in
-    // the shape the contract the caller states describes.
+    // This build's own contract, as the claim's registration states it. The daemon serves each
+    // answer in the shape the contract the caller states describes.
     daemonClient ??= createLegionDaemonClient(
       requiredEnvironment(process.env, "LEGION_DAEMON_URL"),
-      { pluginContract: pkg.legion.daemonApiVersion }
+      { pluginContract: PLUGIN_CONTRACT }
     );
     return daemonClient;
   };
@@ -978,10 +983,12 @@ export default function legionExtension(pi: PiApi): void {
         resolveDocument: async (issue, reference) => {
           // The file pi-envoy's session reads: Oh My Pi's rule, in the same process.
           const config = activeDispatchSettings(
-            sessionDispatchSettings(sessionConfigFile("omp", process.env), process.env, {
-              cwd: process.cwd(),
-              session: currentSessionID,
-            }).dispatch
+            (
+              await sessionDispatchSettings(sessionConfigFile("omp", process.env), process.env, {
+                cwd: process.cwd(),
+                session: currentSessionID,
+              })
+            ).dispatch
           );
           if (config === null) {
             throw new Error(
