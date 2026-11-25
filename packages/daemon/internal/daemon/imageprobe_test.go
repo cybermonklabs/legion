@@ -41,9 +41,9 @@ func newImageOmp(t *testing.T, agents, load, session []string) imageOmp {
 	}
 	script := `#!/bin/sh
 dir=` + shellprefix.Literal(dir) + `
-# held stands in for a process that hangs: it runs until a signal ends it or the test's cleanup
-# writes release, and never ends on a timer of its own.
-held() { until [ -e "$dir/release" ]; do sleep 0.05; done; }
+# held stands in for a process that hangs: it runs until a signal ends it, the test's cleanup
+# writes release, or the test process is gone, and never ends on a timer of its own.
+held() { while [ ! -e "$dir/release" ] && kill -0 ` + strconv.Itoa(os.Getpid()) + ` 2>/dev/null; do sleep 0.05; done; }
 # The pod's load arm, three extensions, comes before the pane's, one, whose glob would swallow it.
 case "$*" in
 "models --extension "*" --extension "*" --extension "*" --json") kind=load lane=pod ;;
