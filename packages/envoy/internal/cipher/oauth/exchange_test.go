@@ -44,8 +44,9 @@ const (
 	repository    = "example-org/example-repo"
 	workflow      = ".github/workflows/release.yaml"
 	ref           = "refs/heads/main"
-	// daemonAccount is an account whose entry fixes the session daemonSession, as the Legion
-	// daemon's does; deployWorkflow is a workflow whose entry fixes deploySession.
+	// daemonAccount is an account whose entry fixes the session daemonSession, the daemon session
+	// of its own project, as the Legion daemon's does, so its tokens hold the scope legion-status;
+	// deployWorkflow is a workflow whose entry fixes deploySession.
 	daemonAccount  = "system:serviceaccount:example-ns:example-daemon"
 	daemonSession  = "legion-daemon:ACME"
 	deployWorkflow = ".github/workflows/deploy.yaml"
@@ -324,8 +325,8 @@ func TestAReadEntrysPodExchangesForATokenThatOnlyReads(t *testing.T) {
 // TestTheEntryDecidesTheScopeAndARequestNamingMachineWidensNothing: the exchange client is
 // registered for the scope machine, so a request may name it, and the library validates it
 // without granting it. Under the read entry the token then holds read and nothing beside it;
-// under a named entry the same request is granted no scope at all, as it was before read entries
-// existed. A request asking for no scope is decided by its entry; one naming read is narrowed
+// under the Legion daemon's entry it holds legion-status and nothing beside it; under a named
+// entry the same request is granted no scope at all, as it was before read entries existed. A request asking for no scope is decided by its entry; one naming read is narrowed
 // (TestATradeThatAsksForReadKeepsItsIdentityAndHoldsRead), and machine widens nothing.
 func TestTheEntryDecidesTheScopeAndARequestNamingMachineWidensNothing(t *testing.T) {
 	f := newExchangeFixture(t, func(*oauth.Config) {})
@@ -335,6 +336,12 @@ func TestTheEntryDecidesTheScopeAndARequestNamingMachineWidensNothing(t *testing
 	if answer := f.introspected(t, f.exchanged(t, read, key)); answer.Scope != oauthwire.ScopeRead || answer.ProjectScope != oauthwire.ProjectScopeNone {
 		t.Errorf("a read entry's exchange naming the scope %s introspects as %+v, want the scope %q alone and the project scope %q",
 			oauthwire.Scope, answer, oauthwire.ScopeRead, oauthwire.ProjectScopeNone)
+	}
+	daemon := exchangeForm(f.podTokenOf(t, daemonAccount, "pod-uid-daemon"), oauthwire.SubjectTokenTypeKubernetes, "")
+	daemon.Set("scope", oauthwire.Scope)
+	if answer := f.introspected(t, f.exchanged(t, daemon, key)); answer.Scope != oauthwire.ScopeLegionStatus || answer.ProjectScope != oauthwire.ProjectScopeNamed || !slices.Equal(answer.Projects, []string{project}) {
+		t.Errorf("the Legion daemon's exchange naming the scope %s introspects as %+v, want the scope %q alone and the named project %s",
+			oauthwire.Scope, answer, oauthwire.ScopeLegionStatus, project)
 	}
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
 	named := exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1")
@@ -372,12 +379,14 @@ func TestAReadEntrysPodNamingAnotherSessionIsRefused(t *testing.T) {
 // under the project scope named; the read entry's holds read and the project scope none and names
 // its service; a Google entry's that names no person names its fleet; a person's sign-in names
 // the person and the machine; a machine login's names its approver; and each fixed-session
-// entry's names the session it fixes. None holds a scope but the read entry's, and each is bound
-// to its DPoP proof's key. TestAPodExchangesItsTokenForOneThatIntrospects holds the named pod's
-// answer the same way. The two kinds that act as their person by a credential of their own also
-// answer what that credential records (withRecordedAccount): a person sign-in's token its Google
-// account, and a machine login's token when its machine login was made. Neither is a value the
-// literal can name, so each is read back and held to what the trade made.
+// entry's names the session it fixes. None holds a scope but the read entry's and the Legion
+// daemon's pod's, whose entry fixes legion-daemon:<its project> and whose token holds
+// legion-status alone, and each is bound to its DPoP proof's key.
+// TestAPodExchangesItsTokenForOneThatIntrospects holds the named pod's answer the same way. The
+// two kinds that act as their person by a credential of their own also answer what that
+// credential records (withRecordedAccount): a person sign-in's token its Google account, and a
+// machine login's token when its machine login was made. Neither is a value the literal can name,
+// so each is read back and held to what the trade made.
 func TestATradeAskingNoScopeGetsTheTokenItGetsToday(t *testing.T) {
 	f := newNarrowingFixture(t, func(*oauth.Config) {})
 	named := oauthwire.Introspection{Active: true, Person: person, ProjectScope: oauthwire.ProjectScopeNamed, Projects: []string{project}, ClientID: oauthwire.ExchangeClientID}
@@ -419,9 +428,9 @@ func TestATradeAskingNoScopeGetsTheTokenItGetsToday(t *testing.T) {
 		token string
 		want  oauthwire.Introspection
 	}{
-		{name: "a pod of a fixed-session account",
+		{name: "a pod of the Legion daemon's account, whose entry fixes legion-daemon:ACME",
 			token: f.exchanged(t, exchangeForm(f.podTokenOf(t, daemonAccount, "pod-uid-daemon"), oauthwire.SubjectTokenTypeKubernetes, ""), key),
-			want:  oauthwire.Introspection{Active: true, Session: daemonSession, Person: person, ProjectScope: oauthwire.ProjectScopeNamed, Projects: []string{project}, ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key)}},
+			want:  oauthwire.Introspection{Active: true, Scope: oauthwire.ScopeLegionStatus, Session: daemonSession, Person: person, ProjectScope: oauthwire.ProjectScopeNamed, Projects: []string{project}, ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key)}},
 		{name: "a run of a fixed-session workflow",
 			token: f.exchanged(t, exchangeForm(f.workflowToken(t, "4242", deploy), oauthwire.SubjectTokenTypeGitHub, deploySession), key),
 			want:  oauthwire.Introspection{Active: true, Session: deploySession, Person: person, ProjectScope: oauthwire.ProjectScopeNamed, Projects: []string{project}, ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key)}},

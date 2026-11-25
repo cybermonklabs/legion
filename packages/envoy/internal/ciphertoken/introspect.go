@@ -50,6 +50,17 @@ const (
 // scope named or person it is no session's credential (ErrNotASession).
 const ScopeRead = oauthwire.ScopeRead
 
+// ScopeLegionStatus is the OAuth scope the broker grants a Legion daemon's own token, in the
+// answer's space-separated Scope: the broker's own wire name, carried here for the reason
+// ScopeRead is. callerOf reads it into Caller.LegionStatus. Beside the project scope named or
+// person, shapeOf reads a token that holds it as it reads one that does not.
+const ScopeLegionStatus = oauthwire.ScopeLegionStatus
+
+// LegionDaemonSessionPrefix starts the session a Legion daemon writes its project's issues under,
+// legion-daemon:<PROJECT>: the broker's own spelling (oauthwire), carried here for the reason
+// ScopeLegionStatus is.
+const LegionDaemonSessionPrefix = oauthwire.LegionDaemonSessionPrefix
+
 // ExchangeClientID is the OAuth client every token issued for acting as a session is issued to:
 // the RFC 8693 exchange a pod, a workflow run or a dev box session asks for a Dispatch access
 // token through (internal/cipher/oauthwire). It is carried here for the same reason the project
@@ -108,6 +119,9 @@ func cutOf(answer Introspection) (time.Time, error) {
 // refuses a held Caller after its own checks. And so is not_held_until, the deadline of a
 // not-held answer, which the cache keeps the answer no later than (answerCache.remember) and each
 // reader refuses a Caller past (Verifier.Lapsed).
+// LegionStatus is whether Scope holds the word ScopeLegionStatus, read one word at a time as
+// shapeOf reads it and with no slice built, since this too runs on every request a verifier
+// decides.
 func callerOf(answer Introspection, shape tokenShape, cut time.Time) Caller {
 	caller := Caller{
 		Session:        answer.Session,
@@ -126,6 +140,12 @@ func callerOf(answer Introspection, shape tokenShape, cut time.Time) Caller {
 	}
 	if answer.NotHeldUntil > 0 {
 		caller.NotHeldUntil = time.Unix(answer.NotHeldUntil, 0).UTC()
+	}
+	for word := range strings.FieldsSeq(answer.Scope) {
+		if word == ScopeLegionStatus {
+			caller.LegionStatus = true
+			break
+		}
 	}
 	return caller
 }

@@ -953,16 +953,26 @@ func readCut(form url.Values, read bool, now time.Time) (time.Time, error) {
 // the list of projects under ClaimProjects, which is empty for every token of the none scope; a
 // named token's one project under claimLegacyProject too, unless it is narrowed, and none for any
 // other; oauthwire.ScopeRead for a narrowed trade and for exchange.ProjectScopeNone, the read
-// entry's decision; and oauthwire.ScopePerson beside read for a narrowed person-scoped token that
-// names its person, the one kind of token that acts for that person. Every other token is
-// granted no scope.
+// entry's decision; oauthwire.ScopePerson beside read for a narrowed person-scoped token that
+// names its person, the one kind of token that acts for that person; and
+// oauthwire.ScopeLegionStatus for a named token that is not narrowed and whose
+// claims.LegionStatus is set, the decision of a Legion daemon's own entry (exchange.Set.Pod).
+// Every other token is granted no scope.
 //
 // The request's own scope parameter decides only whether the trade is narrowed: the exchange
 // client is registered for oauthwire.Scope and oauthwire.ScopeRead (oauthstore.exchangeClient),
-// the library refuses any other scope invalid_scope before decide runs, and it validates a
-// requested scope without granting it. So a request naming oauthwire.Scope is granted nothing
-// for it: under a read entry it is granted read and nothing else, and under any other entry
-// nothing at all.
+// the library refuses any other scope, oauthwire.ScopeLegionStatus included, invalid_scope before
+// decide runs, and it validates a requested scope without granting it. So a request naming
+// oauthwire.Scope is granted nothing for it: under a read entry it is granted read and nothing
+// else, under a Legion daemon's own entry legion-status and nothing else, and under any other
+// entry nothing at all. A Legion daemon's trade that asks for read is narrowed and is granted no
+// legion-status: a token narrowed to reading writes nothing, and a verifier takes a narrowed
+// token that holds any word beside read and person for no session's (ciphertoken's shapeOf).
+//
+// claims.LegionStatus beside any project scope but exchange.ProjectScopeNamed is a server error
+// that names it, and nothing is written or granted. Set.Pod sets it for an account entry alone,
+// whose decision is always named, so it beside another scope is a decision this broker never
+// makes, and the refusal keeps such a Claims from minting a token that holds the scope.
 //
 // Any other value, exchange.ProjectScopeUnset included, is a server error that names it, and
 // nothing is written or granted: every exchange constructor sets the scope, so an unset one is a
@@ -974,6 +984,10 @@ func readCut(form url.Values, read bool, now time.Time) (time.Time, error) {
 // what keeps a value that package adds later from being minted as one of them before this switch
 // learns its word.
 func writeProjectScope(request oauth2.Requester, session *oauthstore.ExchangeSession, claims exchange.Claims, read bool) error {
+	if claims.LegionStatus && claims.Scope != exchange.ProjectScopeNamed {
+		return oauth2.ErrServerError.WithDebugf("the exchange decided %s beside project scope %d (%s) for %s, and this broker grants %s to a named token alone",
+			oauthwire.ScopeLegionStatus, int(claims.Scope), claims.Scope, claims.Principal, oauthwire.ScopeLegionStatus)
+	}
 	var word, narrowed string
 	switch claims.Scope {
 	case exchange.ProjectScopeNamed:
@@ -994,6 +1008,9 @@ func writeProjectScope(request oauth2.Requester, session *oauthstore.ExchangeSes
 	}
 	if read && claims.Scope == exchange.ProjectScopePerson && claims.Person != "" {
 		request.GrantScope(oauthwire.ScopePerson)
+	}
+	if claims.LegionStatus && !read {
+		request.GrantScope(oauthwire.ScopeLegionStatus)
 	}
 	session.Extra[ClaimProjects] = oauthwire.JoinProjects(claims.Projects)
 	// A named token naming one project also stores it under the claim a broker before the list

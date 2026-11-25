@@ -41,6 +41,7 @@ func onAccount(account string) func(*corev1.Pod) {
 // replaced where it does not. What an issue pod's account reaches instead is its round's reasons
 // (TestPodDriftNamesTheServiceAccountThePodRunsAs).
 func TestALaunchKeepsAnAccountDriftedPodARoundCoversAndReplacesOneNoRoundCovers(t *testing.T) {
+	t.Parallel()
 	plugins := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: 24}
 	for name, tc := range map[string]struct {
 		spec     func(*testing.T) runtime.SpawnSpec
@@ -124,6 +125,7 @@ func TestALaunchKeepsAnAccountDriftedPodARoundCoversAndReplacesOneNoRoundCovers(
 // is passed over before the warning, as it is for the image: its own sweep makes its pod again
 // under the new account, with no round and no launch to wait for.
 func TestTheBootReconciliationWarnsOfEachPodRunningAnotherServiceAccount(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	spec := workerSpec(t)
 	issue, controller := g.spawn(spec), g.spawn(controllerSpec(t))
@@ -164,6 +166,7 @@ func TestTheBootReconciliationWarnsOfEachPodRunningAnotherServiceAccount(t *test
 // only after the round has chosen the pod, rather than in the boot sweep that names every pod
 // still running the old check.
 func TestTheBootReconciliationWarnsOfEachPodRunningAnotherLeakCheckManifest(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := g.spawn(workerSpec(t))
 	moved := leakguard.Setting{Repository: testLeakCheck.Repository, ManifestSHA256: strings.Repeat("7c", 32)}
