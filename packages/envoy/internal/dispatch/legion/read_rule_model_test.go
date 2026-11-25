@@ -174,7 +174,7 @@ var readRuleInvariants = map[int]string{
 //     good starting read and the starting reads of two writes of the setting within a minute
 //     included (read-rule-cases v11, cursor.readFor). legion_reads.read_at is the read's time once
 //     the daemon answered (fetchWhole), not its start, so the start is last_read_started_at as
-//     recordWhole writes it beside the read's row (readStartsTrigger).
+//     the read's row finds it on the cursor when it is inserted (readStartsTrigger).
 //
 // With no variable set it runs readRuleRows, each with the heldStarts its row sets.
 // LEGION_READ_RULE_SEED=<n> runs that seed alone, LEGION_READ_RULE_SEEDS=<from>-<to> each seed of
@@ -338,36 +338,27 @@ func newReadRuleModel(t *testing.T, row readRuleRow) *readRuleModel {
 }
 
 // readStartsTrigger records in the rig's database the start of each whole read beside its
-// legion_reads row: recordWhole writes the read's start (wholeRead.started) to last_read_started_at
-// in the transaction that inserts the row, for every read, a good starting read's included. A read
-// whose record is dropped, since the setting moved meanwhile, writes its start with no row: the
-// trigger records a start only for a read row that has none yet, so it never gives such a start to
-// the read before it. The trigger never fails a write of the intake.
+// legion_reads row: as a row of kind read is inserted, the trigger copies the project's cursor's
+// last_read_started_at for it. That is the read's own start (wholeRead.started): readWhole wrote
+// it on the cursor before it called the daemon (read-rule-cases row 7.6), in a statement of its
+// own that committed before recordWhole's transaction inserts the row, and no other read of the
+// project begins in between. recordWhole's write of the cursor after the row changes nothing
+// there, since it keeps the later of the two starts, which are one. A read whose record is
+// dropped, since the setting moved meanwhile, inserts no row, so the trigger never gives its start
+// to another read. The trigger never fails a write of the intake.
 func (m *readRuleModel) readStartsTrigger() {
 	for _, statement := range []string{
 		`create table read_rule_read_starts (id bigserial primary key, read_id bigint, started timestamptz)`,
 		`create function read_rule_read_start() returns trigger language plpgsql as $$
-		declare
-			newest bigint;
 		begin
-			if new.last_read_started_at is null then
-				return null;
-			end if;
-			if tg_op = 'UPDATE' then
-				if new.last_read_started_at is not distinct from old.last_read_started_at then
-					return null;
-				end if;
-			end if;
-			select max(id) into newest from legion_reads where project = new.project and kind = 'read';
-			if newest is null or exists (select 1 from read_rule_read_starts where read_id = newest) then
-				return null;
-			end if;
-			insert into read_rule_read_starts (read_id, started) values (newest, new.last_read_started_at);
+			insert into read_rule_read_starts (read_id, started)
+			select new.id, last_read_started_at from legion_event_cursors
+			where project = new.project and last_read_started_at is not null;
 			return null;
 		end
 		$$`,
-		`create trigger read_rule_read_start after insert or update on legion_event_cursors
-			for each row execute function read_rule_read_start()`,
+		`create trigger read_rule_read_start after insert on legion_reads
+			for each row when (new.kind = 'read') execute function read_rule_read_start()`,
 	} {
 		if _, err := m.rig.database.Pool.Exec(context.Background(), statement); err != nil {
 			m.t.Fatalf("record the start of each whole read: %v", err)

@@ -95,9 +95,10 @@ func (in *Intake) finished(msg *natsgo.Msg) {
 // and is acknowledged unapplied (outcomeCrowded), and the cursor keeps its sequence as the highest
 // it skipped in its store (cursor.skips), so the read in flight, which clears the reasons it was
 // made for, leaves the gap read owed where that sequence is past its snapshot, and the store read
-// owed where it is of another store that the cursor the read leaves does not drop (cursor.afterRead). A
-// project with no cursor yet, whose starting read is queued or in flight, is given one that follows
-// no daemon (lockCursor), so the read it owes is recorded.
+// owed where it is of another store that the cursor the read leaves does not drop
+// (cursor.afterRead). A project with no cursor yet, whose starting read is queued and has not
+// begun, is given one that follows no daemon (lockCursor), so the read it owes is recorded; a read
+// gives its project a cursor before it calls the daemon (Intake.readWhole).
 func (in *Intake) judgeCrowded(ctx context.Context, attempt *messageAttempt) (outcome, error) {
 	message := attempt.message
 	project := message.Project

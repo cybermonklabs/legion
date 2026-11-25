@@ -131,9 +131,11 @@ type cursor struct {
 	// stay, and gap with them. Where that record holds another store that the cursor the read leaves
 	// does not drop (skippedElsewhere), they stay, and store with them. lastReadStartedAt is when the
 	// project's newest whole read began, whatever its reason and whatever it came to: the next read
-	// waits ReadRetryAfter after it (readDueIn). Every whole read's record writes it, and a write of
-	// the setting does not reset it, so it holds across a write's reset of the cursor. It is nil
-	// only for a project with no read recorded since its cursor was created.
+	// waits ReadRetryAfter after it (readDueIn). Every whole read writes it before it calls the
+	// daemon (Intake.readWhole), so a read that a stop of the intake cuts short keeps its start
+	// (read-rule-cases row 7.6), and the read's record writes it again. A write of the setting does
+	// not reset it, so it holds across a write's reset of the cursor. It is nil only for a project
+	// with no whole read begun since its cursor was created.
 	// readHolder is the stream sequence of the message that holds the owed read, which goes back to
 	// the stream until the read is due, and again after each read it makes that fails,
 	// stateMaxHolds times at the most (readFor), and nil where no message holds it. readHolds is
@@ -764,8 +766,10 @@ func lockCursor(ctx context.Context, tx pgx.Tx, project string) (stateURL string
 // daemon, and sets none where it does not.
 //
 // Every read, a good starting read's included, sets last_read_started_at to the read's start, and
-// the next read waits ReadRetryAfter after it (readDueIn). So the minute of a read the daemon is
-// slow to answer, or never answers, counts from when the read began and not from when it ended.
+// the next read waits ReadRetryAfter after it (readDueIn). readWhole wrote that start before the
+// call to the daemon already, so a read that a stop cuts short keeps it too (read-rule-cases row
+// 7.6), and writeCursor keeps the later of the two. So the minute of a read the daemon is slow to
+// answer, or never answers, counts from when the read began and not from when it ended.
 // And a gap or a boot that a message calls for right after a good starting read is made when that
 // minute ends, through the delay of the message that holds it (read-rule-cases v11).
 //

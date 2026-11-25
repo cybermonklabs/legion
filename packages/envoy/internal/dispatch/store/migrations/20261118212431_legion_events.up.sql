@@ -68,14 +68,20 @@
 -- - read_owed is a whole read owed, which Postgres generates from read_reasons, so no write names
 --   it.
 -- - last_read_started_at is when the project's newest whole read began, whatever its reason and
---   whatever it came to: every read's record, a good starting read's included, sets it to the
---   moment before the read's call to the daemon, and so does a read whose record the intake drops
---   because the setting moved meanwhile. The next whole read of the project, for any reason and
---   the starting read included, waits a minute after it (legion.ReadRetryAfter; R3: whole reads of
---   one project start at least 60 seconds apart), so a read the daemon is slow to answer, or never
---   answers, adds no time to the minute. A write of the setting keeps it, and so does a delete of
---   the setting, so the starting reads of two writes within a minute start a minute apart, with a
---   delete between them or none. Null only while the row has recorded no read.
+--   whatever it came to. Every whole read writes it before it calls the daemon, the later of the
+--   row's value and the read's start, in the statement that empties skipped_state_ids and
+--   skipped_seqs: a project with a setting and no row is given its row there (state_url ''), and a
+--   project with no setting is given none. The read writes its start first because a read that a
+--   stop of the intake cuts short records nothing else, and the next holder of the durable must
+--   find that start (read-rule-cases row 7.6). Every read's record, a good starting read's
+--   included, sets it again, and so does a read whose record the intake drops because the setting
+--   moved meanwhile, the later of the two kept. The next whole read of the project, for any reason
+--   and the starting read included, waits a minute after it (legion.ReadRetryAfter; R3: whole
+--   reads of one project start at least 60 seconds apart), so a read the daemon is slow to answer,
+--   or never answers, adds no time to the minute. A write of the setting keeps it, and so does a
+--   delete of the setting, so the starting reads of two writes within a minute start a minute
+--   apart, with a delete between them or none. Null only while no whole read has begun since the
+--   row was created.
 -- - read_holder is the stream sequence of the state message that holds the owed read: the
 --   message the intake sent back to the stream unacknowledged until the read is due, whose
 --   redelivery makes the read, whatever store the message is of. Null where no message holds it.

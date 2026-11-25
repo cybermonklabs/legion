@@ -488,6 +488,69 @@ func requireHoldEndedWithinElevenMinutes(t *testing.T, rig *intakeRig, holder ui
 	}
 }
 
+// TestAReadCutShortByAStopKeepsItsStart: R3-g starts the whole reads of one project at least
+// ReadRetryAfter apart, and a read that a stop of the intake cuts short has called the daemon all
+// the same (read-rule-cases row 7.6, the reviewer's round 6, finding 2 of review 6052791164).
+// After INFRA's good starting read, its message at 12 shows a gap and makes the gap read at once,
+// which the daemon holds for longer than the intake's stop budget (15 s). The intake stops while
+// that read is in flight, and the stop gives the read up: the read records no legion_reads row,
+// and the cursor keeps its start. A second intake takes the durable over when the intake's clock
+// is left short of ReadRetryAfter after that start. Neither the take-over nor the message's
+// redelivery reads INFRA before then: the take-over owes no read, and the redelivery holds the gap
+// read until it is due. Then the redelivery makes one read, the gap read, which starts at least
+// ReadRetryAfter after the read the stop cut short.
+//
+// At cdc5fd84 the start of a read the stop cut short was lost: readWhole kept it in memory only
+// and returned before any write. The cursor kept the starting read's start, so the message's
+// redelivery after the take-over read INFRA at once, inside the minute after the read before.
+func TestAReadCutShortByAStopKeepsItsStart(t *testing.T) {
+	// left is what is left of the minute after the read the stop cut short when the second intake
+	// takes the durable over.
+	const left = 5 * time.Second
+	rig := newIntakeRig(t)
+	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+	rig.start()
+	rig.awaitStartingRead("INFRA")
+	first := lastReadStartedAt(t, rig, "INFRA")
+
+	release := daemon.holds(t)
+	from := rig.clock.now()
+	rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "testing")))
+	rig.waitFor(20*time.Second, func() bool { return daemon.served() >= 2 }, func() string {
+		return "INFRA's message at 12 never made the gap read"
+	})
+	to := rig.clock.now()
+	rig.stop()
+
+	if reads := wholeReadsOf(t, rig.database, "INFRA"); len(reads) != 1 {
+		t.Fatalf("INFRA's whole reads after the stop are %v, want the starting read alone: the stop cut the gap read short", reads)
+	}
+	cut := lastReadStartedAt(t, rig, "INFRA")
+	if cut.Before(from) || cut.After(to) {
+		t.Errorf("after the stop INFRA's cursor keeps %s as the start of its newest whole read, want the start of the gap read the stop cut short, between %s and %s; the starting read began at %s",
+			cut.Format(time.RFC3339Nano), from.Format(time.RFC3339Nano), to.Format(time.RFC3339Nano), first.Format(time.RFC3339Nano))
+		cut = from
+	}
+
+	daemon.serves(daemonState("INFRA", 12, inPhase("testing")))
+	release()
+	due := cut.Add(ReadRetryAfter)
+	rig.clock.advance(due.Add(-left).Sub(rig.clock.now()))
+	rig.start()
+	rig.waitFor(left+15*time.Second, func() bool { return len(wholeReadsOf(t, rig.database, "INFRA")) >= 2 }, func() string {
+		return fmt.Sprintf("INFRA was not read again once the minute after the read the stop cut short ended: its cursor is %s", cursorOf(t, rig.database, "INFRA"))
+	})
+	requireWholeRead(t, wholeReadsOf(t, rig.database, "INFRA")[1], ReadReasonGap, true)
+	if started := lastReadStartedAt(t, rig, "INFRA"); started.Before(due) {
+		t.Errorf("the read after the take-over began %s after the read the stop cut short, on the intake's clock, want at least %s",
+			started.Sub(cut), ReadRetryAfter)
+	}
+	if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { return daemon.served() > 3 }) || daemon.served() != 3 {
+		t.Errorf("INFRA's daemon served %d reads, want the starting read, the gap read the stop cut short and one read after the take-over", daemon.served())
+	}
+}
+
 // TestASettingNamingAnotherDaemonFinishesTheOldDaemonsMessagesWithNoRead: R3 applies no message
 // of the daemon a setting named before once it names another, and a failed starting read is one
 // "which no message holds". So, after a write that names another daemon, the old daemon's held

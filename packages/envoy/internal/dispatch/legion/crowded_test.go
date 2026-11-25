@@ -351,11 +351,12 @@ func readsLockWaiters(t *testing.T, rig *intakeRig) int {
 }
 
 // TestEventsPastTheCapWhileTheFirstReadOfAProjectWithNoCursorIsRecordedAreApplied: R3-h and the
-// second invariant of read-rule-cases. A project
-// with no cursor row gives its starting read's record no row to lock. Messages past the cap of
-// stateMaxWaiting that judgeCrowded judges while that record is written give the project a cursor
-// that follows no daemon, and record on it the gap read they owe, its holder and the sequences
-// they skipped. The record must neither write over them nor miss them.
+// second invariant of read-rule-cases. A project with no cursor row is given one that follows no
+// daemon by its starting read, before the read calls the daemon (Intake.readWhole, read-rule-cases
+// row 7.6). Messages past the cap of stateMaxWaiting that judgeCrowded judges while that read's
+// record is written record on that row the gap read they owe, its holder and the sequences they
+// skipped. The record, which locks the row (lockCursor), must neither write over them nor miss
+// them.
 //
 // INFRA has a setting and no cursor. Its first message makes the starting read, which serves 30,
 // and the test holds the read's record in the database: a lock on legion_reads keeps the insert of
