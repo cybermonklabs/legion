@@ -1114,14 +1114,6 @@
         "since": 276
       },
       {
-        "value": "awaiting_todo",
-        "since": 278
-      },
-      {
-        "value": "chain_unknown",
-        "since": 278
-      },
-      {
         "value": "children_before_retro",
         "since": 219
       },

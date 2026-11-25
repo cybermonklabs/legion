@@ -607,7 +607,6 @@ var stateNarrowings = []stateNarrowing{
 	{contract: dispatchCredentialContract, state: withoutDispatchCredential, dropped: "dispatchCredential"},
 	{contract: gateBasisContract, issue: withoutGateBasis,
 		dropped: "the issues' treeRuns and the gatedSteps of every issue a step of which stands on an ancestor's basis"},
-	{contract: chainContract, state: withoutConvertedAt, dropped: "daemon.convertedAt"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -1228,22 +1227,6 @@ const causeTimesContract = 256
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys and values arrived at stays where it is.
 const gateBasisContract = 276
-
-// chainContract is the daemon contract at which the daemon stores no tree and reads every parent
-// and child question from its copy of Dispatch's links (version.go's 278, dispatch://INFRA-4730).
-// It added one key a plugin parses to the state, `daemon.convertedAt`, the time the project's first
-// boot on this release finished its conversion, which a plugin below it is served without
-// (withoutConvertedAt, its row of stateNarrowings); two held words, `chain_unknown` and
-// `awaiting_todo`, which a value strip serves to a reader below it as `unclassified` (answers.go's
-// heldReasons, withoutUnadmittedHeldWords); and `queued`, the status writes a status call
-// queued, to the answers of set_status, rerun_child and release_children, which a reader below it
-// is served without (shapeAnswer). The state's `tree` and `admission.trees` keep their keys and
-// read the chain (R22 of dispatch://INFRA-3320), so no band is owed for them. The rest of the
-// contract is requests and refusal codes, which no reader enumerates.
-//
-// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
-// that constant, and the contract these keys and values arrived at stays where it is.
-const chainContract = 278
 
 // withoutConvertedAt is state with no `daemon.convertedAt`, the key chainContract added to the
 // state's daemon block. The key is an `omitempty` pointer, absent until the project's conversion

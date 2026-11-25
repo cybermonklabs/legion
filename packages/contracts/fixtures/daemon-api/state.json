@@ -8,8 +8,8 @@
     "convertedAt": "2026-09-18T14:04:11Z"
   },
   "contract": {
-    "daemon": 278,
-    "caller": 278
+    "daemon": 276,
+    "caller": 276
   },
   "admission": {
     "cap": 5,
