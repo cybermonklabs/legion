@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -149,6 +152,12 @@ func noticesOf(t *testing.T, pool *pgxpool.Pool, key string, kind record.NoticeK
 		}
 	}
 	return notices
+}
+
+// carriesNumber says whether s carries n as a number of its own: a run of digits that spells n
+// with no letter or digit beside it, so the 4 of `#42`, of `k4` or of a commit is not n.
+func carriesNumber(s string, n int) bool {
+	return slices.Contains(strings.FieldsFunc(s, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) }), strconv.Itoa(n))
 }
 
 // assertWalksAt fails unless key stands in want with task a running at place.
@@ -410,33 +419,42 @@ func assertRefusedReturnTo(t *testing.T, pool *pgxpool.Pool, engine *Engine, key
 // steps' types give, and the agent of that step is started again in its own session, the
 // tester's notice naming as fields the head it tested and the check that does not pass there,
 // and the agent's task carrying the reason that notice gives, read from the notice and not written
-// here. A report that names the failed step itself or a later one, or a place no step of the task
-// holds, is refused and changes nothing, so the agent reports again (RETURN_REFUSED), as a
-// backward move that no row serves is refused today. An issue with no plan rows has no step to
-// name: a report naming one is refused, and the same report naming none returns to implementing
-// as today.
+// here, and the version of the handoff record the tester's row holds, read from that row. A report
+// that names the failed step itself or a later one, or a place no step of the task holds, is
+// refused and changes nothing, so the agent reports again (RETURN_REFUSED), as a backward move
+// that no row serves is refused today. An issue with no plan rows has no step to name: a report
+// naming one is refused, and the same report naming none returns to implementing as today.
 func TestReturnToNamesAnEarlierStep(t *testing.T) {
 	// planned is LEGION-208 walking the steps planner implementer tester, standing in testing at
 	// step 3, its implementer started once, with its check failed at headOne, the head the
-	// tester's completion names.
-	planned := func(t *testing.T) (*pgxpool.Pool, *Engine, record.Issue) {
+	// tester's completion names, and the task of the planner's start the gate's opening wrote: the
+	// planner's task at its step before the tester wrote anything.
+	planned := func(t *testing.T) (*pgxpool.Pool, *Engine, record.Issue, string) {
 		pool := migratedPool(t)
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "planner", "implementer", "tester")
 		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+		first := roleStartsOf(t, pool, root.Key, claim.RolePlanner)
+		if len(first) != 1 || first[0].Task == "" {
+			t.Fatalf("the gate's opening wrote the planner's starts %+v, want one carrying its task", first)
+		}
 		move(t, pool, engine, root.Key, TriggerPlannerCompleted, "", record.PhaseRow{})
 		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
 		assertWalksAt(t, pool, engine, root.Key, phase.Testing, record.TaskPlace{Kind: record.PlaceStep, Position: 3})
 		testedAs(t, pool, engine, root.Key, headOne, false)
-		return pool, engine, root
+		return pool, engine, root, first[0].Task
 	}
 
 	t.Run("returnTo 1 returns the task to the planner, started again in its own session", func(t *testing.T) {
-		pool, engine, root := planned(t)
+		pool, engine, root, firstTask := planned(t)
 		planners, implementers := len(roleStartsOf(t, pool, root.Key, claim.RolePlanner)), len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer))
 
-		if result := applyFacts(t, pool, engine)("fail-1", failedTest(root.Key, 1, "test-1")); result.Refusal != nil {
+		// The tester's record is version 4 of the issue's test handoff: a number the planner's task
+		// carries only where it names that record, as the check below shows.
+		fail := failedTest(root.Key, 1, "test-1")
+		fail.HandoffVersion = 4
+		if result := applyFacts(t, pool, engine)("fail-1", fail); result.Refusal != nil {
 			t.Fatalf("the tester's fail naming step 1 was refused: %+v", result.Refusal)
 		}
 
@@ -464,6 +482,20 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 		if back[0].Reason == "" || !strings.Contains(start.Task, back[0].Reason) {
 			t.Fatalf("the planner's task %q does not carry the reason %q the tester's notice of the move back gives", start.Task, back[0].Reason)
 		}
+		// The move writes the planner's task from the tester's row too, so the task must carry the
+		// version of the handoff record that row holds, the record the planner reads: the version
+		// is read from the row and found in the task as a number of its own, and no word of the task
+		// is compared with a literal. The planner's task at its step before the tester wrote
+		// anything (planned) and the notice's reason carry no such number, so a task that names no
+		// record of the tester's fails here.
+		tester := roleRowOf(t, pool, engine, root.Key, claim.RoleTester)
+		if tester.HandoffRecord == "" || carriesNumber(firstTask, tester.HandoffVersion) || carriesNumber(back[0].Reason, tester.HandoffVersion) {
+			t.Fatalf("the tester's row holds the record %q at version %d, which the planner's first task %q or the reason %q carries already: this check proves nothing",
+				tester.HandoffRecord, tester.HandoffVersion, firstTask, back[0].Reason)
+		}
+		if !carriesNumber(start.Task, tester.HandoffVersion) {
+			t.Fatalf("the planner's task %q does not carry %d, the version of the handoff record %q the tester's row holds", start.Task, tester.HandoffVersion, tester.HandoffRecord)
+		}
 		if got := len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer)); got > implementers {
 			t.Fatalf("the return wrote %d starts of the implementer, want none: the report named the planner", got-implementers)
 		}
@@ -490,7 +522,7 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 		{"returnTo naming a place no step of the task holds names another task's", 4},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool, engine, root := planned(t)
+			pool, engine, root, _ := planned(t)
 			before := standingOf(t, pool, engine, root.Key, true)
 			apply := applyFacts(t, pool, engine)
 
