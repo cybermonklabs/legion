@@ -149,19 +149,24 @@ func (s *Postgres) PutFix(ctx context.Context, tx pgx.Tx, f TaskFix) error {
 }
 
 // UpdateFix writes f over the stored fix of the same issue, generation, task and number, every
-// other field as f carries it. A fix the store does not hold is refused.
+// other field as f carries it but Pushed, which RecordBesidePush alone writes: a fix read before
+// a push and written after it keeps that push. A fix the store does not hold is refused.
 func (s *Postgres) UpdateFix(ctx context.Context, tx pgx.Tx, f TaskFix) error {
-	pushed, err := json.Marshal(f.Pushed)
-	if err != nil {
-		return fmt.Errorf("update fix %d of task %s of %s at generation %d: %w", f.Fix, f.Task, f.Issue, f.Generation, err)
-	}
-	if f.Pushed == nil {
-		pushed = []byte(`{}`)
+	values, setPushed := fixValues(f), ""
+	if s.rewritePushedWithFix {
+		pushed, err := json.Marshal(f.Pushed)
+		if err != nil {
+			return fmt.Errorf("update fix %d of task %s of %s at generation %d: %w", f.Fix, f.Task, f.Issue, f.Generation, err)
+		}
+		if f.Pushed == nil {
+			pushed = []byte(`{}`)
+		}
+		values, setPushed = append(values, pushed), ", pushed = $22"
 	}
 	tag, err := tx.Exec(ctx, `update task_fixes set state = $5, check_id = $6, head = $7, place = $8, entry = $9, got_report = $10,
 			return_to = $11, failed = $12, end_head = $13, result = $14, job_name = $15, job_url = $16, read_failed = $17,
-			claim_failed = $18, way = $19, started_at = $20, ended_at = $21, pushed = $22
-		where `+fixKey+` and fix = $4`, append(fixValues(f), pushed)...)
+			claim_failed = $18, way = $19, started_at = $20, ended_at = $21`+setPushed+`
+		where `+fixKey+` and fix = $4`, values...)
 	if err != nil {
 		return fmt.Errorf("update fix %d of task %s of %s at generation %d: %w", f.Fix, f.Task, f.Issue, f.Generation, err)
 	}
@@ -179,27 +184,37 @@ func fixValues(f TaskFix) []any {
 
 // RecordBesidePush writes that a push showed head at the branch beside fix of task that role
 // pushes to, and a head of "" that the branch was deleted: it changes that role's key of the
-// fix's Pushed and no other. A push of a branch beside a fix the store does not hold, and an
-// unset role, write nothing.
+// fix's Pushed and no other, in one statement on the stored row, so a push another role made at
+// the same time and a fix written from a read before either keep each other's heads. A push of a
+// branch beside a fix the store does not hold, and an unset role, write nothing.
 func (s *Postgres) RecordBesidePush(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, fix int, role, head string) error {
 	if role == "" {
 		return nil
 	}
-	stored, err := s.FixAt(ctx, tx, issue, generation, task, fix)
-	if err != nil || stored == nil {
-		return err
+	if s.rewritePushedWithFix {
+		stored, err := s.FixAt(ctx, tx, issue, generation, task, fix)
+		if err != nil || stored == nil {
+			return err
+		}
+		pushed := maps.Clone(stored.Pushed)
+		if pushed == nil {
+			pushed = map[string]string{}
+		}
+		if head == "" {
+			delete(pushed, role)
+		} else {
+			pushed[role] = head
+		}
+		stored.Pushed = pushed
+		return s.UpdateFix(ctx, tx, *stored)
 	}
-	pushed := maps.Clone(stored.Pushed)
-	if pushed == nil {
-		pushed = map[string]string{}
+	if _, err := tx.Exec(ctx, `update task_fixes
+		set pushed = case when $6::text = '' then pushed - $5::text else pushed || jsonb_build_object($5::text, $6::text) end
+		where `+fixKey+` and fix = $4`, issue, int64(generation), task, fix, role, head); err != nil {
+		return fmt.Errorf("record the push of %s's branch beside fix %d of task %s of %s at generation %d: %w",
+			role, fix, task, issue, generation, err)
 	}
-	if head == "" {
-		delete(pushed, role)
-	} else {
-		pushed[role] = head
-	}
-	stored.Pushed = pushed
-	return s.UpdateFix(ctx, tx, *stored)
+	return nil
 }
 
 // FixAt is fix number fix of task, in any state, nil where the store holds none: the fix a step's
