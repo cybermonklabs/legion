@@ -3,10 +3,11 @@
 // What this package prints of a refusal the broker or an issuer answered: the broker's own
 // sentences it prints as written (`isKnownBrokerRefusal`), the stand-in for any other text
 // (`REFUSAL_TEXT_WITHHELD`), and the OAuth codes it shows (`shownOAuthCode`). A refusal's text is
-// a peer's choice of characters, so it prints only where it is one of these. The token client
-// (`token-client.ts`) and the person-identity client (`person-identity.ts`) read this policy; the
-// corpus the broker's own library writes (packages/envoy/internal/cipher/oauth/testdata) holds it
-// to what the broker sends.
+// a peer's choice of characters, so it prints only where it is one of these. The token client's
+// errors (`token-errors.ts`, which its broker requests in `broker-request.ts` throw) and the
+// person-identity client (`person-identity.ts`) read this policy; the corpus the broker's own
+// library writes (packages/envoy/internal/cipher/oauth/testdata) holds it to what the broker
+// sends.
 
 import { POD_SESSION_NOT_REGISTERED, SESSION_NAME_NOT_THIS_REGISTRARS } from "./wire";
 
@@ -251,6 +252,8 @@ const KNOWN_BROKER_REFUSAL_PATTERNS: readonly RegExp[] = [
   "The machine login the subject token belongs to has ended\\.",
   "The machine login has ended\\.",
   "Another live machine login holds the key this proof was signed with\\. A (?:machine makes a key of its own|sign-in makes a box key of its own)\\.",
+  // The same two trades refused a key a live read token is bound to.
+  "A live read token is bound to the key this proof was signed with\\. Make a new key\\.",
   `${PERSON_SLOT} is a restricted member, whose token names its projects: set AGENT_SECRETS_PROJECTS to the projects this session works on\\.`,
   `The token names a project its person cannot see: ${PROJECT_SLOT}\\.`,
   `The subject token was refused: its entry names the project ${PROJECT_SLOT}, which its person ${PERSON_SLOT} cannot see\\.`,
@@ -265,6 +268,22 @@ const KNOWN_BROKER_REFUSAL_PATTERNS: readonly RegExp[] = [
   // Dispatch's hold of a person (`membership_held`), as the wire corpus's own sentence writes it:
   // the same person each time.
   `${PERSON_SLOT}'s credentials are held by Dispatch; they work again when \\k<person> signs in to Dispatch, or when Dispatch can confirm \\k<person> with Google again`,
+  // A read trade's own refusals: the cut (`as_of`), the launcher credential a read trade never
+  // makes or moves, the holder's proof (`DPoP-Holder`), and the key a read token may not share
+  // with a launcher credential.
+  "The 'as_of' parameter names a cut, and only a trade that asks for the scope read may name one\\.",
+  "The 'as_of' parameter is not an RFC 3339 time with at most six fractional digits\\.",
+  "The 'as_of' parameter names the zero time, which is no cut: a trade that reads the present names no cut\\.",
+  "The 'as_of' parameter names a time later than this trade, and a cut is a time that has passed\\.",
+  "A read trade makes or moves no launcher credential, so it cannot send launcher_credential=true\\. Trade for read without the parameter\\.",
+  `${PERSON_SLOT}'s sign-in on this machine holds no launcher credential yet, and a read trade makes none\\. Sign in with \`agent-secrets login\` first\\.`,
+  `${PERSON_SLOT}'s sign-in on this machine holds a launcher credential that has lapsed, and a read trade renews none\\. One ordinary trade of the sign-in renews it, as \`agent-secrets\` makes; then trade for read again\\.`,
+  "A person's read trade sends a DPoP-Holder proof: the box key proves the sign-in and is bound to no read token, so the token is bound to a key made for its holder\\.",
+  "The DPoP-Holder header binds a read token to its holder's key, and this trade does not ask for the scope read\\. Ask for it, or send no DPoP-Holder header\\.",
+  "The DPoP-Holder proof was refused: a trade sends one, a DPoP proof of this request signed with the key it embeds, spent nowhere before\\.",
+  "The DPoP-Holder proof is signed with the key the DPoP proof is signed with, and the holder's key is a key of its own\\.",
+  "The key this read token would be bound to signs launcher proofs: a live launcher credential is bound to it, and no read token is bound to such a key\\. Send a DPoP-Holder proof by a key made for the token's holder, and the token is bound to that key\\.",
+  "The key this proof was signed with signs launcher proofs: a live launcher credential is bound to it, and no read token is bound to such a key\\. Ask for the scope read with a DPoP-Holder proof by a key made for the token's holder, or trade with a key that holds no launcher credential\\.",
   ...POLICY_REFUSAL_PATTERNS,
 ].map((source) => new RegExp(`^${source}$`));
 

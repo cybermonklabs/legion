@@ -3,6 +3,7 @@ import type { ActiveDispatchConfig } from "../../packages/envoy-client/src/dispa
 import {
   DISPATCH_TOOL_DEADLINE_MS,
   DispatchServiceError,
+  DispatchWriteLandedError,
   transientStatus,
 } from "../../packages/envoy-client/src/dispatch-http";
 import {
@@ -23,11 +24,18 @@ export const ISSUE_KEY = /^[A-Z][A-Z0-9]*-[1-9][0-9]*$/;
 /** The verdict of a check, of one of its parts, or of a whole run. */
 export type Verdict = "pass" | "fail" | "unavailable";
 
-/** The fixed words a check prints in place of an error's own text: the five `errorCategory`
+/** The fixed words a check prints in place of an error's own text: the six `errorCategory`
  * answers, and the `config` a check prints when Dispatch is off. A check that is unavailable for
  * a reason of its own, as the meaning search check is for a query no word of which is indexable,
  * names that reason in a union of its own over this one. */
-export type Category = "auth" | "refused" | "transport" | "malformed" | "not-found" | "config";
+export type Category =
+  | "auth"
+  | "refused"
+  | "transport"
+  | "malformed"
+  | "not-found"
+  | "landed"
+  | "config";
 
 export const EXIT_CODE = { pass: 0, fail: 1, unavailable: 2 } as const satisfies Record<
   Verdict,
@@ -48,9 +56,12 @@ export class HttpStatusError extends Error {
   }
 }
 
-/** The fixed category an error is reported as; its own text never is. */
+/** The fixed category an error is reported as; its own text never is. A write that landed with no
+ * answer to give (`DispatchWriteLandedError`: a `409 KEY_COMMITTED`, or a replayed 2xx reading
+ * `ANSWER_NOT_KEPT`) is `landed`: it made what it was sent to make, which a check reads back. */
 export function errorCategory(error: unknown): Category {
   if (error instanceof z.ZodError) return "malformed";
+  if (error instanceof DispatchWriteLandedError) return "landed";
   if (!(error instanceof DispatchServiceError || error instanceof HttpStatusError)) {
     return "transport";
   }
@@ -98,9 +109,9 @@ export type DispatchConfig = Pick<ActiveDispatchConfig, "url" | "credential">;
 
 /** Dispatch as every command resolves it, or null when it is off. Its warnings name file paths,
  * so they are not printed. */
-export function resolveDispatch(): DispatchConfig | null {
+export async function resolveDispatch(): Promise<DispatchConfig | null> {
   try {
-    const { dispatch } = sessionDispatchSettings(
+    const { dispatch } = await sessionDispatchSettings(
       sessionConfigFile("command", process.env),
       process.env,
       { cwd: process.cwd() }
@@ -155,11 +166,11 @@ export type Prelude<Options> =
  * that is off prints the word that check spells for it. Both go to stderr and answer 2, since a
  * check that could not be run at all is unavailable.
  */
-export function readCommandLine<Options>(
+export async function readCommandLine<Options>(
   argv: readonly string[],
   parse: (argv: readonly string[]) => Options,
   unavailable: Category
-): Prelude<Options> {
+): Promise<Prelude<Options>> {
   let options: Options;
   try {
     options = parse(argv);
@@ -168,7 +179,7 @@ export function readCommandLine<Options>(
     console.error(`usage: ${error.message}`);
     return { ready: false, code: 2 };
   }
-  const config = resolveDispatch();
+  const config = await resolveDispatch();
   if (config === null) {
     console.error(`unavailable: ${unavailable}`);
     return { ready: false, code: 2 };

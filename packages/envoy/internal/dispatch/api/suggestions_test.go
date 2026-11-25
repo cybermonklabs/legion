@@ -298,10 +298,11 @@ func suggestionsBehindLock(
 	go func() {
 		answered <- srv.relatedCheck(context.Background(), relatedInput{project: project, text: text, source: source})
 	}()
-	// The call queues within milliseconds, and it ends on its own once its allowance does: the wait
-	// returns at once when it answers. So the bound, three allowances, is reached only by a call
-	// that neither queued nor answered in all that time, one stuck somewhere other than this lock.
-	if s, early := storetest.WaitForQueuedBehind(t, lockTx, callPID, answered, 3*lockedSuggestionAllowance); early {
+	// The wait ends on one of two facts: the call's backend queued behind the lock, which takes
+	// milliseconds, or the call's answer arriving first, which fails the row. It has no bound of its
+	// own: a call that does neither, one stuck somewhere other than this lock, holds it until the
+	// test binary's deadline less testwait's margin, where it fails by name.
+	if s, early := storetest.WaitForQueuedBehind(t, lockTx, callPID, answered); early {
 		t.Fatalf("the related-item check answered %+v before its query waited behind the lock on %s, want the %s allowance to end while it waits", s, table, lockedSuggestionAllowance)
 	}
 	return <-answered
@@ -347,6 +348,14 @@ func TestRelatedCheckRespectsDeadlineWhenProjectLookupIsLocked(t *testing.T) {
 		t.Fatalf("suggestions = %+v, want not made for time: the allowance ended while the project lookup waited behind the lock on issues", suggestions)
 	}
 }
+
+// spentRelatedAllowance is the allowance a case gives the related-item check when its outcome is
+// that no check was made: one already spent, so the check's context ends as relatedBounds makes it
+// (context.WithTimeoutCause ends at once a context whose deadline has passed) and the check reads
+// nothing on any machine. A positive allowance, however small, arms a timer instead, which races
+// the check's first read on a machine whose clock moves in coarse steps, and whichever won would be
+// the machine's choice.
+const spentRelatedAllowance = -time.Nanosecond
 
 // TestCreateAskOnIssueKeepsSuggestionsWhenWriteAdviceFails: an issue-owned ask whose write-advice
 // query itself fails must not drop the check's result that was separately computed and persisted
@@ -423,12 +432,12 @@ func TestCreateAskOnIssueKeepsSuggestionsWhenWriteAdviceFails(t *testing.T) {
 		// The empty related list here is meaningful only because the generous case below fills it
 		// in an identically seeded corpus: trim this case's seeding and this assertion goes green
 		// because there was nothing to find, not because the allowance ran out.
-		filed := fileAsk(t, time.Nanosecond)
+		filed := fileAsk(t, spentRelatedAllowance)
 		if filed.advice.Suggestions == nil {
 			t.Fatalf("advice.suggestions = null, want an envelope reporting what is missing: advice = %+v", filed.advice)
 		}
 		// Only that missing is set is asserted, never its text: it interpolates the allowance and
-		// here reads "did not answer within 1ns".
+		// here reads "did not answer within -1ns".
 		if filed.advice.Suggestions.Outcome != "not_made" || filed.advice.Suggestions.Missing == "" {
 			t.Fatalf("advice.suggestions = %+v, want not_made with a reason the check was not made", filed.advice.Suggestions)
 		}
@@ -438,7 +447,9 @@ func TestCreateAskOnIssueKeepsSuggestionsWhenWriteAdviceFails(t *testing.T) {
 	})
 
 	t.Run("a generous allowance finds the related items and records them", func(t *testing.T) {
-		filed := fileAsk(t, 30*time.Second)
+		// A day, longer than any run of the package: the allowance ends for no run, so what this
+		// case finds is what the corpus holds and never what the machine had time for.
+		filed := fileAsk(t, 24*time.Hour)
 		if filed.advice.Suggestions == nil {
 			t.Fatalf("advice.suggestions = null, want the seeded issue %s despite the failed write-advice query: advice = %+v", filed.seededIssue, filed.advice)
 		}
@@ -616,6 +627,16 @@ func seedWriteSuggestion(
 	`, sourceKind, sourceIssueKey, askID, actorID, suggestedKind, suggestedID, issueKey); err != nil {
 		t.Fatalf("seed write_suggestions: %v", err)
 	}
+	// A write the test makes next must postdate the row on the database's clock, which the outcome
+	// sweep compares (created_at > ws.created_at): the wait ends once that clock reads past it.
+	waitUntil(t, "the database's clock to read past the seeded suggestion's created_at", func() bool {
+		var past bool
+		if err := srv.deps.Store.Pool.QueryRow(context.Background(),
+			`select clock_timestamp() > (select max(created_at) from write_suggestions)`).Scan(&past); err != nil {
+			t.Fatalf("read the database's clock against the seeded suggestion: %v", err)
+		}
+		return past
+	})
 }
 
 type suggestionOutcomeRow struct {
@@ -652,7 +673,6 @@ func TestSuggestionOutcomeSweepMarksActedOnWhenSourceCitesTarget(t *testing.T) {
 	}, "alice"))
 
 	seedWriteSuggestion(t, srv, "issue", source.Key, "", "alice", "issue", target.Key, target.Key)
-	time.Sleep(10 * time.Millisecond) // the citation must postdate the suggestion row
 
 	closing := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+source.Key+"/messages", map[string]any{
 		"body": "Duplicate of dispatch://" + target.Key,
@@ -685,7 +705,6 @@ func TestSuggestionOutcomeSweepMarksActedOnWhenTargetUpdatedDirectly(t *testing.
 	}, "alice"))
 
 	seedWriteSuggestion(t, srv, "issue", source.Key, "", "alice", "issue", target.Key, target.Key)
-	time.Sleep(10 * time.Millisecond)
 
 	updated := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+target.Key+"/messages", map[string]any{
 		"body": "Adding the new detail here instead.",
@@ -718,7 +737,6 @@ func TestSuggestionOutcomeSweepMarksOverriddenWhenSourceContinuesWithoutCitingTa
 	}, "alice"))
 
 	seedWriteSuggestion(t, srv, "issue", source.Key, "", "alice", "issue", target.Key, target.Key)
-	time.Sleep(10 * time.Millisecond)
 
 	continued := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+source.Key+"/messages", map[string]any{
 		"body": "This is in fact a separate problem; continuing here.",

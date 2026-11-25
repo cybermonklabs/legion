@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+    `legion gh`'s git reads of the repository (its configuration and its remotes) now stop
+    everything git started when their 30 s bound passes, or when a SIGINT, SIGTERM or SIGHUP reaches
+    `legion gh` before gh runs. A git, or a wrapper of it, whose child keeps the output open no
+    longer holds `legion gh` past that bound. A read whose git exited while something it started
+    still held the output is refused, since what was read may be cut short.
+time: 2026-11-22T08:21:11Z
+custom:
+    Issue: INFRA-3904

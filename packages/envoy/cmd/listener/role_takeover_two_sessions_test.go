@@ -18,7 +18,11 @@ import (
 // handed the copy. What A's return does with the frame is the row.
 
 // twoSessionStart is that start: the rig, the role message's event id, and B's stand-in once B has
-// received the copy.
+// received the copy and its consumer has acknowledged it. B answers the copy done, and the relay
+// acknowledges it only once that answer reaches it, so a take-back that ran before the ack would
+// find the copy unread and copy it to A again, a second delivery to A that R4 allows and that the
+// row's own count does not (seen once at a box load of about 1,000: "ses_cr14_a received ... 2
+// times, want 1").
 func twoSessionStart(t *testing.T, row string) (*crashRig, string, *sessionStandIn) {
 	t.Helper()
 	rig := newCrashRig(t)
@@ -28,7 +32,11 @@ func twoSessionStart(t *testing.T, row string) (*crashRig, string, *sessionStand
 	sent := rig.sendTo(a, role, 1, "for "+a+", which does not read it")
 	next := rig.relayed(b, answerDone)
 	rig.claim(rig.mux, b, role)
-	crashAwaitEvents(t, next, sent, nil, b+", handed the copy of what "+a+" did not read")
+	for _, frame := range crashAwaitEvents(t, next, sent, nil, b+", handed the copy of what "+a+" did not read") {
+		if frame.item.EventID == sent[0] {
+			awaitAcked(t, rig.consumers, b, frame.seq)
+		}
+	}
 	return rig, sent[0], next
 }
 
@@ -171,6 +179,11 @@ func takeBack(t *testing.T, suffix string) (read, unread contracts.Envelope, bef
 	rig.gone(b)
 	rig.claim(rig.away, b, role)
 	rig.awaitStored(contracts.LegacyAgentSubject(b), unread.EventID, "the walk's forward of the copy to "+b)
+	// A's new epoch restarts its relay at its floor, which deletes the consumer holding the frame
+	// A received alone and creates it again, so the row waits for the server to take A's done for
+	// the first frame and then for the consumer's stored state (awaitSessionConsumerStored).
+	awaitAckState(t, rig.consumers, a, 1, rig.seqOn(agent, read.EventID))
+	awaitSessionConsumerStored(t, rig.lane, a)
 	back := startSessionStandIn(t, rig.url, a, answerDone)
 	rig.register(rig.mux, a, "epoch-2")
 	awaitAcked(t, rig.consumers, a, rig.seqOn(agent, unread.EventID))
