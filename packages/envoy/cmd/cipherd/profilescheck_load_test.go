@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
@@ -76,8 +77,11 @@ func gcloudList(t *testing.T, store []secrets.LocalSecret) string {
 // subject the load refuses (a profile, or a stored secret served by its own name) and the reason;
 // the row first holds the load to that refusal, then the check, given the same file and the
 // store's tags, to exit 1 naming the subject, the load's reason and the load's detail, and no
-// reason but that row's for the subject. The control, a narrowed profile within its kind, is served
-// by the load and passes the check.
+// reason but that row's for the subject. The rows of a profile whose source the load does not
+// serve are one for each state of that source the store's tags show (Profiles.SourceMissingFault):
+// refused, a profile, and absent; the fourth, a source waiting for its value, is
+// TestProfilesCheckReadsASourceWaitingForItsValueAsServed's. The control, a narrowed profile within
+// its kind, is served by the load and passes the check.
 func TestProfilesCheckRefusesWhatTheLoadRefusesOfANameBehindTheProxy(t *testing.T) {
 	narrowed := map[string]string{policy.TagProxyNarrowed: policy.ProxyNarrowedTrue}
 	const appBlock = `"github": {"accounts": ["acme"], "permissions": {"metadata": "read"}}`
@@ -168,6 +172,24 @@ func TestProfilesCheckRefusesWhatTheLoadRefusesOfANameBehindTheProxy(t *testing.
 			"", "LONE", policy.ReasonProxyNarrowedProfiles,
 		},
 		{
+			"a profile whose source the load refuses",
+			[]string{`{"name": "TOKEN_READ", "source": "TOKEN", "proxy": "github"}`},
+			[]secrets.LocalSecret{stored("TOKEN", map[string]string{policy.TagProxy: "nokind"})},
+			"TOKEN_READ", "", policy.ReasonProfileSourceMissing,
+		},
+		{
+			"a profile whose source is another profile",
+			[]string{`{"name": "TOKEN_READ", "source": "TOKEN", "proxy": "github"}`, `{"name": "READ_OF_READ", "source": "TOKEN_READ", "proxy": "github"}`},
+			[]secrets.LocalSecret{stored("TOKEN", nil)},
+			"READ_OF_READ", "", policy.ReasonProfileSourceMissing,
+		},
+		{
+			"a profile whose source is absent",
+			[]string{`{"name": "TOKEN_READ", "source": "GONE", "proxy": "github"}`},
+			[]secrets.LocalSecret{stored("OTHER", nil)},
+			"TOKEN_READ", "", policy.ReasonProfileSourceMissing,
+		},
+		{
 			"the control: a narrowed profile within its kind",
 			[]string{`{"name": "TOKEN", "proxy": "narrow", "allow": [{"method": "GET", "pathPrefix": "/v1/items"}]}`},
 			[]secrets.LocalSecret{stored("TOKEN", narrowed)},
@@ -214,6 +236,39 @@ func TestProfilesCheckRefusesWhatTheLoadRefusesOfANameBehindTheProxy(t *testing.
 			}
 			if !slices.Equal(reasons, []string{c.reason}) {
 				t.Fatalf("the check refuses %s for %q; want %s alone", subject, reasons, c.reason)
+			}
+		})
+	}
+}
+
+// TestProfilesCheckReadsASourceWaitingForItsValueAsServed is the fourth state of a source the load
+// does not serve, which the check cannot see: a secret `agent-secrets secret create` made before
+// its value is waiting for it, and the load refuses a profile of it naming pending-value. The
+// store's list, gcloud's name and annotations, holds no version, so the check reads the source by
+// its tags as a served one and refuses nothing. This pins that limit, which the README states:
+// the check reads the store's tags and not its values. The control is the same source with its
+// value, which both the load and the check serve.
+func TestProfilesCheckReadsASourceWaitingForItsValueAsServed(t *testing.T) {
+	file := policytest.KindsFileOf(faultKinds, `{"name": "TOKEN_READ", "source": "TOKEN", "proxy": "github"}`)
+	created := time.Now()
+	waiting := stored("TOKEN", map[string]string{secrets.CreateLabel: "0123456789abcdef0123456789abcdef"})
+	waiting.Value, waiting.CreatedAt = "", &created
+	for _, c := range []struct {
+		name   string
+		source secrets.LocalSecret
+		detail string
+	}{
+		{"waiting for its value", waiting, "source TOKEN: " + policy.ReasonPendingValue},
+		{"the control: with its value", stored("TOKEN", nil), ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			set := policytest.ProfiledCurrent(t, secrets.NewLocal(c.source), file).Get()
+			refusal, refused := set.Refused["profile:TOKEN_READ"]
+			if refused != (c.detail != "") || refusal.Detail != c.detail {
+				t.Fatalf("the load refuses TOKEN_READ %+v (refused %t); want detail %q", refusal, refused, c.detail)
+			}
+			if code, _, stderr := runCheck(t, profilesFile(t, file), "--secrets-json", gcloudList(t, []secrets.LocalSecret{c.source})); code != 0 || stderr != "" {
+				t.Fatalf("the check = exit %d, stderr %q; want exit 0, since the list shows no value state", code, stderr)
 			}
 		})
 	}

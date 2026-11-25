@@ -12,7 +12,7 @@
 //     GITHUB_ENTERPRISE_ADMIN keeps its five rows as its own allow, each on api.github.com,
 //     the three ANTHROPIC_ADMIN_* profiles their three rows under the anthropic kind, and AWS_ADMIN
 //     its one row on iamcredentials.googleapis.com; the four profiles made from a source the broker
-//     also serves by its own name take SC13's proxy string, "github".
+//     also serves by its own name take the proxy string "github".
 //   - secrets-tagged.json is the store after the move's tags, as `gcloud secrets list
 //     --format='json(name,annotations)'` prints it: each own-name source tagged with its kind, the
 //     five narrowed ones tagged proxy-narrowed=true, and each source of a name behind a kind given
@@ -168,7 +168,7 @@ func enterpriseRows(host string) []any {
 // TestProfilesCheckKeepsEveryProxiedNameOfTheMoveBehindTheProxy is the move's gate: the moved file
 // --against the deployment's file in proxy blocks, with the store's tags after the move, exits 0,
 // lists each of the 18 names behind the proxy under the old file as behind its kind under the new
-// one, by its source's tag or SC13's proxy string, lists none leaving, and lists no widening,
+// one, by its source's tag or its proxy string, lists none leaving, and lists no widening,
 // since each narrowed profile keeps its rows as its own allow. The hosts the move adds to a name
 // are listed, not failed: the github kind's two hosts beside AIRLOCK_PROBE's api.github.com, and
 // the gws kind's *.googleapis.com in place of two Google hosts. GITHUB_ENTERPRISE_ADMIN and
@@ -228,7 +228,7 @@ func entryOfFixture(t *testing.T, name string) jsonObject {
 
 // TestProfilesCheckSaysUnknownOfAKindOnlyTheStoreGives: with no --secrets-json, the moved file
 // exits 3: it writes its whole report, one UNKNOWN line for each of its 19 profiles with no proxy
-// string, whose kind only its source's tag gives, and none for the four behind SC13's proxy
+// string, whose kind only its source's tag gives, and none for the four behind their proxy
 // string, which it holds to everything the file decides of them; stderr says what was not read.
 // Controls: a file whose profiles each name their kind as a string exits 0 with no UNKNOWN line,
 // and one of them with a grant cap above its kind's, which the file decides, is refused; and a
@@ -282,7 +282,7 @@ func TestProfilesCheckSaysUnknownOfAKindOnlyTheStoreGives(t *testing.T) {
 // TestProfilesCheckListsANameThatLeavesTheProxy: a name behind the proxy under the old file that
 // the new file and the store put behind nothing exits 1, listing that name as leaving with why and
 // naming it on stderr, and lists the others as served. The rows are the two ways a name leaves: the
-// file drops SC13's proxy string of a profile whose source, an App the profile's github block
+// file drops the proxy string of a profile whose source, an App the profile's github block
 // scopes at its mint, carries no tag, or drops a proxied profile whose name no stored secret holds.
 // A stored token's source that loses its proxy tag does not leave: the load refuses its profile, as
 // only the proxy scopes its credential, and so does the check. The control is the move itself, in
@@ -293,7 +293,7 @@ func TestProfilesCheckListsANameThatLeavesTheProxy(t *testing.T) {
 		file              func(t *testing.T) string
 	}{
 		{
-			"one SC13 proxy string removed", "GITHUB_WRITE", "the profile names no kind, and its source LEGION_IMPLEMENT_APP carries no proxy tag",
+			"one proxy string removed", "GITHUB_WRITE", "the profile names no kind, and its source LEGION_IMPLEMENT_APP carries no proxy tag",
 			func(t *testing.T) string {
 				return kindsCopy(t, func(file jsonObject) { delete(entryOf(t, file, "profiles", "GITHUB_WRITE"), "proxy") })
 			},
@@ -402,7 +402,7 @@ func TestProfilesCheckListsWhatWidensAgainstTheOldFile(t *testing.T) {
 		})
 	}
 	// Reading what the change does to an allow needs no store: the same widening with no
-	// --secrets-json is listed for a name whose kind is SC13's proxy string under both files. The
+	// --secrets-json is listed for a name whose kind is its proxy string under both files. The
 	// runs exit 3 all the same, since the other profiles' kinds are their sources' tags.
 	widened := kindsCopy(t, func(file jsonObject) {
 		read := entryOf(t, file, "profiles", "GITHUB_READ")
@@ -413,6 +413,51 @@ func TestProfilesCheckListsWhatWidensAgainstTheOldFile(t *testing.T) {
 	}
 	if code, stdout, _ := runCheck(t, kindsFixture, "--against", widened); code != exitUnknown || !slices.Equal(linesWith(stdout, `widens "GITHUB_READ"`), []string{`widens "GITHUB_READ": any method and path`}) {
 		t.Fatalf("GITHUB_READ's allow left out against it = exit %d, widens %q; want exit %d and GITHUB_READ widened to any method and path", code, linesWith(stdout, `widens "`), exitUnknown)
+	}
+}
+
+// TestProfilesCheckComparesEachKindBothFilesDeclareWithoutTheTags: with no --secrets-json the
+// check cannot name a stored secret behind a kind by its own proxy tag, whose allow and hosts are
+// that kind's, so it compares each kind both files declare on its own: the slack kind gains a row
+// and a host, listed as `widens kind` and `hosts kind`, and the run exits 3 naming the one kind
+// compared so, and not the tailscale kind, which the old file does not declare. Controls: the new
+// file against itself lists no kind widening and still exits 3, since the names behind slack are
+// unread there too; and with the store's tags, which hold LONE behind slack by its own tag, the
+// same change is listed under LONE's name, no kind is compared on its own, and the run exits 0.
+func TestProfilesCheckComparesEachKindBothFilesDeclareWithoutTheTags(t *testing.T) {
+	old := profilesFile(t, `{"kinds": [{"name": "slack", "hosts": ["slack.com"], "ways": ["swap"], "allow": [{"method": "GET", "pathPrefix": "/api/"}]}], "profiles": []}`)
+	now := profilesFile(t, `{"kinds": [
+  {"name": "slack", "hosts": ["slack.com", "files.slack.com"], "ways": ["swap"], "allow": [{"method": "GET", "pathPrefix": "/api/"}, {"method": "POST", "pathPrefix": "/api/chat.postMessage"}]},
+  {"name": "tailscale", "hosts": ["api.tailscale.com"], "ways": ["swap"]}
+], "profiles": []}`)
+	wantWidens := []string{`widens kind "slack": POST /api/chat.postMessage`}
+	wantHosts := []string{`hosts kind "slack": files.slack.com added`}
+	code, stdout, stderr := runCheck(t, now, "--against", old)
+	if code != exitUnknown || !strings.Contains(stderr, "the names behind 1 kind by their own proxy tag, compared as their kind alone") {
+		t.Fatalf("a widened kind with no --secrets-json = exit %d, stderr %q; want exit %d naming the one kind compared on its own", code, stderr, exitUnknown)
+	}
+	if got, hosts := linesWith(stdout, "widens kind "), linesWith(stdout, "hosts kind "); !slices.Equal(got, wantWidens) || !slices.Equal(hosts, wantHosts) {
+		t.Fatalf("the kinds compared on their own list %q and %q, want %q and %q", got, hosts, wantWidens, wantHosts)
+	}
+	if !strings.Contains(stdout, "profiles check: the kinds both files declare were compared on their own (1 kind)") {
+		t.Errorf("the report does not say how many kinds were compared on their own:\n%s", stdout)
+	}
+
+	code, stdout, stderr = runCheck(t, now, "--against", now)
+	if code != exitUnknown || slices.Concat(linesWith(stdout, "widens kind "), linesWith(stdout, "hosts kind ")) != nil || !strings.Contains(stdout, "widens: none among what was compared\n") {
+		t.Fatalf("the new file against itself = exit %d, stderr %q; want exit %d, no kind widened and the none-among-what-was-compared line:\n%s", code, stderr, exitUnknown, stdout)
+	}
+
+	list := filepath.Join(t.TempDir(), "secrets.json")
+	if err := os.WriteFile(list, []byte(`[{"name": "projects/1/secrets/agent-secrets-lone", "annotations": {"owner": "ada@example.com", "tier": "agent", "proxy": "slack"}}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr = runCheck(t, now, "--against", old, "--secrets-json", list)
+	if code != 0 || stderr != "" {
+		t.Fatalf("the same change with the store's tags = exit %d, stderr %q; want exit 0", code, stderr)
+	}
+	if got := slices.Concat(linesWith(stdout, "widens "), linesWith(stdout, "hosts ")); !slices.Equal(got, []string{`widens "LONE": POST /api/chat.postMessage`, `hosts "LONE": files.slack.com added`}) {
+		t.Fatalf("with the tags the change lists %q, want it under LONE's name and no kind compared on its own", got)
 	}
 }
 

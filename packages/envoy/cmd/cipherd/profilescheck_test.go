@@ -514,7 +514,8 @@ func TestProfilesCheckRefusesAHostTheProxyNeverCompares(t *testing.T) {
 // hosts the change adds to it and the names whose kind no tag read gave. The whole of stdout is
 // asserted. GITHUB_READ is behind its proxy string's kind and is held to everything the file
 // decides of it; LEGACY, under the new file a stored secret behind a kind only by its own tag, is
-// not compared, so the run exits 3.
+// not compared; and the github kind, which both files declare, is compared on its own, since a
+// secret behind it by its own tag is not named. So the run exits 3.
 func TestProfilesCheckReportsWhatChangedAgainstTheOldFile(t *testing.T) {
 	old := profilesFile(t, `{"kinds": [{"name": "github", "hosts": ["api.github.com"], "ways": ["swap"], "allow": [{"method": "GET", "pathPrefix": "/v1/"}]}],
  "profiles": [
@@ -529,7 +530,8 @@ func TestProfilesCheckReportsWhatChangedAgainstTheOldFile(t *testing.T) {
    "proxy": "github", "allow": [{"method": "POST", "pathPrefix": "/v1/repos/", "host": "uploads.github.com"}]}
 ]}`)
 	code, stdout, stderr := runCheck(t, now, "--against", old)
-	wantErr := "profiles check: " + now + ": UNKNOWN: not read (no --secrets-json): the allow or hosts of 1 name against " + old + "; nothing it read is refused\n"
+	wantErr := "profiles check: " + now + ": UNKNOWN: not read (no --secrets-json): the allow or hosts of 1 name against " + old +
+		", and the names behind 1 kind by their own proxy tag, compared as their kind alone; nothing it read is refused\n"
 	if code != exitUnknown || stderr != wantErr {
 		t.Fatalf("a valid file against an old one = exit %d with stderr %q, want exit %d and %q", code, stderr, exitUnknown, wantErr)
 	}
@@ -566,7 +568,10 @@ profile "LEGACY": proxy.allow any method and path
 profile "LEGACY": proxy.kind ""
 widens "GITHUB_READ": POST /v1/repos/ on uploads.github.com
 widens "LEGACY": not compared: under %[1]s no profile holds the name, and its stored secret is behind a kind only by its own proxy tag, which only --secrets-json reads
+widens kind "github": POST /v1/
 hosts "GITHUB_READ": uploads.github.com added
+hosts kind "github": uploads.github.com added
+profiles check: the kinds both files declare were compared on their own (1 kind): a stored secret behind one by its own proxy tag, which only --secrets-json reads, takes that kind's allow and hosts, and none was named
 `, now, old)
 	if stdout != want {
 		t.Fatalf("the report is\n%s\nwant\n%s", stdout, want)
@@ -608,13 +613,18 @@ func TestProfilesCheckReportsABlockAddedAndABlockRemoved(t *testing.T) {
 // TestProfilesCheckReportsAHostRemovedAndAHeaderRemoved is the other direction of the same
 // report, and the default headers with it: a kind that names no header carries the credential in
 // authorization, so a file that writes "headers": [] has taken that header away, and the report
-// says so rather than treating the two as the same empty field.
+// says so rather than treating the two as the same empty field. A host removed widens nothing, so
+// the kind, compared on its own, lists nothing under widens; the run exits 3 all the same, since a
+// secret behind it by its own tag is not named.
 func TestProfilesCheckReportsAHostRemovedAndAHeaderRemoved(t *testing.T) {
 	old := profilesFile(t, `{"kinds": [{"name": "github", "hosts": ["api.github.com", "github.com"], "ways": ["swap"]}], "profiles": [{"name": "GITHUB_ADMIN_PAT", "proxy": "github"}]}`)
 	now := profilesFile(t, `{"kinds": [{"name": "github", "hosts": ["api.github.com"], "headers": [], "ways": ["swap"]}], "profiles": [{"name": "GITHUB_ADMIN_PAT", "proxy": "github"}]}`)
 	code, stdout, stderr := runCheck(t, now, "--against", old)
-	if code != 0 || stderr != "" {
-		t.Fatalf("exit %d with stderr %q, want exit 0 and nothing on stderr", code, stderr)
+	if code != exitUnknown || !strings.Contains(stderr, "the names behind 1 kind by their own proxy tag") {
+		t.Fatalf("exit %d with stderr %q, want exit %d naming the one kind compared on its own", code, stderr, exitUnknown)
+	}
+	if got := slices.Concat(linesWith(stdout, "widens kind "), linesWith(stdout, "hosts kind ")); got != nil || !strings.Contains(stdout, "widens: none among what was compared\n") {
+		t.Fatalf("a kind that only loses a host and a header lists %q under widens, want nothing:\n%s", got, stdout)
 	}
 	for _, want := range []string{
 		`kind "github": hosts github.com removed`,

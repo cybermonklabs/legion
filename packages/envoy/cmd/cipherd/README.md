@@ -59,9 +59,13 @@ the load's own rules and in its words, one line each, `profile "<name>": <reason
 `secret "<name>": <reason>: <detail>`: a `proxy` string that names another kind than its source's
 `proxy` tag, a source only the proxy scopes or an `allow` behind no kind, a way or a `max-grant`
 the kind does not take, an `allow` whose source lacks `proxy-narrowed=true`, a row on a host the
-kind does not bind, rows outside the kind's `allow`, a tag naming no kind, and SC17's rule for a
-narrowed secret. A profile's kind is its own `proxy` string, or else its source's `proxy` tag,
-which is in the secret store, not the file: `--secrets-json` reads the tags from the output of
+kind does not bind, rows outside the kind's `allow`, a tag naming no kind, the narrowed rule
+(`Profiles.NarrowedFaults`) for a secret tagged `proxy-narrowed=true`, and a profile whose source
+the load does not serve: refused, absent, or another profile, which is never a source. It reads the
+store's tags and not its values, so a source the load refuses for its value, or one still waiting
+for its value, reads as a served one. A profile's kind is its own `proxy` string, or else its
+source's `proxy` tag, which is in the secret store, not the file: `--secrets-json` reads the tags
+from the output of
 `gcloud secrets list --filter='name~agent-secrets-' --format='json(name,annotations)'`. Without it,
 a profile with a `proxy` string is held to all the file decides of it, and each profile with none,
 in a file that declares a kind, gets an `UNKNOWN` line naming it; a run that refuses nothing then
@@ -72,7 +76,10 @@ With `--against`, it lists under `widens` each row of a name's `allow` under the
 profile's own `allow`, else its kind's, else its proxy block's; a missing `allow` allows every
 method and path), and each host the change adds to a name. A widening exits 0: the reviewer reads
 it, and a gate that must see none reads the list. A name whose `allow` or hosts only the tags give
-is listed as not compared, and without `--secrets-json` that too makes the run exit 3.
+is listed as not compared. Without `--secrets-json`, a stored secret behind a kind by its own
+`proxy` tag cannot be named, so each kind both files declare is compared on its own instead
+(`widens kind "<kind>": <row>`, `hosts kind "<kind>": <host> added`). Each of these makes a run
+without `--secrets-json` exit 3.
 With `--secrets-json`, it lists each secret's `proxy` and `proxy-narrowed` tags, then each name
 behind the proxy under the old file and how the file serves it, and exits 1 when a name leaves the
 proxy. The old file may be in either form, kinds or the proxy blocks they replaced.
