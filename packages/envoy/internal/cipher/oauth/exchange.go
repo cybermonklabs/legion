@@ -502,7 +502,9 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request, trade f
 	if read && request.GetRequestForm().Get(formRequestedTokenType) == oauthwire.TokenTypeProxyPlaceholder {
 		// A trade narrowed to reading approves nothing, and the approve grant holds the scope
 		// approve alone, so a placeholder trade that asks for read - with a cut or a holder proof,
-		// which only such a trade may carry - is refused before anything of it is read or written.
+		// which only such a trade may carry - is refused before its holder proof is read, before
+		// its claims are held to Dispatch and before the transaction: nothing of a grant or a token
+		// is written.
 		p.writeError(ctx, w, request, oauth2.ErrInvalidRequest.WithHintf(placeholderReadRefused, oauthwire.ScopeRead))
 		return
 	}

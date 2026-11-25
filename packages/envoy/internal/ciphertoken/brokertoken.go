@@ -567,33 +567,31 @@ const (
 // read one word at a time and with no slice built of them, because this runs on every request a
 // verifier decides, an answer served from the cache included.
 func shapeOf(answer Introspection) tokenShape {
-	// reads and persons count the two words a narrowed token's scope is made of, approves the
-	// approve-only token's one word, and other is any word besides them.
-	reads, persons, approves, other := 0, 0, 0, false
+	// The approve-only shape first and whole (approveShapeOf), so no word of the read shapes below,
+	// and no order among their cases, can make a token that holds approve anything but the one
+	// shape it is.
+	if shape, holds := approveShapeOf(answer); holds {
+		return shape
+	}
+	// reads and persons count the two words a narrowed token's scope is made of, and other is any
+	// word besides them.
+	reads, persons, other := 0, 0, false
 	for word := range strings.FieldsSeq(answer.Scope) {
 		switch word {
 		case ScopeRead:
 			reads++
 		case oauthwire.ScopePerson:
 			persons++
-		case ScopeApprove:
-			approves++
 		default:
 			other = true
 		}
 	}
 	read := reads > 0
-	readAlone := reads == 1 && persons == 0 && approves == 0 && !other
-	readPerson := reads == 1 && persons == 1 && approves == 0 && !other
-	approveAlone := approves == 1 && reads == 0 && persons == 0 && !other
+	readAlone := reads == 1 && persons == 0 && !other
+	readPerson := reads == 1 && persons == 1 && !other
 	switch answer.ProjectScope {
 	case ProjectScopeNamed, ProjectScopePerson:
-		switch {
-		case read || answer.AsOf != "":
-			return shapeNotASession
-		case approveAlone && answer.ProjectScope == ProjectScopePerson && answer.Person != "" && answer.Service == "" && len(answer.Projects) == 0:
-			return shapeApproveOnly
-		case approves > 0:
+		if read || answer.AsOf != "" {
 			return shapeNotASession
 		}
 		return shapeOrdinary
@@ -617,6 +615,30 @@ func shapeOf(answer Introspection) tokenShape {
 		}
 	}
 	return shapeNotASession
+}
+
+// approveShapeOf is shapeOf's reading of an answer whose Scope holds the word ScopeApprove, and
+// whether it holds it at all. Such an answer is the approve-only token when its Scope is that one
+// word, its project scope ProjectScopePerson, and it names a person, no service, no projects and
+// no cut; in any other shape it is no session's token. Scope is read one word at a time with no
+// slice built, as shapeOf reads it.
+func approveShapeOf(answer Introspection) (tokenShape, bool) {
+	approves, others := 0, 0
+	for word := range strings.FieldsSeq(answer.Scope) {
+		if word == ScopeApprove {
+			approves++
+		} else {
+			others++
+		}
+	}
+	switch {
+	case approves == 0:
+		return shapeNotASession, false
+	case approves == 1 && others == 0 && answer.ProjectScope == ProjectScopePerson && answer.AsOf == "" &&
+		answer.Person != "" && answer.Service == "" && len(answer.Projects) == 0:
+		return shapeApproveOnly, true
+	}
+	return shapeNotASession, true
 }
 
 // known is the broker's answer about token: the one remembered for it while that answer is still

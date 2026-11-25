@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 )
 
@@ -25,8 +26,9 @@ func approveOnlyToken(jkt string, life time.Duration) ciphertoken.Introspection 
 // answers its Caller marked approve-only, and is ErrNotASession to every other, so a service that
 // does not hold such a token to its approve routes never reads it as its person's ordinary token.
 // The rule is exact: approve beside another word, beside the named scope, with no person, with a
-// service, or with a project in its list is refused by both verifiers; the person-scoped token with
-// no approve is the control both accept unmarked. Each row goes through Verify and through Live.
+// service, with a project in its list, with a cut (as_of), or under the project scope none or any
+// of the narrowed read words is refused by both verifiers; the person-scoped token with no approve
+// is the control both accept unmarked. Each row goes through Verify and through Live.
 // SessionCaller, the NATS auth service's reading, serves no approve-only token.
 func TestAnApproveOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne(t *testing.T) {
 	caller := newSigner(t)
@@ -41,6 +43,13 @@ func TestAnApproveOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne(t *testing.T) 
 	noPerson.Person, noPerson.Service = "", "example-fleet"
 	withProject := approveOnlyToken(caller.jkt, time.Hour)
 	withProject.Projects = []string{"INFRA"}
+	withCut := approveOnlyToken(caller.jkt, time.Hour)
+	withCut.AsOf = time.Now().Add(-time.Hour).UTC().Format("2006-01-02T15:04:05.000000Z")
+	underWord := func(word string) ciphertoken.Introspection {
+		answer := approveOnlyToken(caller.jkt, time.Hour)
+		answer.ProjectScope = word
+		return answer
+	}
 	person := approveOnlyToken(caller.jkt, time.Hour)
 	person.Scope = "dispatch.write"
 	personCaller := ciphertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", ProjectScope: ciphertoken.ProjectScopePerson}
@@ -55,6 +64,11 @@ func TestAnApproveOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne(t *testing.T) 
 		{name: "approve beside the named scope", answer: namedApprove},
 		{name: "approve naming a service and no person", answer: noPerson},
 		{name: "approve naming a project", answer: withProject},
+		{name: "approve with a cut", answer: withCut},
+		{name: "approve under the project scope none", answer: underWord(ciphertoken.ProjectScopeNone)},
+		{name: "approve under read-named", answer: underWord(oauthwire.ProjectScopeReadNamed)},
+		{name: "approve under read-person", answer: underWord(oauthwire.ProjectScopeReadPerson)},
+		{name: "approve under read-none", answer: underWord(oauthwire.ProjectScopeReadNone)},
 		{name: "the person scope with no approve", answer: person, without: personCaller, with: personCaller},
 	}
 	for _, serves := range []bool{false, true} {
