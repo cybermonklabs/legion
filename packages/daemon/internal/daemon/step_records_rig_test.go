@@ -1199,15 +1199,12 @@ func (c *stepClaimant) takeQuietly() shimwire.Prompt {
 // claim working and has applied the fact that the agent took that delivery. The claim shows
 // working before that fact applies, on a goroutine of its own (workflowRuntime.taskConfirmed).
 // The fact first reads the calls of its issue's agents. So a read a test holds after take is the
-// read of a later fact, never of this one. The controller's turns confirm no fact.
+// read of a later fact, never of this one.
 func (c *stepClaimant) startTurn(prompt shimwire.Prompt) {
 	c.r.t.Helper()
 	before, _ := c.r.confirmations.read(c.token)
 	c.send(shimwire.AgentStart{DeliveryID: prompt.DeliveryID})
 	c.waitState(supervise.StateWorking)
-	if c.role == claim.RoleController {
-		return
-	}
 	var applied int
 	var err error
 	if !testwait.Holds(stepRecordsWait, 20*time.Millisecond, func() bool {
