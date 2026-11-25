@@ -1140,6 +1140,54 @@ test("a single pick's onCreate row offers a text no option holds, and a taken on
   }
 });
 
+// A pick and a taken `Use` row give the focus back to the trigger with no scroll: the trigger held
+// the focus as the list opened. The issue header's Repository, half out of sight on a 390 px page,
+// scrolled it 22 px as its `Use` row closed the list. Escape and Tab give it back as the engine
+// focuses, which brings the trigger into view where it is out of sight.
+test("a single pick's option and its taken onCreate row give the focus back with no scroll", async () => {
+  const user = userEvent.setup();
+  const created: string[] = [];
+  const view = render(
+    <SingleHost
+      onCreate={(value) => {
+        created.push(value);
+        return true;
+      }}
+      options={["api", "docs"]}
+    />
+  );
+  const trigger = screen.getByRole("button", { name: "Epic" });
+  const focus = spyOn(trigger, "focus");
+  // How each focus a close gives the trigger asked to scroll.
+  const givenBack = async (close: () => Promise<void>) => {
+    const from = focus.mock.calls.length;
+    await close();
+    return focus.mock.calls.slice(from).map(([options]) => options);
+  };
+  try {
+    const noScroll = { preventScroll: true };
+    await user.click(trigger);
+    expect(await givenBack(() => user.click(screen.getByRole("option", { name: "api" })))).toEqual([
+      noScroll,
+    ]);
+    await user.click(trigger);
+    await user.paste("urgent");
+    expect(
+      await givenBack(() => user.click(screen.getByRole("option", { name: 'Use "urgent"' })))
+    ).toEqual([noScroll]);
+    // From the keyboard: Enter takes the row, the only one while no option holds the text.
+    await user.keyboard("{Enter}");
+    await user.paste("web");
+    expect(await givenBack(() => user.keyboard("{Enter}"))).toEqual([noScroll]);
+    expect(trigger).toHaveFocus();
+    expect(created).toEqual(["urgent", "web"]);
+    expect(screen.getByTestId("handed").textContent).toBe("api");
+  } finally {
+    focus.mockRestore();
+    view.unmount();
+  }
+});
+
 // The host's `false` refuses the text: the list stays open with the text in its box and the
 // focus in it, for the reader to correct.
 test("a single pick's onCreate row the host refuses leaves the list open with the text in its box", async () => {
