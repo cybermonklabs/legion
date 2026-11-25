@@ -1142,13 +1142,18 @@ func (s *server) writeKeyInFlight(w http.ResponseWriter, r *http.Request, route 
 // login's key holds as it answers, as every reader reads it (recoveryPointRead), whatever the
 // repeat's body; nil when the key holds no row. Only a route that shapes its refusals
 // (keyedRoute.refuse) reads the point, and a read that fails is answered as the layer's other
-// failed reads are. The read runs whatever the client does, bounded by keyedBookkeeping, as the
-// drained repeat's read of the key does: net/http cancels the request's context once a read of its
-// connection fails, which the drain-error answer follows.
+// failed reads are. The read and the answer run whatever the client does, the read bounded by
+// keyedBookkeeping, as the drained repeat's read of the key does: net/http cancels the request's
+// context once a read of its connection fails, which the drain-error answer follows, and the
+// answer goes out under a context that outlives that cancel, since writeHandlerError writes
+// nothing to a request whose context has ended (admission.WriteUnserved) and the client that
+// stalled is still there to read its 409, as it was before the keyed layer's refusals went
+// through the route's shaping (refuseKeyed).
 func (s *server) writeUnjudgedKeyInFlight(w http.ResponseWriter, r *http.Request, route keyedRoute, login, key string) {
+	r = r.WithContext(context.WithoutCancel(r.Context()))
 	var recovery json.RawMessage
 	if route.refuse != nil {
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), keyedBookkeeping)
+		ctx, cancel := context.WithTimeout(r.Context(), keyedBookkeeping)
 		defer cancel()
 		err := s.deps.Store.Pool.QueryRow(ctx, `
 			select `+recoveryPointRead+` from request_keys where login = $1 and idempotency_key = $2
