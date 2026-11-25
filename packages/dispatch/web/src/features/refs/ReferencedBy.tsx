@@ -110,11 +110,11 @@ export function drawsEdge(edge: GraphEdge): boolean {
  *  `reference` names, since the new page's outline is that issue's conversation. One function, so
  *  a control that counts the list counts the rows the list shows. Undefined while there is no
  *  read. */
-export function listedEdges(
-  edges: readonly GraphEdge[] | null | undefined,
+export function listedEdges<E extends GraphEdge>(
+  edges: readonly E[] | null | undefined,
   reference: string,
   page: boolean
-): GraphEdge[] | undefined {
+): E[] | undefined {
   const drawn = edges?.filter(drawsEdge);
   const route = page ? parseNodeReference(reference) : undefined;
   const issueKey = route !== undefined && "key" in route ? route.key : undefined;

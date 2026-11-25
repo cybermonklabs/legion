@@ -121,9 +121,10 @@ export function NodeReferences({
   const here = addressed === undefined ? undefined : parseNodeReference(addressed);
   const issueKey = here !== undefined && "key" in here ? here.key : undefined;
   const itemWords = useIssueItemWords(issueKey, open);
-  // The names the page's one batched read gave what its references point at, which a reference in
-  // a citing item's line is named by: a context the page publishes, so no request.
-  const { names } = useKnownReferences();
+  // The names the page's one batched read gave what its references point at, and which of them
+  // name a post its author edited, by which a reference in a citing item's line is named: a
+  // context the page publishes, so no request.
+  const { edited, names } = useKnownReferences();
   // An edge a newer build answers with, of a kind or to a node this page does not know, is left
   // out, as every list of a node's references leaves it (`drawsEdge`): its kind's word would be
   // the node kind's, which says it was only named. Built while the list is open, and again only
@@ -131,9 +132,15 @@ export function NodeReferences({
   const rows = useMemo(
     () =>
       open
-        ? referenceRows(itemWords, (query.data?.edges ?? []).filter(drawsEdge), names, issueKey)
+        ? referenceRows(
+            itemWords,
+            (query.data?.edges ?? []).filter(drawsEdge),
+            names,
+            issueKey,
+            edited
+          )
         : NO_ROWS,
-    [issueKey, itemWords, names, open, query.data]
+    [edited, issueKey, itemWords, names, open, query.data]
   );
   const toggle = useRef<HTMLButtonElement>(null);
   // Retry goes with its line once the read it sent lands, under the reader's own press, and the

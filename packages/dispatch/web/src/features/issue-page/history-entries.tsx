@@ -25,9 +25,15 @@ import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { HistoryHandoff } from "./HistoryHandoff";
-import type { HistoryDay, HistoryEntry, HistoryTurn, NamedBlock } from "./history-model";
+import type {
+  HistoryBlock,
+  HistoryDay,
+  HistoryEntry,
+  HistoryTurn,
+  NamedBlock,
+} from "./history-model";
 import { useMarginDrawer } from "./margin-slot";
-import { DeletedLine } from "./node-line";
+import { DeletedLine, lineOrKindWord, useNodeLine } from "./node-line";
 import { useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
@@ -273,10 +279,9 @@ function DocumentLine({
   );
 }
 
-/** The line of a block repaired or found invalid that names the block by its node's words
+/** The line of a block repaired or found invalid that names the block by its node's one line
  *  (`HistoryEntry.block`), as `DocumentLine` draws a document's: its words, with the block's -
- *  the part of the line `block.part` names - a link to its node in the page's ink and its rows'
- *  underline, where its address reads as one. */
+ *  the part of the line `block.part` names - drawn as that line (`BlockName`). */
 function BlockLine({
   block,
   description,
@@ -284,26 +289,40 @@ function BlockLine({
   block: NamedBlock;
   description: readonly SentencePart[];
 }): ReactNode {
-  const { path } = block.block;
   return (
     <span>
       <SentenceParts
         parts={description}
-        text={(part, index) =>
-          index !== block.part || path === undefined ? (
-            part
-          ) : (
-            <Link
-              className={`dispatch-inline-link ${ROW_LINK} ${pageInkText}`}
-              to={path}
-              {...authorText}
-            >
-              {part}
-            </Link>
-          )
-        }
+        text={(part, index) => (index === block.part ? <BlockName block={block.block} /> : part)}
       />
     </span>
+  );
+}
+
+/** The one line of the node that carries a block a line of the history names, as the outline
+ *  draws a node's (`node-line.tsx`'s `useNodeLine`): its first line, each reference in it read as
+ *  its target's name, and the page's word for its kind where its words hold none; a link to the
+ *  node in the page's ink and its rows' underline, where its address reads as one. Nothing of it
+ *  until the projection has answered. */
+function BlockName({ block }: { block: HistoryBlock }): ReactNode {
+  const { line, reads } = useNodeLine(block.node, { surface: "issue-page-history-block" });
+  const marks = line === "" ? pageChrome : authorText;
+  const words = lineOrKindWord(line, block.node.type);
+  return (
+    <>
+      {reads}
+      {block.path === undefined ? (
+        <span {...marks}>{words}</span>
+      ) : (
+        <Link
+          className={`dispatch-inline-link ${ROW_LINK} ${pageInkText}`}
+          to={block.path}
+          {...marks}
+        >
+          {words}
+        </Link>
+      )}
+    </>
   );
 }
 

@@ -120,6 +120,7 @@ export type DispatchReadingSurface =
   | "issue-page-history-turn"
   | "issue-page-history-handoff-body"
   | "issue-page-history-handoff-data"
+  | "issue-page-history-block"
   | "plan-task-line"
   | "document-page-title"
   | "agent-artifact-page-title"
@@ -695,6 +696,20 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: false,
     rendered: false,
     surface: "issue-page-history-handoff-data",
+  },
+  {
+    cannotCarry: NODE_LINE_NO_QUESTION_ID,
+    files: ["packages/dispatch/web/src/features/issue-page/history-entries.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue-page/IssueHistory.test.tsx",
+      test: "a block's line in the history reads a reference as its target's name",
+    },
+    reach:
+      "/issues/<ISSUE>/activity with the new issue page on, the line of a repaired or refused block in Details' History",
+    reason: `A line of the history names a block by the one line of the node that carries it, its first line cut by the page's first-line rule. ${PLAIN_WORDS_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "issue-page-history-block",
   },
   {
     cannotCarry: NODE_LINE_NO_QUESTION_ID,

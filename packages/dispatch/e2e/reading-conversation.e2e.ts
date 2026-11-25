@@ -3,7 +3,7 @@ import type { Locator } from "@playwright/test";
 import { issueProject } from "../web/src/lib/issue-key";
 import { createAsk, createComment, createHandoff, createIssueArtifact, createMessage } from "./api";
 import { nodeRow, openIssue, READER, rowWords } from "./issue-page-g";
-import { historyItem, historyPanel } from "./issue-page-m";
+import { daemonOf, historyItem, historyPanel } from "./issue-page-m";
 import { withIssuePage } from "./issue-page-option";
 import {
   expectReadsReferences,
@@ -34,6 +34,10 @@ import { expect, test } from "./test";
  * their names and link nothing. A handoff is no record of the reference graph, so a `#id` in
  * its words names nothing, and its driver holds the other five forms. A row of the new page reads
  * no question map, so a `#id` in its words is drawn as written, and its driver holds the rest.
+ *
+ * Two drivers read the new page's Details history: a turn of a thread the history holds, which
+ * reads every form, and a handoff's opened fields, which read all but a question id, since a
+ * handoff is no record of the reference graph.
  */
 
 /** The agent session these rows write as, so a write is never the reader's own. */
@@ -302,7 +306,7 @@ test("issue-page-history-turn: an agents' thread turn in the new page's history 
   const turn = await createMessage(
     world.host.key,
     { body: readingText(world) },
-    { actor: { id: `legion-daemon:${issueProject(world.host.key)}`, kind: "session" }, as: "agent" }
+    daemonOf(issueProject(world.host.key))
   );
 
   await withIssuePage(page.context(), READER);

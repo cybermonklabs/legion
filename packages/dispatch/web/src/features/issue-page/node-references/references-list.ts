@@ -42,6 +42,9 @@ const MENTIONS = "mentions";
 /** No name at all: a caller that holds none of the page's names. */
 const NO_NAMES: ReadonlyMap<string, string> = new Map();
 
+/** No reference read as edited: a caller that holds none of the page's edited references. */
+const NO_EDITED: ReadonlySet<string> = new Set();
+
 /** One node that references the focused one. */
 export interface ReferenceRow {
   /** When the reference was made (`GraphEdge.created_at`), which the old panel drew on each
@@ -143,13 +146,15 @@ function blockItem(node: GraphEdge["node"]): NonNullable<GraphEdge["node"]["pare
  * no cut (`namedWords`), its references named from `names`, the page's one batched read of what
  * its references point at, by reference (`reference-names.tsx`); every other node, and an item
  * whose words the page does not hold yet, carries none. `issue` is the focused node's own issue,
- * which those items are of.
+ * which those items are of, and `edited` the references among the names whose post its author
+ * edited (`KnownReferences.edited`), which a name then marks as the outline's row marks it.
  */
 export function referenceRows(
   itemWords: ReadonlyMap<string, string>,
   edges: readonly GraphEdge[],
   names: ReadonlyMap<string, string> = NO_NAMES,
-  issue?: string
+  issue?: string,
+  edited: ReadonlySet<string> = NO_EDITED
 ): ReferenceRow[] {
   const rows = new Map<string, ReferenceRow>();
   // The issues the page's names know, which a citing item's words tell their references by: read
@@ -170,7 +175,7 @@ export function referenceRows(
       nodeKind,
       ref: item?.ref ?? edge.node.ref,
       source: edge.node.issue_key ?? edge.node.project,
-      words: words === undefined ? "" : namedWords(words, names, issues, issue),
+      words: words === undefined ? "" : namedWords(words, names, issues, issue, edited),
     });
   }
   return [...rows.values()];
@@ -181,7 +186,8 @@ export function referenceRows(
  * references is no place the page shortens, its runs of white space one space each, with each
  * reference they write named as the outline's row names it (`rowReferenceWords`), `issue` being
  * the issue the item is of: an issue by its key and its title, a party by the name its own read
- * gives it, anything else by its target's words. The server's reading of a bare `dispatch://`
+ * gives it, anything else by its target's words, then ` · edited` where its post's author edited
+ * it (`edited`). The server's reading of a bare `dispatch://`
  * reference is a link whose words are the address itself, so the words write it as typed; a
  * reference the read has not named is drawn by the page's word for what it names
  * (`unnamedWords`), since an address is no name, and the rest of the words stay. The batched read
@@ -192,7 +198,8 @@ function namedWords(
   words: string,
   names: ReadonlyMap<string, string>,
   issues: readonly string[],
-  issue: string | undefined
+  issue: string | undefined,
+  edited: ReadonlySet<string>
 ): string {
   const whole = words.replace(/\s+/gu, " ").trim();
   let written = "";
@@ -202,7 +209,7 @@ function namedWords(
     if ((names.get(one.reference) ?? "").trim() === "" && !isPartyRoute(one.route)) {
       written += unnamedWords(one.route);
     } else {
-      const named = rowReferenceWords(one, names, issue);
+      const named = rowReferenceWords(one, names, issue, edited);
       written += named.key === undefined ? named.words : `${named.key} ${named.words}`;
     }
     at = one.end;

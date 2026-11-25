@@ -264,6 +264,32 @@ test("a citing item whose words cite a named node and one with no name draws all
   expect(line, "the row draws the unnamed question's id").not.toContain("a-3");
 });
 
+// A citing comment's words cite a comment its author edited since. The outline's row names that
+// comment by its words and then ` · edited`, inside the reference's name (`rowReferenceWords`),
+// and so does Details' row of what references the focused node.
+test("a citing item's words name a reference whose post its author edited with its edited mark, as the outline's row does", () => {
+  const named = buildDispatchReference({ id: "c-2", key: "LAY-2", kind: "comment" });
+  const text = `Compare ${named} before the review.`;
+  const rows = referenceRows(
+    commentWords({ "c-1": reading(text) }),
+    [
+      edge({
+        excerpt: text,
+        id: "c-1",
+        kind: "mentions",
+        nodeKind: "comment",
+        ref: buildDispatchReference({ id: "c-1", key: "LAY-2", kind: "comment" }),
+      }),
+    ],
+    new Map([[named, "The rail follows the statement"]]),
+    "LAY-2",
+    new Set([named])
+  );
+  expect(rows[0]?.words, "the row names the edited comment without its edited mark").toBe(
+    "Compare The rail follows the statement · edited before the review."
+  );
+});
+
 // A citing comment's words cite a question of a project document by its bare address, which the
 // page's batched read names nothing for. The row draws the question by the page's word for a
 // question, as it draws an issue's question, never by its address. It drew it by the word for a

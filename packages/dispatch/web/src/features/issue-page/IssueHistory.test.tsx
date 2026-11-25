@@ -16,19 +16,22 @@ import type {
   DispatchEvent,
   DisplayTree,
   Handoff,
+  IssueAskRow,
   IssueDetails,
   MessageRead,
 } from "../../api/types";
 import { linkText, pageInkText } from "../../theme/classes";
 import { dateKey, dayLabel } from "../activity/activity-model";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { buildIssuePath } from "../refs/routes";
+import { type PublishedReferences, ReferenceNamesProvider } from "../refs/reference-names";
+import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { measureNearWords } from "./clamp-fixtures";
 import { HistoryHandoff } from "./HistoryHandoff";
 import { type AddressedTurn, IssueHistory } from "./IssueHistory";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
+import { Publisher, publishedNames } from "./projection-fixture";
 import { failRefreshOverHeld } from "./refresh-over-held-fixture";
 import { PAGE_SIZE, SHOW_MORE, showMoreName } from "./show-more-fixture";
 
@@ -532,10 +535,12 @@ test("a repaired block's words are a link to its question's address, and its id 
 const FOLLOWING = "default /issues/CORE-1/messages";
 
 /** The history of `KEY` with nothing above it but a query client that never retries, drawn in
- *  `container` where one is given, at the address of the turn `item` where one is given. */
+ *  `container` where one is given, at the address of the turn `item` where one is given, and
+ *  under the names a page published of its batched read (`published`) where those are given. */
 function drawHistory(
   item: string | undefined,
-  container?: HTMLElement
+  container?: HTMLElement,
+  published?: PublishedReferences
 ): {
   queryClient: QueryClient;
   unmount: () => void;
@@ -545,16 +550,26 @@ function drawHistory(
   });
   queryClient.setQueryData(["agents"], []);
   const issue = { artifacts: [], key: KEY } as unknown as IssueDetails;
+  const history = (
+    <IssueHistory
+      activityFollowing={undefined}
+      issue={issue}
+      item={item === undefined ? undefined : { following: FOLLOWING, id: item }}
+      state={{ [KEY]: { dismissed: [], last_read_seq: 99999, pinned: false, seq: 0 } }}
+      visitMark={99999}
+    />
+  );
   const { unmount } = render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
-        <IssueHistory
-          activityFollowing={undefined}
-          issue={issue}
-          item={item === undefined ? undefined : { following: FOLLOWING, id: item }}
-          state={{ [KEY]: { dismissed: [], last_read_seq: 99999, pinned: false, seq: 0 } }}
-          visitMark={99999}
-        />
+        {published === undefined ? (
+          history
+        ) : (
+          <ReferenceNamesProvider>
+            <Publisher published={published} />
+            {history}
+          </ReferenceNamesProvider>
+        )}
       </QueryClientProvider>
     </MemoryRouter>,
     container === undefined ? {} : { container }
@@ -2261,14 +2276,17 @@ function handoffRecord(summary: string): Handoff {
   };
 }
 
-/** A handoff's fields in the history, drawn open, with nothing above them but a query client
- *  that never retries. */
-function drawHandoff(): { queryClient: QueryClient; unmount: () => void } {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+/** A handoff's fields in the history, drawn open, with nothing above them but a router and
+ *  `queryClient`, a query client that never retries where the case gives none. */
+function drawHandoff(
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+): { queryClient: QueryClient; unmount: () => void } {
   const { unmount } = render(
-    <QueryClientProvider client={queryClient}>
-      <HistoryHandoff handoffId="handoff-1" />
-    </QueryClientProvider>
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <HistoryHandoff handoffId="handoff-1" />
+      </QueryClientProvider>
+    </MemoryRouter>
   );
   return { queryClient, unmount };
 }
@@ -2722,44 +2740,92 @@ test("a handoff's prose field draws a reference as its target's name, not its ad
     status: "in_progress",
     title: "Warm the cache",
   });
-  const view = render(
-    <MemoryRouter>
-      <QueryClientProvider client={queryClient}>
-        <HistoryHandoff handoffId="handoff-1" />
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
+  const { unmount } = drawHandoff(queryClient);
+  const summaryField = () => document.querySelector('[data-handoff-field="summary"]');
 
   try {
     const link = await waitFor(() => {
-      const found = view.container.querySelector<HTMLAnchorElement>(
-        `[data-handoff-field="summary"] a[data-dispatch-ref="${reference}"]`
+      const found = summaryField()?.querySelector<HTMLAnchorElement>(
+        `a[data-dispatch-ref="${reference}"]`
       );
-      if (found === null || found.textContent !== "CORE-2 Warm the cache") {
+      if (found == null || found.textContent !== "CORE-2 Warm the cache") {
         throw new Error(
-          `summary did not draw the reference's target name (text: ${view.container.querySelector('[data-handoff-field="summary"]')?.textContent})`
+          `summary did not draw the reference's target name (text: ${summaryField()?.textContent})`
         );
       }
       return found;
     });
     expect(link).toHaveAttribute("href", "/issues/CORE-2");
+    expect(summaryField()?.textContent).not.toContain(reference);
+    expect(summaryField()?.querySelector("strong")?.textContent).toBe("keeps");
     expect(
-      view.container.querySelector('[data-handoff-field="summary"]')?.textContent
-    ).not.toContain(reference);
-    expect(view.container.querySelector('[data-handoff-field="summary"] strong')?.textContent).toBe(
-      "keeps"
-    );
-    expect(
-      view.container.querySelector(
-        `[data-handoff-field="proof"] a[data-dispatch-ref="${reference}"]`
-      )?.textContent
+      document.querySelector(`[data-handoff-field="proof"] a[data-dispatch-ref="${reference}"]`)
+        ?.textContent
     ).toBe("CORE-2 Warm the cache");
-    expect(view.container.querySelector('[data-handoff-field="files"] pre')?.textContent).toBe(
+    expect(document.querySelector('[data-handoff-field="files"] pre')?.textContent).toBe(
       '[\n  "a.ts"\n]'
     );
   } finally {
-    view.unmount();
+    unmount();
     queryClient.clear();
     getHandoff.mockRestore();
+  }
+});
+
+// A line of the history that names a block by a UUID names it by the one line of the node that
+// carries it, as the outline draws a node's line: a `dispatch://` address in the question reads as
+// its target's name, from the names the page published, and never as the address its author typed.
+test("a block's line in the history reads a reference as its target's name", async () => {
+  await warmMarkdownRenderer();
+  const block = "01f349b4-2a84-4ebb-81be-91fa2f4e2300";
+  const askId = "7a1c3e5f-9b2d-4e6a-8c0f-1d3b5a7c9e20";
+  const address = buildDispatchReference({ key: "CORE-2", kind: "issue" });
+  const question = `Wait on ${address} first. Then ship.`;
+  const restoreReads = stubHistoryReads([
+    {
+      ...claim(1),
+      payload: { block_id: block, disturbed_by: { id: "alice", kind: "user" }, version: 3 },
+      type: "block.repaired",
+    } as DispatchEvent,
+  ]);
+  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([
+    {
+      block_id: block,
+      id: askId,
+      kind: "question",
+      question,
+      question_tree: displayTree(question),
+    } as unknown as IssueAskRow,
+  ]);
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory(
+      undefined,
+      undefined,
+      publishedNames(new Map([[address, "Ship the release"]]))
+    ).unmount;
+    const path = buildIssuePath({ id: askId, key: KEY, kind: "ask" });
+    const line = await waitFor(() => {
+      const found = document.querySelector<HTMLElement>("[data-event-seq]");
+      if (found?.querySelector(`a[href="${path}"]`) == null) {
+        throw new Error(`the block's line is not drawn (text: ${found?.textContent})`);
+      }
+      return found;
+    });
+    await waitFor(() =>
+      expect(
+        line.querySelector(`a[href="${path}"]`)?.textContent,
+        "the block's line does not read its reference as its target's name"
+      ).toBe("Wait on CORE-2 Ship the release first.")
+    );
+    expect(line.textContent).toContain("repaired server-owned state on block “Wait on CORE-2");
+    expect(line.textContent, "the block's line draws the address as typed").not.toContain(
+      "dispatch://"
+    );
+  } finally {
+    unmount?.();
+    listIssueAsks.mockRestore();
+    restoreReads();
   }
 });

@@ -367,7 +367,7 @@ test("with page each excerpt is drawn whole, with no clamp and no Show more, and
     ...READ,
     edges: [itemEdge("CORE-2", "comment", OTHER_COMMENT, excerpt)],
   });
-  const client = clientWithSummaries();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const panel = (page: boolean) => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
@@ -393,7 +393,7 @@ test("with page each excerpt is drawn whole, with no clamp and no Show more, and
       expect(body()?.textContent, "Details does not draw the excerpt whole").toContain(lines[5])
     );
     expect(preview(), "Details clamps the excerpt").toBeNull();
-    expect(body(), "Details clamps the excerpt").not.toHaveClass("line-clamp-3");
+    expect(list().querySelector(".line-clamp-3"), "Details clamps the excerpt").toBeNull();
     expect(
       within(list()).queryByRole("button", { name: /^Show (more|less)$/u }),
       "Details offers more of an excerpt it draws whole"
