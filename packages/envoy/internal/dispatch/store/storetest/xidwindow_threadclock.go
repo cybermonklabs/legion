@@ -9,9 +9,9 @@ import (
 )
 
 // XidRequireGapsEnv names the environment variable that makes a run that cannot judge a window's
-// statement-free gaps fail instead of judging the window's shape alone (Measure). The plain CI jobs
-// that judge gaps, envoy-go and envoy-go-docs-finalizers, set it, so a runner whose kernel stops
-// showing a thread's clocks turns those jobs red with the reason rather than green on shape alone.
+// statement-free gaps fail instead of judging the window's shape alone (Measure). The plain CI steps
+// that judge gaps, envoy-go's, set it, so a runner whose kernel stops showing a thread's clocks
+// turns that job red with the reason rather than green on shape alone.
 const XidRequireGapsEnv = "DISPATCH_XID_REQUIRE_GAP_JUDGMENT"
 
 // xidThreadClockAvailability is what this process can give the rig to judge gaps with: whether
