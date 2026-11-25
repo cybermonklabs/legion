@@ -1000,7 +1000,12 @@ func (r *Runtime) ProvisionsWorkspaces() bool { return true }
 // every other resident role shares that pod and stays reachable until its own explicit stop or
 // issue-level lifecycle effect. A recorded process its pod or launcher shows already ended — the
 // pod replaced or gone, or the launcher running no child or another generation — is stopped
-// already, and nothing is sent.
+// already, and nothing is sent. So is one whose launcher is not connected from a pod still in, or
+// failed in, an init container (beforeLaunchers): no launcher of that pod connected since its init
+// containers last ran, and none can until they end, so there is no answer to wait for. Waiting for
+// one held the stop for the boot timeout and the termination grace and then failed it, while the
+// claim it stops stayed held behind it. Only a stop a launcher can answer is waited on: a
+// connected launcher's, and the reconnect of one of a pod past its init containers.
 func (r *Runtime) Suspend(ctx context.Context, loc runtime.Locator) error {
 	if err := r.checkLocator(loc); err != nil {
 		return err
@@ -1018,7 +1023,14 @@ func (r *Runtime) Suspend(ctx context.Context, loc runtime.Locator) error {
 		r.forgetIf(loc)
 		return nil
 	}
-	if state, connected := r.launchers.state(loc.Claim, loc.Sandbox.PodUID); connected && (state.Child == nil || state.Child.Generation != loc.Sandbox.Generation) {
+	state, connected := r.launchers.state(loc.Claim, loc.Sandbox.PodUID)
+	if connected && (state.Child == nil || state.Child.Generation != loc.Sandbox.Generation) {
+		r.forgetIf(loc)
+		return nil
+	}
+	if !connected && beforeLaunchers(pod) {
+		r.log.Info("sandbox runtime: suspend sends no stop: the pod is in or failed in an init container, so no launcher of it is connected",
+			"claim", loc.Claim, "sandbox", loc.Sandbox.Name, "pod", loc.Sandbox.PodUID, "generation", loc.Sandbox.Generation)
 		r.forgetIf(loc)
 		return nil
 	}

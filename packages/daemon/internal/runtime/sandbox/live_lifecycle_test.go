@@ -789,7 +789,7 @@ func (r *liveRig) checkStalePluginInstall() error {
 
 	old := *worker.last
 	since := time.Now()
-	loc, err := r.resumeWithPlugins(worker, worker.session, &runtime.PluginInstall{PiLegion: legionTar, PiEnvoy: envoyTar, Contract: api.DaemonAPIVersion})
+	loc, err := r.resumeWithPlugins(worker, worker.session, &runtime.PluginInstall{PiLegion: legionTar, PiEnvoy: envoyTar, Contract: api.DaemonAPIVersion()})
 	if err != nil {
 		return err
 	}
@@ -823,8 +823,8 @@ func (r *liveRig) checkStalePluginInstall() error {
 	if err != nil {
 		return err
 	}
-	if legionVersion != r.env.piLegionVersion || legionContract != strconv.Itoa(api.DaemonAPIVersion) {
-		return fmt.Errorf("%s/package.json: version %q contract %q, want version %q and contract %d", legionRoot, legionVersion, legionContract, r.env.piLegionVersion, api.DaemonAPIVersion)
+	if legionVersion != r.env.piLegionVersion || legionContract != strconv.Itoa(api.DaemonAPIVersion()) {
+		return fmt.Errorf("%s/package.json: version %q contract %q, want version %q and contract %d", legionRoot, legionVersion, legionContract, r.env.piLegionVersion, api.DaemonAPIVersion())
 	}
 	envoyVersion, _, err := r.pluginPackageInfo(worker, envoyRoot+"/package.json")
 	if err != nil {
@@ -863,7 +863,7 @@ func (r *liveRig) checkStalePluginInstall() error {
 	// .../g*` has run — but the wrapper's own check ends the child before `exec`, and the runtime
 	// observes it Gone.
 	mark := r.obs.mark()
-	negLoc, err := r.resumeWithPlugins(worker, worker.session, &runtime.PluginInstall{PiLegion: "9.6.1", PiEnvoy: envoyTar, Contract: api.DaemonAPIVersion})
+	negLoc, err := r.resumeWithPlugins(worker, worker.session, &runtime.PluginInstall{PiLegion: "9.6.1", PiEnvoy: envoyTar, Contract: api.DaemonAPIVersion()})
 	if err != nil {
 		return err
 	}
@@ -873,7 +873,7 @@ func (r *liveRig) checkStalePluginInstall() error {
 	if !ok {
 		return fmt.Errorf("no Gone for the negative control's %s within %s", negLoc.Incarnation, liveGoneLimit)
 	}
-	note("runtime", "negative control: Observe gone for %s (the published pi-legion@9.6.1 declares contract 23, not %d) — %s", short(negLoc.Incarnation), api.DaemonAPIVersion, oneLine(firstLine(gone.Detail)))
+	note("runtime", "negative control: Observe gone for %s (the published pi-legion@9.6.1 declares contract 23, not %d) — %s", short(negLoc.Incarnation), api.DaemonAPIVersion(), oneLine(firstLine(gone.Detail)))
 	worker.loc, worker.state = nil, stateDead
 
 	final, err := r.getPod(name)

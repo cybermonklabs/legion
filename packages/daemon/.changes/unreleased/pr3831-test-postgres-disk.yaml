@@ -26,5 +26,6 @@ body: |-
   The key lands only with a `daemonImage` and a worker image that both carry this release: an
   earlier daemon refuses the key at boot, and an earlier image's launcher refuses the new
   `--test-postgres-disk` flag and has no reset. A change that moves either pin back below this
-  release takes the key out first. The daemon API contract rises to 286 for the new flag, so the
-  daemon and the worker image move together. A pod whose key is off runs as before.
+  release takes the key out first. This change adds daemon API contract entry `20261125163621`
+  (`test-postgres-disk`) for the new flag, so the daemon and the worker image move together. A pod
+  whose key is off runs as before.

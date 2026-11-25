@@ -1,7 +1,8 @@
 package api
 
-// DaemonAPIVersion is the contract this daemon speaks with the Legion plugin (@sjawhar/pi-legion):
-// the claim, credential, workflow, controller and state shapes the plugin's client parses
+// This file is the history of DaemonAPIVersion (contracts.go), the contract this daemon speaks
+// with the Legion plugin (@sjawhar/pi-legion): the claim, credential, workflow, controller and
+// state shapes the plugin's client parses
 // (`packages/pi-shared/src/daemon-client.ts`, through
 // `packages/contracts/src/legion-api.ts`), the pane environment it reads — every variable
 // the tmux runtime sets on a pane (`internal/runtime/tmux/spawn.go`'s `panePairs`) and the Sandbox
@@ -11,29 +12,35 @@ package api
 // and the command line of a pod's `legion launcher` container (each pod kind's
 // `launcherContainer` in `internal/runtime/sandbox/podkind.go`, and `sessionProxyFlags`), both of
 // which the image's own `legion` reads. The installed plugin declares the
-// number it was built against as `legion.daemonApiVersion` in its `package.json`, and the boot
-// gate (`internal/daemon/bootgate.go`) refuses to start unless the two are equal.
+// number it was built against as `legion.daemonApiVersion` in the `package.json` its pack writes,
+// and the boot gate (`internal/daemon/bootgate.go`) refuses to start unless the two are equal.
 //
-// Bump rule: a change to any of these surfaces raises this constant above the number its base
-// carries. The same commit writes the number in every other file that holds it:
-// `legion.daemonApiVersion` in `packages/pi-legion/package.json` and
-// `packages/claude-envoy/package.json`, and the two fixtures
-// that this package's golden tests write, `packages/contracts/fixtures/daemon-api/version.json`
-// and `packages/contracts/fixtures/daemon-api/state.json`. In `packages/daemon`,
-// `go test ./internal/api -run '^(TestDaemonAPIVersionGolden|TestStateGolden)$' -update` writes
-// the two fixtures. The plugin's test reads `version.json`, so that fixture holds this constant
-// and the plugin's field together. The bump's history is its numbered entry in this file, below.
-// `.github/scripts/check-daemon-api-contract.sh` refuses a change in which one of those files
-// disagrees with this constant, and, naming a free number, a change that touches the contract
-// below (that script's header says which edits do) and declares no number above its base's.
+// Entry rule: a change to any of these surfaces adds one entry, and edits no number by hand.
+// `scripts/daemon-contract-entry.sh <slug>` writes the entry's file in this package,
+// `contract_<id>_<slug>.go`, whose id is the UTC second it was made; the author writes the
+// entry's text there, what the change does to the contract and why, with every row the change
+// adds to a table the daemon serves from, each naming the entry by its constant. In
+// `packages/daemon`, `go test ./internal/api -update` then writes the entry's fixture,
+// `packages/contracts/fixtures/daemon-api/contracts/<id>_<slug>.json`. The numbered entries below
+// end at LastNumberedContract, and no change adds one or moves one: each build numbers its new
+// entries LastNumberedContract plus their rank in the order main's first-parent history merged
+// them, which the release and worker-image builds stamp into the binary (contracts.go), so no
+// committed file holds a new entry's number. `legion version --contracts` prints each entry's
+// number in a build. `.github/scripts/check-daemon-api-contract.sh` refuses six changes: a
+// numbered entry added to this file or renumbered in it; an entry's file or fixture deleted or
+// renamed; an entry with no fixture, or a fixture with no entry; `legion.daemonApiVersion` in a
+// manifest, a `version.json`, or a `daemon` mark in a state golden; a changelog fragment that
+// names a number above LastNumberedContract; and an edit of an entry's fixture or of a frozen
+// record with no paragraph starting `Correction:` in that entry's text.
 //
 // Serving rule: a change that moves the shape of an answer a plugin parses serves the old shape to
-// each contract of `SupportedContracts` below this constant, through shaping.go's `shapeAnswer`: a
-// band takes off a key the change adds (`stateNarrowings`), a stand-in writes back a key it removes
-// (`withFixAttempts` is one), and a value strip holds back a value newer than that contract's
-// enumeration (`valueStrips`, which reads answers.go's `EnumeratedFields`). The shape gate in this
-// package's tests (`contract_shapes_test.go`) refuses a change that does not, and a record of an
-// earlier contract changed with the serving-down that produces it passes, which a reviewer reads.
+// each contract of `SupportedContracts` below DaemonAPIVersion, through shaping.go's
+// `shapeAnswer`: a band takes off a key the change adds (`stateNarrowings`), a stand-in writes
+// back a key it removes (`standIns`), and a value strip holds back a value newer than that
+// contract's enumeration (`valueStrips`, which reads answers.go's `EnumeratedFields`). The shape
+// gate in this package's tests (`contract_shapes_test.go`) refuses a change that does not, and a
+// record of an earlier contract changed with the serving-down that produces it passes, which a
+// reviewer reads.
 // Under `settings` the rule covers only the top-level keys a supported reader types (answers.go's
 // `typedSettings`): a settings key no reader types needs no band, stand-in or contract number,
 // only its row in settings_test.go's classification and the fixture values the field walk asks for.
@@ -3736,32 +3743,16 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 286: dispatch://INFRA-1117 -- the test database's own disk. Where
-// `runtime.kubernetes.test_postgres_disk` sets a size, an issue pod that runs the test database
-// keeps its cluster on a generic ephemeral volume of that size in place of the `testpg` emptyDir,
-// and the launcher's command line gains `--test-postgres-disk` after `--test-postgres`
-// (sandbox's issuePod.launcherContainer), which tells the launcher that the free bytes it reads
-// there are the cluster's own, so it resets the cluster under a floor (launcher's testpg.go). A
-// pod whose key is off gets no such flag, and its command line is unchanged. The state's settings
-// block carries the key as `settings.runtime.kubernetes.test_postgres_disk`, absent while it is
-// off, which the plugin parses loosely (35 above), so that key alone would bump nothing.
-//
-// The skew is safe in both directions only through this number. An older launcher refuses an
-// unknown flag and exits, so a daemon of this release must never render `--test-postgres-disk`
-// into a pod whose image predates it: the image probe pairs a daemon with an image by this
-// number (`runtime/sandbox/probe.go`), as it did for 137 and 151, so a daemon of this release is
-// paired only with an image of this release. An older daemon renders no such flag, and a
-// launcher of this release given none behaves as before: it reads no free bytes and resets
-// nothing. No frame between the daemon and the launcher moves, and no shape the plugin parses.
-// From this entry the last number of answers.go's SupportedContracts is this change's own, after
-// `api.dispatchCredentialContract` (`dispatchCredentialContract, 286`).
-// (A census of `const DaemonAPIVersion` at refs/pull/<n>/head over every open pull request of this
-// repository, 502 of them, taken between 2026-11-25T10:14:42Z and 10:21:56Z, before the forward
-// merge of main ac1c9a332e, read main's 275 (INFRA-4425's entry above, dispatchCredentialContract)
-// and numbers from 276 to 293 declared by other open heads: 276 by #4592, 277 by #4771, 278 by
-// #4596, 279 by #4580, 280 by #5307, 281 by #4540, 282 by #5488, 283 by #5463, 284 by #5157 and 285
-// by #5158 among them. So this entry takes 286, the lowest number above main's that no other open
-// head declares. It stood at 204, 207, 212, 216, 218, 240, 241, 243, 244, 253 and 260 before, each
-// the number it took at an earlier census. Read main's own number and every open pull request's
-// again at the next forward merge rather than from this line.)
-const DaemonAPIVersion = 286
+// Each change after LastNumberedContract is an entry of its own file, and takes no number here
+// (contracts.go).
+
+/*
+The line below is no Go and no contract number of this build. Main's contract check from before
+this change reads every open pull request's head for `const\s+DaemonAPIVersion\s*=\s*(\d+)` and
+fails each pull request it checks while one open head declares none, so this head keeps a line it
+reads, at the number main declared when the line was written. Its tab keeps it out of every reader
+of the number after the cutover (legion-pins, scripts/daemon-contract.sh and
+scripts/daemon-contract-convert.sh), which read `const DaemonAPIVersion = <n>` with one space, and
+the check of this change reads no open pull request.
+const	DaemonAPIVersion = 275
+*/
