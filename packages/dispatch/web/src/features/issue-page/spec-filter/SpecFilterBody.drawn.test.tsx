@@ -774,7 +774,12 @@ test("a failed Spec view read draws one message, the statements', and no decisio
     read.treeStands("specView", "answered");
     const before = askedOf(read);
     await user.click(within(line).getByRole("button", { name: "Retry" }));
-    await waitFor(() => expect(view.container.querySelector('[role="alert"]')).toBeNull());
+    await waitFor(() =>
+      expect(
+        view.container.querySelector('[role="alert"]'),
+        "the statements' line still stands after its Retry answered"
+      ).toBeNull()
+    );
     expect(askedOf(read).specView, "the Retry did not ask the Spec view read once").toBe(
       before.specView + 1
     );
