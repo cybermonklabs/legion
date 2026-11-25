@@ -186,14 +186,14 @@ jobs:
           key: go-notices-${{ runner.arch }}-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-notices-{0}-{1}-', runner.arch, runner.os) }}
 
-      # The skill-scenario rig's two Go programs belong to no module, so they are formatted here
-      # with the daemon: daemon-pane.go runs with `go run -overlay` inside packages/daemon, and
-      # daemon-routes.go, which imports the standard library alone, runs on its own with GOWORK=off.
-      # So is the citation check's Go scanner, .github/scripts/ci_citations_code.go, which `go run`
-      # runs alone.
+      # The skill-scenario rig's Go programs belong to no module, so they are formatted here with
+      # the daemon: daemon-pane.go runs with `go run -overlay` inside packages/daemon, and the
+      # others (daemon-routes.go, daemon-completion.go, gh-selectors.go, gh-writes.go) run on their
+      # own with GOWORK=off. So is the citation check's Go scanner,
+      # .github/scripts/ci_citations_code.go, which `go run` runs alone.
       - name: Check the Go daemon's formatting
         run: |
-          unformatted=$(gofmt -l packages/daemon packages/pi-legion/scripts/skill-scenarios/daemon-pane.go packages/pi-legion/scripts/skill-scenarios/daemon-routes.go .github/scripts/ci_citations_code.go)
+          unformatted=$(gofmt -l packages/daemon packages/pi-legion/scripts/skill-scenarios/*.go .github/scripts/ci_citations_code.go)
           if [ -n "$unformatted" ]; then
             echo "::error::gofmt -l lists files that are not gofmt-formatted; run gofmt -w on them:"
             echo "$unformatted"

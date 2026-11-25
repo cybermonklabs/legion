@@ -153,9 +153,9 @@ function quotedAssignment(name: string): string {
 /** What rig.sh's namespace_probe prints and its status, under `env`: the probe every run's start
  * makes (require_namespace), in the same form launch.sh starts the agent in, beside the reader of
  * its caller git's system configuration (system_gitconfig), so a probe that read that file would
- * read it here as rig.sh's does. It runs once as this file loads, before childCwd exists, so it
- * starts through the programs' own spawnChecked, where the file's own (below) would start it in
- * childCwd. */
+ * read it here as rig.sh's does. It runs once as this file loads, before operatorHome is
+ * initialized, so it starts through the programs' own spawnChecked: the file's own (below) reads
+ * operatorHome, which throws a ReferenceError there. */
 function namespaceProbe(env: Record<string, string>) {
   const result = spawnCheckedAnywhere(
     [
@@ -192,24 +192,24 @@ const WORLD_APPS = [
   "world_review_app_id",
 ];
 /**
- * The directory this file's work directory goes in: memoryRoot, so /dev/shm where the machine has
- * a tmpfs there, unless its real path holds a character other than letters, digits and `/._-`, or
- * is in the developer's home, and then /tmp. A plain path, because the model route installers and judge-omp write the path of each
- * key command, and of the key file, into a profile as one plain `!command` word, and refuse any
- * other character in it (install-model-gateway.sh and install-key-file-model-route.sh at `--dest`,
- * rig.sh's judge_keys at the key file): under a TMPDIR with a space or a quote in its name, every
- * row that installs a route failed on that refusal. Not in the developer's home, because childCwd
- * is in this directory (memoryRoot gives TMPDIR where /dev/shm does not suit, and a TMPDIR can be
- * in the home). A tmpfs, because the file's afterAll removes
- * the whole directory under the file's 60 s: on the disk TMPDIR names, that removal of about 1,600
- * entries took 70 to 90 s at a five-minute load of about 2,200, and failed the file with "a
- * beforeEach/afterEach hook timed out" after every row had passed. `need` is twice what this file
- * held there at its largest, at its last row: 147,079 KiB in 39,643 entries (measured 2026-11-25,
- * the whole file on a pod's disk: 366 rows passed, 9 skipped for want of docker, and its removal
- * passed). Main's 32 MiB, sixteen times the 1.8 MiB its own file held, took a pod's /dev/shm of
- * 64 MiB, which this file filled: from the describe "the issue workspace's remote" on, 90 rows
- * failed on `ENOSPC`.
- * Where no tmpfs has that room, the directory is the disk's.
+ * The directory this file's work directory goes in: memoryRoot, so /dev/shm where the machine has a
+ * tmpfs there, unless its real path holds a character other than letters, digits and `/._-`, or is
+ * in the developer's home, and then /tmp. A plain path, because the model route installers and
+ * judge-omp write the path of each key command, and of the key file, into a profile as one plain
+ * `!command` word, and refuse any other character in it (install-model-gateway.sh and
+ * install-key-file-model-route.sh at `--dest`, rig.sh's judge_keys at the key file): under a TMPDIR
+ * with a space or a quote in its name, every row that installs a route failed on that refusal. Not
+ * in the developer's home, because childCwd is in this directory (memoryRoot gives TMPDIR where
+ * /dev/shm does not suit, and a TMPDIR can be in the home). A tmpfs, because the file's afterAll
+ * removes the whole directory under the file's 60 s: on the disk TMPDIR names, that removal of
+ * about 1,600 entries took 70 to 90 s at a five-minute load of about 2,200, and failed the file
+ * with "a beforeEach/afterEach hook timed out" after every row had passed. `need` is twice what
+ * this file held there at its largest, at its last row: 147,079 KiB in 39,643 entries (measured
+ * 2026-11-25, the whole file on a pod's disk: 366 rows passed, 9 skipped for want of docker, and
+ * its removal passed). The earlier 32 MiB, sixteen times the 1.8 MiB the file held then, took a
+ * pod's /dev/shm of 64 MiB, which this file filled: from the describe "the issue workspace's
+ * remote" on, 90 rows failed on `ENOSPC`. Where no tmpfs has that room, the directory is the
+ * disk's.
  */
 const memory = memoryRoot({ need: 2 * 147_079 * 1024 });
 const memoryPath = realpathSync(memory);
@@ -284,10 +284,11 @@ const childEnv = {
 };
 /** `spawnChecked` for this file: a child that gets the test's HOME (`operatorHome`, which every
  * `childEnv` carries) starts in childCwd, outside the developer's home, unless its row names a
- * `cwd` of its own. It is the one place this file names that cwd. A child that gets another
- * HOME, or none, runs under the caller's own (the key command and the libpq probe pass no
- * `childEnv`), where mise reads the caller's config as its global config, so it starts where it
- * is told. */
+ * `cwd` of its own. Every synchronous child of this file that gets that HOME starts through it; the
+ * one asynchronous child that does (`greeting`) names childCwd itself. A child that gets no
+ * environment runs under the caller's own HOME (the key command and the libpq probe, among others),
+ * where mise reads the caller's config as its global config; a row that sets another HOME names its
+ * own `cwd`. */
 function spawnChecked<
   const In extends SpawnOptions.Writable = "ignore",
   const Out extends SpawnOptions.Readable = "pipe",
@@ -295,7 +296,7 @@ function spawnChecked<
 >(cmds: string[], options?: SpawnOptions.SpawnSyncOptions<In, Out, Err>): SyncSubprocess<Out, Err> {
   return spawnCheckedAnywhere(
     cmds,
-    options?.env?.HOME === operatorHome ? { cwd: childCwd, ...options } : options
+    options?.env?.HOME === operatorHome ? { ...options, cwd: options.cwd ?? childCwd } : options
   );
 }
 
@@ -1144,11 +1145,12 @@ function namedRun(runs: string, name: string): string | undefined {
 }
 
 // Catches: a child of this file that starts in the test runner's cwd, or a work directory in the
-// developer's home. Either way the developer's home is above the child's cwd, where a mise shim
-// run under the test's HOME exits 1 (childCwd). Every child that gets the test's HOME starts
-// through spawnChecked, and bash() is one of them, so this row holds each one. CI's PATH holds no
-// mise shim, so services_up's row passes in CI either way. Without childCwd this row fails in CI
-// too, because a runner's checkout is in the runner's home.
+// developer's home. Either way the developer's home is above the child's cwd, where a mise shim run
+// under the test's HOME exits 1 (childCwd). Every child that gets the test's HOME starts in
+// childCwd, unless its row names a cwd of its own: through spawnChecked, and the one asynchronous
+// child (`greeting`) names it itself. The row checks bash(), which starts through spawnChecked.
+// CI's PATH holds no mise shim, so services_up's row passes in CI either way. Without childCwd this
+// row fails in CI too, because a runner's checkout is in the runner's home.
 test("a child of this file starts in childCwd, outside the developer's home", () => {
   const cwd = realpathSync(childCwd);
   expect(bash("pwd -P")).toEqual({ code: 0, stdout: `${cwd}\n`, stderr: "" });
@@ -1857,11 +1859,11 @@ describe("cmd_run and its label's services", () => {
 // Every run's agent starts in a detached tmux session (rig.sh's launch). A pod on an older image
 // carried no tmux, and a tmux binary put there alone could not load libevent_core-2.1.so.7; the
 // current worker image carries tmux (3.5a, read 2026-11-25). A batch met either only mid-run, once
-// its databases and services were up. So a batch and a run
-// check their tmux before they make anything (tmux_ready): `tmux -V`, then one detached session
-// started and killed on a socket of the check's own. Each row puts a `tmux` stand-in of its own
-// first on PATH, or gives a PATH with no tmux on it at all, and holds a refused command's work
-// directory to its state before the command: no database, service or run directory.
+// its databases and services were up. So a batch and a run check their tmux before they make
+// anything (tmux_ready): `tmux -V`, then one detached session started and killed on a socket of the
+// check's own. Each row puts a `tmux` stand-in of its own first on PATH, or gives a PATH with no
+// tmux on it at all, and holds a refused command's work directory to its state before the command:
+// no database, service or run directory.
 describe("tmux_ready, before a batch or a run makes anything", () => {
   /** The end of every refusal of a tmux. */
   const NOTHING = "every run's agent starts in a detached tmux session (launch), so nothing starts";
@@ -2187,9 +2189,11 @@ describe("push_guard", () => {
     expect(readFileSync(path.join(R, "pane.env"), "utf8").split("\n")).toContain(
       `PUBLIC_LEAK_CHECK=${run}`
     );
-    // The hook a pane's git runs refuses a check that is no executable file (`[ ! -x ]`), and a
-    // push whose check is refused fails with LEAK CHECK SETUP ERROR: a reviewer's push was
-    // refused so on 2026-11-25, in a pod whose shared check is 0755 and whose copy here was 0644.
+    // The hook a pane's git runs refuses a check that is no executable file (leakguard's `found`,
+    // packages/daemon/internal/leakguard/check.go: `info.Mode().Perm()&0o111 == 0`, "is no
+    // executable file"), and a push whose check is refused fails with LEAK CHECK SETUP ERROR: a
+    // reviewer's push was refused so on 2026-11-25, in a pod whose shared check is 0755 and whose
+    // wrapper here was 0644.
     expect(lstatSync(run).mode & 0o111).not.toBe(0);
     expect(result.stdout.split("\n")).toContain(`ro ${path.dirname(named)}`);
     writeFileSync(named, '#!/bin/sh\nprintf "%s|%s\\n" "$GIT_EXEC_PATH" "$*"\n');
@@ -9613,7 +9617,7 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
       stderr: "ignore",
     });
   const groupBash = (script: string, args: string[], procRoot: string) => {
-    const result = Bun.spawnSync(ownGroup(["bash", "-c", script, "-", ...args]), {
+    const result = spawnChecked(ownGroup(["bash", "-c", script, "-", ...args]), {
       env: { ...childEnv, proc_root: procRoot },
     });
     return {
@@ -13557,7 +13561,7 @@ describe("nats_ready and the URL helpers", () => {
         "-e",
         'const server = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { open: (socket) => void socket.write(process.env.GREETING ?? ""), data: () => {} } });\nconsole.log(server.port);',
       ],
-      { env: { ...childEnv, GREETING: text }, stdout: "pipe", stderr: "inherit" }
+      { cwd: childCwd, env: { ...childEnv, GREETING: text }, stdout: "pipe", stderr: "inherit" }
     );
     const reader = child.stdout.getReader();
     const { value } = await reader.read();
@@ -14814,7 +14818,7 @@ describe("worker_routes", () => {
       ]);
       expect(routes).toEqual({ code: 0, stdout: "", stderr: "" });
     }
-    const result = Bun.spawnSync(
+    const result = spawnChecked(
       [process.execPath, path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
       { env: { ...childEnv, GH_DATA_DIR: run } }
     );
