@@ -681,6 +681,32 @@ check "so neither the doc nor the read table the pull request changes selects th
 run_generate "$root" CI_FILTERS_BASE="$main_tip"
 check "while main's tip as the base makes app every path" "$(is "$(filter_of app | tr '\n' ' ')" '** ')"
 
+# CI's checkout of the test merge is one commit deep: the merge's parents are named in its commit
+# object, but HEAD^1 does not resolve and the parent is not there until the wrapper fetches it. A
+# read of the parents that goes through git's history (`git show -s --format=%P`, `HEAD^1`) finds
+# none there and makes every filter every path, which the full-history tree above cannot show; so
+# the same tree is read here through a clone of depth 1, as actions/checkout makes it.
+echo "case: a one-commit checkout of the test merge fetches its first parent and measures against it"
+narrowed_merge base-merge-shallow
+git -C "$root" branch -q test-merge "$merge"
+shallow="$work/base-merge-shallow-clone"
+git clone -q --depth=1 --branch test-merge "file://$root" "$shallow"
+check "the checkout is one commit deep: HEAD^1 does not resolve" \
+  "$(is "$(git -C "$shallow" rev-parse -q --verify 'HEAD^1' || echo none)" none)"
+check "and the first parent is not in it" \
+  "$(is "$(git -C "$shallow" cat-file -e "$main_tip^{commit}" 2>/dev/null && echo held || echo absent)" absent)"
+root=$shallow
+: > "$root.github-output"
+run_generate "$root" CI_FILTERS_MERGE="$merge" GITHUB_OUTPUT="$root.github-output"
+check "the wrapper exits 0" "$(is "$status" 0)"
+check "says the tree is the test merge, measured against its first parent" \
+  "$(contains "$out" "^this tree is the test merge $merge, measured against its first parent $main_tip$")"
+check "fetched the first parent" \
+  "$(is "$(git -C "$shallow" cat-file -e "$main_tip^{commit}" 2>/dev/null && echo held || echo absent)" held)"
+check "the paths-filter step reads app as every path" "$(is "$(filter_of app | tr '\n' ' ')" '** ')"
+check "and site, which no difference touches, as computed" "$(is "$(filter_of site | tr '\n' ' ')" 'go.work mod/go.mod docs/** ')"
+check "and writes no every_filter output: nothing fell open" "$(is "$(cat "$root.github-output")" "")"
+
 # The fault both runs of #3771 showed is the loud half of the same cause: the event's base was older
 # than the generate mode, so the base tree could not compute its filters, and every filter was every
 # path on a docs-only change. The stand-in check-ci-filters.sh of the older base refuses `generate`
