@@ -211,8 +211,8 @@ export interface UserTurnRouterOptions {
   /** The Claude Code session itself (`./mod-session`). */
   readonly session: ModSession
   /** The session's Dispatch for one request, with `ms` to answer; undefined when Dispatch is not
-   *  configured, and a throw when its configuration cannot be read. */
-  readonly dispatch: (ms: number) => DispatchClient | undefined
+   *  configured, and a rejection when its configuration cannot be read. */
+  readonly dispatch: (ms: number) => Promise<DispatchClient | undefined>
   /** Answers a delivery on Dispatch: the reply the person reads, or the error that stopped it.
    *  `followUp` is the ask that Dispatch post this answer although the attempt is already
    *  answered, which every answer to a delivery after the first carries (`post`). */

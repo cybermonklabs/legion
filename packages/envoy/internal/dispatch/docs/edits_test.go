@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestApplyOpsEditsLiveDocumentAndSettlesVersion(t *testing.T) {
@@ -234,13 +235,10 @@ func TestCheckTableAnchorRowsRejectsCommentReopenedAfterPrevalidation(t *testing
 	if err := tx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the document owner's lock: %v", err)
 	}
-	select {
-	case err := <-updateDone:
-		if err != nil {
-			t.Fatalf("comment body update: %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("comment body update remained blocked after the edit transaction released the owner's lock")
+	// The update was queued behind the owner's lock this test just released, so the wait ends on
+	// its answer, with the test binary's deadline as its only bound.
+	if err := testwait.Receive(t, "the comment body update the released owner lock let through", updateDone); err != nil {
+		t.Fatalf("comment body update: %v", err)
 	}
 }
 

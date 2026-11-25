@@ -117,7 +117,7 @@ function harness(
   const deps: RecordDeps = {
     env: opts.env ?? { OMP_ASKGATE_RECORD_PROJECT: "INFRA" },
     now: () => NOW,
-    dispatchClient: (directory, signal) => {
+    dispatchClient: async (directory, signal) => {
       asked.push({ directory, signal });
       if (opts.unconfigured) return undefined;
       return { client: opts.client ?? fakeRecord().client };
@@ -601,7 +601,7 @@ describe("the AskGate decision record", () => {
       const recorder = createDecisionRecorder({
         env: { OMP_ASKGATE_RECORD_PROJECT: "INFRA" },
         now: () => NOW,
-        dispatchClient: (_directory, signal, deadlineMs) => {
+        dispatchClient: async (_directory, signal, deadlineMs) => {
           asked.push({ signal, deadlineMs });
           return {
             client: new DispatchClient(

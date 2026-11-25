@@ -10,6 +10,7 @@ import (
 )
 
 func TestValidateRejectsUnknownNodeType(t *testing.T) {
+	t.Parallel()
 	n := &Node{Type: "doc", Children: []*Node{{Type: "callout"}}}
 	if err := n.Validate(); err == nil || !errors.Is(err, ErrSchema) {
 		t.Fatalf("Validate() = %v, want ErrSchema", err)
@@ -24,6 +25,7 @@ func TestValidateRejectsUnknownNodeType(t *testing.T) {
 // attribute, never by its text. A known element in a broken shape is ErrSchema alone, so a reader
 // can tell the two apart.
 func TestValidateTellsAnUnknownElementFromABrokenShape(t *testing.T) {
+	t.Parallel()
 	paragraph := func() *Node {
 		return &Node{Type: "paragraph", Children: []*Node{{Type: "text", Text: "x"}}}
 	}
@@ -110,6 +112,7 @@ func TestAStoredEnumValueThisBuildDoesNotListIsNamedByItsAttribute(t *testing.T)
 // comes first, since the repair of that shape replaces the whole document and would delete the
 // unknown element. A broken shape alone stays ErrSchema alone.
 func TestReadClassifiesAnUnknownYjsElement(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		elements []string
@@ -140,6 +143,7 @@ func TestReadClassifiesAnUnknownYjsElement(t *testing.T) {
 // ErrUnknownElement, as the reader of a stored tree does. A known typed block in a broken shape
 // stays ErrSchema alone.
 func TestParseRenderingClassifiesAnUnknownTypedBlockElement(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		markdown string
@@ -161,6 +165,7 @@ func TestParseRenderingClassifiesAnUnknownTypedBlockElement(t *testing.T) {
 }
 
 func TestEqualIgnoresAttrKeyOrder(t *testing.T) {
+	t.Parallel()
 	a := &Node{Type: "text", Text: "x", Marks: []Mark{{Type: "link", Attrs: Attrs{"href": "h", "title": nil}}}}
 	b := &Node{Type: "text", Text: "x", Marks: []Mark{{Type: "link", Attrs: Attrs{"title": nil, "href": "h"}}}}
 	if !a.Equal(b) {
@@ -171,6 +176,7 @@ func TestEqualIgnoresAttrKeyOrder(t *testing.T) {
 // A run carrying two comments may list them in either order (Y attribute map iteration, the
 // engine's mark set): sorting gives one order, so the two compare equal.
 func TestSortMarksOrdersTwoMarksOfOneType(t *testing.T) {
+	t.Parallel()
 	bob := Mark{Type: "proofComment", Attrs: Attrs{"id": "c1", "by": "user:bob"}}
 	alice := Mark{Type: "proofComment", Attrs: Attrs{"id": "c2", "by": "user:alice"}}
 	strong := Mark{Type: "strong"}
@@ -187,6 +193,7 @@ func TestSortMarksOrdersTwoMarksOfOneType(t *testing.T) {
 }
 
 func TestValidateRejectsInlineAtomAsDocumentChild(t *testing.T) {
+	t.Parallel()
 	n := &Node{Type: "doc", Children: []*Node{{Type: "html", Attrs: Attrs{"value": "<i>"}}}}
 	if err := n.Validate(); err == nil || !errors.Is(err, ErrSchema) {
 		t.Fatalf("Validate() = %v, want ErrSchema", err)
@@ -194,6 +201,7 @@ func TestValidateRejectsInlineAtomAsDocumentChild(t *testing.T) {
 }
 
 func TestValidateRequiresParagraphInTableCell(t *testing.T) {
+	t.Parallel()
 	n := &Node{Type: "doc", Children: []*Node{{
 		Type: "table",
 		Children: []*Node{
@@ -207,6 +215,7 @@ func TestValidateRequiresParagraphInTableCell(t *testing.T) {
 }
 
 func TestJSONRoundTrip(t *testing.T) {
+	t.Parallel()
 	n := &Node{Type: "doc", Children: []*Node{{Type: "heading", Attrs: Attrs{"level": float64(2), "id": ""}, Children: []*Node{{Type: "text", Text: "Hi"}}}}}
 	b, err := n.JSON()
 	if err != nil {

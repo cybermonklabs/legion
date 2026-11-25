@@ -209,7 +209,7 @@ export interface RecordDeps {
     directory: string,
     signal: AbortSignal,
     deadlineMs: number
-  ) => { readonly client: RecordClient } | undefined;
+  ) => Promise<{ readonly client: RecordClient } | undefined>;
 }
 
 /**
@@ -419,7 +419,11 @@ export function createDecisionRecorder(deps: RecordDeps): DecisionRecorder {
     const write = async (): Promise<string | undefined> => {
       // One client for the record's read, create and append, so its deadline bounds all three:
       // the session's next record waits on this one, and a minute is all it waits.
-      const dispatch = deps.dispatchClient(directory, stop.signal, DISPATCH_IN_PROCESS_DEADLINE_MS);
+      const dispatch = await deps.dispatchClient(
+        directory,
+        stop.signal,
+        DISPATCH_IN_PROCESS_DEADLINE_MS
+      );
       if (dispatch === undefined) return "the session has no Dispatch configuration";
       const client = dispatch.client;
       // A bearer caller names its own session or Dispatch refuses the write (ACTOR_KIND, "bearer

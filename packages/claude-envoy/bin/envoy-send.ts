@@ -85,7 +85,7 @@ try {
     CLAUDE_CODE_SESSION_ID: process.env["CLAUDE_CODE_SESSION_ID"],
   })
   const file = sessionConfigFile("command", process.env)
-  const envoy = sessionEnvoySettings(file, process.env, {
+  const envoy = await sessionEnvoySettings(file, process.env, {
     cwd: process.cwd(),
     nats: false,
     ...(session === undefined ? {} : { session }),

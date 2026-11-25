@@ -26,6 +26,7 @@ import {
 } from "@legion/envoy-client/dispatch-http";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { processEnded } from "@legion/test-fixtures/process-end";
 import {
   temporaryDirectories,
   temporaryDirectory,
@@ -288,7 +289,7 @@ function bind(opts: BindOptions = {}): BoundGate {
   const complete = opts.complete ?? (async () => ({ text: ALLOW, usage: USAGE }));
   // The session's Dispatch, which a test that drives a document read or a decision record binds;
   // with none, a document read gives nothing and no decision record is written.
-  const dispatchClient = (directory: string, signal: AbortSignal) => {
+  const dispatchClient = async (directory: string, signal: AbortSignal) => {
     dispatchReads.push({ directory, signal });
     return opts.dispatch?.(directory, signal);
   };
@@ -1572,7 +1573,7 @@ describe("deadline and abandonment", () => {
       started = Promise.withResolvers<void>();
       const gated = g.device(id, "dispatch_comment", COMMENT);
       await started.promise;
-      g.event("tool_execution_end", { toolCallId: id, toolName: "write", isError: true });
+      await g.event("tool_execution_end", { toolCallId: id, toolName: "write", isError: true });
       // Warn mode lets it go, and says it went out unreviewed (the attack review, non-blocking 2).
       const result = await gated;
       expect(result?.block).toBeUndefined();
@@ -1587,7 +1588,7 @@ describe("deadline and abandonment", () => {
     started = Promise.withResolvers<void>();
     const next = g.device("d", "dispatch_comment", COMMENT);
     await started.promise;
-    g.event("tool_execution_end", { toolCallId: "d", toolName: "write", isError: true });
+    await g.event("tool_execution_end", { toolCallId: "d", toolName: "write", isError: true });
     await next;
     expect(signals).toHaveLength(4);
   });
@@ -1609,7 +1610,11 @@ describe("deadline and abandonment", () => {
       COMMENT
     );
     await started.promise;
-    g.event("tool_execution_end", { toolCallId: "toolu_eval", toolName: "eval", isError: true });
+    await g.event("tool_execution_end", {
+      toolCallId: "toolu_eval",
+      toolName: "eval",
+      isError: true,
+    });
     expect(signals[0].aborted).toBe(false);
     return { g, gated, signals };
   }
@@ -1620,7 +1625,7 @@ describe("deadline and abandonment", () => {
 
   test("a run the user stopped abandons every gate still waiting, whichever path dispatched its call", async () => {
     const { g, gated, signals } = await bridgedGate();
-    g.event("agent_end", { messages: [fx.user("Post it."), lastAssistant("aborted")] });
+    await g.event("agent_end", { messages: [fx.user("Post it."), lastAssistant("aborted")] });
     const result = await gated;
     expect(result?.block).toBeUndefined();
     expect(result?.additionalContext).toContain('outcome="abandoned"');
@@ -1637,7 +1642,7 @@ describe("deadline and abandonment", () => {
   test("in block mode a call the user's stop left without a verdict is refused, not let through", async () => {
     // A write an eval cell starts from its own timer: its runner is still live when the stop abandons its gate.
     const { g, gated } = await bridgedGate({ OMP_ASKGATE: "block" });
-    g.event("agent_end", { messages: [fx.user("Post it."), lastAssistant("aborted")] });
+    await g.event("agent_end", { messages: [fx.user("Post it."), lastAssistant("aborted")] });
     const result = await gated;
     expect(result?.block).toBe(true);
     expect(result?.reason).toContain("before a verdict");
@@ -1647,7 +1652,7 @@ describe("deadline and abandonment", () => {
   });
   test("an end the session will continue past leaves the gate waiting", async () => {
     const { g, gated, signals } = await bridgedGate({ OMP_ASKGATE_TIMEOUT_MS: "50" });
-    g.event("agent_end", { messages: [lastAssistant("aborted")], willContinue: true });
+    await g.event("agent_end", { messages: [lastAssistant("aborted")], willContinue: true });
     expect(signals[0].aborted).toBe(false);
     await gated;
     expect(g.entries.map((e) => e.outcome)).toEqual(["timeout"]);
@@ -1655,7 +1660,7 @@ describe("deadline and abandonment", () => {
   test("a run that ends any other way leaves the gate to its verdict or its deadline", async () => {
     // A backgrounded eval cell keeps running past the run's end; abandoning its gate would let its write out unchecked.
     const { g, gated, signals } = await bridgedGate({ OMP_ASKGATE_TIMEOUT_MS: "50" });
-    g.event("agent_end", { messages: [fx.user("Post it."), lastAssistant("stop")] });
+    await g.event("agent_end", { messages: [fx.user("Post it."), lastAssistant("stop")] });
     expect(signals[0].aborted).toBe(false);
     await gated;
     expect(g.entries.map((e) => e.outcome)).toEqual(["timeout"]);
@@ -1887,7 +1892,11 @@ console.log(JSON.stringify(args, null, 2));
     });
     const gated = g.bash("dry-ended", ONE_LINE_ASK);
     const signal = await running.promise;
-    g.event("tool_execution_end", { toolCallId: "dry-ended", toolName: "bash", isError: true });
+    await g.event("tool_execution_end", {
+      toolCallId: "dry-ended",
+      toolName: "bash",
+      isError: true,
+    });
     expect(signal.aborted).toBe(true);
     // Warn mode lets the abandoned call go, saying it went out unreviewed.
     const result = await gated;
@@ -1916,7 +1925,11 @@ console.log(JSON.stringify(args, null, 2));
     expect(g.dryRuns).toHaveLength(1);
     expect(g.calls.filter(isCharter)).toHaveLength(1);
     expect(g.calls.filter(isRules)).toHaveLength(1);
-    g.event("tool_execution_end", { toolCallId: "models-ended", toolName: "bash", isError: true });
+    await g.event("tool_execution_end", {
+      toolCallId: "models-ended",
+      toolName: "bash",
+      isError: true,
+    });
     // Both at once, before either call settles: the one stop the call holds aborts them together.
     expect(signals.map((s) => s.aborted)).toEqual([true, true]);
     const result = await gated;
@@ -3337,6 +3350,66 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     expect(result.timedOut).toBe(true);
     expect(Date.now() - began).toBeLessThan(2_000);
   });
+  test("the runner answers when the script ends, and a helper the script left running goes with it", async () => {
+    const pidFile = path.join(work, "dry-run-helper.pid");
+    // The helper inherits the script's stdout, so a read that waited for the pipe to close would
+    // wait for the helper until the 5 s limit, and answer timed out. It sleeps far past the test's
+    // timeout, so only the kill ends it in time.
+    const result = await core.spawnDryRun(`sleep 600 & echo $! > '${pidFile}'; echo out`, {
+      cwd: work,
+      env: { PATH: process.env.PATH ?? "", HOME: work },
+      timeoutMs: 5_000,
+    });
+    const helper = Number(fs.readFileSync(pidFile, "utf8").trim());
+    try {
+      expect(result).toMatchObject({ exitCode: 0, stdout: "out\n", timedOut: false });
+      // Killed as the script ends, so its end is the event: the per-test timeout is the only bound.
+      await processEnded(helper);
+    } finally {
+      try {
+        process.kill(helper, "SIGKILL");
+      } catch {
+        // Gone, as the test expects.
+      }
+    }
+  });
+  // The gate's process can end while a dry run is under way, by a signal or a crash that runs
+  // nothing as it goes: the script's group, its own process group, must end with it.
+  test("a dry run's group ends with the process that started it, even one killed by SIGKILL", async () => {
+    const pidFile = path.join(work, "dry-run-orphan.pid");
+    const runner = path.join(work, "dry-run-runner.ts");
+    fs.writeFileSync(
+      runner,
+      [
+        `import { spawnDryRun } from ${JSON.stringify(path.join(import.meta.dir, "askgate-core.ts"))};`,
+        `void spawnDryRun(${JSON.stringify(`sleep 600 & echo $! > '${pidFile}'; wait`)}, {`,
+        `  cwd: ${JSON.stringify(work)},`,
+        "  env: { PATH: process.env.PATH ?? '' },",
+        "  timeoutMs: 600_000,",
+        "});",
+        `while (!(await Bun.file(${JSON.stringify(pidFile)}).text().catch(() => "")).trim()) {`,
+        "  await Bun.sleep(10);",
+        "}",
+        'process.kill(process.pid, "SIGKILL");',
+      ].join("\n")
+    );
+    const runs = Bun.spawn([process.execPath, runner], { stderr: "pipe", stdout: "ignore" });
+    await runs.exited;
+    const helper = Number(fs.readFileSync(pidFile, "utf8").trim());
+    try {
+      expect(await new Response(runs.stderr).text()).toBe("");
+      expect(runs.signalCode).toBe("SIGKILL");
+      // The watch ends the group once the kernel has closed the pipe the runner held: its end is
+      // the event, and the per-test timeout is the only bound.
+      await processEnded(helper);
+    } finally {
+      try {
+        process.kill(helper, "SIGKILL");
+      } catch {
+        // Gone, as the test expects.
+      }
+    }
+  }, 30_000);
   test("a subagent's dispatch command is never reviewed or recorded, and gets an argv-only marker", async () => {
     const g = bind({ env: STUB, cwd: work, kind: "sub" });
     expect(await g.bash("b1", ASK)).toBeUndefined();
@@ -4978,7 +5051,7 @@ describe("sessions", () => {
     const g = bind({ env: { OMP_ASKGATE_TIMEOUT_MS: "20" }, complete: untilAborted });
     for (const id of ["a", "b", "c", "d"]) await g.device(id, "dispatch_comment", COMMENT);
     expect(g.entries.map((e) => e.outcome)).toEqual(["timeout", "timeout", "timeout", "halted"]);
-    g.event("session_switch", { reason: "new" });
+    await g.event("session_switch", { reason: "new" });
     await g.device("e", "dispatch_comment", COMMENT);
     expect(g.entries.at(-1)?.outcome).toBe("timeout");
     expect(g.calls).toHaveLength(4);
@@ -4992,7 +5065,7 @@ describe("sessions", () => {
     );
     await g.device("a", "dispatch_comment", { issue: "X-1", body: "one" });
     await g.device("b", "dispatch_comment", { issue: "X-1", body: "two" });
-    g.event("session_branch");
+    await g.event("session_branch");
     await g.device("c", "dispatch_comment", { issue: "X-1", body: "three" });
     await g.device("r1", "dispatch_comment", { issue: "X-2", body: "b" });
     expect(g.entries.map((e) => e.outcome)).toEqual(["verdict", "verdict", "verdict", "verdict"]);
@@ -6903,7 +6976,7 @@ describe("rules check", () => {
   }
   test("both pending calls of a gated ask stop together: at its tool's end, at a stopped run, and at shutdown (rules test 16)", async () => {
     const ended = await bothPending();
-    ended.g.event("tool_execution_end", {
+    await ended.g.event("tool_execution_end", {
       toolCallId: "js-write-00000000-0000-4000-8000-000000000002",
       toolName: "write",
       isError: true,
@@ -6924,7 +6997,7 @@ describe("rules check", () => {
     expect(ended.g.entries).toHaveLength(1);
 
     const stopped = await bothPending({ OMP_ASKGATE: "block" });
-    stopped.g.event("agent_end", {
+    await stopped.g.event("agent_end", {
       messages: [
         fx.user("Post it."),
         { ...fx.assistant({ type: "text", text: "Stopping." }), stopReason: "aborted" },
@@ -7120,7 +7193,7 @@ describe("rules check", () => {
       });
       const gated = g.device("t1", "dispatch_ask", KEEP_INPUT);
       await started.promise;
-      g.event("tool_execution_end", { toolCallId: "t1" });
+      await g.event("tool_execution_end", { toolCallId: "t1" });
       expect((await gated)?.block).toBe(blocked);
       expect(g.entries).toMatchObject([
         {
@@ -7273,7 +7346,7 @@ describe("rules check", () => {
     await g.device("h", "dispatch_ask", KEEP_INPUT);
     expect(g.notices).toEqual([RULES_NOTICE, RULES_NOTICE]);
     // A session switch resets it too: the three failures after the switch raise a third.
-    g.event("session_switch", { reason: "new" });
+    await g.event("session_switch", { reason: "new" });
     for (const id of ["i", "j"]) await g.device(id, "dispatch_ask", KEEP_INPUT);
     expect(g.notices).toHaveLength(2);
     await g.device("k", "dispatch_ask", KEEP_INPUT);

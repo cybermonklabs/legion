@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, setDefaultTimeout, test } from "bun:test"
 import { chmodSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { agentStreamControlSubject, IDEMPOTENCY_KEY_COMMITTED } from "@legion/contracts"
@@ -9,6 +9,7 @@ import {
   DispatchWriteUnsettledError,
 } from "@legion/envoy-client/dispatch-http"
 import { messageFor } from "@legion/envoy-client/errors"
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import type { Subprocess } from "bun"
 import { sessionAdmission } from "../src/channel-connection"
@@ -33,6 +34,10 @@ import {
 import { CODEX_COMMAND_REFUSAL, createCodexUserTurnRouter } from "../src/codex/codex-user-turns"
 import { readUserTurnState, userTurnState, userTurnStateFile } from "../src/user-turn-state"
 import { FakeNats, settled, waitFor } from "./channel-session-harness"
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS)
 
 const directory = temporaryDirectory("codex-session")
 
@@ -565,7 +570,7 @@ describe("the Codex router of a person's messages", () => {
       deliver: async (item) => {
         delivered.push(item)
       },
-      dispatch: () =>
+      dispatch: async () =>
         ({
           acceptMessageDelivery: async (id: string) => {
             if (options.acceptThrows !== undefined) throw options.acceptThrows
