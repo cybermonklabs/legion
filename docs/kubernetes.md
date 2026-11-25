@@ -2691,7 +2691,8 @@ The release before refuses three kinds of `merge_forward` row that this release 
 
 - a hold or a landed row to the planner, since it sends those to the tester, the reviewer and the merger alone (`mergeForwardRoles` in `record/outbox.go`);
 
-- an `ask` row sent again to a role's later launch, which carries the key `sentLaunch` (the launch it was sent at), and `sentBefore` too where the record's ask had been told an earlier launch, and the release before decodes the outbox strictly (`DecodeOutboxPayload`, `DisallowUnknownFields`, in `record/outbox.go`). No row carries `sentBefore` without `sentLaunch` (`validateOutboxPayload`).
+- an `ask` row sent again to a role's later launch, which carries the key `sentLaunch` (the launch it was sent at), and `sentBefore` too where the record's ask had been told an earlier launch, and the release before decodes the outbox strictly (`DecodeOutboxPayload`, `DisallowUnknownFields`, in `record/outbox.go`).
+  No row carries `sentBefore` without `sentLaunch` (`validateOutboxPayload`).
 
 Its decode refuses each one (`DecodeOutboxPayload` and `validateOutboxPayload` in `record/outbox.go`), which is no permanent refusal for that kind (`permanentRefusal` in `internal/daemon/outbox.go`), so it fails the row at every attempt and retries it on its backoff until the roll forward.
 Run this with the daemon stopped, before the earlier image is pinned:
