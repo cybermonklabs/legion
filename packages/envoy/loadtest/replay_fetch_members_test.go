@@ -124,7 +124,7 @@ func TestAnAnchoredDocumentsAnswersNameNoneOfTheirWords(t *testing.T) {
 			case strings.Contains(r.URL.Path, "/versions/"):
 				return []any{}
 			}
-			return map[string]any{"id": "d", "created_at": created, "versions": []map[string]any{{"number": 1, "created_at": created}}}
+			return map[string]any{"id": memberUUID, "created_at": created, "versions": []map[string]any{{"number": 1, "created_at": created}}}
 		}},
 		{"blocks", " blocks: ", true, func(*http.Request) any { return map[string]any{"blocks": "none"} }},
 	} {
@@ -142,7 +142,7 @@ func TestAnAnchoredDocumentsAnswersNameNoneOfTheirWords(t *testing.T) {
 				Comments: []replayComment{{ID: commentID, Anchor: &replayAnchor{ArtifactID: id}}}}}}
 			byID, texts := map[string]listedArtifact{}, map[string]string{}
 			if c.listed {
-				byID[id] = listedArtifact{ID: id, Versions: []listedVersion{{Number: 1}}}
+				byID[id] = listedArtifact{ID: dispatchID(id), Versions: []listedVersion{{Number: 1}}}
 				st.Issues[0].Artifacts = []replayArtifact{{ID: id, Kind: "doc", Version: 1, TextVersion: 1, TextPath: "docs/d.md"}}
 				texts[id] = "A paragraph.\n"
 			}

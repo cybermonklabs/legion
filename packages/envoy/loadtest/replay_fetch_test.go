@@ -361,7 +361,7 @@ func TestStateCountsWrittenDocs(t *testing.T) {
 
 // TestFetchCreatedSpecs fetches version 1 of each window-created issue's spec into created-docs/:
 // by the event's primary_artifact_id, else by the issue's listing, and records the readable ones.
-// Its ids are in Dispatch's shape, as replay-fetch requires (eventInShape, listingInShape), and each
+// Its ids are in Dispatch's shape, as replay-fetch requires (eventInShape, readListing), and each
 // file is named after its id.
 func TestFetchCreatedSpecs(t *testing.T) {
 	const (

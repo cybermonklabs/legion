@@ -35,7 +35,7 @@ import (
 // raw/ beside them is replay-fetch's cache of production responses, never part of the bundle.
 // A bundle carries production text; it never goes in the repository. A file named after a document
 // id or an issue key, in the bundle or in raw/, is named after it as it is: replay-fetch keeps only
-// ids and keys in Dispatch's shape (a lowercase UUID, an issue key; eventInShape, listingInShape,
+// ids and keys in Dispatch's shape (a lowercase UUID, an issue key; eventInShape, readListing,
 // issueNumber), which hold no path separator, no "..", and no more than 36 bytes: a UUID's 36, and
 // an issue key's 21 at most, which its bounded number gives it (issueKeyDigits, shown.go).
 const (

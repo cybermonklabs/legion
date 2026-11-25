@@ -330,13 +330,13 @@ func attachArtifacts(st *replayState, listings map[string][]listedArtifact, crea
 		}
 		listedIDs := map[string]bool{}
 		for _, la := range listings[is.Key] {
-			listedIDs[la.ID] = true
+			listedIDs[string(la.ID)] = true
 			v, ok := versionAt(la.Versions, at)
 			if !ok || !la.CreatedAt.Before(at) {
 				continue
 			}
 			is.Artifacts = append(is.Artifacts, replayArtifact{
-				ID: la.ID, Name: la.Name, Slug: la.Slug, Kind: la.Kind, Primary: la.Primary,
+				ID: string(la.ID), Name: la.Name, Slug: la.Slug, Kind: la.Kind, Primary: la.Primary,
 				CreatedAt: la.CreatedAt, Version: v.Number, Size: v.Size, MIME: v.MIME,
 				VersionSizes: versionSizes(la.Versions, v.Number),
 			})
@@ -426,7 +426,7 @@ func (f *replayFetcher) createdSpecs(ctx context.Context, window []replayEvent) 
 			}
 			for _, la := range listing {
 				if la.Primary {
-					specs[i].ID = la.ID
+					specs[i].ID = string(la.ID)
 					break
 				}
 			}

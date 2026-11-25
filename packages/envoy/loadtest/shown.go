@@ -68,7 +68,7 @@ func isDispatchID(s string) bool { return dispatchIDPattern.MatchString(s) }
 
 // replay-fetch settles the shape of the ids and keys a bundle keeps where it decodes the answer that
 // names them, once: an event or an artifact listing that names an issue, a document, a comment or an
-// ask in any other shape is refused (eventInShape, listingInShape), and the issue listing names only
+// ask in any other shape is refused (eventInShape, readListing), and the issue listing names only
 // the project's issue keys (issueNumber). So every id and key a bundle holds is in Dispatch's shape,
 // and the seed, the plan, the run and the checks, which read them from the bundle, name them as they
 // are, as replay-fetch names a cache or bundle file after them.
@@ -183,12 +183,6 @@ func eventInShape(ev replayEvent) bool {
 		return decode(&p)
 	}
 	return true
-}
-
-// listingInShape says whether an artifact listing names every artifact by an id in Dispatch's shape
-// (isDispatchID).
-func listingInShape(listing []listedArtifact) bool {
-	return !slices.ContainsFunc(listing, func(la listedArtifact) bool { return !isDispatchID(la.ID) })
 }
 
 // replayEventTypes are the event types this package names (the ev constants of replay_bundle.go).
