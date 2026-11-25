@@ -13,7 +13,7 @@ GATE = gate("pi_legion_build", "pi-legion-build", reads=reads(
     (CONTRACTS_SRC, f"{at('pi-legion-build', 'Build contracts for pi-legion')}; tsconfig paths @legion/contracts"),
     (TEST_FIXTURES_SRC, "the typecheck compiles packages/pi-legion's extensions and src tests, which import @legion/test-fixtures"),
     ("packages/dispatch/e2e/**", "`packages/pi-legion/scripts/skill-scenarios/seed.ts#listIssueMessages` imports packages/dispatch/e2e/api.ts (typecheck includes scripts/skill-scenarios/*.ts), and that program holds six of that directory's modules: api.ts, harness-ports.ts, harness-broker.ts, harness-processes.ts, harness-real-broker.ts and harness-signin.ts"),
-    ("packages/dispatch/web/src/api/types.ts", "`packages/dispatch/e2e/api.ts#Actor` and `packages/dispatch/e2e/api.ts#GatedStep` imports it"),
+    ("packages/dispatch/web/src/api/types.ts", "`packages/dispatch/e2e/api.ts#Actor` imports it"),
     ("packages/dispatch/web/src/api/paths.ts", "`packages/dispatch/e2e/api.ts#PathsOf` imports PathsOf, Op, PathParams, QueryParams, RequestBody, Query, Body and Result from it, since that client is keyed on the generated document's path patterns"),
     ("skills/**", f"`scripts/pi-plugin-prepack.sh#stage_skills` stages the plugin's skills, run by {at('pi-legion-build', 'Pack pi-legion')}"),
     ("scripts/pi-plugin-prepack.sh", f"packages/pi-legion/package.json prepack ({at('pi-legion-build', 'Pack pi-legion')})"),

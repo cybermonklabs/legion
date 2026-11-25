@@ -349,9 +349,10 @@ names its file alone, `alone`. The first leg hands Bun that file as
 `./e2e/__tests__/outside-agent-codex.test.ts`: Bun 1.4.4 runs a path that starts with `./` as that
 one file, and reads a bare path as a filter, which runs every file whose path holds it. The second
 runs `e2e/__tests__` with `--path-ignore-patterns=e2e/__tests__/outside-agent-codex.test.ts`, which
-leaves out that one file. Both were measured on Bun 1.4.4 over a planted copy of the lane of
-`a.test.ts`, `outside-agent-codex.test.ts`, `outside-agent-codex-2.test.ts`,
-`outside-agent-codex.test.tsx` and `sub/outside-agent-codex.test.ts`: the bare path ran the `.tsx`
+leaves out that one file. Both were measured on Bun 1.4.4 over a planted copy of the lane that
+holds five files: one named `a.test.ts`; one named `outside-agent-codex.test.ts`; one named
+`outside-agent-codex-2.test.ts`; one named `outside-agent-codex.test.tsx`; and one named
+`sub/outside-agent-codex.test.ts`. The bare path ran the `.tsx`
 file too and the `./` path the one file, and the pattern left out the one file and kept the other
 four, where a pattern written `./e2e/...` left out none. So the two legs run each of the lane's
 files once between them, each file's 20 runs in one Bun run of one leg.

@@ -47,7 +47,7 @@ the tool sends itself with the job's token); and it reads the files the quaranti
 from listings of the embedder job's command and of two-process mode. So it needs the install
 and the contracts build the listings load; it reads no git history, so the checkout stays
 shallow.
-It counts a flake only from a run whose head, the commit the run tested, holds that change, and holds the row's fix too where e2e/quarantine.ts's `fixes` names one.
+It counts a flake only from a run whose head, the commit the run tested, holds that change, and holds the row's fix too where `packages/dispatch/e2e/quarantine.ts#fixes` names one.
 GitHub's compare of each such commit with each head says whether the head holds it.
 A run's time does not say it: a nightly started by hand at a branch head blames the branch's own commits, and a merge group of main created after them holds none of them until the branch lands.
 A compare that cannot tell leaves its run counted, and the summary names the run with the reason.

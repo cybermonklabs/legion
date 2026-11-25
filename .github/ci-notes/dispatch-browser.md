@@ -1721,7 +1721,7 @@ that failed and passed on its retry, which only the report of the whole run hold
 
 A row is named `<file>:<line> [<project>] <title>`, and the title is the row's full one:
 its `describe` titles first, each followed by ` › `, as a listing names a row
-(packages/dispatch/e2e/configurations.ts, `rowsOfListing`). The spec's own title alone
+(`packages/dispatch/e2e/configurations.ts#rowsOfListing`). The spec's own title alone
 would read two rows of one file as one where two blocks hold a row of the same title, and
 this line is what the quarantine names a row by (packages/dispatch/e2e/quarantine.ts) and
 what the nightly's quarantine check counts (e2e/tools/quarantine-check.ts). The walk keeps
@@ -1754,7 +1754,7 @@ not a run at all. A retried row contributes each attempt it passed, which is one
 
 Each class's 95th percentile is read against the bar one row is held to, which is R2's
 p95 target for the lane (dispatch://INFRA-983, decisions item 25): the 2,000 ms of
-`slowRowMs` in packages/dispatch/e2e/tools/check-slow-rows.ts, which this step's script
+`packages/dispatch/e2e/tools/check-slow-rows.ts#slowRowMs`, which this step's script
 (.github/scripts/dispatch-browser-reading-row-durations.sh) asks rather than writing the
 figure a second time (`--p95`, whose exit 1 is a figure at or above the bar). It is a target
 and gates nothing: the comparison goes into the table and the notice, a figure over the bar

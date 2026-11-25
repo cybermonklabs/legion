@@ -84,8 +84,9 @@ jobs:
   # packages/dispatch/e2e/tools/shard-weights.ts reads the merged report of both, by the artifact
   # name `dispatch-browser-report-1`.
   #
-  # `quarantine: true` is this call's alone: the quarantined rows run in dispatch-browser.yaml's
-  # `quarantine` job, which gates nothing, so their owner sees on main's tip whether a fix worked.
+  # `quarantine: true` is this call's alone: the quarantined rows run in the
+  # `.github/workflows/dispatch-browser.yaml#quarantine` job, which gates nothing, so their owner
+  # sees on main's tip whether a fix worked.
   dispatch-browser:
     permissions:
       contents: read
