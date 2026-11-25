@@ -16,10 +16,10 @@ import {
   messageMetadataShape,
   parseEnvoyToolArguments,
   publishConfirmationText,
-  sendConfirmationText,
-  sessionsOnMachine,
   STORED_DELIVERY,
   STORED_TOPIC_KINDS,
+  sendConfirmationText,
+  sessionsOnMachine,
   toMessageMetadata,
 } from "../tool-contract";
 import { ToolInputError } from "../tool-input-errors";
