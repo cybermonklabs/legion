@@ -5646,6 +5646,9 @@ The roles of an issue share one scratch, the state homes under its `state` direc
 — the four the issue's roles share, plus the shared Go pair
 — before Oh My Pi starts (`podsafety.EnsureScratch`), since a role told a temporary directory nothing created cannot run;
 `podsafety.EnsureStateHome` makes Oh My Pi's profile directory under the state home.
+The volume's directories carry the set-group-ID bit, which the kubelet sets with the pod's `fsGroup`, and Linux gives that bit to every directory made under one:
+so the shim clears it on `TMPDIR`, one it makes and one it finds on a retained volume, and a directory a role's tool makes `0700` in its temporary directory is exactly `0700`.
+It changes nothing else: not `TMPDIR`'s access bits, owner or group, not its parent, and not the other directories of the scratch.
 What puts them off the container's own filesystem is the ephemeral-storage bound:
 on GKE Autopilot an issue pod is admitted with at most 10Gi for all six roles together (Warden caps a pod's main containers' summed ephemeral-storage requests at 10Gi and clamps each container's limit to its request;
 [Issue sizing](#issue-sizing-one-reservation-per-pod)), while ordinary work measurably needs more:
