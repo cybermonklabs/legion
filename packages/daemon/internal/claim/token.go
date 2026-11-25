@@ -117,3 +117,24 @@ func (t Token) Role() (role Role, ok bool) {
 	}
 	return "", false
 }
+
+// Shaped says whether t is in a shape the daemon makes a token in: NewToken's
+// `legion-<project>-<issue project, lowercased>-<number>-<role>` or ControllerToken's
+// `legion-<project>-controller`, its project a project token. A token of either shape holds
+// lowercase letters, digits and dashes alone, so a reader that prints only a shaped token of
+// another party's answer prints no credential.
+func (t Token) Shaped() bool {
+	role, ok := t.Role()
+	switch {
+	case !ok:
+		return false
+	case role == RoleController:
+		// Role reads the controller's token whole: `legion-`, a project token, `-controller`.
+		return true
+	}
+	issue, _, _ := t.Cut()
+	rest, prefixed := strings.CutPrefix(issue, "legion-")
+	project, key, cut := strings.Cut(rest, "-")
+	return prefixed && cut && projectToken.MatchString(project) &&
+		strings.ToLower(key) == key && issueKey.MatchString(strings.ToUpper(key))
+}

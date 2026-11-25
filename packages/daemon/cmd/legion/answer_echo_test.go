@@ -240,8 +240,8 @@ func claimsEcho(t *testing.T, list func(bearer string) string, retried string) *
 // names the member of its own type and never the answer's, and a token or a state prints only in
 // the shape the daemon makes one (claimWord, stateWord). A failed claim's token is also the path
 // its retry asks, which the line of a retry answered with a body that does not read prints: a
-// token without a claim token's shape is not asked for (claimShaped), and a token in that shape
-// still is, the line naming its path.
+// token in no shape the daemon makes one in is not asked for (legionclaim.Token.Shaped), and a
+// token in such a shape still is, the line naming its path.
 func TestAClaimsAnswerPrintsNoBearerItEchoes(t *testing.T) {
 	tokenFile := writeFile(t, "operator-token", echoProbe+"\n")
 	answered := func(t *testing.T, list func(bearer string) string, retried string, args ...string) string {

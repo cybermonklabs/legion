@@ -500,27 +500,30 @@ func probeAndMint(ctx context.Context, daemonURL string, probe daemon.Controller
 // (absent or null, a shape no conforming daemon serves) and a `live` entry whose `repo` is not
 // `owner/name`, each named by its member and never by its value, which is the daemon's word.
 func checkControllerRepositories(ctx context.Context, daemonURL string) error {
+	const route = "/legion/v1/state"
 	timed, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-	answered, err := operator{base: daemonURL}.do(timed, http.MethodGet, "/legion/v1/state", nil)
+	daemon := operator{base: daemonURL}
+	answered, err := daemon.do(timed, http.MethodGet, route, nil)
 	if err != nil {
 		return fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", daemonURL, err)
 	}
+	asked := daemon.shown(route)
 	if status := answered.Status(); status/100 != 2 {
-		return fmt.Errorf("%s/legion/v1/state: the daemon answered %d: %s", daemonURL, status, strings.TrimSpace(answered.Words().String()))
+		return fmt.Errorf("%s: the daemon answered %d: %s", asked, status, strings.TrimSpace(answered.Words().String()))
 	}
 	var state struct {
 		Repositories *api.RepositoriesView `json:"repositories"`
 	}
 	if err := answered.Decode(&state); err != nil {
-		return fmt.Errorf("%s/legion/v1/state answered with a body that is not a JSON object naming repositories: %w", daemonURL, err)
+		return fmt.Errorf("%s answered with a body that is not a JSON object naming repositories: %w", asked, err)
 	}
 	if state.Repositories == nil {
-		return fmt.Errorf("%s/legion/v1/state's body names no repositories field (null or absent): not a shape a conforming daemon ever serves", daemonURL)
+		return fmt.Errorf("%s's body names no repositories field (null or absent): not a shape a conforming daemon ever serves", asked)
 	}
 	for i, live := range state.Repositories.Live {
 		if _, err := ghrepo.Parse("repositories.live", live.Repo); err != nil {
-			return fmt.Errorf("%s/legion/v1/state names an invalid live repository (repositories.live[%d].repo): not owner/name as GitHub names one", daemonURL, i)
+			return fmt.Errorf("%s names an invalid live repository (repositories.live[%d].repo): not owner/name as GitHub names one", asked, i)
 		}
 	}
 	return nil
@@ -565,37 +568,39 @@ func removeDirs(created []string) {
 // deployment that gates no step, which the daemon answers as `[]`.
 func fetchControllerSecret(ctx context.Context, daemonURL, operatorToken string, contract int) (string, []record.DesignStep, error) {
 	const route = "/legion/v1/controller/secret"
-	answered, err := operator{base: daemonURL, bearer: operatorToken}.do(ctx, http.MethodPost, route, api.ControllerSecretRequest{PluginContract: contract})
+	daemon := operator{base: daemonURL, bearer: operatorToken}
+	answered, err := daemon.do(ctx, http.MethodPost, route, api.ControllerSecretRequest{PluginContract: contract})
 	if err != nil {
 		return "", nil, fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", daemonURL, err)
 	}
+	asked := daemon.shown(route)
 	if status := answered.Status(); status/100 != 2 {
 		// Which refusal it is, is decided on the daemon's sentence as it came (Answer.Decode),
 		// and the refusal prints as the rule reads it (refusal).
 		var refused legionclaim.Refusal
 		if status == http.StatusBadRequest && answered.Decode(&refused) == nil &&
 			strings.Contains(refused.Message, `unknown field "pluginContract"`) {
-			return "", nil, fmt.Errorf("%s%s: the daemon speaks a daemon API contract older than 12, and this legion speaks %d; upgrade the daemon to this legion's release, or start the controller with the legion built with that daemon", daemonURL, route, contract)
+			return "", nil, fmt.Errorf("%s: the daemon speaks a daemon API contract older than 12, and this legion speaks %d; upgrade the daemon to this legion's release, or start the controller with the legion built with that daemon", asked, contract)
 		}
 		hint := ""
 		if status == http.StatusForbidden {
 			hint = " — the operator token does not match the daemon's operator_token_file"
 		}
-		return "", nil, fmt.Errorf("%s%s: %s%s", daemonURL, route, refusal(answered), hint)
+		return "", nil, fmt.Errorf("%s: %s%s", asked, refusal(answered), hint)
 	}
 	var answer api.ControllerSecretResponse
 	if err := answered.Decode(&answer); err != nil {
-		return "", nil, fmt.Errorf("%s%s answered with a body that is not JSON", daemonURL, route)
+		return "", nil, fmt.Errorf("%s answered with a body that is not JSON", asked)
 	}
 	if answer.Secret == "" {
-		return "", nil, fmt.Errorf("%s%s answered with no secret", daemonURL, route)
+		return "", nil, fmt.Errorf("%s answered with no secret", asked)
 	}
 	if answer.DesignGateSteps == nil {
-		return "", nil, fmt.Errorf("%s%s answered no design gate steps (designGateSteps); upgrade the daemon to this legion's release", daemonURL, route)
+		return "", nil, fmt.Errorf("%s answered no design gate steps (designGateSteps); upgrade the daemon to this legion's release", asked)
 	}
 	for i, step := range answer.DesignGateSteps {
 		if !step.Valid() {
-			return "", nil, fmt.Errorf("%s%s answered a design gate step (designGateSteps[%d]) that is not %s; upgrade the daemon to this legion's release", daemonURL, route, i, record.StepWords())
+			return "", nil, fmt.Errorf("%s answered a design gate step (designGateSteps[%d]) that is not %s; upgrade the daemon to this legion's release", asked, i, record.StepWords())
 		}
 	}
 	return answer.Secret, answer.DesignGateSteps, nil

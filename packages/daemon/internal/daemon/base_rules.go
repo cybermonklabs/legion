@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"slices"
 
@@ -68,22 +69,60 @@ type protectionChecks struct {
 }
 
 // githubText is a string member of GitHub's answer the daemon both decides on and prints - a
-// status check context, a pull request's base branch - read twice: Name as it came, which the
+// status check context, a pull request's base branch - read twice: as it came (Name), which the
 // daemon keeps and decides on (record.BaseRules.Required, the base the rules read asks for), and
 // Said, GitHub's words, which the answer's Decode holds with the read's record
 // (oauth2call.Answer.Decode), so a line that names the member prints it as the rule reads it.
+//
+// The member as it came is held behind a pointer, as RemoteText holds its own, so no printer
+// prints it: every printer that calls the type's methods prints shownBase (String, Format,
+// LogValue), and one that reads its fields - fmt calls no method of a value it reaches through an
+// unexported field - prints the pointer's address.
 type githubText struct {
-	Name string
+	name *string
 	Said oauth2call.RemoteText
+}
+
+// newGitHubText is name, a member of GitHub's answer as it came, beside said, GitHub's words for
+// it.
+func newGitHubText(name string, said oauth2call.RemoteText) githubText {
+	return githubText{name: &name, Said: said}
+}
+
+// recordedText is name, which the daemon's own record holds and GitHub did not write, as a
+// githubText: it has no Said, and a line names it as it is (shownBase).
+func recordedText(name string) githubText { return githubText{name: &name} }
+
+// Name is the member as it came, for the daemon to decide on and keep, and never for a line to
+// print (shownBase).
+func (t githubText) Name() string {
+	if t.name == nil {
+		return ""
+	}
+	return *t.name
 }
 
 // UnmarshalJSON reads data, a JSON string, as the member as it came and as GitHub's words.
 func (t *githubText) UnmarshalJSON(data []byte) error {
-	if err := json.Unmarshal(data, &t.Name); err != nil {
+	var name string
+	if err := json.Unmarshal(data, &name); err != nil {
 		return err
 	}
+	t.name = &name
 	return json.Unmarshal(data, &t.Said)
 }
+
+// String is the member as a line names it (shownBase).
+func (t githubText) String() string { return shownBase(t) }
+
+// Format prints String under the verb, flags, width and precision it is given, as fmt prints that
+// string, so no verb prints the member as it came.
+func (t githubText) Format(f fmt.State, verb rune) {
+	fmt.Fprintf(f, fmt.FormatString(f, verb), t.String())
+}
+
+// LogValue is String, so a structured log field names the member as a line does.
+func (t githubText) LogValue() slog.Value { return slog.StringValue(t.String()) }
 
 // readBaseRules reads the rules base, the base branch of pr, holds for its required status checks
 // (record.BaseRules), with github, the implement App's client of pr's repository that the read of
@@ -127,7 +166,7 @@ func (w *workflowRuntime) readBaseRules(ctx context.Context, github githubrest.C
 // baseRules is readBaseRules' two reads and what they come to, without its log line, with each
 // required context as GitHub's words (said), in the order of Required.
 func baseRules(ctx context.Context, github githubrest.Client, base githubText) (rules record.BaseRules, said []oauth2call.RemoteText) {
-	path, shown := ghbranch.RefPath(base.Name), shownBase(base)
+	path, shown := ghbranch.RefPath(base.Name()), shownBase(base)
 	read, cancel := context.WithTimeout(ctx, issueRead)
 	rulesets, err := githubrest.GetPages[githubBranchRule](read, github, "/rules/branches/"+path, "/rules/branches/"+shown)
 	cancel()
@@ -137,9 +176,10 @@ func baseRules(ctx context.Context, github githubrest.Client, base githubText) (
 	words := map[string]oauth2call.RemoteText{}
 	var required []string
 	add := func(named githubText) {
-		required = append(required, named.Name)
-		if _, seen := words[named.Name]; !seen {
-			words[named.Name] = named.Said
+		name := named.Name()
+		required = append(required, name)
+		if _, seen := words[name]; !seen {
+			words[name] = named.Said
 		}
 	}
 	strict := false
@@ -180,7 +220,7 @@ func baseRules(ctx context.Context, github githubrest.Client, base githubText) (
 // (applyMergeability), which has no Said.
 func shownBase(base githubText) string {
 	if base.Said.IsEmpty() {
-		return base.Name
+		return base.Name()
 	}
 	return base.Said.String()
 }

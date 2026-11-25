@@ -33,11 +33,11 @@ var controllerGitHubRefreshInterval = time.Minute
 // controllerCredentialFailure is a non-2xx answer to POST
 // /legion/v1/controller/github-credential whose body parsed as an api.Failure: its code lets the
 // caller tell a daemon that has nothing for the controller's gh to act as — no GitHub App
-// (GITHUB_TOKEN_SOURCE_UNAVAILABLE), or a review App installed on no account
-// (GITHUB_OWNER_UNCONFIGURED) — apart from a capability a later start replaced
-// (INVALID_CONTROLLER_CAPABILITY) or a daemon that launches its own controller
-// (CONTROLLER_LAUNCHED), without parsing the sentence itself. The code is one of those four
-// (controllerCredentialCodes), matched with the daemon's code as it came, and "" for any other.
+// (codeNoGitHubApp), or a review App installed on no account (codeNoGitHubOwner) — apart from a
+// capability a later start replaced (codeCapabilityReplaced) or a daemon that launches its own
+// controller (codeControllerLaunched), without parsing the sentence itself. The code is one of
+// those four (controllerCredentialCodes), matched with the daemon's code as it came, and "" for any
+// other.
 type controllerCredentialFailure struct {
 	code    string
 	message string
@@ -45,18 +45,26 @@ type controllerCredentialFailure struct {
 
 func (f *controllerCredentialFailure) Error() string { return f.message }
 
-// controllerCredentialCodes are the codes of the daemon's credential refusals this command
-// decides on (controllerStartGitHubCredential, controllerCredentialSuperseded).
-var controllerCredentialCodes = []string{"GITHUB_TOKEN_SOURCE_UNAVAILABLE", "GITHUB_OWNER_UNCONFIGURED", "INVALID_CONTROLLER_CAPABILITY", "CONTROLLER_LAUNCHED"}
+// The codes of the daemon's credential refusals this command decides on
+// (controllerStartGitHubCredential, controllerCredentialSuperseded), as the daemon writes them.
+const (
+	codeNoGitHubApp        = "GITHUB_TOKEN_SOURCE_UNAVAILABLE"
+	codeNoGitHubOwner      = "GITHUB_OWNER_UNCONFIGURED"
+	codeCapabilityReplaced = "INVALID_CONTROLLER_CAPABILITY"
+	codeControllerLaunched = "CONTROLLER_LAUNCHED"
+)
+
+// controllerCredentialCodes are those codes, the closed set a refusal's code is matched against.
+var controllerCredentialCodes = []string{codeNoGitHubApp, codeNoGitHubOwner, codeCapabilityReplaced, codeControllerLaunched}
 
 // controllerCredentialSuperseded says whether err is a controllerCredentialFailure that ends the
 // refresh loop rather than retries it: the capability a later `legion controller start` replaced
-// (INVALID_CONTROLLER_CAPABILITY), or a daemon that now launches its own controller
-// (CONTROLLER_LAUNCHED). Either means this process is no longer the daemon's controller, so its gh
-// files are left to last until their token's expiry — last start wins.
+// (codeCapabilityReplaced), or a daemon that now launches its own controller
+// (codeControllerLaunched). Either means this process is no longer the daemon's controller, so its
+// gh files are left to last until their token's expiry — last start wins.
 func controllerCredentialSuperseded(err error) bool {
 	var failure *controllerCredentialFailure
-	return errors.As(err, &failure) && (failure.code == "INVALID_CONTROLLER_CAPABILITY" || failure.code == "CONTROLLER_LAUNCHED")
+	return errors.As(err, &failure) && (failure.code == codeCapabilityReplaced || failure.code == codeControllerLaunched)
 }
 
 // fetchControllerCredential is `legion controller start`'s refresh call, POST
@@ -82,10 +90,12 @@ func controllerCredentialSuperseded(err error) bool {
 // (api.Failure), quoting its sentence through refusal otherwise.
 func fetchControllerCredential(ctx context.Context, daemonURL, secret, defaultOwner string) (bundle ghconfig.Bundle, installed []string, err error) {
 	const route = "/legion/v1/controller/github-credential"
-	answered, err := operator{base: daemonURL}.do(ctx, http.MethodPost, route, api.ControllerCredentialRequest{Secret: secret, Default: defaultOwner})
+	daemon := operator{base: daemonURL}
+	answered, err := daemon.do(ctx, http.MethodPost, route, api.ControllerCredentialRequest{Secret: secret, Default: defaultOwner})
 	if err != nil {
 		return ghconfig.Bundle{}, nil, fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", daemonURL, err)
 	}
+	asked := daemon.shown(route)
 	if answered.Status()/100 != 2 {
 		// Which refusal it is, is decided on the daemon's code as it came (RemoteText.Equal), and
 		// never on the rule's reading of it (SendBack), which is "" where a value the request
@@ -99,21 +109,21 @@ func fetchControllerCredential(ctx context.Context, daemonURL, secret, defaultOw
 			}
 			return ghconfig.Bundle{}, nil, &controllerCredentialFailure{
 				code:    code,
-				message: fmt.Sprintf("%s%s: %s", daemonURL, route, failure.Error),
+				message: fmt.Sprintf("%s: %s", asked, failure.Error),
 			}
 		}
-		return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s: %s", daemonURL, route, refusal(answered))
+		return ghconfig.Bundle{}, nil, fmt.Errorf("%s: %s", asked, refusal(answered))
 	}
 	var answer api.ControllerCredentialResponse
 	if err := answered.Decode(&answer); err != nil {
-		return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s answered with a body that is not JSON", daemonURL, route)
+		return ghconfig.Bundle{}, nil, fmt.Errorf("%s answered with a body that is not JSON", asked)
 	}
 	if !slices.Contains(appauth.Roles, appauth.AppRole(answer.App)) {
-		return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s answered an App (app) that is none of the App roles this legion knows, %s and %s", daemonURL, route, appauth.Implement, appauth.Review)
+		return ghconfig.Bundle{}, nil, fmt.Errorf("%s answered an App (app) that is none of the App roles this legion knows, %s and %s", asked, appauth.Implement, appauth.Review)
 	}
 	expiresAt, err := time.Parse(time.RFC3339Nano, answer.ExpiresAt)
 	if err != nil {
-		return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s answered an expiry (expiresAt) that is not RFC 3339", daemonURL, route)
+		return ghconfig.Bundle{}, nil, fmt.Errorf("%s answered an expiry (expiresAt) that is not RFC 3339", asked)
 	}
 	bundle = ghconfig.Bundle{Default: answer.Default, Dirs: make(map[string]ghconfig.Rendered, len(answer.Owners))}
 	for owner, files := range answer.Owners {
@@ -122,16 +132,16 @@ func fetchControllerCredential(ctx context.Context, daemonURL, secret, defaultOw
 	for i, pair := range answer.Renames {
 		from, err := ghrepo.Parse("the repository a rename moved", pair.From)
 		if err != nil {
-			return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s answered a rename whose from (renames[%d].from) names no repository GitHub could hold", daemonURL, route, i)
+			return ghconfig.Bundle{}, nil, fmt.Errorf("%s answered a rename whose from (renames[%d].from) names no repository GitHub could hold", asked, i)
 		}
 		to, err := ghrepo.Parse("the repository a rename moved it to", pair.To)
 		if err != nil {
-			return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s answered a rename whose to (renames[%d].to) names no repository GitHub could hold", daemonURL, route, i)
+			return ghconfig.Bundle{}, nil, fmt.Errorf("%s answered a rename whose to (renames[%d].to) names no repository GitHub could hold", asked, i)
 		}
 		bundle.Pairs = append(bundle.Pairs, ghrepo.Rename{From: from, To: to})
 	}
 	if bundle.Validate() != nil {
-		return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s answered a credential that is no gh bundle: its default and each of its owners (default, owners) must be a lowercased GitHub login, and its default one of its owners", daemonURL, route)
+		return ghconfig.Bundle{}, nil, fmt.Errorf("%s answered a credential that is no gh bundle: its default and each of its owners (default, owners) must be a lowercased GitHub login, and its default one of its owners", asked)
 	}
 	return bundle, answer.Installed, nil
 }
@@ -176,8 +186,8 @@ func controllerReach(installed []string, bundle ghconfig.Bundle) []string {
 // everything an earlier run left in the gh directory, leaving it empty 0700, no loop running, no
 // default and no owner, so a token an earlier run minted against a daemon that had an App never
 // outlives a start that says gh acts as nobody, and prints the line of the daemon's code, each of
-// which says why: a daemon with no GitHub App (GITHUB_TOKEN_SOURCE_UNAVAILABLE), or one whose
-// review App is installed on no account (GITHUB_OWNER_UNCONFIGURED), where the App exists and a
+// which says why: a daemon with no GitHub App (codeNoGitHubApp), or one whose review App is
+// installed on no account (codeNoGitHubOwner), where the App exists and a
 // line saying the daemon has none would be false; any other failure is this function's error,
 // which controllerStart treats as every other post-mint failure (exit 1, Oh My Pi never started,
 // the secret file left as it is). It answers a function that stops the loop — a no-op when none
@@ -193,9 +203,9 @@ func controllerStartGitHubCredential(ctx context.Context, daemonURL, secret, sta
 		}
 		var line string
 		switch failure.code {
-		case "GITHUB_TOKEN_SOURCE_UNAVAILABLE":
+		case codeNoGitHubApp:
 			line = "[legion] the daemon has no GitHub App to act as; the controller's gh acts as nobody"
-		case "GITHUB_OWNER_UNCONFIGURED":
+		case codeNoGitHubOwner:
 			line = "[legion] the review App is installed on no account, so the controller has no GitHub owner; the controller's gh acts as nobody"
 		default:
 			return noop, "", nil, err

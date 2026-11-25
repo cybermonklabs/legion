@@ -36,7 +36,7 @@ func TestTheBaseRulesLineNamesGitHubsContextsAsTheRuleReadsThem(t *testing.T) {
 	w := &workflowRuntime{log: slog.New(slog.NewJSONHandler(&logs, nil))}
 	github := githubrest.Client{Token: echoedToken, API: githubrest.RepositoryAPI(server.URL, ghrepo.MustParse("acme/widgets"))}
 
-	rules := w.readBaseRules(context.Background(), github, record.PullRequest{Repo: "acme/widgets", Number: 86}, githubText{Name: "main", Said: oauth2calltest.Said("main")})
+	rules := w.readBaseRules(context.Background(), github, record.PullRequest{Repo: "acme/widgets", Number: 86}, newGitHubText("main", oauth2calltest.Said("main")))
 
 	// Control: the rules keep each context as it came, the echoed ones among them, so the line's
 	// contexts are the ones R0 decides on.

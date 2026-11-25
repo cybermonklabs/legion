@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -18,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/redirects"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/urljoin"
 )
 
 // operatorCall is one command that reaches the daemon over the operator's bearer — each `legion
@@ -145,7 +148,7 @@ func (c *operatorCall) request(ctx context.Context, op operator, method, path st
 	if err != nil {
 		if bounded.Err() != nil && ctx.Err() == nil {
 			fmt.Fprintf(c.stderr, "%s: %s %s was not answered within the --wait bound of %s; the daemon goes on with it under its own deadlines. Read `legion claims list` to see where the claim stood, and ask again\n",
-				c.name(), method, op.base+path, *c.wait)
+				c.name(), method, op.shown(path), *c.wait)
 			return 0, nil, false
 		}
 		fmt.Fprintf(c.stderr, "%s: %v\n", c.name(), err)
@@ -163,7 +166,7 @@ func (c *operatorCall) request(ctx context.Context, op operator, method, path st
 // printAnswer hands a 2xx answer path served to print; one it cannot read fails the command.
 func (c *operatorCall) printAnswer(op operator, path string, answer []byte, print func(io.Writer, []byte) error) int {
 	if err := print(c.stdout, answer); err != nil {
-		fmt.Fprintf(c.stderr, "%s: read the answer %s%s served: %v\n", c.name(), op.base, path, err)
+		fmt.Fprintf(c.stderr, "%s: read the answer %s served: %v\n", c.name(), op.shown(path), err)
 		return 1
 	}
 	return 0
@@ -176,20 +179,59 @@ type operator struct {
 	bearer string
 }
 
+// errDaemonURL refuses a request of a daemon whose API root does not parse as an absolute URL with
+// a host (urljoin.ErrBase). url.Parse's error, which http.NewRequest's carries, quotes the URL
+// whole, its user information and query included, so the refusal names the URL by what it is.
+var errDaemonURL = errors.New("the daemon's URL is not an absolute URL with a host (it is not printed)")
+
+// urlOf is the URL a request of route asks: route joined onto the API root's path, the root's query
+// kept ahead of route's own, its user information, host and port kept and its fragment, which no
+// request sends, dropped (urljoin.Join). route appended to the root's text would sit inside the
+// root's query or fragment, and the daemon would be asked another path. A root that does not parse
+// is errDaemonURL; route is the CLI's own, a fixed route whose elements url.PathEscape wrote, which
+// Join never refuses.
+func (op operator) urlOf(route string) (*url.URL, error) {
+	asked, err := urljoin.Join(op.base, route)
+	if err != nil {
+		return nil, errDaemonURL
+	}
+	return asked, nil
+}
+
+// shown is the URL a request of route asks (urlOf) as a line names it: through the URL rule
+// (redact.URLCredentials), which removes its user information and its query, where the root can
+// carry a credential — as do names it in the error of an answer it could not read, and
+// oauth2call.Unanswered in the error of a request that got none. A root that does not parse is
+// named by what it is.
+func (op operator) shown(route string) string {
+	asked, err := op.urlOf(route)
+	if err != nil {
+		return "the daemon's URL (it does not parse, and is not printed)"
+	}
+	return redact.URLCredentials(asked.String())
+}
+
 // daemonClient is the client every request of the CLI to a daemon's API is made on (do, get):
 // http.DefaultClient's, following no redirect (redirects.Refused). An operator request carries the
 // operator bearer, which a followed redirect would hand the host the Location names, and the
 // daemon answers none: a 3xx is its answer, refused by its status.
 var daemonClient = redirects.Refused(http.DefaultClient)
 
-// do is one request to the daemon: body as JSON when it is not nil, the bearer as its
-// Authorization when op carries one. It answers the daemon's answer, read through
-// oauth2call.ReadAnswer with the record of the request, so a refusal prints with the bearer and any
-// credential the request carried redacted (Answer.Words, refusal), and a caller decodes what it
-// decides on as it came (Answer.Decode). Only a request that got no answer, or whose answer could
-// not be read, is an error: the former names its failure and the URL it asked through
-// oauth2call.Unanswered, the latter the URL through the URL rule.
+// do is one request to the daemon, at route joined onto its API root (urlOf): body as JSON when it
+// is not nil, the bearer as its Authorization when op carries one. It answers the daemon's answer,
+// read through oauth2call.ReadAnswer with the record of the request, so a refusal prints with the
+// bearer and any credential the request carried redacted (Answer.Words, refusal), and a caller
+// decodes what it decides on as it came (Answer.Decode). Only a request that was not made, got no
+// answer, or whose answer could not be read, is an error: an API root that does not parse is
+// errDaemonURL, a joined URL url.Parse refuses again (url.URL.String can write text it refuses,
+// such as an IPv6 zone escape) and a request that got no answer name their failure and the URL
+// through oauth2call.Unanswered, and an answer that could not be read names the URL through the
+// URL rule.
 func (op operator) do(ctx context.Context, method, path string, body any) (oauth2call.Answer, error) {
+	asked, err := op.urlOf(path)
+	if err != nil {
+		return oauth2call.Answer{}, err
+	}
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -198,7 +240,7 @@ func (op operator) do(ctx context.Context, method, path string, body any) (oauth
 		}
 		reader = bytes.NewReader(encoded)
 	}
-	request, err := http.NewRequestWithContext(ctx, method, op.base+path, reader)
+	request, err := http.NewRequestWithContext(ctx, method, asked.String(), reader)
 	if err != nil {
 		return oauth2call.Answer{}, oauth2call.Unanswered(err, nil, "")
 	}
@@ -234,10 +276,10 @@ func daemonAddress(configPath string, port int) (string, error) {
 	return "http://" + address, nil
 }
 
-// daemonURL is the API root LEGION_DAEMON_URL names, without a trailing slash, or loopback on
-// LEGION_DAEMON_PORT (13370 when unset) while it names none.
+// daemonURL is the API root LEGION_DAEMON_URL names, or loopback on LEGION_DAEMON_PORT (13370 when
+// unset) while it names none.
 func daemonURL() string {
-	if endpoint := strings.TrimRight(os.Getenv("LEGION_DAEMON_URL"), "/"); endpoint != "" {
+	if endpoint := os.Getenv("LEGION_DAEMON_URL"); endpoint != "" {
 		return endpoint
 	}
 	port := os.Getenv("LEGION_DAEMON_PORT")

@@ -33,21 +33,17 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// plantedToken is the made-up credential the requests of this file's rows carry: the token of
-// their GitHub client, of their Dispatch client, and of the implement App's lease (sinkTokens). It
-// is one of the made-up secrets the check's assertion looks for (redacttest.Token).
-const plantedToken = "not-a-secret-token"
-
-// sinkTokens mints plantedToken for every App and owner, so each GitHub read the daemon makes on
-// a lease carries it.
+// sinkTokens mints oauth2calltest.Token, the made-up credential the requests of this file's rows
+// carry (their GitHub client's, their Dispatch client's, and the implement App's lease), for every
+// App and owner, so each GitHub read the daemon makes on a lease carries it.
 type sinkTokens struct{}
 
 func (sinkTokens) Token(context.Context, appauth.AppRole, string) (appauth.Lease, error) {
-	return appauth.Lease{Token: plantedToken, ExpiresAt: time.Now().Add(time.Hour)}, nil
+	return appauth.Lease{Token: oauth2calltest.Token, ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
 func (sinkTokens) ReadToken(context.Context, appauth.AppRole, string) (appauth.Lease, error) {
-	return appauth.Lease{Token: plantedToken, ExpiresAt: time.Now().Add(time.Hour)}, nil
+	return appauth.Lease{Token: oauth2calltest.Token, ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
 // sinkRoute answers one path of a row's stand-in.
@@ -86,9 +82,10 @@ func (s *sinkServer) carried() []string {
 	return slices.Clone(s.headers)
 }
 
-// sinkClient is the implement App's client of acme/widgets on the stand-in, with plantedToken.
+// sinkClient is the implement App's client of acme/widgets on the stand-in, with
+// oauth2calltest.Token.
 func sinkClient(github *sinkServer) githubrest.Client {
-	return githubrest.Client{Token: plantedToken, API: githubrest.RepositoryAPI(github.URL, ghrepo.MustParse("acme/widgets"))}
+	return githubrest.Client{Token: oauth2calltest.Token, API: githubrest.RepositoryAPI(github.URL, ghrepo.MustParse("acme/widgets"))}
 }
 
 // sinkAnswer answers 200 with body, a JSON document.
@@ -265,7 +262,8 @@ func sinkLines(logs, message, level string) []string {
 	return lines
 }
 
-// sinkReadRuntime is readRuntime over pool reading github, whose every lease is plantedToken.
+// sinkReadRuntime is readRuntime over pool reading github, whose every lease is
+// oauth2calltest.Token.
 func sinkReadRuntime(pool *store.Pool, github *sinkServer, log *slog.Logger) *workflowRuntime {
 	w := readRuntime(pool, github.URL, log)
 	w.tokens = sinkTokens{}
@@ -323,11 +321,11 @@ type sinkRow struct {
 
 // TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried: each row is one of the daemon's
 // log lines CodeQL's go/clear-text-logging names a sink of, driven through the code that holds it.
-// The request the line's value is read from carries a made-up credential - plantedToken, or the
-// review App's JWT where the read is the App's own - and GitHub, Dispatch, or whatever answers in
-// their place refuses it, echoing the request's Authorization header verbatim in its body and in
-// each rate-limit header it writes as text. The credential so sits in the kept field of what the
-// answer said (oauth2call.ReadAnswer's RemoteText: githubrest.Answer's Body and Limit,
+// The request the line's value is read from carries a made-up credential - oauth2calltest.Token,
+// or the review App's JWT where the read is the App's own - and GitHub, Dispatch, or whatever
+// answers in their place refuses it, echoing the request's Authorization header verbatim in its
+// body and in each rate-limit header it writes as text. The credential so sits in the kept field
+// of what the answer said (oauth2call.ReadAnswer's RemoteText: githubrest.Answer's Body and Limit,
 // dispatch.Error's Said and Message, the body words of appauth's refusal), and every printer of
 // that field subtracts it (RemoteText.String, through redact.Tokens). The line, written through
 // the handler `legion start` builds (redact.HandlerOptions), names the refusal - its route and
@@ -348,10 +346,10 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 				github := newSinkServer(t, map[string]sinkRoute{"/repos/acme/widgets/rules/branches/main": sinkRefusal(http.StatusNotFound)})
 				w := &workflowRuntime{log: log.logger()}
 				if rules := w.readBaseRules(context.Background(), sinkClient(github), record.PullRequest{Repo: "acme/widgets", Number: 86},
-					githubText{Name: "main", Said: oauth2calltest.Said("main")}); rules.Unread == "" {
+					newGitHubText("main", oauth2calltest.Said("main"))); rules.Unread == "" {
 					t.Fatalf("the rules read came to %+v, want them unread", rules)
 				}
-				return plantedToken, github
+				return oauth2calltest.Token, github
 			},
 		},
 		{
@@ -363,10 +361,10 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 				github := newSinkServer(t, map[string]sinkRoute{"/repos/acme/widgets/rules/branches/main": sinkPlanRefusal()})
 				w := &workflowRuntime{log: log.logger()}
 				if rules := w.readBaseRules(context.Background(), sinkClient(github), record.PullRequest{Repo: "acme/widgets", Number: 86},
-					githubText{Name: "main", Said: oauth2calltest.Said("main")}); rules.Unread != "" || len(rules.Required) != 0 {
+					newGitHubText("main", oauth2calltest.Said("main"))); rules.Unread != "" || len(rules.Required) != 0 {
 					t.Fatalf("the rules read came to %+v, want no rules, read", rules)
 				}
-				return plantedToken, github
+				return oauth2calltest.Token, github
 			},
 		},
 		{
@@ -381,7 +379,7 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 				if !w.readReviews(ctx, ctx, sinkClient(github), record.PullRequest{Repo: "acme/widgets", Number: 86, Issue: "CAPTURE-1"}) {
 					t.Fatal("the reviews read went on through GitHub's rate limit, want it stopped")
 				}
-				return plantedToken, github
+				return oauth2calltest.Token, github
 			},
 		},
 		{
@@ -396,7 +394,7 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 				if w.readReviews(ctx, ctx, sinkClient(github), record.PullRequest{Repo: "acme/widgets", Number: 86, Issue: "CAPTURE-1"}) {
 					t.Fatal("the reviews read stopped on GitHub's 500, want it to go on")
 				}
-				return plantedToken, github
+				return oauth2calltest.Token, github
 			},
 		},
 		{
@@ -412,7 +410,7 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 					"/repos/acme/widgets/pulls/86/reviews": sinkAnswer(`[]`),
 				})
 				readCapture(t, sinkReadRuntime(seededCapture(t), github, log.logger()))
-				return plantedToken, github
+				return oauth2calltest.Token, github
 			},
 		},
 		{
@@ -429,7 +427,7 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 					"/repos/acme/widgets/pulls/86/reviews": sinkAnswer(`[]`),
 				})
 				readCapture(t, sinkReadRuntime(seededCapture(t), github, log.logger()))
-				return plantedToken, github
+				return oauth2calltest.Token, github
 			},
 		},
 		{
@@ -441,7 +439,7 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 			drive: func(t *testing.T, log *sinkLog) (string, *sinkServer) {
 				github := newSinkServer(t, map[string]sinkRoute{"/repos/acme/widgets/pulls/86": sinkLimit()})
 				sinkReadRuntime(seededCapture(t), github, log.logger()).readIssuesAtStart(context.Background())
-				return plantedToken, github
+				return oauth2calltest.Token, github
 			},
 		},
 		{
@@ -452,7 +450,7 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 			drive: func(t *testing.T, log *sinkLog) (string, *sinkServer) {
 				github := newSinkServer(t, map[string]sinkRoute{"/repos/acme/widgets/pulls/86": sinkRefusal(http.StatusInternalServerError)})
 				sinkReadRuntime(seededCapture(t), github, log.logger()).readIssuesAtStart(context.Background())
-				return plantedToken, github
+				return oauth2calltest.Token, github
 			},
 		},
 		{
@@ -477,7 +475,7 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 				})
 				cancel()
 				<-stopped
-				return plantedToken, github
+				return oauth2calltest.Token, github
 			},
 		},
 		{
@@ -494,7 +492,7 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 					running, _ := ladders(w)
 					return running == 0 && log.holds("read GitHub's merge state for an issue whose read was asked for; the record stands as it was until the next read")
 				})
-				return plantedToken, github
+				return oauth2calltest.Token, github
 			},
 		},
 		{
@@ -508,7 +506,7 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 				w := sinkReadRuntime(seededCapture(t), github, log.logger())
 				w.mergeStateRetry = 10 * time.Millisecond
 				sinkLadder(t, w, func() { w.queueMergeStateFollow("CAPTURE-1", "code") }, func() bool { return log.holds(followRead) })
-				return plantedToken, github
+				return oauth2calltest.Token, github
 			},
 		},
 		{
@@ -521,12 +519,12 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 				rig := newStepRecordRig(t, nil)
 				server := newSinkServer(t, map[string]sinkRoute{"/api/v1/issues/" + stepIssue + "/steps/" + stepRecordID: sinkDispatchRefusal()})
 				rig.runner.log = log.logger()
-				rig.runner.dispatch = dispatch.New(server.URL, plantedToken)
+				rig.runner.dispatch = dispatch.New(server.URL, oauth2calltest.Token)
 				rig.run()
 				if left := rig.left(); left != 0 {
 					t.Fatalf("rows left after Dispatch refused the record = %d, want none", left)
 				}
-				return plantedToken, server
+				return oauth2calltest.Token, server
 			},
 		},
 		{
@@ -540,7 +538,7 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 				w, clock := sinkHeldRead(t, github, log)
 				clock.advance(2 * time.Hour)
 				w.rereadHeldBranches(context.Background(), clock.Now())
-				return plantedToken, github
+				return oauth2calltest.Token, github
 			},
 		},
 		{
@@ -556,11 +554,11 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 				listing := newSinkServer(t, map[string]sinkRoute{"/api/v1/issues": sinkAnswer(`[{"key":"CAPTURE-2","title":"CAPTURE-2","status":"todo","labels":["legion"],"resolved_repo":"acme/widgets"}]`)})
 				repos := newRepositories("CAPTURE", ghrepo.Renames{})
 				w := &workflowRuntime{pool: isolatedOutboxPool(t), records: projectRecords{Store: record.NewStore(), project: "CAPTURE"}, dispatchProject: "CAPTURE",
-					dispatch: dispatch.New(listing.URL, plantedToken), installs: &installations{}, repositories: repos, log: log.logger(),
+					dispatch: dispatch.New(listing.URL, oauth2calltest.Token), installs: &installations{}, repositories: repos, log: log.logger(),
 					defaultBranches: newDefaultBranches(sinkTokens{}, repos, github.URL, defaultBranchTTL, time.Now)}
 				w.leaveForRecovery(ghrepo.MustParse("acme/widgets"))
 				w.recoverRepositories(context.Background())
-				return plantedToken, github
+				return oauth2calltest.Token, github
 			},
 		},
 		{
@@ -576,7 +574,7 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 				if _, err := w.prepareUnrecorded(context.Background(), intake.DispatchIssue{Key: "CAPTURE-2", Seq: 1, Status: "todo", HandedOver: true, ResolvedRepo: "acme/widgets"}, false); err != nil {
 					t.Fatalf("prepare a todo issue on acme/widgets = %v, want it prepared on the branch last read", err)
 				}
-				return plantedToken, github
+				return oauth2calltest.Token, github
 			},
 		},
 		{
@@ -591,7 +589,7 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 			drive: func(t *testing.T, log *sinkLog) (string, *sinkServer) {
 				github := newSinkServer(t, map[string]sinkRoute{"/repos/acme/widgets": sinkInTurn(sinkAnswer(sinkRepository), sinkLimit())})
 				sinkHeldRead(t, github, log)
-				return plantedToken, github
+				return oauth2calltest.Token, github
 			},
 		},
 		{
@@ -606,7 +604,7 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 			drive: func(t *testing.T, log *sinkLog) (string, *sinkServer) {
 				github := newSinkServer(t, map[string]sinkRoute{"/repos/acme/widgets": sinkInTurn(sinkAnswer(sinkRepository), sinkPrimaryLimit())})
 				sinkHeldRead(t, github, log)
-				return plantedToken, github
+				return oauth2calltest.Token, github
 			},
 		},
 		{

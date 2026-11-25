@@ -19,6 +19,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
+// The states GitHub documents for a pull request (githubPullRequest.State), as GitHub writes them.
+const (
+	pullOpen   = "open"
+	pullClosed = "closed"
+)
+
+// pullStates are those states, the closed set a line names one of.
+var pullStates = []string{pullOpen, pullClosed}
+
 // mergeQueueRead runs a merge-queue read (record.MergeQueueRead): the daemon's one read of a pull
 // request that GitHub reported leaving the merge queue at the row's head. GitHub's event names no
 // reason for the removal, and GitHub's merge queue reports a removal in the same second as the
@@ -89,7 +98,7 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 		}
 		return nil
 	case failed == nil:
-		r.log.Info("outbox merge-queue read: GitHub answered not merged; the merger is told", append(attributes, "state", githubrest.ShownWord(pull.State, "open", "closed"),
+		r.log.Info("outbox merge-queue read: GitHub answered not merged; the merger is told", append(attributes, "state", githubrest.ShownWord(pull.State, pullStates...),
 			"mergeable", string(pull.mergeability()), "mergeState", string(pull.mergeState()))...)
 		if err := r.applyMergeability(ctx, github, *pr, pull, readAt, fmt.Sprintf("merge-queue-mergeability:%s:%d:%d", row.Issue, row.ID, attempt)); err != nil {
 			return fmt.Errorf("apply the mergeability of %s's pull request #%d: %w", row.Issue, payload.Number, err)

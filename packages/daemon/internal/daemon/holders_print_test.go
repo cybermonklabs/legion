@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"encoding/json"
+	"strconv"
 	"testing"
 	"time"
 
@@ -9,8 +11,8 @@ import (
 
 // The box print test of this package's holders (oauth2calltest.PrintTest): githubText, and the
 // types the daemon decodes GitHub's answers into that hold it - the base rules read's and the pull
-// request's - each holding the probe in every box it reaches, and each twin the same shape with
-// the probe as a string there.
+// request's - each holding the probe in every box it reaches and in githubText's member as it
+// came, and each twin the same shape with the probe as a string in each of those places.
 func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 	type textTwin struct {
 		Name string
@@ -58,8 +60,13 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 		Merged         bool      `json:"merged"`
 		MergeCommitSHA string    `json:"merge_commit_sha"`
 	}
-	text := githubText{Name: "lint", Said: oauth2calltest.Said(oauth2calltest.Words)}
-	textT := textTwin{Name: "lint", Said: oauth2calltest.Words}
+	// githubText holds the probe as it came and as GitHub's words, as its decode of an answer that
+	// names the probe fills it.
+	var text githubText
+	if err := json.Unmarshal([]byte(strconv.Quote(oauth2calltest.Words)), &text); err != nil {
+		t.Fatal(err)
+	}
+	textT := textTwin{Name: oauth2calltest.Words, Said: oauth2calltest.Words}
 	check, checkT := requiredCheck{Context: text}, checkTwin{Context: textT}
 	checks := requiredStatusChecks{RequiredStatusChecks: []requiredCheck{check}, Strict: true}
 	checksT := checksTwin{RequiredStatusChecks: []checkTwin{checkT}, Strict: true}
