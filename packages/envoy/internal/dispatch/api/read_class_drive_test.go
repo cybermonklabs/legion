@@ -76,6 +76,21 @@ const searchTook = "how long the search ran, which each read times on its own cl
 // post the seed corrected once.
 const postHistoryStatement = `\bleft\s+join\s+lateral\s*\(\s*select\s+body,\s*edited_by,\s*edited_at\s+from\s+post_body_history\b`
 
+// issueArtifactsListRead is the one read of an issue's artifacts list (issueArtifactsStatement):
+// the artifacts of the issue $1, in created order, with a retired one, the issue's tree artifact
+// and its decisions query (refs.DecisionsQuerySQL: a document whose node is the query node of
+// decisions and which no document_rooms row joins to a room) left out. No other read of the list's
+// request reads artifacts by issue: the batch after it reads versions, reviews and asks by id.
+const issueArtifactsListRead = `\bfrom\s+artifacts\s+where\s+issue_key\s*=\s*\$1\s+and\s+artifacts\.retired_at\s+is\s+null\s+and\s+artifacts\.kind\s*<>\s*'tree'` +
+	`\s+and\s+not\s*\(\s*artifacts\.kind\s*=\s*'doc'\s+and\s+not\s+exists\s*\(\s*select\s+1\s+from\s+document_rooms\s+moved\s+where\s+moved\.artifact_id\s*=\s*artifacts\.id\b[^)]*\)` +
+	`\s+and\s+exists\s*\(\s*select\s+1\s+from\s+graph_nodes\s+node\s+where\s[^)]*\bnode\.attributes->>'query'\s*=\s*'decisions'\s*\)\s*\)\s+order\s+by\s+created_at,\s*id\b`
+
+// versionRenderRead is the renderer's read of one version of a document (docs.RenderVersion),
+// which the change set sends for each of the two versions it compares: version $2 of document $1
+// joined to its version_renders row, which says whether the version renders from the tree or
+// answers its stored bytes. No other read of the change set's request names either table.
+const versionRenderRead = `\bfrom\s+artifact_versions\s+v\s+left\s+join\s+version_renders\s+r\s+on\s+r\.artifact_id\s*=\s*v\.artifact_id\s+and\s+r\.number\s*=\s*v\.number\s+where\s+v\.artifact_id\s*=\s*\$1\s+and\s+v\.number\s*=\s*\$2\b`
+
 // readRowDrives is the drive of every read row of the table (readWritesNothing), keyed
 // "GET <pattern>" as readClasses is: the request that shows the row writes nothing a read may
 // not write and answers a read-only token as it answers that token's writer.
@@ -144,7 +159,7 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/lenses":               {target: "/api/v1/lenses?on=$issueRef", statement: statementOf(`\bt\.to_kind\s*=\s*\$1\s+and\s+t\.to_id\s*=\s*\$2\s+and\s+t\.kind\s*=\s*'part_of'\s+and\s+t\.from_kind\s*=\s*'lens'`)},
 	"GET /api/v1/issues/{key}/subscribers": {target: "/api/v1/issues/$issue/subscribers",
 		fromMemory: "it lists the listener's interests and sessions, and reads no row"},
-	"GET /api/v1/issues/{key}/artifacts": {target: "/api/v1/issues/$issue/artifacts", statement: statementOf(`\bfrom\s+artifacts\s+where\s+issue_key\s*=\s*\$1\s+and\s+retired_at\s+is\s+null\s+order\s+by\b`)},
+	"GET /api/v1/issues/{key}/artifacts": {target: "/api/v1/issues/$issue/artifacts", statement: statementOf(issueArtifactsListRead)},
 	// The after_merge and default_branch checks' read of whether a commit is on their branch.
 	"GET /api/v1/issues/{key}/results": {target: "/api/v1/issues/$issue/results", statement: statementOf(`\bfrom\s+branch_commits\s+where\s+repo\b`),
 		volatile: []volatileMember{
@@ -222,7 +237,7 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/artifacts/{id}/versions/{number}": {target: "/api/v1/artifacts/$notes/versions/1",
 		statement: statementOf(`\bfrom\s+artifact_versions\s+v\s+where\s+v\.artifact_id\s*=\s*\$1\s+and\s+v\.number\s*=\s*\$2\b`)},
 	"GET /api/v1/artifacts/{id}/changes": {target: "/api/v1/artifacts/$notes/changes?from=1&to=2",
-		statement: statementOf(`\bfrom\s+artifact_versions\s+where\s+artifact_id\s*=\s*\$1::uuid\s+and\s+number\s*=\s*any\(\$2::int\[\]\)`)},
+		statement: statementOf(versionRenderRead)},
 	"GET /api/v1/issues/{key}/artifacts/{slug}": {target: "/api/v1/issues/$issue/artifacts/$notesSlug", statement: statementOf(`\bfrom\s+artifacts\s+where\s+ref_key\s*=\s*\$1\b`)},
 	"GET /api/v1/issues/{key}/artifacts/{slug}/text": {target: "/api/v1/issues/$issue/artifacts/$notesSlug/text",
 		statement: statementOf(`\bselect\s+max\(number\)\s+from\s+artifact_versions\b`)},

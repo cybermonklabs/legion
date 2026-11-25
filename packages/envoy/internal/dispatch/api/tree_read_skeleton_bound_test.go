@@ -650,8 +650,10 @@ func seedSkeleton(t *testing.T, s *readCostServer, decides bool) []*skeletonIssu
 			if err := json.Unmarshal(asked.body, &ask); err != nil || ask.ID == "" {
 				t.Fatalf("read ask %d of %s back: %v: %s", index+1, issue.key, err, asked)
 			}
+			// The ask was created above and never edited, so the answer names that wording with a
+			// null expected_edited_at, which both releases require (ASK_REVISION_REQUIRED).
 			s.expect(t, fmt.Sprintf("answer ask %d of %s", index+1, issue.key), http.MethodPost, "/api/v1/asks/"+ask.ID+"/answer", readCostWriter,
-				map[string]any{"selected": []string{"Yes"}, "text": fmt.Sprintf("Yes, answer %d: we take that way.", index+1)}, http.StatusOK)
+				map[string]any{"selected": []string{"Yes"}, "text": fmt.Sprintf("Yes, answer %d: we take that way.", index+1), "expected_edited_at": nil}, http.StatusOK)
 		}
 		skeletonInParallel(t, "write the comments of "+issue.key, shape.comments, func(index int) error {
 			_, err := s.write(http.MethodPost, "/api/v1/issues/"+issue.key+"/comments", readCostWriter,
