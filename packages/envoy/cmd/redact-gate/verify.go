@@ -29,7 +29,8 @@ import (
 // command's stderr is kept apart. A start-up run that does not exit 0 is its package's run, and
 // the package's rows do not run. The whole packages are CI's. For each Bun file it runs `bun test`
 // in the file's package with Bun's JUnit reporter. Then it prints the verdicts and answers
-// judgeVerify's exit status, or 2 where it refused the inventory or a command did not start.
+// judgeVerify's exit status, or 2 where it refused the inventory, a command did not start, or its
+// scratch or -keep directory, or a run's record in it, could not be made or written.
 //
 // With keep, each run's record stays in that directory: for the nth package go-<n>.json (the
 // events judged) and go-<n>.err, with go-steps.tsv (the package, its exit status and its stderr's
@@ -75,7 +76,9 @@ var wholeSeconds = regexp.MustCompile(`^[1-9][0-9]*s$`)
 // an inventory it cannot parse; one with no Go row or no Bun row; one with a row that lacks its id,
 // requirement, package (a Bun row's file) or test, or holds a line break in one, which would split
 // the row's verdict line; one that repeats an id; and one whose gate.row_timeout is not a whole
-// count of seconds. The gate's load reads the same file for its stages and refuses none of these.
+// count of seconds. The gate's load reads the same file for its stages and refuses only some of
+// these: an inventory it cannot parse, one that holds no row at all, and a gate.row_timeout that
+// is no duration.
 func verifyInventory(path string) (inventory, time.Duration, error) {
 	var inv inventory
 	data, err := os.ReadFile(path)
