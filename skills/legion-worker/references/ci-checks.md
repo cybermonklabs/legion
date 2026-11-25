@@ -44,7 +44,7 @@ When the run gives no result, the line reads `CI run <name> has no result (<case
   Each failure of a check it runs is a fail result on that check in Dispatch, never a field of its handoff.
 
 - The reviewer waits for a run still going by its name, and neither approves nor requests changes for that check until it concludes.
-  A check that its task, or a message of a fix, names as a running fix's check is the fix's, and holds no approval.
+  A check that its task, or a message of a fix, names as a running fix's check is the fix's, and so is its named run: the reviewer may approve while it is red, but that red still holds the merge, and the run must be green before the merge, like any other required check.
   On a task that takes a fix, a prompt to read Dispatch again comes when a check's state changes at the head: it names no verdict.
 
 - A job the repository runs on a pull request only under the label `full-ci` (on cybermonklabs/legion, the slow suites and the full browser lane) reads `skipped` without it.

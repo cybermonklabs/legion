@@ -73,7 +73,7 @@ Cases 2, 3, 4 and 6 end: tell the architect, do not approve, and wait with a `WA
 ### The issue's checks
 
 - Approval is gated by the issue's own `before_merge` checks, as your role prompt says;
-  a `ci_check` check as `skill://legion-worker/references/ci-checks.md` says, a running fix's check none.
+  a `ci_check` check, a running fix's among them, as `skill://legion-worker/references/ci-checks.md` says.
   With no earlier tester step, the implementer's evidence for each is what you read.
   A check whose `run` is a whole test suite with no pass standing is a finding for the architect: wait for its rewrite, and request no changes for it.
 
