@@ -653,10 +653,11 @@ It prints `WARNING: LIKELY CLEANUP/FINALIZER ISSUES`, then one `is reachable fro
 The rule covers the cleanup's argument as well as its closure, so an argument that reaches the object is the same defect: the room load `keepInstance` passed reached a document of its own, which is the finding this job made on a head where the closure itself was already weak, and the comment on that cleanup names the path it took (dispatch://INFRA-1085).
 A run that reports nothing is no proof on its own: the check runs at a garbage collection, so a short run can pass with the path present.
 `GOGC=10` beside the detector makes a single test likelier to fire it, not certain, so repeat the run before you read a quiet one as a clean one: with this fix reversed, `TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt` under `GOGC=10 GODEBUG=checkfinalizers=1` fired in 2 of 3 runs for the implementer and in 1 of 6 for the reviewer, and at the fixed head it was quiet in 9 of 9.
-CI runs that command in `envoy-go-docs-finalizers` (`.github/workflows/ci-job-envoy-go-docs-finalizers.yaml`, which holds that job's steps), which the `envoy_go_race_docs` filter in `.github/workflows/ci.yaml` selects.
-It is a slow suite: a pull request runs it only with the label `full-ci` (or `lane:envoy_go_race_docs`), and the merge queue runs it on the tree the change lands as, which is where its result normally comes from (`.github/ci-notes/ci.md`, "Which lane a job runs in: the pull request or the merge queue").
+CI runs it in `envoy-go-race-docs` (`.github/workflows/ci-job-envoy-go-race-docs.yaml`), on the same line as the race detector, so one run of the package's tests serves both detectors, and on the package's line of `envoy-go`'s step "Test what the race build cannot run at all or at full size", which runs plain the tests the race build leaves out or shrinks.
+The `envoy_go_race_docs` and `envoy_go` filters in `.github/ci-filters.yaml` select them.
+Both are slow suites: a pull request runs them only with the label `full-ci` or that suite's `lane:` label, and the merge queue runs them on the tree the change lands as, which is where their result normally comes from (`.github/ci-notes/ci.md`, "Which lane a job runs in: the pull request or the merge queue").
 
-That job runs the command with `-v` for a second check Go's detector does not make:
+The race run streams the test binary's own output (`go test -json`) and so carries a second check Go's detector does not make:
 the package's `TestMain` prints `docs: <built> services built, <alive> still alive after <duration>` once the tests have run, and the line after it names each test that built a service still alive at the end of the run.
 A test that builds a `*Service` registers a cleanup that shuts it down, with `testcleanup.Add`.
 A service a test left running holds its rooms, and their documents, for the rest of the binary's run.
@@ -666,7 +667,7 @@ A settlement timer's callback therefore holds the service and the room's state w
 
 `packages/envoy/internal/dispatch/docs` is the only package of this repository that registers a cleanup today, and no repository-wide check holds that true:
 `grep -rn "runtime.AddCleanup\|runtime.SetFinalizer" --include=*.go .` finds those two sites and nothing else.
-A `runtime.AddCleanup` or `runtime.SetFinalizer` added in another package comes with a detector job of its own, in the same pull request.
+A `runtime.AddCleanup` or `runtime.SetFinalizer` added in another package puts `GODEBUG=checkfinalizers=1` on the go test line that already runs that package's tests, in the same pull request, rather than a job that runs them again; `.github/scripts/ci_job_reads.py`'s `CLEANUP_DETECTOR_PACKAGES` names the packages whose lines carry it.
 
 ## A database a Go test creates
 
