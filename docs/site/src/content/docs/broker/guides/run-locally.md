@@ -605,17 +605,40 @@ what the stand's installation holds left out: `issues`, which the installation h
 `packages/envoy/scripts/dev-airlock.sh` starts the whole airlock, in a stack of its own. It runs
 `dev-broker.sh` first, for Postgres, `dev-oidc-issuer` and the binaries, and then adds what the
 airlock needs: `cmd/dev-proxy-stands`, which serves the stand-in services and records every
-request each one is sent; a profiles file (`BROKER_PROFILES_FILE`), each secret a profile of its
-own name with a proxy block, and a fake secrets file that
-name the same secrets; two broker processes on one database, each with an API port and a proxy
-port of its own, behind one TCP front over both API ports and one over both proxy ports; one
-enrolled pod session, whose key directory the exports name and whose lease an
-`agent-secrets renew` keeps alive for as long as the stack runs, as a Legion worker pod's is; and
-the model judge on both brokers ([let the judge decide a request](#let-the-judge-decide-a-request)).
-Run it in place of `dev-broker.sh`, from `packages/envoy`, and set the same
-`DEV_BROKER_POSTGRES_URL` where you have no Docker. Each bound host listens on port 443 of a
-loopback address of its own (127.0.0.2 and up), so the machine must let this user bind 443, and
-one such stack runs at a time.
+request each one is sent; a profiles file (`BROKER_PROFILES_FILE`) in the kinds form, whose
+`kinds` list declares a test kind for each stand-in and the `anthropic` kind as the deployment
+writes it, and a fake secrets file whose secrets each name their kind in a `proxy` tag; two broker
+processes on one database, each with an API port and a proxy port of its own, behind one TCP
+front over both API ports and one over both proxy ports; one enrolled pod session, whose key
+directory the exports name and whose lease an `agent-secrets renew` keeps alive for as long as the
+stack runs, as a Legion worker pod's is; and the model judge on both brokers
+([let the judge decide a request](#let-the-judge-decide-a-request)). Run it in place of
+`dev-broker.sh`, from `packages/envoy`, and set the same `DEV_BROKER_POSTGRES_URL` where you have
+no Docker. Each bound host listens on port 443 of a loopback address of its own (127.0.0.2 and up),
+so the machine must let this user bind 443, and one such stack runs at a time.
+
+The `anthropic` kind's host is Anthropic's own name, `api.anthropic.com`, and
+`BROKER_AIRLOCK_TEST_RESOLVE` sends it to the stack's stand-in of the Admin API on 127.0.0.6, so no
+call of the stack reaches Anthropic. The stack stores two `anthropic-federation` secrets,
+`AIRLOCK_ANTHROPIC_NARROWED`, tagged `proxy-narrowed=true` with one profile of the kind's three
+`allow` rows, and `AIRLOCK_ANTHROPIC_KIND`, with no profile, each bound to a Google account of its
+own in `BROKER_SERVICE_ACCOUNT_SECRETS` and approved by the stack's person. The broker mints their
+tokens at two stand-ins, which two settings of the local stack alone name, and which a production
+start refuses, as it refuses every `BROKER_AIRLOCK_TEST_*` setting:
+
+- `BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL`: the origin where the broker reads a bound account's
+  Google identity token (IAM Service Account Credentials' `generateIdToken`), in place of
+  `https://iamcredentials.googleapis.com`. The stand-in takes only the access token the stack's
+  metadata stand answers as its bearer, and lists each token it minted, with its account and
+  audience, at `AIRLOCK_IAM_TOKENS_URL`.
+- `BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL`: Anthropic's token exchange, in place of
+  `https://api.anthropic.com/v1/oauth/token`. The stand-in takes only an assertion the IAM
+  stand-in minted, answers an `sk-ant-oat01-` token with an `expires_in` of 3600, and lists each
+  token at `AIRLOCK_ANTHROPIC_TOKENS_URL`. A POST of `{"expires_in": <seconds>}` to
+  `AIRLOCK_ANTHROPIC_ANSWER_URL` changes the lifetime every later exchange answers: 3601 makes the
+  broker refuse the token, as it refuses a federation rule's token that outlives its grant's hour.
+
+`packages/envoy/scripts/airlock-check.sh k47` runs the `anthropic` kind's check on this stack.
 
 This run used the same Postgres server as the first section. The lines `dev-broker.sh` prints are
 the ones that section shows, and are cut here:

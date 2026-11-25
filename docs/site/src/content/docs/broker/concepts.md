@@ -721,8 +721,10 @@ is how a deployment moves a name from a key the broker held to the minted tokens
 and then retires the key; any other value, and no tag, leaves the profile refused),
 `profile-block-mismatch` (a `github` or `google` block that
 does not fit the source's type, `github-owners` or `scopes`), `profile-looser` (looser than the
-source in tier, `requesters` or `maxGrant`), `profile-needs-proxy` (no `proxy` block on a stored
-value, `google-login` or `azure-login` source), or a tag rule its own tags over its source's break,
+source in tier, `requesters` or `maxGrant`), `profile-source-not-proxied` (a stored-token,
+`google-login`, `azure-login` or `anthropic-federation` source with no `proxy` tag and no `proxy`
+string, refused with its source), one of the airlock's refusals ([The airlock](#the-airlock)), or
+a tag rule its own tags over its source's break,
 such as `admin-tier` for an agent-tier profile of an `admin` source. A source a profile of another
 name uses is served only through its profiles, and a `github-app` secret no profile names is
 refused by its own name (`github-app-no-profile`), as is a `github-installations` one
@@ -798,7 +800,7 @@ its grants stay live; a secret with no tag is served as before. A broker with no
 A secret tagged `project-channels` is limited by the projects the credential names, whatever
 project the secret itself belongs to. A credential that names a private project, whether or not
 its person can still see it, gets the secret only behind the airlock, and is denied it
-`project-channels-need-airlock` where no profile with a proxy block serves the secret. The proxy then carries only
+`project-channels-need-airlock` where it is not behind a kind of the airlock. The proxy then carries only
 `POST /api/chat.postMessage` with `channel`, `thread_ts` and `text`, to a channel id that the owner
 of every private project the credential names has listed in Dispatch, and refuses every other call
 `CHANNEL_NOT_ALLOWED` without calling Slack. The credential has no channel at all when an owner
@@ -1472,20 +1474,111 @@ nothing. To end every session's automatic access to a secret, change its tags
 ## The airlock
 
 A deployment can keep a secret's value from its sessions altogether. The broker reads a profiles
-file when it starts (`BROKER_PROFILES_FILE`, a `profiles.json`), and each profile's `proxy` block
-is one entry of the airlock's rules, under that profile's name: it names the hosts that
-profile's value may reach, the request headers that may carry it
-(`authorization`, unless the entry names others) and, where the entry gives them, the methods and
-path prefixes it may travel on
-(`packages/envoy/internal/cipher/proxyrules`). Who decides a request for the value is no part of
-an entry: that is the secret's own `judge` and `guidance` tags ([The model judge](#the-model-judge)),
-and a profiles file whose `proxy` block still sets `judge` or `guidance` is refused, naming the tag
-that took its place. Every
-entry names at least one host: an entry with no `hosts` would hold the value back and carry it
-nowhere, so the broker refuses to start with a file that holds one, and
-`envoy-broker profiles check` refuses that file too. Those hosts carry no port, so an entry binds
-a name on port 443 alone, and another port of that name is another service the proxy tunnels
-unread.
+file when it starts (`BROKER_PROFILES_FILE`, a `profiles.json`) whose `kinds` list declares the
+airlock's kinds (`packages/envoy/internal/cipher/proxyrules`, `Kind`). A kind says where a
+credential of it may go and how it goes in, for every secret of the kind:
+
+```json
+{"kinds": [
+  {"name": "anthropic", "hosts": ["api.anthropic.com"], "headers": ["Authorization"],
+   "variables": ["ANTHROPIC_ADMIN_TOKEN"], "ways": ["mint"], "max_grant": "1h",
+   "allow": [{"method": "GET", "pathPrefix": "/v1/organizations/"},
+             {"method": "POST", "pathPrefix": "/v1/organizations/"},
+             {"method": "DELETE", "pathPrefix": "/v1/organizations/"}]}
+],
+ "profiles": [ ... ]}
+```
+
+- `name`: one lowercase word, `a` to `z`, the service's word where it has one.
+- `hosts` (at least one): the hosts a credential of the kind may reach, each on port 443.
+- `headers`: the request headers that may carry it, `authorization` when the kind names none.
+- `allow` (optional): rows of a method and a `pathPrefix`. A prefix holds a path that equals it or
+  continues it at a `/`, so `/storage-limit` holds `/storage-limit/7` and not
+  `/storage-limitX`. With no `allow`, any method and path on the kind's hosts; an empty list
+  allows nothing. A kind's row names no host.
+- `ways` (at least one): how a credential of the kind goes into a call: `swap` (a stored value
+  swapped in), `mint` (a token the broker mints and swaps in), `sign` (an AWS key pair, signed
+  with again), `exchange` (an Entra identity, exchanged at Microsoft's token endpoint),
+  `app-token` (a GitHub App's JSON Web Token) or `dpop`.
+- `variables`: the client variables each placeholder of the kind goes into.
+- `max_grant`: a Go duration that caps the `max-grant` tag of each secret of the kind.
+- `placeholder_prefix`: the prefix each placeholder of the kind opens with, in place of
+  `agent-secrets-placeholder-`, for a client that checks a key's shape before it sends it.
+
+A stored secret is behind a kind when its `proxy` tag names that kind. Its `type` tag picks the
+way it takes, and the kind's `ways` must hold it: no type takes `swap`, or `sign` for an AWS key
+pair under a kind that lists `sign` and not `swap`; `github-app`, `github-installations`,
+`google-login`, `google-service-account` and `anthropic-federation` take `mint`; `azure-login`
+takes `exchange`. A profile is behind its source's kind. Each policy load refuses the secret, by
+its name, when its `proxy` tag names no kind of the file (`proxy-kind-unknown`), when its way is
+not one of the kind's (`proxy-way-not-in-kind`), and, for a kind with a `max_grant`, when it sets
+no `max-grant` or one longer than that (`proxy-max-grant-above-kind`). Tags change at run time,
+so the rules the proxy decides from are rebuilt at each policy load.
+
+A profile may narrow its one source further with an `allow` of its own: the proxy forwards a
+request only when the kind's `allow` and the profile's `allow` both allow it, so a profile narrows
+its kind and never widens it. A profile's row may name a `host`, which must be one of its kind's
+hosts, and then allows the request on that host alone. Each policy load refuses a profile row that
+no row of its kind covers (same method, no host or the same host, and a prefix that the kind's
+prefix holds at a `/`: `profile-allow-outside-kind`) and a row whose host the kind does not bind
+(`profile-allow-host`). The narrowing must also be in the store: a profile with an `allow` whose
+source does not carry the tag `proxy-narrowed=true` is refused (`profile-allow-not-narrowed`), and
+a secret tagged `proxy-narrowed=true` is served through exactly one profile, which has an `allow`.
+With no profile, with a profile that has no `allow`, or with more than one profile that names it,
+the secret and each of those profiles are refused (`proxy-narrowed-profiles`), and a
+`proxy-narrowed` tag of any value but `true` refuses the secret (`proxy-narrowed-malformed`). So
+a reviewed change of the file alone cannot take a narrowing away. A profile whose source is a
+stored token, a `google-login`, an `azure-login` or an `anthropic-federation` secret with no `proxy`
+tag is refused with its source (`profile-source-not-proxied`): without the refusal the source
+would be released to an approved command as its value, and the profile's `allow` would never be
+read.
+
+Two forms of a profile's `proxy` key survive while secrets move to kinds. A profile may name a
+kind as the string value of its `proxy` key, `"proxy": "github"`, and is then served behind that
+kind as if its source carried the tag; a string that names another kind than the source's tag is
+refused (`proxy-kind-conflict`), and one that names the same kind is served with one warning line
+at each load. And a `proxy` object of kind `dpop` alone (below) is kept. Every other `proxy`
+object is refused, naming `kinds`.
+
+Who decides a request for a value is no part of a kind: that is the secret's own `judge` and
+`guidance` tags ([The model judge](#the-model-judge)), and a profiles file that still sets `judge`
+or `guidance` is refused, naming the tag that took its place. Every kind names at least one host:
+a kind with no `hosts` would hold every value of it back and carry it nowhere, so the broker
+refuses to start with a file that holds one, and `envoy-broker profiles check` refuses that file
+too. Those hosts carry no port, so a kind binds a name on port 443 alone, and another port of that
+name is another service the proxy tunnels unread.
+
+The kinds a deployment declares are its own. These are the kinds the airlock's design names, each
+with what narrows it and how its credential goes in:
+
+| Kind | Its credential | How it goes in | Hosts | Headers | Longest grant |
+| --- | --- | --- | --- | --- | --- |
+| `github` | a GitHub App, or a stored token | mints an installation token; a stored token is swapped as it is | `api.github.com`, `github.com`, `uploads.github.com` | `Authorization`, also inside `Basic` | 12 hours |
+| `slack` | a bot token | swaps it in | `slack.com` | `Authorization` | 12 hours |
+| `aws` | a stored key pair | signs again (Signature Version 4) | `sts.amazonaws.com`, STS's regional hosts, and each other AWS host a consumer calls | the signature | 12 hours |
+| `gcp` | a person's login or a service account | mints an access token | `*.googleapis.com`, `*.pkg.dev` | `Authorization` | 24 hours for a login, 1 hour for a service account |
+| `gws` | a person's Workspace login | mints an access token | `*.googleapis.com` | `Authorization` | 24 hours |
+| `azure` | an Entra identity | exchanges at Microsoft's token endpoint, then swaps the access token in | `login.microsoftonline.com`, `management.azure.com` | `Authorization` | 1 hour |
+| `tailscale` | an API key, or an OAuth client | swaps an API key in | `api.tailscale.com` | `Authorization` | 12 hours |
+| `datadog` | an API key, an application key or an access token | swaps it in | `api.us3.datadoghq.com` | `DD-API-KEY`, `DD-APPLICATION-KEY`, `Authorization` | 12 hours |
+| `openrouter`, `typesafe`, `deepgram` | an API key | swaps it in | `openrouter.ai`, `api.typesafe.ai`, `api.deepgram.com` | `Authorization` | 12 hours |
+| `tinker` | an API key | swaps it in; its placeholder opens with `tml-` | `tinker.thinkingmachines.dev`, `inference.thinkingmachines.dev` | `X-API-Key`, `Authorization` | 12 hours |
+| `elevenlabs` | an API key | swaps it in | `api.elevenlabs.io` | `xi-api-key` | 12 hours |
+| `anthropic` | an Anthropic organization's token by workload identity federation (`anthropic-federation`) | mints the token at Anthropic's token exchange and swaps it in; the kind's `allow` is `GET`, `POST` and `DELETE` under `/v1/organizations/` | `api.anthropic.com` | `Authorization` | 1 hour |
+| `evals` | a ClickHouse login's password | swaps it in, at a private destination | `transcript-store.<tailnet>.ts.net` | `X-ClickHouse-Key` | 12 hours |
+| `dispatch` | a CI run's results token, or a person's approve token, which the broker mints and holds | swaps it in with a DPoP proof, at a private destination | `dispatch.<tailnet>.ts.net` | `Authorization` | 15 minutes |
+
+An `anthropic-federation` secret is minted as its type says ([Requests and grants](#requests-and-grants)):
+the broker reads the Google identity token of the account `BROKER_SERVICE_ACCOUNT_SECRETS` binds to
+the secret, for the audience `https://api.anthropic.com`, trades it at
+`POST https://api.anthropic.com/v1/oauth/token` for a token that opens with `sk-ant-oat01-`, and
+refuses a token whose `expires_in` is more than an hour. The kind's `allow` bounds every secret of
+it, one with no profile included, so a token of the kind reaches Anthropic's Admin API alone and
+never its token exchange or its Messages API, on the same host. A client that names
+`api.anthropic.com` in its `NO_PROXY` reaches the proxy all the same under a grant of an
+`anthropic` secret: `agent-secrets` drops that entry from the child's `NO_PROXY` and changes no
+variable outside the child.
+
 A host is written in one form, the one every request for it is compared in: a DNS host name of
 letters, digits and hyphens between single dots, with no label longer than 63 characters,
 starting or ending with a hyphen, or holding `--` as its third and fourth characters other than
@@ -1516,16 +1609,33 @@ What a host in another spelling would do if it were served depends on the spelli
 - The rest — white space, a scheme, a port, brackets, an empty or overlong label, a number for a
   last label — is no name a client sends, or one clients read differently.
 
-A secret an entry binds to at least one host is **behind the airlock**,
-and the broker never releases its value to anyone: a read of a grant of it leaves the name out of
-`values` and answers an `airlock` object instead, which carries the proxy's URL, the certificate
-authority to trust that proxy by, a proxy password, and, for each name, a placeholder, the
-placeholder of each slot of the value, and the hosts the entry binds. A placeholder is
-`agent-secrets-placeholder-` and 32 letters and digits, minted for that one grant and name. The
+A secret behind a kind is **behind the airlock**, and the broker never releases its value to
+anyone: a read of a grant of it leaves the name out of `values` and answers an `airlock` object
+instead, which carries the proxy's URL, the certificate authority to trust that proxy by, a proxy
+password, and, for each name, a placeholder, the placeholder of each slot of the value, and the
+hosts its kind binds. A placeholder is the kind's `placeholder_prefix`, else
+`agent-secrets-placeholder-`, and 32 letters and digits, minted for that one grant and name. The
 file is the deployment's own, and the broker reads it once at start, so a change to it rolls the
-brokers; `envoy-broker profiles check <file> [--against <old file>] [--private-upstream '<host>=<url> ...']`
-says whether a broker would serve a file, and what that file adds and removes against the one in
-force.
+brokers; `envoy-broker profiles check <file> [--against <old file>] [--secrets-json <file>]
+[--private-upstream '<host>=<url> ...']` says whether a broker would serve a file, and what that
+file adds and removes against the one in force: the kinds, hosts, headers, variables, ways,
+`max_grant` and `allow` rows of the kinds and of the profiles. With `--against` it also lists,
+under `widens`, each served name whose `allow` the change widens, and each host it adds to a name.
+With `--secrets-json` (the list `gcloud secrets list --format='json(name,annotations)'` prints for
+the agent secrets) it reads each secret's `proxy` and `proxy-narrowed` tags, holds each profile's
+rows to its source's kind, and exits 1 when a name behind the proxy under the old file is behind
+none under the new one.
+
+A command that works as `agent-secrets NAME -- command` works unchanged while its grant lives when
+`NAME` is behind the airlock, except in these named cases: Bun's `node:https`; the AWS uploads and
+URLs the `aws` kind refuses (a chunk-signed upload and a presigned URL); a private address literal
+from Node, wget or Python's urllib; other names under a suffix a bound host is under; the App token
+request `POST /app/installations/{id}/access_tokens` and every other call to `/app` or under `/app/`
+that is not a `GET` or `HEAD`; a call to `/repos/{owner}/{repo}/installation`,
+`/orgs/{org}/installation` or `/users/{username}/installation`, which GitHub answers only for the
+App's JSON Web Token and which the proxy sends with an installation token; a client that signs an
+App's JSON Web Token itself; a request that needs the values of two secrets at once; and a GraphQL
+write to another account's repository.
 
 A proxy block may be of kind `dpop`: a capability the broker mints for a grant of its own and
 holds, from no stored secret. Such a profile is a name and its proxy block alone. Its grant is
@@ -1587,7 +1697,9 @@ resolved to, the class of the failure and the reason. The host and the port are 
 own text, cut to 256 bytes, the host lowercased and the port read as its number, and a refusal's
 path and correlation id are too; none of that is redaction, so every line the proxy writes has
 each placeholder — `agent-secrets-placeholder-`, in any case, and at most the 32 letters and
-digits after it, up to where another placeholder starts — replaced by `[placeholder]`. A path that
+digits after it, up to where another placeholder starts, or a kind's own `placeholder_prefix` and
+the 32 letters and digits after it, where the character before it is no ASCII letter or digit —
+replaced by `[placeholder]`. A path that
 holds a `.` or `..` segment is refused outright
 (`path has a dot segment`), whatever the entry's paths allow, because a reader that resolves
 such a path first — which is what RFC 3986 says it means — reads it as a path the prefix does
@@ -1640,7 +1752,7 @@ What the airlock does not stop is as much of the design as what it does:
   beside `BROKER_PROFILES_FILE`: a Service range can be public address space, as GKE's
   default `34.118.224.0/20` is, so no private-address rule covers its ClusterIPs. In a cluster
   (`KUBERNETES_SERVICE_HOST` set to a non-empty value; empty or unset is outside a cluster), a
-  broker whose profiles file gives any profile a proxy block refuses to start without that
+  broker whose profiles file declares a kind or a `dpop` block refuses to start without that
   setting, or when no range in it holds that address. A command that needs such a call sets its
   own `NO_PROXY` entry for that name.
 
