@@ -866,8 +866,8 @@ func (id GitIdentity) Env() map[string]string {
 // RoleIdentitiesVariable is the table of every role's git identity that the daemon writes into
 // each workflow role's process environment (spec.Env, which a tmux pane and a pod's role carry): the
 // value RoleIdentities spells, which the author step of `legion jj` reads (ReadRoleIdentities)
-// before a push, to set each commit's author from the role its Legion-Role trailer names. A
-// controller's process has none. An operator may not set it (PaneVariableRefusal, the pod's own
+// before a push, to set the author of a commit a push sends from the role its first Legion-Role
+// trailer names, where the step's rules let it. A controller's process has none. An operator may not set it (PaneVariableRefusal, the pod's own
 // list), and it is no runtime-owned name, since ValidateSpawnSpec refuses a spec.Env name a runtime
 // owns.
 const RoleIdentitiesVariable = "LEGION_ROLE_IDENTITIES"

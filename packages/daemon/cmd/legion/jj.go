@@ -25,7 +25,7 @@ const jjUsage = `usage: legion jj --real <jj> -- <jj argument>…
 A jj wrapper runs this command, never a person. It runs a jj with the arguments after --.
 Before a jj git push, it first sets the author of a commit the push sends from that
 commit's first Legion-Role trailer: the identity LEGION_ROLE_IDENTITIES gives that role, by
-one jj metaedit --update-author for each role, where the step's rules let it
+one jj metaedit --update-author for each role, where its rules let it
 (docs/deployment.md). It prints one line for each commit it rewrote.
 With --after, it first expands the arguments as jj does, through jj's aliases and
 ui.default-command, so a command that jj runs as a jj git push is one too.

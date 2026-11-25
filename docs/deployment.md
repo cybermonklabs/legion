@@ -593,8 +593,8 @@ A jj command of the step that fails stops the push with jj's error and exit stat
 run that it cannot read (below), a read of a revision argument that jj refuses, and a rewrite
 that jj refuses because its commit exists already, where that commit stands for one the push
 names (below).
-An argument whose first read, before any rewrite, jj refuses goes to the push as written; one
-whose read after a rewrite jj refuses goes as its ids, with its one printed line.
+An argument that jj refuses to read before any rewrite goes to the push as written; one that jj
+refuses to read again later goes as its ids, with its one printed line.
 Where it cannot read the dry run, it prints one line, and the push runs as written, but where a
 metaedit of the step ran first, such as the fill of an empty author, after which each revision
 argument is held to its set as above, and with `--ignore-working-copy` where the step took its
