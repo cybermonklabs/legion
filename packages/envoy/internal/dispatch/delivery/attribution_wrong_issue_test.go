@@ -204,7 +204,7 @@ func TestPR2808EveryWriterGivesTheBranchsIssue(t *testing.T) {
 		write func(t *testing.T)
 	}{
 		{"the pull_request envelope of the merge", func(t *testing.T) {
-			intake := newIntake(nil, pool, nil, client, broker, nil, unrenamed())
+			intake := newIntake(tuningFor(t), nil, pool, nil, client, broker, nil, unrenamed())
 			if _, err := intake.recordPullRequestHead(ctx, pr2808Envelope(), pr2808Number); err != nil {
 				t.Fatalf("record the envelope's head: %v", err)
 			}
@@ -254,7 +254,7 @@ func TestPR2808AnEnvelopeWithoutItsBranchStillGivesTheBranchsIssue(t *testing.T)
 	pool, ctx := deliveryTestPool(t)
 	seedPR2808Issues(t, ctx, pool)
 	fake, _ := pr2808GitHub(t)
-	intake := newIntake(nil, pool, nil, fake.newTestClient(), events.NewBroker(), nil, unrenamed())
+	intake := newIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), events.NewBroker(), nil, unrenamed())
 
 	envelope := pr2808Envelope()
 	delete(envelope, "head_ref")
@@ -356,7 +356,7 @@ func judgePR2808BehindOlderRows(t *testing.T, ahead int) pr2808Pass {
 	pass.factsQueries = fake.factsQueries.Load()
 	t.Logf("with %d older-rule rows read before it, after one pass #2808 credits %s from %s; the pass made %d REST reads and %d batched queries",
 		ahead, pass.issue, pass.source, pass.restReads, pass.factsQueries)
-	wrongHeads, err := unrenamed().HeadsAttributedTo(ctx, pool, pr2808Wrong)
+	wrongHeads, err := unrenamed().HeadsAttributedTo(ctx, pool, pr2808Wrong, HeadAnswers{})
 	if err != nil {
 		t.Fatalf("read the heads of %s: %v", pr2808Wrong, err)
 	}
@@ -394,7 +394,7 @@ func TestPR2808TheTwoStoredAttributionsOfOnePullRequestAgree(t *testing.T) {
 			timeline = pr2808KeyOf(pr.IssueKey)
 		}
 	}
-	heads, err := unrenamed().HeadsAttributedTo(ctx, pool, pr2808Right)
+	heads, err := unrenamed().HeadsAttributedTo(ctx, pool, pr2808Right, HeadAnswers{})
 	if err != nil {
 		t.Fatalf("read the heads of %s: %v", pr2808Right, err)
 	}

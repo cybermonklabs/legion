@@ -4,10 +4,11 @@
 // through, its exit status, and the pull request body it kept, if any), then answered from the
 // first route in $SKILL_SCENARIO_RUN/fixtures.json whose regex matches "gh <argv...>". A call no
 // route matches answers `gh: Not Found (HTTP 404)` and exits 1. Nothing is sent anywhere.
-// `--json a,b` picks fields and `--jq`/`-q` runs jq, as gh does. A pull request body edit (`gh pr
-// edit --body`, `--body-file`, or a PATCH through `gh api`) is kept: every route answering with an
-// object that has a `body` then answers with the new one, as GitHub's next read would, and the
-// call's record carries it as `body`.
+// `--json a,b` picks those fields of the answer, or of each object of a list answer (`gh pr list`),
+// and `--jq`/`-q` runs jq, as gh does. A pull request body edit (`gh pr edit --body`,
+// `--body-file`, or a PATCH through `gh api`) is kept: every route answering with an object that
+// has a `body`, or with a list that holds such objects, then answers with the new one in each such
+// object, as GitHub's next read would, and the call's record carries it as `body`.
 //   gh-standin.ts gh <args...>
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { z } from "zod";
@@ -100,22 +101,33 @@ if (!route) {
   exit(1);
 }
 if (body !== undefined) {
-  const edited = routes.map((candidate) =>
-    typeof candidate.stdout === "object" && candidate.stdout !== null && "body" in candidate.stdout
-      ? { ...candidate, stdout: { ...candidate.stdout, body } }
-      : candidate
-  );
+  /** `value` with the new body, when it is an object that has a body. */
+  const withBody = (value: unknown): unknown =>
+    typeof value === "object" && value !== null && !Array.isArray(value) && "body" in value
+      ? { ...value, body }
+      : value;
+  const edited = routes.map((candidate) => ({
+    ...candidate,
+    stdout: Array.isArray(candidate.stdout)
+      ? candidate.stdout.map(withBody)
+      : withBody(candidate.stdout),
+  }));
   writeFileSync(`${run}/fixtures.json`, JSON.stringify({ ...fixtures, routes: edited }));
   kept = body;
 }
 let output: unknown = route.stdout ?? "";
 const jsonIndex = args.indexOf("--json");
-if (jsonIndex >= 0 && typeof output === "object" && output !== null && !Array.isArray(output)) {
-  const record: Record<string, unknown> = { ...output };
+if (jsonIndex >= 0) {
   const fields = (args[jsonIndex + 1] ?? "").split(",");
-  output = Object.fromEntries(
-    fields.filter((field) => field in record).map((field) => [field, record[field]])
-  );
+  /** The fields `--json` names of `value`, when it is an object. */
+  const pick = (value: unknown): unknown => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
+    const record: Record<string, unknown> = { ...value };
+    return Object.fromEntries(
+      fields.filter((field) => Object.hasOwn(record, field)).map((field) => [field, record[field]])
+    );
+  };
+  output = Array.isArray(output) ? output.map(pick) : pick(output);
 }
 let text = typeof output === "string" ? output : JSON.stringify(output);
 const jqIndex = args.findIndex((arg) => arg === "--jq" || arg === "-q");

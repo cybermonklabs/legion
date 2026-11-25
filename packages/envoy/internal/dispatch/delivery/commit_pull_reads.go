@@ -20,7 +20,10 @@ import (
 // caller is the results read (api/results_comparison.go, comparisonReader.readThroughHead), which
 // keeps a memo for the span of one request and no policy. The bound holds across processes:
 // each process keeps the moment in its memory (CommitPullReads), and the database holds the claim
-// every process shares (commit_pull_reads, ClaimAcrossProcesses).
+// every process shares (commit_pull_reads, ClaimAcrossProcesses). A writer's read claims a commit
+// here; a read-only caller's read takes no claim and only reads the writer's, in this process's
+// memory and in the database (RefusesAcrossProcesses), since it stores nothing and keeps nothing
+// after its request.
 
 // CommitPullReadStaleAfter is how long one commit's read-through stands before another read may
 // run for that commit. Each read costs one GET /repos/{owner}/{repo}/commits/{sha}/pulls, and
@@ -103,7 +106,7 @@ func (c *CommitPullReads) Claim(repoFull, sha string, now time.Time) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	key := commitPullKey{repo: repoFull, sha: sha}
-	if until, found := c.notBefore[key]; found && now.Before(until) {
+	if c.refusesLocked(key, now) {
 		return false
 	}
 	if c.notBefore == nil {
@@ -117,6 +120,45 @@ func (c *CommitPullReads) Claim(repoFull, sha string, now time.Time) bool {
 	}
 	c.notBefore[key] = now.Add(CommitPullReadStaleAfter)
 	return true
+}
+
+// Refuses reports whether Claim would refuse sha's pull requests in repoFull at now — a claim or a
+// settle holds the pair past now — read under the lock Claim reads the bound under, and records
+// nothing: no claim, and no sweep. It is RefusesAcrossProcesses' first gate, as Claim is
+// ClaimAcrossProcesses'.
+func (c *CommitPullReads) Refuses(repoFull, sha string, now time.Time) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.refusesLocked(commitPullKey{repo: repoFull, sha: sha}, now)
+}
+
+// RefusesAcrossProcesses reports whether ClaimAcrossProcesses would refuse sha's pull requests in
+// repoFull at now, and records nothing: no claim in this process's memory or in the database, no
+// hold and no sweep. A read-only caller's results read asks it where a writer's read claims
+// (api/results_read_through.go, comparisonReader.readThroughHead), so it asks GitHub nothing where
+// a writer's read at that moment would be refused, and leaves every later read's claim as it found
+// it. It asks this process's memory first (Refuses), and then reads the claim every process shares
+// (commit_pull_reads): a moment held there past now refuses, as claimCommitPullReadSQL's guard
+// refuses a writer's claim. A read that fails refuses too, as a writer's claim that fails grants
+// nothing, and answers its error.
+func (c *CommitPullReads) RefusesAcrossProcesses(ctx context.Context, pool *store.Pool, repoFull, sha string, now time.Time) (bool, error) {
+	if c.Refuses(repoFull, sha, now) {
+		return true, nil
+	}
+	var held bool
+	if err := pool.QueryRow(ctx, `
+		select exists (select 1 from commit_pull_reads where repo = $1 and sha = $2 and not_before > $3)
+	`, repoFull, sha, now).Scan(&held); err != nil {
+		return true, fmt.Errorf("read the claim of the read of the pull requests of %s at %s: %w", repoFull, sha, err)
+	}
+	return held, nil
+}
+
+// refusesLocked is whether the moment held for key is after now, the one test Claim and Refuses
+// both read the bound by.
+func (c *CommitPullReads) refusesLocked(key commitPullKey, now time.Time) bool {
+	until, found := c.notBefore[key]
+	return found && now.Before(until)
 }
 
 // Settle holds the asking about one repository and commit off for CommitPullSettledFor: GitHub

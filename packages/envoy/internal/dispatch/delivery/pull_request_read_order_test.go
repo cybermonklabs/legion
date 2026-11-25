@@ -283,7 +283,7 @@ func TestAReadWhosePlaceCannotBeTakenDoesNotStartAndIsOwed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	newIntake(nil, pool, nil, client, nil, newSettingsCache(pool, nil), unrenamed()).deliver(deliveryWithNoNATS(ctx), intakeMessage{
+	newIntake(tuningFor(t), nil, pool, nil, client, nil, newSettingsCache(pool, nil), unrenamed()).deliver(deliveryWithNoNATS(ctx), intakeMessage{
 		msg:      &natsgo.Msg{Subject: "notifications.github.acme.widgets.pr." + strconv.Itoa(number)},
 		envelope: &contracts.Envelope{Payload: string(payload)},
 	})

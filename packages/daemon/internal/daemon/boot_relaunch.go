@@ -39,7 +39,9 @@ type releaseOutcome int
 
 const (
 	// releaseSettled is a claim that left launch_uncertain by another way, its old process's
-	// hello or a stop, and is not relaunched.
+	// hello or a stop, and is not relaunched; and a release the daemon's stop cut short
+	// (supervisor.decisionFailed answering false), whose claim is still launch_uncertain for the
+	// next boot to take up.
 	releaseSettled releaseOutcome = iota
 	// releaseQueued is a claim released to queued with no process, relaunched now.
 	releaseQueued
@@ -68,9 +70,9 @@ func waitingLaunches(tokens []claim.Token) map[claim.Token]time.Time {
 // from it.
 //
 // It runs in three steps. Every claim's uncertain launch is released first, each on a goroutine of
-// its own. Then the waiting claims' turns are reserved in the wake pacing one at a time, in the
-// order their work was owed (reserveUnfinishedTurns), and only then is every released launch
-// posted at once, each carrying its turn (supervise.RequestSpawn.Turn). Most of these claims were
+// its own. Then the waiting claims are handed turns in the wake pacing in the order their work was
+// owed (reserveUnfinishedTurns), and only then is every released launch posted at once, each
+// carrying its turn (supervise.RequestSpawn.Turn). Most of these claims were
 // waiting in the previous daemon's pacing when it stopped, and a wake is memory only, so this is
 // the queue that daemon was draining, rebuilt: reserved instead as each goroutine reached the
 // gate, its order was chance, and a claim that had waited most of an hour went back to a random
@@ -205,15 +207,15 @@ func (s *supervision) recordedDeath(token claim.Token) (*bootRelaunch, bool) {
 // gate decides.
 //
 // A claim whose release the store refused keeps the turn it was handed for the sweep that retries
-// it, so a refusal that clears costs the claim no place: its turn goes back into the pool and, its
-// work owed longer, it takes the pool's earliest turn again. The pool is what keeps that order when
-// turns pass: a kept turn that has passed is replaced by a fresh one at the pacing's tail, but the
-// pool sorts the fresh with the kept and hands the earliest to the claim owed longest, so the
-// claims owed longest do not launch last, and a passed turn is never run at once, which would let
-// every claim a store outage held launch together outside the pace. A refused claim whose turn
-// has passed is handed none and reserved none while it stays refused, so a refusal that never
-// clears does not take a turn of the pacing at every sweep; its release, when it comes, reserves
-// it one.
+// it, so a refusal that clears costs the claim no place: its turn goes back into the pool, and each
+// claim of the retry takes its place in owed order. The pool is what keeps that order when turns
+// pass: a kept turn that has passed is replaced by a fresh one at the pacing's tail, but the pool
+// sorts the fresh with the kept and hands the earliest to the claim owed longest, so the claims
+// owed longest do not launch last, and a passed turn is never run at once, which would let every
+// claim a store outage held launch together outside the pace. A refused claim whose turn has
+// passed is handed none and reserved none while it stays refused, so a refusal that never clears
+// does not take a turn of the pacing at every sweep; its release, when it comes, reserves it one.
+// The order of the reservations does not matter, since the pool is sorted before it is handed out.
 func (s *supervision) reserveUnfinishedTurns(launches []*bootRelaunch) {
 	deps := &s.supervisor.deps
 	now := deps.Clock.Now()
@@ -224,7 +226,6 @@ func (s *supervision) reserveUnfinishedTurns(launches []*bootRelaunch) {
 	var (
 		queue []owed
 		pool  []time.Time
-		fresh int
 	)
 	for _, l := range launches {
 		c := l.m.View().Claim
@@ -232,18 +233,15 @@ func (s *supervision) reserveUnfinishedTurns(launches []*bootRelaunch) {
 			l.turn = time.Time{}
 			continue
 		}
-		switch {
-		case l.turn.After(now):
-			pool = append(pool, l.turn)
-		case l.release == releaseRefused && !l.turn.IsZero():
-			continue
-		default:
-			fresh++
+		turn := l.turn
+		if !turn.After(now) {
+			if l.release == releaseRefused && !turn.IsZero() {
+				continue
+			}
+			turn = deps.WakePace.Reserve(deps.Clock.Now())
 		}
+		pool = append(pool, turn)
 		queue = append(queue, owed{launch: l, since: owedSince(c)})
-	}
-	for range fresh {
-		pool = append(pool, deps.WakePace.Reserve(deps.Clock.Now()))
 	}
 	slices.SortFunc(pool, time.Time.Compare)
 	slices.SortStableFunc(queue, func(a, b owed) int {
@@ -254,10 +252,12 @@ func (s *supervision) reserveUnfinishedTurns(launches []*bootRelaunch) {
 	}
 }
 
-// owedSince is when the work an unfinished launch is for was first owed: the moment the task the
-// claim holds was queued to it, and the zero time for a claim that holds none.
+// owedSince is when the work an unfinished launch is for was first owed: the moment the task that
+// hands the claim work was queued to it (supervise.HoldsWork), and the zero time for a claim that
+// holds none — no delivery, the daemon's own notice of its relaunch, or a task of news alone,
+// none of which is work a person waits on.
 func owedSince(c supervise.Claim) time.Time {
-	if c.Pending == nil {
+	if !supervise.HoldsWork(c.Pending) {
 		return time.Time{}
 	}
 	return c.Pending.QueuedAt

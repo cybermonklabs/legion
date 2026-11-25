@@ -252,7 +252,7 @@ func TestTheLinkBackfillOwesTheReadOfEachLinkedPullRequestWithNoHead(t *testing.
 		}
 	}
 	for issue, want := range map[string]int{"ATTR-901": 5063, "ATTR-904": 5067} {
-		heads, err := attributor.HeadsAttributedTo(ctx, pool, issue)
+		heads, err := attributor.HeadsAttributedTo(ctx, pool, issue, HeadAnswers{})
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -112,7 +112,7 @@ func (s *server) refuseUnknownCommit(ctx context.Context, q refs.Queryer, issueK
 	if repo == nil {
 		return nil, nil
 	}
-	heads, err := s.deps.Attributor.HeadsAttributedTo(ctx, q, issueKey)
+	heads, err := s.deps.Attributor.HeadsAttributedTo(ctx, q, issueKey, delivery.HeadAnswers{})
 	if err != nil {
 		slog.Warn("dispatch: read the pull request heads of a recorded result's commit",
 			"issue", issueKey, "commit", sha, "error", err)
@@ -437,13 +437,16 @@ func (c *comparisonReader) linkedBranchBases(ctx context.Context, check model.Ch
 // gives the issue a pull request it links in any repository, and baseBranchMergedFor reads the
 // pull requests of the repository the issue resolves to alone, so this reads its merge there. The
 // key is the issue and the repository: an issue whose work spans two repositories merged once in
-// each. The memo keeps a failed read as baseBranchMergedFor's does, for the same reason.
+// each. The memo keeps a failed read as baseBranchMergedFor's does, for the same reason. It reads
+// the caller's request's answers as baseBranchMergedFor does: a merged pull request a read-only
+// caller's read-through of a linked repository's commit learned is a row a writer's read-through
+// would have stored, which its read here finds.
 func (c *comparisonReader) baseBranchMergedIn(ctx context.Context, issueKey, repo string) (string, bool) {
 	memo := [2]string{issueKey, repo}
 	if answer, memoized := c.linkedBaseBranches[memo]; memoized {
 		return answer.branch, answer.read
 	}
-	branch, err := c.server.deps.Attributor.BaseBranchMergedIn(ctx, c.server.deps.Store.Pool, issueKey, repo)
+	branch, err := c.server.deps.Attributor.BaseBranchMergedIn(ctx, c.server.deps.Store.Pool, issueKey, repo, c.answers)
 	if err != nil {
 		slog.Warn("dispatch: read the branch a result's issue merged into", "issue", issueKey, "repo", repo, "error", err)
 	}

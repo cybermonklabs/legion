@@ -27,9 +27,10 @@ import (
 // it again, Dispatch's standby polls for the life of the process: there is no deadline and no
 // exit. A durable another envoy-dispatch process holds is not a failed start but the ordinary
 // state of every process but one, which has every other thing a Dispatch server does to get on
-// with meanwhile. Its value is 2 s in every build. A var, with the hold's three below, so a test of
-// a hold's lapse shrinks all four together (shrinkIntakeHold) and waits out a lapse of seconds.
-var durableBindInterval = 2 * time.Second
+// with meanwhile. Its value is 2 s in every build. It is the default of the intake's own
+// bindInterval (intakeTuning), which a test of a hold's lapse shortens, with the hold's three
+// below, on the intakes it builds (shrinkIntakeHold), and waits out a lapse of seconds.
+const durableBindInterval = 2 * time.Second
 
 // standbyLogEvery bounds how often one intake says it is standing by for its durable. The first
 // refusal is logged as it happens, so an operator sees at once which process stood by and why;
@@ -43,9 +44,10 @@ const standbyLogEvery = 30 * time.Second
 // standby can take it. A holder that dies is replaced within intakeHoldTTL plus one
 // durableBindInterval. The holder checks that the durable still delivers to it on the same
 // interval it renews (heldDurable.check). Their values are 15 s, 5 s and 2 s in every build, which
-// duty.TryHold requires to keep Renew under TTL less Margin. Vars so a test of a hold's lapse
-// shrinks them (shrinkIntakeHold), in the same proportion, before it starts an intake.
-var (
+// duty.TryHold requires to keep Renew under TTL less Margin. They are the defaults of the intake's
+// own holdTTL, holdRenew and holdMargin (intakeTuning), which a test of a hold's lapse shortens, in
+// the same proportion, on the intakes it builds (shrinkIntakeHold) before it starts them.
+const (
 	intakeHoldTTL    = 15 * time.Second
 	intakeHoldRenew  = 5 * time.Second
 	intakeHoldMargin = 2 * time.Second
@@ -205,10 +207,14 @@ type heldDurable struct {
 	holder uuid.UUID
 	// throttle is this intake's own standby-log state (bindThrottle).
 	throttle *bindThrottle
-	// config is the durable's config in this build; each call draws a fresh deliver subject.
-	config func() natsgo.ConsumerConfig
+	// config is the durable's config in this build, timed by tuning; each call draws a fresh
+	// deliver subject.
+	config func(*intakeTuning) natsgo.ConsumerConfig
 	// name is the durable's name: config's Durable, which every call returns alike.
 	name string
+	// tuning is what this intake times its work by and the steps a test hooks (intakeTuning),
+	// shared with every delivery it makes.
+	tuning *intakeTuning
 	// key reads whether this intake wants a message at all and the key whose goroutine handles it
 	// (intakeKey for the delivery intake, jobKey for the job intake).
 	key func(*natsgo.Msg) (string, *contracts.Envelope, bool)
@@ -243,13 +249,13 @@ type heldDurable struct {
 }
 
 // newHeldDurable builds the delivery from config's durable on natsClient, taking its hold and
-// consumer lease on leases, routing each message by key and handing it to handle.
-func newHeldDurable(natsClient *bus.Client, leases intakeLeases, config func() natsgo.ConsumerConfig,
+// consumer lease on leases, routing each message by key and handing it to handle, timed by tuning.
+func newHeldDurable(tuning *intakeTuning, natsClient *bus.Client, leases intakeLeases, config func(*intakeTuning) natsgo.ConsumerConfig,
 	key func(*natsgo.Msg) (string, *contracts.Envelope, bool), handle func(*intakeDelivery, intakeMessage),
 ) heldDurable {
 	return heldDurable{
 		nats: natsClient, leases: leases, holder: uuid.New(), throttle: &bindThrottle{},
-		config: config, name: config().Durable, key: key, handle: handle,
+		config: config, name: config(tuning).Durable, tuning: tuning, key: key, handle: handle,
 	}
 }
 
@@ -268,12 +274,12 @@ func (d *heldDurable) run(ctx context.Context) {
 	// Armed before the first attempt, so a take-over under way as ctx ends -- a standby's poll,
 	// whose JetStream calls take their own time -- spends the stop's budget rather than starting
 	// it late.
-	stopping, release := stopContext(ctx)
+	stopping, release := stopContext(ctx, d.tuning.stopBudget)
 	defer release()
 	defer d.stop(stopping)
-	binds := time.NewTicker(durableBindInterval)
+	binds := time.NewTicker(d.tuning.bindInterval)
 	defer binds.Stop()
-	checks := time.NewTicker(intakeHoldRenew)
+	checks := time.NewTicker(d.tuning.holdRenew)
 	defer checks.Stop()
 	attempt := func() {
 		if d.subject == "" {
@@ -301,7 +307,7 @@ func (d *heldDurable) run(ctx context.Context) {
 			// since another process may take the hold from that moment. The delivery's loss
 			// watcher seals it and settles its hand-backs meanwhile (watchLoss), on a goroutine
 			// of its own, so nothing this loop waits for can delay that.
-			d.stopDeliveringWithin(intakeHoldMargin)
+			d.stopDeliveringWithin(d.tuning.holdMargin)
 			d.hold, d.settled, d.subject = nil, nil, ""
 		}
 	}
@@ -334,7 +340,7 @@ func (d *heldDurable) attempt(ctx context.Context) {
 
 // lookupDurable reads the durable's state from the server, bounded by intakeHoldRenew.
 func (d *heldDurable) lookupDurable(ctx context.Context) (*natsgo.ConsumerInfo, error) {
-	lookup, cancel := context.WithTimeout(ctx, intakeHoldRenew)
+	lookup, cancel := context.WithTimeout(ctx, d.tuning.holdRenew)
 	defer cancel()
 	return d.nats.JS().ConsumerInfo(bus.Stream, d.name, natsgo.Context(lookup))
 }
@@ -347,7 +353,7 @@ const heldElsewhere = "dispatch delivery: NATS consumer held by another process;
 // takes a lapsed hold, so the lapsed hold's token is read first (duty.HoldToken).
 func (d *heldDurable) takeHold(ctx context.Context) bool {
 	holdName := intakeHoldName(d.name)
-	bounded, cancel := context.WithTimeout(ctx, intakeHoldRenew)
+	bounded, cancel := context.WithTimeout(ctx, d.tuning.holdRenew)
 	defer cancel()
 	token, live, err := duty.HoldToken(bounded, d.leases, holdName)
 	switch {
@@ -361,7 +367,7 @@ func (d *heldDurable) takeHold(ctx context.Context) bool {
 		return false
 	}
 	hold, err := duty.TryHold(bounded, d.leases, holdName, d.holder, duty.HoldOptions{
-		TTL: intakeHoldTTL, Renew: intakeHoldRenew, Margin: intakeHoldMargin, Token: token,
+		TTL: d.tuning.holdTTL, Renew: d.tuning.holdRenew, Margin: d.tuning.holdMargin, Token: token,
 	})
 	if err != nil {
 		if ctx.Err() == nil {
@@ -420,7 +426,7 @@ func (d *heldDurable) holds() bool {
 // absent leaves behind).
 func (d *heldDurable) takeOver(ctx context.Context) {
 	js := d.nats.JS()
-	wanted := d.config()
+	wanted := d.config(d.tuning)
 	name := wanted.Durable
 	create := wanted
 	deleteFirst := false
@@ -556,10 +562,10 @@ func (d *heldDurable) finishTakeOver(create natsgo.ConsumerConfig, deleteFirst b
 		return
 	}
 	if d.retryHeld(finish, "create NATS consumer", func(call context.Context) error {
-		_, err := createDurable(js, &create, natsgo.Context(call))
+		_, err := d.tuning.createDurable(js, &create, natsgo.Context(call))
 		return err
 	}, "subject", create.FilterSubject, "start_seq", create.OptStartSeq) != nil {
-		d.stopDeliveringWithin(intakeHoldRenew)
+		d.stopDeliveringWithin(d.tuning.holdRenew)
 		return
 	}
 	bound := intakeHoldToken{subject: create.DeliverSubject}
@@ -569,7 +575,7 @@ func (d *heldDurable) finishTakeOver(create natsgo.ConsumerConfig, deleteFirst b
 		// The durable delivers here, but the hold does not say so: the next holder would take
 		// the binding for a process that holds nothing and wait for it. Stop, and take the
 		// durable over again on the next attempt.
-		d.stopDeliveringWithin(intakeHoldRenew)
+		d.stopDeliveringWithin(d.tuning.holdRenew)
 		return
 	}
 	d.recorded, d.subject = bound, create.DeliverSubject
@@ -631,12 +637,6 @@ func (d *heldDurable) failedStep(doing string, err error, attributes []any) erro
 	return err
 }
 
-// createDurable creates the durable config describes on the notification stream. A var so a test
-// can make a take-over's create fail after its delete.
-var createDurable = func(js natsgo.JetStreamContext, config *natsgo.ConsumerConfig, opts ...natsgo.JSOpt) (*natsgo.ConsumerInfo, error) {
-	return js.AddConsumer(bus.Stream, config, opts...)
-}
-
 // durableDeliversElsewhere is the line of an intake whose durable no longer delivers to its
 // deliver subject, so it stops delivering (check).
 const durableDeliversElsewhere = "dispatch delivery: the NATS consumer no longer delivers to this intake; it stops delivering"
@@ -660,7 +660,7 @@ func (d *heldDurable) check(ctx context.Context) {
 	slog.Warn(durableDeliversElsewhere, "name", d.name)
 	// The durable's messages are the next holder's from here, so a handler still running after
 	// the renewal interval is given up rather than left to write what that holder writes too.
-	d.stopDeliveringWithin(intakeHoldRenew)
+	d.stopDeliveringWithin(d.tuning.holdRenew)
 	d.subject = ""
 }
 
@@ -743,7 +743,7 @@ func (d *heldDurable) finalizeHandBacks(delivery *intakeDelivery, hold *duty.Hol
 	defer retry.Stop()
 	for {
 		if d.handBacksSettled() {
-			if before := finalizerBeforeRelease.Load(); before != nil {
+			if before := d.tuning.beforeRelease.Load(); before != nil {
 				(*before)()
 			}
 			select {
@@ -891,10 +891,6 @@ func (d *heldDurable) confirmHandBacks(delivery *intakeDelivery) <-chan bool {
 	return confirmed
 }
 
-// finalizerBeforeRelease is nil outside the shutdown row. It holds a settled finalizer before it
-// releases, so the row sees that stopIntakes waits for it.
-var finalizerBeforeRelease atomic.Pointer[func()]
-
 // waitFinalizers waits for hand-backs a stopped durable left running to settle after its NATS
 // client closes. They can then no longer wait for that client, and release their holds through the
 // still-open database pool before its caller closes it (StartIntakes).
@@ -906,7 +902,7 @@ func (d *heldDurable) releaseHold(hold *duty.Hold, lapse bool) {
 	if lapse {
 		release = hold.Lapse
 	}
-	releasing, cancel := context.WithTimeout(context.Background(), intakeHoldRenew)
+	releasing, cancel := context.WithTimeout(context.Background(), d.tuning.holdRenew)
 	defer cancel()
 	if err := release(releasing); err != nil {
 		slog.Error("dispatch delivery: release the intake's hold", "name", d.name, "error", err)

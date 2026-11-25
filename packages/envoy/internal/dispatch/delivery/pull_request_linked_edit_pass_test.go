@@ -71,7 +71,7 @@ func TestALinkedPullRequestWhoseBodyIsEditedIsComparedBeforeAnyResult(t *testing
 				}
 			}
 			if c.action != "" {
-				intake := newIntake(nil, pool, nil, client, nil, newSettingsCache(pool, nil), unrenamed())
+				intake := newIntake(tuningFor(t), nil, pool, nil, client, nil, newSettingsCache(pool, nil), unrenamed())
 				payload, err := json.Marshal(prEnvelope("acme/widgets", number, c.action, head, "topic", body, at))
 				if err != nil {
 					t.Fatal(err)
@@ -84,7 +84,7 @@ func TestALinkedPullRequestWhoseBodyIsEditedIsComparedBeforeAnyResult(t *testing
 			NewReconcile(pool, client, events.NewBroker(), unrenamed()).runOnce(ctx)
 			readsAfterPass := github.reads.Load()
 
-			heads, err := unrenamed().HeadsAttributedTo(ctx, pool, key)
+			heads, err := unrenamed().HeadsAttributedTo(ctx, pool, key, HeadAnswers{})
 			if err != nil {
 				t.Fatal(err)
 			}

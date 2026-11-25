@@ -384,7 +384,7 @@ func TestNewestPullRequestHeadTakesTheOpenOneElseTheMergedOne(t *testing.T) {
 	}
 	newest := func(issueKey string) (NewestHead, bool) {
 		t.Helper()
-		head, found, err := unrenamed().NewestPullRequestHead(ctx, pool, issueKey)
+		head, found, err := unrenamed().NewestPullRequestHead(ctx, pool, issueKey, HeadAnswers{})
 		if err != nil {
 			t.Fatalf("NewestPullRequestHead(%s): %v", issueKey, err)
 		}
@@ -510,7 +510,7 @@ func TestAPullRequestTitledAfterAnotherRepositorysIssueKeepsItsOwn(t *testing.T)
 	client := fake.newTestClient()
 
 	// The envelope path: #21, reported by a `pull_request` event.
-	intake := newIntake(nil, pool, deliveryTestLeases(t, pool), client, events.NewBroker(), nil, unrenamed())
+	intake := newIntake(tuningFor(t), nil, pool, deliveryTestLeases(t, pool), client, events.NewBroker(), nil, unrenamed())
 	if _, err := intake.recordPullRequestHead(ctx, map[string]string{
 		"kind": "pr", "action": "opened", "merged": "false", "repo": "acme/gadgets", "number": "21",
 		"title": title, "body": "", "head_ref": "legion/work", "head_repo": "acme/gadgets",
@@ -698,7 +698,7 @@ func TestAForkPullRequestEnvelopeIsNoBasisForAResult(t *testing.T) {
 		t.Error("a pull request whose head is not this repository's paged its commit messages; it attributes nobody whatever they say")
 		mustEncode(t, w, []any{})
 	})
-	intake := newIntake(nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed())
+	intake := newIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed())
 	envelope := func(number int) map[string]string {
 		return map[string]string{
 			"kind": "pr", "action": "opened", "repo": "acme/widgets", "number": strconv.Itoa(number),
@@ -876,7 +876,7 @@ func TestAMergeEnvelopeNamingNoHeadRepositoryKeepsTheStoredAttribution(t *testin
 	const mergedHead = "1212121212121212121212121212121212121212"
 	fake := newFakeGitHub(t)
 	github := serveGitHubPulls(t, fake, "acme/widgets")
-	intake := newIntake(nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed())
+	intake := newIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed())
 	envelope := func(action, merged, headSHA, updatedAt string, fields map[string]string) map[string]string {
 		payload := map[string]string{
 			"kind": "pr", "action": action, "merged": merged, "repo": "acme/widgets", "number": "71",
@@ -1443,7 +1443,7 @@ func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedOnceItsReadIsOwed(t *tes
 	natsClient := intakeTestClient(t)
 	fake := newFakeGitHub(t)
 	serveMergedPullRequest(t, fake, 9102)
-	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
+	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool),
 		fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 	before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
@@ -1493,7 +1493,7 @@ func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedOnceItsReadIsOwed(t *tes
 func TestEveryFailureOfTheReadsBeforeAHeadWriteIsMarked(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliveryProject(t, ctx, pool)
-	in := newIntake(nil, pool, nil, newFakeGitHub(t).newTestClient(), events.NewBroker(), nil, unrenamed())
+	in := newIntake(tuningFor(t), nil, pool, nil, newFakeGitHub(t).newTestClient(), events.NewBroker(), nil, unrenamed())
 	payload := map[string]string{
 		"kind": "pr", "action": "opened", "repo": "acme/widgets", "number": "9103",
 		"head_sha": landedCommit, "head_ref": "legion/INFRA-1691", "head_repo": "acme/widgets",
@@ -1858,25 +1858,25 @@ func TestAHoldNothingStandsForIsDroppedAsItIsRead(t *testing.T) {
 	pair := repoBranch{repo: "acme/widgets", branch: "integration/138"}
 	asked := time.Now()
 
-	branches.markUnseen(pair, asked)
-	if !branches.unseenHeld(pair, asked.Add(BranchCommitStaleAfter/2)) {
+	branches.markUnseen(nil, pair, asked)
+	if !branches.unseenHeld(nil, pair, asked.Add(BranchCommitStaleAfter/2)) {
 		t.Fatal("a pair held half the span ago reads unheld, want held")
 	}
-	if branches.unseenHeld(pair, asked.Add(BranchCommitStaleAfter+time.Minute)) {
+	if branches.unseenHeld(nil, pair, asked.Add(BranchCommitStaleAfter+time.Minute)) {
 		t.Fatal("a pair held past the span reads held, want unheld")
 	}
 	if got := len(branches.compares); got != 0 {
 		t.Fatalf("entries after reading a hold nothing stands for = %d, want none", got)
 	}
 
-	branches.markSeen(pair, asked)
-	if branches.unseenHeld(pair, asked.Add(time.Minute)) {
+	branches.markSeen(nil, pair, asked)
+	if branches.unseenHeld(nil, pair, asked.Add(time.Minute)) {
 		t.Fatal("a pair GitHub answered reads held, want unheld")
 	}
 	if got := len(branches.compares); got != 1 {
 		t.Fatalf("entries after reading a pair answered a minute ago = %d, want the answer kept", got)
 	}
-	if branches.unseenHeld(pair, asked.Add(BranchCommitStaleAfter+time.Minute)) {
+	if branches.unseenHeld(nil, pair, asked.Add(BranchCommitStaleAfter+time.Minute)) {
 		t.Fatal("a pair answered past the span reads held, want unheld")
 	}
 	if got := len(branches.compares); got != 0 {

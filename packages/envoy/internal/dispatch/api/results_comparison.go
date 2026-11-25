@@ -18,6 +18,32 @@ import (
 // delivery.Attributor.HeadsAttributedTo, delivery.Attributor.ReadThroughCommitPulls). What lives
 // here is the choice of bases (comparedWith, measuredBranches) and one memo per read, so a tab
 // listing twenty results against a handful of commits costs a handful of round trips.
+//
+// A read-only caller's read (model.Credential.ReadOnly) asks GitHub what a writer's read made at
+// the same moment asks and answers what it answers, and stores nothing: no pull_request_heads,
+// pull_request_texts or branch_commits row, no settle of an owed read and no event, and no claim,
+// hold, seen mark or default branch in this process's caches or in commit_pull_reads, so it keeps
+// nothing it learned after its request (plan D32). Two things of the process change as they do
+// for any read, since neither changes an answer or a GitHub call: the GitHub client's token cache
+// fills as its calls mint installation tokens (githubapp.Client.RepositoryToken), and a lapsed
+// hold it reads is deleted, as a writer's read deletes it (delivery.Branches' unseenHeld and
+// isDefaultBranch). It reads the writer's claims and settles of a commit
+// (server.commitPulls.RefusesAcrossProcesses) without taking one. Each write a writer's
+// read-through would make, its own read-through makes with the writer's own code in a
+// transaction that it rolls back, and keeps for the rest of its own request (answers): each later
+// read of the stored rows runs in such a transaction after those writes, so it reads the rows a
+// writer's read would read at that place, and its branch reads carry the default branch and the
+// pairs refused as unseen that its own reads found (carried), in the writer's order and before
+// the same exits, so the two make the same GitHub calls and give the same answer.
+
+// resultsNow is the moment a results read takes each of its moments from: server.resultsClock's,
+// or time.Now's where that is nil, as it is on every server the deployment builds.
+func (s *server) resultsNow() time.Time {
+	if s.resultsClock != nil {
+		return s.resultsClock()
+	}
+	return time.Now()
+}
 
 // comparisonReader answers one read of one issue's results: for each check the bases its
 // results are compared with, and for each result where its commit stands among them.
@@ -100,18 +126,28 @@ import (
 //
 // The repository each issue resolves to, its default branch, the branch each issue's pull
 // request merged into, the pull request heads of each issue and GitHub's answer about each
-// repository, branch and commit are each read once per read of the results, and so are the
-// canonical name of each linked repository a result's row takes its commit to be of, one GitHub
-// said holds that commit when the result was recorded, and the branch each issue's linked pull
-// request merged into in each such repository. The branch is in that last key of GitHub's, and
-// not the repository and the commit alone, because one issue's Verification document may hold an
-// `after_merge` check and a `default_branch` check with a result at the same commit: two
-// questions, with two answers, that one key for both would collapse into whichever was asked
-// first. Across reads, a repository's default branch, a commit's place on a branch and the last
-// read-through of a commit's pull requests are held by delivery (server.branches,
-// branch_commits, server.commitPulls and commit_pull_reads).
+// repository, branch and commit are each read once per read of the results, and so is the branch
+// each issue's linked pull request merged into in each linked repository a result's row takes its
+// commit to be of, one GitHub said holds that commit when the result was recorded. The branch is
+// in that last key of GitHub's, and not the repository and the commit alone, because one issue's
+// Verification document may hold an `after_merge` check and a `default_branch` check with a
+// result at the same commit: two questions, with two answers, that one key for both would
+// collapse into whichever was asked first. The canonical name of such a linked repository is no
+// read: it comes from the rename pairs Dispatch holds in memory (refs.Renames.Canonical over
+// Deps.Renames). Across reads, a repository's default branch, a commit's place on a branch and
+// the last read-through of a commit's pull requests are held by delivery (server.branches,
+// branch_commits, server.commitPulls and commit_pull_reads). A read-only caller's read writes
+// none of those: it reads them as a writer's read does, and carries what a writer's read would
+// write for the rest of its own request alone (answers, carried).
 type comparisonReader struct {
 	server *server
+	// readOnly is whether the request the reader reads for was made with a read-only credential
+	// (model.Credential.ReadOnly), read once when the reader is made from the caller the read-only
+	// gate put on the request's context (refuseReadOnlyToken): the gate puts every caller that can
+	// be read-only there, a broker-issued token and a personal token alike, and a cookie, the
+	// shared token and a service-account token never are. optionalActor answers the handler the
+	// same caller, and it cannot change within one read.
+	readOnly bool
 	// at is the one commit the reader named, and noCommitNamed where it named none.
 	at                 string
 	repos              map[string]repositoryAnswer
@@ -125,6 +161,25 @@ type comparisonReader struct {
 	// (notKnownOf), by canonical name. Only answer fills it, after learn, so a pull request that
 	// the same read learns is in it.
 	notKnown map[string]notKnownAnswer
+	// answers is, for a read-only caller's read, each write its own read-throughs would have made
+	// had a writer made them, in order, and stored nowhere (delivery.HeadAnswers): every read of
+	// the stored heads, of the merged branch, in the issue's own repository and in a linked one,
+	// of the newest head a check CI proves is derived at, and of the pull requests whose answer is
+	// not known, runs in a transaction that makes those writes with the writer's own code and is
+	// rolled back after the read (delivery.HeadAnswers.Read), and a commit's branch answer reads a
+	// merge among them as its yes (delivery.Branches.ReadCommitOnBranch), which is what a writer's
+	// read reads once its read-throughs have stored them. A writer's read stores what it finds and
+	// passes this empty, which reads the stored rows alone. It is dropped with the read.
+	answers delivery.HeadAnswers
+	// carried is what a read-only caller's branch reads carry for this read alone in place of what
+	// a writer's read writes on server.branches: the default branch its own read of a repository
+	// found, and the pairs a compare read of its own was refused as unseen
+	// (delivery.BranchCarry). It is dropped with the read.
+	carried delivery.BranchCarry
+	// askedPulls is each repository-and-commit pair a read-only caller's read has asked GitHub
+	// for in this read: a second result at the same commit is answered as a writer's read
+	// answers it, whose claim of that pair this read already holds (answerCommitPulls).
+	askedPulls map[[2]string]struct{}
 }
 
 // noCommitNamed is the `at` of a read that named no commit, which is every read but the one a
@@ -190,9 +245,9 @@ type baseBranchAnswer struct {
 	read   bool
 }
 
-func newComparisonReader(s *server, at string) *comparisonReader {
+func newComparisonReader(ctx context.Context, s *server, at string) *comparisonReader {
 	return &comparisonReader{
-		server: s, at: at, repos: map[string]repositoryAnswer{},
+		server: s, readOnly: readOnlyCredential(ctx) != nil, at: at, repos: map[string]repositoryAnswer{},
 		defaults:           map[string]defaultBranchAnswer{},
 		baseBranches:       map[string]baseBranchAnswer{},
 		linkedBaseBranches: map[[2]string]baseBranchAnswer{},
@@ -200,6 +255,7 @@ func newComparisonReader(s *server, at string) *comparisonReader {
 		readThroughs:       map[[2]string]struct{}{},
 		commits:            map[[3]string]delivery.BranchAnswer{},
 		notKnown:           map[string]notKnownAnswer{},
+		askedPulls:         map[[2]string]struct{}{},
 	}
 }
 
@@ -307,8 +363,13 @@ func (c *comparisonReader) comparedWith(ctx context.Context, check model.CheckBl
 // request whose answer is not known, names model.ReasonIssueNotKnown and lists each of them
 // (decision D2): one of them can be the issue's own, so "no pull request" says more than Dispatch
 // knows. A failed read of those pull requests is model.ReasonReadFailed.
+//
+// A read-only caller's read passes the writes its own read-throughs would have made (answers),
+// and the statement reads the stored rows after them, which is what a writer's read reads once
+// its read-throughs have stored them; a writer's read passes none and reads the stored heads
+// alone.
 func (c *comparisonReader) headBases(ctx context.Context, issueKey string) comparison {
-	heads, err := c.server.deps.Attributor.HeadsAttributedTo(ctx, c.server.deps.Store.Pool, issueKey)
+	heads, err := c.server.deps.Attributor.HeadsAttributedTo(ctx, c.server.deps.Store.Pool, issueKey, c.answers)
 	if err != nil {
 		slog.Warn("dispatch: read the pull request heads of a check's issue", "issue", issueKey, "error", err)
 		return noBases(model.ReasonReadFailed)
@@ -473,13 +534,21 @@ func (c *comparisonReader) nothingReason(ctx context.Context, issueKey string) s
 // document, before any check is answered: a pull request that GitHub named can be a basis now,
 // at that commit or at another result's commit, and the same read compares with it (R5). It reads
 // a commit that a basis of the check already is, too: GitHub can name a second pull request at
-// the same head, whose own event never arrived (R6 of the results lookup).
+// the same head, whose own event never arrived (R6 of the results lookup). A read-only caller's
+// read stores no pull request head: it keeps the writes a writer's read-through would have made
+// (answerCommitPulls, answers), and every read after it reads the rows as they would stand had it
+// made them, so the same heads are its bases too. So every check of one answer is answered on the
+// heads as they stand after this read's read-throughs, both callers alike (plan D32).
 //
 // It is what stops a result recorded at a commit before any pull request carried it from
 // standing at no basis for ever (dispatch://INFRA-1240). It runs over the whole document
 // before any check is answered, so every `before_merge` check of one issue names the same
 // list of heads: a head one check's result taught Dispatch is a basis the sibling check is
-// read against too, whichever came first in the document.
+// read against too, whichever came first in the document. It runs before any check CI proves
+// is derived, too (deriveCIResults), which reads the issue's newest pull request head after it
+// (delivery.NewestPullRequestHead): a head learned here is the head such a check is derived at, as it
+// is another check's basis. The checks' results it reads are the recorded ones, since a derived
+// result is at that newest head and has nothing left to learn.
 //
 // A reader that named a commit asks GitHub nothing at all, and learns nothing here.
 //
@@ -854,6 +923,7 @@ func (c *comparisonReader) measuredBranches(
 	return branches, true
 }
 
+
 // repositoryOf is checkIssueRepository read once per read of the results: the repository the
 // check's issue resolves to, and whether the resolve answered at all. The memo keeps the three
 // states apart as the resolve states them, so an issue that resolves to none, a resolve that
@@ -888,12 +958,22 @@ func (c *comparisonReader) defaultBranchOf(ctx context.Context, issueKey string)
 // branch and whether the App answered it, read once per repository per read of the results.
 // defaultBranchOf names the repository the check's issue resolves to, and commitRepositoryOf and
 // onNamedBranch name the repository a result's row takes its commit to be of. The memo is the
-// same for both, so a repository that is both is read once.
+// same for both, so a repository that is both is read once. A writer's read puts what GitHub
+// answered in the process's cache (delivery.Branches.DefaultBranchOf); a read-only caller's read
+// carries it for the rest of its own request instead (carried,
+// delivery.Branches.ReadDefaultBranchOf), where its branch reads read it as a writer's read their
+// cache entry.
 func (c *comparisonReader) defaultBranchIn(ctx context.Context, repo string) (string, bool) {
 	if answer, memoized := c.defaults[repo]; memoized {
 		return answer.branch, answer.readable
 	}
-	branch, readable := c.server.branches.DefaultBranchOf(ctx, c.server.deps.GitHub, repo, time.Now())
+	var branch string
+	var readable bool
+	if c.readOnly {
+		branch, readable = c.server.branches.ReadDefaultBranchOf(ctx, c.server.deps.GitHub, &c.carried, repo, c.server.resultsNow())
+	} else {
+		branch, readable = c.server.branches.DefaultBranchOf(ctx, c.server.deps.GitHub, repo, c.server.resultsNow())
+	}
 	c.defaults[repo] = defaultBranchAnswer{branch: branch, readable: readable}
 	return branch, readable
 }
@@ -903,7 +983,9 @@ func (c *comparisonReader) defaultBranchIn(ctx context.Context, repo string) (st
 // (delivery.Attributor.BaseBranchMergedFor), read once per read of the results, and whether the
 // read answered at all. An issue Dispatch holds no merge of answers noMergedBranch, which
 // measuredBranches reads as no branch but the repository's default one to ask about. A linked
-// repository's merge is baseBranchMergedIn's.
+// repository's merge is baseBranchMergedIn's. It reads the caller's request's answers as
+// headBases does, so a merge a read-only caller's read-through learned is read as the row a
+// writer's read-through stored.
 //
 // The memo keeps a failed read as it keeps an answered one, so a second result of the same
 // issue neither reads again nor is quietly compared with the default branch because the first
@@ -913,7 +995,7 @@ func (c *comparisonReader) baseBranchMergedFor(ctx context.Context, issueKey str
 	if answer, memoized := c.baseBranches[issueKey]; memoized {
 		return answer.branch, answer.read
 	}
-	branch, err := c.server.deps.Attributor.BaseBranchMergedFor(ctx, c.server.deps.Store.Pool, issueKey)
+	branch, err := c.server.deps.Attributor.BaseBranchMergedFor(ctx, c.server.deps.Store.Pool, issueKey, c.answers)
 	if err != nil {
 		slog.Warn("dispatch: read the branch a result's issue merged into", "issue", issueKey, "error", err)
 	}
@@ -932,13 +1014,28 @@ func (c *comparisonReader) baseBranchMergedFor(ctx context.Context, issueKey str
 // The memo holds the answer's own kind, so a branch the App cannot see and a read that failed
 // reach the walk as the different things they are: one is "not on that branch", the other is
 // no answer at all (onNamedBranch).
+//
+// A writer's read writes what a compare read answers to branch_commits
+// (delivery.Branches.CommitOnBranch). A read-only caller's read writes nothing
+// (delivery.Branches.ReadCommitOnBranch): it reads a merge its own read-throughs learned as the
+// yes a writer's store would have written, and the default branch and the unseen pairs it carries
+// where a writer's read reads its cache entry and its holds. This memo is where it answers a
+// compare read's answer for the rest of its request, where a writer's later read in the same
+// request reads the row its own read wrote; after the request it keeps none of it, so a writer's
+// read after it still asks and writes the row.
 func (c *comparisonReader) onBranch(ctx context.Context, repo, branch, sha string) delivery.BranchAnswer {
 	memo := [3]string{repo, branch, sha}
 	if answer, memoized := c.commits[memo]; memoized {
 		return answer
 	}
-	answer := c.server.branches.CommitOnBranch(
-		ctx, c.server.deps.Store.Pool, c.server.deps.GitHub, repo, branch, sha, time.Now())
+	var answer delivery.BranchAnswer
+	if c.readOnly {
+		answer = c.server.branches.ReadCommitOnBranch(
+			ctx, c.server.deps.Store.Pool, c.server.deps.GitHub, c.answers, &c.carried, repo, branch, sha, c.server.resultsNow())
+	} else {
+		answer = c.server.branches.CommitOnBranch(
+			ctx, c.server.deps.Store.Pool, c.server.deps.GitHub, repo, branch, sha, c.server.resultsNow())
+	}
 	c.commits[memo] = answer
 	return answer
 }

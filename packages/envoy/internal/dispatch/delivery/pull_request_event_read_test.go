@@ -238,7 +238,7 @@ func TestALaterEventOfAClosedPullRequestLeavesItClosed(t *testing.T) {
 	issue := seedHeadIssue(t, ctx, pool, 71)
 	fake := newFakeGitHub(t)
 	github := serveGitHubPulls(t, fake, "acme/widgets")
-	intake := newIntake(nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed())
+	intake := newIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed())
 	const head = "7171717171717171717171717171717171717171"
 	branch, body := "legion/"+issue, "Dispatch: "+issue
 	at := func(hour int) time.Time { return time.Date(2026, 2, 4, hour, 0, 0, 0, time.UTC) }
@@ -281,7 +281,7 @@ func TestAnEnvelopeWritesGitHubsHeadAndStateAndNotItsOwn(t *testing.T) {
 	issue := seedHeadIssue(t, ctx, pool, 72)
 	fake := newFakeGitHub(t)
 	github := serveGitHubPulls(t, fake, "acme/widgets")
-	intake := newIntake(nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed())
+	intake := newIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed())
 	const (
 		real   = "7272727272727272727272727272727272727272"
 		forged = "7070707070707070707070707070707070707070"
@@ -338,7 +338,7 @@ func TestABacklogOfOnePullRequestsEventsCostsOneReadAndOneForItsLastSecond(t *te
 	fake := newFakeGitHub(t)
 	const repo = "acme/backlog"
 	github := serveGitHubPulls(t, fake, repo)
-	intake := newIntake(nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed())
+	intake := newIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed())
 	const pulls = 200
 	latest := time.Now().Add(-time.Hour).Truncate(time.Second)
 	head := func(number, push int) string { return fmt.Sprintf("%02x%038d", push, number) }
@@ -375,7 +375,7 @@ func TestARateLimitedPullRequestReadWritesNoRowAndIsAHeadNotStored(t *testing.T)
 	pool, ctx := deliveryTestPool(t)
 	fake := newFakeGitHub(t)
 	github := serveGitHubPulls(t, fake, "acme/widgets")
-	intake := newIntake(nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed())
+	intake := newIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed())
 	const head = "7474747474747474747474747474747474747474"
 	at := time.Now().Truncate(time.Second)
 	github.set("acme/widgets", 74, "open", head, "feature/74", "", at)
@@ -435,7 +435,7 @@ func TestAGitHubOutageLosesNoHead(t *testing.T) {
 	branch, body := "legion/"+issue, "Dispatch: "+issue
 	before := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second)
 	github.set("acme/widgets", pushed, "open", headBefore, branch, body, before)
-	if _, err := newIntake(nil, pool, nil, client, nil, nil, unrenamed()).handlePullRequestEnvelope(ctx, nil,
+	if _, err := newIntake(tuningFor(t), nil, pool, nil, client, nil, nil, unrenamed()).handlePullRequestEnvelope(ctx, nil,
 		prEnvelope("acme/widgets", pushed, "opened", headBefore, branch, body, before)); err != nil {
 		t.Fatalf("handle #%d's opening before the outage: %v", pushed, err)
 	}
@@ -447,7 +447,7 @@ func TestAGitHubOutageLosesNoHead(t *testing.T) {
 	github.failing = true
 	github.mu.Unlock()
 	natsClient := intakeTestClient(t)
-	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
+	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool),
 		client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", opened,
@@ -510,7 +510,7 @@ func TestAPullRequestGitHubDidNotKnowAtItsEventIsReadByTheNextReconcilePass(t *t
 	fake := newFakeGitHub(t)
 	github := serveGitHubPulls(t, fake, "acme/widgets")
 	client := fake.newTestClient()
-	intake := newIntake(nil, pool, nil, client, nil, nil, unrenamed())
+	intake := newIntake(tuningFor(t), nil, pool, nil, client, nil, nil, unrenamed())
 	const (
 		lagged = 77
 		never  = 78
@@ -568,7 +568,7 @@ func TestAKeyFreePullRequestLinkedOnItsIssueIsListedAtItsPushedHeadWithNoDeliver
 	issue := seedHeadIssue(t, ctx, pool, 9301)
 	fake := newFakeGitHub(t)
 	github := serveGitHubPulls(t, fake, "acme/widgets")
-	intake := newIntake(nil, pool, nil, fake.newTestClient(), nil, newSettingsCache(pool, nil), unrenamed())
+	intake := newIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), nil, newSettingsCache(pool, nil), unrenamed())
 	const opened, pushed = "4301430143014301430143014301430143014301", "e273e273e273e273e273e273e273e273e273e273"
 	const branch, body = "test/nats-hooked-server", "No key here."
 	deliver := func(number int, action, head string, at time.Time) {
@@ -594,7 +594,7 @@ func TestAKeyFreePullRequestLinkedOnItsIssueIsListedAtItsPushedHeadWithNoDeliver
 	for _, number := range []int{301, 302} {
 		deliver(number, "synchronize", pushed, at.Add(48*time.Minute))
 	}
-	heads, err := unrenamed().HeadsAttributedTo(ctx, pool, issue)
+	heads, err := unrenamed().HeadsAttributedTo(ctx, pool, issue, HeadAnswers{})
 	if err != nil {
 		t.Fatal(err)
 	}

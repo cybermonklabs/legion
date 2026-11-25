@@ -354,7 +354,7 @@ func TestTheReaderOfPullRequestsWhoseAnswerIsNotKnownUsesItsIndex(t *testing.T) 
 		for i := range 20 {
 			recorder := &recordedReads{pool: pool}
 			began := time.Now()
-			pulls, err := unrenamed().PullRequestsNotKnown(ctx, recorder, "acme/widgets")
+			pulls, err := unrenamed().PullRequestsNotKnown(ctx, recorder, "acme/widgets", HeadAnswers{})
 			took := time.Since(began)
 			if err != nil {
 				t.Fatalf("PullRequestsNotKnown(acme/widgets): %v", err)

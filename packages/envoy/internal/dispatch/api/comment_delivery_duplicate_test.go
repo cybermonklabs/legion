@@ -54,8 +54,9 @@ func TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(
 			listenerState.delivered[key] = struct{}{}
 			listenerState.Unlock()
 			if missing {
-				// The send lands; the answer misses the client's window.
-				time.Sleep(400 * time.Millisecond)
+				// The send lands; the answer misses the client's window, since it is written only
+				// once the client has given up on the call, however late its timer fires.
+				<-r.Context().Done()
 			}
 			if held {
 				_, _ = w.Write([]byte(`{"event_id":"mention-envelope-2","recipient":"s1","duplicate":true}`))

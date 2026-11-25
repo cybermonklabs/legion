@@ -30,6 +30,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/config"
@@ -51,6 +52,7 @@ import (
 )
 
 func TestSettingsTableNamesEachVariableOnce(t *testing.T) {
+	t.Parallel()
 	name := regexp.MustCompile(`^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*$`)
 	seen := map[string]bool{}
 	for _, row := range settings {
@@ -88,6 +90,7 @@ func TestSettingsTableNamesEachVariableOnce(t *testing.T) {
 // `envoy-dispatch settings` is what the docs site's configuration reference is generated from, so
 // it carries every row whole: the _FILE form by name, and null where a row has no default.
 func TestSettingsSubcommandPrintsEveryRow(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	if code := runSubcommand(context.Background(), []string{"settings"}, envGetter(nil), &stdout, &stderr); code != 0 {
 		t.Fatalf("envoy-dispatch settings: exit %d, stderr %q", code, stderr.String())
@@ -122,6 +125,7 @@ func TestSettingsSubcommandPrintsEveryRow(t *testing.T) {
 }
 
 func TestSettingValuesRefuseAVariableTheTableDoesNotList(t *testing.T) {
+	t.Parallel()
 	defer func() {
 		if recovered := recover(); recovered == nil || !strings.Contains(recovered.(string), "DISPATCH_NOT_A_SETTING") {
 			t.Fatalf("recovered %v, want a panic naming DISPATCH_NOT_A_SETTING", recovered)
@@ -421,6 +425,8 @@ func errorCode(response *httptest.ResponseRecorder) string {
 // each case hands its variable to the reader main hands it to, through the settings read alone,
 // never the process environment, so a reader that reads around the table fails its case.
 func TestEverySettingReachesItsReader(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault); and it sets
+	// environment variables for the whole process.
 	appJSON := func(t *testing.T) string {
 		return filepath.Dir(writeFile(t, "app.json", `{"clientId":"Iv1.file"}`))
 	}
@@ -2190,6 +2196,37 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("unset: NewIssueSession = %q, want no conversation started", boot.NewIssueSession)
 			}
 		},
+		"DISPATCH_PARENT_STATUS_RULE": func(t *testing.T) {
+			// Its reader: R25's fix at boot (api.RunParentStatusFixAtBoot), whose answer is the rule
+			// main builds the server with (TestTheServerAnswersOnlyAfterTheParentStatusFix boots the
+			// binary with it). Unset or off, the fix answers the rule off and reads nothing, so it is
+			// given no database.
+			for _, overrides := range []map[string]string{{}, {"DISPATCH_PARENT_STATUS_RULE": "off"}} {
+				boot := resolveWith(t, overrides)
+				if boot.ParentStatusRule {
+					t.Errorf("%v: ParentStatusRule true, want the rule off", overrides)
+				}
+				if rule, err := api.RunParentStatusFixAtBoot(t.Context(), api.Deps{}, nil, boot.ParentStatusRule); err != nil || rule.On() {
+					t.Errorf("%v: the boot's fix answered the rule on=%t and %v, want the rule off and no error", overrides, rule.On(), err)
+				}
+			}
+			// On, the fix runs over the database, which holds no issue, and answers the rule on once
+			// its record is there.
+			boot := resolveWith(t, map[string]string{"DISPATCH_PARENT_STATUS_RULE": "on"})
+			if !boot.ParentStatusRule {
+				t.Error("DISPATCH_PARENT_STATUS_RULE=on: ParentStatusRule false, want the rule on")
+			}
+			database := storetest.Open(t)
+			rule, err := api.RunParentStatusFixAtBoot(t.Context(), api.Deps{Store: database}, storetest.Leases(t, database.Pool), boot.ParentStatusRule)
+			if err != nil || !rule.On() {
+				t.Errorf("DISPATCH_PARENT_STATUS_RULE=on: the boot's fix answered the rule on=%t and %v, want the rule on and no error", rule.On(), err)
+			}
+			var recorded bool
+			if err := database.Pool.QueryRow(t.Context(), `select exists (select 1 from parent_status_fix)`).Scan(&recorded); err != nil || !recorded {
+				t.Errorf("DISPATCH_PARENT_STATUS_RULE=on: the record of the fix is there=%t (%v), want it written", recorded, err)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_PARENT_STATUS_RULE": "yes"}, `DISPATCH_PARENT_STATUS_RULE="yes"`)
+		},
 		"DISPATCH_TEST_EMBEDDER_OFF": func(t *testing.T) {
 			// Azure's own environment, the one shape that builds an embedder with no AWS SDK and
 			// no model service reachable, so the switch is what decides and not the credentials.
@@ -2226,6 +2263,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 // (newDocumentService, through documentDeps): boot's seven values, each one distinct, are each
 // found on the dependencies the service is built from.
 func TestDocumentDepsCarryEveryBootSetting(t *testing.T) {
+	t.Parallel()
 	boot := bootConfig{
 		SettleDelay:       11 * time.Second,
 		MarkWait:          12 * time.Second,
@@ -2358,6 +2396,7 @@ func sharedAgentTokenListReachesTheAPI(t *testing.T) {
 // unreachable: what is wrong is Dispatch's own credential, which the operator fixes in Dispatch's
 // deployment, not in the broker's.
 func TestACredentialPageWithAnUnreadableAccountTokenDoesNotBlameTheBroker(t *testing.T) {
+	t.Parallel()
 	for name, tokenFile := range map[string]string{
 		"a path that does not exist": filepath.Join(t.TempDir(), "missing"),
 		"an empty file":              writeFile(t, "account-token", "\n"),

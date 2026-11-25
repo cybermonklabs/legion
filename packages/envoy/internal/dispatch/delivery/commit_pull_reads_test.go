@@ -15,19 +15,40 @@ import (
 // One claim per pair per CommitPullReadStaleAfter, and the decision and the record are one step:
 // the second claim of a pair is refused however soon it asks, and the claim one span later is
 // granted. Another commit of the same repository, and the same commit of another, are their own
-// pairs.
+// pairs. The read a read-only results read makes of a claim (Refuses) answers whether a claim
+// would be refused at that moment, and records nothing: no entry for a pair nothing holds, and no
+// moment moved for one a claim holds.
 func TestACommitPullReadIsClaimedOncePerSpan(t *testing.T) {
 	t.Parallel()
 	var reads CommitPullReads
 	start := time.Date(2026, 11, 5, 7, 15, 8, 0, time.UTC)
+	if reads.Refuses("acme/widgets", "abc", start) {
+		t.Fatal("the read of a pair nothing holds answered that a claim would be refused, want granted")
+	}
+	if held := len(reads.notBefore); held != 0 {
+		t.Fatalf("the read of a pair nothing holds left %d entries, want none", held)
+	}
 	if !reads.Claim("acme/widgets", "abc", start) {
 		t.Fatal("the first claim of a pair was refused, want it granted")
 	}
-	if reads.Claim("acme/widgets", "abc", start.Add(CommitPullReadStaleAfter-time.Nanosecond)) {
+	inside := start.Add(CommitPullReadStaleAfter - time.Nanosecond)
+	if !reads.Refuses("acme/widgets", "abc", inside) {
+		t.Fatal("the read of a claimed pair inside its span answered that a claim would be granted, want refused")
+	}
+	if reads.Refuses("acme/widgets", "def", inside) || reads.Refuses("acme/gadgets", "abc", inside) {
+		t.Fatal("the read of another pair answered that a claim would be refused, want each pair bounded on its own")
+	}
+	if held := len(reads.notBefore); held != 1 {
+		t.Fatalf("the reads left %d entries, want the one claim's", held)
+	}
+	if reads.Claim("acme/widgets", "abc", inside) {
 		t.Fatal("a claim inside the span was granted, want it refused")
 	}
 	if !reads.Claim("acme/widgets", "def", start) || !reads.Claim("acme/gadgets", "abc", start) {
 		t.Fatal("a claim of another pair was refused, want each pair bounded on its own")
+	}
+	if reads.Refuses("acme/widgets", "abc", start.Add(CommitPullReadStaleAfter)) {
+		t.Fatal("the read of a claimed pair one span later answered that a claim would be refused, want granted")
 	}
 	if !reads.Claim("acme/widgets", "abc", start.Add(CommitPullReadStaleAfter)) {
 		t.Fatal("the claim one span later was refused, want it granted")
@@ -37,7 +58,7 @@ func TestACommitPullReadIsClaimedOncePerSpan(t *testing.T) {
 // The sweep: a claim granted once the map has passed commitPullReadSweepAt drops every entry no
 // claim can be refused by any more, so a process reading results for weeks holds the commits of
 // the last CommitPullReadStaleAfter and not every commit it ever asked about. The entries inside
-// the span stay, bound and all.
+// the span stay, bound and all. A read of a claim sweeps nothing, since it writes nothing.
 func TestAClaimSweepsTheEntriesNoBoundCanRefuse(t *testing.T) {
 	t.Parallel()
 	var reads CommitPullReads
@@ -48,6 +69,12 @@ func TestAClaimSweepsTheEntriesNoBoundCanRefuse(t *testing.T) {
 		}
 	}
 	fresh := start.Add(CommitPullReadStaleAfter)
+	if reads.Refuses("acme/widgets", "fresh", fresh) {
+		t.Fatal("the read of a pair nothing holds answered that a claim would be refused, want granted")
+	}
+	if held := len(reads.notBefore); held != commitPullReadSweepAt {
+		t.Fatalf("the read of a claim left %d entries, want the %d it found", held, commitPullReadSweepAt)
+	}
 	if !reads.Claim("acme/widgets", "fresh", fresh) {
 		t.Fatal("a claim of a pair nothing is held for was refused, want it granted")
 	}
@@ -65,7 +92,8 @@ func TestAClaimSweepsTheEntriesNoBoundCanRefuse(t *testing.T) {
 // CommitPullSettledFor buys the same answer again, and the sweep, which drops the moments no
 // claim can be refused by, must not drop one that refuses every claim yet. Once the span has
 // passed the pair is a pair like any other — a pull request opened later can have its head at
-// that commit — so the claim is granted and the sweep drops what is left.
+// that commit — so the claim is granted and the sweep drops what is left. A read of the claim
+// answers as the claim does at each of those moments.
 func TestASettledCommitIsRefusedUntilItsSpanEndsAndTheSweepKeepsItUntilThen(t *testing.T) {
 	t.Parallel()
 	var reads CommitPullReads
@@ -74,6 +102,9 @@ func TestASettledCommitIsRefusedUntilItsSpanEndsAndTheSweepKeepsItUntilThen(t *t
 		t.Fatal("the first claim of a pair was refused, want it granted")
 	}
 	reads.Settle("acme/widgets", "abc", start)
+	if !reads.Refuses("acme/widgets", "abc", start.Add(CommitPullSettledFor-time.Nanosecond)) {
+		t.Fatal("the read of a settled pair inside its span answered that a claim would be granted, want refused")
+	}
 	if reads.Claim("acme/widgets", "abc", start.Add(CommitPullSettledFor-time.Nanosecond)) {
 		t.Fatal("a claim of a settled pair inside its span was granted, want it refused")
 	}
@@ -98,6 +129,9 @@ func TestASettledCommitIsRefusedUntilItsSpanEndsAndTheSweepKeepsItUntilThen(t *t
 	// Past the settled span the pair is read through again, and the sweep drops what the
 	// settling left: nothing here is held for the life of the process.
 	ended := start.Add(CommitPullSettledFor)
+	if reads.Refuses("acme/widgets", "abc", ended) {
+		t.Fatal("the read of the settled pair once its span had passed answered that a claim would be refused, want granted")
+	}
 	if !reads.Claim("acme/widgets", "abc", ended) {
 		t.Fatal("a claim of the settled pair once its span had passed was refused, want it granted")
 	}

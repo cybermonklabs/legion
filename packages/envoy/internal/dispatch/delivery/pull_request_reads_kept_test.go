@@ -48,7 +48,7 @@ func TestAFailedReadHoldsNoSlotThatOtherRepositoriesShare(t *testing.T) {
 			acme.mu.Unlock()
 
 			natsClient := intakeTestClient(t)
-			startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+			startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 			awaitBoundDurable(t, natsClient)
 			before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
 			for n := 1; n <= intakeMaxAckPending; n++ {
@@ -138,8 +138,8 @@ func TestAnOwedRecordTheDatabaseRefusesAtSomeDeliveriesLosesNoHead(t *testing.T)
 
 	shrinkOwedReadWriteTimeout(t)
 	natsClient := intakeTestClient(t)
-	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
-	intake.redeliverAfter = testRedeliverAfter
+	tuningFor(t).redeliverAfter = testRedeliverAfter
+	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	startIntake(t, intake)
 	awaitBoundDurable(t, natsClient)
 	before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
@@ -206,7 +206,7 @@ func TestARefusalEndsOnEvidenceAndNeverByItsAge(t *testing.T) {
 			fake := newFakeGitHub(t)
 			github := serveGitHubPulls(t, fake, "acme/widgets")
 			client := fake.newTestClient()
-			intake := newIntake(nil, pool, nil, client, nil, nil, unrenamed())
+			intake := newIntake(tuningFor(t), nil, pool, nil, client, nil, nil, unrenamed())
 			now := time.Now().UTC().Truncate(time.Second)
 			const (
 				number = 99001

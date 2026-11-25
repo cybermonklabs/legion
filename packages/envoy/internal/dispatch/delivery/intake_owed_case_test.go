@@ -94,7 +94,7 @@ func TestTheIntakesReadSettlesTheReadALinkOwedInAnotherCase(t *testing.T) {
 			github := serveGitHubPulls(t, fake, "Acme/Widgets")
 			at := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
 			github.set("Acme/Widgets", number, "open", head, branch, "", at)
-			intake := newIntake(nil, pool, nil, fake.newTestClient(), nil, newSettingsCache(pool, nil), unrenamed())
+			intake := newIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), nil, newSettingsCache(pool, nil), unrenamed())
 			payload, err := json.Marshal(prEnvelope("Acme/Widgets", number, "synchronize", head, branch, "", at))
 			if err != nil {
 				t.Fatal(err)
@@ -122,7 +122,8 @@ func TestTheIntakesReadSettlesTheReadALinkOwedInAnotherCase(t *testing.T) {
 // acknowledgement fails and the answer path hands the message back (acknowledge); the delivery is
 // sealed, so that hand-back is withheld (admitHandBack) rather than marked on a bus connection the
 // test does not have. What the test reads is what the handling wrote, which the answer to NATS
-// does not change.
+// does not change. Its calls to NATS wait by production's tuning (callNATS), as the intake's own
+// deliveries would.
 func deliveryWithNoNATS(handling context.Context) *intakeDelivery {
-	return &intakeDelivery{handling: handling, sealed: true}
+	return &intakeDelivery{handling: handling, sealed: true, tuning: newIntakeTuning()}
 }

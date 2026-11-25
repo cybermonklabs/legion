@@ -59,7 +59,7 @@ func TestAnOutagesOwedReadIsNotHeldBehindForgedRefusals(t *testing.T) {
 			fake := newFakeGitHub(t)
 			github := serveGitHubPulls(t, fake, "acme/widgets")
 			client := fake.newTestClient()
-			intake := newIntake(nil, pool, nil, client, nil, nil, unrenamed())
+			intake := newIntake(tuningFor(t), nil, pool, nil, client, nil, nil, unrenamed())
 			at := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
 			for i := range forged {
 				n := 500000 + i

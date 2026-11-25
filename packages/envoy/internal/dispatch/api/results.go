@@ -595,13 +595,23 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	}
 	// The CI read and the comparison share one reader, so the repository and its default branch
 	// are read once for both.
-	reader := newComparisonReader(s, at)
+	reader := newComparisonReader(r.Context(), s, at)
 	// A pull request the issue links whose head Dispatch does not hold is read before any head is,
 	// so the CI read and every comparison below read the head it stores (readLinkedHeads). A read
 	// that named a commit asks GitHub nothing, as learn asks nothing then.
 	if at == noCommitNamed {
-		s.readLinkedHeads(r.Context(), issueKey)
+		reader.readLinkedHeads(r.Context(), issueKey)
 	}
+	// The reader learns the heads GitHub names before any check CI proves is derived
+	// (deriveCIResults). A derived result is read at the issue's newest pull request head, which
+	// may be a head this read's read-through learns: derived first, a first read would answer
+	// that Dispatch holds no head while it names the head it learned as another check's basis. A
+	// derived result is at that newest head, which the learned heads already hold, so it leaves
+	// nothing to learn. Every head GitHub has to be asked for is learned before the first check is
+	// answered, so each check of the answer is answered on the heads as they stand after this
+	// read's read-throughs, and two `before_merge` checks of one issue name one list of bases and
+	// not two (comparisonReader.learn).
+	reader.learn(r.Context(), checks)
 	if err := s.deriveCIResults(r.Context(), reader, issueKey, checks); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -613,10 +623,7 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 			trees.text(&checks[index].Results[result].ObservedTree, checks[index].Results[result].Observed)
 		}
 	}
-	// Every head GitHub has to be asked for is learned before the first check is answered, so
-	// two `before_merge` checks of one issue name one list of bases and not two
-	// (comparisonReader.learn).
-	reader.learn(r.Context(), checks)
+
 	for index := range checks {
 		reader.answer(r.Context(), &checks[index])
 	}

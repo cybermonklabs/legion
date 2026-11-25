@@ -120,6 +120,7 @@ POST /api/v1/issues/{key}/results any
 POST /api/v1/issues/{key}/results/dry-run any
 GET /api/v1/issues/{key}/role-holders any
 PUT /api/v1/issues/{key}/role-holders any
+POST /api/v1/issues/{key}/status-change any
 GET /api/v1/issues/{key}/steps any
 PUT /api/v1/issues/{key}/steps/{id} any
 PUT /api/v1/issues/{key}/steps/{id}/rating any

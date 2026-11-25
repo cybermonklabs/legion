@@ -35,7 +35,7 @@ func TestALinkAfterAMergedRowReachesItWithinOnePass(t *testing.T) {
 	}
 	listed := func() []int {
 		t.Helper()
-		heads, err := unrenamed().HeadsAttributedTo(ctx, pool, issue)
+		heads, err := unrenamed().HeadsAttributedTo(ctx, pool, issue, HeadAnswers{})
 		if err != nil {
 			t.Fatalf("HeadsAttributedTo(%s): %v", issue, err)
 		}
@@ -185,7 +185,7 @@ func TestAChangeInDispatchReachesAMergedRowWithinOnePass(t *testing.T) {
 			}
 			listed := func() []int {
 				t.Helper()
-				heads, err := unrenamed().HeadsAttributedTo(ctx, pool, c.issue)
+				heads, err := unrenamed().HeadsAttributedTo(ctx, pool, c.issue, HeadAnswers{})
 				if err != nil {
 					t.Fatalf("HeadsAttributedTo(%s): %v", c.issue, err)
 				}

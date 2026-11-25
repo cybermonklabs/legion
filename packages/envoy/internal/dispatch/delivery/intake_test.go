@@ -32,16 +32,74 @@ import (
 // deliveryTestParallelism is how many of this package's tests run at once when the command line
 // names no -parallel. Every test calls t.Parallel except those that change or read back something
 // the whole process shares, which stay serial and run before the rest: a package variable a test
-// shortens (intakeStopBudget, intakeMessageTimeout, callNATSWait and the like), the default logger
-// (captureLogs), t.Setenv, the process's goroutines, a select on a short time.After, or a read of
-// Postgres's whole-server views. Each parallel test has a database of its own (storetest.Open's
-// clone) and a JetStream account of its own (testnats.URL), and waits on NATS and Postgres far more
-// than on a core. go test's default of GOMAXPROCS is four on CI's arm runner, but hundreds on a dev
-// box, where every test's database and pools at once would open more connections than the test
-// server allows.
+// shortens (githubPageRetryWait, decodeEnvelope), the default logger (captureLogs), t.Setenv, the
+// process's goroutines, a select on a short time.After or a quiet window close to what it waits
+// for, a measurement of the machine's speed, or a read of Postgres's whole-server views. An
+// intake's own timers and hooks are its tuning (tuningFor), which no other test's intake reads.
+// Each parallel test has a database of its own (storetest.Open's clone) and a JetStream account of
+// its own (testnats.URL), and waits on NATS and Postgres far more than on a core. go test's default
+// of GOMAXPROCS is four on CI's arm runner, but hundreds on a dev box, where every test's database
+// and pools at once would open more connections than the test server allows.
 //
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const deliveryTestParallelism = 8
+
+// tunings holds each running test's intake tuning, by the test's name (tuningFor).
+var tunings = struct {
+	sync.Mutex
+	byTest map[string]*intakeTuning
+}{byTest: map[string]*intakeTuning{}}
+
+// tuningFor is the tuning (intakeTuning) of every intake test t builds, and the one t changes to
+// shorten a timer or hook a step of those intakes: made for t on its first use and dropped when t
+// ends, as a copy of its nearest ancestor test's when one has a tuning and production's
+// (newIntakeTuning) otherwise. Each test has its own, so a test that changes it runs beside tests
+// that do not, and every intake one test builds shares it, as they shared the package variables it
+// replaces. Set its durations and createDurable before the intakes start; its atomics at any time.
+func tuningFor(t testing.TB) *intakeTuning {
+	tunings.Lock()
+	defer tunings.Unlock()
+	name := t.Name()
+	if tuning, ok := tunings.byTest[name]; ok {
+		return tuning
+	}
+	tuning := newIntakeTuning()
+	for ancestor := name; strings.Contains(ancestor, "/"); {
+		ancestor = ancestor[:strings.LastIndex(ancestor, "/")]
+		if parent, ok := tunings.byTest[ancestor]; ok {
+			tuning = copyTuning(parent)
+			break
+		}
+	}
+	tunings.byTest[name] = tuning
+	t.Cleanup(func() {
+		tunings.Lock()
+		defer tunings.Unlock()
+		delete(tunings.byTest, name)
+	})
+	return tuning
+}
+
+// copyTuning is a tuning holding what from holds now: its fields copied one by one, since its
+// atomics cannot be copied with it.
+func copyTuning(from *intakeTuning) *intakeTuning {
+	to := &intakeTuning{
+		messageTimeout: from.messageTimeout,
+		maxAckPending:  from.maxAckPending,
+		stopBudget:     from.stopBudget,
+		redeliverAfter: from.redeliverAfter,
+		bindInterval:   from.bindInterval,
+		holdTTL:        from.holdTTL,
+		holdRenew:      from.holdRenew,
+		holdMargin:     from.holdMargin,
+		createDurable:  from.createDurable,
+	}
+	to.callWait.Store(from.callWait.Load())
+	to.drainWait.Store(from.drainWait.Load())
+	to.stopArmed.Store(from.stopArmed.Load())
+	to.beforeRelease.Store(from.beforeRelease.Load())
+	return to
+}
 
 // TestMain sets the package's default -parallel, and removes the NATS server the package's tests
 // share (testnats.Main) and the databases their pools are cloned on (storetest.Run).
@@ -300,21 +358,19 @@ func pathBaseForTest(workflowPath string) string {
 	return workflowPath
 }
 
-// shrinkIntakeFlowControl shrinks the intake's own timing so a test exercises its real flow
-// control in test time. intakeMaxAckPending is deliberately left alone: it is the bound under
-// test.
+// shrinkIntakeFlowControl shrinks the messageTimeout of the intakes this test builds after it
+// (tuningFor), so a test exercises their real flow control in test time. maxAckPending is
+// deliberately left alone: it is the bound under test.
 func shrinkIntakeFlowControl(t *testing.T) {
 	t.Helper()
-	messageTimeout := intakeMessageTimeout
-	intakeMessageTimeout = 5 * time.Second
-	t.Cleanup(func() { intakeMessageTimeout = messageTimeout })
+	tuningFor(t).messageTimeout = 5 * time.Second
 }
 
-// testRedeliverAfter is the hand-back delay a test sets on the one intake it builds
-// (Intake.redeliverAfter) where it waits for a delivery after a hand-back: the envelope comes
-// back a fifth of a second after it was handed back, rather than headWriteRedeliverAfter, 10 s,
-// later. What the test holds is that it comes back, and in which order; no such test reads the
-// length of the delay.
+// testRedeliverAfter is the hand-back delay a test sets on the intakes it builds
+// (tuningFor(t).redeliverAfter) where it waits for a delivery after a hand-back: the envelope
+// comes back a fifth of a second after it was handed back, rather than headWriteRedeliverAfter,
+// 10 s, later. What the test holds is that it comes back, and in which order; no such test reads
+// the length of the delay.
 const testRedeliverAfter = 200 * time.Millisecond
 
 // shrinkOwedReadWriteTimeout sets owedReadWriteTimeout to a second for the test, and puts the
@@ -380,9 +436,7 @@ func publishWorkflowEnvelope(t *testing.T, natsClient *bus.Client, owner, repo, 
 }
 
 // startIntake runs intake until the test ends, and waits for Run to return before the test's own
-// cleanups go on. Cancelling alone does not: Run reads the intake flow-control vars, and the next
-// test's shrinkIntakeFlowControl writes them, so a Run still unwinding from the previous test is a
-// data race on them.
+// cleanups go on, so no Run outlives the test that started it.
 func startIntake(t *testing.T, intake *Intake) {
 	t.Helper()
 	runCtx, cancel := context.WithCancel(t.Context())
@@ -410,29 +464,24 @@ func intakeTestClient(t *testing.T) *bus.Client {
 
 // awaitBoundDurable waits for the intake to have created its durable and subscribed to it, so a
 // test that means to publish into a bound consumer does not race the bind. Its one bound is what
-// the test binary's deadline leaves less boundDurableSpare (testwait.Remaining): a bind that is
+// the test binary's deadline leaves less rowDeadlineMargin (untilTheBinaryDeadline): a bind that is
 // merely slow on a loaded machine still passes, and one that never comes fails the row with time
 // left for its cleanups.
 func awaitBoundDurable(t *testing.T, natsClient *bus.Client) {
 	t.Helper()
 	var state string
-	waitFor(t, testwait.Remaining(t, boundDurableSpare), func() bool {
+	waitFor(t, untilTheBinaryDeadline(t), func() bool {
 		info, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		if err != nil {
 			state = err.Error()
 			return false
 		}
 		state = fmt.Sprintf("push_bound=%t max_ack_pending=%d", info.PushBound, info.Config.MaxAckPending)
-		return info.PushBound && info.Config.MaxAckPending == intakeMaxAckPending
+		return info.PushBound && info.Config.MaxAckPending == tuningFor(t).maxAckPending
 	}, func() string {
-		return fmt.Sprintf("intake never bound its durable with max_ack_pending=%d: %s", intakeMaxAckPending, state)
+		return fmt.Sprintf("intake never bound its durable with max_ack_pending=%d: %s", tuningFor(t).maxAckPending, state)
 	})
 }
-
-// boundDurableSpare is what awaitBoundDurable leaves of the test binary's deadline for a failed
-// row's cleanups: stopping its intakes, which wait out their stop's deadline, and dropping its
-// database.
-const boundDurableSpare = time.Minute
 
 // awaitRuns waits for the intake to have stored want delivery_runs rows, and fails with the
 // stream's message count and the consumer's whole state when it does not -- the numbers that say

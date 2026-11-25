@@ -30,6 +30,14 @@ const (
 // slice, as every surface shares DISPATCH_SCOPES in @legion/contracts.
 var Scopes = []string{ScopePerson, ScopeApprove}
 
+// ScopeRead is the word that marks a read-only credential. GET /api/v1/whoami lists it among such
+// a credential's scopes, and a read-only personal token's set holds it: POST
+// /api/v1/me/agent-tokens takes it as a mint word and keeps it in agent_read_tokens.scopes, the
+// token list names it, and PATCH /api/v1/me/agent-tokens/{id} refuses it. No credential holds it
+// as a scope: Credential.ReadOnly marks the credential, Credential.Scopes never carries the word,
+// and no route requires it, so no recorded act names it either.
+const ScopeRead = "read"
+
 // ActorAct names the agent that acted when a credential acted for its person, so a write records
 // which credential made it and not only whom it was made for: Session is the session a
 // broker-issued token proved, TokenID and TokenName the personal token presented, and Scopes the
@@ -72,15 +80,30 @@ type Credential struct {
 	// TokenID and TokenName name a personal token, and are empty for every other credential.
 	TokenID   string
 	TokenName string
-	// ReadOnly is a broker-issued token that holds only the scope read (ciphertoken.ScopeRead):
-	// one the secrets broker minted from a read entry, naming a service and a session and no
-	// person and no project. Dispatch serves it on the routes its read list names
-	// (readScopeRoutes) alone and answers it 403 READ_ONLY_TOKEN on every other
-	// (refuseReadOnlyToken), before anything else the route does. The scope itself is not among
-	// Scopes: those are what a route can require of a credential, and read meets no route's
-	// requirement; it narrows what this credential may call rather than widening it. False for
-	// every other credential.
+	// ReadOnly is a credential that may only read. Two credentials set it: a broker-issued token
+	// its verifier decided is read-only (ciphertoken.Caller.ReadOnly), which the secrets broker
+	// minted from a read entry or narrowed to reading because its trade asked for read; and a
+	// read-only personal token, a row of agent_read_tokens, which a person made holding read
+	// alone or beside person (personalTokenActor in internal/dispatch/api). Dispatch answers it
+	// 403 READ_ONLY_TOKEN on every route it does not serve such a token on (refuseReadOnlyToken),
+	// before anything else the route does. The scope itself is not among Scopes: those are what a
+	// route can require of a credential, and read meets no route's requirement; it narrows what
+	// this credential may call rather than widening it. whoami lists it as ScopeRead after
+	// Scopes. False for every other credential: a cookie, the deployment's shared token, a
+	// service-account token, and a broker-issued or personal token that may write.
 	ReadOnly bool
+	// Cut is the past time a read-only credential reads at (ciphertoken.Caller.Cut), in UTC, and
+	// the zero time for a credential that names no cut. Only a read-only credential carries one.
+	Cut time.Time
+	// ProjectScope is a broker-issued token's project scope as the broker answered it, read as
+	// its base word (ciphertoken.Caller.ProjectScope): `named` for a token an operator's entry
+	// mapped, `person` for one acting as its person or for a machine nobody signed in on, `none`
+	// for the read entry's token; a token narrowed to reading carries the word it narrows, with
+	// ReadOnly beside it. It is what tells a token that names a service and no person apart: a
+	// `named` one is an account entry's that names no person, whose writes are recorded under its
+	// account (writeNeedsASignedInPerson), and a `person` one is a machine's that nobody signed in
+	// on, which writes nothing. Empty for every other credential.
+	ProjectScope string
 }
 
 // Holds reports whether the credential holds one scope. A nil Credential holds none, so a
@@ -867,6 +890,11 @@ type SearchResult struct {
 	// Ask is set on ask hits and nil on every other kind; an ask removed between the search and
 	// the read of its state keeps it nil too.
 	Ask *SearchAsk `json:"ask,omitempty"`
+	// Author is who wrote a comment, a message or an ask hit, read from the item's row once
+	// GET /api/v1/search ran (api.attachAskStates, api.attachItemAuthors), so a reader of the hit
+	// alone can say who said it. It is nil on an issue hit and a document hit, and on an item
+	// removed after the search ran.
+	Author *Actor `json:"author,omitempty"`
 }
 
 // SearchQueryReading is how GET /api/v1/search read the words it was given: Operators names the
@@ -1111,7 +1139,14 @@ type RelatedCheckTiming struct {
 // for a refusal. Candidates are the candidates the gate read at or above NudgeScore, at most
 // five, best score first, with each one's title as it then stood; RefuseScore and NudgeScore are
 // the bars the build read them against, and BuildCommit is the legion commit it was built from,
-// null for a build nothing stamped.
+// null for a build nothing stamped. ReadMS is how long the create waited on the gate's read, in
+// milliseconds, from the gate's start until the read returned, its transaction's rollback
+// included, and ReadStage the step the read was in when it answered or ended: connect (taking a
+// pool connection and opening the read transaction), terms (picking the new text's rarest words),
+// keys (reading the lexemes the project's issue keys give) or score (scoring the project's open
+// issues, which every answered read ends in); a row whose reason is bound or failed says by them
+// at which step its read was waiting. Both are null together on a row written before Dispatch
+// recorded them.
 type NearCopyCheck struct {
 	ID          string                   `json:"id"`
 	CreatedAt   time.Time                `json:"created_at"`
@@ -1130,6 +1165,8 @@ type NearCopyCheck struct {
 	RefuseScore float64                  `json:"refuse_score"`
 	NudgeScore  float64                  `json:"nudge_score"`
 	BuildCommit *string                  `json:"build_commit"`
+	ReadMS      *int                     `json:"read_ms"`
+	ReadStage   *string                  `json:"read_stage" enum:"connect,terms,keys,score"`
 }
 
 // NearCopyCheckCandidate is one issue the near-copy gate read for a create, with the score it
@@ -1889,6 +1926,37 @@ type Version struct {
 	Size   *int    `json:"size,omitempty"`
 	MIME   *string `json:"mime,omitempty"`
 	SHA256 *string `json:"sha256,omitempty"`
+	// Token is a file's or an image's version token (FileVersionToken): what an upload replacing
+	// that version names as its precondition's document token, and what `dispatch doc-read`
+	// prints for it. Every read of a version row states it (StateFileTokens). A document's version
+	// carries none here, since a document's token is its live tree's (GET
+	// /api/v1/artifacts/{id}/text).
+	Token *string `json:"token,omitempty"`
+}
+
+// FileVersionToken is the token of a file's or an image's version whose bytes have the SHA-256
+// sha (hex), written as a document token is. It is the one place the token is made, for the
+// reads that state it and the upload that checks it, so what `dispatch doc-read` prints is what
+// the upload compares.
+func FileVersionToken(sha string) string {
+	return "sha256:" + sha
+}
+
+// StateFileTokens sets each version's Token from its SHA256 where kind, the artifact's, is a
+// file or an image, for versions read from their rows. A document's versions get none whatever
+// their rows hold: a document's token is its live tree's, and a hash its row held would be no
+// token an upload of it takes. A file's version stored with no hash gets none either, so an
+// upload naming a token for it is refused.
+func StateFileTokens(kind string, versions []Version) {
+	if kind != "file" && kind != "image" {
+		return
+	}
+	for index := range versions {
+		if sha := versions[index].SHA256; sha != nil {
+			token := FileVersionToken(*sha)
+			versions[index].Token = &token
+		}
+	}
 }
 
 // VersionSize is the SQL a version's Size is selected with, over artifact_versions aliased v. A

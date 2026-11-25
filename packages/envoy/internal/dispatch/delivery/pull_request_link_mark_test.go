@@ -62,7 +62,7 @@ func TestALinkWrittenWhileAHeadWriteIsInFlightIsFollowedByTheNextPass(t *testing
 		{name: "the_intake", write: func(ctx context.Context, pool *store.Pool, client *githubapp.Client, number int, head string, second time.Time) error {
 			envelope := prEnvelope(repo, number, "closed", head, "feature/no-key", "", second)
 			envelope["merged"] = "true"
-			_, err := newIntake(nil, pool, nil, client, nil, nil, unrenamed()).handlePullRequestEnvelope(ctx, nil, envelope)
+			_, err := newIntake(tuningFor(t), nil, pool, nil, client, nil, nil, unrenamed()).handlePullRequestEnvelope(ctx, nil, envelope)
 			return err
 		}},
 		{name: "the_reconcile", write: func(ctx context.Context, pool *store.Pool, client *githubapp.Client, number int, _ string, _ time.Time) error {

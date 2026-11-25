@@ -65,7 +65,7 @@ func storeReadHead(t *testing.T, ctx context.Context, pool *store.Pool, number i
 	github := serveGitHubPulls(t, fake, "acme/widgets")
 	opened := time.Now().UTC().Add(-2 * time.Minute).Truncate(time.Second)
 	github.set("acme/widgets", number, "open", first, "legion/"+issue, "Dispatch: "+issue, opened)
-	if _, err := newIntake(nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed()).handlePullRequestEnvelope(ctx, nil,
+	if _, err := newIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed()).handlePullRequestEnvelope(ctx, nil,
 		prEnvelope("acme/widgets", number, "opened", first, "legion/"+issue, "Dispatch: "+issue, opened)); err != nil {
 		t.Fatalf("handle the envelope that opens #%d: %v", number, err)
 	}

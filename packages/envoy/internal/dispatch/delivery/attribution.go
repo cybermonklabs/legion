@@ -552,13 +552,24 @@ type NotKnownPullRequest struct {
 // PullRequestsNotKnown is every open or merged pull request of repoFull, a canonical name, whose
 // answer is not known, by number: the path of such a pull request to the results route, by its
 // repository and never by a stored issue (api/results_comparison.go, api/results_ci.go). It reads
-// the rows stored under repoFull and under each name renamed away from it.
-func (a *Attributor) PullRequestsNotKnown(ctx context.Context, q Querier, repoFull string) ([]NotKnownPullRequest, error) {
+// the rows stored under repoFull and under each name renamed away from it. answers is the caller's
+// request's, as HeadsAttributedTo takes them.
+func (a *Attributor) PullRequestsNotKnown(ctx context.Context, q Querier, repoFull string, answers HeadAnswers) ([]NotKnownPullRequest, error) {
 	statements, err := a.attribution()
 	if err != nil {
 		return nil, err
 	}
-	rows, err := q.Query(ctx, statements.pullRequestsNotKnown, repoFull)
+	var pulls []NotKnownPullRequest
+	err = answers.Read(ctx, q, func(q Querier) error {
+		pulls, err = readNotKnown(ctx, q, statements.pullRequestsNotKnown, repoFull)
+		return err
+	})
+	return pulls, err
+}
+
+// readNotKnown is PullRequestsNotKnown's statement on q.
+func readNotKnown(ctx context.Context, q Querier, statement, repoFull string) ([]NotKnownPullRequest, error) {
+	rows, err := q.Query(ctx, statement, repoFull)
 	if err != nil {
 		return nil, fmt.Errorf("read the pull requests of %s whose issue is not known: %w", repoFull, err)
 	}

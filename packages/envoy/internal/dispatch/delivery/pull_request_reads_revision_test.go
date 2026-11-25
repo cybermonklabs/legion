@@ -108,7 +108,7 @@ func TestAnOweThatADatabaseClockBehindTheReadDatesEarlierOutlivesTheRead(t *test
 			github := serveGitHubPulls(t, fake, "acme/widgets")
 			client := fake.newTestClient()
 			traced := storetest.Traced(t, pool, clockStepTracer{t: t, pool: pool, repo: "acme/widgets", number: number, step: step}, nil)
-			intake := newIntake(nil, traced, nil, client, nil, nil, unrenamed())
+			intake := newIntake(tuningFor(t), nil, traced, nil, client, nil, nil, unrenamed())
 			older, newer := fakeSHA("a", number), fakeSHA("b", number)
 			branch, body := "legion/"+issue, "Dispatch: "+issue
 			now := time.Now().UTC().Truncate(time.Second)
@@ -198,7 +198,7 @@ func TestAnOweOfATransactionThatBeganBeforeTheReadOutlivesTheRead(t *testing.T) 
 			waitOn(t, aWaiting, "writer A's transaction")
 			time.Sleep(age)
 
-			intakeB := newIntake(nil, pool, nil, client, nil, nil, unrenamed())
+			intakeB := newIntake(tuningFor(t), nil, pool, nil, client, nil, nil, unrenamed())
 			bDone := make(chan error, 1)
 			go func() {
 				_, err := intakeB.handlePullRequestEnvelope(ctx, nil,
@@ -267,7 +267,7 @@ func TestALateWriteOfASnapshotCoversNoLaterEventOfItsSecond(t *testing.T) {
 			}
 			github.set("acme/widgets", number, "closed", head, branch, body, second)
 			client := fake.newTestClient()
-			intake := newIntake(nil, pool, nil, client, nil, nil, unrenamed())
+			intake := newIntake(tuningFor(t), nil, pool, nil, client, nil, nil, unrenamed())
 			for _, action := range []string{"closed", "reopened"} {
 				if _, err := intake.handlePullRequestEnvelope(ctx, nil,
 					prEnvelope("acme/widgets", number, action, head, branch, body, second)); err != nil {
@@ -324,7 +324,7 @@ func TestASnapshotThatLandsAfterANewerAnswerOfItsSecondIsReadAgain(t *testing.T)
 					BaseRef: "main", Body: body, CommitMessages: []string{}, MessagesRead: true}}); err != nil {
 				t.Fatal(err)
 			}
-			intakeA, intakeB := newIntake(nil, pool, nil, client, nil, nil, unrenamed()), newIntake(nil, pool, nil, client, nil, nil, unrenamed())
+			intakeA, intakeB := newIntake(tuningFor(t), nil, pool, nil, client, nil, nil, unrenamed()), newIntake(tuningFor(t), nil, pool, nil, client, nil, nil, unrenamed())
 			aDone := make(chan error, 1)
 			go func() {
 				_, err := intakeA.handlePullRequestEnvelope(ctx, nil, prEnvelope("acme/widgets", number, "closed", head, branch, body, second))
@@ -384,7 +384,7 @@ func TestAnAnswerWhoseReadStartedEarlierNeverReplacesTheHeadOfItsSecond(t *testi
 		read    func(ctx context.Context, pool *store.Pool, client *githubapp.Client, number int, head string, second time.Time) error
 	}{
 		{name: "the_intake", read: func(ctx context.Context, pool *store.Pool, client *githubapp.Client, number int, head string, second time.Time) error {
-			_, err := newIntake(nil, pool, nil, client, nil, nil, unrenamed()).handlePullRequestEnvelope(ctx, nil,
+			_, err := newIntake(tuningFor(t), nil, pool, nil, client, nil, nil, unrenamed()).handlePullRequestEnvelope(ctx, nil,
 				prEnvelope(repo, number, "synchronize", head, "feature/x", "", second))
 			return err
 		}},
@@ -437,7 +437,7 @@ func TestAnAnswerWhoseReadStartedEarlierNeverReplacesTheHeadOfItsSecond(t *testi
 						t.Fatal(err)
 					}
 				}
-				if _, err := newIntake(nil, pool, nil, client, nil, nil, unrenamed()).handlePullRequestEnvelope(ctx, nil,
+				if _, err := newIntake(tuningFor(t), nil, pool, nil, client, nil, nil, unrenamed()).handlePullRequestEnvelope(ctx, nil,
 					prEnvelope(repo, number, "synchronize", newer, "feature/x", "", second)); err != nil {
 					t.Fatalf("the intake's read of the event of B: %v", err)
 				}
@@ -499,7 +499,7 @@ func TestAReadThatCannotReadTheOwedRevisionDeletesNothingAndTheReconcileReadsAga
 			}
 			handling, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
-			_, err := newIntake(nil, pool, nil, client, nil, nil, unrenamed()).handlePullRequestEnvelope(handling, nil,
+			_, err := newIntake(tuningFor(t), nil, pool, nil, client, nil, nil, unrenamed()).handlePullRequestEnvelope(handling, nil,
 				prEnvelope("acme/widgets", number, "synchronize", head, branch, body, at))
 			release()
 			if err != nil {

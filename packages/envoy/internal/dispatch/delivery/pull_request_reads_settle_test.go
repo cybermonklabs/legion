@@ -64,7 +64,7 @@ func TestTheReadAnOlderAnswerOwesOutlivesASlowSettle(t *testing.T) {
 			fake := newFakeGitHub(t)
 			github := serveGitHubPulls(t, fake, "acme/widgets")
 			client := fake.newTestClient()
-			intake := newIntake(nil, storetest.Traced(t, pool, settleWaitTracer{wait: c.wait}, nil), nil, client, nil, nil, unrenamed())
+			intake := newIntake(tuningFor(t), nil, storetest.Traced(t, pool, settleWaitTracer{wait: c.wait}, nil), nil, client, nil, nil, unrenamed())
 			const number = 88401
 			older, newer := fakeSHA("a", number), fakeSHA("b", number)
 			branch, body := "legion/"+issue, "Dispatch: "+issue

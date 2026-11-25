@@ -48,10 +48,9 @@ func TestAnEnvelopeWhoseHeadRowCouldNotBeStoredIsHandedBack(t *testing.T) {
 	natsClient := intakeTestClient(t)
 	fake := newFakeGitHub(t)
 	serveMergedPullRequest(t, fake, 9101)
-	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool),
-		fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
-	intake.redeliverAfter = testRedeliverAfter
-	startIntake(t, intake)
+	tuningFor(t).redeliverAfter = testRedeliverAfter
+	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool),
+		fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 	before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
 
@@ -167,7 +166,7 @@ func startHeadWriteProcess(t *testing.T, pool *store.Pool, natsURL string, hold 
 	process.release = sync.OnceFunc(func() { close(held) })
 	t.Cleanup(process.release)
 
-	process.intake = newIntake(client, second.Pool, process.leases, github, events.NewBroker(),
+	process.intake = newIntake(tuningFor(t), client, second.Pool, process.leases, github, events.NewBroker(),
 		loadedSettingsCache(t, t.Context(), second.Pool), unrenamed())
 	runCtx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -261,18 +260,14 @@ func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelop
 	t.Run("head_stored", func(t *testing.T) { holdLapseRow(t, true) })
 }
 
-// shrinkIntakeHold sets the hold's TTL, renewal and margin and the standby's poll to a fifth of
-// their values in every build (3 s, 1 s, 400 ms and 400 ms, which duty.TryHold takes: the renewal
-// stays under the TTL less the margin), and puts them back at the test's end, so a test of a
-// hold's lapse waits out 3 s rather than 15. Call it before an intake starts: the cleanups run in
-// reverse, so the values are put back only once the intakes have stopped.
+// shrinkIntakeHold sets the hold's TTL, renewal and margin and the standby's poll of the intakes
+// this test builds after it (tuningFor) to a fifth of their values in every build (3 s, 1 s,
+// 400 ms and 400 ms, which duty.TryHold takes: the renewal stays under the TTL less the margin),
+// so a test of a hold's lapse waits out 3 s rather than 15. Call it before an intake starts.
 func shrinkIntakeHold(t *testing.T) {
 	t.Helper()
-	ttl, renew, margin, bind := intakeHoldTTL, intakeHoldRenew, intakeHoldMargin, durableBindInterval
-	intakeHoldTTL, intakeHoldRenew, intakeHoldMargin, durableBindInterval = 3*time.Second, time.Second, 400*time.Millisecond, 400*time.Millisecond
-	t.Cleanup(func() {
-		intakeHoldTTL, intakeHoldRenew, intakeHoldMargin, durableBindInterval = ttl, renew, margin, bind
-	})
+	tuning := tuningFor(t)
+	tuning.holdTTL, tuning.holdRenew, tuning.holdMargin, tuning.bindInterval = 3*time.Second, time.Second, 400*time.Millisecond, 400*time.Millisecond
 }
 
 // holdLapseRow is one case of the row above: headStored leaves branch_commits and
@@ -328,7 +323,7 @@ func holdLapseRow(t *testing.T, headStored bool) {
 	restoreOwedReads()
 	keeper.release()
 
-	// 60 s: the hold's lapse (intakeHoldTTL, 3 s here), the keeper's poll (durableBindInterval,
+	// 60 s: the hold's lapse (the tuning's holdTTL, 3 s here), the keeper's poll (its bindInterval,
 	// 400 ms here) and its take-over's delete, subscribe and create under the consumer lease.
 	waitFor(t, 60*time.Second, func() bool { return keeper.reads.Load() >= 1 }, func() string {
 		return fmt.Sprintf("the keeper was never handed the envelope the holder left unanswered: holder %d read(s), keeper %d; %s",

@@ -59,7 +59,7 @@ func (c *comparisonReader) notKnownOf(ctx context.Context, issueKey string) ([]d
 	if memoized, held := c.notKnown[*repo]; held {
 		return memoized.pulls, memoized.read
 	}
-	pulls, err := c.server.deps.Attributor.PullRequestsNotKnown(ctx, c.server.deps.Store.Pool, *repo)
+	pulls, err := c.server.deps.Attributor.PullRequestsNotKnown(ctx, c.server.deps.Store.Pool, *repo, c.answers)
 	if err != nil {
 		slog.Warn("dispatch: read the pull requests of a check's repository whose issue is not known",
 			"repo", *repo, "error", err)

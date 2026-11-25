@@ -141,7 +141,7 @@ func TestEveryWriterStoresGitHubsTextsAndNoIssue(t *testing.T) {
 		{name: "an_envelope_that_names_no_head_branch", write: func(ctx context.Context, pool *store.Pool, client *githubapp.Client, second time.Time) error {
 			envelope := prEnvelope(statementRepo, number, "edited", head, "", "", second)
 			delete(envelope, "head_ref")
-			_, err := newIntake(nil, pool, nil, client, nil, nil, unrenamed()).handlePullRequestEnvelope(ctx, nil, envelope)
+			_, err := newIntake(tuningFor(t), nil, pool, nil, client, nil, nil, unrenamed()).handlePullRequestEnvelope(ctx, nil, envelope)
 			return err
 		}},
 		{name: "the_refresh", write: func(ctx context.Context, pool *store.Pool, client *githubapp.Client, _ time.Time) error {
@@ -251,7 +251,7 @@ func TestAKeylessPullRequestIsKnownInTheFirstAnswerAfterItsEvent(t *testing.T) {
 			if failing {
 				github.failCommits()
 			}
-			intake := newIntake(nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed())
+			intake := newIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed())
 			handle := func(action, head string, at time.Time) int32 {
 				github.set(repo, number, "open", head, "work/no-key", "", at)
 				github.setMessages(number, "Work.\n\nDispatch: ACME-4")

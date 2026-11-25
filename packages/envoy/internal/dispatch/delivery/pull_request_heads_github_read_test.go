@@ -35,7 +35,7 @@ func TestRedTeamLegacyFutureRowVersusGitHub(t *testing.T) {
 			fake := newFakeGitHub(t)
 			gh := serveGitHubPulls(t, fake, "acme/widgets")
 			client := fake.newTestClient()
-			intake := newIntake(nil, pool, nil, client, nil, nil, unrenamed())
+			intake := newIntake(tuningFor(t), nil, pool, nil, client, nil, nil, unrenamed())
 			now := time.Now().UTC().Truncate(time.Second)
 			eventAt := now.Add(-time.Minute)
 			if legacyFuture {
@@ -171,7 +171,7 @@ func TestARowTheReleaseBeforeWritesBesideThisBuildStopsNoReadOfGitHub(t *testing
 			fake := newFakeGitHub(t)
 			github := serveGitHubPulls(t, fake, "acme/widgets")
 			client := fake.newTestClient()
-			intake := newIntake(nil, pool, nil, client, nil, nil, unrenamed())
+			intake := newIntake(tuningFor(t), nil, pool, nil, client, nil, nil, unrenamed())
 			const (
 				real   = "6969696969696969696969696969696969696969"
 				forged = "6060606060606060606060606060606060606060"

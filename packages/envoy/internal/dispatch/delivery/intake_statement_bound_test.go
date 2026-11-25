@@ -37,9 +37,7 @@ func TestTheSettleOfAnOwedReadWaitsOnALockNoLongerThanTheOwe(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
 	shrinkOwedReadWriteTimeout(t)
-	messageTimeout := intakeMessageTimeout
-	intakeMessageTimeout = 20 * time.Second
-	t.Cleanup(func() { intakeMessageTimeout = messageTimeout })
+	tuningFor(t).messageTimeout = 20 * time.Second
 	const number = 4299
 	const head, branch = "4299429942994299429942994299429942994299", "feature/settle"
 	fake := newFakeGitHub(t)
@@ -55,7 +53,7 @@ func TestTheSettleOfAnOwedReadWaitsOnALockNoLongerThanTheOwe(t *testing.T) {
 		<-answer
 	}
 	settles := &statementWaitTracer{match: "delete from pull_request_reads_owed"}
-	intake := newIntake(nil, storetest.Traced(t, pool, settles, nil), nil, fake.newTestClient(), nil, newSettingsCache(pool, nil), unrenamed())
+	intake := newIntake(tuningFor(t), nil, storetest.Traced(t, pool, settles, nil), nil, fake.newTestClient(), nil, newSettingsCache(pool, nil), unrenamed())
 	payload, err := json.Marshal(prEnvelope("acme/widgets", number, "synchronize", head, branch, "", at))
 	if err != nil {
 		t.Fatal(err)
@@ -83,7 +81,7 @@ func TestTheSettleOfAnOwedReadWaitsOnALockNoLongerThanTheOwe(t *testing.T) {
 	release()
 	heads := headRowCount(t, ctx, intake, "acme/widgets", number)
 	settled := settles.first()
-	t.Logf("delivery_after_answer=%s settle_waited=%s head_rows=%d message_timeout=%s owe_bound=%s", took.Round(time.Millisecond), settled.Round(time.Microsecond), heads, intakeMessageTimeout, owedReadWriteTimeout)
+	t.Logf("delivery_after_answer=%s settle_waited=%s head_rows=%d message_timeout=%s owe_bound=%s", took.Round(time.Millisecond), settled.Round(time.Microsecond), heads, tuningFor(t).messageTimeout, owedReadWriteTimeout)
 	if heads != 1 {
 		t.Errorf("#%d has %d head rows after its delivery, want 1: the head was written before the settle", number, heads)
 	}
@@ -96,7 +94,7 @@ func TestTheSettleOfAnOwedReadWaitsOnALockNoLongerThanTheOwe(t *testing.T) {
 	}
 	if took > owedReadWriteTimeout+5*time.Second {
 		t.Errorf("the delivery ended %s after GitHub answered, while pull_request_reads_owed was locked; want within the owe's bound (%s) and 5 s: the settle of the owed read waits on the message's deadline (%s)",
-			took.Round(time.Millisecond), owedReadWriteTimeout, intakeMessageTimeout)
+			took.Round(time.Millisecond), owedReadWriteTimeout, tuningFor(t).messageTimeout)
 	}
 }
 
@@ -115,9 +113,7 @@ func TestTheHeadWriteOfTheIntakeWaitsOnALockNoLongerThanTheOwe(t *testing.T) {
 			logs := captureLogs(t)
 			pool, ctx := deliveryTestPool(t)
 			shrinkOwedReadWriteTimeout(t)
-			messageTimeout := intakeMessageTimeout
-			intakeMessageTimeout = 10 * time.Minute
-			t.Cleanup(func() { intakeMessageTimeout = messageTimeout })
+			tuningFor(t).messageTimeout = 10 * time.Minute
 			const number = 4298
 			older, newer := fakeSHA("a", number), fakeSHA("b", number)
 			second := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
@@ -125,7 +121,7 @@ func TestTheHeadWriteOfTheIntakeWaitsOnALockNoLongerThanTheOwe(t *testing.T) {
 			github := serveGitHubPulls(t, fake, "acme/widgets")
 			github.set("acme/widgets", number, "open", older, "feature/x", "", second)
 			client := fake.newTestClient()
-			if _, err := newIntake(nil, pool, nil, client, nil, nil, unrenamed()).handlePullRequestEnvelope(ctx, nil,
+			if _, err := newIntake(tuningFor(t), nil, pool, nil, client, nil, nil, unrenamed()).handlePullRequestEnvelope(ctx, nil,
 				prEnvelope("acme/widgets", number, "opened", older, "feature/x", "", second)); err != nil {
 				t.Fatalf("store head A: %v", err)
 			}
@@ -136,8 +132,8 @@ func TestTheHeadWriteOfTheIntakeWaitsOnALockNoLongerThanTheOwe(t *testing.T) {
 			}
 			natsClient := intakeTestClient(t)
 			writes := &statementWaitTracer{match: "insert into pull_request_heads"}
-			intake := newIntake(natsClient, storetest.Traced(t, pool, writes, nil), deliveryTestLeases(t, pool), client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
-			intake.redeliverAfter = testRedeliverAfter
+			tuningFor(t).redeliverAfter = testRedeliverAfter
+			intake := newIntake(tuningFor(t), natsClient, storetest.Traced(t, pool, writes, nil), deliveryTestLeases(t, pool), client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 			startIntake(t, intake)
 			awaitBoundDurable(t, natsClient)
 			published := time.Now()
@@ -205,9 +201,7 @@ func TestTheReadsPlaceAtTheIntakeWaitsOnALockNoLongerThanTheOwe(t *testing.T) {
 			logs := captureLogs(t)
 			pool, ctx := deliveryTestPool(t)
 			shrinkOwedReadWriteTimeout(t)
-			messageTimeout := intakeMessageTimeout
-			intakeMessageTimeout = 10 * time.Minute
-			t.Cleanup(func() { intakeMessageTimeout = messageTimeout })
+			tuningFor(t).messageTimeout = 10 * time.Minute
 			const number = 4297
 			head, branch := fakeSHA("c", number), "feature/place"
 			at := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
@@ -215,7 +209,7 @@ func TestTheReadsPlaceAtTheIntakeWaitsOnALockNoLongerThanTheOwe(t *testing.T) {
 			github := serveGitHubPulls(t, fake, "acme/widgets")
 			github.set("acme/widgets", number, "open", head, branch, "", at)
 			places := &statementWaitTracer{match: "nextval('pull_request_reads_owed_revision_seq')"}
-			intake := newIntake(nil, storetest.Traced(t, pool, places, nil), nil, fake.newTestClient(), nil, newSettingsCache(pool, nil), unrenamed())
+			intake := newIntake(tuningFor(t), nil, storetest.Traced(t, pool, places, nil), nil, fake.newTestClient(), nil, newSettingsCache(pool, nil), unrenamed())
 			payload, err := json.Marshal(prEnvelope("acme/widgets", number, "synchronize", head, branch, "", at))
 			if err != nil {
 				t.Fatal(err)
@@ -263,7 +257,7 @@ func TestTheReadsPlaceAtTheIntakeWaitsOnALockNoLongerThanTheOwe(t *testing.T) {
 			case <-time.After(time.Minute):
 				ranOut = true
 				t.Errorf("the delivery of #%d did not end in a minute while another session held %q, want within the bounds of the read's place and the owe (%s each): the place waits on the message's deadline (%s)",
-					number, hold.statement, owedReadWriteTimeout, intakeMessageTimeout)
+					number, hold.statement, owedReadWriteTimeout, tuningFor(t).messageTimeout)
 			}
 			// Counted before the hold ends: a delivery still under the hold has made every read of
 			// GitHub it makes under it, and one that ends after the hold could make another.

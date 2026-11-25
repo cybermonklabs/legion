@@ -112,7 +112,7 @@ func TestADeliveryWritesItsLinesBeforeItAnswers(t *testing.T) {
 			logtest.SetDefault(t, slowLine{Handler: slog.NewJSONHandler(&buffer, &slog.HandlerOptions{Level: slog.LevelInfo}), message: line, delay: delay})
 			fake := newFakeGitHub(t)
 			natsClient := intakeTestClient(t)
-			startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+			startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 			awaitBoundDurable(t, natsClient)
 
 			publishGitHubEnvelope(t, natsClient, topic, `["pr","closed"]`)

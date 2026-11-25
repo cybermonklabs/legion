@@ -95,7 +95,7 @@ func TestAnEnvelopeNoDeliveryCanGetPastIsFinalAtItsFirstDelivery(t *testing.T) {
 			github := serveGitHubPulls(t, fake, "acme/widgets")
 			client := fake.newTestClient()
 			natsClient := intakeTestClient(t)
-			startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
+			startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool),
 				client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), attributor))
 			awaitBoundDurable(t, natsClient)
 			before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
@@ -192,7 +192,7 @@ func TestAnAnswerNoRowHoldsIsOwedAtTheIntakeAndAtTheReconcile(t *testing.T) {
 	at := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
 	github.set("acme/widgets", number, "open", poisonHead, "feature/x\x00", "", at)
 	natsClient := intakeTestClient(t)
-	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
+	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool),
 		client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 	before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
@@ -283,7 +283,7 @@ func TestAnEventWhileAStoredRenameTargetBreaksTheNameRuleIsReadOnceTheTargetIsCo
 	github.set(renamed, opened, "open", openedHead, "feature/y", "", at)
 
 	natsClient := intakeTestClient(t)
-	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
+	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool),
 		client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), standing))
 	awaitBoundDurable(t, natsClient)
 	publishPullRequestEnvelope(t, natsClient, "acme", "legacy", pushed,
@@ -371,9 +371,9 @@ func TestAPullRequestGitHubGivesNoAnswerForLogsOneLineOnceItsReadIsOwed(t *testi
 			fault := refuseOwedReads(t, ctx, pool)
 			owes := &oweWaitTracer{lift: fault, liftOn: owedFailure, liftAt: faultedDeliveries}
 			natsClient := intakeTestClient(t)
-			intake := newIntake(natsClient, storetest.Traced(t, pool, owes, nil), deliveryTestLeases(t, pool),
+			tuningFor(t).redeliverAfter = faultedRedelivery
+			intake := newIntake(tuningFor(t), natsClient, storetest.Traced(t, pool, owes, nil), deliveryTestLeases(t, pool),
 				client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
-			intake.redeliverAfter = faultedRedelivery
 			startIntake(t, intake)
 			awaitBoundDurable(t, natsClient)
 			before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
@@ -447,9 +447,7 @@ func TestTheOweOfARefusedReadWaitsOnALockNoLongerThanTheStatementsBesideIt(t *te
 	fastPageRetries(t)
 	logs := captureLogs(t)
 	pool, ctx := deliveryTestPool(t)
-	messageTimeout := intakeMessageTimeout
-	intakeMessageTimeout = 10 * time.Minute
-	t.Cleanup(func() { intakeMessageTimeout = messageTimeout })
+	tuningFor(t).messageTimeout = 10 * time.Minute
 	const number = 4217
 	fake := newFakeGitHub(t)
 	serveGitHubPulls(t, fake, "acme/widgets")
@@ -457,9 +455,9 @@ func TestTheOweOfARefusedReadWaitsOnALockNoLongerThanTheStatementsBesideIt(t *te
 	release := lockOwedReads(t, ctx, pool)
 	owes := &oweWaitTracer{lift: release, liftOn: owedFailure, liftAt: 1}
 	natsClient := intakeTestClient(t)
-	intake := newIntake(natsClient, storetest.Traced(t, pool, owes, nil), deliveryTestLeases(t, pool),
+	tuningFor(t).redeliverAfter = faultedRedelivery
+	intake := newIntake(tuningFor(t), natsClient, storetest.Traced(t, pool, owes, nil), deliveryTestLeases(t, pool),
 		fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
-	intake.redeliverAfter = faultedRedelivery
 	startIntake(t, intake)
 	awaitBoundDurable(t, natsClient)
 	at := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
@@ -620,9 +618,9 @@ func TestAnOwedRecordRefusedForAnyCauseLosesNoHead(t *testing.T) {
 			restore := refuseOwedReadsWith(t, ctx, pool, sqlstate)
 
 			natsClient := intakeTestClient(t)
-			intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool),
+			tuningFor(t).redeliverAfter = testRedeliverAfter
+			intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool),
 				client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
-			intake.redeliverAfter = testRedeliverAfter
 			startIntake(t, intake)
 			awaitBoundDurable(t, natsClient)
 			before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
@@ -746,7 +744,7 @@ func TestAHeadWrittenAfterAFailedDeliveryLeavesNothingOwed(t *testing.T) {
 	github.failing = true
 	github.mu.Unlock()
 	natsClient := intakeTestClient(t)
-	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
+	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool),
 		client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 	before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer

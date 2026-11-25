@@ -144,7 +144,7 @@ func describeAttribution(answer PullRequestAttribution) string {
 // head Dispatch has not read.
 func listedFor(t *testing.T, a *Attributor, ctx context.Context, pool *store.Pool, issue string) []string {
 	t.Helper()
-	heads, err := a.HeadsAttributedTo(ctx, pool, issue)
+	heads, err := a.HeadsAttributedTo(ctx, pool, issue, HeadAnswers{})
 	if err != nil {
 		t.Fatalf("HeadsAttributedTo(%s): %v", issue, err)
 	}
@@ -175,11 +175,11 @@ func readersOf(t *testing.T, a *Attributor, ctx context.Context, pool *store.Poo
 	if err != nil {
 		t.Fatalf("HeadAttributedTo(%s): %v", issue, err)
 	}
-	newest, found, err := a.NewestPullRequestHead(ctx, pool, issue)
+	newest, found, err := a.NewestPullRequestHead(ctx, pool, issue, HeadAnswers{})
 	if err != nil {
 		t.Fatalf("NewestPullRequestHead(%s): %v", issue, err)
 	}
-	branch, err := a.BaseBranchMergedFor(ctx, pool, issue)
+	branch, err := a.BaseBranchMergedFor(ctx, pool, issue, HeadAnswers{})
 	if err != nil {
 		t.Fatalf("BaseBranchMergedFor(%s): %v", issue, err)
 	}

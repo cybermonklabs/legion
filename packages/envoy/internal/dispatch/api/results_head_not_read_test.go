@@ -111,7 +111,7 @@ func recordNotReadPass(t *testing.T, handler http.Handler, issue, blockID, commi
 // pair, so it reads with unrenamed.
 func notReadListed(t *testing.T, database *store.Store, issueKey string) []string {
 	t.Helper()
-	heads, err := unrenamed().HeadsAttributedTo(context.Background(), database.Pool, issueKey)
+	heads, err := unrenamed().HeadsAttributedTo(context.Background(), database.Pool, issueKey, delivery.HeadAnswers{})
 	if err != nil {
 		t.Fatalf("HeadsAttributedTo(%s): %v", issueKey, err)
 	}
@@ -506,7 +506,7 @@ func TestAnAfterMergeCheckBesideAMergeWhoseAnswerIsNotKnown(t *testing.T) {
 				wantNotReadAnswer(t, database, 85, "nobody, not known")
 			}
 			wantNotReadAnswer(t, database, 70, issue+", known")
-			if branch, err := unrenamed().BaseBranchMergedFor(context.Background(), database.Pool, issue); err != nil || branch != "release" {
+			if branch, err := unrenamed().BaseBranchMergedFor(context.Background(), database.Pool, issue, delivery.HeadAnswers{}); err != nil || branch != "release" {
 				t.Fatalf("SETUP: BaseBranchMergedFor(%s) answers %q (%v), want release", issue, branch, err)
 			}
 			onRelease := recordNotReadPass(t, handler, issue, "k2", integrationCommit)

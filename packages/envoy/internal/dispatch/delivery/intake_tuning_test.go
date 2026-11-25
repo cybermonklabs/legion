@@ -1,0 +1,50 @@
+package delivery
+
+import (
+	"reflect"
+	"testing"
+	"time"
+
+	natsgo "github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/bus"
+)
+
+// Production's tuning is the values the intakes ran by when each was a package variable a test
+// overwrote, and StartIntakes builds both intakes with it: a test now shortens a timer or hooks a
+// step on its own intakes alone (tuningFor), so these are the values no test reads and every
+// deployment runs by. The row pins each, that no hook is set, and that each call makes a tuning of
+// its own.
+func TestProductionsIntakeTuningIsTheShippedTimersAndNoHook(t *testing.T) {
+	t.Parallel()
+	tuning := newIntakeTuning()
+	for _, field := range []struct {
+		name      string
+		got, want any
+	}{
+		{"messageTimeout", tuning.messageTimeout, time.Minute},
+		{"maxAckPending", tuning.maxAckPending, 4},
+		{"stopBudget", tuning.stopBudget, 15 * time.Second},
+		{"redeliverAfter", tuning.redeliverAfter, 10 * time.Second},
+		{"bindInterval", tuning.bindInterval, 2 * time.Second},
+		{"holdTTL", tuning.holdTTL, 15 * time.Second},
+		{"holdRenew", tuning.holdRenew, 5 * time.Second},
+		{"holdMargin", tuning.holdMargin, 2 * time.Second},
+		{"callWait", time.Duration(tuning.callWait.Load()), bus.ConnLockWait},
+		{"drainWait", time.Duration(tuning.drainWait.Load()), natsgo.DefaultDrainTimeout},
+		{"ackWait", tuning.ackWait(), 5 * time.Minute},
+	} {
+		if field.got != field.want {
+			t.Errorf("production's %s = %v, want %v", field.name, field.got, field.want)
+		}
+	}
+	if reflect.ValueOf(tuning.createDurable).Pointer() != reflect.ValueOf(addDurable).Pointer() {
+		t.Error("production's createDurable is not addDurable, the create that sends the durable to the stream")
+	}
+	if tuning.stopArmed.Load() != nil || tuning.beforeRelease.Load() != nil {
+		t.Error("production's tuning carries a test's hook")
+	}
+	if newIntakeTuning() == tuning {
+		t.Error("newIntakeTuning returned the same tuning twice, so two intakes would share one")
+	}
+}

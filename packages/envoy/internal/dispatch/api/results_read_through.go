@@ -58,6 +58,9 @@ import (
 // after the record would never be learned. The readable test is that repository's own. A read
 // that fails leaves the bases exactly as the stored rows say, which is what a result reads with
 // no read-through at all: a GitHub call that did not land is no evidence either way.
+//
+// A read-only caller's read makes the same read and stores nothing, takes no claim and settles
+// nothing (answerCommitPulls).
 func (c *comparisonReader) readThroughHead(ctx context.Context, result model.CheckResult) {
 	if c.server.deps.GitHub == nil {
 		return
@@ -66,7 +69,11 @@ func (c *comparisonReader) readThroughHead(ctx context.Context, result model.Che
 	if !readable {
 		return
 	}
-	now := time.Now()
+	now := c.server.resultsNow()
+	if c.readOnly {
+		c.answerCommitPulls(ctx, repo, result.CommitSHA, now)
+		return
+	}
 	claimed, err := c.server.commitPulls.ClaimAcrossProcesses(ctx, c.server.deps.Store.Pool, repo, result.CommitSHA, now)
 	if err != nil {
 		slog.Info("dispatch: the claim of a read of a result's commit was not taken, so the read asks GitHub nothing",
@@ -99,6 +106,43 @@ func (c *comparisonReader) readThroughHead(ctx context.Context, result model.Che
 	}
 }
 
+// answerCommitPulls is readThroughHead's read-through for a read-only caller, which stores
+// nothing and keeps nothing after its request (plan D32). Where a writer's claim or settle of the
+// commit stands, in this process's memory or in the claim every process shares
+// (server.commitPulls.RefusesAcrossProcesses), it asks GitHub nothing, as a writer's read whose
+// claim is refused asks nothing, and the stored rows answer; a read of that claim that fails asks
+// nothing too, as a writer's claim that fails grants nothing. Otherwise it makes the writer's
+// read-through with its writes kept for this read alone (delivery.Attributor.AnswerCommitPulls,
+// answers), takes no claim and settles nothing.
+//
+// A pair this read has already asked GitHub for asks nothing again, as a writer's read is refused
+// by the claim it took for that pair earlier in the same read; one whose read stored nothing
+// (ErrReadThroughNotStored) may ask again, as a writer's read gives that claim back.
+func (c *comparisonReader) answerCommitPulls(ctx context.Context, repo, sha string, now time.Time) {
+	pair := [2]string{repo, sha}
+	if _, asked := c.askedPulls[pair]; asked {
+		return
+	}
+	pool := c.server.deps.Store.Pool
+	refused, err := c.server.commitPulls.RefusesAcrossProcesses(ctx, pool, repo, sha, now)
+	if err != nil {
+		slog.Info("dispatch: the claim of a read of a result's commit was not read, so the read asks GitHub nothing",
+			"repo", repo, "commit", sha, "error", err)
+		return
+	}
+	if refused {
+		return
+	}
+	c.askedPulls[pair] = struct{}{}
+	if _, _, err := c.server.deps.Attributor.AnswerCommitPulls(ctx, pool, c.server.deps.GitHub, &c.answers, repo, sha, now); err != nil {
+		slog.Info("dispatch: GitHub named no pull request for a result's commit",
+			"repo", repo, "commit", sha, "error", err)
+		if errors.Is(err, delivery.ErrReadThroughNotStored) {
+			delete(c.askedPulls, pair)
+		}
+	}
+}
+
 // readThroughRepository is the repository readThroughHead reads a result's commit through, and
 // whether that read can be made at all, by whose the commit is taken to be (commitRepositoryOf):
 // a linked repository, where the App can read it (commitRepository.readable, the one answer
@@ -124,8 +168,8 @@ func (c *comparisonReader) readThroughRepository(ctx context.Context, result mod
 // took, linked to an issue whose only `before_merge` check is one CI proves, takes no result from
 // any role (409 CHECK_PROVED_BY_CI), so no result write's read-through and no read-through of a
 // result commit (readThroughHead) asks GitHub about it, and the check read no head until the
-// reconcile's next pass read the owed link (INFRA-5094: no_head with the pull request open, linked
-// and green). It reads whatever checks the issue holds, and for a link written before links owed a
+// reconcile's next pass read the owed link (no_head with the pull request open, linked and
+// green). It reads whatever checks the issue holds, and for a link written before links owed a
 // read as for one written since.
 //
 // One linked pull request is read at most once per delivery.CommitPullReadStaleAfter in this
@@ -133,22 +177,36 @@ func (c *comparisonReader) readThroughRepository(ctx context.Context, result mod
 // delivery.LinkedHeadReadsPerRead of them in one read, and a read that fails is claimed with the
 // rest: the read leaves the bases as the stored rows say, which the reconcile repairs, so a GitHub
 // call that did not land costs the results read nothing but the call.
-func (s *server) readLinkedHeads(ctx context.Context, issueKey string) {
+//
+// A read-only caller's read takes no claim: it asks GitHub nothing where a writer's claim stands
+// (Refuses), and keeps what it learns for its own request alone
+// (delivery.Attributor.AnswerLinkedHead, answers).
+func (c *comparisonReader) readLinkedHeads(ctx context.Context, issueKey string) {
+	s := c.server
 	if s.deps.GitHub == nil || s.deps.Attributor == nil {
 		return
 	}
 	pool := s.deps.Store.Pool
-	unread, err := s.deps.Attributor.LinkedHeadsUnread(ctx, pool, issueKey)
+	unread, err := s.deps.Attributor.LinkedHeadsUnread(ctx, pool, issueKey, c.answers)
 	if err != nil {
 		slog.Warn("dispatch: read the linked pull requests whose head is not held", "issue", issueKey, "error", err)
 		return
 	}
-	now := time.Now()
+	now := s.resultsNow()
 	for _, link := range unread {
-		if !s.linkedHeads.Claim(link.Repo, "pull/"+strconv.Itoa(link.Number), now) {
-			continue
+		key := "pull/" + strconv.Itoa(link.Number)
+		if c.readOnly {
+			if s.linkedHeads.Refuses(link.Repo, key, now) {
+				continue
+			}
+			err = s.deps.Attributor.AnswerLinkedHead(ctx, pool, s.deps.GitHub, &c.answers, link, now)
+		} else {
+			if !s.linkedHeads.Claim(link.Repo, key, now) {
+				continue
+			}
+			err = s.deps.Attributor.ReadLinkedHead(ctx, pool, s.deps.GitHub, link, now)
 		}
-		if err := s.deps.Attributor.ReadLinkedHead(ctx, pool, s.deps.GitHub, link, now); err != nil {
+		if err != nil {
 			slog.Info("dispatch: read a linked pull request's head for an issue's results; the reconcile reads it again",
 				"issue", issueKey, "repo", link.Repo, "number", link.Number, "error", err)
 		}

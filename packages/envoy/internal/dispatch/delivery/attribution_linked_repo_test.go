@@ -68,7 +68,7 @@ func TestAPullRequestAnIssueLinksInAnotherRepositoryIsItsOwnInTheResultsAndTheTi
 		t.Errorf("control: acme/tools#11, which ATTR-872 links and whose head is in a fork, answers %s; want none", got)
 	}
 
-	heads, err := unrenamed().HeadsAttributedTo(ctx, pool, "ATTR-871")
+	heads, err := unrenamed().HeadsAttributedTo(ctx, pool, "ATTR-871", HeadAnswers{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,10 +82,10 @@ func TestAPullRequestAnIssueLinksInAnotherRepositoryIsItsOwnInTheResultsAndTheTi
 	if !slices.ContainsFunc(timeline, func(pr DeliveryPullRequest) bool { return pr.Repo == "acme/tools" && pr.Number == 9 }) || len(timeline) != 1 {
 		t.Errorf("the timeline of ATTR-871 lists %+v; want acme/tools#9 alone, the issue the results name", timeline)
 	}
-	if branch, err := unrenamed().BaseBranchMergedIn(ctx, pool, "ATTR-871", "acme/tools"); err != nil || branch != "release" {
+	if branch, err := unrenamed().BaseBranchMergedIn(ctx, pool, "ATTR-871", "acme/tools", HeadAnswers{}); err != nil || branch != "release" {
 		t.Errorf("BaseBranchMergedIn(ATTR-871, acme/tools) = %q, %v; want release, the branch #9 merged into", branch, err)
 	}
-	if branch, err := unrenamed().BaseBranchMergedFor(ctx, pool, "ATTR-871"); err != nil || branch != "" {
+	if branch, err := unrenamed().BaseBranchMergedFor(ctx, pool, "ATTR-871", HeadAnswers{}); err != nil || branch != "" {
 		t.Errorf("BaseBranchMergedFor(ATTR-871) = %q, %v; want none: it reads acme/widgets, the issue's own repository, alone", branch, err)
 	}
 }

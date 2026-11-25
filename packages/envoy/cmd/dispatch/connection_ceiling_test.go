@@ -24,11 +24,11 @@ import (
 // roles with the SUPERUSER attribute` (SQLSTATE 53300) in its own log, and nothing in the failure
 // names the cause.
 //
-// So every start checks two things, against constants rather than numbers written here. It refuses
-// a start that would run more processes at once than testlimits.MaxProcessesAtOnce, which every CI
-// lane's server is sized from. And it refuses a start the server it meets cannot serve. The fix is
-// the server's size, never the pools: pools shrunk for tests would test a shape production does
-// not run.
+// So the count never passes testlimits.MaxProcessesAtOnce, which every CI lane's server is sized
+// from: every start first takes one of that many slots (dispatchSlots), where a first start waits
+// for a free one. And every start is refused when the server it meets cannot serve the processes
+// counted. The fix is the server's size, never the pools: pools shrunk for tests would test a shape
+// production does not run.
 //
 // The check reads max_connections, not the slots in use: a server whose slots other clients hold
 // (this binary's own pools, another test binary, any other program) passes it and refuses the
@@ -44,24 +44,17 @@ import (
 var dispatchProcessesRunning atomic.Int64
 
 // requireConnectionCeiling counts one more Dispatch process running in this test binary and
-// refuses its start when the count is over testlimits.MaxProcessesAtOnce or the server cannot serve
-// that many. It answers the release that takes the process off the count, which the caller runs
-// once the process has exited; the test's cleanup runs it too, for a start that never ran a
-// process, and only the first call counts.
+// refuses its start when the server cannot serve that many. Every start takes a slot of
+// dispatchSlots first (dispatchSlots.take), so the count never passes
+// testlimits.MaxProcessesAtOnce. It answers the release that takes the process off the count,
+// which the caller runs once the process has exited; the test's cleanup runs it too, for a start
+// that never ran a process, and only the first call counts.
 func requireConnectionCeiling(t *testing.T, databaseURL string) (release func()) {
 	t.Helper()
 	processes := int(dispatchProcessesRunning.Add(1))
 	var once sync.Once
 	release = func() { once.Do(func() { dispatchProcessesRunning.Add(-1) }) }
 	t.Cleanup(release)
-
-	if processes > testlimits.MaxProcessesAtOnce {
-		release()
-		t.Fatalf("this start would run %d Dispatch processes at once in this test binary, and "+
-			"testlimits.MaxProcessesAtOnce is %d. Every CI lane's Postgres is sized from that constant: "+
-			"raise it, so the lanes grow with it, rather than leaving this row to meet a server that "+
-			"cannot serve it.", processes, testlimits.MaxProcessesAtOnce)
-	}
 
 	ctx := context.Background()
 	config, err := store.ConnConfig(databaseURL)

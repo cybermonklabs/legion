@@ -78,8 +78,8 @@ func callbackHandBackAsTheStopEnds(t *testing.T, heldPastTheStop bool) {
 	letKeyingGo := make(chan struct{})
 	releaseKeying := sync.OnceFunc(func() { close(letKeyingGo) })
 	t.Cleanup(releaseKeying)
-	wanted := deliveryConsumerConfig()
-	durable := newHeldDurable(client, deliveryTestLeases(t, pool), func() natsgo.ConsumerConfig { return wanted },
+	wanted := deliveryConsumerConfig(tuningFor(t))
+	durable := newHeldDurable(tuningFor(t), client, deliveryTestLeases(t, pool), func(*intakeTuning) natsgo.ConsumerConfig { return wanted },
 		func(msg *natsgo.Msg) (string, *contracts.Envelope, bool) {
 			entered.Do(func() { close(keying) })
 			<-letKeyingGo
@@ -225,6 +225,7 @@ func callbackHandBackAsTheStopEnds(t *testing.T, heldPastTheStop bool) {
 // hold and left the hand-back pending: the second subtest fails there with the -NAK after the
 // creation.
 func TestAHandBackPendingWhenTheHoldIsLostNeverReachesTheStandbysDurable(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		lose bool
@@ -286,7 +287,7 @@ func TestAHandBackPendingWhenTheHoldIsLostNeverReachesTheStandbysDurable(t *test
 // The row's handler does what Intake.deliver does with a given-up message: it waits for its context
 // to end and hands the message back. Two messages of one pull request are published, so the first is
 // in its handler and the second waits behind its key, on a link that moves. One stop runs under an
-// ended context, and once its give-up is armed (stopGiveUpArmed) it waits until the key has no
+// ended context, and once its give-up is armed (intakeTuning.stopArmed) it waits until the key has no
 // handler goroutine left: the first handler has returned, and the runner has either started the
 // second or found its queue taken. Then the row requires that one handler started, and, once every
 // hand-back has landed and the client has flushed, that the server was sent one hand-back: the
@@ -330,8 +331,7 @@ func TestAStopUnderAnEndedContextHoldsTheMessageWaitingBehindItsKey(t *testing.T
 			close(idle)
 		})
 	}
-	stopGiveUpArmed.Store(&armed)
-	t.Cleanup(func() { stopGiveUpArmed.Store(nil) })
+	delivery.tuning.stopArmed.Store(&armed)
 	stopped := row.stopUnder(cancelled())
 	select {
 	case <-idle:
@@ -339,7 +339,7 @@ func TestAStopUnderAnEndedContextHoldsTheMessageWaitingBehindItsKey(t *testing.T
 		t.Fatal("control: the given-up handler's key still had a handler goroutine 30 s after the give-up was armed")
 	}
 	testnats.AnswersWithin(t, 30*time.Second, "StopDelivering", stopped)
-	stopGiveUpArmed.Store(nil)
+	delivery.tuning.stopArmed.Store(nil)
 	if n := started.Load(); n != 1 {
 		t.Fatalf("%d handlers started: the message waiting behind its key started its handler under the stop's ended context, rather than being held by the stop", n)
 	}

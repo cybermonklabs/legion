@@ -137,7 +137,7 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 	if !deadline.IsZero() && (m.held.Deadline.IsZero() || deadline.Before(m.held.Deadline)) {
 		m.held.Deadline = deadline
 		if a, ok := m.timers[TimerSuspend]; !ok || deadline.Before(a.due) {
-			m.arm(TimerSuspend, max(0, deadline.Sub(m.deps.Clock.Now())), "")
+			m.armAt(TimerSuspend, deadline, "")
 			m.log.Info("supervise: the held suspension stops the agent at its deadline if its turn has not ended", "deadline", deadline, "by", m.held.By)
 		}
 	}
@@ -560,10 +560,10 @@ const (
 // toward the deaths limit for a death the daemon is being asked to recover from. A suspension is
 // no launch failure of its own either.
 func (m *Machine) suspendOverADeadProcess(ctx context.Context, request RequestSuspend) error {
-	cause := m.claim.LastDeathCause
-	m.claim.LastDeathCause = m.goneCause
+	cause, at := m.claim.LastDeathCause, m.claim.LastDeathAt
+	m.claim.LastDeathCause, m.claim.LastDeathAt = m.goneCause, m.deps.Clock.Now()
 	if err := m.interrupted(ctx, "the process the task's turn ran on is gone", m.goneOutOfMemory); err != nil {
-		m.claim.LastDeathCause = cause
+		m.claim.LastDeathCause, m.claim.LastDeathAt = cause, at
 		return err
 	}
 	m.recordEnd(ctx, endDied(m.goneCause))

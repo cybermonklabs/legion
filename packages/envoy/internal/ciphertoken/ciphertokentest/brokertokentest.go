@@ -3,18 +3,27 @@
 // each token is, and a caller holding one key, whose proofs come from the producer a real caller
 // uses (internal/cipher/helper's DPoP transport) rather than from a second signer written beside
 // the test. Two are a GoogleAccount's: a Compute Engine metadata server, and IAM Service Account
-// Credentials' generateIdToken. It is an ordinary package rather than a _test.go file so the
-// suites that drive each — internal/ciphertoken's own and internal/dispatch/api's for the check,
-// internal/ciphertoken's own and internal/cipher/judge's for the account — read one copy; Go
-// cannot share test-only code across packages.
+// Credentials' generateIdToken. It also reads the golden file of the answers to a token narrowed
+// to reading (NarrowedAnswers), which the broker's test and every reader's test hold to. It is an
+// ordinary package rather than a _test.go file so the suites that drive each — internal/ciphertoken's
+// own and internal/dispatch/api's for the check, internal/ciphertoken's own and
+// internal/cipher/judge's for the account, and every reader of a narrowed token for the golden
+// file — read one copy; Go cannot share test-only code across packages.
 package ciphertokentest
+
+//ci:reads packages/envoy/internal/ciphertoken/testdata/narrowed-answers.json narrowedAnswersFile joins ../testdata/narrowed-answers.json from this file's own path, which NarrowedAnswers reads for every reader's test
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -163,6 +172,47 @@ func (c *Caller) Signed(t testing.TB, method, url, token string) *http.Request {
 	c.captured.mu.Lock()
 	defer c.captured.mu.Unlock()
 	return c.captured.last
+}
+
+// narrowedAnswersFile is internal/ciphertoken/testdata/narrowed-answers.json, read once for the
+// test binary. It is found from this file's own path rather than from the process's working
+// directory, so the test of every package reads the one file, wherever its binary runs.
+var narrowedAnswersFile = sync.OnceValues(func() ([]byte, error) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		return nil, errors.New("this test binary carries no path for brokertokentest.go")
+	}
+	return os.ReadFile(filepath.Join(filepath.Dir(file), "..", "testdata", "narrowed-answers.json"))
+})
+
+// NarrowedAnswers is the broker's answer for a token narrowed to reading, by the kind of trade
+// that minted it, as the golden file internal/ciphertoken/testdata/narrowed-answers.json holds
+// them: each bound to jkt, naming session and expiring at exp, filled in as the file's comment
+// says. The broker's own test holds the answers it mints to the same file
+// (internal/cipher/oauth, TestATradeThatAsksForReadKeepsItsIdentityAndHoldsRead). A member the
+// file names and Introspection does not carry fails the read, so the file holds nothing a reader
+// never reads.
+func NarrowedAnswers(t testing.TB, jkt, session string, exp int64) map[string]ciphertoken.Introspection {
+	t.Helper()
+	raw, err := narrowedAnswersFile()
+	if err != nil {
+		t.Fatalf("read the narrowed answers: %v", err)
+	}
+	filled := strings.NewReplacer(`"${jkt}"`, strconv.Quote(jkt), `"${session}"`, strconv.Quote(session),
+		`"${exp}"`, strconv.FormatInt(exp, 10)).Replace(string(raw))
+	var golden struct {
+		Comment string                               `json:"_comment"`
+		Answers map[string]ciphertoken.Introspection `json:"answers"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(filled))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&golden); err != nil {
+		t.Fatalf("decode the narrowed answers: %v", err)
+	}
+	if len(golden.Answers) == 0 {
+		t.Fatal("the narrowed answers file holds no answer")
+	}
+	return golden.Answers
 }
 
 // The two paths of a Compute Engine metadata server a GoogleAccount reads, as

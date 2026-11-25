@@ -8,24 +8,16 @@
 // turns the person trade off (`PERSON_SIGNIN_TRADE=off`), which is the machine's own client
 // whatever the sign-in store holds, and reads none of it.
 
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { createPublicKey, generateKeyPairSync } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
-import { calculateJwkThumbprint, type JWK } from "jose";
-import { signedIn, stubIssuer, writeSignIn } from "../../test/sign-ins";
-import {
-  BROKER_URL_VAR,
-  type BrokerEnvironment,
-  brokerTokenClient,
-  IDENTITY_VAR,
-  MACHINE_AUDIENCE_VAR,
-  PROJECTS_VAR,
-  SESSION_VAR,
-} from "../environment";
-import { METADATA_HOST_VAR } from "../metadata-identity";
+import { calculateJwkThumbprint, compactVerify, importJWK, type JWK } from "jose";
+import { serveMetadataIdentity } from "../../test/metadata-server";
+import { boxes, CLIENT_ID, MACHINE_SESSION, signedIn, stubIssuer } from "../../test/sign-ins";
+import { type BrokerEnvironment, brokerTokenClient, PROJECTS_VAR } from "../environment";
 import {
   PERSON_TRADE_VAR,
   PERSON_VAR,
@@ -33,53 +25,33 @@ import {
   SIGNIN_CLIENT_SECRET_FILE_VAR,
   SIGNIN_COMMAND,
   SIGNIN_DIR_VAR,
-  SIGNIN_ISSUER_VAR,
-  type SignInRecord,
   signInSessionName,
 } from "../signins";
 import type { BrokerTokenClient } from "../token-client";
 import {
   ACTOR_TOKEN_TYPE_MACHINE,
+  FORM_AS_OF,
   FORM_LAUNCHER_CREDENTIAL,
   FORM_LAUNCHER_CREDENTIAL_DECLINED,
   FORM_PROJECTS,
+  FORM_SCOPE,
   FORM_SESSION,
+  SCOPE_READ,
   SUBJECT_TOKEN_TYPE_GOOGLE,
   SUBJECT_TOKEN_TYPE_PERSON,
+  TOKEN_PATH,
 } from "../wire";
 import { accepted, stubBroker } from "./stub";
 
 const PERSON = "ada@example.com";
-const CLIENT_ID = "example-device-client";
-const CLIENT_SECRET = fixtureSecret("client");
 const MACHINE_TOKEN = fixtureSecret("machine");
-/** The name the machine trades under for a caller that acts as no session of its own. */
-const MACHINE_SESSION = "legion-demo-controller";
+/** The token the stub broker answers a read trade's nth trade with, at READ_TOKENS[n - 1]. */
+const READ_TOKENS = [fixtureSecret("read1"), fixtureSecret("read2"), fixtureSecret("read3")];
 
 const makeDirectory = temporaryDirectories("person-route");
 
-/**
- * The metadata server this file's machine asks for its own Google identity token. The metadata
- * identity reads `GCE_METADATA_HOST` from the process's environment, so the variable is set for
- * this file and put back after it.
- */
-let stopMetadata = () => {};
-let previousMetadataHost: string | undefined;
-beforeAll(() => {
-  const server = Bun.serve({
-    port: 0,
-    hostname: "127.0.0.1",
-    fetch: () => new Response(`${MACHINE_TOKEN}\n`),
-  });
-  stopMetadata = () => server.stop(true);
-  previousMetadataHost = process.env[METADATA_HOST_VAR];
-  process.env[METADATA_HOST_VAR] = `127.0.0.1:${server.port}`;
-});
-afterAll(() => {
-  stopMetadata();
-  if (previousMetadataHost === undefined) delete process.env[METADATA_HOST_VAR];
-  else process.env[METADATA_HOST_VAR] = previousMetadataHost;
-});
+/** The metadata server this file's machine asks for its own Google identity token. */
+serveMetadataIdentity(MACHINE_TOKEN);
 
 const stops: (() => void)[] = [];
 afterEach(() => {
@@ -95,32 +67,8 @@ async function stubs() {
   return { broker, issuer };
 }
 
-/**
- * The environment of a Compute Engine box at `brokerUrl` whose sign-in directory holds
- * `records`, with the sign-in client at `issuer` configured and `AGENT_SECRETS_SESSION` set, as a
- * daemon's environment sets it.
- */
-async function box(
-  brokerUrl: string,
-  issuer: string,
-  records: readonly SignInRecord[]
-): Promise<BrokerEnvironment> {
-  const dir = makeDirectory();
-  const signins = join(dir, "signins");
-  for (const record of records) await writeSignIn(signins, record);
-  const secret = join(dir, "client-secret");
-  await writeFile(secret, `${CLIENT_SECRET}\n`, { mode: 0o600 });
-  return {
-    [BROKER_URL_VAR]: brokerUrl,
-    [IDENTITY_VAR]: "metadata",
-    [MACHINE_AUDIENCE_VAR]: "example-machine-client-id",
-    [SESSION_VAR]: MACHINE_SESSION,
-    [SIGNIN_DIR_VAR]: signins,
-    [SIGNIN_ISSUER_VAR]: issuer,
-    [SIGNIN_CLIENT_ID_VAR]: CLIENT_ID,
-    [SIGNIN_CLIENT_SECRET_FILE_VAR]: secret,
-  };
-}
+/** This file's box environments, each in a directory of its own ({@link boxes}). */
+const box = boxes(makeDirectory);
 
 /** The client the factory answers, which these tests expect it to answer. */
 async function clientOf(env: BrokerEnvironment, own?: string): Promise<BrokerTokenClient> {
@@ -192,6 +140,133 @@ test("the person's proof carries the box key's public JWK, the key the broker bo
   expect(client.key.publicJwk).toEqual({ kty, crv, x, y });
   // The thumbprint `agent-secrets login` recorded, which a revoke of this sign-in refuses.
   expect(await calculateJwkThumbprint(jwk as JWK)).toBe(record.thumbprint);
+});
+
+test("a person's read trade asks for scope read, sends no launcher_credential and reads an answer with no credential_id", async () => {
+  // The broker answers a read trade with no launcher credential: it makes, moves and extends none.
+  const broker = stubBroker((_trade, count) => ({
+    body: {
+      access_token: READ_TOKENS[count - 1],
+      issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+      token_type: "DPoP",
+      expires_in: 600,
+      scope: SCOPE_READ,
+    },
+  }));
+  const issuer = await stubIssuer({ clientId: CLIENT_ID, person: PERSON });
+  stops.push(broker.stop, issuer.stop);
+  const record = await signedIn(PERSON, { client_id: CLIENT_ID });
+  const env = await box(broker.url, issuer.url, [record]);
+  const cut = "2026-11-19T08:30:00.123456Z";
+  const made = await brokerTokenClient(env, "ses_01a9", {});
+  const cutMade = await brokerTokenClient(env, "ses_01a9", { asOf: cut });
+  if (made === undefined || cutMade === undefined)
+    throw new Error("the factory answered no client");
+
+  const token = await made.client.token();
+  await cutMade.client.token();
+
+  const [read, cutRead] = broker.trades;
+  expect(read?.form.get("subject_token_type")).toBe(SUBJECT_TOKEN_TYPE_PERSON);
+  expect(read?.form.get("actor_token_type")).toBe(ACTOR_TOKEN_TYPE_MACHINE);
+  expect(read?.form.get(FORM_SCOPE)).toBe(SCOPE_READ);
+  expect(read?.form.has(FORM_AS_OF)).toBe(false);
+  // Absent, a read trade's launcher_credential reads as declined, and a person's trade may not
+  // send `false`, so the parameter is left out.
+  expect(read?.form.has(FORM_LAUNCHER_CREDENTIAL)).toBe(false);
+  expect(cutRead?.form.get(FORM_SCOPE)).toBe(SCOPE_READ);
+  expect(cutRead?.form.get(FORM_AS_OF)).toBe(cut);
+  expect(cutRead?.form.has(FORM_LAUNCHER_CREDENTIAL)).toBe(false);
+  expect(token.accessToken).toBe(READ_TOKENS[0]);
+  expect(token.credentialId).toBe("");
+  expect(token.credentialExpiresAt).toBeNull();
+  // The sign-in a refusal is remembered by is still the box key's.
+  expect(made.signIn).toEqual({ person: PERSON, thumbprint: record.thumbprint });
+});
+
+test("a person's read trade signs its DPoP proof with the box key, sends a DPoP-Holder proof with a key of its own, and signs every later proof with that key", async () => {
+  // The first answer asks for a nonce, which both proofs of the retried trade must carry.
+  const broker = stubBroker((_trade, count) =>
+    count === 1
+      ? { status: 400, body: { error: "use_dpop_nonce" }, nonce: "nonce-1" }
+      : { body: accepted(READ_TOKENS[count - 1], 600) }
+  );
+  const issuer = await stubIssuer({ clientId: CLIENT_ID, person: PERSON });
+  stops.push(broker.stop, issuer.stop);
+  const record = await signedIn(PERSON, { client_id: CLIENT_ID });
+  const env = await box(broker.url, issuer.url, [record]);
+  const made = await brokerTokenClient(env, "ses_01a9", {});
+  if (made === undefined) throw new Error("the factory answered no client");
+  const { client } = made;
+  const token = await client.token();
+  // A later trade of the same client, as a renewal makes.
+  client.drop();
+  await client.token();
+
+  const { kty, crv, x, y } = createPublicKey(record.box_key).export({ format: "jwk" });
+  const boxJwk = { kty, crv, x, y };
+  const [asked, traded, renewed] = broker.trades;
+  expect(broker.trades).toHaveLength(3);
+  const endpoint = broker.url + TOKEN_PATH;
+  for (const trade of [asked, traded, renewed]) {
+    // The sign-in is proved by the box key, as every trade of it is.
+    expect(trade?.proofHeader.jwk).toEqual(boxJwk);
+    // The holder proof is a DPoP proof of the same request, by another P-256 key.
+    expect(trade?.holderHeader).toMatchObject({ typ: "dpop+jwt", alg: "ES256" });
+    const holderJwk = trade?.holderHeader.jwk as JWK;
+    expect(Object.keys(holderJwk).sort()).toEqual(["crv", "kty", "x", "y"]);
+    expect(holderJwk).not.toEqual(boxJwk);
+    expect(trade?.holderClaims).toMatchObject({ htm: "POST", htu: endpoint });
+    expect(typeof trade?.holderClaims.jti).toBe("string");
+    expect(trade?.holderClaims.jti).not.toBe(trade?.proofClaims.jti);
+    expect(typeof trade?.holderClaims.iat).toBe("number");
+  }
+  expect(asked?.holderClaims.nonce).toBeUndefined();
+  expect(traded?.proofClaims.nonce).toBe("nonce-1");
+  expect(traded?.holderClaims.nonce).toBe("nonce-1");
+  // One holder key for the client's life, so every token it trades is bound to the same key.
+  const holderJwk = traded?.holderHeader.jwk as JWK;
+  expect(renewed?.holderHeader.jwk).toEqual(holderJwk);
+
+  // The key a caller signs Dispatch's proofs with is the holder key, and never the box key.
+  expect(client.key.publicJwk).toEqual(holderJwk);
+  const proof = await client.key.proof({
+    method: "GET",
+    url: "http://dispatch.test/api/v1/whoami",
+    accessToken: token.accessToken,
+  });
+  const header = JSON.parse(Buffer.from(proof.split(".")[0] ?? "", "base64url").toString("utf8"));
+  expect(header.jwk).toEqual(holderJwk);
+  await compactVerify(proof, await importJWK(holderJwk, "ES256"));
+  expect(
+    await compactVerify(proof, await importJWK(boxJwk as JWK, "ES256")).then(
+      () => "verified",
+      () => "refused"
+    )
+  ).toBe("refused");
+});
+
+test("a trade that asks for no scope sends no scope, no cut and no holder proof", async () => {
+  const { broker, issuer } = await stubs();
+  const record = await signedIn(PERSON, { client_id: CLIENT_ID });
+  const person = await clientOf(await box(broker.url, issuer.url, [record]), "ses_01a9");
+  const machine = await clientOf(await box(broker.url, issuer.url, []), "ses_01a9");
+  await person.token();
+  await machine.token();
+  for (const trade of broker.trades) {
+    expect(trade.form.has(FORM_SCOPE)).toBe(false);
+    expect(trade.form.has(FORM_AS_OF)).toBe(false);
+    expect(trade.holderHeader).toEqual({});
+  }
+  // A machine's read trade proves a key this process made, which holds no launcher credential,
+  // so it binds that key and sends no holder proof.
+  const made = await brokerTokenClient(await box(broker.url, issuer.url, []), "ses_01a9", {});
+  await made?.client.token();
+  const read = broker.trades[2];
+  expect(read?.form.get(FORM_SCOPE)).toBe(SCOPE_READ);
+  expect(read?.form.get(FORM_LAUNCHER_CREDENTIAL)).toBe(FORM_LAUNCHER_CREDENTIAL_DECLINED);
+  expect(read?.holderHeader).toEqual({});
+  expect(read?.proofHeader.jwk).toEqual(made?.client.key.publicJwk);
 });
 
 test("with no sign-in, the client is the machine's own: launcher_credential=false, tradeSession and a fresh key", async () => {

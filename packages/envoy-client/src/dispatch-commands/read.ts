@@ -46,13 +46,19 @@ import {
   olderServerWarnings,
   routeHeldBySession,
 } from "./render-issue";
-import { askSummary, commentSummary, messageSummary, postHistorySummary } from "./render-item";
+import {
+  askSummary,
+  commentSummary,
+  commentsSummary,
+  messageSummary,
+  postHistorySummary,
+} from "./render-item";
 
 /**
  * `dispatch read`: whatever the call names — a message's conversation, an ask, a comment, a
  * message, one block, a project's documents, a document's summary, an issue's log, its children,
- * or the issue itself. Reads report their owner and follow nothing; no result subscribes the
- * session.
+ * its comments, or the issue itself. Reads report their owner and follow nothing; no result
+ * subscribes the session.
  */
 export async function readCommand(context: CommandContext): Promise<DispatchToolResult> {
   const {
@@ -409,6 +415,21 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     return {
       text: childrenSummary(parent),
       details: { issue: parent.key },
+    };
+  }
+  if (ownerArguments.ref?.kind === "comments") {
+    // The comment list of a key no issue carries is empty, not 404, so the issue is read beside
+    // it: a missing key is refused as the log and the children refuse it, never listed as an
+    // issue with no comments.
+    const [owner, comments] = await Promise.all([
+      client.getIssue(issueKey),
+      client.getComments(issueKey),
+    ]);
+    const pictures = await picturesOf(datedBodies(comments));
+    return {
+      text: [commentsSummary(owner.key, comments), ...pictures.lines].join("\n"),
+      details: { issue: owner.key },
+      ...showImages(pictures),
     };
   }
   const readPromise = client.read(issueKey, readEvents);

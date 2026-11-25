@@ -193,14 +193,17 @@ EXCEPTIONS = (
             "R3 (dispatch://INFRA-1408/spec): envoy-smoke's pulumilive step over infra/host keeps "
             "running the whole package, untagged tests included, because envoy-smoke runs on a "
             "Dispatch-only change where envoy-infra-build does not, and in such a run those untagged "
-            "tests would otherwise run nowhere."
+            "tests would otherwise run nowhere. A -run of the tagged tests alone would make "
+            "check-ci-filters.sh's rule 15 hold envoy_infra_build's filter to every file envoy-smoke "
+            "reads, the listener image's inputs among them, and so start envoy-infra-build on each "
+            "change to the image to spare the twenty untagged tests' 0.17 s in envoy-smoke (job "
+            "137289139653)."
         ),
     ),
     Exception_(
         steps=frozenset({
             (".github/workflows/ci-job-envoy-go.yaml", "Test what the race build cannot run at all or at full size"),
             (".github/workflows/ci-job-envoy-go-race-docs.yaml", "Race-test the document service"),
-            (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "Test the document service under the cleanup detector"),
         }),
         package="github.com/sjawhar/envoy/internal/dispatch/docs",
         functions=(
@@ -210,8 +213,7 @@ EXCEPTIONS = (
         requirement=(
             "R2 (dispatch://INFRA-1408/spec): the two render-reuse storms run fewer seeds and "
             "fewer edits under the race detector (raceEnabled), so envoy-go's plain step is their "
-            "full-size run and envoy-go-race-docs is the detector's run of the shrunk one. The "
-            "third step is the cleanup detector's, declared with the rest of the package below."
+            "full-size run and envoy-go-race-docs is the detector's run of the shrunk one."
         ),
     ),
     Exception_(
@@ -227,40 +229,6 @@ EXCEPTIONS = (
             "restart storm opens two hundred under the race detector (raceEnabled), whose cost per "
             "in-process connect fails the setup at five hundred on a loaded runner, so envoy-go's "
             "plain step is its full-size run and envoy-go-race the detector's run of the smaller one."
-        ),
-    ),
-    Exception_(
-        steps=frozenset({
-            (".github/workflows/ci-job-envoy-go-race-docs.yaml", "Race-test the document service"),
-            (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "Test the document service under the cleanup detector"),
-        }),
-        package="github.com/sjawhar/envoy/internal/dispatch/docs",
-        functions=None,
-        requirement=(
-            "A3 (dispatch://INFRA-1413/artifact/verification-md#b-k3): envoy-go-docs-finalizers "
-            "runs this package in a Go mode no other step runs it in, GODEBUG=checkfinalizers=1, "
-            "and with -v, because the package's own count of the services its tests left alive is "
-            "printed from TestMain after they have run and a package-list run drops it. The mode "
-            "is what the job is for, and a cleanup the detector reports can be any test's, so the "
-            "lane takes the package whole rather than a -run of part of it."
-        ),
-    ),
-    Exception_(
-        steps=frozenset({
-            (".github/workflows/ci-job-envoy-go.yaml", "Test what the race build cannot run at all or at full size"),
-            (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "Test the document service under the cleanup detector"),
-        }),
-        package="github.com/sjawhar/envoy/internal/dispatch/docs",
-        functions=(
-            "TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound",
-            "TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound",
-            "TestUploadsToARoomInUseKeepMemoryWithinTheBound",
-        ),
-        requirement=(
-            "R2 (dispatch://INFRA-1408/spec) and A3 (dispatch://INFRA-1413): these three bound a "
-            "room's memory, which the race build cannot measure, so the race listing does not "
-            "hold them and envoy-go's plain step is their one measured run. The finalizers lane "
-            "runs them as part of the package under its own mode, for the reason above."
         ),
     ),
     Exception_(
@@ -444,7 +412,7 @@ AUDITED_SCRIPTS = {
             "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/":
                 "go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/",
         },
-        sha256="5ee056e823d43b6c390442eac6f7ae1e374e0e14a6f112900dce281f8c692a8f",
+        sha256="12390a66016de998835824efd88426a462d725ebe3596bb968fec5fcdc9bbecd",
     ),
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'` over the packages before its
@@ -459,6 +427,20 @@ AUDITED_SCRIPTS = {
                 "./cmd/cipher/ ./internal/cipher/api/",
         },
         sha256="bea62eaf32791a70c86e0350053bda35bae7dfa81685ad3338022849f0587a0e",
+    ),
+    # It moves into packages/envoy/infra (`cd "$(dirname "$0")/.."`) and, given `run`, runs one
+    # `go test -count=1 -race` over the packages `go list ./...` prints less those its EXCLUDE,
+    # '/internal/textcheck$' (ci_job_reads.INFRA_PLAIN_PATTERN), matches, with no -tags, -run or
+    # -skip. envoy-infra-build's unit step passes `run`. Until this entry the reader skipped that
+    # step, so neither verdict saw the module's race run: every untagged test of infra/core,
+    # infra/seed and infra/gcp read as compiled by the natslive step and run by no step, and
+    # infra/host's untagged tests, which envoy-smoke's pulumilive step runs plain, as run once.
+    "packages/envoy/infra/scripts/race-unit.sh": AuditedScript(
+        module="packages/envoy/infra",
+        commands={
+            "run": "go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -count=1 -race",
+        },
+        sha256="3e9946d3482859bdab444ee99341955f982e70e86cb6e93c2138040cd015753b",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.

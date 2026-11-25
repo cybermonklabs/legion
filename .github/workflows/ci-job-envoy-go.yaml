@@ -116,12 +116,16 @@ jobs:
       # The tests the race detector makes impossible, which the race job of each of these packages
       # therefore cannot make, so envoy-go keeps a plain run of exactly them: internal/bus counts
       # HoldsSeed's allocations, which the race runtime's own allocations would be counted into;
-      # the API's and delivery's xid window tests judge a window's gaps, which the detector
-      # stretches past any bound, so a race run checks only their shape, which this run checks as
-      # well (storetest.XidJudgesGaps, INFRA-636); and the documents package measures the heap a
-      # room keeps, which the detector's shadow memory and instrumentation move. Those are out of
-      # the race build altogether (//go:build !race), and the two render-reuse storms run fewer
-      # seeds and fewer edits under it (raceEnabled), so this is their full-size run. So is the
+      # the API's, delivery's and the documents package's xid window tests judge a window's gaps,
+      # which the detector stretches past any bound, so a race run would check only their shape,
+      # which this run checks as well (storetest.XidJudgesGaps, INFRA-636); and the documents
+      # package measures the heap a room keeps, which the detector's shadow memory and
+      # instrumentation move. Those are out of the race build altogether (//go:build !race), and
+      # the two render-reuse storms run fewer seeds and fewer edits under it (raceEnabled), so this
+      # is their full-size run. The documents package's line runs under Go's cleanup detector
+      # (GODEBUG=checkfinalizers=1), as envoy-go-race-docs' run of the rest of it does, since it is
+      # the one package that registers a cleanup (ci_job_reads.py's CLEANUP_DETECTOR), and with -v,
+      # so its TestMain's count of services left alive and the xid rig's logs print. So is the
       # NATS auth service's restart storm's: five hundred connections, two hundred under the
       # detector (raceEnabled), whose instrumentation makes each in-process connect several times
       # the cost (natscallout's race_disabled_test.go says why). The API's mention sender claim
@@ -134,22 +138,25 @@ jobs:
       # reason the API package's own run did: run beside the other package binaries,
       # its Postgres-backed tests and the room-memory measurements queue their per-test database
       # cleanup on the service's one checkpointer, and the API's live-feed and delivery-hub tests
-      # wait for the event log's safe horizon, which any open transaction on this job's Postgres
-      # delays. The five -run lists are derived in .github/scripts/ci_job_reads.py from the race
-      # lane's own packages and those files' //go:build !race and raceEnabled, so a test added to
-      # either and missing here fails the ci-filters job naming this step. The restart storm took
+      # wait for the event log's safe horizon, which before cybermonklabs/legion#4913 any open
+      # transaction on this job's Postgres delayed and since then only an event write of each
+      # test's own database does. The six -run lists are derived in
+      # .github/scripts/ci_job_reads.py from the race lane's own packages and those files'
+      # //go:build !race and raceEnabled, so a test added to either and missing here fails the
+      # ci-filters job naming this step. The restart storm took
       # 17 s on a dev box. Measured over three
       # runs on a two-vCPU pod: the bus under a tenth of a second and the documents package 92 to
       # 127 s; with the xid window tests in, one run on a two-vCPU pod took the API 134.082 s and
-      # delivery 4.106 s (INFRA-636). 10 minutes each is ample.
+      # delivery 4.106 s (INFRA-636), and the documents package's line, with fifteen of its tests,
+      # took 55.972 s (job 137362821700). 10 minutes each is ample.
       - name: Test what the race build cannot run at all or at full size
         run: |
           go test -count=1 -timeout 10m -run '^(TestXidWindowAttributionMoveRecorded|TestXidWindowDeployedEventRecorded)$' ./internal/dispatch/delivery
           go test -count=1 -timeout 10m -run '^(TestACommitThatEndsAfterTheCaptureIsInsideTheTrace|TestAGapsDeviceSoftirqsHoldOnlyTheirMeasuredTime|TestAMeasureUnderGoTestTraceSaysSo|TestAQuotasReadingSeesASleepAsASleep|TestAQuotasThrottlingReadsAsAWaitForACPU|TestARigProblemHidesNoViolation|TestASleepAfterARuntimeHandoffIsNotErasedByIt|TestASoftirqCountIsReadAtItsCPUsColumn|TestASoftirqCountThatWrappedInAGapReadsItsRuns|TestAStallInTheTracesCalibrationShiftsNoMoment|TestAStalledCalibrationLeavesAGapOfTheCodesCPUMade|TestAStatementTheRigCouldNotReadIsUnknown|TestAStoppedMeasureLeavesTheNextItsOwnTrace|TestAWaitOnAPHandedToALockedThreadDecidesNothing|TestAWindowThatKeepsD6OnlyOnARuntimeWaitIsUnknown|TestRuleTwoReadsTheStatementsTheCodeMade|TestTheKernelsInterruptAccountingIsReadOffProcStat|TestTheRigCountsTheSoftirqsItsPinnedCPURuns|TestTheTracersEventsInAWindowTouchNoFreshPage|TestXidGapJudgmentNeedsReadableThreadClocks)$' ./internal/dispatch/store/storetest
           go test -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
           go test -count=1 -timeout 10m -run '^(TestACalloutStormAfterAServerRestartAdmitsEveryConnection)$' ./internal/cipher/natscallout
-          go test -count=1 -timeout 10m -run '^(TestXidWindowApprovalAnswerOverTwoDocuments|TestXidWindowAskAnswerBlock|TestXidWindowAskBlockEditThenIssueClose|TestXidWindowAskResolveBlock|TestXidWindowDeliveries|TestXidWindowDocumentRebuild|TestXidWindowIssueAskRepairRestoration|TestXidWindowIssueAskRepairWithdrawal|TestXidWindowRouteTable|TestXidWindowUploadRestoringTheApprovedText|TestXidWindowsOnTheLargeSpec)$' ./internal/dispatch/api
-          go test -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound|TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP|TestXidWindowKeepsD6WhenTheLoadHoldsThePs|TestXidWindowRigHoldsAGapsSoftirqsToTheirCap|TestXidWindowRigNeverExcusesASleepForSoftirqs)$' ./internal/dispatch/docs
+          go test -count=1 -timeout 10m -run '^(TestXidWindowApprovalAnswerOverTwoDocuments|TestXidWindowAskAnswerBlock|TestXidWindowAskBlockEditThenIssueClose|TestXidWindowAskResolveBlock|TestXidWindowDeliveries|TestXidWindowDocumentRebuild|TestXidWindowIssueAskRepairRestoration|TestXidWindowIssueAskRepairWithdrawal|TestXidWindowRouteTable|TestXidWindowUploadRestoringTheApprovedText|TestXidWindowsOnTheLargeSpec|TestXidWindowsUnderTheParentStatusRule)$' ./internal/dispatch/api
+          GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound|TestXidWindowAnchorBlockBackfill|TestXidWindowBlockIndexWindowArm|TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP|TestXidWindowCatchesADocumentCallInsideTheWindow|TestXidWindowClosedIssueSettlementVersionWrite|TestXidWindowEditNoticeSweep|TestXidWindowKeepsD6WhenTheLoadHoldsThePs|TestXidWindowReconcileTaskProgress|TestXidWindowRigCatchesAGapAfterTheFirstWrite|TestXidWindowRigHoldsAGapsSoftirqsToTheirCap|TestXidWindowRigJudgesAWriteThePollerNeverSaw|TestXidWindowRigKeepsItsOwnWorkOutOfTheGaps|TestXidWindowRigNeverExcusesASleepForSoftirqs|TestXidWindowRigPassesBackToBackStatementsAfterTheFirstWrite|TestXidWindowRigReadsASleepAfterAHandoffAsTheCodes|TestXidWindowRigReadsTheMachinesLoadAsTheMachines|TestXidWindowRigReadsTheRuntimesWaitAsTheRuntimes|TestXidWindowSettlementVersionWrite)$' ./internal/dispatch/docs
         working-directory: packages/envoy
         # This step judges the xid window tests' statement-free gaps (storetest.XidJudgesGaps).
         # With this set, a runner whose kernel stops showing a thread's scheduler clocks, or

@@ -120,10 +120,10 @@ func TestEveryLineOfAHandedBackDeliveryKeepsTheHandBacksCadence(t *testing.T) {
 			intakePool := storetest.Traced(t, faultPool, &oweWaitTracer{lift: lift, liftOn: owedFailure, liftAt: cadenceHandBacks}, nil)
 
 			natsClient := intakeTestClient(t)
-			intake := newIntake(natsClient, intakePool, deliveryTestLeases(t, pool),
-				client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 			// This intake's own delay, so 32 hand-backs take a second, not five minutes.
-			intake.redeliverAfter = 20 * time.Millisecond
+			tuningFor(t).redeliverAfter = 20 * time.Millisecond
+			intake := newIntake(tuningFor(t), natsClient, intakePool, deliveryTestLeases(t, pool),
+				client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 			startIntake(t, intake)
 			awaitBoundDurable(t, natsClient)
 			started := awaitIntakeStarted(t, logs)

@@ -40,6 +40,8 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   related: (client) => client.related("DSP", { title: "A title", text: "Some text." }),
   getIssue: (client) => client.getIssue("DSP-1"),
   updateIssue: (client) => client.updateIssue("DSP-1", { status: "testing", actor }),
+  changeIssueStatus: (client) =>
+    client.changeIssueStatus("DSP-1", { status: "in_progress", include_parent: true, actor }),
   claimIssue: (client) => client.claimIssue("DSP-1", { actor }),
   releaseIssueClaim: (client) => client.releaseIssueClaim("DSP-1", { actor }),
   getIssueEvents: (client) => client.getIssueEvents("DSP-1"),

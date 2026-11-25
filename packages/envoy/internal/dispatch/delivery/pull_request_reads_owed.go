@@ -516,8 +516,8 @@ func refusalOf(err error) string {
 // owedReadsIn), where the row's revision is still revision. That read's answer covers every owe
 // that row recorded, and every owe made since gave the row another revision (owePullRequestRead,
 // the triggers of pull_request_heads), so its record stays for the next read.
-func settleOwedRead(ctx context.Context, pool *store.Pool, repoFull string, number int, revision int64) error {
-	if _, err := pool.Exec(ctx, `
+func settleOwedRead(ctx context.Context, db refs.Execer, repoFull string, number int, revision int64) error {
+	if _, err := db.Exec(ctx, `
 		delete from pull_request_reads_owed where repo = $1 and number = $2 and revision = $3
 	`, repoFull, number, revision); err != nil {
 		return fmt.Errorf("settle the read %s#%d is owed: %w", repoFull, number, err)
@@ -601,15 +601,15 @@ const (
 // link, an event or a trigger gives the row a new revision, so the next pass reads it again, and
 // a pass makes it readable again once the App's installations cover the repository
 // (wakeUnreadableReads). Every other outcome leaves the row readable.
-func recordOwedReadOutcome(ctx context.Context, pool *store.Pool, read owedRead, outcome owedReadOutcome, refusedAs string) error {
+func recordOwedReadOutcome(ctx context.Context, db refs.Execer, read owedRead, outcome owedReadOutcome, refusedAs string) error {
 	if outcome == owedReadAnswered {
-		return settleOwedRead(ctx, pool, read.Repo, read.Number, read.Revision)
+		return settleOwedRead(ctx, db, read.Repo, read.Number, read.Revision)
 	}
 	reason := owedFailure
 	if outcome == owedReadRefused {
 		reason = owedRefusal
 	}
-	if _, err := pool.Exec(ctx, `
+	if _, err := db.Exec(ctx, `
 		update pull_request_reads_owed set reason = $4::text, reads = reads + 1,
 			`+owedRefusalSet("$4::text", "nullif($5::text, '')", "now()", "")+`,
 			unreadable_revision = case when $5::text = $6::text and linked_revision = revision then revision end
@@ -654,10 +654,10 @@ func owedReadsOfRepository(renames refs.Renames) string {
 // owedReadsIn is the name, the number and the revision of each read owed in repoFull, the
 // canonical name, as a read of GitHub begins (owedReadsOfRepository). A read that fails answers
 // nothing, so the read-through settles nothing and the reconcile reads each one again.
-func (a *Attributor) owedReadsIn(ctx context.Context, pool *store.Pool, repoFull string) map[int][]owedRead {
+func (a *Attributor) owedReadsIn(ctx context.Context, q refs.Queryer, repoFull string) map[int][]owedRead {
 	bounded, cancel := context.WithTimeout(ctx, owedRevisionReadTimeout)
 	defer cancel()
-	rows, err := pool.Query(bounded, owedReadsOfRepository(a.renames), repoFull)
+	rows, err := q.Query(bounded, owedReadsOfRepository(a.renames), repoFull)
 	if err != nil {
 		logging.FromContext(ctx).Warn("dispatch delivery: read the reads owed in a repository; this read settles none, and the reconcile reads each once more",
 			"repo", repoFull, "error", err)

@@ -894,11 +894,18 @@ func TestARemakeOfKeysCannotStoreTheKeysOfOlderTexts(t *testing.T) {
 	}()
 	var remakeErr error
 	ended, deadline := false, time.Now().Add(time.Minute)
-	for !ended && storetest.WaitForLockWaiters(t, writer, 1, 10*time.Millisecond) == 0 {
+	for !ended {
+		waiting, err := storetest.LockWaiters(ctx, writer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			break
+		}
 		select {
 		case remakeErr = <-remade:
 			ended = true
-		default:
+		case <-time.After(10 * time.Millisecond):
 			if time.Now().After(deadline) {
 				t.Fatal("RemakeKeys neither ended nor waited on the writer's open update within a minute")
 			}

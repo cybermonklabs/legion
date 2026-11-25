@@ -40,9 +40,13 @@ import (
 // here too: the /pull/ and the /issues/ form, the scheme, the host and the path word in any letter
 // case, a number up to 2147483647, and an owner and a name GitHub can have (refs.SplitGitHubRepo).
 // A link the rule refuses names nothing here.
+//
+// linked_pulls is materialized: it is the handful of pull requests one issue links, read once,
+// so a reader of it compares each row with a stored name and number, rather than evaluating the
+// link's pattern and the canonical name's expression again for every row it meets.
 func linkedPullRequestTerms(renames refs.Renames) string {
 	return `subjects as (select $1::text as key), ` + refs.IssueRepoTerms + `,
-	linked_pulls as (
+	linked_pulls as materialized (
 		select ` + refs.CanonicalRepoSQL(renames, "link.repo") + ` as repo, link.number, link.url
 		from (
 			select l.url, lower(lp.repo) as repo, lp.number
@@ -115,9 +119,22 @@ type LinkedHead struct {
 // GitHub nothing for it. A read owed that GitHub refused and that is recorded unreadable at its
 // revision is left out: nothing can change GitHub's answer until a write gives the row a new
 // revision (pull_request_reads_unreadable.go), and UnreadableLinksOf names it. The list is in the
-// order of the owed names, at most LinkedHeadReadsPerRead of them.
-func (a *Attributor) LinkedHeadsUnread(ctx context.Context, pool *store.Pool, issueKey string) ([]LinkedHead, error) {
-	rows, err := pool.Query(ctx, `select url from issue_external_links where issue_key = $1`, issueKey)
+// order of the owed names, at most LinkedHeadReadsPerRead of them. answers is the caller's
+// request's, as HeadsAttributedTo takes them: a read-only caller's read reads the rows its own
+// read-throughs would have stored.
+func (a *Attributor) LinkedHeadsUnread(ctx context.Context, q Querier, issueKey string, answers HeadAnswers) ([]LinkedHead, error) {
+	var unread []LinkedHead
+	err := answers.Read(ctx, q, func(q Querier) error {
+		var err error
+		unread, err = a.linkedHeadsUnread(ctx, q, issueKey)
+		return err
+	})
+	return unread, err
+}
+
+// linkedHeadsUnread is LinkedHeadsUnread's reads on q.
+func (a *Attributor) linkedHeadsUnread(ctx context.Context, q Querier, issueKey string) ([]LinkedHead, error) {
+	rows, err := q.Query(ctx, `select url from issue_external_links where issue_key = $1`, issueKey)
 	if err != nil {
 		return nil, fmt.Errorf("read the links of %s: %w", issueKey, err)
 	}
@@ -155,7 +172,7 @@ func (a *Attributor) LinkedHeadsUnread(ctx context.Context, pool *store.Pool, is
 		var owedRepo *string
 		var revision *int64
 		var unreadable bool
-		if err := pool.QueryRow(ctx, `
+		if err := q.QueryRow(ctx, `
 			select exists (select 1 from pull_request_heads h
 				where h.number = $2 and lower(`+refs.CanonicalRepoSQL(a.renames, "h.repo")+`) = lower($1)),
 				o.repo, o.revision, coalesce(o.unreadable_revision = o.revision, false)
@@ -182,7 +199,21 @@ func (a *Attributor) LinkedHeadsUnread(ctx context.Context, pool *store.Pool, is
 // read that GitHub did not answer owes nothing new here: the next read of the results asks again.
 // It answers the read's error, a rate limit included, for its caller to log.
 func (a *Attributor) ReadLinkedHead(ctx context.Context, pool *store.Pool, client *githubapp.Client, link LinkedHead, now time.Time) error {
-	_, refused, err := a.RefreshPullRequestHead(ctx, pool, client, nil, link.Repo, link.Number, now)
+	return a.readLinkedHead(ctx, facts{pool: pool}, client, link, now)
+}
+
+// AnswerLinkedHead is ReadLinkedHead for a read-only caller's results read: the same reads of
+// GitHub, with each statement made in a transaction that holds answers' writes and is rolled
+// back, and each write kept in answers (facts, HeadAnswers), so it stores nothing.
+func (a *Attributor) AnswerLinkedHead(
+	ctx context.Context, pool *store.Pool, client *githubapp.Client, answers *HeadAnswers, link LinkedHead, now time.Time,
+) error {
+	return a.readLinkedHead(ctx, facts{pool: pool, answers: answers}, client, link, now)
+}
+
+// readLinkedHead is ReadLinkedHead through f.
+func (a *Attributor) readLinkedHead(ctx context.Context, f facts, client *githubapp.Client, link LinkedHead, now time.Time) error {
+	_, refused, err := a.refreshPullRequestHead(ctx, f, client, nil, link.Repo, link.Number, now)
 	if link.owed != nil {
 		outcome, refusedAs := owedReadAnswered, ""
 		switch {
@@ -191,7 +222,10 @@ func (a *Attributor) ReadLinkedHead(ctx context.Context, pool *store.Pool, clien
 		case refused != nil:
 			outcome, refusedAs = owedReadRefused, refusalOf(refused.err)
 		}
-		if recordErr := recordOwedReadOutcome(ctx, pool, *link.owed, outcome, refusedAs); recordErr != nil {
+		owed := *link.owed
+		if _, recordErr := f.write(ctx, func(ctx context.Context, db refs.Pool) (bool, error) {
+			return false, recordOwedReadOutcome(ctx, db, owed, outcome, refusedAs)
+		}, nil); recordErr != nil {
 			slog.Warn("dispatch: record how a linked pull request's owed read ended; the reconcile reads it again",
 				"repo", link.Repo, "number", link.Number, "error", recordErr)
 		}
