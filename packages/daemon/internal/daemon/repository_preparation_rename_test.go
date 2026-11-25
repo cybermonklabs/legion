@@ -18,6 +18,7 @@ import (
 // at every preparation, with nothing said on it and nothing recorded, for ever, while GitHub has
 // answered every read it was asked.
 func TestAnIssueOnARenamedRepositoryNoRecordNamesIsRecordedOnGitHubsNameForIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	github := newNamedGitHub(t, map[string]string{
 		"acme/widgets": "acme/widgets@main", "zeta/tools": "zeta/tools@main",

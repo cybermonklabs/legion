@@ -134,7 +134,7 @@ func TestAProjectBecomesPrivateBeforeItsFullSwitch(t *testing.T) {
 			!strings.Contains(err.Error(), "DISPATCH_PRIVATE_PROJECTS") || !strings.Contains(err.Error(), "DISPATCH_PRIVATE_BEFORE_FULL_SWITCH") {
 			t.Fatalf("NewDeps with PRIV on both lists = %v, want it refused naming PRIV and both settings, and not DAYONE", err)
 		}
-		if _, err := NewDeps(DepsInput{PrivateProjects: []string{"OTHER"}, PrivateBeforeFullSwitch: beforeFullSwitch}); err != nil {
+		if _, err := NewDeps(withDocumentService(t, DepsInput{PrivateProjects: []string{"OTHER"}, PrivateBeforeFullSwitch: beforeFullSwitch})); err != nil {
 			t.Fatalf("NewDeps with lists that share no project = %v, want them taken", err)
 		}
 	})

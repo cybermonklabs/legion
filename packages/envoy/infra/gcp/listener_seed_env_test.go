@@ -29,8 +29,13 @@ type seedEnvRun struct {
 }
 
 // seedEnv runs the golden's listener-seed-env, with the golden's fetch-secret beside it, against f.
+// It fails the test at once without curl, jq or base64 on this machine (tool), which fetch-secret
+// calls at every attempt.
 func seedEnv(t *testing.T, f *fakeGCP) seedEnvRun {
 	t.Helper()
+	for _, name := range []string{"curl", "jq", "base64"} {
+		tool(t, name)
+	}
 	var golden gcp.CloudConfig
 	require.NoError(t, yamlUnmarshalGolden(t, &golden))
 	scriptDir := t.TempDir()
@@ -42,7 +47,7 @@ func seedEnv(t *testing.T, f *fakeGCP) seedEnvRun {
 	dir := t.TempDir()
 	envFile := filepath.Join(dir, "listener.env")
 
-	cmd := shellCommand(t, script, envFile, fetchSecret)
+	cmd := gcp.ShellCommand(t, script, envFile, fetchSecret)
 	cmd.Env = []string{
 		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"SLEEP_LOG=" + filepath.Join(scriptDir, "sleeps"),
@@ -134,7 +139,7 @@ while :; do sleep 1; done
 `), 0o700))
 	dir := t.TempDir()
 
-	cmd := shellCommand(t, script, filepath.Join(dir, "listener.env"), fetchSecret)
+	cmd := gcp.ShellCommand(t, script, filepath.Join(dir, "listener.env"), fetchSecret)
 	cmd.Env = []string{"FETCH_STARTED=" + started, "PATH=" + os.Getenv("PATH")}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	require.NoError(t, cmd.Start())

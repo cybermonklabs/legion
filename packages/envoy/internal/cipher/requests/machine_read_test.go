@@ -22,7 +22,7 @@ import (
 func TestGrantsForApproverNamesWhoApproved(t *testing.T) {
 	m, enr, key, operator := newFixture(t)
 	ctx := context.Background()
-	pending, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "ALICE_KEY"), "", nil)
+	pending, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "ALICE_KEY"), "")
 	if err != nil || pending.RecordID == nil {
 		t.Fatalf("Create(pending) = %+v, %v", pending, err)
 	}
@@ -58,7 +58,7 @@ func TestEachSlotOfAPodSignsItsOwnRecordAndListsItsOwnGrant(t *testing.T) {
 		if _, err := m.Store.Pool.Exec(ctx, `update enrollments set slot=$2 where id=$1`, id, slot); err != nil {
 			t.Fatalf("set slot %q: %v", slot, err)
 		}
-		req, err := m.Create(ctx, id, signRequest(t, m, key, "role "+slot, "DEEL_API_KEY"), "", nil)
+		req, err := m.Create(ctx, id, signRequest(t, m, key, "role "+slot, "DEEL_API_KEY"), "")
 		if err != nil || req.State != "pending" || req.RecordID == nil {
 			t.Fatalf("Create(slot %q) = %+v, %v", slot, req, err)
 		}
@@ -81,7 +81,7 @@ func TestEachSlotOfAPodSignsItsOwnRecordAndListsItsOwnGrant(t *testing.T) {
 		if err != nil || dec.GrantID == "" {
 			t.Fatalf("ApplyDecision(slot %q) = %+v, %v", slot, dec, err)
 		}
-		release, err := m.Values(ctx, dec.GrantID, id, nil, ReleaseCall{})
+		release, err := m.Values(ctx, dec.GrantID, id, ReleaseCall{})
 		if err != nil || release.Values["DEEL_API_KEY"] != "deel-v1" {
 			t.Fatalf("Values(slot %q) = %v, %v; want the chain to verify and release", slot, release.Values, err)
 		}
@@ -205,7 +205,7 @@ func TestReadRecordAndPendingNameBothSessionIDsWhenTheyDiffer(t *testing.T) {
 	if _, err := m.Store.Pool.Exec(ctx, `update enrollments set session_id=$2 where id=$1`, enr, "sess-enrollment-1"); err != nil {
 		t.Fatalf("set enrollment session_id: %v", err)
 	}
-	pending, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "sess-request-2", nil)
+	pending, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "sess-request-2")
 	if err != nil || pending.RecordID == nil {
 		t.Fatalf("Create = %+v, %v", pending, err)
 	}
@@ -236,7 +236,7 @@ func TestPendingForApproverLeavesOutARecordThatDoesNotVerify(t *testing.T) {
 
 	current := m.Audience
 	m.Audience = "https://the-old-public-url.example"
-	stale, err := m.Create(ctx, first, signRequest(t, m, firstKey, "asked before the URL moved", "DEEL_API_KEY"), "", nil)
+	stale, err := m.Create(ctx, first, signRequest(t, m, firstKey, "asked before the URL moved", "DEEL_API_KEY"), "")
 	if err != nil || stale.RecordID == nil {
 		t.Fatalf("Create under the old audience = %+v, %v", stale, err)
 	}
@@ -244,7 +244,7 @@ func TestPendingForApproverLeavesOutARecordThatDoesNotVerify(t *testing.T) {
 	var valid []string
 	for _, box := range []string{"box-b", "box-c"} {
 		enr, key := newEnrollment(t, m.Store, "session", box+"-"+t.Name(), new(fixtureOperator), nil)
-		req, err := m.Create(ctx, enr, signRequest(t, m, key, "asked after the move", "DEEL_API_KEY"), "", nil)
+		req, err := m.Create(ctx, enr, signRequest(t, m, key, "asked after the move", "DEEL_API_KEY"), "")
 		if err != nil || req.RecordID == nil {
 			t.Fatalf("Create(%s) = %+v, %v", box, req, err)
 		}
@@ -317,7 +317,7 @@ func TestPendingForApproverWarnsOnceAboutALeftOutRecordPastItsExpiry(t *testing.
 		stale, body.Canonical(), body.Approver, body.ExpiresAt); err != nil {
 		t.Fatalf("insert the expired machine login record: %v", err)
 	}
-	valid, err := m.Create(ctx, enr, signRequest(t, m, key, "asked after the move", "DEEL_API_KEY"), "", nil)
+	valid, err := m.Create(ctx, enr, signRequest(t, m, key, "asked after the move", "DEEL_API_KEY"), "")
 	if err != nil || valid.RecordID == nil {
 		t.Fatalf("Create = %+v, %v", valid, err)
 	}
@@ -354,7 +354,7 @@ func TestReadRecordKeepsTheEnrollmentSessionIDAfterRevocation(t *testing.T) {
 	if _, err := m.Store.Pool.Exec(ctx, `update enrollments set session_id=$2 where id=$1`, enr, "sess-enrollment-revoked"); err != nil {
 		t.Fatalf("set enrollment session_id: %v", err)
 	}
-	pending, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "", nil)
+	pending, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
 	if err != nil || pending.RecordID == nil {
 		t.Fatalf("Create = %+v, %v", pending, err)
 	}

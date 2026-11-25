@@ -65,7 +65,7 @@ func newSignOutRig(t *testing.T, rule identity.SignInRule, answers map[string]ht
 	if err := os.WriteFile(accountFile, []byte("dispatch-account"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	ctx, err := BuildAppContext(AppContextOptions{
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey:            testSigningKey,
 		People:                rig.people,
 		Sessions:              rig.sessions,
@@ -75,7 +75,7 @@ func newSignOutRig(t *testing.T, rule identity.SignInRule, answers map[string]ht
 		AgentSecretsURL:       broker.URL,
 		AgentSecretsTokenFile: accountFile,
 		Lifetime:              t.Context(),
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}

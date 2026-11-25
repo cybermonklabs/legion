@@ -4,7 +4,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // droppedDuplicateLine is the line handleMessage writes for a fact ApplyFact answers
@@ -28,17 +29,20 @@ func TestTheIntakeSaysSoWhenItDropsAFactDeliveredAgain(t *testing.T) {
 	// A hang guard, not the subject: the row counts the lines one dropped duplicate writes, and a
 	// delivery either message got again would write one more. AckWait bounds each read this
 	// handling makes, which here is the one read of whether the pull request is recorded
-	// (recordedPullRequest), since the row sets no ReviewPermission resolver, and consumerSpec's
-	// 200 ms is about the length of that work on a loaded runner, so a minute is far above it
-	// and cuts nothing the row does. The margin is what makes the count of one sound: a
-	// redelivery the count would see needs the whole minute to pass before the handling's
-	// acknowledgement reaches the server. The campaign of dispatch://INFRA-1113 measured that
-	// trip at 516.8 ms at its largest, under 16 busy loops on 2 CPUs, and the handler's own work
-	// and that trip together, about 717 ms, are a factor of about 80 below this window.
-	// The progress keeper reports nothing here: it ticks at a third of the window
-	// (spec.AckWait/3 in consume.go), so at 20 s, and each handling of this row acknowledges
-	// long before the first tick is due (keepInProgress, ackprogress.go).
-	spec.AckWait = time.Minute
+	// (recordedPullRequest), since the row sets no ReviewPermission resolver, and any fixed
+	// window lets the machine decide whether that read is cut: consumerSpec's 200 ms is about the
+	// length of that work on a loaded runner, and a minute is cut by a read of 61 s. So the
+	// window, and the row's wait for each acknowledgement (waitAcknowledged), are what is left of
+	// the test binary's deadline less 30 s (testwait.Remaining): a read however slow is
+	// waited out, and only one that never answers fails the row, by name, before the binary's own
+	// timeout. The window is also what makes the count of one sound: a redelivery the count would
+	// see needs the whole window to pass before the handling's acknowledgement reaches the server.
+	// The campaign of dispatch://INFRA-1113 measured that trip at 516.8 ms at its largest, under
+	// 16 busy loops on 2 CPUs, and the handler's own work and that trip together, about 717 ms, are
+	// far below this window. The progress keeper reports nothing here: it ticks at a third of the
+	// window (spec.AckWait/3 in consume.go), and each handling of this row acknowledges long
+	// before the first tick is due (keepInProgress, ackprogress.go).
+	spec.AckWait = testwait.Remaining(t)
 	stop := startConsume(t, js, spec, pool)
 	defer stop()
 	recordPullRequest(t, pool, "LEGION-208", 42)

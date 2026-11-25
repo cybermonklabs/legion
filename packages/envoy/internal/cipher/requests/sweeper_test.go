@@ -38,7 +38,7 @@ func TestSweeperTickExpiresPendingRequestsAndMachineLogins(t *testing.T) {
 	// An overdue pending request: PendingTTL negative backdates pending_expires_at into the past
 	// at creation time, so it is immediately eligible for the sweep.
 	m.PendingTTL = -time.Hour
-	overdue, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "", nil)
+	overdue, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
 	if err != nil || overdue.State != "pending" {
 		t.Fatalf("Create(overdue) = %+v, %v, want state pending", overdue, err)
 	}
@@ -46,7 +46,7 @@ func TestSweeperTickExpiresPendingRequestsAndMachineLogins(t *testing.T) {
 	// A second enrollment's own overdue pending request, to pin that Wake fires once PER request
 	// leaving pending, not once per tick.
 	enr2, key2 := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
-	overdue2, err := m.Create(ctx, enr2, signRequest(t, m, key2, "need it too", "DEEL_API_KEY"), "", nil)
+	overdue2, err := m.Create(ctx, enr2, signRequest(t, m, key2, "need it too", "DEEL_API_KEY"), "")
 	if err != nil || overdue2.State != "pending" {
 		t.Fatalf("Create(overdue2) = %+v, %v, want state pending", overdue2, err)
 	}
@@ -55,7 +55,7 @@ func TestSweeperTickExpiresPendingRequestsAndMachineLogins(t *testing.T) {
 	// distinct enrollment avoids coalescing onto overdue's own pending row for the same secret.
 	enr3, key3 := newEnrollment(t, m.Store, "session", "box-c-"+t.Name(), new(fixtureOperator), nil)
 	m.PendingTTL = time.Hour
-	fresh, err := m.Create(ctx, enr3, signRequest(t, m, key3, "not yet", "DEEL_API_KEY"), "", nil)
+	fresh, err := m.Create(ctx, enr3, signRequest(t, m, key3, "not yet", "DEEL_API_KEY"), "")
 	if err != nil || fresh.State != "pending" {
 		t.Fatalf("Create(fresh) = %+v, %v, want state pending", fresh, err)
 	}
@@ -266,11 +266,11 @@ func TestSweeperEndsLapsedEnrollments(t *testing.T) {
 	type session struct{ grantID, pendingID, recordID string }
 	open := func(enr string, key *ecdsa.PrivateKey) session {
 		t.Helper()
-		granted, err := m.Create(ctx, enr, signRequest(t, m, key, "automatic", "AUTO_TOKEN"), "", nil)
+		granted, err := m.Create(ctx, enr, signRequest(t, m, key, "automatic", "AUTO_TOKEN"), "")
 		if err != nil || granted.GrantID == nil {
 			t.Fatalf("Create(AUTO_TOKEN) = %+v, %v, want a grant", granted, err)
 		}
-		pending, err := m.Create(ctx, enr, signRequest(t, m, key, "needs approval", "DEEL_API_KEY"), "", nil)
+		pending, err := m.Create(ctx, enr, signRequest(t, m, key, "needs approval", "DEEL_API_KEY"), "")
 		if err != nil || pending.State != "pending" || pending.RecordID == nil {
 			t.Fatalf("Create(DEEL_API_KEY) = %+v, %v, want pending with a record", pending, err)
 		}
@@ -379,7 +379,7 @@ func TestCreateWritesNothingOnAnEnrollmentTheSweepEnded(t *testing.T) {
 				sweeper.Tick(ctx)
 				return replay(ctx, jti, expires)
 			}
-			req, err := m.Create(ctx, enr, signRequest(t, m, key, "racing the sweep", name), "", nil)
+			req, err := m.Create(ctx, enr, signRequest(t, m, key, "racing the sweep", name), "")
 			if !errors.Is(err, pgx.ErrNoRows) {
 				t.Fatalf("Create after the sweep ended its enrollment = %+v, %v; want pgx.ErrNoRows", req, err)
 			}
@@ -398,7 +398,7 @@ func TestCreateWritesNothingOnAnEnrollmentTheSweepEnded(t *testing.T) {
 func TestCreateWaitsOutTheSweepItRaces(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
-	granted, err := m.Create(ctx, enr, signRequest(t, m, key, "a grant the sweep revokes", "AUTO_TOKEN"), "", nil)
+	granted, err := m.Create(ctx, enr, signRequest(t, m, key, "a grant the sweep revokes", "AUTO_TOKEN"), "")
 	if err != nil || granted.GrantID == nil {
 		t.Fatalf("Create(AUTO_TOKEN) = %+v, %v, want a grant", granted, err)
 	}
@@ -435,7 +435,7 @@ func TestCreateWaitsOutTheSweepItRaces(t *testing.T) {
 	var createErr error
 	go func() {
 		defer close(createDone)
-		created, createErr = m.Create(ctx, enr, signed, "", nil)
+		created, createErr = m.Create(ctx, enr, signed, "")
 	}()
 	createPID := storetest.AwaitLockWaiters(t, watch, holdAdvisory, 1)[0]
 

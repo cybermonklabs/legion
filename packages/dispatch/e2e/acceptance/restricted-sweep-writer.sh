@@ -45,7 +45,7 @@ run_writer() {
     post_comment
     comment_id=$posted
     [ -n "$comment_id" ] || printf 'writer  the comment on %s answered %s: %s\n' "$write_issue" "$status" "$(head_of "$work/body" 120)"
-    post_message "$full_browser" "$dm_session"
+    post_message full "$dm_session"
     message_id=$posted
     [ -n "$message_id" ] || printf 'writer  the direct message to %s answered %s: %s\n' "$dm_session" "$status" "$(head_of "$work/body" 120)"
     ended=$(date -u +%Y-%m-%dT%H:%M:%SZ)

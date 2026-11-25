@@ -10,7 +10,7 @@ suggestions, artifacts, and durable event history. The Go server in
 `AuthGate` requests `GET /auth/whoami` and sends unauthenticated visitors to the
 Google sign-in flow. All application requests are same-origin. React Router serves
 the Inbox at `/`, an issue workspace at `/issues/:key/*`, and the
-repository-to-project settings page at `/settings`; TanStack Query and the live socket's events
+settings page at `/settings`; TanStack Query and the live socket's events
 feed keep the issue, Inbox, documents, and sidebar current.
 
 The desktop shell has a sidebar, issue content, and review margin. Issue content has Spec,
@@ -597,9 +597,9 @@ optional ones:
 - `FAKE_GITHUB_PORT`, the harness's fake GitHub, which the server reads as
   `DISPATCH_GITHUB_API_BASE`. The run gives it one repository holding one pull request whose
   title names the issue and one further commit beside that pull request's head, replacing every
-  repository the fake served: where `PROJECT` maps no default repository the reading section
-  seeds a repository of its own, maps it as `PROJECT`'s default and removes the mapping on exit;
-  where `PROJECT` maps one, the setup seeds that repository and maps nothing. The results of the
+  repository the fake served. Where `PROJECT` has no default repository, the reading section
+  seeds a repository of its own, sets it as `PROJECT`'s default and clears that default on exit.
+  Where `PROJECT` has one, the setup seeds that repository and sets nothing. The results of the
   check are then compared with that pull request's head, a result at the further commit — whose
   first twelve characters are the head's — stands at none of them, and a result at a commit the
   repository holds neither of is refused. Unset, one `SKIP: reading …` line stands in for the
@@ -616,9 +616,9 @@ It asks the issue's own repository first, and reads the links only where GitHub 
 Where a read of a linked pull request or of a linked repository does not answer and no repository is shown to hold the commit, it refuses the result `502 GITHUB_UNREADABLE`, and where its own read of the issue's links fails, it answers a server error, `500 INTERNAL`; either way it stores nothing, and the caller records the result again.
 One record reads at most 10 linked pull requests, each distinct repository once, and a refusal says how many links the bound left unread.
 The script links no pull request to any issue it writes, so no linked repository is asked about any result it records.
-Only GitHub's `422 No commit found for SHA` refuses, and the script reads `PROJECT`'s repository mappings once, in its setup, to know which of two runs it is.
-Where `PROJECT` maps no default repository, every result recorded outside the reading section is stored because the check's issue resolves to no repository, which is never asked about; inside the section, each stored result names a commit it seeded its fake GitHub with, and the one commit it seeds nothing with is the refusal it drives.
-Where `PROJECT` already maps one, every issue the script writes resolves to that repository, so the setup reads that repository's default-branch head from GitHub with `gh` and every result is recorded at that head: no check stands down, and the run prints no `SKIP` for a recorded result.
+Only GitHub's `422 No commit found for SHA` refuses, and the script reads `PROJECT`'s default repository once, in its setup (`default_repo` on `GET /api/v1/projects`), to know which of two runs it is.
+Where `PROJECT` has no default repository, every result recorded outside the reading section is stored because the check's issue resolves to no repository, which is never asked about; inside the section, each stored result names a commit it seeded its fake GitHub with, and the one commit it seeds nothing with is the refusal it drives.
+Where `PROJECT` already has one, every issue the script writes resolves to that repository, so the setup reads that repository's default-branch head from GitHub with `gh` and every result is recorded at that head: no check stands down, and the run prints no `SKIP` for a recorded result.
 A repository `gh` cannot read fails the run, naming it.
 Where `FAKE_GITHUB_PORT` is set the setup also gives that repository, that head, the look-alike and the pull request to the fake, since a server reading the fake asks the fake and not GitHub; a server reading the real GitHub needs no such seeding, and a fake-backed run proves this script's fixture and its count rather than a server talking to GitHub.
 Every other check runs either way, the `result` section's two refusals among them: a malformed field and an unknown check are refused before any commit is read.
@@ -695,11 +695,11 @@ document socket admits a person alone, so the sockets of `k1` sign that person i
 runs with NATS disabled, so no `pull_request` event stores a pull request head: the script stages
 each head with `psql` as one `pull_request_heads` row attributed to its issue, and gives the fake
 one repository holding the same pull requests and each head's check runs, replacing every
-repository the fake served. That repository is `PROJECT`'s default where it maps one, and
-otherwise one of the run's own, which nothing maps. It writes nine issues in `PROJECT` and closes
-every one of them, also when a check fails; on exit it deletes the rows it staged and empties the
-fake. Against `bun run dispatch:local`, with the URL, the fake GitHub's port and the database it
-prints:
+repository the fake served. That repository is `PROJECT`'s default where it has one, and
+otherwise one of the run's own, which is no project's default. It writes nine issues in
+`PROJECT` and closes every one of them, also when a check fails; on exit it deletes the rows it
+staged and empties the fake. Against `bun run dispatch:local`, with the URL, the fake GitHub's
+port and the database it prints:
 
 ```bash
 DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
@@ -732,20 +732,6 @@ it:
 DATABASE_URL=postgres://dispatch@127.0.0.1:5433/dispatch_e2e FAKE_ENVOY_PORT=9023 \
   DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
   DEV_SIGNIN_LOGIN=alice bash packages/dispatch/e2e/acceptance/graph-store.sh
-```
-
-`e2e/acceptance/graph-erase.sh` drives `envoy-dispatch erase`, the one statement in Dispatch that
-removes bytes: the refusal until it has listed what it would remove, the erase itself, the
-version and the review it ends, the `graph_erasures` row that holds no erased text, and the 404
-the route that does not exist answers. It takes the first three inputs, `DATABASE_URL`, the built
-`envoy-dispatch` on `PATH` (the command takes a database credential and no bearer), and
-`DEV_SIGNIN_LOGIN` optional, the person who approves the version it then erases. It refuses a
-`DATABASE_URL` whose host is not loopback, and erases only the comment it wrote itself:
-
-```bash
-DATABASE_URL=postgres://dispatch@127.0.0.1:5433/dispatch_e2e DISPATCH_URL=http://127.0.0.1:8777 \
-  DISPATCH_TOKEN=e2e-token PROJECT=CORE DEV_SIGNIN_LOGIN=alice \
-  bash packages/dispatch/e2e/acceptance/graph-erase.sh
 ```
 
 `e2e/acceptance/graph-sizing.sh` drives `envoy-dispatch census --store --sizing`: the write rate
@@ -1198,18 +1184,29 @@ project's document, while the same probe admits them to a document of their own,
 event feed, open for the whole of `SWEEP_LIVE_SECONDS` (60 by default), is sent no event of the
 project while the full member comments on `SWEEP_WRITE_ISSUE` and sends the project's session a
 direct message that names no issue, both of which the full member's own feed must be sent; and
-the member's feed must be sent the direct message the member sends their own session,
-`SWEEP_MEMBER_SESSION`, in the window, which they then read by `GET /api/v1/messages/{id}`. A
-subscription the server ends or refuses on an open socket covers no window. The comment, the
-direct messages and the question are the writes it makes. Its inputs are `SWEEP_ORIGIN`
+the member's feed must be sent the member's own writes of the window, the control of their feed,
+which takes one of two forms, exactly one given: with `SWEEP_MEMBER_SESSION`, the direct message
+the member sends their own session; with `SWEEP_MEMBER_ISSUE`, for a member who holds no session
+(a browser's person alone), a comment and then a message, each a body alone, on that issue of a
+project whose access list names the member, never of `SWEEP_PROJECT`. Their feed must be sent
+each, and they read the message by `GET /api/v1/messages/{id}`. A subscription the server ends or
+refuses on an open socket covers no window. The writes it makes are the full member's comment,
+direct messages and question, and the member's own direct message, or comment and message. Its
+inputs are `SWEEP_ORIGIN`
 (`https://`, or `http://` to a loopback host), `SWEEP_PROJECT`, `SWEEP_FULL_TOKEN`,
-`SWEEP_RESTRICTED_COOKIE` (the `Cookie` header's `<name>=<value>`), `SWEEP_MEMBER_SESSION`,
-`SWEEP_WRITE_ISSUE` and `SWEEP_CONVERSATION_FILE` (`<session id>/<slug>`, a file in the
+`SWEEP_RESTRICTED_COOKIE` (the `Cookie` header's `<name>=<value>`), `SWEEP_MEMBER_SESSION` or
+`SWEEP_MEMBER_ISSUE`, `SWEEP_WRITE_ISSUE` and `SWEEP_CONVERSATION_FILE` (`<session id>/<slug>`,
+a file in the
 conversation of a session that worked in the project alone), and `SWEEP_FULL_COOKIE`, the full
-member's session cookie: the GitHub proxy and the agent view read as the browser's person and never
-as a token, and a direct message is a person's write, so without it the proxy reads cannot fail,
-and the run is `UNKNOWN`, naming them. It needs bash 3.2 or later, curl 7.55 or later, jq 1.6 or
-later, and bun with this checkout's dependencies installed (`bun install`), which runs the socket
+member's session cookie, which makes the GitHub proxy reads alone. Without it the proxy reads are
+`SWEEP_FULL_TOKEN`'s, which a build from cybermonklabs/legion#5079 on reads; a build before it reads
+the proxy as the browser's person alone and refuses the token (401, or 403 `OAUTH_SCOPE_REQUIRED`),
+and each proxy read is then `UNKNOWN`, naming the build and `SWEEP_FULL_COOKIE`, never `PASS` or
+`FAIL`, while every other row still runs. The direct messages and the agent view are made as
+`SWEEP_FULL_TOKEN` too, which needs the `person` scope (a full member's personal token). It needs
+bash 3.2 or later, curl
+7.55 or later, jq 1.6 or later, and bun with this checkout's dependencies installed
+(`bun install`), which runs the socket
 probe `e2e/acceptance/socket-access.ts`. No token or cookie reaches a command line or the output.
 
 ```bash
@@ -1230,8 +1227,10 @@ time of each of the member's own projects (`deployment`), which tell one deploym
 and read the same at its private origin and its public one; fills mode and a runner each refuse a
 list of projects that gives no creation time of each of them. A row that can fail is a
 `can_fail<TAB><row>` line, each proxy read, the agent view and the app-installation row among
-them, and every row it judged has a `full_status` line. Fills mode needs `SWEEP_FULL_COOKIE` too,
-since a proxy read it cannot make fail leaves no file, and writes none that lacks a fill. It takes
+them, and every row it judged has a `full_status` line. A proxy read the full member's credential
+made that cannot fail leaves no file; one the proxy refused the full member's token for is kept
+with no `can_fail` line, which a runner reads `UNKNOWN`. Fills mode writes no file that lacks a
+fill. It takes
 the member's login in `SWEEP_MEMBER`, and reads the member's own projects as the ones whose access
 lists name it. A runner, any run with `SWEEP_FILLS_FILE` and no `SWEEP_MODE`, does the member's
 half with the member's cookie alone, refuses a full member's credential, and refuses fills of
@@ -1247,8 +1246,8 @@ project's session answers is read then, and may have changed since. A runner rea
 live feed over a window it prints,
 `live window <W0> <W1>` (UTC), whose end leaves the writer's 15 s delivery bound before the feed
 closes, and which holds two of the writer's writes at 15 s, so `SWEEP_LIVE_SECONDS` is at least 45
-on a runner; it writes the member's own direct
-message alone. Writer mode (`SWEEP_MODE=writer`) runs beside it with the full member's token and
+on a runner; it makes the member's own writes alone, the direct message or the comment and the
+message. Writer mode (`SWEEP_MODE=writer`) runs beside it with the full member's token and
 cookie and the fills: every `SWEEP_WRITE_EVERY` seconds it comments on `SWEEP_WRITE_ISSUE` and sends
 the fills' session of the project a direct message, and prints
 `write <began> <ended> <comment id> <message id> delivered`, or `not delivered`, as both reach the
@@ -1268,9 +1267,12 @@ SWEEP_MODE=fills SWEEP_ORIGIN=... SWEEP_PROJECT=PRIV SWEEP_MEMBER=<login> SWEEP_
   SWEEP_FULL_COOKIE=... SWEEP_CONVERSATION_FILE=<session id>/<slug> SWEEP_FILLS_FILE=fills.tsv \
   bash e2e/acceptance/restricted-sweep.sh
 SWEEP_MODE=writer SWEEP_ORIGIN=... SWEEP_PROJECT=PRIV SWEEP_WRITE_ISSUE=PRIV-12 SWEEP_FULL_TOKEN=... \
-  SWEEP_FULL_COOKIE=... SWEEP_FILLS_FILE=fills.tsv bash e2e/acceptance/restricted-sweep.sh &
+  SWEEP_FILLS_FILE=fills.tsv bash e2e/acceptance/restricted-sweep.sh &
 SWEEP_ORIGIN=... SWEEP_PROJECT=PRIV SWEEP_FILLS_FILE=fills.tsv SWEEP_RESTRICTED_COOKIE=... \
   SWEEP_MEMBER_SESSION=<session id> bash e2e/acceptance/restricted-sweep.sh
+# Or, for a member who holds no session, their own comment and message on an issue of theirs:
+SWEEP_ORIGIN=... SWEEP_PROJECT=PRIV SWEEP_FILLS_FILE=fills.tsv SWEEP_RESTRICTED_COOKIE=... \
+  SWEEP_MEMBER_ISSUE=OWN-3 bash e2e/acceptance/restricted-sweep.sh
 ```
 
 Every row's line says whether it can fail (the full member is answered the project's object

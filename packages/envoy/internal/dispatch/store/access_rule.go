@@ -43,9 +43,10 @@ func PersonSeesProjectSQLIn(schema, personExpr, memberExpr, projectAlias string)
 
 // SessionOwnerLock names the advisory lock, one per person by login, that orders a session's tie
 // to that person (access.TieSession, which takes it shared) with a change that takes a project
-// from them (RecordReachedProjects and the switch to private's trigger, which take it exclusive):
-// a tie committed first is one the change reads, and a tie written after waits for the change to
-// commit, so the request it was written for reads what the person sees after the change.
+// from them (RecordReachedProjects, which takes it exclusive): a tie committed first is one the
+// change reads, and a tie written after waits for the change to commit, so the request it was
+// written for reads what the person sees after the change. The switch to private's trigger takes
+// no such lock.
 const SessionOwnerLock = "dispatch-session-owner"
 
 // RecordReachedProjects writes, in tx, a pair (session, project) in session_reached_projects for

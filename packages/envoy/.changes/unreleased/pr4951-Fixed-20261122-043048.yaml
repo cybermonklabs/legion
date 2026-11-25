@@ -1,0 +1,21 @@
+kind: Fixed
+body: |-
+  The listener no longer holds a head for ever behind another App's check suite with no check run.
+  GitHub creates a suite for each App that may write checks on every push and sends that App a
+  `check_suite` delivery with the action `requested`; an App that never adds a run leaves the suite
+  queued, and the listener recorded it, so the head's `checks settled` never went out. The webhook
+  route now records no `check_suite` delivery whose action is `requested` or `rerequested`: it asks
+  the App to run its checks and is no CI result. A completed suite is recorded as before.
+
+  For records written before this release, a suite that is not completed holds a head only when it
+  is GitHub Actions' (App 15368), which creates its suite before its runs, or when the record names
+  no App for it; every recorded run still holds the head until it finishes. A head held today only
+  by another App's suite settles at the first summary pass that finds its record after the listener
+  starts, with no new webhook, and a head already settled is not announced again.
+
+  The run count a suite kept while not completed is removed, since no suite is recorded before it
+  completes, and the `checks held a head` line names only the suites that hold the head, as
+  `<id> app=<app id> status=<status>`.
+time: 2026-11-22T04:30:48Z
+custom:
+    Issue: pr4951

@@ -7,8 +7,10 @@ body: |-
   30 seconds until the broker confirms. The broker ends every machine login the old account approved
   for the address's own machines and every sign-in it made on a machine, whenever it made them, with
   every token minted under them, and refuses it any new one. A service's machine login and the new
-  account's credentials are left as they are. Deploy the secrets broker that serves that route first:
-  an older broker answers it 404, which leaves the revocation owed.
+  account's credentials are left as they are. An older broker answers the route 404, which leaves
+  the revocation owed and tried again every 30 seconds, so it is paid once the broker serves the
+  route; until then the old account's credentials stand at the broker, while Dispatch refuses its
+  broker tokens from the replacing sign-in.
 time: 2026-11-16T23:36:15.829142660Z
 custom:
     Issue: pr4199

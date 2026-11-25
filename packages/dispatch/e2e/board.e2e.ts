@@ -9,9 +9,9 @@ import {
   lastEventSeq,
   listRead,
   logReads,
-  PICK_HOLD_MS,
   pagePicker,
   readAnsweredSince,
+  savesAtRoute,
   savesEnded,
   storedValues,
   watchShown,
@@ -82,9 +82,50 @@ async function clicksDelivered(page: Page): Promise<void> {
   });
 }
 
-/** Drags with the mouse from the middle of `source` to `target` (a card or a column). */
+/**
+ * Waits until `element`, every element around it and the window have held their scroll offsets
+ * across two animation frames, and returns those offsets. dnd-kit scrolls a scroller a step every
+ * 5 ms while the pointer or finger of a carried card is in an edge zone of it, and stops once it
+ * leaves; a card in flight takes the snapping off the board's scrollers (`IssueBoard.tsx`), so no
+ * fling and no snap follows that scrolling: one unchanged pair of frames is the view at rest.
+ */
+async function viewAtRest(element: Locator): Promise<string> {
+  return element.evaluate(async (start) => {
+    const offsets = (): string => {
+      const read = [`window ${window.scrollX},${window.scrollY}`];
+      for (let node: Element | null = start; node !== null; node = node.parentElement) {
+        read.push(`${node.tagName.toLowerCase()} ${node.scrollLeft},${node.scrollTop}`);
+      }
+      return read.join("; ");
+    };
+    for (;;) {
+      const was = offsets();
+      const frame = Promise.withResolvers<void>();
+      requestAnimationFrame(() => requestAnimationFrame(() => frame.resolve()));
+      await frame.promise;
+      if (offsets() === was) {
+        return was;
+      }
+    }
+  });
+}
+
+/**
+ * Drags with the mouse from the middle of `source` to `target` (a card or a column), or to
+ * `yOffset` below the target's top. While the pointer of a carried card is within a fifth of a
+ * scroller's height or width of its edge, dnd-kit scrolls that scroller on for as long as the
+ * pointer stays there (`defaultThreshold` and `getScrollDirectionAndSpeed`, @dnd-kit/core 6.3.1's
+ * `dist/core.esm.js:827-874`; the board's `DndContext` leaves auto-scroll on). A drop aimed at a
+ * target only scrolled into view sits at the window's edge, and the card lands wherever the page
+ * has scrolled to by the release, which a loaded runner delivers late. So the source and then the
+ * target are each brought to the middle of every scroller around them, out of every edge zone, or
+ * to a scroller's end, from which it can scroll no further; and the button is released only with
+ * the view where it was when the drop was aimed.
+ */
 async function mouseDrag(page: Page, source: Locator, target: Locator, yOffset?: number) {
   await boardAtRest(page);
+  await source.evaluate((element) => element.scrollIntoView({ block: "center", inline: "center" }));
+  await viewAtRest(source);
   // `hover` presses only once the card holds still and is the element under the pointer; a bare
   // `mouse.move` to a measured box would press on whatever is painted there.
   await source.hover();
@@ -95,8 +136,11 @@ async function mouseDrag(page: Page, source: Locator, target: Locator, yOffset?:
   }
   await page.mouse.down();
   await page.mouse.move(sourceBox.x + sourceBox.width / 2 + 10, sourceBox.y + sourceBox.height / 2);
-  await target.scrollIntoViewIfNeeded();
-  // The scroll above waited for the target to be visible and still, so its box is there.
+  await target.evaluate((element) => element.scrollIntoView({ block: "center", inline: "center" }));
+  // The offsets are read once the view has held still, and the release compares against them.
+  const aimedAt = await viewAtRest(target);
+  await boardAtRest(page);
+  // The view and the cards are at rest, so the box read now is where the drop lands.
   const targetBox = await target.boundingBox();
   if (targetBox === null) {
     throw new Error("drag target is not visible");
@@ -106,6 +150,13 @@ async function mouseDrag(page: Page, source: Locator, target: Locator, yOffset?:
     yOffset === undefined ? targetBox.y + targetBox.height / 2 : targetBox.y + yOffset,
     { steps: 24 }
   );
+  // Read once the view has held still again: any change from the aim is a real scroll.
+  const releasedAt = await viewAtRest(target);
+  if (releasedAt !== aimedAt) {
+    throw new Error(
+      `the view scrolled under the drop: aimed at ${aimedAt}, released at ${releasedAt}`
+    );
+  }
   await page.mouse.up();
   await clicksDelivered(page);
 }
@@ -702,27 +753,9 @@ async function columnArrived(column: Locator, within: number): Promise<number> {
   }, within);
 }
 
-/** Waits until the scroller has held one frame still. dnd-kit scrolls it with a step a frame
- *  while a carried card is in an edge zone and stops a frame or two after the finger leaves, and
- *  a card in flight takes the snapping off the scroller (`IssueBoard.tsx`), so there is no fling
- *  and no snap behind that scrolling: one unchanged frame is rest. */
-async function scrollerAtRest(scroller: Locator): Promise<void> {
-  await scroller.evaluate(async (element) => {
-    for (;;) {
-      const was = element.scrollLeft;
-      const frame = Promise.withResolvers<void>();
-      requestAnimationFrame(() => requestAnimationFrame(() => frame.resolve()));
-      await frame.promise;
-      if (element.scrollLeft === was) {
-        return;
-      }
-    }
-  });
-}
-
 /** Puts the `index`-th column's start edge at the scroller's start and waits for the scroll to end. */
 async function scrollToColumn(scroller: Locator, index: number): Promise<void> {
-  await scrollerAtRest(scroller);
+  await viewAtRest(scroller);
   // The scroller came to rest above, so the offsets read here are the ones it holds still at.
   const target = await scroller.evaluate((element, index) => {
     const section = element.querySelectorAll("section")[index];
@@ -882,7 +915,7 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
     // worth anything.
     const drop = scrollerBox.x + scrollerBox.width / 2;
     await finger.moveTo({ x: drop, y: from.y }, 1);
-    await scrollerAtRest(scroller);
+    await viewAtRest(scroller);
     // The scroller came to rest above, so the column's box read now is where the drop lands.
     const landing = await inProgress.boundingBox();
     if (landing === null || landing.x > drop - 40 || landing.x + landing.width < drop + 40) {
@@ -1175,15 +1208,15 @@ test("picker keeps a pick on screen: the priority on the project board, over a l
   }
 });
 
-// The board split by priority: with every save of the issue held at least `PICK_HOLD_MS`, a pick
-// on a card and then two drags of it, each to another priority lane. The row sends no write of
-// its own straight to the server: the project's list read waits for the board's moves
-// (`boardMovesSettled`), so no answer of it lands while they are out.
+// The board split by priority: a pick on a card and then two drags of it, each to another priority
+// lane, both made while the pick's save is held (`holdIssuePatches`, until the row releases it).
+// The row sends no write of its own straight to the server: the project's list read waits for the
+// board's moves (`boardMovesSettled`), so no answer of it lands while they are out.
 // SLOW(>=2s): three saves each held three seconds, two drags across lanes, dnd-kit's landings and
 // a reload.
 test("picker keeps a pick on screen: a card dragged to another priority lane while its pick is out stays in that lane", async ({
   browser,
-}, testInfo) => {
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const anchor = await createIssue({ project: "CORE", title: "P0 card" });
   const issue = await createIssue({ project: "CORE", title: "Picked card" });
@@ -1221,6 +1254,12 @@ test("picker keeps a pick on screen: a card dragged to another priority lane whi
     await expect.poll(() => shown.values.at(-1)).toBe("0");
     const fromDrop = shown.values.length - 1;
     await expect(p0Todo.getByRole("article", { name: `${issue.key} Picked card` })).toBeVisible();
+    // The drop was made while the pick's save was out: the route still holds it, and it is the
+    // only save of the issue to have reached the route, the drag's waiting behind it in the line.
+    expect(
+      savesAtRoute(held),
+      "the saves of the issue at the route once the card is in the P0 lane, and whether each is held"
+    ).toEqual([{ body: { priority: 1 }, held: true }]);
     // A second drag, into the P2 lane, while the pick and the first drag are both out: the newer
     // drag is the card's lane from the moment it is made, although its save waits for the first
     // drag's answer before it goes out.
@@ -1231,20 +1270,19 @@ test("picker keeps a pick on screen: a card dragged to another priority lane whi
     await expect.poll(() => shown.values.at(-1)).toBe("2");
     const fromSecondDrop = shown.values.length - 1;
     await expect(p2Todo.getByRole("article", { name: `${issue.key} Picked card` })).toBeVisible();
+    // So was the second drop: no save of the issue had been answered when the card took the P2
+    // lane, so every answer the card shows through below lands after both drops.
+    expect(
+      savesAtRoute(held),
+      "the saves of the issue at the route once the card is in the P2 lane, and whether each is held"
+    ).toEqual([{ body: { priority: 1 }, held: true }]);
     held.release();
     await savesEnded(page, held);
 
-    // Every save of the issue - the pick's and each drag's - was held at least `PICK_HOLD_MS`.
-    const holds = held.sent.map((patch) => ({
-      body: patch.body,
-      heldMs: (patch.endedAt ?? Number.NaN) - patch.arrivedAt,
-    }));
-    console.log(`PICK-HOLDS [${testInfo.project.name}] ${JSON.stringify(holds)}`);
-    expect(holds.length, `the pick's save and each drag's: ${JSON.stringify(holds)}`).toBe(3);
     expect(
-      holds.every((hold) => hold.heldMs >= PICK_HOLD_MS),
-      `every save of the issue was held at least ${PICK_HOLD_MS} ms: ${JSON.stringify(holds)}`
-    ).toBe(true);
+      held.sent.map(({ body }) => body),
+      "the pick's save and each drag's, as they reached the route"
+    ).toHaveLength(3);
 
     expect(
       shown.values.slice(fromPick, fromDrop).some((value) => value.split("|").includes("3")),

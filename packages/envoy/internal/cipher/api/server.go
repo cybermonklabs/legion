@@ -88,12 +88,14 @@ type Deps struct {
 	// which is a single-pod broker and every test that wires none. POST
 	// /v1/secrets/{name}/reread is its one route (notifyPeers, from rereadSecret and from the
 	// reread it runs after answering, rereadAfterAnswer), which explains both when it is called
-	// and why it is called from the route rather than from RefreshOne.
+	// and why it is called from the route rather than from RefreshOne. moved is the names whose
+	// value this pod's own reread of name may have moved (policy.Lookup.Moved, RefreshOne's), whose
+	// held values cmd/cipherd drops from its airlock proxy.
 	//
 	// It reports nothing, because the handler has nothing to do with a failure: the local reread
 	// has already succeeded and its answer stands, so whether a failed fan-out is logged, and at
 	// what level, belongs to the function cmd/cipherd supplies.
-	NotifyReread func(ctx context.Context, name string)
+	NotifyReread func(ctx context.Context, name string, moved []string)
 	// Detached counts the work a route starts that outlives its answer, the reread run after a
 	// 202, for the stop sequence to wait on (Detached.Wait); nil counts nothing, for a mux nothing
 	// stops.
@@ -1089,7 +1091,8 @@ func (c *cachedPing) run(ctx context.Context, done chan struct{}) error {
 type signInStatusResponse struct {
 	// What the last check of the broker's client at its sign-in provider found: "ready" (the
 	// provider accepted the client), "client_rejected" (it refused it, so nobody can sign in)
-	// or "issuer_unreachable" (it could not be asked, which says nothing about the client).
+	// or "issuer_unreachable" (it could not be asked or gave no verdict, which says nothing about
+	// the client).
 	ClientCheck *string `json:"client_check"`
 	// When that check was taken (RFC 3339).
 	ClientCheckedAt *time.Time `json:"client_checked_at"`

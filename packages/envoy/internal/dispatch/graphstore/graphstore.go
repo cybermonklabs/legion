@@ -1,10 +1,9 @@
 // Package graphstore is the one place in the tree that writes `graph_nodes` and `graph_tuples`.
 // A node is a thing Dispatch holds; a tuple is one fact stated about it at one moment, by one
-// writer, caused by one event. Nothing here updates a tuple, and nothing deletes one but
-// EraseNode, the erase's delete of a node with every tuple on both sides of it: a relation that
-// ends is a second tuple with Asserted false, and an attribute that changes is a second tuple
-// carrying the new value. Every table Dispatch reads today stays where it is and becomes the
-// projection of these two (store/migrations/20261109013400_graph_store.up.sql).
+// writer, caused by one event. Nothing here updates a tuple and nothing deletes one: a relation
+// that ends is a second tuple with Asserted false, and an attribute that changes is a second
+// tuple carrying the new value. Every table Dispatch reads today stays where it is and becomes
+// the projection of these two (store/migrations/20261109013400_graph_store.up.sql).
 //
 // A read answers the tuples alone, never the projection: a caller that wants the current state
 // asks CurrentOut, CurrentIn or CurrentValue, one that wants the state at a moment asks AsOfOut

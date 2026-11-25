@@ -560,7 +560,7 @@ that the database could not be read says nothing about the logins: run it again 
 `$BROKER_DATABASE_URL` connects.
 
 That ends every person's machine login that records no approving account, those from before the
-broker recorded approving accounts (its migration 0041) included, with every session each
+broker recorded approving accounts (its migration 0042) included, with every session each
 enrolled; each machine logs in again (`agent-secrets machine login`) and its person approves the
 new code. A service's login, the Legion daemon's, is not among them. Until it runs, whoever the
 pool signed in as an address during the pool era keeps the machines that person logged in reading

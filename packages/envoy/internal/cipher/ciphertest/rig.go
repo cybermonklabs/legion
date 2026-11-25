@@ -165,11 +165,12 @@ type Rig struct {
 type Option func(*rigConfig)
 
 type rigConfig struct {
-	lease         time.Duration
-	maxConns      int
-	minters       map[string]requests.Minter
-	personPods    []personPod
-	projectAccess *projectaccess.Client
+	lease          time.Duration
+	maxConns       int
+	minters        map[string]requests.Minter
+	accessLifetime time.Duration
+	personPods     []personPod
+	projectAccess  *projectaccess.Client
 	// projectAccessNow is the clock WithDispatchAccess gives the client and the gate; nil is the
 	// wall clock.
 	projectAccessNow func() time.Time
@@ -179,6 +180,7 @@ type rigConfig struct {
 	// holdRequiresDeadline is WithHoldRequiresDeadline: the gate's RequireDeadline.
 	holdRequiresDeadline bool
 	personSignIns        *personSignInConfig
+	profiles             string
 	edge                 bool
 	// edgeDeviceLimit is the edge's bucket every caller of a device authorization shares
 	// (api.Edge.DeviceLimit); nil is api.DefaultEdgeDeviceLimit.
@@ -222,6 +224,9 @@ func WithEdgeDeviceLogin(wrap func(api.DeviceLoginFunc) api.DeviceLoginFunc) Opt
 type ProviderOption func(*providerConfig)
 
 type providerConfig struct {
+	// accessLifetime is how long the access tokens the provider issues live; zero is fifteen
+	// minutes, as main sets it where BROKER_ACCESS_TOKEN_SECONDS is unset.
+	accessLifetime      time.Duration
 	projectAccess       projectaccess.Access
 	hold                *hold.Gate
 	google              *oidctest.Issuer
@@ -306,6 +311,23 @@ func WithPersonSignIns(google *oidctest.Issuer, machineAccount string) Option {
 	}
 }
 
+// WithAccessLifetime makes every access token the broker issues live d, a machine login's and an
+// exchanged one's alike, as BROKER_ACCESS_TOKEN_SECONDS sets it; fifteen minutes by default.
+func WithAccessLifetime(d time.Duration) Option {
+	return func(c *rigConfig) { c.accessLifetime = d }
+}
+
+// WithProfiles serves file as the deployment's profiles file, the JSON BROKER_PROFILES_FILE
+// names (policytest.ProfilesFile builds one), so a test asks for a profile by its name as a session
+// of a deployment that lists it does. Every github-app secret the policy serves is a profile's
+// (policy.ReasonGitHubAppNoProfile), so a test that releases one names its profile here. With no
+// such option, or with "", the rig has no profiles file, as a deployment that leaves the setting
+// unset has none. The rig wires no proxy rules (requests.Machine.Airlock), so a proxy block the
+// file holds keeps no value back here.
+func WithProfiles(file string) Option {
+	return func(c *rigConfig) { c.profiles = file }
+}
+
 // personPod is one WithPersonPod: an account that BROKER_POD_OPERATORS maps to person, and the
 // service the account logs in as.
 type personPod struct {
@@ -333,7 +355,7 @@ func WithPersonPod(account, service, person string) Option {
 // (storetest.Open's own contract).
 func NewRig(t *testing.T, options ...Option) *Rig {
 	t.Helper()
-	config := rigConfig{lease: time.Hour}
+	config := rigConfig{lease: time.Hour, accessLifetime: 15 * time.Minute}
 	for _, option := range options {
 		option(&config)
 	}
@@ -358,6 +380,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	// which NewCurrent takes, and the gauge of unservable secrets once NewCurrent has answered.
 	// The loader serves a secret tagged with a project only where the broker can ask Dispatch
 	// whether that project is private, as main's does (policy.Loader.ProjectChecks).
+	// Its profiles are WithProfiles's file, or none.
 	registry := metrics.New()
 	// The Dispatch client keeps each person answer in this rig's store and counts on its registry,
 	// as main's does, before anything is built on it.
@@ -366,6 +389,9 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	}
 	loader := policytest.Loader(local)
 	loader.ProjectChecks = config.projectAccess != nil
+	if config.profiles != "" {
+		loader.Profiles = policytest.Profiles(t, config.profiles)
+	}
 	cur := policytest.Metered(t, loader, registry)
 
 	mux := http.NewServeMux()
@@ -411,6 +437,9 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	for _, pod := range []string{WorkerAccount, ExchangeRolesAccount, ExchangeAccount} {
 		podRegistrars[api.PodRegistrar{Registrar: DaemonAccount, Pod: pod}] = struct{}{}
 	}
+	// Projects is set below only when the rig holds a Dispatch client: config.projectAccess is a
+	// *projectaccess.Client, and a nil one put in the interface field is a non-nil Access that
+	// panics at its first read, so a rig with no client would ask Dispatch on every enrollment.
 	enr := &enroll.Service{
 		Store: st, Lease: config.lease, Pod: enroll.K8sPodVerifier{Verifier: podVerifier},
 		ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount, PodOperators: podOperators,
@@ -481,6 +510,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		// hold gate.
 		providerOptions = append(providerOptions, func(c *providerConfig) { c.projectAccess = config.projects })
 	}
+	providerOptions = append(providerOptions, func(c *providerConfig) { c.accessLifetime = config.accessLifetime })
 	provider := NewOAuthProvider(t, st, issuer, providerOptions...)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: cur,
@@ -597,6 +627,10 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, op
 	for _, opt := range opts {
 		opt(&config)
 	}
+	accessLifetime := config.accessLifetime
+	if accessLifetime == 0 {
+		accessLifetime = 15 * time.Minute
+	}
 	oauthStore := oauthstore.New(st.Pool)
 	oauthStore.Reused = enroll.RevokeReusedCredential
 	secret, err := oauthStore.Secret(context.Background())
@@ -629,7 +663,7 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, op
 		exchangeConfig.PersonSignIns = config.personSignInRecords
 	}
 	provider, err := oauth.New(oauth.Config{
-		Secret: secret, DeviceLifetime: 15 * time.Minute, AccessLifetime: 15 * time.Minute,
+		Secret: secret, DeviceLifetime: 15 * time.Minute, AccessLifetime: accessLifetime,
 		RefreshLifetime: 7 * 24 * time.Hour, VerificationURL: MachineLoginURL, ProofSkew: time.Minute,
 		Exchange: exchangeConfig,
 	}, oauthStore)

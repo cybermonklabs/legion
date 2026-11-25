@@ -32,15 +32,16 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
-	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/config"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/identity/directorytest"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -214,7 +215,7 @@ func envoyJSONHome(t *testing.T) string {
 func routerFor(t *testing.T, boot bootConfig, built routes.AppContextOptions) http.Handler {
 	t.Helper()
 	built.Lifetime = t.Context()
-	appCtx, err := appContextFor(boot, built)
+	appCtx, err := appContextFor(t, boot, built)
 	if err != nil {
 		t.Fatalf("build the router: %v", err)
 	}
@@ -234,7 +235,9 @@ var testSigningKey = auth.SingleSigningKey("signing-key")
 // currentSessions unless the case passes the database's own, as one whose sign-ins record Google
 // accounts must: recording an account moves the session generation in the database itself
 // (migration 20261118041916), which the mint's and the approve's re-read compare a cookie with.
-func appContextFor(boot bootConfig, built routes.AppContextOptions) (*routes.AppContext, error) {
+// A case that gives no document service (built.Docs) gets one (withDocumentService).
+func appContextFor(t testing.TB, boot bootConfig, built routes.AppContextOptions) (*routes.AppContext, error) {
+	t.Helper()
 	built.SigningKey = testSigningKey
 	if built.People == nil {
 		built.People = store.NewPgPeopleStore(nil, built.SigningKey, nil)
@@ -256,7 +259,31 @@ func appContextFor(boot bootConfig, built routes.AppContextOptions) (*routes.App
 	if err != nil {
 		return nil, err
 	}
-	return buildAppContext(boot, rule, built, membership)
+	return buildAppContext(boot, rule, withDocumentService(t, boot, built), membership)
+}
+
+// withDocumentService is built with a document service of the test's own where it has none
+// (built.Docs), which routes.BuildAppContext requires: one over built's store, event broker,
+// identity and server URL, built as main builds it (newDocumentService, which takes the origins
+// from boot), shut down once t ends. built with no broker gets one, which the router and the
+// service then share. Every test that builds the router through buildAppContext hands its options
+// through here.
+func withDocumentService(t testing.TB, boot bootConfig, built routes.AppContextOptions) routes.AppContextOptions {
+	t.Helper()
+	if built.Docs != nil {
+		return built
+	}
+	if built.Events == nil {
+		built.Events = events.NewBroker()
+	}
+	documents := newDocumentService(boot, built.ServerURL, docs.Deps{Store: built.Store, Events: built.Events, Identity: built.Identity})
+	t.Cleanup(func() {
+		if err := documents.Shutdown(context.Background()); err != nil {
+			t.Errorf("shut the document service down: %v", err)
+		}
+	})
+	built.Docs = documents
+	return built
 }
 
 // pgPeople is the Postgres people store people is, or holds (testPeople), for the passkey store
@@ -322,11 +349,12 @@ func devSignIn(t *testing.T, boot bootConfig, login string) *httptest.ResponseRe
 }
 
 // signInPool is a sign-in pool on this machine with Dispatch's app client, clientID and
-// clientSecret, the one DISPATCH_SIGNIN_ISSUER names in a case.
+// clientSecret, the one DISPATCH_SIGNIN_ISSUER names in a case, registering the callback the
+// router signInRouter builds names for the Host startSignIn's request carries, dispatch.test.
 func signInPool(t *testing.T, clientID, clientSecret string) *oidctest.Issuer {
 	t.Helper()
 	pool := oidctest.New(t)
-	pool.EnableCodeFlow(pool.PublishKey(t, "signing-key"), clientID, clientSecret)
+	pool.EnableCodeFlow(pool.PublishKey(t, "signing-key"), clientID, clientSecret, "http://dispatch.test/auth/callback")
 	return pool
 }
 
@@ -1223,42 +1251,6 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"ENVOY_ACCOUNT_GOOGLE_AUDIENCE": "envoy-listener", "ENVOY_ACCOUNT_TOKEN_FILE": "/run/token"}, "ENVOY_ACCOUNT_GOOGLE_AUDIENCE")
 		},
-		"DISPATCH_REPO_PROJECTS": func(t *testing.T) {
-			if boot := resolveWith(t, map[string]string{"DISPATCH_REPO_PROJECTS": " acme/widgets=WID "}); boot.RepoProjects != "acme/widgets=WID" {
-				t.Errorf("RepoProjects = %q", boot.RepoProjects)
-			}
-			// Its one reader is api.SeedRepoProjects, which main runs before it builds the router: a
-			// malformed mapping is refused there, naming the variable, before anything is written.
-			if err := api.SeedRepoProjects(context.Background(), nil, nil, resolveWith(t, map[string]string{"DISPATCH_REPO_PROJECTS": "acme/widgets"}).RepoProjects); err == nil || !strings.Contains(err.Error(), "DISPATCH_REPO_PROJECTS") {
-				t.Errorf("DISPATCH_REPO_PROJECTS=acme/widgets: seeding the repository mappings: err = %v, want a refusal naming DISPATCH_REPO_PROJECTS", err)
-			}
-		},
-		"DISPATCH_DEFAULT_PROJECT": func(t *testing.T) {
-			if boot := resolveWith(t, map[string]string{"DISPATCH_DEFAULT_PROJECT": " WID "}); boot.DefaultProject != "WID" {
-				t.Errorf("DefaultProject = %q", boot.DefaultProject)
-			}
-			// The project the router files an external issue in when no mapping names its
-			// repository: a create naming another project is refused naming that one, and with
-			// no default the repository is unmapped.
-			t.Run("router", func(t *testing.T) {
-				database := storetest.Open(t)
-				create := func(overrides map[string]string) *httptest.ResponseRecorder {
-					t.Helper()
-					request := httptest.NewRequest(http.MethodPost, "/api/v1/issues", strings.NewReader(`{"external":"acme/unmapped#7","project":"OTHER","actor":{"kind":"session","id":"settings-test"}}`))
-					request.Header.Set("Authorization", "Bearer agent-token")
-					request.Header.Set("Content-Type", "application/json")
-					response := httptest.NewRecorder()
-					routerFor(t, resolveWith(t, overrides), routes.AppContextOptions{Store: database}).ServeHTTP(response, request)
-					return response
-				}
-				if response := create(map[string]string{"DISPATCH_DEFAULT_PROJECT": "WID"}); errorCode(response) != "EXTERNAL_PROJECT_MISMATCH" || !strings.Contains(response.Body.String(), "project WID") {
-					t.Errorf("DISPATCH_DEFAULT_PROJECT=WID: POST /api/v1/issues answered %d %s, want the unmapped repository's project to be WID", response.Code, response.Body.String())
-				}
-				if response := create(nil); errorCode(response) != "PROJECT_UNMAPPED" {
-					t.Errorf("unset: POST /api/v1/issues answered %d %s, want PROJECT_UNMAPPED", response.Code, response.Body.String())
-				}
-			})
-		},
 		"DISPATCH_PROJECT_OWNER_FALLBACK": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{"DISPATCH_PROJECT_OWNER_FALLBACK": " operator@example.com "}); boot.ProjectOwnerFallback != "operator@example.com" {
 				t.Errorf("ProjectOwnerFallback = %q", boot.ProjectOwnerFallback)
@@ -1269,8 +1261,8 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			for _, value := range []string{"Operator@example.com", "operator", "operator@", "@example.com", "operator@example.com,carol@example.com", "op erator@example.com"} {
 				refusedWith(t, map[string]string{"DISPATCH_PROJECT_OWNER_FALLBACK": value}, "DISPATCH_PROJECT_OWNER_FALLBACK must be a lowercase email")
 			}
-			// Its reader is the boot's owner check (store.EnsureProjectOwners), right after the
-			// default project's: over a project with no owner a process refuses to serve, naming
+			// Its reader is the boot's owner check (store.EnsureProjectOwners): over a project
+			// with no owner a process refuses to serve, naming
 			// the project and both repairs, until the setting names a full member, whom the boot
 			// then makes the project's owner.
 			t.Run("boot", func(t *testing.T) {
@@ -1474,7 +1466,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			_, url := testnats.Start(t)
 			_, pemText := githubapptest.Key(t)
 			reconciler, err := ciReconciler(startDispatchStream(t, []string{url}, nil), &store.Store{},
-				&auth.AppConfig{ClientID: "Iv1.reviewer", PEM: pemText}, "", boot.ReviewerAppID, cireconcile.Interval, &registeredInstance{})
+				&auth.AppConfig{ClientID: "Iv1.reviewer", PEM: pemText}, "", boot.ReviewerAppID, cireconcile.Interval, &registeredInstance{}, refs.Renames{})
 			if err != nil || reconciler == nil {
 				t.Fatalf("build the CI reconcile pass: %+v, %v", reconciler, err)
 			}
@@ -2598,7 +2590,13 @@ func documentCapReachesTheService(t *testing.T, name string, capOf func(rooms, c
 	t.Helper()
 	for value, want := range map[string]int{"": 1000, " 25 ": 25} {
 		boot := resolveWith(t, map[string]string{name: value})
-		if got := capOf(newDocumentService(boot, "", docs.Deps{}).RoomCapsForTest()); got != want {
+		documents := newDocumentService(boot, "", docs.Deps{})
+		t.Cleanup(func() {
+			if err := documents.Shutdown(context.Background()); err != nil {
+				t.Errorf("shut the document service down: %v", err)
+			}
+		})
+		if got := capOf(documents.RoomCapsForTest()); got != want {
 			t.Errorf("%s=%q: the document service's cap is %d, want %d", name, value, got, want)
 		}
 	}

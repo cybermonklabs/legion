@@ -10,9 +10,9 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // The spec's rule, restored: a root enters awaiting_person only while it holds an admission
@@ -147,12 +147,11 @@ func TestReconcileAwaitingMovesOnlyTheRootHoldingItsSlot(t *testing.T) {
 func reconcileRoots(t *testing.T, pool *pgxpool.Pool, keys ...string) []string {
 	t.Helper()
 	var entered []string
-	seedRecord(t, pool, func(tx pgx.Tx) error {
-		ctx, _ := intake.WithCommitHooks(context.Background())
-		store := record.NewStore()
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		records := record.NewStore()
 		issues := make([]record.Issue, 0, len(keys))
 		for _, key := range keys {
-			issue, err := store.Issue(ctx, tx, key)
+			issue, err := records.Issue(ctx, tx, key)
 			if err != nil {
 				return err
 			}
@@ -161,7 +160,9 @@ func reconcileRoots(t *testing.T, pool *pgxpool.Pool, keys ...string) []string {
 		var err error
 		entered, _, err = testEngine(config.DesignGateRootIssues, nil).ReconcileAwaiting(ctx, tx, "LEGION", issues, nil)
 		return err
-	})
+	}); err != nil {
+		t.Fatalf("reconcile the roots that wait: %v", err)
+	}
 	return entered
 }
 

@@ -55,7 +55,14 @@ func OrphanedDocumentNodes(ctx context.Context, q graphstore.Queryer, limit int)
 func orphanedDocumentNode(n string) string {
 	return n + `.state <> '` + graphstore.StateGone + `'
 		  and not exists (select 1 from artifacts a where a.ref_key = ` + n + `.id)
-		  and exists (select 1 from issues i where i.key = split_part(` + n + `.id, '/', 1))`
+		  and ` + issueDocumentAddress(n+".id")
+}
+
+// issueDocumentAddress is, for the document address id, whether it names an issue: the one kind of
+// document a removal takes, and so the one orphaned node the block-index tick states gone
+// (StateOrphanedGone) and the census names that tick as the cure of (ProjectComplete).
+func issueDocumentAddress(id string) string {
+	return `exists (select 1 from issues i where i.key = split_part(` + id + `, '/', 1))`
 }
 
 // ErrNotOrphaned is StateOrphanedGone's answer for a node it may not state gone, which it leaves
@@ -91,7 +98,7 @@ func StateOrphanedGone(ctx context.Context, database *store.Store, ref string) e
 			return fmt.Errorf("%w: %s is no issue's document", ErrNotOrphaned, ref)
 		}
 		owners := events.OwnerRows{}
-		owners.Add(issue, "", "the issue of document "+ref)
+		owners.Add(issue, "")
 		if err := events.LockOwnerRows(ctx, tx, owners); err != nil {
 			return err
 		}

@@ -72,9 +72,9 @@ func BatchedBy(t testing.TB, send func(pgx.Tx) error) []Statement {
 	return recorder.sent
 }
 
-// RecordedTx is a transaction that keeps every statement read through it by Query or QueryRow,
+// RecordedTx is a transaction that keeps every statement sent through it by Query or QueryRow,
 // with the arguments it bound, and runs each on the transaction it wraps: a reader handed it
-// answers as it would, and the test reads the plan of the statement the reader sent.
+// answers as it would, and the test reads the plan of the statement it sent.
 type RecordedTx struct {
 	pgx.Tx
 	Sent []Statement

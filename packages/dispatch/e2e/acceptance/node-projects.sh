@@ -19,7 +19,8 @@
 # zeros. Last, the writes of a build before this one, which writes no node, during a roll: it
 # creates a document's row at the removed document's address, which the census names `gone` and
 # the backfill gives a live node, then removes that row, which leaves the live node with no row:
-# the census names it `orphaned`, the backfill leaves it, and `envoy-dispatch erase` removes it, so
+# the census names it `orphaned` with the server's block-index tick as its cure, the backfill
+# leaves it, and once that build's removal event is in the log the tick states the node gone, so
 # the run leaves its database complete.
 #
 # Inputs: DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (an agent bearer, read
@@ -29,7 +30,7 @@
 # writes, which an agent's bearer may not make), DATABASE_URL (the database that server serves,
 # which `envoy-dispatch` reads from its own environment), and `envoy-dispatch` on PATH. It reads
 # this pod's own test database and never a deployment's: it refuses a DATABASE_URL whose host is
-# not loopback, and the nodes it deletes are the ask's this run made and the orphaned document's.
+# not loopback, and the node it deletes is the ask's this run made.
 #
 # Under e2e/acceptance/with-harness.sh, which exports DISPATCH_E2E_PORT, FAKE_ENVOY_PORT and
 # DATABASE_URL and none of the other inputs, the driver is its own caller, so the check that runs
@@ -140,9 +141,9 @@ printf '%s\n' -b "$work/jar" -H "Origin: $origin" >"$work/person.args"
 actor() { jq -cn --arg s "$session" '{kind: "session", id: $s}'; }
 
 # Under the harness the driver makes what its inputs would otherwise name (the header says what).
-# The census, the backfill and the erase it runs are this checkout's: it builds envoy-dispatch and
-# puts it first on PATH, so an envoy-dispatch installed on the machine, of another build, is never
-# the one under test.
+# The census and the backfill it runs are this checkout's: it builds envoy-dispatch and puts it
+# first on PATH, so an envoy-dispatch installed on the machine, of another build, is never the one
+# under test.
 if [[ -n "$harness" ]]; then
   require_commands go
   mkdir "$work/bin"
@@ -375,6 +376,45 @@ declared "$section" "read the block-index tick's interval" "$docs_source/block_i
 readonly tick_seconds="$answer"
 readonly pass_key="$tick_lease/$((tick_seconds * 1000000000))" quiet_ticks=6 stalled_seconds=$((10 * tick_seconds))
 start_horizon_watch "$section"
+# await_pass SECTION EVENT CURED WHAT: waits, as the paragraph above says, until a cursor row of
+# this server has reached event EVENT with no debt and the SQL test CURED holds, and fails SECTION
+# naming WHAT after quiet_ticks passes at the 30 s period with no cure, or after stalled_seconds
+# with no such pass.
+await_pass() {
+  local section="$1" event="$2" cured="$3" what="$4" boundary="" ticks=0 last_pass=$SECONDS
+  while :; do
+    query "$section" "read the period the block-index tick last served" \
+      "select coalesce((select boundary::text from duty_passes where lease = '$pass_key'), '')"
+    if [[ "$answer" != "$boundary" ]]; then
+      [[ -z "$boundary" ]] || ticks=$((ticks + 1))
+      boundary="$answer" last_pass=$SECONDS
+    fi
+    query "$section" "read whether the server's object pass has run after event $event" "
+      select exists (select 1 from block_index_event_cursors where event_id >= $event and object_nodes_owed_at is null)
+         and ($cured)"
+    [[ "$answer" == t ]] && return 0
+    watch_horizon "$section"
+    ((ticks < quiet_ticks)) || {
+      query "$section" "read the oldest transaction on the instance that holds the event horizon back" "
+        select coalesce((select name from (
+          select format('backend %s in database %s, open since %s: %s', pid, datname, coalesce(xact_start::text, '<privilege>'),
+              left(coalesce(query, ''), 80)) as name, age(backend_xid) as age
+          from pg_stat_activity
+          where backend_xid is not null and pid <> pg_backend_pid()
+          union all
+          select format('prepared transaction %s in database %s, prepared at %s', gid, database, prepared), age(transaction)
+          from pg_prepared_xacts
+        ) holder order by age desc limit 1), 'none')"
+      fail "$section" "the server's object pass runs" \
+        "no cursor past event $event without a debt and no $what after $ticks block-index ticks; the oldest transaction on the instance: $answer"
+    }
+    if ((SECONDS - last_pass >= stalled_seconds)); then
+      fail "$section" "the server's block-index tick runs" \
+        "no pass at the tick's $tick_seconds s period ($pass_key) for $((SECONDS - last_pass)) s: the tick stopped, or it stepped at blockIndexStep that long; the last period it served began at ${boundary:-(none recorded)}"
+    fi
+    sleep 1
+  done
+}
 query "$section" "an earlier build sends a direct message with its event and no node" "
   with message as (
     insert into messages (issue_key, author, body, target)
@@ -388,39 +428,7 @@ query "$section" "an earlier build sends a direct message with its event and no 
   )
   select message.id::text || ' ' || event.id from message, event"
 read -r before written <<<"$answer"
-boundary="" ticks=0 last_pass=$SECONDS
-while :; do
-  query "$section" "read the period the block-index tick last served" \
-    "select coalesce((select boundary::text from duty_passes where lease = '$pass_key'), '')"
-  if [[ "$answer" != "$boundary" ]]; then
-    [[ -z "$boundary" ]] || ticks=$((ticks + 1))
-    boundary="$answer" last_pass=$SECONDS
-  fi
-  query "$section" "read whether the server's object pass has run after event $written" "
-    select exists (select 1 from block_index_event_cursors where event_id >= $written and object_nodes_owed_at is null)
-       and exists (select 1 from graph_nodes where kind = 'message' and id = '$before')"
-  [[ "$answer" == t ]] && break
-  watch_horizon "$section"
-  ((ticks < quiet_ticks)) || {
-    query "$section" "read the oldest transaction on the instance that holds the event horizon back" "
-      select coalesce((select name from (
-        select format('backend %s in database %s, open since %s: %s', pid, datname, coalesce(xact_start::text, '<privilege>'),
-            left(coalesce(query, ''), 80)) as name, age(backend_xid) as age
-        from pg_stat_activity
-        where backend_xid is not null and pid <> pg_backend_pid()
-        union all
-        select format('prepared transaction %s in database %s, prepared at %s', gid, database, prepared), age(transaction)
-        from pg_prepared_xacts
-      ) holder order by age desc limit 1), 'none')"
-    fail "$section" "the server's object pass runs" \
-      "no cursor past event $written without a debt and no node of message $before after $ticks block-index ticks; the oldest transaction on the instance: $answer"
-  }
-  if ((SECONDS - last_pass >= stalled_seconds)); then
-    fail "$section" "the server's block-index tick runs" \
-      "no pass at the tick's $tick_seconds s period ($pass_key) for $((SECONDS - last_pass)) s: the tick stopped, or it stepped at blockIndexStep that long; the last period it served began at ${boundary:-(none recorded)}"
-  fi
-  sleep 1
-done
+await_pass "$section" "$written" "exists (select 1 from graph_nodes where kind = 'message' and id = '$before')" "node of message $before"
 pass "$section" "the server's object pass wrote the node of message $before after event $written and owes nothing"
 
 section=control
@@ -466,8 +474,9 @@ query "$section" "the node of $scratch_ref is live" \
 [[ "$answer" == live ]] || fail "$section" "the backfill gives $scratch_ref a live node" "it reads '$answer'"
 census_complete "$section" "after the backfill made $scratch_ref live"
 
-query "$section" "an earlier build removes $scratch_ref" "delete from artifacts where ref_key = '$scratch_ref' returning ref_key"
-[[ "$answer" == "$scratch_ref" ]] || fail "$section" "an earlier build removes $scratch_ref" "it removed '$answer'"
+query "$section" "an earlier build removes $scratch_ref" "delete from artifacts where ref_key = '$scratch_ref' returning id::text"
+[[ -n "$answer" ]] || fail "$section" "an earlier build removes $scratch_ref" "it removed no row"
+readonly removed_id="$answer"
 for run in census backfill; do
   if [[ "$run" == backfill ]]; then
     envoy-dispatch backfill-graph-store >"$work/backfill" 2>&1 ||
@@ -477,25 +486,34 @@ for run in census backfill; do
   line="$(census_line artifact)"
   [[ "$line" =~ missing=0\ gone=0\ differs=0\ unscoped=0\ orphaned=1$ ]] ||
     fail "$section" "the artifact census after the $run reads one orphaned node" "${line:-no line for artifact}"
-  grep -qxF "census: project incomplete artifact $scratch_ref: orphaned; remove it with: envoy-dispatch erase --node artifact:$scratch_ref" "$work/census" ||
-    fail "$section" "the census after the $run names $scratch_ref orphaned, with the erase that removes it" "$(grep '^census: project incomplete' "$work/census" | head -n 5)"
+  grep -qxF "census: project incomplete artifact $scratch_ref: orphaned; this build's block-index tick states it gone" "$work/census" ||
+    fail "$section" "the census after the $run names $scratch_ref orphaned, with the tick that states it gone" "$(grep '^census: project incomplete' "$work/census" | head -n 5)"
 done
-pass "$section" "the census names the live node of $scratch_ref, which no row stands behind, orphaned with the erase that removes it, and the backfill leaves it"
+pass "$section" "the census names the live node of $scratch_ref, which no row stands behind, orphaned with the tick that states it gone, and the backfill leaves it"
 
-# erase_node ARGS...: `envoy-dispatch erase ARGS`, the command the census's orphaned line printed,
-# with the database credential and no bearer, its output in $work/erase and its exit status in
-# $erase_code.
-erase_node() {
-  erase_code=0
-  env -u DISPATCH_TOKEN -u DISPATCH_TOKEN_FILE DATABASE_URL="$database_url" \
-    envoy-dispatch erase "$@" >"$work/erase" 2>&1 || erase_code=$?
-}
-erase_node --node "artifact:$scratch_ref"
-[[ "$erase_code" == 1 ]] || fail "$section" "list the orphaned node's erase" "exited $erase_code: $(<"$work/erase")"
-digest="$(sed -n 's/^  listing digest: \([0-9a-f]\{64\}\)$/\1/p' "$work/erase")"
-[[ -n "$digest" ]] || fail "$section" "read the orphaned node's listing digest" "$(<"$work/erase")"
-erase_node --node "artifact:$scratch_ref" --confirm "$digest"
-[[ "$erase_code" == 0 ]] || fail "$section" "erase the orphaned node" "exited $erase_code: $(<"$work/erase")"
-query "$section" "no node of $scratch_ref remains" "select count(*) from graph_nodes where kind = 'artifact' and id = '$scratch_ref'"
-[[ "$answer" == 0 ]] || fail "$section" "the erase removes the node of $scratch_ref" "$answer node(s) remain"
-census_complete "$section" "after the erase of $scratch_ref"
+# That build's removal appends its artifact.removed event in the transaction that deletes the row.
+# It is appended here only now, so the census above read the orphan before any pass of this server
+# could cure it: with this build serving alone, the last pass (section pass) is 10 minutes behind,
+# and no event before this one names the orphaned node. The tick that reads it owes the object
+# pass (graphcensus.EventsOweObjectPass), whose sweep states the node gone as this build's own
+# removal does, under this event (graphcensus.StateOrphanedGone). The horizon is watched from 5 s
+# before the event, as section pass watches it.
+start_horizon_watch "$section"
+query "$section" "the earlier build's removal event of $scratch_ref" "
+  insert into events (issue_key, seq, type, actor, payload, notify)
+  select '$key', coalesce(max(seq), 0) + 1, 'artifact.removed', '{\"kind\":\"user\",\"id\":\"$person\"}',
+         jsonb_build_object('artifact', jsonb_build_object('id', '$removed_id', 'issue_key', '$key',
+           'slug', '${scratch_ref#*/}', 'ref_key', '$scratch_ref')), false
+  from events where issue_key = '$key'
+  returning id"
+readonly removal="$answer"
+await_pass "$section" "$removal" "exists (select 1 from graph_nodes where kind = 'artifact' and id = '$scratch_ref' and state = 'gone')" \
+  "gone node of $scratch_ref"
+query "$section" "the gone statement of $scratch_ref is the tick's, under event $removal" "
+  select coalesce((select source_event || ' ' || (who->>'id') from graph_tuples
+                   where from_kind = 'artifact' and from_id = '$scratch_ref' and kind = 'state' and to_id = 'gone'
+                   order by seq desc limit 1), '(none)')"
+[[ "$answer" == "$removal dispatch-block-index" ]] ||
+  fail "$section" "the tick states $scratch_ref gone under event $removal" "the newest gone statement reads '$answer'"
+pass "$section" "this server's block-index tick stated the node of $scratch_ref gone under event $removal"
+census_complete "$section" "after the tick stated $scratch_ref gone"

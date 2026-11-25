@@ -396,8 +396,13 @@ type Project struct {
 	// person must approve before the tree's work runs. The empty list is a deployment that
 	// gates nothing and a deployment that has not published yet alike: neither holds a step
 	// waiting for a person, so a reader need not tell them apart.
-	GatedSteps []string  `json:"gated_steps"`
-	CreatedAt  time.Time `json:"created_at"`
+	GatedSteps []string `json:"gated_steps"`
+	// DefaultRepo is the repository, owner/name, an issue of this project resolves to when
+	// neither the issue nor an issue above it names one (refs.IssueRepoResolved). It is set
+	// and cleared by PUT /api/v1/projects/{key}/default-repository. A project with none
+	// carries no member, so a client that does not know the member reads the same project.
+	DefaultRepo *string   `json:"default_repo,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 	// Visibility is ProjectPrivate for a private project and absent for a public one, so a
 	// deployment where every project is public answers every project as it did before projects
 	// could be private.
@@ -764,12 +769,11 @@ type PriorityIssue struct {
 	MovedBy   *Actor         `json:"moved_by"`
 }
 
-// RepoProject assigns an external repository to a native Dispatch project. Default marks the one
-// mapping of the project an issue with no repository of its own, and none on its parent chain,
-// resolves to; at most one mapping of a project is its default. RenamedTo is the full
-// `owner/name` this repository is called today, null for one that was never renamed: Dispatch
-// holds both names of one repository, and the canonical name is what this field reads, else the
-// repository's own (refs.CanonicalRepo).
+// RepoProject is one row of repo_projects. GET /api/v1/settings/repo-projects answers the rows
+// as the last release left them, and nothing writes them now. Default marks the row that was its
+// project's default repository. This release's migration copied it to the project's
+// default_repo. RenamedTo is the full `owner/name` this repository is called today, null for one
+// that was never renamed: the boot reads these pairs once (store.ReadRepoRenames).
 type RepoProject struct {
 	Repo      string    `json:"repo"`
 	Project   string    `json:"project"`
@@ -909,10 +913,10 @@ type Issue struct {
 	ExternalLinks    []ExternalLink  `json:"external_links"`
 	Route            *string         `json:"route"`
 	// Repo is the issue's own repository, owner/name: any repository GitHub could hold, whether
-	// or not a project maps it; nil when it inherits.
+	// or not it is any project's default; nil when it inherits.
 	Repo *string `json:"repo"`
 	// ResolvedRepo is the repository the issue targets, resolved on read: its own Repo, else its
-	// nearest ancestor's, else its project's default mapping, else nil.
+	// nearest ancestor's, else its project's default repository (Project.DefaultRepo), else nil.
 	ResolvedRepo      *string    `json:"resolved_repo"`
 	CreatedBy         *Actor     `json:"created_by"`
 	CreatedAt         time.Time  `json:"created_at"`
@@ -3518,10 +3522,13 @@ type MessageDelivery struct {
 	Delivery   string  `json:"delivery"`
 	SessionID  string  `json:"session_id"`
 	EnvelopeID *string `json:"envelope_id"`
-	// Duplicate reports that the stream already held this message when the attempt was sent: an
-	// earlier attempt landed, so this one is a repeat the recipient is not handed again
-	// (DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts). EnvelopeID is then nil: the envelope
-	// this send minted is the one JetStream discarded.
+	// Duplicate reports that the stream already held a message under this attempt's key when the
+	// attempt was sent: an earlier attempt landed, or another sender's message holds the key, so
+	// the stream stored nothing new for this one (DELIVERY_DUPLICATE_WINDOW_MS in
+	// packages/contracts). EnvelopeID is then nil: the copy the stream holds may be an earlier
+	// attempt's or another sender's under the same key, and an older listener answers the envelope
+	// this send minted, which JetStream discarded, so a duplicate's answer is no envelope id to
+	// record.
 	Duplicate bool `json:"duplicate"`
 	// State is "pending" before the send, then "sent" for a message the listener handed to a
 	// running session, "queued" for one it stored for a session it knows that is not running

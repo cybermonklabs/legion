@@ -32,8 +32,11 @@ import { harnessPorts } from "./harness-ports";
 // which Dispatch reads to revoke them after a Reset or the last removal from an access list, and
 // which this broker answers with none; `POST /v1/person-subjects/revoke`, which Dispatch sends
 // after a Reset gives the person a new passkey account, and which this broker answers revoked with
-// nothing ended; and the public `GET /.well-known/oauth-authorization-server`, the RFC 8414
-// document Dispatch reads to learn whether this broker still serves the device grant.
+// nothing ended; the public `GET /.well-known/oauth-authorization-server`, the RFC 8414
+// document Dispatch reads to learn whether this broker still serves the device grant; and the
+// public `GET /v1/settings`, which Dispatch reads before it relays an approve to learn whether the
+// broker takes the approver fields, and which this broker answers it does, as the broker of this
+// release does (Dispatch relays no approve to a broker whose settings it cannot read).
 // The server reaches this through DISPATCH_AGENT_SECRETS_URL (run-server.sh) whenever the harness
 // switch is left unset
 // (e2e/harness-broker.ts), and it lists nothing until a test seeds a request through
@@ -232,6 +235,11 @@ const server = Bun.serve({
   port: harnessPorts().fakeBroker.port,
   async fetch(request) {
     const url = new URL(request.url);
+    // `GET /v1/settings`: this broker takes the approver fields, as the broker of this release does;
+    // `decide` reads the approver and ignores the rest.
+    if (request.method === "GET" && url.pathname === "/v1/settings") {
+      return Response.json({ approver_fields: true });
+    }
     // The broker's own row shape names no approver: it lists one approver's requests. It lists
     // only the states the caller asks for (Dispatch asks for both), every seeded row when it names
     // none, and never a dismissed row; the pending rows come before the expired ones, as

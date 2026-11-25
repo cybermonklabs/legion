@@ -1458,7 +1458,9 @@ func requireIndexSetInTheCatalog(t *testing.T, ctx context.Context, pool *store.
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read the store's indexes out of the catalog: %v", err)
 	}
-	for _, want := range requiredGraphIndexes {
+	// The later indexes on graph_nodes (laterGraphNodesIndexes) are held here too: the files say
+	// where each is declared, and only the catalog says it still stands after every later migration.
+	for _, want := range slices.Concat(requiredGraphIndexes, laterGraphNodesIndexes) {
 		got, held := standing[want.name]
 		switch {
 		case !held:
@@ -1474,8 +1476,8 @@ func requireIndexSetInTheCatalog(t *testing.T, ctx context.Context, pool *store.
 		t.Errorf("the migrated database keys graph_nodes' primary key on (%s), want (kind, id); every read of one node and every foreign key of a projection row rests on it",
 			nodesPrimaryKey)
 	}
-	t.Logf("the migrated database's catalog holds %d indexes on graph_tuples and graph_nodes, read against the %d of the store's index set",
-		len(standing), len(requiredGraphIndexes)+1)
+	t.Logf("the migrated database's catalog holds %d indexes on graph_tuples and graph_nodes, read against the %d of the store's index set and the %d later graph_nodes indexes",
+		len(standing), len(requiredGraphIndexes)+1, len(laterGraphNodesIndexes))
 }
 
 // catalogIndexKeys cuts the key list out of a definition pg_indexes writes, which reads

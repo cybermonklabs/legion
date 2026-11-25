@@ -549,20 +549,15 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 //     lockBlockDocuments, and a document settlement's lockSettlementFence, which takes it before
 //     the asks the settlement opens are followed), before it writes a node, a tuple or a
 //     projection row, so two passes over one document queue at the fence and the one that loses
-//     it has written nothing.
+//     it has written nothing. A write that creates the document - a new document, or a new
+//     issue's spec - finds no such row to take: its version's insert makes it
+//     (document_block_versions_owe), after the owner lock and before the block nodes and rows, and
+//     no other transaction can hold a row that does not exist yet (the lockstep tests hold that
+//     table's writes in its place, store_writer_lock_steps_test.go's newFenceStep).
 //
 // Appending a tuple locks no row of another table: graph_tuples has no foreign key and nothing
 // updates or deletes a tuple, so where the append falls in a writer's sequence moves no lock,
-// and invariant 3 is about which rows exist, not about which are held. The one exception is the
-// erase (`envoy-dispatch erase`, R1 and R5 of this change), which deletes a node's
-// tuples and its node row, and takes this same order to do it: the lock of every owner it writes
-// under, then the node row, then the rest of the rows it locks before it reads (its projection
-// rows) (grapherase's lockInStoreOrder). Before its first owner lock it takes two rows no writer
-// holding an owner lock takes, each of which a background pass holds for a whole transaction of
-// its own: the term statistics totals row of each project of its owners
-// (api.TakeErasedTermTotalsTx), and the keyword fill's cursor row, which holds the fill back until
-// the erase ends (textversions.HoldFillBack), so it waits for such a pass holding no owner lock,
-// which no writer of the node's issue or document then waits on. A writer owning no
+// and invariant 3 is about which rows exist, not about which are held. A writer owning no
 // issue and no document - an operator's own write, a session-addressed event - takes no owner
 // lock at all, and invariant 1 says nothing about it. graphstore's
 // TestEveryStoreWriteTakesOneLockOrder reads this list and fails if these five are not in it.

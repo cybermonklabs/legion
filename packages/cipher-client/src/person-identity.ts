@@ -34,6 +34,22 @@ const ISSUER_TIMEOUT_SECONDS = 30;
 /** What an issuer answers a refresh token it no longer honours (RFC 6749 Section 5.2). */
 const INVALID_GRANT = "invalid_grant";
 
+/**
+ * Whether `error` is the issuer's token endpoint answering 400 or 401 with `invalid_grant`
+ * (RFC 6749 section 5.2): the issuer saying the refresh token is over, the rule Go's
+ * `oauthrefusal.EndsGrant` (`packages/envoy/internal/oauthrefusal`) states for ending a grant. A
+ * 403 or a 429 naming `invalid_grant` is no such refusal. A 5xx never reaches this as one: the
+ * library (oauth4webapi, under `openid-client`) reads an error body only from a 4xx answer, and
+ * fails a 5xx as an answer that is not a token response.
+ */
+function grantRefused(error: unknown): boolean {
+  return (
+    error instanceof ResponseBodyError &&
+    error.error === INVALID_GRANT &&
+    (error.status === 400 || error.status === 401)
+  );
+}
+
 /** What {@link personIdentity} takes beside the sign-in and its client. */
 export interface PersonIdentityOptions {
   /** The fetch every request to the issuer goes through; the global one by default. Only a test
@@ -77,10 +93,10 @@ function issuerSaid(error: unknown): string {
  * dev stack's, is posted to as it is named. A new refresh token in the answer is ignored, as Go
  * ignores it: the kept one stays the one to keep.
  *
- * The issuer's `invalid_grant` is a {@link SignInEndedError}, which is final; every other failure
- * is an ordinary error, which leaves a client's live token in hand. An answer with no `id_token`
- * is an error. A record made with a client other than `flow`'s is refused here, before any
- * request, in the words of Go's `registerSignInSession`
+ * The issuer's 400 or 401 `invalid_grant` is a {@link SignInEndedError}, which is final; every
+ * other failure is an ordinary error, which leaves a client's live token in hand. An answer with
+ * no `id_token` is an error. A record made with a client other than `flow`'s is refused here,
+ * before any request, in the words of Go's `registerSignInSession`
  * (`packages/envoy/cmd/cipher/login.go`), since no other client can renew it. The source
  * keeps only the record's person and refresh token, so the box key's PEM is not held for its life.
  */
@@ -154,7 +170,7 @@ export function personIdentity(
       } catch (error) {
         // No `cause` on either: an answer the library refused hangs off its error, and that answer
         // can hold the person's fresh ID token, which no log of this error may carry.
-        if (error instanceof ResponseBodyError && error.error === INVALID_GRANT) {
+        if (grantRefused(error)) {
           throw new SignInEndedError(issuer, person);
         }
         throw new Error(`renew ${person}'s sign-in at ${issuer}: ${issuerSaid(error)}`);

@@ -234,3 +234,4 @@ until_true $((reconcile_seconds * 2)) "$target_key to be referenced by both comm
 timeout_hook=''
 note "$target_key is referenced by $written and $second, with no command run"
 pass
+run_end

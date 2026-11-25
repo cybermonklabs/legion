@@ -21,8 +21,8 @@ func (e *Engine) openBeneath(ctx context.Context, tx pgx.Tx, issue record.Issue)
 
 // ChildUnderAcceptedParentNotice is what the architect above the child is told when a person
 // moves an issue to todo beneath an ancestor whose own reviewed head the daemon has already
-// accepted (record.AcceptedAncestor): the issue is recorded, and left standing at admitted until
-// that ancestor closes, because work entering the workflow beneath it now would let that ancestor
+// accepted (record.AcceptedAncestor): the issue is recorded, and left standing at admitted while
+// that ancestor stands in retro or merging, because work entering the workflow beneath it now would let that ancestor
 // merge a head which does not carry the work. The two doors an agent uses refuse such an issue
 // outright (the API's CHILD_UNDER_ACCEPTED_PARENT), so what reaches this is a person's own
 // move, which the daemon records rather than undoes.
@@ -31,7 +31,6 @@ func (e *Engine) openBeneath(ctx context.Context, tx pgx.Tx, issue record.Issue)
 // told under, so it reaches the architect above the child by the route those already take.
 func ChildUnderAcceptedParentNotice(child, ancestor string) record.Notice {
 	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: fmt.Sprintf(
-		"%s is beneath %s, whose own reviewed head the daemon has already accepted, so %s is recorded at admitted and nothing starts it until %s closes. "+
-			"Take %s back with a backward move to run %s under it now, or leave %s where it is and it starts once %s has closed.",
-		child, ancestor, child, ancestor, ancestor, child, child, ancestor)}
+		"%s is beneath %s, whose own reviewed head the daemon has already accepted, so %s is recorded at admitted and nothing starts it while %s stands in retro or merging.",
+		child, ancestor, child, ancestor)}
 }

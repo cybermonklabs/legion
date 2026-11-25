@@ -263,17 +263,39 @@ func sandboxBootOf(cfg config.Config, reads sandboxReads) (sandboxBoot, error) {
 
 // probeReservation is the image probe pod's own reservation, fixed: `legion probe-image` starts
 // one Oh My Pi at a time, each briefly (pi.agents, the plugin's load, the session-storage
-// setting), runs no lane, holds its TLS clients and headless Chromium to the two compromised
-// chains and a control site, and exits. It reserves 500m so the probe ends at least 60 s inside
-// its 240 s command budget at the defaults. Five runs of `legion probe-image --skip-agent-models`
-// at 1 CPU under gVisor (2026-11-18) took 51.9–76.2 s, 19.40–35.99 s of it on CPU. Predicted at
-// 250m (CPU time × 4, plus the wall time off CPU), the worst takes 184 s, 56 s inside the budget,
-// short of the 60 s; at 500m (CPU time × 2) it takes 112 s, 128 s inside. The runs are at 1 CPU
-// because the builds namespace refuses a Job under 1 CPU, so the 500m figures are predictions.
-// None of these runs met a cold image: a TLS run its own limit stops at a site an earlier run
-// reached runs once more at two times that limit (probeTLSClients), which adds up to two times
-// the limit for each such run to a probe on a node where the image is new, and a probe its
-// deadline cuts exits 75, which the daemon reads as a transient attempt.
+// setting), runs no lane, holds its TLS clients and headless Chromium to the chains its own server
+// serves and to two public test sites, and exits. It reserves 500m so the probe ends at least 60 s
+// inside its 240 s command budget at the defaults where the public test sites answer or refuse at
+// once. Five runs of `legion probe-image --skip-agent-models` at 1 CPU under gVisor (2026-11-18)
+// took 51.9–76.2 s, 19.40–35.99 s of it on CPU. Predicted at 250m (CPU time × 4, plus the wall time
+// off CPU), the worst takes 184 s, 56 s inside the budget, short of the 60 s; at 500m (CPU time × 2)
+// it takes 112 s, 128 s inside. The runs are at 1 CPU because the builds namespace refuses a Job
+// under 1 CPU, so the 500m figures are predictions. Once the probe served its own TLS chains
+// (2026-11-20), its runs in the worker image of 1c7c825367 in a CPU-quota scope on a development
+// host took 121.9–147.3 s at 500m (eleven runs, 44.0–56.6 s on CPU), 93 s inside the budget at the
+// slowest, and 73.5–104.4 s at 1 CPU (sixteen runs), with a peak of 374 MiB; on that host main's
+// probe took 66.5–91.1 s at 1 CPU, slower than under gVisor. A public test site that hangs, as a
+// blackhole does, costs at most one run at each of the two, a client's, or the site's positive
+// control's where it hangs from the start, since no client asks a site that gave no verdict
+// (probeTLSClients). While the served copies of the public chains are asked, only node, CodeGraph's
+// node, wget and git ask the public sites, each with a 20 s limit, so such a run stops at 20 s, up
+// to procgroup.StopGrace and procgroup.WaitDelay more for the stop, and the two add at most 44 s,
+// which would end the slowest run above at about 191 s, 49 s inside the budget, short of the 60 s
+// but inside it, so it takes no exit 75. Once a served copy is unasked, as every one is once its
+// leaf has expired (2027-05-03 for the leaves vendored on 2026-11-20; the probe warns of a leaf 30
+// days before its end), every client asks that public site, so a site that starts to hang at bq's
+// turn costs 60 s and at Chromium's 90 s, each up to 2 s more: at Chromium's turn at both sites
+// that ends the slowest run near 331 s and at bq's near 271 s, past the budget, so the probe's
+// deadline cuts it and it exits 75. On 2026-11-21, on the same host at 500m and a one-minute load
+// of 660 to 1,079 on 288 CPUs, a run whose public sites moved to a blackhole once their positive
+// controls passed took 264.6 s and one beside it with the sites left alone 245.5 s: the blackhole
+// cost 19 s, since node, the first client asked, gave up at each after its own 10 s connect
+// timeout; at that load neither run, which had no probe budget, kept inside 240 s, so the pair
+// measures the hung site's cost, not the margin. None of these runs met a cold image: a TLS run its
+// own limit stops at a site an earlier run reached runs once more at two times that limit
+// (probeTLSClients), which adds up to two times the limit for each such run to a probe on a node
+// where the image is new, and a probe its deadline cuts exits 75, which the daemon reads as a
+// transient attempt.
 // Five fresh runs at 250m / 1Gi, before the probe held gcloud, bq, az, mise, wget, git, go,
 // kubectl, redis-cli and socat, took 57.68–77.43 s, so 1Gi held the probe, and the reservation
 // still fits a pool that cannot place a controller or issue pod. It has a 5Gi bound on node disk
@@ -369,17 +391,6 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 	if err != nil {
 		return sandbox.Options{}, err
 	}
-	// The guard's settings reach an accepted issue-pod launcher on the answer to its hello
-	// (sandbox Runtime.LauncherResolver). Nil is what the launcher reads as "run no guard", so a
-	// deployment that turned runtime.kubernetes.memory_guard.issue_pods off and a daemon built
-	// before the guard write the same ack (shimwire.LauncherHelloAck.MemoryGuard, INFRA-3557).
-	var memoryGuard *shimwire.LauncherMemoryGuard
-	if g := k.MemoryGuard.IssuePods; g.Enabled {
-		memoryGuard = &shimwire.LauncherMemoryGuard{
-			ActPercent: g.ActPercent, FloorPercent: g.FloorPercent,
-			WaitSeconds: g.WaitSeconds, IntervalMilliseconds: g.IntervalMilliseconds,
-		}
-	}
 	// The trimmer's settings reach an accepted issue-pod launcher on the answer to its hello
 	// (sandbox Runtime.LauncherResolver). Nil is what the launcher reads as "no settings", on
 	// which its trimmer reads and deletes nothing, so a deployment that turned
@@ -411,21 +422,40 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 		SessionStore:            k.SessionStore,
 		Setup:                   k.Setup,
 		TestPostgres:            k.TestPostgres,
-		MemoryGuard:             memoryGuard,
-		LeakCheckSetting:        cfg.LeakCheck,
-		BootTimeout:             cfg.WorkerBootTimeout,
-		RegistrationIntervals:   cfg.WorkerBootRegistrationDeadlineIntervals,
-		BusyBackoff:             busyBackoffFirst,
-		TerminationGrace:        cfg.WorkerStopTimeout,
-		ProbeInterval:           cfg.ProbeInterval,
-		AdoptTimeout:            cfg.SlowCommandTimeout,
-		AgentSecrets:            agentSecrets,
-		RepositoryCache:         cache,
-		VolumeTrim:              volumeTrim,
-		Log:                     log,
+		// The guard's settings reach an accepted launcher on the answer to its hello (sandbox
+		// Runtime.LauncherResolver), each pod kind's from its own block: an issue pod's launchers
+		// runtime.kubernetes.memory_guard.issue_pods, the controller pod's launcher
+		// runtime.kubernetes.memory_guard.controller_pod. Nil is what the launcher reads as "run no
+		// guard", so a deployment that turned a kind off and a daemon built before the guard write
+		// the same ack (shimwire.LauncherHelloAck.MemoryGuard, INFRA-3557).
+		MemoryGuard:           launcherMemoryGuard(k.MemoryGuard.IssuePods),
+		ControllerMemoryGuard: launcherMemoryGuard(k.MemoryGuard.ControllerPod),
+		LeakCheckSetting:      cfg.LeakCheck,
+		BootTimeout:           cfg.WorkerBootTimeout,
+		RegistrationIntervals: cfg.WorkerBootRegistrationDeadlineIntervals,
+		BusyBackoff:           busyBackoffFirst,
+		TerminationGrace:      cfg.WorkerStopTimeout,
+		ProbeInterval:         cfg.ProbeInterval,
+		AdoptTimeout:          cfg.SlowCommandTimeout,
+		AgentSecrets:          agentSecrets,
+		RepositoryCache:       cache,
+		VolumeTrim:            volumeTrim,
+		Log:                   log,
 	}
 	opts.ExperimentVariants = experiment.DeclaredVariants(cfg.ExperimentsDeclared())
 	return opts, nil
+}
+
+// launcherMemoryGuard is one pod kind's settled memory guard as its launchers are handed it on the
+// answer to each hello, nil where the kind's block turned the guard off.
+func launcherMemoryGuard(g config.MemoryGuardPodConfig) *shimwire.LauncherMemoryGuard {
+	if !g.Enabled {
+		return nil
+	}
+	return &shimwire.LauncherMemoryGuard{
+		ActPercent: g.ActPercent, FloorPercent: g.FloorPercent,
+		WaitSeconds: g.WaitSeconds, IntervalMilliseconds: g.IntervalMilliseconds,
+	}
 }
 
 // sandboxConfig is runtime.kubernetes.sandbox as the runtime takes it: the settled block, member
@@ -643,9 +673,10 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Re
 		// is pushed none; a daemon with no Apps reads none, and the runtime refuses the start of a
 		// role whose launcher names a tag under a named check with the cause that says so.
 		opts.LeakCheck = leakCheckSource(apps, githubAPI, opts.LeakCheckSetting)
-		// Each process an issue pod's memory guard ends reaches the daemon through the kill
-		// holder (memoryGuardKills).
+		// Each process an issue pod's memory guard ends, and each the controller pod's ends,
+		// reaches the daemon through the kill holder (memoryGuardKills).
 		opts.MemoryGuardKilled = kills.killed
+		opts.ControllerMemoryGuardKilled = kills.controllerKilled
 		if apps != nil {
 			// Two records per project, written by the two credentials and read by the directory
 			// set for the Apps of the pod it answers for: the owners each App's last bundle read
@@ -693,13 +724,14 @@ func heldWorkspaceBundle(st *store.Store, project string) runtime.HeldWorkspaceB
 	}
 }
 
-// memoryGuardKills turns one process an issue pod's memory guard ended, as the pod's launcher
-// reported it, into the fact the workflow applies (intake.MemoryGuardKill). It is the seam between
-// the Kubernetes runtime factory (sandboxRuntime), which prepareSandbox builds before the workflow
-// opens, and the fact path, which exists only after it: prepareSandbox makes one and hands it to
-// the factory, and the boot fills it the moment the workflow is open (plan.memoryGuardKills,
-// daemon.run). A holder nobody filled refuses every report with errMemoryGuardKillsUnbound, which
-// the launcher session logs with the report it drops.
+// memoryGuardKills turns one process a pod's memory guard ended, as the pod's launcher reported
+// it, into the fact the workflow applies: intake.MemoryGuardKill for an issue pod's (killed) and
+// intake.ControllerMemoryGuardKill for the controller pod's (controllerKilled). It is the seam
+// between the Kubernetes runtime factory (sandboxRuntime), which prepareSandbox builds before the
+// workflow opens, and the fact path, which exists only after it: prepareSandbox makes one and
+// hands it to the factory, and the boot fills it the moment the workflow is open
+// (plan.memoryGuardKills, daemon.run). A holder nobody filled refuses every report with
+// errMemoryGuardKillsUnbound, which the launcher session logs with the report it drops.
 //
 // It is filled once, in the boot's own goroutine, before the runtime is built and so before any
 // launcher can connect: there is nothing to lock, and nothing ever replaces what was filled.
@@ -710,11 +742,11 @@ type memoryGuardKills struct {
 
 // errMemoryGuardKillsUnbound is what a holder the boot never filled answers every report with. Its
 // text names the line that fills it, since a log line is then the only place the drop shows: the
-// role whose process was ended is told nothing. An unbound holder can only be a boot bug, never a
-// daemon that runs no workflow: prepareSandbox makes the holder only under runtime: kubernetes, and
-// configuration load refuses a runtime: kubernetes file that names no dispatch_url (config's
-// checkKubernetesKeys, "the workflow is what launches every pod"), so every daemon with a holder
-// opens the workflow whose boot fills it.
+// role or the controller whose process was ended is told nothing. An unbound holder can only be a
+// boot bug, never a daemon that runs no workflow: prepareSandbox makes the holder only under
+// runtime: kubernetes, and configuration load refuses a runtime: kubernetes file that names no
+// dispatch_url (config's checkKubernetesKeys, "the workflow is what launches every pod"), so every
+// daemon with a holder opens the workflow whose boot fills it.
 var errMemoryGuardKillsUnbound = errors.New("the daemon's memory guard kill holder was never bound to the workflow " +
 	"(daemon.go, plan.memoryGuardKills.bind), so this report and every later one is dropped")
 
@@ -738,6 +770,28 @@ func (m *memoryGuardKills) bind(pool *store.Pool, handlers []intake.Handler) {
 // connection it then lost sends it again on the next, and ApplyFact applies one id once, so the
 // role is told of one kill once however often its report arrives.
 func (m *memoryGuardKills) killed(ctx context.Context, issue string, token claim.Token, podUID string, report shimwire.LauncherMemoryKill) error {
+	return m.apply(ctx, report, intake.MemoryGuardKill{Issue: issue, Token: token, PodUID: podUID, Report: report}, issue, podUID)
+}
+
+// controllerKilled applies one kill of the controller's pod as one intake fact
+// (runtime.ControllerMemoryGuardKilled), crediting it to token, the claim whose connection carried
+// the report, and to podUID, the pod that launcher runs in, both the session's and never the
+// report's. It runs where killed runs, under the same bounded context and hold mark, and answers
+// a holder nobody bound with the same errMemoryGuardKillsUnbound, for the same reason.
+//
+// The event id is the one killed applies under (memoryGuardKillEventID): the guard's id is minted
+// by each launcher process, so a kill of the controller's pod and one of an issue pod never share
+// it, and a report the controller's launcher sent again on its next connection is applied once, so
+// the controller is told of one kill once.
+func (m *memoryGuardKills) controllerKilled(ctx context.Context, token claim.Token, podUID string, report shimwire.LauncherMemoryKill) error {
+	return m.apply(ctx, report, intake.ControllerMemoryGuardKill{Token: token, PodUID: podUID, Report: report}, "the controller", podUID)
+}
+
+// apply applies fact, the intake fact of report, under the kill's own event id
+// (memoryGuardKillEventID) and a hold mark of its own (store.ForConcurrentWorker), which is what
+// killed and controllerKilled share. An apply that fails names the kill's pod in its error: owner
+// is whose pod podUID is, an issue's key or `the controller`.
+func (m *memoryGuardKills) apply(ctx context.Context, report shimwire.LauncherMemoryKill, fact intake.Fact, owner, podUID string) error {
 	if m.pool == nil || len(m.handlers) == 0 {
 		// Nothing bound the holder to the workflow, so there is no fact path to apply the report
 		// through. That is a boot that skipped plan.memoryGuardKills.bind, never a daemon that runs
@@ -747,9 +801,8 @@ func (m *memoryGuardKills) killed(ctx context.Context, issue string, token claim
 		// the report it dropped (sandbox's memoryKilled), which is what makes the drop findable.
 		return errMemoryGuardKillsUnbound
 	}
-	fact := intake.MemoryGuardKill{Issue: issue, Token: token, PodUID: podUID, Report: report}
 	if _, err := intake.ApplyFact(store.ForConcurrentWorker(ctx), m.pool, "launcher", memoryGuardKillEventID(report), fact, m.handlers...); err != nil {
-		return fmt.Errorf("apply the memory guard's kill of pid %d in %s's pod %s: %w", report.PID, issue, podUID, err)
+		return fmt.Errorf("apply the memory guard's kill of pid %d in %s's pod %s: %w", report.PID, owner, podUID, err)
 	}
 	return nil
 }

@@ -32,7 +32,8 @@ var browserWrites = map[string]string{
 func mounted(t *testing.T) *http.ServeMux {
 	t.Helper()
 	mux := http.NewServeMux()
-	mount(newKeyedCensusContext(t), mux)
+	_, background := mount(newKeyedCensusContext(t), mux)
+	t.Cleanup(background.Wait)
 	return mux
 }
 
@@ -79,7 +80,7 @@ func newKeyedCensusContext(t *testing.T) *AppContext {
 	if err != nil {
 		t.Fatalf("build the passkey ceremonies: %v", err)
 	}
-	ctx, err := BuildAppContext(AppContextOptions{
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey:       testSigningKey,
 		People:           people,
 		Identity:         identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
@@ -88,7 +89,7 @@ func newKeyedCensusContext(t *testing.T) *AppContext {
 		ServerURL:        "http://dispatch.test",
 		OutsideOrigin:    outside,
 		Passkeys:         ceremonies,
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}

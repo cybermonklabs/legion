@@ -91,14 +91,16 @@ func devSignInRequest(handler http.Handler, method, path, body string, with ...f
 }
 
 // devSignInToken signs login in at handler's dev sign-in route and mints a personal token on the
-// cookie it sets, as Settings mints one, returning the token's plaintext.
+// cookie it sets, as Settings mints one, listing PRIV: the one project a restricted member's token
+// lists, which the token keeps once its owner is made one (api's personalTokenActor refuses a
+// restricted member's token listing other than one project). It returns the token's plaintext.
 func devSignInToken(t *testing.T, handler http.Handler, login string) string {
 	t.Helper()
 	signIn := devSignInRequest(handler, http.MethodGet, "/auth/_dev/signin?login="+url.QueryEscape(login), "")
 	if signIn.Code != http.StatusFound || !sessionCookieSet(signIn) {
 		t.Fatalf("dev sign-in as %s answered %d %s, want a redirect setting the session cookie", login, signIn.Code, signIn.Body.String())
 	}
-	minted := devSignInRequest(handler, http.MethodPost, "/api/v1/me/agent-tokens", `{"name":"an agent of mine"}`, func(r *http.Request) {
+	minted := devSignInRequest(handler, http.MethodPost, "/api/v1/me/agent-tokens", `{"name":"an agent of mine","projects":["PRIV"]}`, func(r *http.Request) {
 		r.Header.Set("Origin", devSignInOrigin)
 		for _, cookie := range signIn.Result().Cookies() {
 			if isSessionCookie(cookie) {

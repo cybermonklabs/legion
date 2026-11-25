@@ -219,7 +219,7 @@ func TestARenewRenewsAClaimTheCopyLostFromTheRecordItIsGiven(t *testing.T) {
 	reads := rig.reg.RoleClaimRepair().Completed
 	at := beat(rig)
 
-	control, err := rig.reg.RenewRoleClaims(context.Background(), holder, roleClaimInstance, Interest{SessionID: holder})
+	control, err := rig.reg.RenewRoleClaims(context.Background(), holder, roleClaimInstance, Interest{SessionID: holder}, nil)
 	if err != nil {
 		t.Fatalf("the renewal from the copy alone: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestARenewRenewsAClaimTheCopyLostFromTheRecordItIsGiven(t *testing.T) {
 	}
 
 	row := registered(t, rig.reg, holder, own)
-	renewal, err := rig.reg.RenewRoleClaims(context.Background(), holder, roleClaimInstance, row)
+	renewal, err := rig.reg.RenewRoleClaims(context.Background(), holder, roleClaimInstance, row, nil)
 	if err != nil {
 		t.Fatalf("renew %s's role claims: %v", holder, err)
 	}
@@ -315,7 +315,7 @@ func TestTheSetReadFromTheStoreRenewsARoleAStaleInterestCacheHides(t *testing.T)
 	}
 	registrationReads := interests.reads() - start
 
-	renewal, err := rig.reg.RenewRoleClaims(ctx, holder, roleClaimInstance, row)
+	renewal, err := rig.reg.RenewRoleClaims(ctx, holder, roleClaimInstance, row, nil)
 	if err != nil {
 		t.Fatalf("renew %s's role claims: %v", holder, err)
 	}
@@ -407,7 +407,7 @@ func TestARenewalThatLandsClearsItsFailureRecord(t *testing.T) {
 
 	roles.failGets.Store(true)
 	readFailedAt := beat(rig)
-	if _, err := rig.reg.RenewRoleClaims(ctx, holder, roleClaimInstance, row); !errors.Is(err, errClaimReadFailed) {
+	if _, err := rig.reg.RenewRoleClaims(ctx, holder, roleClaimInstance, row, nil); !errors.Is(err, errClaimReadFailed) {
 		t.Fatalf("a renewal whose claim read failed answered %v, want %v", err, errClaimReadFailed)
 	}
 	requireRenewalFailure(t, rig.reg, role, holder, readFailedAt, errClaimReadFailed)
@@ -415,14 +415,14 @@ func TestARenewalThatLandsClearsItsFailureRecord(t *testing.T) {
 
 	roles.failUpdates.Store(true)
 	writeFailedAt := beat(rig)
-	if _, err := rig.reg.RenewRoleClaims(ctx, holder, roleClaimInstance, row); !errors.Is(err, errClaimWriteFailed) {
+	if _, err := rig.reg.RenewRoleClaims(ctx, holder, roleClaimInstance, row, nil); !errors.Is(err, errClaimWriteFailed) {
 		t.Fatalf("a renewal whose write failed answered %v, want %v", err, errClaimWriteFailed)
 	}
 	requireRenewalFailure(t, rig.reg, role, holder, writeFailedAt, errClaimWriteFailed)
 	roles.failUpdates.Store(false)
 
 	beat(rig)
-	stood, err := rig.reg.RenewRoleClaims(ctx, holder, roleClaimSecondInstance, row)
+	stood, err := rig.reg.RenewRoleClaims(ctx, holder, roleClaimSecondInstance, row, nil)
 	if err != nil || len(stood.Renewed) != 0 {
 		t.Fatalf("a renewal by another process renewed %v with %v, want nothing and no error", stood.Renewed, err)
 	}
@@ -431,7 +431,7 @@ func TestARenewalThatLandsClearsItsFailureRecord(t *testing.T) {
 	landedAt := beat(rig)
 	withUnclaimed := row
 	withUnclaimed.Topics = append(slices.Clone(row.Topics), contracts.RoleTopicPrefix+unclaimed)
-	landed, err := rig.reg.RenewRoleClaims(ctx, holder, roleClaimInstance, withUnclaimed)
+	landed, err := rig.reg.RenewRoleClaims(ctx, holder, roleClaimInstance, withUnclaimed, nil)
 	if err != nil {
 		t.Fatalf("a renewal with reads and writes answering: %v", err)
 	}
@@ -546,7 +546,7 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 					row := registered(t, rig.reg, holder, own)
 					beat(rig)
 
-					renewal, err := rig.reg.RenewRoleClaims(context.Background(), holder, roleClaimInstance, row)
+					renewal, err := rig.reg.RenewRoleClaims(context.Background(), holder, roleClaimInstance, row, nil)
 					if err != nil {
 						t.Fatalf("renew %s's role claims: %v", holder, err)
 					}
@@ -574,7 +574,7 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 			row := registered(t, rig.reg, holder, own)
 			at := beat(rig)
 
-			renewal, err := rig.reg.RenewRoleClaims(context.Background(), holder, roleClaimInstance, row)
+			renewal, err := rig.reg.RenewRoleClaims(context.Background(), holder, roleClaimInstance, row, nil)
 			if err != nil {
 				t.Fatalf("renew %s's role claims: %v", holder, err)
 			}
@@ -759,7 +759,7 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 				roles.failGets.Store(fails)
 				at := beat(rig)
 
-				renewal, err := rig.reg.RenewRoleClaims(context.Background(), holder, roleClaimInstance, row)
+				renewal, err := rig.reg.RenewRoleClaims(context.Background(), holder, roleClaimInstance, row, nil)
 				roles.failGets.Store(false)
 				stored := storedRoleClaim(t, rig.reg, role)
 				if !fails {

@@ -3,11 +3,16 @@ package testnats
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net"
+	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
@@ -21,6 +26,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
 	"github.com/testcontainers/testcontainers-go"
+	tcexec "github.com/testcontainers/testcontainers-go/exec"
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -71,10 +77,24 @@ func TestAFailedStartLeavesNoContainer(t *testing.T) {
 // handed the first attempt's reader copies an empty configuration in, and that server admits
 // anyone. The row takes the first probe's client port at its address once the probe lets it go,
 // as another program can, and requires the start to have been tried again: a first start Docker
-// did not refuse checks no retry.
+// did not refuse checks no retry. Docker refuses only where this process can hold the port it
+// publishes: on a daemon on this machine. On a daemon on another machine the row fails as UNKNOWN,
+// naming the daemon, rather than fail on a probe count that says nothing of the configuration.
 func TestAStartRetriedAfterARefusedPublishEnforcesItsUsers(t *testing.T) {
 	if server, _, err := external(); err == nil && server != "" {
 		t.Skipf("%s names a running NATS server, so the package starts no container", externalURLEnv)
+	}
+	if local, err := localDaemon(context.Background()); err != nil {
+		t.Fatalf("find where the Docker daemon publishes a container's ports: %v", err)
+	} else if !local {
+		daemon := "another machine"
+		if provider, err := testcontainers.NewDockerProvider(); err == nil {
+			if host, err := provider.DaemonHost(context.Background()); err == nil {
+				daemon = host
+			}
+			provider.Close()
+		}
+		t.Fatalf("UNKNOWN: the Docker daemon is at %s, not this machine, so this process cannot hold the port Docker publishes there and cannot make Docker refuse a start; run the row against a daemon on this machine", daemon)
 	}
 	probe := loopbackPorts
 	t.Cleanup(func() { loopbackPorts = probe })
@@ -236,6 +256,135 @@ func TestABurstLeftInFlightDoesNotReachTheNextTest(t *testing.T) {
 			t.Errorf("the recreated stream holds %d of the previous test's %d messages", info.State.Msgs, burst)
 		}
 	})
+}
+
+// A durable an earlier test created does not reach the next test, even when a stream delete whose
+// rename failed leaves the earlier test's stream directory in place with every consumer's state
+// file (the consumer deletes in URL say how, and name the lines). The first subtest stands in for
+// an earlier delete's removal still running: it makes the .<name> directory the next delete
+// renames onto. The second checks the delete did leave the stream's directory, so the row cannot
+// pass on a delete that moved it aside, and then asks for durables that start at the next
+// message. Two durables, so a reset that deleted only one consumer fails too. The stream's name is
+// the invocation's own, which also makes the first subtest's look at its directory proof that the
+// path is the server's store, and under -count keeps a second invocation's plant out of the
+// .<name> the first one's last delete is still removing, which would remove the plant with it. The
+// second subtest run alone (-run naming it) lays what the first leaves in a subtest of its own
+// before it takes the server, so it still finds an earlier test's durables.
+func TestADurableOfAnEarlierTestDoesNotReachTheNextTest(t *testing.T) {
+	config := jetstream.StreamConfig{Name: "LEFT_DURABLE_" + rand.Text(), Subjects: []string{"left.>"}, Storage: jetstream.FileStorage}
+	var durables []jetstream.ConsumerConfig
+	for _, name := range []string{"left-durable-1", "left-durable-2"} {
+		durables = append(durables, jetstream.ConsumerConfig{Durable: name, AckPolicy: jetstream.AckExplicitPolicy, DeliverPolicy: jetstream.DeliverNewPolicy})
+	}
+	var streams, plant string
+	t.Cleanup(func() {
+		if plant != "" {
+			onTheServersHost(t, "rm", "-rf", plant)
+		}
+	})
+	leave := func(t *testing.T) {
+		js := JetStream(t)
+		stream := CreateStream(t, js, config)
+		for _, durable := range durables {
+			if _, err := stream.CreateConsumer(t.Context(), durable); err != nil {
+				t.Fatalf("create durable %s: %v", durable.Durable, err)
+			}
+		}
+		streams = streamsDirectory(t)
+		onTheServersHost(t, "test", "-d", filepath.Join(streams, config.Name))
+		plant = filepath.Join(streams, "."+config.Name)
+		onTheServersHost(t, "mkdir", "-p", filepath.Join(plant, "still-being-removed"))
+	}
+	if !t.Run("creates durables while an earlier delete of their stream is still being removed", leave) {
+		return
+	}
+	t.Run("creates the durables again and finds them at the next message", func(t *testing.T) {
+		if plant == "" && !t.Run("an earlier test leaves durables while their stream's removal is held", leave) {
+			t.Fatal("the earlier test's durables and the held removal of their stream could not be laid, so this subtest would prove nothing")
+		}
+		if plant == "" {
+			t.Fatal("no earlier test left durables and a held removal of their stream (-run filtered out both subtests that lay them), so this subtest would prove nothing")
+		}
+		js := JetStream(t)
+		onTheServersHost(t, "test", "-d", filepath.Join(streams, config.Name))
+		stream := CreateStream(t, js, config)
+		published, err := js.Publish(t.Context(), "left.one", []byte("x"))
+		if err != nil {
+			t.Fatalf("publish: %v", err)
+		}
+		for _, durable := range durables {
+			consumer, err := stream.CreateConsumer(t.Context(), durable)
+			if err != nil {
+				t.Fatalf("create durable %s: %v", durable.Durable, err)
+			}
+			info, err := consumer.Info(t.Context())
+			if err != nil {
+				t.Fatalf("read durable %s: %v", durable.Durable, err)
+			}
+			if info.NumPending != 0 {
+				t.Errorf("durable %s was created delivering new after the message at stream sequence %d, with %d messages pending, want 0: it took up the earlier test's durable, delivered through stream sequence %d",
+					durable.Durable, published.Sequence, info.NumPending, info.Delivered.Stream)
+			}
+		}
+	})
+}
+
+// streamsDirectory is the directory the shared server keeps its streams in: its JetStream store,
+// as its monitoring endpoint reports it, and in that the global account's directory, $G, which
+// holds every stream of a server with no accounts configured. The row that reads it acts on that
+// path where the server runs, so an external server's store must be on this host, writable by the
+// tests' user, and named by an absolute path (README.md says so); a relative one, which the
+// server resolves from its own working directory, fails t by name.
+func streamsDirectory(t *testing.T) string {
+	t.Helper()
+	response, err := monitorClient.Get(monitorURL + "/jsz")
+	if err != nil {
+		t.Fatalf("read the NATS server's JetStream configuration: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s/jsz answered %s", monitorURL, response.Status)
+	}
+	var jsz struct {
+		Config struct {
+			StoreDir string `json:"store_dir"`
+		} `json:"config"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&jsz); err != nil {
+		t.Fatalf("decode %s/jsz: %v", monitorURL, err)
+	}
+	if jsz.Config.StoreDir == "" {
+		t.Fatalf("%s/jsz names no store directory", monitorURL)
+	}
+	if !filepath.IsAbs(jsz.Config.StoreDir) {
+		t.Fatalf("%s/jsz names the store directory %q, a relative path this test cannot resolve: start the server with an absolute -sd", monitorURL, jsz.Config.StoreDir)
+	}
+	return filepath.Join(jsz.Config.StoreDir, "$G", "streams")
+}
+
+// onTheServersHost runs a command where the shared server keeps its store: in the package's
+// container, or on this host for an external server, which a host with no Docker runs itself
+// (the package comment). It fails t when the command fails, with what the command printed.
+func onTheServersHost(t *testing.T, name string, args ...string) {
+	t.Helper()
+	command := strings.Join(append([]string{name}, args...), " ")
+	if shared == nil {
+		if out, err := exec.Command(name, args...).CombinedOutput(); err != nil {
+			t.Fatalf("%s on this host, where the external NATS server keeps its store: %v: %s", command, err, out)
+		}
+		return
+	}
+	code, reader, err := shared.Exec(context.Background(), append([]string{name}, args...), tcexec.Multiplexed())
+	if err != nil {
+		t.Fatalf("%s in the NATS container: %v", command, err)
+	}
+	out, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("read the output of %s in the NATS container: %v", command, err)
+	}
+	if code != 0 {
+		t.Fatalf("%s in the NATS container exited %d: %s", command, code, out)
+	}
 }
 
 // The stream a test is handed must be empty. A create that comes back holding an earlier test's
@@ -690,7 +839,7 @@ func openedSince(t *testing.T, armed map[uint64]bool, want ...string) map[string
 		return listed
 	}
 	if !testwait.Holds(leakSettle, leakPoll, func() bool {
-		found, err = opened(armed)
+		found, err = opened(readConnections, armed)
 		if err != nil || len(found) != len(want) {
 			return false
 		}

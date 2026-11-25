@@ -9,7 +9,7 @@ import (
 )
 
 // The broker keeps the member kind the last answer of Dispatch's person route named for each
-// person in 0046's person_member_kind, so that while Dispatch cannot be asked its member-kind read
+// person in 0047's person_member_kind, so that while Dispatch cannot be asked its member-kind read
 // (projectaccess.Client.MemberKind) serves a person last answered a full member as one. Every
 // process writes the kind of each answer its own asks fetched, held or not, so the row keeps the
 // latest by Dispatch's own clock, the answer's as_of, and never by the order the writes arrive in.

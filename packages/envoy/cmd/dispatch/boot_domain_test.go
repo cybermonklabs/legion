@@ -111,7 +111,7 @@ func requireBootServes(t *testing.T, process *dispatchProcess, why string) {
 // which requireConnectionCeiling makes each start wait for).
 func TestBootRefusesASignInDomainNoFullMemberRecords(t *testing.T) {
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret, loopbackCallback)
 	members := []bootDomainRow{
 		{email: "ada@example.com", domain: "example.com", kind: model.MemberFull},
 		{email: "bob@example.com", domain: "example.com", kind: model.MemberFull},

@@ -7,8 +7,8 @@
 --
 -- The sibling index on document_blocks (20261111043000) carries the measurement: deleting
 -- 16,809 nodes with no such index read that table for each one and took 2 minutes 51 seconds.
--- A node is deleted by the erase (envoy-dispatch erase), which removes a node and the rows
--- that project it, and by a projection's own retirement.
+-- No statement of this tree deletes a graph_nodes row; the index also serves the graph_edges
+-- view's tuple arm, which probes a projection row by its node (20261109215947).
 --
 -- It is a performance index: no constraint and no later migration depends on it. A failed
 -- concurrent build leaves an INVALID index of this name on comments, which the runner drops

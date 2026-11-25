@@ -101,8 +101,20 @@ var priorityRelationsQuery = `select newest.from_id, newest.to_id
 // descendant the cap cuts off is one no chain could have reached anyway, and a raced reparent
 // that ever committed a cycle still terminates. `members` is distinct because an issue inherits
 // the same priority from every issue above it that states it.
+//
+// The seed reads the two arrays by their subscripts (generate_subscripts) rather than through
+// unnest, so the rows Postgres plans for are the same whatever the arrays hold. pgx prepares
+// every statement, and from a connection's sixth run of one Postgres may run the generic plan it
+// makes once, with no argument known. unnest sizes its rows from its array, which such a plan
+// cannot see, so it planned 10 seed rows for the corpus's 400: the walk then hashed each step's
+// few rows and scanned all of issues for every step, and the four statements over the seed
+// touched 6.7 to 45.8 times the shared buffers of the plans made for their arguments
+// (TestPrioritiesReadKeepsItsPlans, PostgreSQL 18.6, 2026-11-22). generate_subscripts has no
+// such estimate: every plan, made for the arguments or not, plans its 1,000 rows, so the generic
+// plan walks as the others do, by hashing issues once.
 var priorityMemberTerms = `members_seed as (
-		select key, priority from unnest($1::text[], $2::text[]) as seed(key, priority)
+		select ($1::text[])[i] as key, ($2::text[])[i] as priority
+		from generate_subscripts($1::text[], 1) as seed(i)
 	), members_spread as (
 		select s.key, s.priority, 0 as depth from members_seed s
 		union all
@@ -365,7 +377,7 @@ func (s *server) readPriorities(ctx context.Context, viewer any, projects []stri
 // readPriorityRelations reads the `advances` relations of every live priority as two lists in one
 // order, the issue key and the priority id of each, of the issues the reader whose visibility
 // argument is viewer sees: the pair of arrays the statements below take as their seed, which
-// `unnest` reads back as rows.
+// priorityMemberTerms reads back as rows by their subscripts.
 func (s *server) readPriorityRelations(ctx context.Context, ids []string, viewer any) ([]string, []string, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, priorityRelationsQuery, ids, viewer)
 	if err != nil {

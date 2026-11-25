@@ -90,7 +90,7 @@ func (s *outsideSignIn) routerWithSessionsFor(t *testing.T, boot bootConfig) htt
 	if err != nil {
 		t.Fatalf("build the request identity: %v", err)
 	}
-	appCtx, err := buildAppContext(boot, rule, built, membership)
+	appCtx, err := buildAppContext(boot, rule, withDocumentService(t, boot, built), membership)
 	if err != nil {
 		t.Fatalf("build the router: %v", err)
 	}

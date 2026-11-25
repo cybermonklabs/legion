@@ -9,7 +9,7 @@ import (
 )
 
 // TestATradeUnderASignInRecordingNoAccountEndsItsCredentialAndSessions: a sign-in from before
-// migration 0041 records no account, so the sessions enrolled under its launcher credential might
+// migration 0042 records no account, so the sessions enrolled under its launcher credential might
 // be any account's. A trade under its key ends that sign-in (store.RecordPersonSignIn) and, in
 // the same transaction, the credential it held and every session enrolled under it, the grant
 // revoked and the pending request cancelled, as revoking the sign-in does, each naming

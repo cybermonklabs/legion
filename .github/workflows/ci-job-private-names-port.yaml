@@ -65,6 +65,8 @@ jobs:
     # compiles that command's 1,217 packages from nothing; 20 minutes is many times the cold
     # build and the 148 cases after it, and still fails a hung case well inside the hour.
     timeout-minutes: 20
+    env:
+      JOB_TIMEOUT_MINUTES: 20 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -76,6 +78,8 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/daemon/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
 
       - name: Test the private-name rules' port against the frozen script

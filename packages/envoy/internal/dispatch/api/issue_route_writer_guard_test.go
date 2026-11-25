@@ -104,6 +104,7 @@ func routeScanSkipped(path string, entry fs.DirEntry) bool {
 // app's end-to-end fixtures seed a fresh database whose issues have no event yet. A second writer
 // belongs behind the same rule: give it its event, then name it here.
 func TestOnlyTheIssuePatchWritesTheRoute(t *testing.T) {
+	t.Parallel()
 	sources := moduleSources(t)
 	constants, err := stringConstants(sources)
 	if err != nil {
@@ -176,6 +177,7 @@ func TestOnlyTheIssuePatchWritesTheRoute(t *testing.T) {
 // guard reads and checks it is seen, and that what it must not count is not: an update of another
 // column, a read of the route, and a test file, which writes rows on purpose.
 func TestTheRouteWriterGuardSeesAPlantedWriter(t *testing.T) {
+	t.Parallel()
 	planted := `package planted
 
 func move(tx tx, key string) error {

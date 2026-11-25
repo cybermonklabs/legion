@@ -85,13 +85,14 @@ decides only which private projects it sees: a private project needs a token tha
   token that lists projects is refused a write of the whole deployment, such as `dispatch project`
   or a broadcast, `403 PROJECT_SCOPE_DEPLOYMENT`; one that lists none makes it as its person does,
   and so does a broker access token acting as its person while no project is private.
-- A restricted member's token that lists projects sees those of them its person sees, and nothing
-  of any other project; one that lists none sees the public projects its person sees. Of what
-  belongs to no project, it reads only the people and agent sessions of those projects, its own,
-  and the direct conversations its person is in whose agent sessions it reads. A read of the
-  whole deployment, such as `dispatch priorities`, is refused `403 DEPLOYMENT_READ_REFUSED`, and a
-  write of it `403 RESTRICTED_MEMBER`, except the revoke of its person's own credential grant or
-  sign-in, which a token that lists no project makes as its person does.
+- A restricted member's token is their agent's: it holds no scope and lists exactly one project,
+  so it approves no login, makes no token and decides, dismisses or revokes no credential, and a
+  token of theirs that lists none or several acts for nobody, `403 RESTRICTED_MEMBER`. It sees its
+  project if its person sees it, and nothing of any other project. Of what belongs to no project,
+  it reads only the people and agent sessions of that project, its own, and the direct
+  conversations its person is in whose agent sessions it reads. A read of the whole deployment,
+  such as `dispatch priorities`, is refused `403 DEPLOYMENT_READ_REFUSED`, and a write of it
+  `403 RESTRICTED_MEMBER`.
 - The shared token, and any other credential that acts for no person, sees the public projects
   and the private projects its list names.
 
@@ -112,7 +113,7 @@ deployment, a full member's token sees every project its person sees, whatever i
 | Priorities | `dispatch priorities` lists every live priority the deployment works towards, in rank order, with the work under each — its open issues by status, how many are claimed, their open asks, what closed in the last seven days, and when anything under it last moved — then the two faults: the work in flight under no priority and the work under a priority parked in backlog or icebox. `--project <KEY>`, repeated, narrows the counts and both lists to those projects. A priority belongs to no project, so this reads the whole deployment, counting only the work of the projects the token sees, and a restricted member's token is refused it; the id each row names is what `--advance` takes. |
 | Projects | `dispatch project` creates a project from a key and a name; a key that is already taken is refused, and so is any call from a token that lists projects, a broker access token acting as its person only while some project is private. `--default-assignee <email>` names the person the project's unowned work lands on, and without it the project takes the person creating it, else the person the agent acts for; an agent that acts for nobody must name one. `dispatch projects` lists the key and name of every project the token sees. |
 | Asks | `dispatch ask` opens one. `dispatch edit-ask` rewords an open one. `dispatch resolve-ask` retracts or resolves one. `dispatch follow` follows or leaves an ask's thread. `dispatch open-asks` lists open asks. `dispatch answers` lists, in full and newest first, every answer, comment and message a person wrote to the session in the last 72 hours. |
-| Comments | `dispatch comment` comments on a document or replies in a thread. `dispatch suggest` proposes replacement text. `dispatch resolve-comment` resolves a thread. |
+| Comments | `dispatch comment` comments on a document or replies in a thread; `--mention-role <name>`, repeated, mentions a role, so Dispatch delivers the comment to the session that holds it, and `--mention role:<name>` or `--mention session:<id>` names a target whole. `dispatch suggest` proposes replacement text. `dispatch resolve-comment` resolves a thread. |
 | Messages | `dispatch message` posts a message or replies to one. |
 | Documents | `dispatch doc-read` reads a document, or the text of an uploaded file; with `--blocks` it lists the document's block ids, tokens and table rows that `dispatch doc-edit` addresses. `dispatch doc-edit` edits one in place. `dispatch artifact` uploads a file or a new document. `dispatch request-approval` asks a person to approve a document. |
 | Reading | `dispatch read` reads an issue, ask, comment, message, or document summary; an issue read lists the issue's last 10 events, `--events N` the last N, and `--all-events` every one. `dispatch search` searches everything the token sees. `dispatch related --project <KEY>` runs the related-item check a new issue or ask gets on a `--title` and `--text`, and writes nothing. `dispatch whoami` reports who Dispatch takes the agent for, the OAuth scopes its credential holds, and the projects it lists. `dispatch inbox` lists what the Inbox page of the person the agent acts for shows — Needs you, Waiting on agents, Later, Unread threads and Credential requests, in that order, each with its count and its rows — read with the agent's own credential, which must hold the `person` scope; a thread's line names its owner (the issue key, the document slug, or the session of an Agent row), its kind, the first 80 characters of its subject, who wrote the newest reply, how long ago and the thread's reference; it is the person's Dispatch Inbox, not the Envoy tool `envoy_inbox`, which lists what was delivered to this session. |

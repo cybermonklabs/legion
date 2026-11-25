@@ -5,12 +5,13 @@
 // (RequireStoppedAt), and holds the order it queued in to that lock order
 // (RequireTheStoreLockOrder).
 //
-// The backfill's tests (graphcensus) and the erase's (grapherase) both follow their writers
-// through it. It imports neither package, so graphcensus's own tests can import it. It writes no
-// table: the source scans that hold every writer of the store and of its projections to a register
-// (graphstore's TestEveryStoreWriteCallSiteIsListed, docs' requireEveryPassReadsItsSource) read
-// every Go file but the tests, so a fixture that writes one - a seed, a hold written through the
-// store's writer - stays in the _test.go files of the package that uses it.
+// The backfill's tests (graphcensus), and the tests of other writers of the store, follow their
+// writers through it. It imports no writer's package, so graphcensus's own tests can import it. It
+// writes no table: the source scans that hold every writer of the store and of its projections to
+// a register (graphstore's TestEveryStoreWriteCallSiteIsListed, docs'
+// requireEveryPassReadsItsSource) read every Go file but the tests, so a fixture that writes one -
+// a seed, a hold written through the store's writer - stays in the _test.go files of the package
+// that uses it.
 //
 // It also holds the register of the store's writers, each beside the test that drives its lock
 // steps (StoreWriteCallSites), which graphstore's and graphcensus's tests both read.
@@ -180,12 +181,12 @@ func RequireStoppedAt(t testing.TB, ctx context.Context, database *store.Store, 
 //   - the project of the event last;
 //   - several rows of one step in ascending order: node rows in ascending (kind, id), and owner
 //     locks in ascending owner key and fence rows in document id order, the order every writer of
-//     several documents takes them in (graphcensus's lockBlockDocuments, grapherase's
-//     lockInStoreOrder, events.LockOwnerRows, store.LockOwners).
+//     several documents takes them in (graphcensus's lockBlockDocuments, events.LockOwnerRows,
+//     store.LockOwners).
 //
 // The third invariant, the event before the tuples it causes, holds of a writer with nothing to
-// read: neither the backfill nor the erase appends an event, and every cause the backfill's tuples
-// carry is an event the log already holds.
+// read: the backfill appends no event, and every cause its tuples carry is an event the log
+// already holds.
 func RequireTheStoreLockOrder(t testing.TB, run string, holds, queued []*Hold) {
 	t.Helper()
 	order := HoldNames(queued)

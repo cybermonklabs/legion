@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -371,6 +372,15 @@ func takeStoreCensus(t *testing.T, database *store.Store) *graphcensus.StoreRepo
 		t.Fatalf("take the store census: %v", err)
 	}
 	return report
+}
+
+// censusFindings is report as `census --store` prints it (StoreReport.Write): every kind it read
+// with its differences, the kinds it read no row of, and the project census's findings, so a
+// refusal says which of the three refused it, not the differences alone.
+func censusFindings(report *graphcensus.StoreReport) string {
+	var printed strings.Builder
+	report.Write(&printed)
+	return printed.String()
 }
 
 func censusOfBlocks(t *testing.T, report *graphcensus.StoreReport) graphcensus.KindReport {

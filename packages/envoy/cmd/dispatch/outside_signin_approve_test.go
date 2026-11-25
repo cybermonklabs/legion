@@ -171,6 +171,9 @@ func TestOutsideSignInApproveRefusesACallerWhoLostTheAddressWhileItsBodyArrived(
 						t.Errorf("the approve by the first holder's %s, whose body arrived after the address passed on, was relayed to the broker: %s", credential.name, call)
 					}
 				}
+				if reads := broker.settingsRead(); reads != 0 {
+					t.Errorf("the refused approve by the first holder's %s read the broker's settings %d times, want none: a refused caller asks the broker nothing", credential.name, reads)
+				}
 			})
 		}
 	}
@@ -265,6 +268,9 @@ func TestOutsideSignInAnApproveHeldPastTheRevocationIsNotRelayed(t *testing.T) {
 				if strings.Contains(call, "/approve") {
 					t.Errorf("the first holder's %s approve, whose body arrived an hour after the revocation settled, was relayed to the broker: %s", credential.name, call)
 				}
+			}
+			if reads := broker.settingsRead(); reads != 0 {
+				t.Errorf("the refused approve by the first holder's %s read the broker's settings %d times, want none: a refused caller asks the broker nothing", credential.name, reads)
 			}
 		})
 	}
@@ -405,6 +411,11 @@ func TestOutsideSignInApproveNamesTheApprovingAccount(t *testing.T) {
 				t.Fatalf("the approve by the holder's %s answered %d %s, want 200", credential.name, recorder.Code, recorder.Body.String())
 			}
 			requireCalls(t, broker, "after the approve by the holder's "+credential.name, s.approveRelayed(t, firstHolder))
+			// The control of the refused approves' settings counts: the approve that is relayed reads
+			// the broker's settings once, on a router whose client has read none.
+			if reads := broker.settingsRead(); reads != 1 {
+				t.Errorf("the approve by the holder's %s read the broker's settings %d times, want once", credential.name, reads)
+			}
 		})
 	}
 }

@@ -31,7 +31,7 @@ func adminDatabaseURL(t *testing.T) string {
 // itself rather than a clone, in whichever order the packages run. So the two migration sets
 // must create no schema-global name in common: a function, a table, a type, a sequence or an
 // index that both create fails the second set's migration (two functions named
-// refuse_recorded_account_change did, in broker migration 0042 and Dispatch migration
+// refuse_recorded_account_change did, in broker migration 0043 and Dispatch migration
 // 20261117160116). Each order is migrated into a fresh database of its own, twice, the second
 // pass applying nothing.
 //

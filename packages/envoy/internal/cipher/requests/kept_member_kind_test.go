@@ -131,7 +131,7 @@ func TestWhileDispatchCannotBeAskedAPersonKeptFullIsServed(t *testing.T) {
 	}
 	granted := func(t *testing.T, s session, name string) string {
 		t.Helper()
-		req, err := m.Create(ctx, s.id, signRequest(t, m, s.key, "needs "+name, name), "", nil)
+		req, err := m.Create(ctx, s.id, signRequest(t, m, s.key, "needs "+name, name), "")
 		if err != nil || req.State != "granted" || req.GrantID == nil {
 			t.Fatalf("Create(%s) = %+v, %v; want it granted at once", name, req, err)
 		}
@@ -139,7 +139,7 @@ func TestWhileDispatchCannotBeAskedAPersonKeptFullIsServed(t *testing.T) {
 	}
 	released := func(t *testing.T, s session, grant, name, value, when string) {
 		t.Helper()
-		if release, err := m.Values(ctx, grant, s.id, nil, ReleaseCall{}); err != nil || release.Values[name] != value {
+		if release, err := m.Values(ctx, grant, s.id, ReleaseCall{}); err != nil || release.Values[name] != value {
 			t.Fatalf("Values(%s) %s = %v, %v; want %q", name, when, release.Values, err, value)
 		}
 	}
@@ -158,14 +158,14 @@ func TestWhileDispatchCannotBeAskedAPersonKeptFullIsServed(t *testing.T) {
 	// The process before the outage reads ines and outsider, and keeps what Dispatch answers.
 	m.Projects = newKeptProcess(dispatch, m.Store).client
 	released(t, ines, inesGrant, "SHARED_TOKEN", "shared-token-v1", "while Dispatch answers")
-	if req, err := m.Create(ctx, outside.id, signRequest(t, m, outside.key, "needs it", "SHARED_FRESH"), "", nil); err != nil || req.State != "denied" {
+	if req, err := m.Create(ctx, outside.id, signRequest(t, m, outside.key, "needs it", "SHARED_FRESH"), ""); err != nil || req.State != "denied" {
 		t.Fatalf("Create(SHARED_FRESH) under %s while Dispatch answers = %+v, %v; want it denied, a restricted member's", outsider, req, err)
 	}
 
 	dispatch.SetDown(true)
 	t.Cleanup(func() { dispatch.SetDown(false) })
 	m.Projects = projectaccess.New(dispatch.URL, dispatch.Account, nil)
-	if _, err := m.Values(ctx, inesGrant, ines.id, nil, ReleaseCall{}); err == nil {
+	if _, err := m.Values(ctx, inesGrant, ines.id, ReleaseCall{}); err == nil {
 		t.Fatal("a client with no keeper released ines's grant while Dispatch is down: the outage is not real")
 	}
 	after := newKeptProcess(dispatch, m.Store)
@@ -188,12 +188,12 @@ func TestWhileDispatchCannotBeAskedAPersonKeptFullIsServed(t *testing.T) {
 	}{{outsider, outside, outsideGrant, "restricted"}, {unasked, uma, umaGrant, "none"}} {
 		t.Run("a person kept "+refused.kept+" is refused their release and their ask, with nothing written", func(t *testing.T) {
 			before := requests(refused.s)
-			release, err := m.Values(ctx, refused.grant, refused.s.id, nil, ReleaseCall{})
+			release, err := m.Values(ctx, refused.grant, refused.s.id, ReleaseCall{})
 			requireUncheckable(t, "Values(SHARED_TOKEN) under "+refused.person, err, refused.person)
 			if len(release.Values) != 0 {
 				t.Fatalf("the refused release under %s released %v; want nothing", refused.person, release.Values)
 			}
-			_, err = m.Create(ctx, refused.s.id, signRequest(t, m, refused.s.key, "needs it while Dispatch is down", "SHARED_OTHER"), "", nil)
+			_, err = m.Create(ctx, refused.s.id, signRequest(t, m, refused.s.key, "needs it while Dispatch is down", "SHARED_OTHER"), "")
 			requireUncheckable(t, "Create(SHARED_OTHER) under "+refused.person, err, refused.person)
 			if n := requests(refused.s); n != before {
 				t.Fatalf("the refused ask under %s left %d requests, want %d", refused.person, n, before)

@@ -53,6 +53,8 @@ jobs:
   lint:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
+    env:
+      JOB_TIMEOUT_MINUTES: 30 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -89,7 +91,7 @@ jobs:
       - name: Check every tool asset of .github/ci-tools.yaml agrees with its pin
         run: .github/scripts/check-ci-tools.sh
 
-      - name: Check every remote action is pinned to a commit SHA
+      - name: Check every remote action is pinned to a commit SHA, and every setup-go step reads Go from go.dev
         run: .github/scripts/check-action-pins.sh
 
       - name: Check no current file names the pre-split Oh My Pi plugin
@@ -131,6 +133,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/daemon/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
 
       # The skill-scenario rig's daemon-pane.go belongs to no module (it runs with `go run -overlay`
@@ -186,11 +190,11 @@ jobs:
         run: .github/scripts/check-ts-filters.sh
 
       # The notices step below builds go-licenses and loads every release binary's modules. It
-      # keeps them in a cache family of its own, go-notices: one entry, read on every run, so never
-      # evicted, and refreshed only when Go is bumped. Keyed on the go.sum files it would leave a
-      # 2.2 GB entry per key change; keyed on the Go version, a go.sum change only downloads the
-      # changed modules and rebuilds the changed packages, since Go's build cache is
-      # content-addressed. Restored only when the notices step runs; ci-caches.yaml fills it.
+      # keeps them in a cache family of its own, go-notices, which ci-caches.yaml fills again from
+      # its newest entry on every push to main. Keyed on the go.sum files it would leave a 2.2 GB
+      # entry per key change; keyed on the Go version, a go.sum change only downloads the changed
+      # modules and rebuilds the changed packages, since Go's build cache is content-addressed.
+      # Restored only when the notices step runs.
       #
       # The runner's architecture comes before the OS in this family's key, where the other Go
       # families put it after: the entry holds go-licenses, a program of the runner that built it,
@@ -252,6 +256,8 @@ jobs:
   private-names:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

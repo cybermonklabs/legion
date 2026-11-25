@@ -775,14 +775,17 @@ either, the server logs that meaning search is unavailable and serves everything
 Sign in, then open **Settings**:
 
 - **Projects**: create your first project, with a key such as `CORE` and a name.
-- **Repositories → Projects**: choose which project issues from each GitHub repository land in.
-  `DISPATCH_DEFAULT_PROJECT` catches repositories with no mapping; that project must already exist.
 - **Projects → Default assignee**: name the person each project's unowned work lands on, in the
   projects table's own column. An issue created with no assignee, by an agent on the shared token
   and under no parent that names one, goes to that person, and so does every question on an issue
   nobody holds. Every project names one, so the page moves a default from one person to another
   and clears none. A person moves it here, and an agent names a project's first one in the call
   that creates the project.
+- **Projects → Default repository**: name the repository each project's work is done in, in the
+  projects table's own column, as `owner/name`. An issue that names no repository, under no parent
+  that names one, takes it. **Save** sets it, **Clear** removes it, and a project with none reads
+  **None**. An import of a GitHub issue names its project, since Dispatch chooses no project from
+  a repository.
 - **Architecture sources**: add each repository branch holding part of a project's architecture
   model. A project can have several, one per repository, and its model is all of their components
   together. Saving checks that the GitHub App can read the repository.
@@ -823,10 +826,13 @@ sees: a private project needs a token that lists it.
   lists projects is refused a write of the whole deployment, such as a new project, a repository
   mapping or a broadcast, `403 PROJECT_SCOPE_DEPLOYMENT`; a broker access token acting as its
   person is refused it only while some project is private.
-- A restricted member's token that lists projects sees those of them its person sees and nothing
-  else; one that lists none sees the public projects its person sees. Of what belongs to no
-  project it reads only the people and sessions of those projects, its own, and its person's
-  direct conversations with those sessions.
+- A restricted member's token, their personal token or one the secrets broker issued for their
+  agent, holds no scope and lists exactly one project; one of theirs that lists none or several
+  acts for nobody, `403 RESTRICTED_MEMBER`. It sees its project if its person sees it, and
+  nothing else. Of what belongs to no project it reads only the people and sessions of that
+  project, its own, and its person's direct conversations with those sessions. Their browser's
+  mint in Settings gives a personal token that shape, and a stored one holding a scope acts with
+  none.
 - A credential that acts for no person, the shared `DISPATCH_AGENT_TOKEN` or a Kubernetes
   service-account token, sees the public projects and the private projects its list names.
 
@@ -1050,7 +1056,7 @@ The second kind is a part of its read that a loop gives up:
   redelivery request, or a rate limit stops the sweep.
 - The CI reconcile: a repository it reads that it cannot read (it gets no token for it, GitHub does
   not answer for it or gives it a name that is not `owner/name`, or its open pull requests cannot
-  be listed), a repository a project maps that the App is not installed on, a pull request head it
+  be listed), a project's default repository that the App is not installed on, a pull request head it
   cannot read (an answer too large included), a failed read of a head's commit statuses, or a
   rate limit that ends the pass, also one already in force when the pass starts. A read that the
   pass's own time limit cut short is not one of these.
@@ -1188,7 +1194,7 @@ one. Three things have to be true first; Dispatch checks the first for you.
   database while it lasts.
 
 A second server also costs connections, and Postgres counts them per server. Each server opens up
-to 64 connections for requests, up to 24 for the work it runs once across the servers, the
+to 64 connections for requests, up to 25 for the work it runs once across the servers, the
 delivery intakes' holds and the keyword fill's hold,
 up to 8 for saving what people type in documents, up to 4 for loading
 documents, up to 2 for compacting documents, up to 2 for the background fill of documents'
@@ -1202,7 +1208,7 @@ background work when the rows that work reads change included. The other servers
 database find each server by the name of that shared connection. The fifth sends the cursors of
 the server's document sessions and its questions and answers to the other servers about a
 document. It opens the first time the server has one to send. A document edit's own notification
-goes out in the transaction that writes the edit, and needs no connection of its own. That is 115
+goes out in the transaction that writes the edit, and needs no connection of its own. That is 116
 connections for one server at its ceiling, and twice that for two, past a default Postgres's
 limit of 100. Check the database's connection limit before you start the second server: a limit
 sized for one server, with whatever else uses that database counted in, is the thing that runs
@@ -1258,7 +1264,8 @@ What a reader sees while two servers are serving:
 - A document that a server of the earlier version removes or makes again during the rollout can
   leave this version's record of it out of step: `envoy-dispatch census --store` then names it
   `orphaned` or `gone`. Once the rollout is done, run `envoy-dispatch backfill-graph-store` for
-  `gone`, and for each `orphaned` line the `envoy-dispatch erase` command that line prints.
+  `gone`; an `orphaned` document clears by itself at the first block-index pass a server of this
+  version runs once the earlier version has stopped.
 - The dashboard's **A new version is available** notice waits until every server runs one
   version: while two versions are serving, nobody is told to reload. A page that fails to load one
   of its files reloads itself, at most three times in five minutes.

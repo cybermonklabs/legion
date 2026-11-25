@@ -1,0 +1,3 @@
+kind: Changed
+body: |-
+  `dispatch-openapi.json` describes `POST /api/v1/credential-requests/{id}/approve`'s use of the secrets broker's settings: the approve names the approving account and its session generation to a broker whose settings say it takes them, the approver and the code alone to one whose settings answer without, and is sent to no broker, `503 AGENT_SECRETS_SETTINGS_UNREAD`, when those settings cannot be read.

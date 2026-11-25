@@ -35,12 +35,14 @@ var planDrawnAt = time.Date(2026, 9, 21, 18, 42, 11, 0, time.UTC)
 // the times of the task they hold of that entry, a root no architect claim stands for carries the
 // architect-stalled arm the daemon reads for it, each reviewing root of it carries what its round
 // waits on from GitHub, every issue of a live tree carries that tree's quiet time, the issues of
-// its drawn tree carry the experiment answers they hold, and the project stands paused
-// (`paused`), so one state proves every band of stateNarrowings and that they compose; it stands
-// no member of the line of the kind 132 added, whose value strip waiting_on_issue_test.go proves,
-// and the pause's other key, `lastPause`, is pause_test.go's state of its own. What the
-// quiet-time band is measured on in finer grain — both halves on each member of one tree, and
-// neither on an issue whose tree has left the workflow — is quiet_time_test.go's state of its own.
+// its drawn tree carry the experiment answers they hold, the project stands paused (`paused`),
+// and its capability report holds the repository caches' row with that source's own word, so one
+// state proves every band of stateNarrowings, that they compose, and the value strip of a
+// capability row's `source` beside them; it stands no member of the line of the kind 132 added,
+// whose value strip waiting_on_issue_test.go proves, and the pause's other key, `lastPause`, is
+// pause_test.go's state of its own. What the quiet-time band is measured on in finer grain — both
+// halves on each member of one tree, and neither on an issue whose tree has left the workflow —
+// is quiet_time_test.go's state of its own.
 
 // issueViews is every issue of a state body, decoded as the plugin's reader sees it, by key.
 func issueViews(t *testing.T, body []byte) map[string]map[string]any {
@@ -229,6 +231,14 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// from the same entries. No pod's claims place a caller at it (callerKind.reaches), so the
 		// rows served it are the three this daemon serves its own body.
 		repos bool
+		// caches is whether the caller is served the repository-cache-room row's `source`,
+		// `caches` (cachesSourceContract), the contract that added the word. The word is a value,
+		// held back from every caller whose pod's lowest contract is below that contract
+		// (withoutUnadmittedCapabilitySources), and every pod this table places is below it: a
+		// claim at shapedAnswersContract or above is in no pod's reckoning (podContracts). So the
+		// rows served this daemon's own body are served the word, and every other row the row
+		// without it.
+		caches bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(memoryContract - 1), rounds: true, contract: memoryContract - 1},
 		{name: "a pod below PodUpdateContract, below every narrowing", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1), contract: supervise.PodUpdateContract - 1},
@@ -314,11 +324,12 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// The band from pauseContract to below shapedAnswersContract, the last a pod's claims
 		// place a caller in (callerKind.reaches): the project's pause is served too, and every key
 		// a later row of stateNarrowings adds is held back, the repositories block written in the
-		// shape contract 152 gave it.
+		// shape contract 152 gave it, as is the repository caches' row's `source`, the value
+		// cachesSourceContract added.
 		{name: "a pod at pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, contract: pauseContract},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, contract: DaemonAPIVersion},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, contract: DaemonAPIVersion},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, contract: DaemonAPIVersion},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, caches: true, contract: DaemonAPIVersion},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, caches: true, contract: DaemonAPIVersion},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, caches: true, contract: DaemonAPIVersion},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -455,6 +466,12 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			// `lastPause` (api's withoutPause), which is every pod of every band below it.
 			if !tc.pause {
 				delete(want, "paused")
+			}
+			// A pod below cachesSourceContract is served the repository caches' capability row
+			// without its `source` (api's withoutUnadmittedCapabilitySources), which is every pod
+			// this table places.
+			if !tc.caches {
+				stripCachesSources(want)
 			}
 			// A pod below retiredStrandedContract is served the report of claims nothing will
 			// wake without its retired entries, the state contract 56 added (api's

@@ -25,7 +25,7 @@ func commentMarkRecord(comment model.Comment, replies []model.Comment, suggestio
 	record := docs.MarkRecord{
 		Kind:      "comment",
 		By:        docs.ActorRef(comment.Author),
-		CreatedAt: docs.MarkTime(comment.CreatedAt),
+		CreatedAt: timestampValue(comment.CreatedAt),
 		Text:      comment.Body,
 		Resolved:  comment.Resolved,
 		Replies:   make([]docs.MarkReply, 0, len(replies)),
@@ -34,7 +34,7 @@ func commentMarkRecord(comment model.Comment, replies []model.Comment, suggestio
 		record.Replies = append(record.Replies, docs.MarkReply{
 			By:   docs.ActorRef(reply.Author),
 			Text: reply.Body,
-			At:   docs.MarkTime(reply.CreatedAt),
+			At:   timestampValue(reply.CreatedAt),
 		})
 	}
 	if comment.Suggestion != nil {

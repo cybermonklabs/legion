@@ -367,11 +367,12 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
   );
 
   // The control of the row above: each proxy read of the project's repository answered as one
-  // the App is not installed on, as the proxy answers it (503 GITHUB_TOKEN_UNAVAILABLE).
+  // the App is not installed on, as the proxy answers it (503 GITHUB_TOKEN_UNAVAILABLE). The full
+  // member's proxy reads are their cookie's, so the run is given it, or no read could fail.
   test(
     "each GitHub proxy read answered as a repository the App is not installed on is no FAIL",
     async () => {
-      const { stdout } = await sweep([], { rows: ["/api/v1/whoami"] });
+      const { stdout } = await sweep([], { env: served.env, rows: ["/api/v1/whoami"] });
       expect(failures(stdout)).toEqual([]);
       expect(proxyReads().length).toBeGreaterThan(0);
       for (const shape of proxyReads()) {
@@ -407,10 +408,35 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
     rowLimit("short")
   );
 
+  // Without the full member's cookie the proxy reads are their token's, which a build from
+  // cybermonklabs/legion#5079 on reads: every row can fail, and the run passes with no cookie.
   test(
-    "without the full member's cookie, a proxy that reads no token leaves the run UNKNOWN, naming each read",
+    "with the full member's token alone, a proxy that reads tokens is read as the full member, and the run passes",
     async () => {
-      const { code, stdout } = await sweep([], {
+      const { code, directBy, stdout } = await sweep([], {
+        ...served,
+        env: {},
+        rows: ["/api/v1/whoami"],
+      });
+      for (const shape of proxyReads()) {
+        expect(stdout).toContain(
+          `\nok      GET /api/github/rest/repos/{owner}/{repo}/${shape}: 503, as a repository the App is not installed on (can fail)\n`
+        );
+      }
+      expect(directBy).toEqual(["token"]);
+      expect(verdictOf(stdout)).toBe(passed);
+      expect(code, stdout).toBe(0);
+    },
+    rowLimit("short")
+  );
+
+  // A build before #5079 reads the proxy as the browser's person alone and refuses the token
+  // 401: each proxy read is UNKNOWN, naming the build and the cookie, never a FAIL or a PASS,
+  // while the direct messages and the agent view, the token's too, still run and hold.
+  test(
+    "with the full member's token alone, a proxy that reads cookies only leaves each read UNKNOWN, naming the build, and the token's rows still hold",
+    async () => {
+      const { code, directBy, stdout } = await sweep([], {
         ...served,
         env: {},
         proxyReadsCookies: true,
@@ -419,9 +445,14 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
       expect(failures(stdout)).toEqual([]);
       for (const shape of proxyReads()) {
         expect(stdout).toContain(
-          `\nUNKNOWN GET /api/github/rest/repos/{owner}/{repo}/${shape}: the member is answered 503, as a repository the App is not installed on, but the full member is answered 503 for TGT's repository as for one the App is not installed on (503), so the read could not fail: the proxy reads the browser's person alone, whom SWEEP_FULL_COOKIE names\n`
+          `\nUNKNOWN GET /api/github/rest/repos/{owner}/{repo}/${shape}: the member is answered 503, as a repository the App is not installed on, but the proxy refused the full member's token (401 NO_IDENTITY): a build before cybermonklabs/legion#5079 reads the proxy as the browser's person alone; give SWEEP_FULL_COOKIE\n`
         );
       }
+      expect(stdout).toMatch(/^ok {6}\/ws\/live: .* \(controls\)$/m);
+      expect(stdout).toContain(
+        "\nok      /ws/live agent view of {session_id}: no one answers for it (can fail)\n"
+      );
+      expect(directBy).toEqual(["token"]);
       expect(stdout).not.toContain("PASS");
       expect(verdictOf(stdout)).toBe(
         `UNKNOWN: nothing reached the member, but this run did not prove it, for the ${proxyReads().length} reasons above`

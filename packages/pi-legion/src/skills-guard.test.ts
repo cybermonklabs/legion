@@ -392,8 +392,7 @@ function countedOncePerFile(rule: string, relativePaths: string[]) {
 
 // R3: a forward merge brings instances from the base that the branch's own diff never shows, so a
 // merge can bring a new instance of a class the branch already answered. The implementer's merge
-// procedure carries the class search; the tester's prompt carries its own, which roles_test.go
-// pins.
+// procedure carries the class search.
 test("a forward merge searches the new head for each earlier finding's class", () => {
   expect(
     collapsed(path.join(staged, "legion-worker", "references", "conflicts-and-rewrites.md"))
@@ -557,10 +556,10 @@ test("the worker prompt tells a role to read the pull request's head after its o
     "about ten seconds after your push, again about ten seconds later, and a last time about thirty seconds after that, with a read that gives the pushed commit ending the step there and only the last read deciding a mismatch",
     "This read is of the pull request's own head and of no check, so the wait it makes is not a wait on CI",
     "an empty one when your work is complete",
-    "A new head is a different commit, so record each `before_merge` check again at the new head. A check carrying `ci_check` is CI's, so skip it.",
+    "The empty commit changes no file, so record each `before_merge` check again at the new head as carried from the commit before it (`skill://legion-worker/references/pr-body.md#what-a-result-is`), and run none of them again. A check carrying `ci_check` is CI's, so skip it.",
     "tell your architect the commit you pushed, the head each read gave and the time of each, and end the turn with a WAITING line naming that answer rather than completing: a phase completed here hands the next role a commit the pull request does not name.",
     "The push you make to answer an update message is the exception: that message has you push, let your subagents and background jobs finish or stop them, push what they made, answer the daemon and end the turn, so make this read in your next turn, before your phase completes.",
-    "The merger pushes nothing, so this step never falls to it; it reports a mismatch it sees to the architect.",
+    "The merger pushes only a merge of the base forward, and makes this read after that push as any role does; the results at the new head are the implementer's and the tester's to record, so it asks them as its part says, and it merges nothing until the pull request names its commit.",
     "the empty commit that carries the pull request onto the commit you pushed",
   ];
   for (const rule of step) {
@@ -578,7 +577,7 @@ test("the worker prompt tells a role to read the pull request's head after its o
     '`jj -R "$LEGION_WORKSPACE" log -r legion/<issue>@origin --no-graph -T commit_id`',
     workerPrompt
   );
-  countedOncePerFile("Create no commit and push nothing, a prose fix included", [
+  countedOncePerFile("Create no commit and push nothing", [
     "packages/daemon/internal/prompts/roles/reviewer.md",
   ]);
 });
@@ -661,4 +660,43 @@ test("the retro skill names the rating's fields, its refusals, its scale and its
   ]) {
     expect(retro).toContain(token);
   }
+});
+
+// INFRA-4673 R3: the code, a command's output and its `--help` win over a skill, and the sentence
+// that says so is said once per kind of session: in the role prompts, which the daemon's
+// prompts/code_precedence_test.go reads composed, and in the two agent definitions that load
+// skills into an agent no role prompt reaches. Each file that carries it carries it once.
+test("the code precedence sentence is once in each prompt part and agent definition that carries it", () => {
+  countedOncePerFile(
+    "If a skill disagrees with the code, a command's output or its `--help`, follow those and say which line of the skill is wrong.",
+    [
+      "packages/daemon/internal/prompts/go/worker-common.md",
+      "packages/daemon/internal/prompts/go/architect-common.md",
+      "packages/daemon/internal/prompts/go/controller-headless.md",
+      "packages/daemon/internal/prompts/go/controller-interactive.md",
+      "packages/pi-legion/agents/thermonuclear-code-quality.md",
+      "packages/pi-legion/agents/thermonuclear-deep-review.md",
+    ]
+  );
+});
+
+// INFRA-4673 R3: the role prompts and the two agent definitions carry the code precedence, so no
+// skill holds it, in those words or in others: a skill's copy would be a second one in every
+// session that loads the skill. Every Markdown file of the repository's skills/ is read, both
+// plugins' partitions, and the files that still hold one are listed by path.
+test("no skill holds a code precedence sentence; the role prompts and agent definitions carry it", () => {
+  const holding = files(repoSkillsRoot)
+    .filter((file) => file.endsWith(".md") && /disagrees? with the code/i.test(collapsed(file)))
+    .map((file) => path.relative(REPO_ROOT, file))
+    .sort();
+  expect(holding).toEqual([]);
+});
+
+// A decision in a document beside the issue, the task and the handoffs reaches no worker, because
+// no start task names that document. This shows the text ships, never that a role follows it.
+test("a worker's first step reads the issue, its task and the handoffs, and no other document for decisions", () => {
+  countedOncePerFile(
+    "Read the issue, then your task, then each earlier phase's handoff (`dispatch handoff-read --issue <issue> --phase <plan|implement|test|review>`). Your architect's decisions for you come in your task and your messages: read no other document for them.",
+    ["skills/legion-worker/SKILL.md"]
+  );
 });

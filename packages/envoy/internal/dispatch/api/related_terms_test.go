@@ -79,6 +79,7 @@ func addIssueComment(t *testing.T, handler http.Handler, issueKey, body string) 
 // A 10,000-word spec offers far more distinctive words than the keyword query may OR together;
 // the picker keeps relatedTermLimit of them.
 func TestRelatedTermsCapAt25(t *testing.T) {
+	t.Parallel()
 	handler, database, srv := relatedTermsServer(t)
 	createSuggestionProject(t, handler, "CAP")
 	var rare []string
@@ -107,6 +108,7 @@ func TestRelatedTermsCapAt25(t *testing.T) {
 // is what made the old query match thousands of rows; the picker leaves it out and keeps the rare
 // words beside it.
 func TestRelatedTermsDropAWordInMoreThanATenthOfTheProject(t *testing.T) {
+	t.Parallel()
 	handler, database, srv := relatedTermsServer(t)
 	createSuggestionProject(t, handler, "COMMON")
 	for index := range 110 {
@@ -136,6 +138,7 @@ func TestRelatedTermsDropAWordInMoreThanATenthOfTheProject(t *testing.T) {
 // Numbers, versions, dates and hashes match nothing related, so the picker never chooses them,
 // even where they are the rarest lexemes of the text.
 func TestRelatedTermsDropNumbersAndHexRuns(t *testing.T) {
+	t.Parallel()
 	handler, database, srv := relatedTermsServer(t)
 	createSuggestionProject(t, handler, "NOISE")
 	title := "Rollout 20261027 broke at deadbeefcafe1234 on 1.2.3"
@@ -157,6 +160,7 @@ func TestRelatedTermsDropNumbersAndHexRuns(t *testing.T) {
 // counted on its issue, its spec and its comment, is never picked, while it is for a check with
 // nothing excluded.
 func TestRelatedTermsLeaveOutAWordOnlyTheExcludedSourceHolds(t *testing.T) {
+	t.Parallel()
 	handler, database, srv := relatedTermsServer(t)
 	createSuggestionProject(t, handler, "OWN")
 	source := createSearchIssue(t, handler, "OWN", "Quixotic rollout plan", "The quixotic part.")
@@ -177,6 +181,7 @@ func TestRelatedTermsLeaveOutAWordOnlyTheExcludedSourceHolds(t *testing.T) {
 // A lexeme written since the last refresh has no statistics row; the picker probes it live,
 // leaving out the excluded source's items, and a hit counts as df 1.
 func TestRelatedTermsProbeLexemesWrittenSinceTheRefresh(t *testing.T) {
+	t.Parallel()
 	handler, database, srv := relatedTermsServer(t)
 	createSuggestionProject(t, handler, "PROBE")
 	createSearchIssue(t, handler, "PROBE", "Harbour crane schedule", "")
@@ -208,6 +213,7 @@ func TestRelatedTermsProbeLexemesWrittenSinceTheRefresh(t *testing.T) {
 
 // A project with no statistics is picked in probe mode, and the pick starts its refresh.
 func TestRelatedTermsProbeAProjectWithNoStatisticsAndStartItsRefresh(t *testing.T) {
+	t.Parallel()
 	handler, database, srv := relatedTermsServer(t)
 	createSuggestionProject(t, handler, "FRESH")
 	createSearchIssue(t, handler, "FRESH", "Lighthouse lens", "")
@@ -242,6 +248,7 @@ func TestRelatedTermsProbeAProjectWithNoStatisticsAndStartItsRefresh(t *testing.
 // The pick leaves out a term whose df would take the summed df past relatedMatchBudget, which
 // bounds the rows the keyword query matches.
 func TestRelatedTermsHoldToTheMatchBudget(t *testing.T) {
+	t.Parallel()
 	handler, database, srv := relatedTermsServer(t)
 	createSuggestionProject(t, handler, "BUDGET")
 	// Statistics of a project far larger than a test seeds: 100,000 items, so no df below is too
@@ -291,6 +298,7 @@ func summedDF(picked relatedTerms) int {
 // repeats outrank two rare words it names once, and once the first is chosen the second would pass
 // the budget, yet the rare words scored below it still fit and are chosen.
 func TestRelatedTermsSkipAWordPastTheMatchBudgetAndKeepTheRarerOnes(t *testing.T) {
+	t.Parallel()
 	handler, database, srv := relatedTermsServer(t)
 	createSuggestionProject(t, handler, "SKIP")
 	// 20,000 items: a tenth is 2,000, so none of these is too common.
@@ -310,6 +318,7 @@ func TestRelatedTermsSkipAWordPastTheMatchBudgetAndKeepTheRarerOnes(t *testing.T
 // scoring first, it is skipped and the rare words are still chosen, where stopping at it chose
 // nothing.
 func TestRelatedTermsSkipASingleWordPastTheMatchBudget(t *testing.T) {
+	t.Parallel()
 	handler, database, srv := relatedTermsServer(t)
 	createSuggestionProject(t, handler, "LONE")
 	// 100,000 items: a tenth is 10,000, so a df of 5,000 is not too common but passes 3,000.
@@ -327,6 +336,7 @@ func TestRelatedTermsSkipASingleWordPastTheMatchBudget(t *testing.T) {
 
 // The refresh reads each document at its latest version only, as search does, and counts it once.
 func TestRelatedTermsRefreshCountsADocumentOnceAtItsLatestVersion(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := relatedTermsServer(t)
 	issue := createInteractionIssue(t, handler, "VERS", "Instruments", "The astrolabe measures altitude.\n")
 	edit := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
@@ -382,6 +392,7 @@ func TestRelatedTermsRefreshCountsADocumentOnceAtItsLatestVersion(t *testing.T) 
 // The pick's tsquery is cast as it stands (relatedQOpener) and, through search's own keyword
 // body, finds the items holding the chosen words and none holding only words it left out.
 func TestRelatedTermsQueryCastsAndMatchesTheItemsHoldingTheChosenWords(t *testing.T) {
+	t.Parallel()
 	handler, database, srv := relatedTermsServer(t)
 	createSuggestionProject(t, handler, "CAST")
 	walrus := createSearchIssue(t, handler, "CAST", "Walrus migration", "")
@@ -424,6 +435,7 @@ func TestRelatedTermsQueryCastsAndMatchesTheItemsHoldingTheChosenWords(t *testin
 // spec's words are never mapped, which is what keeps a 10,000-word spec's pick fast. The title
 // chooses no term: the same text picks the same lexemes with no title at all.
 func TestRelatedTermsSurfacesComeFromTheTitleAlone(t *testing.T) {
+	t.Parallel()
 	handler, database, srv := relatedTermsServer(t)
 	createSuggestionProject(t, handler, "SURF")
 	createSearchIssue(t, handler, "SURF", "Walrus migration", "")
@@ -454,6 +466,7 @@ func TestRelatedTermsSurfacesComeFromTheTitleAlone(t *testing.T) {
 // A text with no lexeme, blank or stopwords alone, says so, so the check can answer that it made
 // no search.
 func TestRelatedTermsSayATextHoldsNoLexeme(t *testing.T) {
+	t.Parallel()
 	handler, _, srv := relatedTermsServer(t)
 	createSuggestionProject(t, handler, "EMPTY")
 	for _, text := range []string{"", "   ", "the and of it"} {
@@ -464,29 +477,40 @@ func TestRelatedTermsSayATextHoldsNoLexeme(t *testing.T) {
 	}
 }
 
-// The picker tokenizes a text in the order a document version's vector is built: search_text,
-// then the ask blocks stripped. Underscore runs either side of an ask block written inline join
-// once the block is stripped; search_text applied before leaves the joined run whole, a host name
-// the stored vector holds as one lexeme, while applied after it breaks the run into words no
-// stored vector holds.
+// The picker tokenizes a text as a document version's vector is built: the ask blocks removed,
+// then search_text, both through search_document_text. Underscore runs either side of an ask block
+// written inline join once the block is removed, and search_text then breaks the joined run after
+// its sixteenth segment as it breaks any other: the stored vector holds the run's sixteen words and
+// the host name after them, and no host name of the whole run, and the picker reads the same.
+// Applied in the other order, search_text left the joined run whole and handed the parser a run
+// nothing had broken.
 func TestRelatedTermsTokenizeATextAsADocumentVersionsVectorIsBuilt(t *testing.T) {
+	t.Parallel()
 	handler, database, srv := relatedTermsServer(t)
 	createSuggestionProject(t, handler, "ORDER")
 	// The block splits a segment, so no underscore meets it, which the stored markdown would
 	// escape: stripped, "al" and "pha_" join into the run's ninth segment.
+	const inline = "al:::ask{#x} Which? :::pha_"
 	document := createProjectDocument(t, handler, "ORDER", "run-notes.md",
-		strings.Repeat("alpha_", 8)+"al:::ask{#x} Which? :::pha_"+strings.Repeat("alpha_", 7)+"beta.example.com\n")
+		strings.Repeat("alpha_", 8)+inline+strings.Repeat("alpha_", 7)+"beta.example.com\n")
 	refreshTermStats(t, database, "ORDER")
 	var markdown string
 	var stored []string
+	var alphas int
 	if err := database.Pool.QueryRow(context.Background(), `
-		select markdown, tsvector_to_array(search) from artifact_versions
-		 where artifact_id = $1 order by number desc limit 1`, document.ID).Scan(&markdown, &stored); err != nil {
+		select markdown, tsvector_to_array(search),
+		       coalesce((select array_length(u.positions, 1) from unnest(search) u where u.lexeme = 'alpha'), 0)
+		  from artifact_versions
+		 where artifact_id = $1 order by number desc limit 1`, document.ID).Scan(&markdown, &stored, &alphas); err != nil {
 		t.Fatalf("read the document's version: %v", err)
 	}
-	host := strings.Repeat("alpha_", 16) + "beta.example.com"
-	if !slices.Contains(stored, host) {
-		t.Fatalf("stored vector %v of %q holds no %q: the version does not keep the inline block inside the run", stored, markdown, host)
+	if !strings.Contains(markdown, inline) {
+		t.Fatalf("stored markdown %q does not keep the inline block inside the run", markdown)
+	}
+	const host = "beta.example.com"
+	if joined := strings.Repeat("alpha_", 16) + host; slices.Contains(stored, joined) || !slices.Contains(stored, host) || alphas != 16 {
+		t.Fatalf("stored vector %v of %q, %d positions of alpha: want 16 of alpha and %q, and not %q, the run broken after its sixteenth segment",
+			stored, markdown, alphas, host, joined)
 	}
 
 	picked := pickTerms(t, srv, "ORDER", markdown, relatedExclusion{})

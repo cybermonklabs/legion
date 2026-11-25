@@ -130,11 +130,12 @@ var settingsEmitted = map[string]string{
 	"MetadataConfig.IdentityProvider":                "runtime.kubernetes.sandbox.microvm.metadata.identity_provider",
 	"Kubernetes.MemoryGuard":                         "runtime.kubernetes.memory_guard",
 	"MemoryGuardConfig.IssuePods":                    "runtime.kubernetes.memory_guard.issue_pods",
-	"MemoryGuardPodConfig.Enabled":                   "runtime.kubernetes.memory_guard.issue_pods.enabled",
-	"MemoryGuardPodConfig.ActPercent":                "runtime.kubernetes.memory_guard.issue_pods.act_percent",
-	"MemoryGuardPodConfig.FloorPercent":              "runtime.kubernetes.memory_guard.issue_pods.floor_percent",
-	"MemoryGuardPodConfig.WaitSeconds":               "runtime.kubernetes.memory_guard.issue_pods.wait_seconds",
-	"MemoryGuardPodConfig.IntervalMilliseconds":      "runtime.kubernetes.memory_guard.issue_pods.interval_milliseconds",
+	"MemoryGuardConfig.ControllerPod":                "runtime.kubernetes.memory_guard.controller_pod",
+	"MemoryGuardPodConfig.Enabled":                   "runtime.kubernetes.memory_guard.<pod>.enabled",
+	"MemoryGuardPodConfig.ActPercent":                "runtime.kubernetes.memory_guard.<pod>.act_percent",
+	"MemoryGuardPodConfig.FloorPercent":              "runtime.kubernetes.memory_guard.<pod>.floor_percent",
+	"MemoryGuardPodConfig.WaitSeconds":               "runtime.kubernetes.memory_guard.<pod>.wait_seconds",
+	"MemoryGuardPodConfig.IntervalMilliseconds":      "runtime.kubernetes.memory_guard.<pod>.interval_milliseconds",
 	"Kubernetes.VolumeTrim":                          "runtime.kubernetes.volume_trim",
 	"VolumeTrimConfig.Enabled":                       "runtime.kubernetes.volume_trim.enabled",
 	"VolumeTrimConfig.HighPercent":                   "runtime.kubernetes.volume_trim.high_percent",
@@ -234,6 +235,7 @@ var settingsExcluded = map[string]string{
 	"Hook.Prompt":                     "the words a hook puts in front of its roles, which the deployment writes for its own agents and no pod needs to read from a route that authenticates nobody; `hooks[].prompt_file` carries the path of the file the other form holds them in, as `instructions` carries a path and never its text",
 	"Variant.ConfigFilesField":        "derived: the key an operator wrote the arm's `config_files` under, built by config.Project.ExperimentsDeclared from the project key and the names beside it, which the settings already carry",
 	"Variant.MemoryBlock":             "derived: whether the arm is the `memory` block's rather than the `experiments` key's, set by config.Project.ExperimentsDeclared, which the settings already tell by carrying the block under `memory` and the key under `experiments`",
+	"Config.Revision":                 "not a setting: the commit this binary was built from, which `legion start` sets from cmd/legion's link-time revision and no legion.yaml key names",
 }
 
 // Every exported field of every struct the walk reaches (settingsConfigTypes) is named in exactly
@@ -286,6 +288,23 @@ func TestTheTmuxSettingsShowTheTakeOver(t *testing.T) {
 		if string(encoded) != tc.want {
 			t.Errorf("tmuxSettingsOf(%+v) = %s, want %s", tc.block, encoded, tc.want)
 		}
+	}
+}
+
+// The memory_guard block shows each pod kind's own settled block under its own key: different
+// numbers in the two come out each under its kind, and one kind off leaves the other on.
+func TestTheMemoryGuardSettingsShowEachPodKindsOwnBlock(t *testing.T) {
+	encoded, err := json.Marshal(kubernetesSettingsOf(&config.Kubernetes{MemoryGuard: config.MemoryGuardConfig{
+		IssuePods:     config.MemoryGuardPodConfig{Enabled: true, ActPercent: 80, FloorPercent: 15, WaitSeconds: 8, IntervalMilliseconds: 250},
+		ControllerPod: config.MemoryGuardPodConfig{Enabled: false, ActPercent: 70, FloorPercent: 20, WaitSeconds: 9, IntervalMilliseconds: 400},
+	}}).MemoryGuard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"issue_pods":{"enabled":true,"act_percent":80,"floor_percent":15,"wait_seconds":8,"interval_milliseconds":250},` +
+		`"controller_pod":{"enabled":false,"act_percent":70,"floor_percent":20,"wait_seconds":9,"interval_milliseconds":400}}`
+	if string(encoded) != want {
+		t.Errorf("settings.runtime.kubernetes.memory_guard = %s, want %s", encoded, want)
 	}
 }
 
@@ -371,10 +390,12 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 		"idle_minutes", "backstop_minutes",
 	})
 	memoryGuardKeys := keysOf(t, kubernetesKeys["memory_guard"])
-	assertKeys(t, "settings.runtime.kubernetes.memory_guard", memoryGuardKeys, []string{"issue_pods"})
-	assertKeys(t, "settings.runtime.kubernetes.memory_guard.issue_pods", keysOf(t, memoryGuardKeys["issue_pods"]), []string{
-		"enabled", "act_percent", "floor_percent", "wait_seconds", "interval_milliseconds",
-	})
+	assertKeys(t, "settings.runtime.kubernetes.memory_guard", memoryGuardKeys, []string{"issue_pods", "controller_pod"})
+	for _, kind := range []string{"issue_pods", "controller_pod"} {
+		assertKeys(t, "settings.runtime.kubernetes.memory_guard."+kind, keysOf(t, memoryGuardKeys[kind]), []string{
+			"enabled", "act_percent", "floor_percent", "wait_seconds", "interval_milliseconds",
+		})
+	}
 	assertKeys(t, "settings.runtime.kubernetes.repository_cache", keysOf(t, kubernetesKeys["repository_cache"]), []string{
 		"volume", "refresh_minutes", "retain_hours", "resources",
 	})

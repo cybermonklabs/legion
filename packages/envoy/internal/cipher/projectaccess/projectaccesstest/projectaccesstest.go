@@ -172,8 +172,8 @@ func (s *Server) SetMemberKind(person, kind string) {
 }
 
 // SetRepositories makes the list project's issues resolve to, which the repository route answers,
-// a copy of list from now on; an empty list is answered as []. The project's mapped list, which
-// the membership answer carries, does not change.
+// a copy of list from now on; an empty list is answered as []. The membership answer's own list
+// of the project does not change.
 func (s *Server) SetRepositories(project string, list []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

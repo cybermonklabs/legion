@@ -42,9 +42,9 @@
 #                      127905818541 of the run that read them (2026-11-06). So the test is the
 #                      field's shape: a prefix or an empty field is a post, and a UUID is a job's
 #                      own check run.
-#   GH_RETRY_SECONDS   optional: a refused or failed post is retried twice on gh-read.sh's one
-#                      ladder, this many seconds and then twice as many apart (10 by default; the
-#                      tests set 0), then fails the step.
+#   GH_RETRY_SECONDS   optional: a refused post is retried twice on gh-read.sh's one ladder, this
+#                      many seconds and then twice as many apart (10 by default; the tests set 0),
+#                      then fails the step (gh-read.sh says how it waits out a spent API budget).
 #
 # Run from anywhere: HEAD_SHA=... CHECK_NAME=... CONCLUSION=... TITLE=... SUMMARY_FILE=...
 #   DETAILS_URL=... EXTERNAL_ID=... .github/scripts/post-check-run.sh
@@ -89,5 +89,5 @@ if posted=$(gh_read gh api --method POST "repos/$GITHUB_REPOSITORY/check-runs" -
   echo "posted $CHECK_NAME ($CONCLUSION) on $HEAD_SHA: $posted"
   exit 0
 fi
-echo "::error::GitHub refused the $CHECK_NAME check run on $HEAD_SHA three times"
+echo "::error::GitHub refused the $CHECK_NAME check run on $HEAD_SHA at every attempt gh-read.sh made"
 exit 1

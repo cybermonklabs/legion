@@ -284,6 +284,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/issue-page-k.e2e.ts` | the view orders the plan's blocks and needs the server stored |
 | `e2e/issue-page-look.e2e.ts` | its rows read the Dispatch server's content type for the font file, its /THIRD_PARTY_NOTICES.txt, and the issue.page preference under a real sign-in |
 | `e2e/issue-page-p.e2e.ts` | each row writes the header's issue, its questions and its approval requests through the server and reads back what the header's controls write: the title, the status, the priority, the pin and an approval |
+| `e2e/issue-page-q.e2e.ts` | the server's decisions read sorts the view; a sent Change is re-read |
 | `e2e/issue-page-switch.e2e.ts` | the setting is kept under the login the server's sign-in names, and one row signs a second login in on the same context to read that it holds none; one row reads the server's 404 for a key it does not hold |
 | `e2e/issue-page-v.e2e.ts` | the rows record and withdraw results and file a child through the server, and the view draws its coverage and results reads |
 | `e2e/issue.e2e.ts` | asserts the fake Envoy's state across resets; status writes re-read; writes persisted and re-read |
@@ -349,7 +350,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/result-commit.e2e.ts` | the result line is read in the document margin's Pinned tab |
 | `e2e/search-tiers.e2e.ts` | its claim is the number of embeddings the server asks the fake embedder for, counted on the server's own calls |
 | `e2e/search.e2e.ts` | the server's search hits; the server's answer for the query |
-| `e2e/settings.e2e.ts` | mappings, defaults and architecture sources saved, refused and re-read |
+| `e2e/settings.e2e.ts` | project defaults and architecture sources saved, refused and re-read |
 | `e2e/shell.e2e.ts` | the server must revoke the session |
 | `e2e/signins.e2e.ts` | the broker's machine list and a Revoke decided there |
 | `e2e/smoke.e2e.ts` | the reader nobody signed in, where the stubbed layer's page is always signed in because its recording answers /auth/whoami |

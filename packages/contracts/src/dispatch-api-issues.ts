@@ -130,11 +130,12 @@ export const issueFields = {
   components: IssueComponentsSchema,
   external_links: z.array(ExternalLinkSchema),
   route: z.string().nullable(),
-  /** The issue's own repository, owner/name: any repository GitHub could hold, whether or not a
-   *  project maps it; null when it inherits. */
+  /** The issue's own repository, owner/name: any repository GitHub could hold. Null when the
+   *  issue names none of its own. */
   repo: z.string().nullable(),
   /** The repository Dispatch resolves for the issue: its own, else its nearest ancestor's, else the
-   *  project's default mapping, else null. Legion records it when it first records the issue. */
+   *  project's default repository (`Project.default_repo`), else null. Legion records it when it
+   *  first records the issue. */
   resolved_repo: z.string().nullable(),
   /** Null for issues created before Dispatch recorded their creator. */
   created_by: ActorSchema.nullable(),

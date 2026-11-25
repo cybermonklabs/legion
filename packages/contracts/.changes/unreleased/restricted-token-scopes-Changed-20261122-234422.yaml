@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  The Dispatch HTTP API document says that a restricted member's personal token holds no scope and
+  lists exactly one project they see: `POST /api/v1/me/agent-tokens` and
+  `PATCH /api/v1/me/agent-tokens/{id}` answer `403 RESTRICTED_MEMBER` to such a member's body asking
+  for a scope or for another list, and `GET /api/v1/me/agent-tokens` lists such a token holding no
+  scope. `GET /api/v1/whoami` says every token of a restricted member holds none, and the
+  machine-login lookup, approve, deny and revoke, the machine-login list and the dismissal say a
+  token of theirs is `403 OAUTH_SCOPE_REQUIRED` there.
+time: 2026-11-22T23:44:22Z
+custom:
+    Issue: restricted-token-scopes

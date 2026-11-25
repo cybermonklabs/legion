@@ -29,6 +29,21 @@ const (
 	seedCarol   = "carol@example.com"
 )
 
+// storeRepoMapping writes one repo_projects row as the last release that wrote the mapping left
+// it: no route writes the mapping now (`PUT /api/v1/settings/repo-projects/{owner}/{repo}` is
+// gone), but the read-only list still answers its rows, by the projects its caller sees. isDefault
+// is the row's own flag; a project's default repository is projects.default_repo, which
+// PUT /api/v1/projects/{key}/default-repository writes.
+func storeRepoMapping(t *testing.T, database *store.Store, repo, project string, isDefault bool) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into repo_projects (repo, project, is_default, created_by)
+		values ($1, $2, $3, '{"kind":"user","id":"carol@example.com"}')
+	`, repo, project, isDefault); err != nil {
+		t.Fatalf("store the mapping of %s to %s: %v", repo, project, err)
+	}
+}
+
 // privateCaller is one caller of verification v16, by the name a failure prints.
 type privateCaller string
 

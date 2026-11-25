@@ -30,10 +30,6 @@ const (
 	probeMachineLogin      probeObject = "machine-login"      // a machine login's id at the secrets broker
 	probeSignin            probeObject = "signin"             // a sign-in's id at the secrets broker
 	probeStep              probeObject = "step"               // a step record's id: the uuid the Legion daemon derives for a run
-	// probeMappedRepository is the name of a repository a project's mapping holds, which an
-	// issue's external reference names (bodyReferences). Its missing side is a name no mapping
-	// holds.
-	probeMappedRepository probeObject = "mapped-repository"
 )
 
 // Probes the write rows share, beside the read rows' (byIssue, byProject, byDocument, bySession).
@@ -93,6 +89,7 @@ var writeProbes = map[string]writeProbe{
 	"DELETE /api/v1/projects/{key}/access/groups/{name}":                   {readProbe{"key": probeProject, "name": probeGroup}, ""},
 	"PUT /api/v1/projects/{key}/gated-steps":                               {byProject, `{` + probeActor + `,"steps":[]}`},
 	"PUT /api/v1/projects/{key}/legion/daemon":                             {byProject, `{` + probeActor + `,"state_url":"http://legion-walked.internal"}`},
+	"PUT /api/v1/projects/{key}/default-repository":                        {byProject, `{` + probeActor + `,"repo":"acme/walked"}`},
 	"DELETE /api/v1/projects/{key}/legion/daemon":                          {byProject, ""},
 	"PUT /api/v1/projects/{key}/architecture-sources/{owner}/{repo}":       {byArchitecture, `{` + probeActor + `,"branch":"main"}`},
 	"DELETE /api/v1/projects/{key}/architecture-sources/{owner}/{repo}":    {byArchitecture, `{` + probeActor + `}`},
@@ -183,8 +180,6 @@ type noProjectWrite struct {
 // is scopeDeployment, which refuses every caller that is not open, and the acceptance driver holds
 // each row to that refusal for every such caller (RouteProbe.NoProject).
 var noProjectWrites = map[string]noProjectWrite{
-	"PUT /api/v1/access-groups/{name}":                     {"an access group is the deployment's, which no project owns", `{"members":[]}`},
-	"DELETE /api/v1/access-groups/{name}":                  {"an access group is the deployment's, which no project owns", ""},
-	"PUT /api/v1/settings/repo-projects/{owner}/{repo}":    {"a repository mapping is the deployment's, keyed by a repository no project owns", `{"project":"PUB"}`},
-	"DELETE /api/v1/settings/repo-projects/{owner}/{repo}": {"a repository mapping is the deployment's, keyed by a repository no project owns", ""},
+	"PUT /api/v1/access-groups/{name}":    {"an access group is the deployment's, which no project owns", `{"members":[]}`},
+	"DELETE /api/v1/access-groups/{name}": {"an access group is the deployment's, which no project owns", ""},
 }

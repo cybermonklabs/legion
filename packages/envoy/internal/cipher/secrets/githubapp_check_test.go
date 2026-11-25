@@ -17,7 +17,7 @@ import (
 // gitHubCheckStand is the GitHub a check is driven against: the stand-in of
 // internal/cipher/proxyrules/proxyrulestest, on a plain (http) service of its own, with the App
 // installed on acme-org (1) and ada (2). It is that stand-in rather than this package's own
-// narrowingGitHub because it serves the read a released token is spent at and its revoke route
+// profileGitHub because it serves the read a released token is spent at and its revoke route
 // forgets the token it revoked, so a read made with a token afterwards is refused as any other
 // credential of nobody's: that is how a check's promise to hold no token past GitHub's answer is
 // read below, rather than from the revoke call alone.
@@ -62,19 +62,22 @@ func errorText(err error) string {
 	return err.Error()
 }
 
-// TestAGitHubAppCheckOfANarrowingBeforeApprovalReleasesNoToken: secrets.MintRequest.Check is what
-// the broker asks this minter before anybody is asked to approve a narrowed request, and it
-// promises the release's verdict without the release. For each answer GitHub gives a narrowing
-// that names repositories or read-only, it makes the calls the release makes, in the same order,
-// and adds the revoke of every token GitHub answered with; it hands back no value at all, and
-// the error it answers is the one the release answered. A token a check minted is dead by the
-// time it returns: the stand-in forgets a token it revoked, so the read a released token is spent
-// at is refused with it. A narrowing to its owner alone is checked from the installations
-// listing alone: the check sends no token request, so GitHub holds no token with every
-// permission of the installation for it, and it still refuses an account the App has no
-// installation on. A check that names no narrowing is a programming error, refused before GitHub
-// is asked anything.
-func TestAGitHubAppCheckOfANarrowingBeforeApprovalReleasesNoToken(t *testing.T) {
+// TestAGitHubAppCheckOfAProfileBeforeApprovalReleasesNoToken: secrets.MintRequest.Check is what
+// the broker asks this minter before anybody is asked to approve a request for a github-app
+// profile, and it promises the release's verdict without the release. For each answer GitHub
+// gives a profile's scope, of named repositories or of every repository the installation
+// reaches, it makes the calls the release makes, in the same order, and adds the revoke of every
+// token GitHub answered with: a scope of every repository is minted and revoked too, since every
+// token request names the profile's permissions and GitHub's answer can refuse them. It hands
+// back no value at all, nor the entries the cut left out, and the error it answers is the one the
+// release answered. A token a check minted is dead by the time it returns: the stand-in forgets
+// a token it revoked, so the read a released token is spent at is refused with it. A scope whose
+// account the App has no installation on, and one whose permissions the installation holds none
+// of but metadata, are refused from the installations listing alone, before any token request,
+// as the two refusals the broker refuses a request for besides GitHub's 422
+// (secrets.ErrMintNoInstallation and secrets.ErrMintEmptyCut). A check that carries no scope is
+// a programming error, refused before GitHub is asked anything.
+func TestAGitHubAppCheckOfAProfileBeforeApprovalReleasesNoToken(t *testing.T) {
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -82,9 +85,17 @@ func TestAGitHubAppCheckOfANarrowingBeforeApprovalReleasesNoToken(t *testing.T) 
 	service, stand := gitHubCheckStand(t)
 	app := secrets.GitHubApp{Base: service.URL(), HTTP: http.DefaultClient}
 	value := githubAppValue(t, "123456", key)
-	// grace is an account the github-owners tag lists and the App is not installed on.
-	owners := []string{"acme-org", "ada", "grace"}
-	lean := &secrets.GitHubNarrowing{Owner: "ada", Repositories: []string{"lean"}, ReadOnly: true}
+	lean := readScope("ada")
+	lean.Repositories = []string{"ada/lean"}
+	// leanWithIssues asks for issues too, which the stand-in's installation does not hold, so the
+	// cut leaves it out and the release names it.
+	leanWithIssues := readScope("ada")
+	leanWithIssues.Repositories = []string{"ada/lean"}
+	leanWithIssues.Permissions = map[string]string{"contents": "read", "issues": "write", "metadata": "read"}
+	// administration is a permission the stand-in's installation does not hold at all, so the cut
+	// keeps metadata alone, which every installation holds: an empty cut.
+	noneHeld := readScope("ada")
+	noneHeld.Permissions = map[string]string{"administration": "write", "metadata": "read"}
 	const (
 		installations = "GET /app/installations"
 		tokenRequest  = "POST /app/installations/2/access_tokens"
@@ -92,39 +103,40 @@ func TestAGitHubAppCheckOfANarrowingBeforeApprovalReleasesNoToken(t *testing.T) 
 	)
 
 	for _, tc := range []struct {
-		name      string
-		narrowing *secrets.GitHubNarrowing
+		name  string
+		scope *secrets.GitHubScope
 		// answer is what the stand-in answers each token request with while this row runs.
 		answer proxyrulestest.GitHubAnswer
-		class  string // the class of the error the release answers, "" where it serves the narrowing
-		// noInstallation is whether that error is the App with no installation on the account
-		// (secrets.ErrMintNoInstallation), the one refusal of GitHub's the broker refuses a
-		// request for besides the narrowing's own.
-		noInstallation bool
-		releaseCalls   []string // the calls the release makes to GitHub
-		checkCalls     []string // the calls the check makes
+		class  string // the class of the error the release answers, "" where it serves the scope
+		// wraps is the one of the two refusals the broker refuses a request for before GitHub
+		// is asked for a token (secrets.ErrMintNoInstallation, secrets.ErrMintEmptyCut) that
+		// error wraps, and nil for neither.
+		wraps error
+		// leftOut is what the release says the cut left out.
+		leftOut      map[string][]string
+		releaseCalls []string // the calls the release makes to GitHub
+		checkCalls   []string // the calls the check makes
 	}{
 		{
-			name:         "a narrowing GitHub serves",
-			narrowing:    lean,
+			name:         "a scope GitHub serves",
+			scope:        lean,
 			answer:       proxyrulestest.GitHubAnswer{Mode: proxyrulestest.GitHubTokensOrdinary},
 			releaseCalls: []string{installations, tokenRequest},
 			checkCalls:   []string{installations, tokenRequest, revoke},
 		},
 		{
-			name:      "a narrowing GitHub refuses",
-			narrowing: lean,
-			// The read-only half asks for the reads the installation holds in the one token
-			// request, which this answer refuses, so neither run holds a token and neither
-			// revokes one.
+			name:  "a scope GitHub refuses",
+			scope: lean,
+			// The one token request is refused, so neither run holds a token and neither revokes
+			// one.
 			answer:       proxyrulestest.GitHubAnswer{Mode: proxyrulestest.GitHubTokensRefused},
 			class:        "narrowing",
 			releaseCalls: []string{installations, tokenRequest},
 			checkCalls:   []string{installations, tokenRequest},
 		},
 		{
-			name:      "a token GitHub mints wider than the narrowing",
-			narrowing: lean,
+			name:  "a token GitHub mints wider than the scope",
+			scope: lean,
 			// The release revokes the token it will not hand over, and the check revokes the
 			// same token before it judges it, so the two make the same calls.
 			answer:       proxyrulestest.GitHubAnswer{Mode: proxyrulestest.GitHubTokensWider},
@@ -133,22 +145,40 @@ func TestAGitHubAppCheckOfANarrowingBeforeApprovalReleasesNoToken(t *testing.T) 
 			checkCalls:   []string{installations, tokenRequest, revoke},
 		},
 		{
-			name:      "a narrowing to an account alone, which the App is installed on",
-			narrowing: &secrets.GitHubNarrowing{Owner: "ada"},
-			// The release asks for the token with no body. The check asks for none: GitHub's
-			// answer to such a request could refuse the App but never the narrowing.
+			name:  "a scope of every repository of an account the App is installed on",
+			scope: readScope("ada"),
+			// The check asks for the token as the release does, with the profile's permissions,
+			// and revokes it: GitHub's answer to that request can refuse the permissions.
 			answer:       proxyrulestest.GitHubAnswer{Mode: proxyrulestest.GitHubTokensOrdinary},
 			releaseCalls: []string{installations, tokenRequest},
+			checkCalls:   []string{installations, tokenRequest, revoke},
+		},
+		{
+			name:         "a scope the cut leaves part of",
+			scope:        leanWithIssues,
+			answer:       proxyrulestest.GitHubAnswer{Mode: proxyrulestest.GitHubTokensOrdinary},
+			leftOut:      map[string][]string{"ada": {"issues"}},
+			releaseCalls: []string{installations, tokenRequest},
+			checkCalls:   []string{installations, tokenRequest, revoke},
+		},
+		{
+			// grace is an account the App is not installed on.
+			name:         "a scope of an account the App is not installed on",
+			scope:        readScope("grace"),
+			answer:       proxyrulestest.GitHubAnswer{Mode: proxyrulestest.GitHubTokensOrdinary},
+			class:        "refused",
+			wraps:        secrets.ErrMintNoInstallation,
+			releaseCalls: []string{installations},
 			checkCalls:   []string{installations},
 		},
 		{
-			name:           "a narrowing to an account alone, which the App is not installed on",
-			narrowing:      &secrets.GitHubNarrowing{Owner: "grace"},
-			answer:         proxyrulestest.GitHubAnswer{Mode: proxyrulestest.GitHubTokensOrdinary},
-			class:          "refused",
-			noInstallation: true,
-			releaseCalls:   []string{installations},
-			checkCalls:     []string{installations},
+			name:         "a scope whose permissions the installation holds none of but metadata",
+			scope:        noneHeld,
+			answer:       proxyrulestest.GitHubAnswer{Mode: proxyrulestest.GitHubTokensOrdinary},
+			class:        "narrowing",
+			wraps:        secrets.ErrMintEmptyCut,
+			releaseCalls: []string{installations},
+			checkCalls:   []string{installations},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -163,14 +193,27 @@ func TestAGitHubAppCheckOfANarrowingBeforeApprovalReleasesNoToken(t *testing.T) 
 				seen = len(requests)
 				return made
 			}
+			// wrapsAsWanted is whether err wraps the refusal the row names of the two, and not
+			// the other.
+			wrapsAsWanted := func(err error) bool {
+				for _, refusal := range []error{secrets.ErrMintNoInstallation, secrets.ErrMintEmptyCut} {
+					if errors.Is(err, refusal) != (tc.wraps == refusal) {
+						return false
+					}
+				}
+				return true
+			}
 
-			release, releaseErr := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: owners, GitHubNarrowing: tc.narrowing})
+			release, releaseErr := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHub: tc.scope})
 			class := ""
 			if releaseErr != nil {
 				class = secrets.MintErrorClass(releaseErr)
 			}
-			if class != tc.class || errors.Is(releaseErr, secrets.ErrMintNoInstallation) != tc.noInstallation {
-				t.Fatalf("the release answered %v (class %q), want class %q, the App with no installation %t", releaseErr, class, tc.class, tc.noInstallation)
+			if class != tc.class || !wrapsAsWanted(releaseErr) {
+				t.Fatalf("the release answered %v (class %q), want class %q wrapping %v", releaseErr, class, tc.class, tc.wraps)
+			}
+			if !reflect.DeepEqual(release.LeftOut, tc.leftOut) {
+				t.Fatalf("the release says the cut left out %v, want %v", release.LeftOut, tc.leftOut)
 			}
 			if made := callsSince(); !reflect.DeepEqual(made, tc.releaseCalls) {
 				t.Fatalf("the release made the calls %v, want %v", made, tc.releaseCalls)
@@ -190,12 +233,12 @@ func TestAGitHubAppCheckOfANarrowingBeforeApprovalReleasesNoToken(t *testing.T) 
 				seen = len(service.Requests())
 			}
 
-			checked, checkErr := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: owners, GitHubNarrowing: tc.narrowing, Check: true})
-			if errorText(checkErr) != errorText(releaseErr) || errors.Is(checkErr, secrets.ErrMintNoInstallation) != tc.noInstallation {
+			checked, checkErr := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHub: tc.scope, Check: true})
+			if errorText(checkErr) != errorText(releaseErr) || !wrapsAsWanted(checkErr) {
 				t.Fatalf("the check answered %v, want the release's own answer, %v", checkErr, releaseErr)
 			}
-			if checked.Value != "" || !checked.Expires.IsZero() {
-				t.Fatalf("the check handed back %q, expiring %v; want no value at all", checked.Value, checked.Expires)
+			if checked.Value != "" || !checked.Expires.IsZero() || checked.LeftOut != nil {
+				t.Fatalf("the check handed back %q, expiring %v, leaving out %v; want no value at all", checked.Value, checked.Expires, checked.LeftOut)
 			}
 			if made := callsSince(); !reflect.DeepEqual(made, tc.checkCalls) {
 				t.Fatalf("the check made the calls %v, want %v", made, tc.checkCalls)
@@ -211,11 +254,11 @@ func TestAGitHubAppCheckOfANarrowingBeforeApprovalReleasesNoToken(t *testing.T) 
 		})
 	}
 
-	t.Run("a check that names no narrowing", func(t *testing.T) {
+	t.Run("a check that carries no scope", func(t *testing.T) {
 		seen := len(service.Requests())
-		checked, err := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: owners, Check: true})
-		if checked.Value != "" || secrets.MintErrorClass(err) != "refused" || !strings.Contains(err.Error(), "narrowing") {
-			t.Fatalf("a check with no narrowing = %q, %v (class %s); want nothing released and class refused, naming the narrowing",
+		checked, err := app.Mint(t.Context(), secrets.MintRequest{Value: value, Check: true})
+		if checked.Value != "" || secrets.MintErrorClass(err) != "refused" || !strings.Contains(err.Error(), "scope") {
+			t.Fatalf("a check with no scope = %q, %v (class %s); want nothing released and class refused, naming the scope",
 				checked.Value, err, secrets.MintErrorClass(err))
 		}
 		if made := service.Requests()[seen:]; len(made) != 0 {

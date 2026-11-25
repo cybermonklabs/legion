@@ -22,15 +22,14 @@ import (
 // A member held at admitted is handed over whatever becomes, during the linger, of the ancestor
 // that held it. The tree is the spec's own: a root R waiting for its children, a child C whose
 // own reviewed head the daemon has accepted, and a grandchild G a person moved to todo under C,
-// which the daemon recorded at admitted and told C's architect starts once C has closed
+// which the daemon recorded at admitted and held there while C stood in retro or merging
 // (record.HeldUnderAccepted). A person closes R by hand, and the tree lingers.
 //
 // An ancestor below the root does not keep its phase through that linger: C's pull request still
 // merges, a person still moves C to done or to backlog, and record.OpenBeneath leaves G out of
 // the wait any of them read, so nothing stops them. Decided from the hold, the expiry then read
-// G as held by nobody and left it todo at admitted in a closed tree, with its architect told it
-// would start. Decided from G's own state — in the workflow and never started — the hand-over
-// is the same in all four, which is what the architect's notice promised.
+// G as held by nobody and left it todo at admitted in a closed tree for ever. Decided from G's
+// own state — in the workflow and never started — the hand-over is the same in all four.
 func TestTheHeldGrandchildIsHandedOverWhateverBecomesOfItsAcceptedParent(t *testing.T) {
 	root, child, held := "LEGION-208", "LEGION-209", "LEGION-210"
 	for _, during := range []struct {

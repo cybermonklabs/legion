@@ -1126,10 +1126,15 @@ run_spec() {
   seed_ts capture-spec "$R/fixture.json" "$R"
 }
 
-# The judge's two profiles, under $work/judge-profiles/<kind>, each its own HOME made by
-# make_omp_home with the model route install_model_route installs and no plugin. `ste` holds one
-# user skill, this checkout's skills/asd-ste100. `bare` holds none. The first judge-omp call builds
-# both, and every other call waits on the same lock, so parallel calls are safe.
+# The judge's two profiles, under $work/judge-profiles/<kind>, each under a HOME of its own with the
+# model route install_model_route installs and no plugin. `ste` holds one user skill, this
+# checkout's skills/asd-ste100. `bare` holds none. The first judge-omp call builds both, and every
+# other call waits on the same lock, so parallel calls are safe.
+# A judge's HOME is only the .omp directory the route installers require, not make_omp_home's: no
+# Oh My Pi and no jj runs under it on this host. cmd_judge_omp copies the profile's agent directory
+# into the container's own HOME and mounts no native cache, so make_omp_home's natives link and jj
+# overlay would reach no judge, while its read of the operator's jj config would make judge-omp
+# fail on a machine with no jj on PATH.
 judge_profiles() {
   local dir=$work/judge-profiles kind P commit
   mkdir -p "$dir"
@@ -1142,13 +1147,8 @@ judge_profiles() {
     for kind in ste bare; do
       P=$dir/$kind
       rm -rf "$P"
-      mkdir -p "$P"
-      (
-        # shellcheck source=/dev/null
-        source "$root/scripts/e2e/lib/omp-home.sh"
-        make_omp_home "$P/home"
-      ) >"$P/install.log" 2>&1 || fail "make_omp_home failed for the judge's $kind profile; see $P/install.log"
-      install_model_route "$root" "judge-$kind" "$P" >>"$P/install.log" 2>&1 ||
+      mkdir -p "$P/home/.omp"
+      install_model_route "$root" "judge-$kind" "$P" >"$P/install.log" 2>&1 ||
         fail "the judge's model route (${LEGION_E2E_MODEL_ROUTE:-gateway}) could not be installed; see $P/install.log"
     done
     mkdir -p "$dir/ste/home/.omp/profiles/judge-ste/agent/skills"

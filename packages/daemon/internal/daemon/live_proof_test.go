@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -179,6 +180,23 @@ func (p *liveProof) publish(subject, source, eventID, payload string) string {
 		p.t.Fatalf("publish %s: %v", subject, err)
 	}
 	return eventID
+}
+
+// publishMergeOf publishes GitHub's merge of the pull request numbered number, issue's, at head
+// onto base, as Envoy relays a GitHub pull-request event closed with merged true (intake's
+// decodePullRequest reads it), and returns its event id. The merge commit is named for the head.
+func (p *liveProof) publishMergeOf(number int, issue, head, base string) string {
+	p.t.Helper()
+	payload, err := json.Marshal(map[string]string{
+		"action": "closed", "kind": "pr", "repo": liveRepo, "number": strconv.Itoa(number), "merged": "true",
+		"merge_commit_sha": "merge-" + head, "head_sha": head, "base_ref": base, "head_ref": claim.IssueBranch(issue),
+		"updated_at": time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		p.t.Fatalf("encode the merge payload: %v", err)
+	}
+	subject := fmt.Sprintf("notifications.github.%s.pr.%d", p.subjectRepo(), number)
+	return p.publish(subject, "github", fmt.Sprintf("pr-%d-merged", number), string(payload))
 }
 
 // admit seeds issues, in order, into the next free admission slots in tx. Slot indexes are unique

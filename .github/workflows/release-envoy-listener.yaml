@@ -192,16 +192,29 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
       - name: Generate Go contracts
         run: bun run gen:go
         working-directory: packages/contracts
       # The archive holds envoy-listener and THIRD_PARTY_NOTICES, the license of every Go module the
       # binary compiles in (scripts/go-third-party-notices.sh, run with the build's own GOOS and
-      # GOARCH), which fails the build when one cannot be determined.
+      # GOARCH), which fails the build when one cannot be determined. The binary is stamped with
+      # this run's commit (internal/buildversion's commit), as the image's binaries are
+      # (packages/envoy/docker/Dockerfile's LEGION_COMMIT), so every NATS connection of a listener
+      # run from the archive names its build (legion@<commit>), which legacy-subjects-gate.sh's
+      # census of connections reads; -buildvcs=false records no other commit. The step reads the
+      # stamp back from the binary and fails without it.
       - name: Build envoy binary
+        env:
+          SHA: ${{ github.sha }}
         run: |
           mkdir -p out
-          GOOS=linux GOARCH=${{ matrix.arch }} go build -buildvcs=false -o out/envoy-listener ./cmd/listener
+          GOOS=linux GOARCH=${{ matrix.arch }} go build -buildvcs=false \
+            -ldflags "-X github.com/sjawhar/envoy/internal/buildversion.commit=$SHA" \
+            -o out/envoy-listener ./cmd/listener
+          go version -m out/envoy-listener | grep -F -- "buildversion.commit=$SHA" >/dev/null \
+            || { echo "::error::out/envoy-listener was not built with buildversion.commit=$SHA"; exit 1; }
           GOOS=linux GOARCH=${{ matrix.arch }} ../../scripts/go-third-party-notices.sh out/THIRD_PARTY_NOTICES ./cmd/listener
           tar czf legion-envoy-${{ matrix.arch }}.tar.gz -C out envoy-listener THIRD_PARTY_NOTICES
         working-directory: packages/envoy
@@ -262,6 +275,8 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           # The amd64 leg keeps the module cache it has always had. An arm64 entry would be one more
           # setup-go-Linux-arm64 Actions-cache entry of about 0.5–1 GB, against INFRA-490's target
           # of an Actions cache under 9 GB.
@@ -549,6 +564,8 @@ jobs:
         if: steps.version.outputs.skip != 'true'
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
       # CGO_ENABLED=0 matches the existing agent-secrets builds
       # (packages/envoy/docker/Dockerfile, packages/daemon/docker/worker.Dockerfile):
       # without it, a same-arch build (amd64 here) links dynamically against the
@@ -689,6 +706,8 @@ jobs:
       actions: write
     # No cache is restored in a job that holds a credential.
     cache-mode: none
+    env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, which gh-read.sh's wait for a spent API budget stays within
     steps:
       # For release-push.sh and the tag, with every tag. No credential is left in the checkout: the
       # deploy key reaches the "Tag release" step alone.
@@ -718,7 +737,10 @@ jobs:
               rm -f "$error_file"
               return 0
             fi
-            if grep -Eqi 'manifest unknown|name unknown|not found' "$error_file"; then
+            # No image only on buildx's own line for a tag the registry does not hold, as the last
+            # line, for this reference: `ERROR: <image>:<tag>: not found`. A refusal of another
+            # request that ends in "404 Not Found" (a token endpoint's) is no answer about the tag.
+            if [ "$(tail -n 1 "$error_file")" = "ERROR: $IMAGE:$sha: not found" ]; then
               rm -f "$error_file"
               return 1
             fi

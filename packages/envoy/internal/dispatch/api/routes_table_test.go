@@ -45,6 +45,7 @@ func routeIndexLines(routes []apiRoute) string {
 // table happens to hold: two methods of one path whose auth classes sort the other way round are
 // ordered by their methods, not by their auth.
 func TestRouteIndexLinesOrderTwoMethodsOfOnePathByMethod(t *testing.T) {
+	t.Parallel()
 	got := routeIndexLines([]apiRoute{
 		{routeRow: routeRow{Method: http.MethodGet, Pattern: "/api/v1/things/{id}", Auth: authAny}},
 		{routeRow: routeRow{Method: http.MethodDelete, Pattern: "/api/v1/things/{id}", Auth: authBearer}},
@@ -56,6 +57,7 @@ func TestRouteIndexLinesOrderTwoMethodsOfOnePathByMethod(t *testing.T) {
 }
 
 func TestRouteIndexListsEveryRouteSortedByPathThenMethod(t *testing.T) {
+	t.Parallel()
 	mux := http.NewServeMux()
 	Register(mux, t.Context(), Deps{AgentTokens: sharedAgentTokens(t, "agent-token")})
 
@@ -132,6 +134,7 @@ func TestRouteIndexListsEveryRouteSortedByPathThenMethod(t *testing.T) {
 // WriteRouteIndex is what `envoy-dispatch routes` prints and the docs site's API reference is
 // generated from: every row of the table, as GET /api/v1 serves it, and no test hook.
 func TestWriteRouteIndexCarriesEveryRouteTheTableHas(t *testing.T) {
+	t.Parallel()
 	var output bytes.Buffer
 	if err := WriteRouteIndex(&output); err != nil {
 		t.Fatal(err)
@@ -188,6 +191,7 @@ func TestWriteRouteIndexCarriesEveryRouteTheTableHas(t *testing.T) {
 // (testdata/routes.txt), which two branches that each add a route merge into the union of their
 // two lines.
 func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
+	t.Parallel()
 	routes := (&server{}).routes()
 	seen := make(map[string]struct{}, len(routes))
 	for _, route := range routes {
@@ -220,6 +224,7 @@ func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 // one: the index leaves descriptions out (routeIndexLines) and the pin only holds each row to
 // having one, so nothing else fails when a description outlives the code it describes.
 func TestTheInboxRouteDescriptionStatesTheRule(t *testing.T) {
+	t.Parallel()
 	descriptions := map[string]string{}
 	for _, route := range (&server{}).routes() {
 		descriptions[route.Method+" "+route.Pattern] = route.Description
@@ -273,6 +278,8 @@ func TestTheInboxRouteDescriptionStatesTheRule(t *testing.T) {
 // nothing and says why not at once, and one that resolves an id without naming that 404, fails
 // on each.
 func TestEveryIDRouteIsNamed(t *testing.T) {
+	// Not parallel: it adds a row to idRoutes (withIDRoute), the table every server of the package
+	// reads.
 	routes := (&server{deps: Deps{TestHooksEnabled: true}}).routes()
 	if undecided := undecidedIDRoutes(routes); len(undecided) > 0 {
 		t.Fatalf("%d route(s) whose id the prefix layer cannot decide:\n%s", len(undecided), strings.Join(undecided, "\n"))
@@ -452,6 +459,15 @@ func personalTokenHolding(t *testing.T, database *store.Store, scopes ...string)
 // with an empty id (agent_tokens.go), so only the owner tells them apart.
 func personalTokenOwnedBy(t *testing.T, database *store.Store, owner string, scopes ...string) string {
 	t.Helper()
+	return personalTokenListing(t, database, owner, nil, scopes...)
+}
+
+// personalTokenListing is personalTokenOwnedBy for a token whose row lists projects, written
+// straight to the table as that one is: a row a build mints no longer, such as a restricted
+// member's token holding a scope or listing other than one project, which a mint before the rule
+// that holds such a token to one project and no scope (tokenScopes, tokenProjects) wrote.
+func personalTokenListing(t *testing.T, database *store.Store, owner string, projects []string, scopes ...string) string {
+	t.Helper()
 	plaintext, hash, err := newAgentToken()
 	if err != nil {
 		t.Fatalf("mint a personal token: %v", err)
@@ -461,10 +477,13 @@ func personalTokenOwnedBy(t *testing.T, database *store.Store, owner string, sco
 		// an empty set, as the shared token's credential holds, rather than a null one.
 		scopes = []string{}
 	}
+	if projects == nil {
+		projects = []string{}
+	}
 	if _, err := database.Pool.Exec(context.Background(), `
-		insert into agent_tokens (owner, name, token_hash, prefix, scopes)
-		values ($1, $2, $3, $4, $5)
-	`, owner, "probe", hash[:], plaintext[len("dsp_"):len("dsp_")+agentTokenPrefixLength], scopes); err != nil {
+		insert into agent_tokens (owner, name, token_hash, prefix, scopes, projects)
+		values ($1, $2, $3, $4, $5, $6)
+	`, owner, "probe", hash[:], plaintext[len("dsp_"):len("dsp_")+agentTokenPrefixLength], scopes, projects); err != nil {
 		t.Fatalf("insert a personal token: %v", err)
 	}
 	return plaintext
@@ -479,6 +498,7 @@ func personalTokenOwnedBy(t *testing.T, database *store.Store, owner string, sco
 // That last probe is what holds the gate to the table: without it a row the table declares
 // `approve` whose gate asked only for `person` would pass every test here.
 func TestRoutesTableAuthCellsMatchHandlers(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	personal := personalTokenHolding(t, database, model.ScopePerson, model.ScopeApprove)
 	personOnly := personalTokenHolding(t, database, model.ScopePerson)
@@ -551,6 +571,7 @@ func TestRoutesTableAuthCellsMatchHandlers(t *testing.T) {
 // and the scope map names no route the table does not mount: the two halves register's panic
 // protects (scopedRoutesNotMounted), proved from the table alone with nothing mounted.
 func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
+	t.Parallel()
 	browserOnly := []string{
 		"GET /api/v1/settings/project-default-assignees",
 		"PUT /api/v1/projects/{key}/default-assignee",

@@ -344,8 +344,8 @@ func currentPartOf(t *testing.T, database *store.Store, address string) graphsto
 // revision and commits no tuple below it. The backfill takes the fence row after its owner lock
 // and reads its rows again under it, so its holder takes that row alone. The source tree is read
 // last: for any statement that writes a revision into document_block_versions outside the fence,
-// and for a revision test in the erase or in refs.IndexOwedItemBlocks, which R23 reads as writers
-// outside the fence.
+// and for a revision test in refs.IndexOwedItemBlocks, which R23 reads as a writer outside the
+// fence.
 func TestAStaleWriteCannotAssertAParentANewerEditReplaced(t *testing.T) {
 	ctx := context.Background()
 	database, service := blockIndexService(t)
@@ -1115,11 +1115,9 @@ func requireOnlyTheFenceWritesTheOwedRow(t *testing.T) {
 	}
 }
 
-// outsideTheFence is the two writers R23 reads as writers outside the fence: the erase, which
-// deletes under its own transaction and asserts no current set, and the item block pass, which
-// writes no store row in this child. Each is named by its file and its `func` line.
+// outsideTheFence is the writer R23 reads as outside the fence: the item block pass, which writes
+// no store row in this child. It is named by its file and its `func` line.
 var outsideTheFence = []struct{ file, function string }{
-	{"grapherase/erase.go", "func (e *Erasure) apply("},
 	{"refs/item_blocks.go", "func IndexOwedItemBlocks("},
 }
 
@@ -1130,7 +1128,7 @@ var outsideTheFence = []struct{ file, function string }{
 var revisionTest = regexp.MustCompile(`(?is)\bdocument_block_versions\b|\bqueueStand\(|\bIndexBlocks\(`)
 
 // requireNoRevisionTestOutsideTheFence reads the source of each writer outside the fence and
-// fails if either carries a revision test. A writer that compared a revision it does not own
+// fails if one carries a revision test. A writer that compared a revision it does not own
 // would refuse a write the fence never meant to refuse, or claim the fence's row for a set it
 // does not compute. The comments are taken out first, since the tree writes its reasoning
 // about the fence in them.

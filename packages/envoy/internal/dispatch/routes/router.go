@@ -65,15 +65,14 @@ import (
 // read-only after BuildAppContext returns; per-request state lives on
 // *router.
 type AppContext struct {
-	SigningKey     auth.SigningKeys
-	WebDistDir     string
-	AssetStore     AssetStore
-	Sessions       auth.SessionStore
-	People         auth.PeopleStore
-	Identity       identity.Identity
-	Store          *store.Store
-	DefaultProject string
-	ServerURL      string
+	SigningKey auth.SigningKeys
+	WebDistDir string
+	AssetStore AssetStore
+	Sessions   auth.SessionStore
+	People     auth.PeopleStore
+	Identity   identity.Identity
+	Store      *store.Store
+	ServerURL  string
 	// OutsideOrigin is the second origin the server answers at (DISPATCH_OUTSIDE_ORIGIN; empty for
 	// none): a request whose Host is its host is answered as that origin (publicOrigin), except
 	// /auth/start and /auth/callback, which answer 404 there (googleSignInHere), and /auth/whoami
@@ -99,9 +98,10 @@ type AppContext struct {
 	// lifetime is AppContextOptions.Lifetime, which New passes to api.Register.
 	lifetime context.Context
 	// devSignInHost is the dashboard origin's host:port when the dev sign-in route is mounted,
-	// and empty otherwise. Only BuildAppContext sets it, from DevSignInOrigin, so no caller can
-	// turn the route on without the origin check.
-	devSignInHost string
+	// and empty otherwise, and devSignInOrigin that origin, scheme://host:port, the one place the
+	// route sends a browser. Only BuildAppContext sets them, from DevSignInOrigin, so no caller
+	// can turn the route on without the origin check.
+	devSignInHost, devSignInOrigin string
 	// origins is what GET /auth/whoami answers as origins: the canonical origin and OutsideOrigin,
 	// in that order, where the server answers at both, and nil where it answers at one. Only
 	// BuildAppContext sets it.
@@ -133,15 +133,14 @@ type AppContextOptions struct {
 	DashboardEntry string
 	// BuildCommit is the commit this process was built from, which main holds in its own
 	// `buildCommit`; "" for a build nothing stamped. See api.DepsInput.
-	BuildCommit    string
-	Sessions       auth.SessionStore
-	People         auth.PeopleStore
-	Identity       identity.Identity
-	SignIn         *oidc.CodeFlow
-	SignInRule     identity.SignInRule
-	Store          *store.Store
-	AgentTokens    *auth.SharedAgentTokens
-	DefaultProject string
+	BuildCommit string
+	Sessions    auth.SessionStore
+	People      auth.PeopleStore
+	Identity    identity.Identity
+	SignIn      *oidc.CodeFlow
+	SignInRule  identity.SignInRule
+	Store       *store.Store
+	AgentTokens *auth.SharedAgentTokens
 	// Passkeys is the passkey ceremonies where passkey sign-in is on, nil where it is off; the API is
 	// handed them whole (api.DepsInput.Passkeys), reading their store and their rule's check of a
 	// Workspace address from them. See AppContext.Passkeys.
@@ -171,7 +170,9 @@ type AppContextOptions struct {
 	// machine's identity token every listener call presents in EnvoyToken's place instead
 	// (cmd/dispatch); empty presents none.
 	EnvoyGoogleAudience string
-	Docs                docs.API
+	// Docs is the document service, which BuildAppContext requires (api.NewDeps refuses none):
+	// its caller builds it and shuts it down once the router is done with it. See api.DepsInput.
+	Docs docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549); nil turns it off.
 	Embedder embed.Embedder
 	// Answerer answers a going request's question (INFRA-1279); nil means no model is configured.
@@ -209,6 +210,9 @@ type AppContextOptions struct {
 	// Lifetime is the process context the API's background work runs on, which New passes to
 	// api.Register as its lifetime; required, since api.Register refuses a nil one.
 	Lifetime context.Context
+	// Renames is the rename pairs main read once at boot (store.ReadRepoRenames). See
+	// api.DepsInput.
+	Renames refs.Renames
 	// AgentSecretsURL/AgentSecretsTokenFile configure the credential-request UI's secrets broker
 	// client; empty URL means the feature is off. See api.DepsInput.
 	AgentSecretsURL       string
@@ -294,7 +298,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 	case opts.SignInRule != nil:
 		restricted = opts.SignInRule
 	}
-	var devSignInHost string
+	var devSignInHost, devSignInOrigin string
 	if opts.DevSignIn {
 		if opts.Sessions == nil {
 			return nil, fmt.Errorf("BuildAppContext: DevSignIn requires a Sessions store")
@@ -303,7 +307,9 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		if err != nil {
 			return nil, fmt.Errorf("BuildAppContext: %w", err)
 		}
-		devSignInHost = host
+		// DevSignInOrigin has parsed ServerURL already, so this parse cannot fail.
+		parsed, _ := url.Parse(opts.ServerURL)
+		devSignInHost, devSignInOrigin = host, parsed.Scheme+"://"+host
 	}
 	// A second origin is the second of two: whoami names the canonical one first, and a request
 	// whose Host is neither's is answered as the canonical one.
@@ -323,7 +329,6 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		Store:                   opts.Store,
 		Identity:                opts.Identity,
 		AgentTokens:             opts.AgentTokens,
-		DefaultProject:          opts.DefaultProject,
 		NewIssueLabel:           opts.NewIssueLabel,
 		NewIssueSession:         opts.NewIssueSession,
 		ServerURL:               opts.ServerURL,
@@ -336,6 +341,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		Embedder:                opts.Embedder,
 		Answerer:                opts.Answerer,
 		Events:                  opts.Events,
+		Renames:                 opts.Renames,
 		App:                     opts.App,
 		GitHubAPIBase:           opts.GitHubAPIBase,
 		OIDC:                    opts.OIDC,
@@ -383,26 +389,26 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		clock = time.Now
 	}
 	return &AppContext{
-		SigningKey:     opts.SigningKey,
-		WebDistDir:     opts.WebDistDir,
-		AssetStore:     opts.AssetStore,
-		Sessions:       opts.Sessions,
-		People:         opts.People,
-		Identity:       opts.Identity,
-		Store:          opts.Store,
-		DefaultProject: opts.DefaultProject,
-		ServerURL:      strings.TrimSuffix(opts.ServerURL, "/"),
-		OutsideOrigin:  outsideOrigin,
-		SignIn:         opts.SignIn,
-		SignInRule:     opts.SignInRule,
-		Passkeys:       opts.Passkeys,
-		InsecureCookie: opts.InsecureCookie,
-		devSignInHost:  devSignInHost,
-		origins:        origins,
-		apiDeps:        apiDeps,
-		eventHead:      eventHead,
-		lifetime:       opts.Lifetime,
-		clock:          clock,
+		SigningKey:      opts.SigningKey,
+		WebDistDir:      opts.WebDistDir,
+		AssetStore:      opts.AssetStore,
+		Sessions:        opts.Sessions,
+		People:          opts.People,
+		Identity:        opts.Identity,
+		Store:           opts.Store,
+		ServerURL:       strings.TrimSuffix(opts.ServerURL, "/"),
+		OutsideOrigin:   outsideOrigin,
+		SignIn:          opts.SignIn,
+		SignInRule:      opts.SignInRule,
+		Passkeys:        opts.Passkeys,
+		InsecureCookie:  opts.InsecureCookie,
+		devSignInHost:   devSignInHost,
+		devSignInOrigin: devSignInOrigin,
+		origins:         origins,
+		apiDeps:         apiDeps,
+		eventHead:       eventHead,
+		lifetime:        opts.Lifetime,
+		clock:           clock,
 		// The ranges as boot parsed them, which nothing changes after.
 		trustedProxyRanges: opts.TrustedProxyRanges,
 	}, nil
@@ -589,8 +595,11 @@ func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 // state was used, yet each completes at most once: the callback clears the cookie before anything
 // else, the issuer's authorization code is single-use, and Exchange accepts only an ID token
 // carrying the nonce the cookie bound the sign-in to. An exchange that meets an issuer this
-// process has not discovered (another process started the sign-in) is answered 503
-// SIGNIN_UNAVAILABLE; any other failed exchange 502.
+// process has not discovered (another process started the sign-in), or a token endpoint that
+// cannot answer it (a 5xx, a 408 or a 429, an answer whose body was cut off, or no answer:
+// oidc.ErrIssuerUnavailable), is answered 503 SIGNIN_UNAVAILABLE. Every other answer of the token
+// endpoint - a 4xx with or without an OAuth error, a 2xx that names an error or holds no token, a
+// 3xx - and every other failure of the sign-in is answered 502.
 func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 	if r.ctx.SignIn == nil {
 		signInUnconfigured(w)
@@ -614,7 +623,7 @@ func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 	}
 	session, err := r.ctx.SignIn.Exchange(req.Context(), callbackURL(r.ctx.ServerURL, req), code, pending.Nonce)
 	if errors.Is(err, oidc.ErrIssuerUnavailable) {
-		slog.Warn("dispatch: sign-in code exchange failed: the sign-in issuer is not discovered", "error", err)
+		slog.Warn("dispatch: sign-in code exchange failed: the sign-in issuer is undiscovered or could not answer", "error", err)
 		identity.WriteError(w, fmt.Errorf("%w: %w", identity.ErrSignInUnavailable, err))
 		return
 	}

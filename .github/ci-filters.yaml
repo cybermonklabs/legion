@@ -63,13 +63,16 @@ daemon_envoy_deps: &daemon_envoy_deps
   - 'packages/envoy/internal/cipher/policy/**'
   - 'packages/envoy/internal/cipher/proof/*'
   - 'packages/envoy/internal/cipher/record/*'
+  - 'packages/envoy/internal/cipher/githubname/*'
   - 'packages/envoy/internal/cipher/requests/*'
+  - 'packages/envoy/internal/cipher/rulehost/*'
   - 'packages/envoy/internal/cipher/secrets/*'
   - 'packages/envoy/internal/cipher/store/**'
   - 'packages/envoy/internal/cipher/wire/*'
   - 'packages/envoy/internal/cipherclient/**'
   - 'packages/envoy/internal/ciphertoken/*'
   - 'packages/envoy/internal/bus/*'
+  - 'packages/envoy/internal/buildversion/*'
   - 'packages/envoy/internal/contracts/*'
   - 'packages/envoy/internal/ctxlock/*'
   - 'packages/envoy/natscred/*'
@@ -84,6 +87,7 @@ daemon_envoy_deps: &daemon_envoy_deps
   - 'packages/envoy/internal/id/*'
   - 'packages/envoy/internal/logtest/*'
   - 'packages/envoy/internal/metrics/*'
+  - 'packages/envoy/internal/oauthrefusal/*'
   - 'packages/envoy/internal/oidc/**'
   - 'packages/envoy/internal/pgmigrate/*'
   - 'packages/envoy/internal/principal/*'
@@ -96,6 +100,7 @@ daemon_envoy_deps: &daemon_envoy_deps
   - 'packages/envoy/internal/testpg/testdb/*'
   - 'packages/envoy/listenerwire/*'
   - 'packages/envoy/internal/testport/*'
+  - 'packages/envoy/internal/weborigin/*'
   - 'packages/envoy/internal/testwait/*'
   - 'packages/envoy/listenfd/*'
   - 'packages/envoy/migrationid/*'
@@ -105,6 +110,7 @@ daemon_envoy_deps: &daemon_envoy_deps
   - 'packages/envoy/subjectforms/*'
   - 'packages/envoy/natsversion/*'
   - 'packages/envoy/testnatsimages/*'
+  - 'packages/envoy/testnatsinprocess/*'
   - 'packages/envoy/steprecord/*'
 dispatch_server: &dispatch_server
   - 'packages/envoy/cmd/dispatch/*'
@@ -113,6 +119,7 @@ dispatch_server: &dispatch_server
   - 'packages/envoy/internal/cipher/wire/*'
   - 'packages/envoy/internal/ciphertoken/*'
   - 'packages/envoy/internal/bus/*'
+  - 'packages/envoy/internal/buildversion/*'
   - 'packages/envoy/internal/cipherclient/*'
   - 'packages/envoy/cipheraddr/*'
   - 'packages/envoy/internal/ctxlock/*'
@@ -146,7 +153,6 @@ dispatch_server: &dispatch_server
   - 'packages/envoy/internal/dispatch/githubapp/ratelimit/*'
   - 'packages/envoy/internal/dispatch/githubreads/*'
   - 'packages/envoy/internal/dispatch/graphcensus/*'
-  - 'packages/envoy/internal/dispatch/grapherase/*'
   - 'packages/envoy/internal/dispatch/graphstore/*'
   - 'packages/envoy/internal/dispatch/identity/*'
   - 'packages/envoy/internal/dispatch/itemblocks/*'
@@ -181,6 +187,7 @@ dispatch_server: &dispatch_server
   - 'packages/envoy/internal/legionagents/*'
   - 'packages/envoy/internal/logging/*'
   - 'packages/envoy/internal/metrics/*'
+  - 'packages/envoy/internal/oauthrefusal/*'
   - 'packages/envoy/internal/oidc/*'
   - 'packages/envoy/internal/pglisten/*'
   - 'packages/envoy/internal/pgmigrate/*'
@@ -201,6 +208,7 @@ dispatch_server: &dispatch_server
   - 'packages/envoy/natsversion/*'
 legion_command: &legion_command
   - 'packages/daemon/cmd/legion/*'
+  - 'packages/daemon/cmd/legion/tls-fixtures/*'
   - 'packages/daemon/internal/admit/*'
   - 'packages/daemon/internal/cipher/*'
   - 'packages/daemon/internal/api/*'
@@ -239,6 +247,7 @@ legion_command: &legion_command
   - 'packages/daemon/internal/pods/**'
   - 'packages/daemon/internal/podsafety/**'
   - 'packages/daemon/internal/procgroup/*'
+  - 'packages/daemon/internal/programbound/*'
   - 'packages/daemon/internal/projection/*'
   - 'packages/daemon/internal/promptrefs/*'
   - 'packages/daemon/internal/prompts/**'
@@ -260,7 +269,9 @@ legion_command: &legion_command
   - 'packages/daemon/internal/stream/*'
   - 'packages/daemon/internal/supervise/*'
   - 'packages/daemon/internal/tlsalert/*'
+  - 'packages/daemon/internal/termsafe/*'
   - 'packages/daemon/internal/treelifecycle/*'
+  - 'packages/daemon/internal/volumestat/*'
   - 'packages/daemon/internal/wait/*'
   - 'packages/daemon/internal/wakepace/*'
   - 'packages/daemon/internal/workflow/*'
@@ -281,6 +292,7 @@ legion_command: &legion_command
   - 'packages/envoy/internal/dispatch/text/*'
   - 'packages/envoy/internal/fold/*'
   - 'packages/envoy/internal/googleidentity/*'
+  - 'packages/envoy/internal/oauthrefusal/*'
   - 'packages/envoy/internal/redact/*'
   - 'packages/envoy/internal/tlsalert/*'
   - 'packages/envoy/internal/redirects/*'
@@ -299,7 +311,9 @@ listener_command: &listener_command
   - 'packages/envoy/cmd/listener/*'
   - 'packages/envoy/internal/cipher/oauthwire/*'
   - 'packages/envoy/internal/ciphertoken/*'
+  - 'packages/envoy/internal/cipher/netaddr/*'
   - 'packages/envoy/internal/bus/*'
+  - 'packages/envoy/internal/buildversion/*'
   - 'packages/envoy/internal/cipherclient/*'
   - 'packages/envoy/cipheraddr/*'
   - 'packages/envoy/internal/redact/*'
@@ -307,6 +321,7 @@ listener_command: &listener_command
   - 'packages/envoy/internal/redirects/*'
   - 'packages/envoy/internal/ctxlock/*'
   - 'packages/envoy/natscred/*'
+  - 'packages/envoy/natsgrant/*'
   - 'packages/envoy/internal/cistore/*'
   - 'packages/envoy/internal/config/*'
   - 'packages/envoy/internal/contracts/*'
@@ -320,6 +335,7 @@ listener_command: &listener_command
   - 'packages/envoy/internal/legionagents/*'
   - 'packages/envoy/internal/logging/*'
   - 'packages/envoy/internal/metrics/*'
+  - 'packages/envoy/internal/oauthrefusal/*'
   - 'packages/envoy/internal/oidc/*'
   - 'packages/envoy/internal/ratelimit/*'
   - 'packages/envoy/internal/roles/*'
@@ -339,7 +355,7 @@ jj_install: &jj_install
 omp_install: &omp_install
   - '.omp-pin'
   - '.github/actions/install-omp/**'
-  - *jj_install
+  - 'packages/daemon/docker/worker.Dockerfile'
 # why: .github/ci-notes/ci.md#daemon_go_tests-the-daemon-go-job-what-its-two-go-steps-read-together
 daemon_go_tests:
   - *ci_router
@@ -350,6 +366,8 @@ daemon_go_tests:
   - *daemon_envoy_deps
   - *dispatch_server
   - *listener_command
+  - 'packages/envoy/scripts/forced-order.sh'
+  - 'packages/envoy/internal/testnats/testdata/hooked/**'
   - 'packages/envoy/internal/contracts/**'
   - 'packages/envoy/internal/principal/*'
   - 'packages/contracts/fixtures/capability-redaction.json'
@@ -365,6 +383,7 @@ daemon_go_tests:
   - 'skills/legion-worker/references/tools.md'
   - 'skills/legion-worker/references/merge-gate.md'
   - 'scripts/e2e/lib/github-apps.sh'
+  - 'docs/deployment.md'
   - 'scripts/e2e/stage1-skeleton.sh'
   - 'scripts/e2e/lib/rig.sh'
   - 'scripts/e2e/lib/loopback-dsn.sh'
@@ -378,15 +397,25 @@ daemon_go_tests:
   - 'deploy/kubernetes/daemon/legion.yaml.example'
   - 'deploy/kubernetes/operator-route/pod.yml'
   - *omp_install
+  - *jj_install
   - '.github/actions/install-uv/**'
   - '.github/actions/pull-test-images/**'
   # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
   # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
+  - '!packages/daemon/internal/daemon/approved_version_news_live_test.go'
+  - '!packages/daemon/internal/daemon/approved_version_news_part_one_steps_live_test.go'
+  - '!packages/daemon/internal/daemon/approved_version_news_prompt_file_test.go'
+  - '!packages/daemon/internal/daemon/approved_version_news_seed_live_test.go'
+  - '!packages/daemon/internal/daemon/approved_version_news_sessions_live_test.go'
+  - '!packages/daemon/internal/daemon/approved_version_news_sessions_setup_live_test.go'
+  - '!packages/daemon/internal/daemon/approved_version_news_steps_live_test.go'
   - '!packages/daemon/internal/daemon/behind_entry_fence_live_test.go'
   - '!packages/daemon/internal/daemon/burstable_live_test.go'
   - '!packages/daemon/internal/daemon/busy_relaunch_live_test.go'
   - '!packages/daemon/internal/daemon/child_adoption_live_test.go'
   - '!packages/daemon/internal/daemon/claim_compaction_live_test.go'
+  - '!packages/daemon/internal/daemon/conflict_live_test.go'
+  - '!packages/daemon/internal/daemon/conflict_merger_live_test.go'
   - '!packages/daemon/internal/daemon/conflict_no_takeover_live_test.go'
   - '!packages/daemon/internal/daemon/controller_sweep_live_test.go'
   - '!packages/daemon/internal/daemon/github_envelopes_live_test.go'
@@ -441,6 +470,7 @@ plugin_pack:
   - 'packages/envoy/natsversion/*'
   - 'packages/envoy/steprecord/*'
   - 'packages/envoy/testnatsimages/*'
+  - 'packages/envoy/testnatsinprocess/*'
   - 'packages/contracts/**'
   - 'packages/envoy-client/**'
   - 'packages/pi-envoy/**'
@@ -467,11 +497,20 @@ plugin_pack:
   - '!packages/daemon/internal/config/**/*_test.go'
   - '!packages/daemon/internal/controller/**/*_test.go'
   - '!packages/daemon/internal/credential/**/*_test.go'
+  - '!packages/daemon/internal/daemon/approved_version_news_live_test.go'
+  - '!packages/daemon/internal/daemon/approved_version_news_part_one_steps_live_test.go'
+  - '!packages/daemon/internal/daemon/approved_version_news_prompt_file_test.go'
+  - '!packages/daemon/internal/daemon/approved_version_news_seed_live_test.go'
+  - '!packages/daemon/internal/daemon/approved_version_news_sessions_live_test.go'
+  - '!packages/daemon/internal/daemon/approved_version_news_sessions_setup_live_test.go'
+  - '!packages/daemon/internal/daemon/approved_version_news_steps_live_test.go'
   - '!packages/daemon/internal/daemon/behind_entry_fence_live_test.go'
   - '!packages/daemon/internal/daemon/burstable_live_test.go'
   - '!packages/daemon/internal/daemon/busy_relaunch_live_test.go'
   - '!packages/daemon/internal/daemon/child_adoption_live_test.go'
   - '!packages/daemon/internal/daemon/claim_compaction_live_test.go'
+  - '!packages/daemon/internal/daemon/conflict_live_test.go'
+  - '!packages/daemon/internal/daemon/conflict_merger_live_test.go'
   - '!packages/daemon/internal/daemon/conflict_no_takeover_live_test.go'
   - '!packages/daemon/internal/daemon/controller_sweep_live_test.go'
   - '!packages/daemon/internal/daemon/github_envelopes_live_test.go'
@@ -512,6 +551,7 @@ plugin_pack:
   - '!packages/daemon/internal/phase/**/*_test.go'
   - '!packages/daemon/internal/podsafety/**/*_test.go'
   - '!packages/daemon/internal/procgroup/**/*_test.go'
+  - '!packages/daemon/internal/programbound/**/*_test.go'
   - '!packages/daemon/internal/projection/**/*_test.go'
   - '!packages/daemon/internal/promptrefs/**/*_test.go'
   - '!packages/daemon/internal/prompts/**/*_test.go'
@@ -519,6 +559,7 @@ plugin_pack:
   - '!packages/daemon/internal/redact/**/*_test.go'
   - '!packages/daemon/internal/registry/**/*_test.go'
   - '!packages/daemon/internal/repocache/**/*_test.go'
+  - '!packages/daemon/internal/reviewround/**/*_test.go'
   - '!packages/daemon/internal/rolefile/**/*_test.go'
   - '!packages/daemon/internal/runtime/**/*_test.go'
   - '!packages/daemon/internal/sessionproxy/**/*_test.go'
@@ -527,11 +568,15 @@ plugin_pack:
   - '!packages/daemon/internal/store/**/*_test.go'
   - '!packages/daemon/internal/stream/**/*_test.go'
   - '!packages/daemon/internal/supervise/**/*_test.go'
+  - '!packages/daemon/internal/termsafe/**/*_test.go'
   - '!packages/daemon/internal/testbin/**/*_test.go'
+  - '!packages/daemon/internal/testfifo/**/*_test.go'
   - '!packages/daemon/internal/testnats/**/*_test.go'
   - '!packages/daemon/internal/testpg/**/*_test.go'
   - '!packages/daemon/internal/testtmp/**/*_test.go'
+  - '!packages/daemon/internal/testwait/**/*_test.go'
   - '!packages/daemon/internal/textcheck/**/*_test.go'
+  - '!packages/daemon/internal/volumestat/**/*_test.go'
   - '!packages/daemon/internal/wait/**/*_test.go'
   - '!packages/daemon/internal/wakepace/**/*_test.go'
   - '!packages/daemon/internal/workflow/**/*_test.go'
@@ -578,6 +623,7 @@ claude_envoy:
   - '.github/actions/install-claude-code/**'
   - 'packages/contracts/fixtures/daemon-api/**'
   - 'packages/contracts/fixtures/envelope-without-role.json'
+  - 'packages/contracts/fixtures/session-grant.json'
   - 'packages/envoy-client/test/**'
   - 'packages/pi-shared/test/image-manifest.ts'
   - 'packages/test-fixtures/src/**'
@@ -588,6 +634,7 @@ claude_envoy:
   - '.github/actions/private-names-packed-plugin/**'
   - '.github/scripts/check-private-names.sh'
   - '.github/scripts/release-claude-envoy-check-packed.sh'
+  - '.github/scripts/release-codex-envoy-check-packed.sh'
   - '.github/scripts/release-claude-envoy-manifest-repository.sh'
   - '.github/scripts/release-claude-envoy-version.sh'
   - '.github/scripts/repo-paths.sh'
@@ -628,8 +675,10 @@ release_push_test: &release_push_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/release-push.test.sh'
   - '.github/scripts/release-push.sh'
+  - '.github/scripts/gh-read.sh'
   - '.github/scripts/release-bump.sh'
   - '.github/workflows/release.yaml'
+  - '.github/workflows/release-envoy-listener.yaml'
   - 'packages/pi-legion/.changie.yaml'
 release_bump_test: &release_bump_test
   - *ci_router
@@ -777,6 +826,7 @@ check_private_names_test: &check_private_names_test
   - '.github/scripts/check-private-names-test-lib.sh'
   - '.github/scripts/check-private-names.sh'
   - '.github/scripts/check-pr-text.sh'
+  - '.github/scripts/gh-read.sh'
 check_private_names_terms_test: &check_private_names_terms_test
   - *ci_router
   - *ci_filters_data
@@ -786,6 +836,7 @@ check_private_names_terms_test: &check_private_names_terms_test
   - '.github/scripts/check-private-names-test-lib.sh'
   - '.github/scripts/check-private-names.sh'
   - '.github/scripts/check-pr-text.sh'
+  - '.github/scripts/gh-read.sh'
 check_private_names_keys_test: &check_private_names_keys_test
   - *ci_router
   - *ci_filters_data
@@ -795,6 +846,7 @@ check_private_names_keys_test: &check_private_names_keys_test
   - '.github/scripts/check-private-names-test-lib.sh'
   - '.github/scripts/check-private-names.sh'
   - '.github/scripts/check-pr-text.sh'
+  - '.github/scripts/gh-read.sh'
 check_plugin_names_test: &check_plugin_names_test
   - *ci_router
   - *ci_filters_data
@@ -816,6 +868,7 @@ check_daemon_api_contract_test: &check_daemon_api_contract_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/check-daemon-api-contract.test.sh'
   - '.github/scripts/check-daemon-api-contract.sh'
+  - '.github/scripts/gh-read.sh'
 check_release_credentials_test: &check_release_credentials_test
   - *ci_router
   - *ci_filters_data
@@ -848,6 +901,13 @@ go_tagged_tests_test: &go_tagged_tests_test
   - '.github/scripts/go-tagged-tests.test.sh'
   - '.github/scripts/go-tagged-tests.sh'
   - 'packages/envoy/cmd/listener/*_test.go'
+ci_router_outputs_test: &ci_router_outputs_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/ci-router-outputs.test.sh'
+  - '.github/scripts/ci_router_outputs.py'
 ci_ok_test: &ci_ok_test
   - *ci_router
   - *ci_filters_data
@@ -865,6 +925,7 @@ ci_ok_report_test: &ci_ok_report_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/ci-ok-report.test.sh'
   - '.github/scripts/ci-ok-report.sh'
+  - '.github/scripts/ci-ok-hold.sh'
   - '.github/scripts/post-check-run.sh'
   - '.github/scripts/gh-read.sh'
   - '.github/scripts/runner-shutdown.sh'
@@ -885,6 +946,7 @@ find_pr_payload_test: &find_pr_payload_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/find-pr-payload.test.sh'
   - '.github/scripts/find-pr-payload.sh'
+  - '.github/scripts/gh-read.sh'
 merge_group_cancels_test: &merge_group_cancels_test
   - *ci_router
   - *ci_filters_data
@@ -914,6 +976,14 @@ dispatch_browser_latest_blobs_test: &dispatch_browser_latest_blobs_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/dispatch-browser-latest-blobs.test.sh'
   - '.github/scripts/dispatch-browser-latest-blobs.sh'
+dispatch_browser_reading_rows_test: &dispatch_browser_reading_rows_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/dispatch-browser-reading-rows.test.sh'
+  - '.github/scripts/dispatch-browser-reading-rows.sh'
+  - '.github/workflows/dispatch-browser.yaml'
 dispatch_browser_run_reads_test: &dispatch_browser_run_reads_test
   - *ci_router
   - *ci_filters_data
@@ -921,6 +991,13 @@ dispatch_browser_run_reads_test: &dispatch_browser_run_reads_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/dispatch-browser-run-reads.test.sh'
   - '.github/scripts/dispatch-browser-run-reads.sh'
+  - '.github/scripts/gh-read.sh'
+gh_read_test: &gh_read_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/gh-read.test.sh'
   - '.github/scripts/gh-read.sh'
 dispatch_browser_samples_test: &dispatch_browser_samples_test
   - *ci_router
@@ -963,6 +1040,7 @@ check_ci_filters_test: &check_ci_filters_test
   - '.github/scripts/go_build_tags.py'
   - '.github/scripts/ci_job_reads.py'
   - '.github/workflows/ci-job-typecheck.yaml'
+  - 'packages/envoy/scripts/forced-order.sh'
 check_ts_filters_test: &check_ts_filters_test
   - *ci_router
   - *ci_filters_data
@@ -1034,6 +1112,7 @@ test:
   - *repo_paths_test
   - *select_e2e_proofs_test
   - *go_tagged_tests_test
+  - *ci_router_outputs_test
   - *ci_ok_test
   - *ci_ok_report_test
   - *ci_ok_reconcile_test
@@ -1042,7 +1121,9 @@ test:
   - *main_bypass_check_test
   - *edited_migrations_base_test
   - *dispatch_browser_latest_blobs_test
+  - *dispatch_browser_reading_rows_test
   - *dispatch_browser_run_reads_test
+  - *gh_read_test
   - *dispatch_browser_samples_test
   - *race_memory_test
   - *disk_watch_test
@@ -1088,6 +1169,7 @@ test:
   - '!packages/envoy/listenerwire/**/*_test.go'
   - '!packages/envoy/listenfd/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
+  - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
@@ -1137,6 +1219,7 @@ docs:
   - 'packages/envoy/internal/cipher/projectrepos/*'
   - 'packages/envoy/internal/cipher/proof/*'
   - 'packages/envoy/internal/cipher/record/*'
+  - 'packages/envoy/internal/cipher/githubname/*'
   - 'packages/envoy/internal/cipher/requests/*'
   - 'packages/envoy/internal/cipher/reread/*'
   - 'packages/envoy/internal/cipher/secrets/*'
@@ -1183,7 +1266,6 @@ go_notices:
   - 'packages/envoy/cmd/cipher/*'
   - 'packages/envoy/cmd/cipher-helper/*'
   - *listener_command
-  - 'packages/envoy/natsgrant/*'
   - 'packages/envoy/infra/go.mod'
   - 'packages/envoy/infra/go.sum'
   - 'packages/envoy/infra/go.work'
@@ -1238,7 +1320,9 @@ dispatch_command_tests: &dispatch_command_tests
   - 'packages/envoy/internal/cipher/dispatchread/*'
   - 'packages/envoy/internal/cipher/projectaccess/*'
   - 'packages/envoy/internal/cipher/record/*'
+  - 'packages/envoy/internal/cipher/githubname/*'
   - 'packages/envoy/internal/cipher/requests/*'
+  - 'packages/envoy/internal/cipher/rulehost/*'
   - 'packages/envoy/internal/cipher/secrets/*'
   - 'packages/envoy/internal/cipher/store/**'
   - 'packages/envoy/internal/testpg/testdb/*'
@@ -1249,6 +1333,7 @@ dispatch_command_tests: &dispatch_command_tests
   - 'packages/envoy/internal/dispatch/**'
   - 'packages/envoy/internal/bus/*'
   - 'packages/envoy/internal/bus/bustest/*'
+  - 'packages/envoy/internal/buildversion/*'
   - 'packages/envoy/internal/cipherclient/*'
   - 'packages/envoy/cipheraddr/*'
   # The two commands cmd/dispatch/leaver_hold_clients_test.go builds from the tree and
@@ -1276,6 +1361,7 @@ dispatch_command_tests: &dispatch_command_tests
   - 'packages/envoy/internal/logging/*'
   - 'packages/envoy/internal/logtest/*'
   - 'packages/envoy/internal/metrics/*'
+  - 'packages/envoy/internal/oauthrefusal/*'
   - 'packages/envoy/internal/oidc/**'
   - 'packages/envoy/internal/pglisten/*'
   - 'packages/envoy/internal/pgmigrate/*'
@@ -1374,6 +1460,7 @@ pi_envoy:
   - 'packages/test-fixtures/src/**'
   - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
   - 'packages/contracts/fixtures/envelope-without-role.json'
+  - 'packages/contracts/fixtures/session-grant.json'
   - 'skills/**'
   - 'packages/daemon/internal/prompts/**'
   - 'scripts/pi-plugin-prepack.sh'
@@ -1436,6 +1523,7 @@ pi_legion:
   - 'deploy/kubernetes/daemon/controller.yaml.example'
   - 'scripts/e2e/lib/**'
   - *omp_install
+  - *jj_install
   # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
   # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
   - '!packages/envoy/**/*_test.go'
@@ -1448,6 +1536,7 @@ dispatch_ui:
   - *bun_install
   - 'packages/dispatch/**'
   - 'packages/proof-editor/**'
+  - '.github/workflows/dispatch-unit-repeat.yaml'
   - 'packages/test-fixtures/src/**'
   # e2e/__tests__/project-access-blob-base.test.ts copies the blob driver and every shell file it
   # sources into a repository of its own and runs it, so those files are this job's reads.
@@ -1653,6 +1742,7 @@ dispatch_browser:
   - 'packages/envoy/internal/cipher/projectrepos/*'
   - 'packages/envoy/internal/cipher/proof/*'
   - 'packages/envoy/internal/cipher/record/*'
+  - 'packages/envoy/internal/cipher/githubname/*'
   - 'packages/envoy/internal/cipher/requests/*'
   - 'packages/envoy/internal/cipher/reread/*'
   - 'packages/envoy/internal/cipher/secrets/*'
@@ -1665,6 +1755,7 @@ dispatch_browser:
   - 'packages/envoy/internal/principal/*'
   - 'packages/envoy/internal/ratelimit/*'
   - 'packages/envoy/internal/testpg/testdb/*'
+  - 'packages/envoy/internal/testwait/*'
   - 'packages/envoy/internal/cipher/rulehost/*'
   - 'packages/envoy/internal/cipher/logmask/*'
   - 'packages/envoy/internal/weborigin/*'
@@ -1682,7 +1773,6 @@ envoy_infra_go:
   - *dispatch_server
   - 'packages/envoy/cmd/dispatch/testdata/signin-domain-vectors.json'
   - *listener_command
-  - 'packages/envoy/natsgrant/*'
   - 'packages/envoy/internal/cmdtest/*'
   - 'packages/envoy/internal/contracts/**'
   - 'packages/envoy/internal/dispatch/githubapp/**'
@@ -1738,6 +1828,10 @@ envoy_go:
   - 'packages/contracts/fixtures/live/**'
   - 'packages/contracts/schemas/dispatch-openapi.json'
   - 'packages/contracts/fixtures/ask-reply-recipients.json'
+  - 'packages/contracts/fixtures/session-grant.json'
+  # why: .github/ci-notes/ci.md#envoy_go-its-natslive-step-runs-cmdlisteners-natslive-tests
+  - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
+  - 'packages/contracts/fixtures/envoy-session-no-interests.json'
   - 'packages/daemon/internal/intake/testdata/dispatch/server-started.json'
   # why: .github/ci-notes/ci.md#envoy_go-internaldispatchtextwhitespace_fixture_testgo-holds-unicodeisspace-to-this
   - 'packages/contracts/fixtures/go-unicode-isspace.json'
@@ -2247,18 +2341,32 @@ listener_server_change:
   - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
   - 'packages/envoy/migrationid/*'
+  - 'packages/envoy/natsgrant/*'
   - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
   - 'packages/contracts/fixtures/envoy-session-no-interests.json'
   - '.github/scripts/go-tagged-tests.sh'
   # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
   # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
   - '!packages/envoy/cipheraddr/**/*_test.go'
+  - '!packages/envoy/cmd/listener/edge_confirm_fault_test.go'
+  - '!packages/envoy/cmd/listener/edge_confirm_record_test.go'
+  - '!packages/envoy/cmd/listener/edge_confirm_unanswered_test.go'
+  - '!packages/envoy/cmd/listener/edge_frame_rule_test.go'
+  - '!packages/envoy/cmd/listener/edge_leader_seam_test.go'
+  - '!packages/envoy/cmd/listener/edge_live_test.go'
+  - '!packages/envoy/cmd/listener/edge_record_binding_test.go'
+  - '!packages/envoy/cmd/listener/edge_record_renewal_test.go'
+  - '!packages/envoy/cmd/listener/edge_republished_confirm_test.go'
+  - '!packages/envoy/cmd/listener/edge_role_project_live_test.go'
+  - '!packages/envoy/cmd/listener/edge_server_written_test.go'
+  - '!packages/envoy/cmd/listener/relay_socket_live_test.go'
   - '!packages/envoy/going/**/*_test.go'
   - '!packages/envoy/internal/**/*_test.go'
   - '!packages/envoy/listenerwire/**/*_test.go'
   - '!packages/envoy/listenfd/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
+  - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
@@ -2298,6 +2406,7 @@ broker_multiprocess:
   - 'packages/envoy/internal/cipher/projectrepos/**'
   - 'packages/envoy/internal/cipher/proof/*'
   - 'packages/envoy/internal/cipher/record/*'
+  - 'packages/envoy/internal/cipher/githubname/*'
   - 'packages/envoy/internal/cipher/requests/*'
   - 'packages/envoy/internal/cipher/reread/*'
   - 'packages/envoy/internal/cipher/secrets/*'
@@ -2324,6 +2433,7 @@ broker_multiprocess:
   - 'packages/envoy/internal/logging/*'
   - 'packages/envoy/internal/logtest/*'
   - 'packages/envoy/internal/metrics/*'
+  - 'packages/envoy/internal/oauthrefusal/*'
   - 'packages/envoy/internal/oidc/**'
   - 'packages/envoy/internal/pglisten/*'
   - 'packages/envoy/internal/pgmigrate/*'
@@ -2454,6 +2564,7 @@ envoy_smoke:
   - '!packages/envoy/internal/logging/**/*_test.go'
   - '!packages/envoy/internal/mcpbridge/**/*_test.go'
   - '!packages/envoy/internal/metrics/**/*_test.go'
+  - '!packages/envoy/internal/oauthrefusal/**/*_test.go'
   - '!packages/envoy/internal/oidc/**/*_test.go'
   - '!packages/envoy/internal/pglisten/**/*_test.go'
   - '!packages/envoy/internal/pgmigrate/**/*_test.go'
@@ -2580,6 +2691,7 @@ worker_image:
   - 'packages/envoy/natsversion/**'
   - 'packages/envoy/steprecord/**'
   - 'packages/envoy/testnatsimages/**'
+  - 'packages/envoy/testnatsinprocess/**'
   - '.omp-pin'
   - '.bun-version'
   - '.dockerignore'
@@ -2701,6 +2813,7 @@ envoy_client:
   - 'packages/contracts/fixtures/envoy-session-no-interests.json'
   - 'packages/contracts/fixtures/envelope-without-role.json'
   - 'packages/contracts/fixtures/ask-reply-recipients.json'
+  - 'packages/contracts/fixtures/session-grant.json'
   - 'packages/envoy/internal/dispatch/api/testdata/**'
   - 'skills/**'
   - 'packages/*/AGENTS.md'
@@ -2745,6 +2858,18 @@ envoy_go_race:
   - '!packages/envoy/cmd/dev-proxy-stands/**/*_test.go'
   - '!packages/envoy/cmd/dispatch/**/*_test.go'
   - '!packages/envoy/cmd/dispatch-seed/**/*_test.go'
+  - '!packages/envoy/cmd/listener/edge_confirm_fault_test.go'
+  - '!packages/envoy/cmd/listener/edge_confirm_record_test.go'
+  - '!packages/envoy/cmd/listener/edge_confirm_unanswered_test.go'
+  - '!packages/envoy/cmd/listener/edge_frame_rule_test.go'
+  - '!packages/envoy/cmd/listener/edge_leader_seam_test.go'
+  - '!packages/envoy/cmd/listener/edge_live_test.go'
+  - '!packages/envoy/cmd/listener/edge_record_binding_test.go'
+  - '!packages/envoy/cmd/listener/edge_record_renewal_test.go'
+  - '!packages/envoy/cmd/listener/edge_republished_confirm_test.go'
+  - '!packages/envoy/cmd/listener/edge_role_project_live_test.go'
+  - '!packages/envoy/cmd/listener/edge_server_written_test.go'
+  - '!packages/envoy/cmd/listener/relay_socket_live_test.go'
   - '!packages/envoy/cmd/natsprobe/**/*_test.go'
   - '!packages/envoy/cmd/natstail/**/*_test.go'
   - '!packages/envoy/cmd/spec-check/**/*_test.go'
@@ -2762,6 +2887,7 @@ envoy_go_race:
   - '!packages/envoy/internal/cipher/e2e/**/*_test.go'
   - '!packages/envoy/internal/cipher/enroll/**/*_test.go'
   - '!packages/envoy/internal/cipher/exchange/**/*_test.go'
+  - '!packages/envoy/internal/cipher/githubname/**/*_test.go'
   - '!packages/envoy/internal/cipher/groups/**/*_test.go'
   - '!packages/envoy/internal/cipher/helper/**/*_test.go'
   - '!packages/envoy/internal/cipher/hold/**/*_test.go'
@@ -2822,7 +2948,6 @@ envoy_go_race:
   - '!packages/envoy/internal/dispatch/githubapp/**/*_test.go'
   - '!packages/envoy/internal/dispatch/githubreads/**/*_test.go'
   - '!packages/envoy/internal/dispatch/graphcensus/**/*_test.go'
-  - '!packages/envoy/internal/dispatch/grapherase/**/*_test.go'
   - '!packages/envoy/internal/dispatch/graphstore/**/*_test.go'
   - '!packages/envoy/internal/dispatch/horizontest/**/*_test.go'
   - '!packages/envoy/internal/dispatch/identity/**/*_test.go'
@@ -2842,6 +2967,12 @@ envoy_go_race:
   - '!packages/envoy/internal/dispatch/sessionanswers/**/*_test.go'
   - '!packages/envoy/internal/dispatch/specgraph/**/*_test.go'
   - '!packages/envoy/internal/dispatch/startup/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/store/storetest/xidwindow_gaps_test.go'
+  - '!packages/envoy/internal/dispatch/store/storetest/xidwindow_measure_test.go'
+  - '!packages/envoy/internal/dispatch/store/storetest/xidwindow_quota_linux_test.go'
+  - '!packages/envoy/internal/dispatch/store/storetest/xidwindow_softirq_linux_test.go'
+  - '!packages/envoy/internal/dispatch/store/storetest/xidwindow_softirq_test.go'
+  - '!packages/envoy/internal/dispatch/store/storetest/xidwindow_tracepages_linux_test.go'
   - '!packages/envoy/internal/dispatch/testlimits/**/*_test.go'
   - '!packages/envoy/internal/dispatch/text/**/*_test.go'
   - '!packages/envoy/internal/dispatch/texttreefill/**/*_test.go'
@@ -2860,6 +2991,7 @@ envoy_go_race:
   - '!packages/envoy/internal/logging/**/*_test.go'
   - '!packages/envoy/internal/mcpbridge/**/*_test.go'
   - '!packages/envoy/internal/metrics/**/*_test.go'
+  - '!packages/envoy/internal/oauthrefusal/**/*_test.go'
   - '!packages/envoy/internal/oidc/oidctest/**/*_test.go'
   - '!packages/envoy/internal/pglisten/**/*_test.go'
   - '!packages/envoy/internal/pgmigrate/**/*_test.go'
@@ -2872,7 +3004,21 @@ envoy_go_race:
   - '!packages/envoy/internal/serverwait/**/*_test.go'
   - '!packages/envoy/internal/smoke/**/*_test.go'
   - '!packages/envoy/internal/stacktest/**/*_test.go'
-  - '!packages/envoy/internal/testnats/**/*_test.go'
+  - '!packages/envoy/internal/testnats/callout_image_test.go'
+  - '!packages/envoy/internal/testnats/callout_test.go'
+  - '!packages/envoy/internal/testnats/cluster_test.go'
+  - '!packages/envoy/internal/testnats/handshake_hold_test.go'
+  - '!packages/envoy/internal/testnats/image_test.go'
+  - '!packages/envoy/internal/testnats/image_url_test.go'
+  - '!packages/envoy/internal/testnats/loopback_test.go'
+  - '!packages/envoy/internal/testnats/nats_test.go'
+  - '!packages/envoy/internal/testnats/proxy_test.go'
+  - '!packages/envoy/internal/testnats/relay_test.go'
+  - '!packages/envoy/internal/testnats/responsetimer_test.go'
+  - '!packages/envoy/internal/testnats/start_wait_test.go'
+  - '!packages/envoy/internal/testnats/stream_create_test.go'
+  - '!packages/envoy/internal/testnats/wait_bound_test.go'
+  - '!packages/envoy/internal/testnats/cmd/**/*_test.go'
   - '!packages/envoy/internal/testport/**/*_test.go'
   - '!packages/envoy/internal/testtmp/**/*_test.go'
   - '!packages/envoy/internal/testwait/**/*_test.go'
@@ -2925,7 +3071,9 @@ envoy_go_race_api:
   - 'packages/envoy/internal/cipher/projectaccess/projectaccesstest/*'
   - 'packages/envoy/internal/cipher/proof/*'
   - 'packages/envoy/internal/cipher/record/*'
+  - 'packages/envoy/internal/cipher/githubname/*'
   - 'packages/envoy/internal/cipher/requests/*'
+  - 'packages/envoy/internal/cipher/rulehost/*'
   - 'packages/envoy/internal/cipher/secrets/*'
   - 'packages/envoy/internal/cipher/store/*'
   - 'packages/envoy/internal/cipher/store/migrations/**'
@@ -2934,6 +3082,7 @@ envoy_go_race_api:
   - 'packages/envoy/internal/ciphertoken/*'
   - 'packages/envoy/internal/ciphertoken/ciphertokentest/*'
   - 'packages/envoy/internal/bus/*'
+  - 'packages/envoy/internal/buildversion/*'
   - 'packages/envoy/internal/contracts/*'
   - 'packages/envoy/internal/cputest/*'
   - 'packages/envoy/internal/ctxlock/*'
@@ -2956,6 +3105,7 @@ envoy_go_race_api:
   # why: .github/ci-notes/ci.md#envoy_go_race_api-the-apis-ci-reconcile-passes-route-reads-cireconciles
   - 'packages/envoy/internal/dispatch/cireconcile/*'
   - 'packages/envoy/internal/dispatch/delivery/*'
+  - 'packages/envoy/internal/dispatch/delivery/citebody/*'
   - 'packages/envoy/internal/dispatch/delivery/measures/*'
   - 'packages/envoy/internal/dispatch/delivery/measures/testdata/**'
   - 'packages/envoy/internal/dispatch/delivery/testdata/**'
@@ -3021,6 +3171,7 @@ envoy_go_race_api:
   - 'packages/envoy/internal/legionagents/*'
   - 'packages/envoy/internal/logtest/*'
   - 'packages/envoy/internal/metrics/*'
+  - 'packages/envoy/internal/oauthrefusal/*'
   - 'packages/envoy/internal/oidc/*'
   - 'packages/envoy/internal/oidc/oidctest/*'
   - 'packages/envoy/internal/pglisten/*'
@@ -3038,6 +3189,7 @@ envoy_go_race_api:
   - 'packages/envoy/internal/testpg/testdb/*'
   - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
+  - 'packages/envoy/internal/weborigin/*'
   - 'packages/envoy/listenerwire/*'
   - 'packages/envoy/migrationid/*'
   - 'packages/envoy/roleholder/*'
@@ -3135,6 +3287,7 @@ envoy_go_race_api:
   - '!packages/envoy/internal/kvwatch/**/*_test.go'
   - '!packages/envoy/internal/legionagents/**/*_test.go'
   - '!packages/envoy/internal/metrics/**/*_test.go'
+  - '!packages/envoy/internal/oauthrefusal/**/*_test.go'
   - '!packages/envoy/internal/oidc/**/*_test.go'
   - '!packages/envoy/internal/pglisten/**/*_test.go'
   - '!packages/envoy/internal/pgmigrate/**/*_test.go'
@@ -3149,6 +3302,7 @@ envoy_go_race_api:
   - '!packages/envoy/internal/testport/**/*_test.go'
   - '!packages/envoy/internal/testwait/**/*_test.go'
   - '!packages/envoy/internal/tlsalert/**/*_test.go'
+  - '!packages/envoy/internal/weborigin/**/*_test.go'
   - '!packages/envoy/listenerwire/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
@@ -3216,7 +3370,6 @@ envoy_go_claim_model:
   - '!packages/envoy/internal/dispatch/githubapp/**/*_test.go'
   - '!packages/envoy/internal/dispatch/githubreads/**/*_test.go'
   - '!packages/envoy/internal/dispatch/graphcensus/**/*_test.go'
-  - '!packages/envoy/internal/dispatch/grapherase/**/*_test.go'
   - '!packages/envoy/internal/dispatch/graphstore/**/*_test.go'
   - '!packages/envoy/internal/dispatch/horizontest/**/*_test.go'
   - '!packages/envoy/internal/dispatch/identity/**/*_test.go'
@@ -3256,6 +3409,7 @@ envoy_go_claim_model:
   - '!packages/envoy/internal/logging/**/*_test.go'
   - '!packages/envoy/internal/mcpbridge/**/*_test.go'
   - '!packages/envoy/internal/metrics/**/*_test.go'
+  - '!packages/envoy/internal/oauthrefusal/**/*_test.go'
   - '!packages/envoy/internal/oidc/**/*_test.go'
   - '!packages/envoy/internal/pglisten/**/*_test.go'
   - '!packages/envoy/internal/pgmigrate/**/*_test.go'
@@ -3359,6 +3513,7 @@ envoy_go_race_docs:
   - 'packages/envoy/internal/googleidentity/*'
   - 'packages/envoy/internal/goroutinetest/*'
   - 'packages/envoy/internal/logtest/*'
+  - 'packages/envoy/internal/oauthrefusal/*'
   - 'packages/envoy/internal/oidc/*'
   - 'packages/envoy/internal/pglisten/*'
   - 'packages/envoy/internal/pgmigrate/*'
@@ -3371,6 +3526,7 @@ envoy_go_race_docs:
   # redirects (googleaccount.go).
   - 'packages/envoy/internal/redirects/*'
   - 'packages/envoy/internal/stacktest/*'
+  - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
   - 'packages/envoy/listenerwire/*'
   - 'packages/envoy/migrationid/*'
@@ -3407,6 +3563,7 @@ envoy_go_race_docs:
   - '!packages/envoy/internal/fold/**/*_test.go'
   - '!packages/envoy/internal/googleidentity/**/*_test.go'
   - '!packages/envoy/internal/goroutinetest/**/*_test.go'
+  - '!packages/envoy/internal/oauthrefusal/**/*_test.go'
   - '!packages/envoy/internal/oidc/**/*_test.go'
   - '!packages/envoy/internal/pglisten/**/*_test.go'
   - '!packages/envoy/internal/pgmigrate/**/*_test.go'
@@ -3414,6 +3571,7 @@ envoy_go_race_docs:
   - '!packages/envoy/internal/ratelimit/**/*_test.go'
   - '!packages/envoy/internal/redact/**/*_test.go'
   - '!packages/envoy/internal/stacktest/**/*_test.go'
+  - '!packages/envoy/internal/testport/**/*_test.go'
   - '!packages/envoy/internal/testwait/**/*_test.go'
   - '!packages/envoy/internal/tlsalert/**/*_test.go'
   - '!packages/envoy/listenerwire/**/*_test.go'

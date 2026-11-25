@@ -58,8 +58,10 @@ func TestAServerWithNoDatabaseReadsAsTheClosedViewer(t *testing.T) {
 // TestADeploymentReadIsRefusedToAViewerThatIsNotOpen walks every GET row the table classes as a
 // read of the deployment. bob, a restricted member, and bob's token that lists PRIV, one acting for
 // him, are refused each one 403 DEPLOYMENT_READ_REFUSED before its handler runs, the refusal naming
-// the row; alice, a full member no list names, her token that lists PRIV, carol's token that lists
-// PRIV and the shared token, all open viewers, are not: a full member's credential list decides
+// the row, but for the rows that need a scope, which bob's token, a restricted member's, does not
+// hold (R16): those refuse it 403 OAUTH_SCOPE_REQUIRED first (gateRouteScopes). alice, a full
+// member no list names, her token that lists PRIV, carol's token that lists PRIV and the shared
+// token, all open viewers, are not refused: a full member's credential list decides
 // only private projects, and a read of the deployment names none. GET /metrics, among the rows,
 // answers each open viewer 200. A wildcard is filled with a value no row holds, since the refusal
 // comes before any row is read. The one row a restricted member's browser reads, the list of their
@@ -90,6 +92,12 @@ func TestADeploymentReadIsRefusedToAViewerThatIsNotOpen(t *testing.T) {
 			refused := seed.request(t, restricted, http.MethodGet, target, nil)
 			var refusal struct{ Code, Error string }
 			_ = json.Unmarshal(refused.Body.Bytes(), &refusal)
+			if restricted == callerBobPrivToken && len(routeScopes[route.Method+" "+route.Pattern]) > 0 {
+				if refused.Code != http.StatusForbidden || refusal.Code != codeScopeRequired {
+					t.Errorf("%s read GET %s as %d %s, want 403 %s: a restricted member's token holds no scope", restricted, route.Pattern, refused.Code, refused.Body.String(), codeScopeRequired)
+				}
+				continue
+			}
 			if refused.Code != http.StatusForbidden || refusal.Code != "DEPLOYMENT_READ_REFUSED" || !strings.Contains(refusal.Error, "GET "+route.Pattern) {
 				t.Errorf("%s read GET %s as %d %s, want 403 DEPLOYMENT_READ_REFUSED naming the row", restricted, route.Pattern, refused.Code, refused.Body.String())
 			}

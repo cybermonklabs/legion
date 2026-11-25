@@ -251,7 +251,7 @@ export class TokenClientClosedError extends Error {
 }
 
 /**
- * A person's sign-in that the issuer no longer honours: its refresh token was answered
+ * A person's sign-in that the issuer no longer honours: its refresh token was answered 400 or 401
  * `invalid_grant`, because the person revoked the grant at Google or it expired. It mirrors the
  * Go client's `ErrSignInEnded` (`packages/envoy/internal/cipherclient/device.go`), and like a
  * broker's permanent refusal it is final ({@link isFinalRefusal}): no retry and no other caller

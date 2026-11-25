@@ -21,9 +21,9 @@ const tupleColumns = `seq, from_kind, from_id, kind, to_kind, to_id, at, who, so
 // cuts to the relations that stand, so a relation whose newest tuple retracts it is absent rather
 // than answered as ended. It is SQL text rather than a read, because most of its readers splice
 // it into a statement of their own - the census's links of every node, a person's page, the
-// claims the publisher's record restates, the parents a block index compares, the backlink
-// counts' test of one tuple and the erase's blockers - and the rule written out in each of them
-// was several readings to keep in step, as prioritystore.AdvancesTupleRead's own store found.
+// claims the publisher's record restates, the parents a block index compares and the backlink
+// counts' test of one tuple - and the rule written out in each of them was several readings to
+// keep in step, as prioritystore.AdvancesTupleRead's own store found.
 //
 // It reads graph_tuples as t. relation is the columns of t that tell one relation from another
 // among the rows narrow keeps - the relation's key, (from_kind, from_id, kind, to_kind, to_id),
@@ -242,27 +242,6 @@ func ReadNode(ctx context.Context, q Queryer, kind, id string) (Node, bool, erro
 // nodeColumns is what every node read answers, in the order a node scan takes them, and what
 // every node write writes (nodeArrays binds one array per column).
 const nodeColumns = `kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event, project_key, parties`
-
-// ProjectedTable is one table that projects the store: each of its rows names the node it is the
-// projection of by its node_kind and node_address, which migration 20261109022248 gave it with a
-// foreign key to graph_nodes. Issue is the column naming the issue that owns a row itself, empty
-// for a table whose rows are owned through their document alone, by the artifact_id each of them
-// carries: a comment is an issue's or a document's (comments_one_owner, migration 0009), and a
-// block and a block reference are their document's. Key is the table's primary key, the order a
-// reader takes a node's rows of it in and how it names each.
-type ProjectedTable struct{ Table, Issue, Key string }
-
-// ProjectedTables are the tables that project the store, the one list of them the tree's
-// production code reads: the erase walks all three by (node_kind, node_address) rather than by the
-// node's kind, to read, lock and delete a node's rows of them (grapherase), so a kind that gains a
-// projection carries no second list there to keep in step. censustest.ProjectedColumns holds the
-// columns of each that the store states, and graphcensus's
-// TestTheProjectedColumnsListEveryTableTheStoreProjects holds its tables to these.
-var ProjectedTables = []ProjectedTable{
-	{Table: "comments", Issue: "issue_key", Key: "id"},
-	{Table: "document_blocks", Key: "artifact_id, block_id"},
-	{Table: "block_refs", Key: "artifact_id, block_id, to_kind, to_id, kind"},
-}
 
 // NodesOfKind answers every node of one kind, in id order. It reads through the primary key
 // (kind, id), whose leading column it binds, so a kind the store holds few of costs that few

@@ -130,10 +130,10 @@ func requireTheBlockRefBatchLockOrder(t *testing.T) {
 }
 
 // requireTheCommentBatchLockOrder holds writeCommentBatch to its steps. The batch first takes the
-// owner lock of its comments' issue, as every writer of a comments row and the erase do
+// owner lock of its comments' issue, as every writer of a comments row does
 // (refs.LockCommentOwners), and reads under it which comments still stand unmarked
-// (refs.CommentsNamingNoNode), so a batch read before another run marked a comment and the erase
-// removed it writes nothing for it. It then writes every node it writes - its comments' and their
+// (refs.CommentsNamingNoNode), so a batch read before another run marked a comment writes nothing
+// for it. It then writes every node it writes - its comments' and their
 // authors' - in one store write, which takes their rows in ascending (kind, id) and then appends
 // every tuple: the facts each comment row projects, and each author's authored_by and aliases
 // (graphstore.AuthorFacts). Only then does it name the nodes on the comments rows. It appends no
@@ -334,11 +334,11 @@ const (
 
 // TestTheBlockBatchTakesEveryOwnerRowBeforeAnyFenceRow holds writeBlockBatch over two documents of
 // two issues to the order lockBlockDocuments takes their locks in: both owner locks first, in
-// ascending owner key, the order the erase takes several owner locks in, and only then each
-// document's document_block_versions row, in document id order. The documents' ids sort the other
-// way round from their issues' keys, so a batch that took one document's owner lock and fence row
-// before the next document's owner lock, in document id order, would take issue CORE-1's lock
-// first and its document's fence row before issue ACME-1's lock.
+// ascending owner key, the order events.Broker.LockOwners takes several owner locks in, and only
+// then each document's document_block_versions row, in document id order. The documents' ids sort
+// the other way round from their issues' keys, so a batch that took one document's owner lock and
+// fence row before the next document's owner lock, in document id order, would take issue
+// CORE-1's lock first and its document's fence row before issue ACME-1's lock.
 //
 // Each of the four rows is held in a transaction of its own while the real Backfill runs
 // (followTheBackfill), and the order the run queues behind them in is held to the invariants

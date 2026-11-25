@@ -201,7 +201,7 @@ func TestAReconcileReupsertOfTheSameFactsLogsNothing(t *testing.T) {
 		}
 	}
 	for range 2 {
-		if _, err := AttributePullRequests(ctx, pool, AttributionResolveBatch); err != nil {
+		if _, err := unrenamed().AttributePullRequests(ctx, pool, AttributionResolveBatch); err != nil {
 			t.Fatalf("AttributePullRequests: %v", err)
 		}
 	}

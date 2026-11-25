@@ -270,7 +270,9 @@ member_marker() {
 # rule reads; a runner reads can and ft from the fills instead. A control that failed leaves the
 # run UNKNOWN, naming the read, and the member's half is not run: the row observed nothing, so it
 # is counted neither as a row that can fail nor as a blind one. Fills mode keeps the row's half
-# (put_row) or, where the row is unfailable, leaves the run UNKNOWN (no file). Every other mode
+# (put_row) or, where the row is unfailable, leaves the run UNKNOWN (no file), but for a proxy read
+# the proxy refused the full member's token for (`proxy_refused`), which it keeps as one that
+# cannot fail, so the rest still runs and a runner reads that row UNKNOWN. Every other mode
 # then runs the member's half, `KIND_member LABEL ARGS...`, whose `held` makes an unfailable row
 # UNKNOWN too. A runner's row its fills hold no line of was never asked of the full member (the
 # fills were made from another API document; another route index read_fills refuses): its
@@ -281,7 +283,7 @@ row() {
   shift 2
   must_fail=0
   case $kind in as_missing | proxy) must_fail=1 ;; esac
-  can=0 ft=- why='' control_failed='' in_fills=1 can_text=''
+  can=0 ft=- why='' control_failed='' in_fills=1 can_text='' proxy_refused=''
   if [ "$mode" = runner ]; then
     can=$(fills_can "$label")
     ft=$(fills_status "$label")
@@ -301,8 +303,13 @@ row() {
   fi
   counted "$can"
   if [ "$mode" = fills ]; then
-    if unfailable; then
+    if unfailable && { [ "$kind" != proxy ] || [ -z "$proxy_refused" ]; }; then
       unproven "$label: $why"
+      return
+    fi
+    if unfailable; then
+      put_row "$label"
+      printf 'fill    %s (cannot fail: %s)\n' "$label" "$why"
       return
     fi
     put_row "$label"
@@ -492,19 +499,27 @@ proxy_answer() { is_judgeable "$1" || not_installed "$1" "$2"; }
 # one's is the proxy's answer for a repository the App is not installed on. The proxy passes
 # GitHub's own status through, and GitHub answers 403 to an App that lacks a permission: the
 # member, on a build with no read check, is answered that 403 too, which their half takes as a
-# refusal, so a full member's 403 is no read that could fail. The proxy reads the browser's
-# person alone, so the full member reads as SWEEP_FULL_COOKIE's person; without it the full
-# member's read is answered as no one's, and cannot fail.
+# refusal, so a full member's 403 is no read that could fail. The full member reads as
+# SWEEP_FULL_COOKIE's person, or as SWEEP_FULL_TOKEN where no cookie is given (proxy_by). A build
+# before cybermonklabs/legion#5079 reads the proxy as the browser's person alone and refuses a
+# token, 401 or 403 OAUTH_SCOPE_REQUIRED: that read could not fail, and names the build
+# (proxy_refused), never a FAIL or a PASS.
 proxy_full() {
-  local fm cookie_why="the proxy reads the browser's person alone, whom SWEEP_FULL_COOKIE names"
+  local fm code
   call "$full_browser" "$2" "$work/ft"
   ft=$status
+  code=$(jq -r 'if type == "object" then .code // empty else empty end' "$work/ft" 2>/dev/null)
+  if [ "$proxy_by" = token ] && { [ "$ft" = 401 ] || { [ "$ft" = 403 ] && [ "$code" = OAUTH_SCOPE_REQUIRED ]; }; }; then
+    proxy_refused=1
+    why="the proxy refused the full member's token ($ft ${code:-no code}): a build before cybermonklabs/legion#5079 reads the proxy as the browser's person alone; give SWEEP_FULL_COOKIE"
+    return
+  fi
   call "$full_browser" "$3" "$work/fm"
   fm=$status
   if ! not_installed "$fm" "$work/fm"; then
     control_failed=1 why="the full member is answered $fm for a repository the App is not installed on, not the proxy's own answer for one (503 $not_installed_code), so its control was not read"
   elif not_installed "$ft" "$work/ft"; then
-    why="the full member is answered $ft for $project's repository as for one the App is not installed on ($fm), so the read could not fail: $cookie_why"
+    why="the full member is answered $ft for $project's repository as for one the App is not installed on ($fm), so the read could not fail"
   elif ! is_judgeable "$ft"; then
     control_failed=1 why="the full member is answered $ft for $project's repository, which no rule judges, so its control was not read"
   elif [ "$ft" = 403 ]; then
@@ -558,10 +573,10 @@ agent_answer() {
 # agent_view SESSION: the live socket's agent view of SESSION, a session of the project alone (one
 # conversation as it is spoken, over GET /ws/live). The member must be answered as for a session
 # no one answers for, the one frame that says so and nothing after it, or refused the upgrade. It
-# can fail where the full member, as SWEEP_FULL_COOKIE's person (the view reads the person scope),
-# is answered more than that.
+# can fail where the full member, as SWEEP_FULL_TOKEN (the view reads its person scope), is
+# answered more than that.
 agent_view_full() {
-  agent_answer "$full_browser" "$work/agent-full" "$2"
+  agent_answer full "$work/agent-full" "$2"
   ft=socket
   if [ "$agent_exit" != 0 ] || ! grep -q '^{' "$work/agent-full" || grep -q '^closed ' "$work/agent-full"; then
     control_failed=1 why="the full member's view was answered $(frames_of "$work/agent-full"), so its control was not read"

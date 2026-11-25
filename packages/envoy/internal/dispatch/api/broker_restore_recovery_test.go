@@ -38,10 +38,10 @@ func newRecoveryRig(t *testing.T) *recoveryRig {
 	t.Helper()
 	rig := ciphertest.NewRig(t)
 	dispatch := storetest.Open(t)
-	deps, err := NewDeps(DepsInput{
+	deps, err := NewDeps(withDocumentService(t, DepsInput{
 		Store: dispatch, Identity: headerIdentity(dispatch), ServerURL: "https://dispatch.example", Events: events.NewBroker(),
 		AgentSecretsURL: rig.URL, AgentSecretsTokenFile: accountTokenFile(t, rig.UIToken),
-	})
+	}))
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
 	}

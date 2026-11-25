@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 )
 
@@ -200,14 +201,18 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 		}
 		references = decoded
 	}
-	invocation := f.omp
-	if invocation == "" {
-		invocation = os.Getenv("LEGION_OMP_PATH")
+	// --omp and LEGION_OMP_PATH each name the OMP executable, a path, as LEGION_OMP_PATH is for the
+	// daemon (omplaunch.ResolveInvocation). Every launch below is shell text, so the path goes in as
+	// one shell word: a path holding a space or a glob character still names the one file.
+	omp := f.omp
+	if omp == "" {
+		omp = os.Getenv("LEGION_OMP_PATH")
 	}
-	if invocation == "" {
+	if omp == "" {
 		fmt.Fprintln(stderr, "legion probe-image: set LEGION_OMP_PATH (or pass --omp) to the OMP executable to probe")
 		return 1
 	}
+	invocation := shellprefix.Word(omp)
 	expected, err := strconv.Atoi(f.contract)
 	if !digits.MatchString(f.contract) || err != nil || expected < 1 {
 		fmt.Fprintf(stderr, "legion probe-image: --daemon-api-version must be a positive integer (got %q)\n", f.contract)
@@ -293,31 +298,7 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 			noVerdict = append(noVerdict, "capability "+string(line.Name)+": not checked")
 		}
 	}
-	// The sites the positive controls reached, where a TLS client's run its own limit ends with no
-	// answer has no verdict (probeTLSClients): every compromised site once the controls passed.
-	var reached []tlsSite
-	var controlsNoVerdict tlsNoVerdicts
-	switch err := newTLSPositiveControls(ctx, environ); {
-	case errors.As(err, &controlsNoVerdict):
-		noVerdict = append(noVerdict, controlsNoVerdict...)
-	case err != nil:
-		fmt.Fprintf(stderr, "legion probe-image: %v\n", err)
-		return 1
-	default:
-		reached = compromisedTLSSites()
-		fmt.Fprintln(stdout, tlsPositiveControlsLine(reached))
-	}
-	tlsStateDir, removeTLSStateDir, err := newTLSStateDir()
-	if err != nil {
-		fmt.Fprintf(stderr, "legion probe-image: %v\n", err)
-		return 1
-	}
-	defer removeTLSStateDir()
-	observations, clientsNoVerdict, err := probeTLSClients(ctx, newImageTLSClients(invocation, environ, tlsStateDir), reached)
-	for _, observation := range observations {
-		fmt.Fprintf(stdout, "probe-image: TLS client %s %s: %s (%s)\n",
-			observation.client, observation.site.name, observation.status, observation.detail)
-	}
+	clientsNoVerdict, err := runTLSProbe(ctx, invocation, environ, stdout)
 	if err != nil {
 		fmt.Fprintf(stderr, "legion probe-image: %v\n", err)
 		return 1
@@ -354,7 +335,7 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 	if natsUser != "" {
 		fmt.Fprintln(stdout, bootprobe.NATSUserLine(natsUser))
 	}
-	fmt.Fprintln(stdout, bootprobe.OKLine(invocation, expected, agentModels, checked, modelFallback))
+	fmt.Fprintln(stdout, bootprobe.OKLine(omp, expected, agentModels, checked, modelFallback))
 	return 0
 }
 

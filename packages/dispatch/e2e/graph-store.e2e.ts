@@ -462,8 +462,8 @@ test("a person page lists what they authored and what reached them", async ({
 
     // Every row is the store's answer and nothing else's: with the delivery's tuple retracted
     // the received row goes, while the comment and its sent attempt stand where they were. The
-    // retraction is a second tuple, as every end of a relation in this store is: nothing but
-    // `envoy-dispatch erase` deletes a tuple row.
+    // retraction is a second tuple, as every end of a relation in this store is: nothing deletes
+    // a tuple row.
     await sql(
       `insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
        select from_kind, from_id, kind, to_kind, to_id, now(), who, 0, null, false

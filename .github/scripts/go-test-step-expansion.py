@@ -325,14 +325,31 @@ EXCEPTIONS = (
             (".github/workflows/ci-job-envoy-go.yaml", "Count the database broker suites' skips"),
         }),
         package="github.com/sjawhar/envoy/internal/cipher/proxyrules",
-        functions=("TestTheModelReadsAHostlessEntryWithGuidance",),
+        functions=("TestTheModelRefusesAHostlessEntry",),
         requirement=(
             "The same reason as TestModelAgreesOnHostShapes above: airlock-lean's corpus "
             "comparison runs a host-less entry carrying guidance, a field the generator never "
-            "writes, through both the Go airlock and the Lean model's, with AIRLOCK_MODEL set. "
-            "envoy-go's step \"Count the database broker suites' skips\" lists it too, and it "
-            "skips there for want of AIRLOCK_MODEL, as that script's EXPECTED_SKIPS records, so "
-            "the comparison runs only in airlock-lean."
+            "writes, through both the Go validation and the Lean model's, which each refuse it, "
+            "with AIRLOCK_MODEL set. envoy-go's step \"Count the database broker suites' skips\" "
+            "lists it too, and it skips there for want of AIRLOCK_MODEL, as that script's "
+            "EXPECTED_SKIPS records, so the comparison runs only in airlock-lean."
+        ),
+    ),
+    Exception_(
+        steps=frozenset({
+            (".github/workflows/ci-job-envoy-go.yaml", "Unit test envoy Go package"),
+            (".github/workflows/ci-job-envoy-go-checks.yaml", "Test pmdoc's tables in a build without inlining"),
+        }),
+        package="github.com/sjawhar/envoy/internal/dispatch/pmdoc",
+        functions=None,
+        requirement=(
+            "pmdoc's readers must read a table in every build, whatever its inlining. "
+            "envoy-go-checks runs pmdoc's table tests and its display fixture test in a build made "
+            "with -gcflags=all=-l, a mode no other step builds pmdoc in: goldmark builds pmdoc's "
+            "readers through an interface Go's initialization order does not look through, so a "
+            "reader that copied a variable of pmdoc was handed nil in that build alone, and each "
+            "table failed to read there while it passed in envoy-go's unit step. The two runs "
+            "answer different questions."
         ),
     ),
 )
@@ -408,7 +425,7 @@ AUDITED_SCRIPTS = {
             "--var BROKER_TEST_DATABASE_URL --race --timeout 10m ./internal/cipher/natscallout/":
                 "go test -json -count=1 -race -timeout 10m ./internal/cipher/natscallout/",
         },
-        sha256="7b8df16ba99cc0890dcde2d6816b16bcd80dea8c1e95c74b285df9ce70fcb49e",
+        sha256="d274c3e1c3b0c71165aa9e0082c220fe3d8de1ab4ea222c0efa443b479d1412f",
     ),
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'` over the packages before its

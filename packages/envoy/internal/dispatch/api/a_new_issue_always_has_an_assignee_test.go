@@ -17,6 +17,7 @@ import (
 // Each step of the chain is driven through POST /api/v1/issues and the issue is then read back,
 // since the create's answer and the stored row must name the same person.
 func TestANewIssueAlwaysHasAnAssignee(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	// carol is nobody's creator and holds no token here, so an issue reaching her reached the
 	// project's default and nothing else.
@@ -92,6 +93,7 @@ func TestANewIssueAlwaysHasAnAssignee(t *testing.T) {
 // Each issue is read back, and the project's listing, which every issue summary carries its
 // assignee on (GET /api/v1/issues has no assignee filter), names a person for every one of them.
 func TestACreateNamingNobodyTakesTheDefault(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	// carol is nobody's creator and holds no token here, so an issue reaching her reached the
 	// project's default and nothing else.

@@ -12,14 +12,17 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// parseIssueRepo decodes the tri-state `repo` field of an issue write. Absent → (nil, false): leave
-// it alone. JSON null → (nil, true): clear it, so the issue resolves through its parent chain and the
-// project's default again. A string, trimmed of the space around it → its canonical `owner/name`,
-// provided GitHub could hold a repository of that name (refs.ParseGitHubRepo, which lowercases,
-// drops a `.git` suffix and holds the stored form to GitHub's names); anything else → 400
-// INVALID_ISSUE. Since migration 20261112004945 no repo_projects row stands behind an issue's own
-// repository, so this is the whole gate on the value, and the value goes on to GitHub reads of its
-// own: the CI repair asks GitHub about every distinct repository an issue names (cireconcile's
+// parseIssueRepo decodes a tri-state `repo` field: an issue's own repository on an issue write,
+// and a project's default repository on PUT /api/v1/projects/{key}/default-repository. Absent →
+// (nil, false): leave it alone. JSON null → (nil, true): clear it, so the issue resolves through
+// its parent chain and the project's default again, or the project has no default. A string,
+// trimmed of the space around it → its canonical `owner/name`, provided GitHub could hold a
+// repository of that name (refs.ParseGitHubRepo, which lowercases, drops a `.git` suffix and
+// holds the stored form to GitHub's names); anything else → 400 with code, the write's own
+// invalid-input code (INVALID_ISSUE, INVALID_PROJECT). An issue's own repository is a column of
+// the issue and a project's default repository a column of the project, so this is the whole
+// gate on the value, and the value goes on to GitHub reads of its own: the CI repair asks GitHub
+// about every distinct repository an issue names or a project has as its default (cireconcile's
 // covered), once a pass, and the Legion daemon prepares a working copy from it. A name GitHub's
 // rule refuses can only answer "no such repository" there, every pass, so it is refused at the
 // write instead. The rule is held here and not in the reading of an issue reference's repository
@@ -27,7 +30,7 @@ import (
 // linked (resolveIssueRef): a row written before this gate existed is still to be found by the
 // reference that names it, and refusing the rule there would answer INVALID_ISSUE_REF for a link
 // the server itself stored.
-func parseIssueRepo(raw json.RawMessage) (repo *string, provided bool, err error) {
+func parseIssueRepo(raw json.RawMessage, code string) (repo *string, provided bool, err error) {
 	if len(raw) == 0 {
 		return nil, false, nil
 	}
@@ -36,11 +39,11 @@ func parseIssueRepo(raw json.RawMessage) (repo *string, provided bool, err error
 	}
 	var value string
 	if err := json.Unmarshal(raw, &value); err != nil {
-		return nil, true, errorf(http.StatusBadRequest, "INVALID_ISSUE", `repo must be "owner/name" or null`)
+		return nil, true, errorf(http.StatusBadRequest, code, `repo must be "owner/name" or null`)
 	}
 	owner, name, err := refs.ParseGitHubRepo(strings.TrimSpace(value))
 	if err != nil {
-		return nil, true, errorf(http.StatusBadRequest, "INVALID_ISSUE", `repo must be "owner/name" (got %q)`, value)
+		return nil, true, errorf(http.StatusBadRequest, code, `repo must be "owner/name" (got %q)`, value)
 	}
 	canonical := owner + "/" + name
 	return &canonical, true, nil
@@ -111,6 +114,18 @@ func refuseRepoHidden(ctx context.Context, q queryer, who model.Actor, repo *str
 	return nil
 }
 
+// renamedRepo is repo under its new name where a rename pair renames it away
+// (refs.Renames.Canonical). nil, no repository, stays nil. An issue's create and patch and a
+// project's default repository write take it, so no write stores an old name, and the results
+// read takes it for the repository a check's issue resolves to (checkIssueRepository).
+func (s *server) renamedRepo(repo *string) *string {
+	if repo == nil {
+		return nil
+	}
+	canonical := s.deps.Renames.Canonical(*repo)
+	return &canonical
+}
+
 // repoScan receives refs.IssueRepoColumns for one issue, the repository-resolution rule the
 // server keeps in one place: refs.IssueRepository reads the same terms for a single key, for
 // the results read and the pull-request head attribution, so an issue read and those two
@@ -134,12 +149,12 @@ func (r *repoScan) resolve(key string) (own, resolved *string, err error) {
 
 // checkIssueRepository is the repository a check's issue resolves to: its own, the nearest one
 // above it, or its project's default (refs.IssueRepository), under the canonical name that
-// repository is called today (refs.CanonicalRepo). It answers three states, and every caller
-// says which it has: a repository; nil answered, the issue that resolves to none; and nil
-// unanswered, either read having failed, where Dispatch cannot say which of the two the issue
-// is. q is the pool or transaction the two reads are made on.
+// repository is called today (refs.Renames.Canonical over Deps.Renames). It answers three
+// states, and every caller says which it has: a repository; nil answered, the issue that
+// resolves to none; and nil unanswered, the read having failed, where Dispatch cannot say which
+// of the two the issue is. q is the pool or transaction the read is made on.
 //
-// The two nothings part here, where the reads are made and the error is in hand, rather than as
+// The two nothings part here, where the read is made and the error is in hand, rather than as
 // one nil standing for both that every caller has to guess the meaning of, because the guess has
 // one right answer and it is not the same one at each call site: an issue that resolves to no
 // repository is a fact about the work, and no pass of such a check stands, while a read of
@@ -153,8 +168,8 @@ func (r *repoScan) resolve(key string) (own, resolved *string, err error) {
 // readThroughPullRequests).
 // An issue recorded under a name that was renamed away would otherwise have the App asked
 // about that name, which GitHub answers 404 for, and every result of that issue would read
-// unknown. A repository with no rename is its own canonical name, so this costs one read and
-// changes no answer for it.
+// unknown. The pairs were read once at boot, so the canonical name costs no read, and a
+// repository with no pair is its own canonical name.
 //
 // Both routes resolve through this one function: two hand-kept copies of this resolve are how
 // a refusal and a result's answer come to name different repositories.
@@ -181,13 +196,5 @@ func (s *server) checkIssueRepository(ctx context.Context, q refs.Queryer, issue
 		slog.Warn("dispatch: resolve the repository of a check's issue", "issue", issueKey, "error", err)
 		return nil, false
 	}
-	if repo == nil {
-		return nil, true
-	}
-	canonical, err := refs.CanonicalRepo(ctx, q, *repo)
-	if err != nil {
-		slog.Warn("dispatch: canonical name of a check's repository", "issue", issueKey, "repo", *repo, "error", err)
-		return nil, false
-	}
-	return &canonical, true
+	return s.renamedRepo(repo), true
 }

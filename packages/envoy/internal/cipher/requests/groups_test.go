@@ -101,7 +101,7 @@ func newGroupFixture(t *testing.T) *groupFixture {
 // ask is Create of names on enr, signed with key.
 func (f *groupFixture) ask(t *testing.T, enr string, key *ecdsa.PrivateKey, names ...string) Request {
 	t.Helper()
-	req, err := f.m.Create(context.Background(), enr, signRequest(t, f.m, key, "team work", names...), "", nil)
+	req, err := f.m.Create(context.Background(), enr, signRequest(t, f.m, key, "team work", names...), "")
 	if err != nil {
 		t.Fatalf("Create(%v): %v", names, err)
 	}
@@ -225,7 +225,7 @@ func TestAMemberListsAndRevokesAGroupOwnedGrant(t *testing.T) {
 	if err := f.m.RevokeByApprover(context.Background(), grantID, secondMember, record.HumanActor(secondMember)); err != nil {
 		t.Fatalf("RevokeByApprover(second member) = %v, want nil", err)
 	}
-	if _, err := f.m.Values(context.Background(), grantID, f.asker, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
+	if _, err := f.m.Values(context.Background(), grantID, f.asker, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("Values after a member's revoke = %v, want ErrGrantNotLive", err)
 	}
 }
@@ -245,7 +245,7 @@ func TestAnOutsiderNeitherListsNorRevokesAGroupOwnedGrant(t *testing.T) {
 	if err := f.m.RevokeByApprover(context.Background(), grantID, groupOutsider, record.HumanActor(groupOutsider)); !errors.Is(err, ErrNotApprover) {
 		t.Fatalf("RevokeByApprover(outsider) = %v, want ErrNotApprover", err)
 	}
-	if _, err := f.m.Values(context.Background(), grantID, f.asker, nil, ReleaseCall{}); err != nil {
+	if _, err := f.m.Values(context.Background(), grantID, f.asker, ReleaseCall{}); err != nil {
 		t.Fatalf("Values after the outsider's refused revoke = %v, want the grant still live", err)
 	}
 }
@@ -257,7 +257,7 @@ func (f *groupFixture) automaticTeamToken(t *testing.T) string {
 	if req.State != "granted" || req.GrantID == nil || req.RecordID != nil {
 		t.Fatalf("the member's TEAM_TOKEN = %+v; want granted at once, with no record", req)
 	}
-	if _, err := f.m.Values(context.Background(), *req.GrantID, f.member, nil, ReleaseCall{}); err != nil {
+	if _, err := f.m.Values(context.Background(), *req.GrantID, f.member, ReleaseCall{}); err != nil {
 		t.Fatalf("Values of the member's automatic grant = %v, want its value", err)
 	}
 	return *req.GrantID
@@ -281,7 +281,7 @@ func TestAnAutomaticGrantOfAStaleGroupIsRefusedAtItsNextReleaseUnderAnUnchangedP
 	f := newGroupFixture(t)
 	grantID := f.automaticTeamToken(t)
 	f.staleUnderTheSamePolicy(t)
-	if release, err := f.m.Values(context.Background(), grantID, f.member, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || release.Values != nil {
+	if release, err := f.m.Values(context.Background(), grantID, f.member, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || release.Values != nil {
 		t.Fatalf("Values of the automatic grant, group stale = %v, %v; want ErrGrantNotLive and no value", release.Values, err)
 	}
 }
@@ -309,11 +309,11 @@ func TestAnApprovedGrantOfAStaleGroupIsRefusedWithNoChainAlarm(t *testing.T) {
 	capture := captureRecords(t)
 	f := newGroupFixture(t)
 	_, grantID := f.approvedTeamKey(t)
-	if _, err := f.m.Values(context.Background(), grantID, f.asker, nil, ReleaseCall{}); err != nil {
+	if _, err := f.m.Values(context.Background(), grantID, f.asker, ReleaseCall{}); err != nil {
 		t.Fatalf("Values while the group is fresh = %v, want the value", err)
 	}
 	f.staleUnderTheSamePolicy(t)
-	_, err := f.m.Values(context.Background(), grantID, f.asker, nil, ReleaseCall{})
+	_, err := f.m.Values(context.Background(), grantID, f.asker, ReleaseCall{})
 	if !errors.Is(err, ErrGrantNotLive) || !errors.Is(err, record.ErrApproverNotAdmittedNow) || errors.Is(err, ErrGrantChainInvalid) {
 		t.Fatalf("Values, group stale = %v; want ErrGrantNotLive wrapping ErrApproverNotAdmittedNow, and no ErrGrantChainInvalid", err)
 	}
@@ -363,7 +363,7 @@ func TestALapsedGroupApprovalWritesOneLogLine(t *testing.T) {
 	// The group stale: one line at the release, one at the reuse, no chain line.
 	f.directory.MarkStale(approversGroup)
 	mark, chainMark := lapsedSoFar(), chainsSoFar()
-	if _, err := f.m.Values(ctx, grantID, f.asker, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
+	if _, err := f.m.Values(ctx, grantID, f.asker, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("Values, group stale = %v, want ErrGrantNotLive", err)
 	}
 	requireLines(t, capture, mark, chainMark, 0, lapsedLine{grantID, recordID, groupMember, "values"})
@@ -379,7 +379,7 @@ func TestALapsedGroupApprovalWritesOneLogLine(t *testing.T) {
 		t.Fatalf("rewrite the decision row: %v", err)
 	}
 	mark, chainMark = lapsedSoFar(), chainsSoFar()
-	if _, err := f.m.Values(ctx, grantID, f.asker, nil, ReleaseCall{}); !errors.Is(err, ErrGrantChainInvalid) {
+	if _, err := f.m.Values(ctx, grantID, f.asker, ReleaseCall{}); !errors.Is(err, ErrGrantChainInvalid) {
 		t.Fatalf("Values of a decision row naming an outsider = %v, want ErrGrantChainInvalid", err)
 	}
 	requireLines(t, capture, mark, chainMark, 1, lapsedLine{grantID, recordID, groupOutsider, "values"})
@@ -390,7 +390,7 @@ func TestALapsedGroupApprovalWritesOneLogLine(t *testing.T) {
 	// The member dropped from a group that stays fresh: one of each at the release and the reuse.
 	f.directory.Drop(approversGroup, groupMember)
 	mark, chainMark = lapsedSoFar(), chainsSoFar()
-	if _, err := f.m.Values(ctx, grantID, f.asker, nil, ReleaseCall{}); !errors.Is(err, ErrGrantChainInvalid) {
+	if _, err := f.m.Values(ctx, grantID, f.asker, ReleaseCall{}); !errors.Is(err, ErrGrantChainInvalid) {
 		t.Fatalf("Values, the decider dropped = %v, want ErrGrantChainInvalid", err)
 	}
 	requireLines(t, capture, mark, chainMark, 1, lapsedLine{grantID, recordID, groupMember, "values"})
@@ -421,11 +421,11 @@ func TestAStaleRequestersGroupPausesItsGrants(t *testing.T) {
 		t.Fatalf("the member's LISTED_TOKEN = %+v; want granted at once", req)
 	}
 	grantID := *req.GrantID
-	if _, err := f.m.Values(ctx, grantID, f.member, nil, ReleaseCall{}); err != nil {
+	if _, err := f.m.Values(ctx, grantID, f.member, ReleaseCall{}); err != nil {
 		t.Fatalf("Values while the group is fresh = %v, want the value", err)
 	}
 	f.directory.MarkStale(approversGroup)
-	if _, err := f.m.Values(ctx, grantID, f.member, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
+	if _, err := f.m.Values(ctx, grantID, f.member, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("Values while the requesters group is stale = %v, want ErrGrantNotLive", err)
 	}
 	again := f.ask(t, f.member, f.memberKey, "LISTED_TOKEN")
@@ -436,7 +436,7 @@ func TestAStaleRequestersGroupPausesItsGrants(t *testing.T) {
 		t.Fatal("a stale requesters group revoked the grant; want it paused")
 	}
 	f.directory.Set(approversGroup, groupMember, secondMember)
-	if _, err := f.m.Values(ctx, grantID, f.member, nil, ReleaseCall{}); err != nil {
+	if _, err := f.m.Values(ctx, grantID, f.member, ReleaseCall{}); err != nil {
 		t.Fatalf("Values once the group is read again = %v, want the value", err)
 	}
 }
@@ -547,7 +547,7 @@ func TestAJudgedGroupGrantStaysOnAMembersListWhileTheGroupIsStale(t *testing.T) 
 		return slices.ContainsFunc(grants, func(g ApproverGrant) bool { return g.GrantID == dec.GrantID })
 	}
 	f.directory.MarkStale(approversGroup)
-	if _, err := f.m.Values(ctx, dec.GrantID, f.asker, nil, ReleaseCall{}); err != nil {
+	if _, err := f.m.Values(ctx, dec.GrantID, f.asker, ReleaseCall{}); err != nil {
 		t.Fatalf("Values of the judged grant while the group is stale = %v; want it released, as no group read decides it", err)
 	}
 	for login, want := range map[string]bool{groupMember: true, secondMember: true, groupOutsider: false} {
@@ -586,7 +586,7 @@ func TestTheLapseLineFollowsTheRecordsGroup(t *testing.T) {
 	f.retag(t, "TEAM_KEY", policytest.Secret("TEAM_KEY", groupOwner, policy.TierHuman, "team-v1"))
 	f.directory.MarkStale(approversGroup)
 	mark, chainMark := len(loggedLines(t, capture, GrantApproverLapsedMessage)), len(loggedLines(t, capture, GrantChainInvalidMessage))
-	if _, err := f.m.Values(ctx, grantID, f.asker, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
+	if _, err := f.m.Values(ctx, grantID, f.asker, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("Values after the retag, group stale = %v, want ErrGrantNotLive", err)
 	}
 	requireLines(t, capture, mark, chainMark, 0, lapsedLine{grantID, recordID, groupMember, "values"})
@@ -604,7 +604,7 @@ func TestTheLapseLineFollowsTheRecordsGroup(t *testing.T) {
 	handed.Tags[policy.TagRequesters] = approversForm
 	f.retag(t, "OWNER_KEY", handed)
 	mark = len(loggedLines(t, capture, GrantApproverLapsedMessage))
-	if _, err := f.m.Values(ctx, dec.GrantID, f.member, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
+	if _, err := f.m.Values(ctx, dec.GrantID, f.member, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("Values of the person's grant after its secret went to the group = %v, want ErrGrantNotLive", err)
 	}
 	f.ask(t, f.member, f.memberKey, "OWNER_KEY")

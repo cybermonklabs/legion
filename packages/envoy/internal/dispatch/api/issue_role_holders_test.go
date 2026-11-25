@@ -87,6 +87,7 @@ func countRoleHolders(t *testing.T, database *store.Store) int {
 // The daemon publishes the issue's whole set each time. A session that a later set does not name
 // holds no role of the issue, and the empty set leaves no session with a role.
 func TestTheDaemonPublishesTheRoleHoldersOfAnIssue(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := roleHolderIssue(t, handler)
 
@@ -109,6 +110,7 @@ func TestTheDaemonPublishesTheRoleHoldersOfAnIssue(t *testing.T) {
 // Two sessions that change roles in one publication meet neither key of the table: the
 // publication deletes each pair that it does not name before it inserts the new pairs.
 func TestTwoSessionsThatChangeRolesInOnePublication(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := roleHolderIssue(t, handler)
 
@@ -121,6 +123,7 @@ func TestTwoSessionsThatChangeRolesInOnePublication(t *testing.T) {
 // The daemon publishes again at each boot and at each start and end of a claim. A pair that did
 // not change keeps the time that Dispatch first recorded it.
 func TestAnUnchangedHolderKeepsItsTime(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := roleHolderIssue(t, handler)
 
@@ -143,6 +146,7 @@ func TestAnUnchangedHolderKeepsItsTime(t *testing.T) {
 // of another project and a person are each refused, in the words the route has always refused
 // them in (R9: a deployment with no private project answers as before), and no row is written.
 func TestOnlyTheDaemonOfTheIssuesProjectNamesTheRoleHolders(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := roleHolderIssue(t, handler)
 	holders := []issueRoleHolder{{Role: "tester", Session: "ses-a"}}
@@ -174,6 +178,7 @@ func TestOnlyTheDaemonOfTheIssuesProjectNamesTheRoleHolders(t *testing.T) {
 // A body that is not the whole set of an issue is refused before the database sees it, and an
 // issue that Dispatch does not know is refused with the code the daemon ends a publication on.
 func TestARoleHoldersPublicationRefusesWhatIsNoSet(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := roleHolderIssue(t, handler)
 
@@ -208,6 +213,7 @@ func TestARoleHoldersPublicationRefusesWhatIsNoSet(t *testing.T) {
 
 // The tester's production check comes after the close, so a closed issue takes its role holders.
 func TestAClosedIssueTakesItsRoleHolders(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := roleHolderIssue(t, handler)
 	setIssueStatus(t, handler, issue, "done")
@@ -219,6 +225,7 @@ func TestAClosedIssueTakesItsRoleHolders(t *testing.T) {
 // The set reads back in the order the workflow reaches the roles, whatever order the publication
 // named them in. The PUT answers in that order too.
 func TestTheRoleHoldersOfAnIssueReadInWorkflowOrder(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := roleHolderIssue(t, handler)
 	if none := readRoleHolders(t, handler, issue); none.Issue != issue || none.Holders == nil || len(none.Holders) != 0 {
@@ -271,6 +278,7 @@ func sortedPairs(holders []issueRoleHolderRecord) []issueRoleHolder {
 // that finished last leaves its set stored. Twenty rounds of each shape, because one round can pass
 // by the order the two happen to run in.
 func TestTwoPublicationsOfOneIssueAtOnceLeaveOneWholeSet(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := roleHolderIssue(t, handler)
 	for _, shape := range []struct {
@@ -325,6 +333,7 @@ func TestTwoPublicationsOfOneIssueAtOnceLeaveOneWholeSet(t *testing.T) {
 // with 400, and so is one so long that the table's unique index could not hold it: no body gives a
 // 500, which the daemon would retry with no end. The stored set stays as it was.
 func TestASessionThatIsNoSessionIDIsRefused(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := roleHolderIssue(t, handler)
 	before := []issueRoleHolder{{Role: "tester", Session: "ses-t"}}
@@ -370,6 +379,7 @@ func TestASessionThatIsNoSessionIDIsRefused(t *testing.T) {
 // The contract names the roles in the enum of each shape, which a tag must spell. The route refuses
 // every role that legionagents.Roles does not name, so the two lists must be the same.
 func TestTheRoleHolderShapesNameTheLegionRoles(t *testing.T) {
+	t.Parallel()
 	want := strings.Join(legionagents.Roles, ",")
 	for _, shape := range []any{issueRoleHolder{}, issueRoleHolderRecord{}} {
 		field, ok := reflect.TypeOf(shape).FieldByName("Role")
@@ -388,6 +398,7 @@ func TestTheRoleHolderShapesNameTheLegionRoles(t *testing.T) {
 // generated, walking from the PUT's own request body to the schema of one pair, so the schema
 // read is the one the route takes and not a name that only looks like it.
 func TestTheContractRequiresTheRoleAndTheSessionOfEachHolder(t *testing.T) {
+	t.Parallel()
 	var document map[string]any
 	if err := json.Unmarshal(committedOpenAPI(t), &document); err != nil {
 		t.Fatalf("read the committed document: %v", err)
@@ -431,6 +442,7 @@ func TestTheContractRequiresTheRoleAndTheSessionOfEachHolder(t *testing.T) {
 // meet the check, a 500. This reads the check the migrated database holds and compares its roles,
 // in order, with Roles.
 func TestTheRoleHoldersTableChecksTheLegionRoles(t *testing.T) {
+	t.Parallel()
 	_, database, _ := newTestServer(t, testServerOptions{})
 	rows, err := database.Pool.Query(context.Background(), `
 		select pg_get_constraintdef(c.oid)

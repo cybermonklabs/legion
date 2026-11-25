@@ -321,21 +321,23 @@ func (s *supervisor) inDecision() []string {
 	return busy
 }
 
-// post queues ev for the claim's machine. An event for a claim the daemon does not supervise, or
-// one that arrives once supervision is stopping, goes nowhere.
-func (s *supervisor) post(token claim.Token, ev supervise.Event) {
+// post queues ev for the claim's machine and answers whether it delivered. An event for a claim
+// the daemon does not supervise, or one that arrives once supervision is stopping, goes nowhere
+// and answers false.
+func (s *supervisor) post(token claim.Token, ev supervise.Event) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.stopped {
-		return
+		return false
 	}
 	m, ok := s.machines[token]
 	if !ok {
 		s.log.Warn("supervise: an event for a claim this daemon does not supervise", "claim", token,
 			"event", fmt.Sprintf("%T", ev))
-		return
+		return false
 	}
 	m.inbox.put(ev)
+	return true
 }
 
 // drained puts the stream's mark (stream.Drained) in token's inbox behind every event posted to it
@@ -663,13 +665,18 @@ func (b *inbox) take() (inboxItem, bool) {
 }
 
 // close ends the inbox. A mark it still holds is closed, since no event before it will be
-// handled now and its asker waits for nothing more.
+// handled now and its asker waits for nothing more. A refresh post it still holds gives back the
+// credit of the stale-plugin refresh gate it carries, since no machine will decide that post and
+// the post is the credit's one holder until one does (supervise.RefreshGate, its rule of return).
 func (b *inbox) close() {
 	b.mu.Lock()
 	b.closed = true
 	for _, item := range b.items {
 		if item.drained != nil {
 			close(item.drained)
+		}
+		if stale, ok := item.ev.(supervise.StalePlugin); ok {
+			stale.Credit.Release()
 		}
 	}
 	b.items = nil

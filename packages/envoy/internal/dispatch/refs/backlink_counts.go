@@ -592,12 +592,11 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 		arm(`refs r`, ` and r.from_kind = any($2) and not `+heldByABlock("r"),
 			VisibleEnd(`r.from_kind`, `r.from_id`, false, backlinkSeen)),
 		// block_refs_to_source (to_kind, to_id, (artifact_id::text)), by its first two columns,
-		// over the rows that name no node. The view's own arm
-		// lists a block[] pointer's row only while block_ref_listed holds, the types test a
-		// typed block's pointer carries, and a row with no limit is listed without the call;
-		// this arm repeats both, so the count is the rows the list shows. A pointer whose
-		// target is retyped out of its allowed types leaves the count the moment it leaves the
-		// list, with no rewrite of either.
+		// over the rows that name no node. The view's own arm lists a block[] pointer's row only
+		// while block_ref_listed holds, the types test a typed block's pointer carries, and a row
+		// with no limit is listed without the call; this arm repeats both, so the count is the
+		// rows the list shows. A pointer whose target is retyped out of its allowed types leaves
+		// the count the moment it leaves the list, with no rewrite of either.
 		arm(`block_refs r`, ` and (r.to_types is null or block_ref_listed(r.to_types, r.to_id))
 			and `+rowNamesNoNode(`r.node_kind`),
 			VisibleKind("block", `r.from_node`, backlinkSeen)),
@@ -623,7 +622,8 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 	// holds is listed while that block is one of the item's current ones, and the count copies
 	// the view's answer rather than correcting it.
 	for _, item := range itemKinds {
-		arms = append(arms, arm(itemBlockLinks(item), ` and `+itemBlockCurrent, VisibleKind(item.BlockKind(), `r.from_node`, backlinkSeen)))
+		arms = append(arms, arm(itemBlockLinks(item), ` and `+itemBlockCurrent,
+			VisibleKind(item.BlockKind(), `r.from_node`, backlinkSeen)))
 	}
 	return arms
 }

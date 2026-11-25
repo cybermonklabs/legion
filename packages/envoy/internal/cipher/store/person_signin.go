@@ -10,7 +10,7 @@ import (
 
 // A person's sign-ins are rows of 0025's person_signins, one per box key: the person, the RFC
 // 7638 thumbprint of the key `agent-secrets login` made on that machine, the Google account of
-// the machine, the account of the person's own Google identity token that made it (0041: its
+// the machine, the account of the person's own Google identity token that made it (0042: its
 // issuer and `sub`, none on a row from before), and the times the row was made, last used and
 // revoked.
 //
@@ -23,7 +23,7 @@ import (
 // a person who revokes a sign-in is not undone by the box trading the very key again. A person
 // signing in on a second box is a second thumbprint and a row of its own, which is why revoking
 // one leaves the others working. The one row ever deleted is a live one from before migration
-// 0041, which records no account: the next trade under its key ends it and everything it holds
+// 0042, which records no account: the next trade under its key ends it and everything it holds
 // and writes a row of its own (RecordPersonSignIn), so a row's account is never changed.
 //
 // The three vocabularies - a lowercase login, an RFC 7638 thumbprint and a lowercase Google
@@ -92,12 +92,12 @@ type PersonSignIn struct {
 // that key, ErrSignInMachineChanged when the sign-in that key belongs to was made on another
 // machine, and ErrSignInSubjectChanged when it was made by another account.
 //
-// A row's account is written once, when the row is inserted, and never changes: migration 0042's
+// A row's account is written once, when the row is inserted, and never changes: migration 0043's
 // trigger refuses any update of issuer or subject
 // (TestTheDatabaseRefusesAnyChangeOfARecordedAccount). The first trade of a person and a box key
 // inserts the row, recording the account; every later trade of that pair by that account is the
 // same sign-in, so it moves last_used_at and nothing else. A live row from
-// before migration 0041 records none, and might be any account's, so a trade under its key ends
+// before migration 0042 records none, and might be any account's, so a trade under its key ends
 // it rather than adopting it: the row is deleted, which frees the pair's slot for the new row,
 // and every live access token of that person bound to that key ends in this same transaction
 // (endSignInTokensSQL), as revoking the sign-in ends them. The caller ends the launcher credential
@@ -213,7 +213,7 @@ func (s *Store) PersonSignIns(ctx context.Context, person string) ([]PersonSignI
 }
 
 // SubjectSignInsTx answers, in tx, the ids of person's live sign-ins that account may have made:
-// those recorded as its, and those recorded as nobody's, rows from before migration 0041 that no
+// those recorded as its, and those recorded as nobody's, rows from before migration 0042 that no
 // trade has traded since, which might be any account's. A sign-in another account made is not
 // among them. The caller holds LockPerson, so no trade of person adds a row while it reads.
 func SubjectSignInsTx(ctx context.Context, tx pgx.Tx, person string, account IssuerSubject) ([]string, error) {

@@ -374,3 +374,4 @@ begin keywords_only
 prove_member keywords_only "q=quasar%20drift&keywords_only=true" "q=quasar%20drift" \
   "issue $both_words_key; document $both_words_key"
 pass
+run_end

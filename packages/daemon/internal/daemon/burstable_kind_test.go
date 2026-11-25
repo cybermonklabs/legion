@@ -207,6 +207,7 @@ func (publicCloneTokens) Token(context.Context, ghrepo.Repository) (string, erro
 // against an API server standing in for the kind cluster; each case's root launch passes the
 // spawn-spec checks. Every step is the one the driver takes before it reaches the cluster.
 func TestTheBurstableKindProofBuildsItsRuntimesFromItsConfigurations(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	server := httptest.NewServer(newIssueSandboxAPI())
 	t.Cleanup(func() { cancel(); server.Close() })

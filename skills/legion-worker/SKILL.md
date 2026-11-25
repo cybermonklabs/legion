@@ -5,16 +5,15 @@ description: Use when dispatched as a per-process Legion phase worker — planne
 
 # Legion Phase Worker
 
-Your role prompt gives the workspace, the push, the handoff, `handoff_complete`, the waits and the pod release; this skill adds the rest. Where it disagrees with the code or a command's `--help`, follow those and tell your architect which line is wrong.
+Your role prompt gives the workspace, the push, the handoff, `handoff_complete`, the waits and the pod release; this skill adds the rest.
 
 ## Every phase
 
-1. Read the issue, then its `open-items.md` where one exists (`dispatch doc-read --issue <issue> --artifact open-items-md`): the architect records decisions there that it does not message. Then read each earlier phase's handoff (`dispatch handoff-read --issue <issue> --phase <plan|implement|test|review>`). A record beats your memory.
-2. Before the turn's first `jj new`, list `jj -R "$LEGION_WORKSPACE" diff -r @ --name-only` and `jj -R "$LEGION_WORKSPACE" diff --from "legion/<issue>@origin" --to @ --name-only`. A path you did not write in either list: read `skill://legion-worker/references/foreign-path.md`.
-3. Commit only your phase's paths: `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`.
-4. Before you write the handoff, run `jj -R "$LEGION_WORKSPACE" status` and remove or restore every file you copied in that is not your phase's work: the working copy is the next role's first commit.
-5. Every role writes the one workspace, so a file can change under your check. Run checks from a copy of the head (`git archive`, or a clone under `$TMPDIR`) where you can, and run `git diff --quiet <head> -- <files the check reads>` before you record a result. A script that fails in the workspace is a finding only when it fails again with `sha256sum <script>` unchanged just before and after. A run whose output you did not capture can be neither confirmed nor cleared.
-6. A codebase-wide rename or deletion leaves historical records (transcripts, test snapshots, changelog entries) unchanged.
+1. Read the issue, then your task, then each earlier phase's handoff (`dispatch handoff-read --issue <issue> --phase <plan|implement|test|review>`). Your architect's decisions for you come in your task and your messages: read no other document for them. A record beats your memory.
+2. Commit only your phase's paths: `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`.
+3. Before you write the handoff, run `jj -R "$LEGION_WORKSPACE" status` and remove or restore every file you copied in that is not your phase's work: another role that commits next sets aside whatever the working copy holds.
+4. Every role writes the one workspace, so a file can change under your check. Run checks from a copy of the head (`git archive`, or a clone under `$TMPDIR`) where you can, and run `git diff --quiet <head> -- <files the check reads>` before you record a result. A script that fails in the workspace is a finding only when it fails again with `sha256sum <script>` unchanged just before and after. A run whose output you did not capture can be neither confirmed nor cleared.
+5. A codebase-wide rename or deletion leaves historical records (transcripts, test snapshots, changelog entries) unchanged.
 
 ## Stop rules
 
@@ -30,12 +29,11 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
   - a pushing role whose second push still did not carry the pull request onto its commit.
 - Send any other decision someone else owns (product, scope, design, lifecycle, another phase's) to the owning architect with what you observed, what you tried and the decision needed, then go on.
 - No surface reaches the changed path: report it to the architect, never complete (`skill://legion-worker/references/pr-body.md`).
-- A released pod is not a stop. Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives.
+- A released pod is not a stop. Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives, except on a volume the deployment keeps.
 - When another role's topic answers 404, read its handoff with `dispatch handoff-read`.
 
 ## Commits and pushes
 
-- Before a push, run the trailer check in `skill://legion-worker/references/default-branch-check.md`. Then, with the `$default` it set, read your branch's full commit messages: `jj -R "$LEGION_WORKSPACE" log -r "${default}@origin..@" -T 'description ++ "\n"'`. Earlier phases' commits in it are expected; `description.first_line()` shows no trailer.
 - Write no trailer yourself. The pane's jj adds `Omp-Session:` and `Legion-Role:`, and `Dispatch: <KEY>` in a repository the deployment names; the git wrapper adds the first two to a `git commit`. A merge, revert, cherry-pick or rebase that git makes gets none. Cure a commit that lacks a line by describing it again in the pane's shell; where that adds no issue line and `LEGION_ISSUE_TRAILER` is set, add the trailer line `Dispatch: $LEGION_ISSUE_TRAILER` yourself.
 - A repository you clone under `$LEGION_WORKSPACE` is stamped with this issue's key: clone one you will push elsewhere outside it.
 - A planner whose issue moved back from implementing starts on the remote tip: `jj -R "$LEGION_WORKSPACE" new legion/<KEY>@origin`.

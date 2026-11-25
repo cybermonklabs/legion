@@ -71,7 +71,9 @@ func (c *Client) onReconnect(nc *nats.Conn) {
 		// before is past: this server may grant it. A refusal of the re-sent one is reported after
 		// this callback, and marks it again (onAsyncError).
 		c.subscriptionsMu.Lock()
-		c.subscriptions[coreSubscription].refused = false
+		core := &c.subscriptions[coreSubscription]
+		core.refused = false
+		core.sentOn, core.sentReconnects = nc, nc.Stats().Reconnects
 		c.subscriptionsMu.Unlock()
 	}
 	c.mu.Unlock()
@@ -601,6 +603,7 @@ func (c *Client) restoreSubscriptions() (pending bool, err error) {
 		subscription.binding = make(chan struct{})
 		// The bind sends the subscription anew, on a connection that may grant it.
 		subscription.refused = false
+		subscription.sentOn, subscription.sentReconnects = conn, reconnectsOf(conn)
 		restoring = append(restoring, subscription)
 	}
 	registrations := make([]recoverableSubscription, len(restoring))

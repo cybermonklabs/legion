@@ -169,7 +169,7 @@ var RebuildMarkStatement = `
 	select id, now(), $1::integer from artifacts where kind = 'doc'
 	on conflict (artifact_id) do update set version = null,
 		store_owed_at = coalesce(document_block_versions.store_owed_at, excluded.store_owed_at),
-		store_owed_rule = ` + OwedRuleKept("document_block_versions", "excluded.store_owed_rule", "\n\t\t\t") + `
+		store_owed_rule = ` + OwedRuleKept("document_block_versions", "excluded.store_owed_rule") + `
 `
 
 func loadSourceIDs(ctx context.Context, pool Pool, query string) ([]string, error) {

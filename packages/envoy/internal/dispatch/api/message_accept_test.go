@@ -118,6 +118,7 @@ func bearerRetryDelivery(t *testing.T, handler http.Handler, messageID, delivery
 // session its attempt went to: the accept records it on the attempt, every read of the thread
 // then says so, and one message.accepted event tells the page, owned by the conversation.
 func TestAcceptRecordsAPersonsFreshAttemptAsTheSessionsTurnOnce(t *testing.T) {
+	t.Parallel()
 	handler, database, root, _, _ := directConversationFrom(t, "alice")
 
 	accepted := acceptDelivery(t, handler, root.ID, 1, "s1")
@@ -184,6 +185,7 @@ func TestAcceptRecordsAPersonsFreshAttemptAsTheSessionsTurnOnce(t *testing.T) {
 // never takes as a turn, so the page must never say one reached the conversation. Another
 // person's retry is refused too: only the author's own Send or Aside becomes their turn.
 func TestAcceptRefusesEveryAttemptThatIsNotAPersonsFreshLatestDeliveryToThisSession(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		// prepare returns the message and the attempt of it that `session` then accepts.
@@ -333,6 +335,7 @@ func TestAcceptRefusesEveryAttemptThatIsNotAPersonsFreshLatestDeliveryToThisSess
 // as model.CanonicalLogin compares it, so the accept's check that the requester is the message's author
 // compares people the same way.
 func TestAcceptTakesTheAuthorsOwnRetryHoweverTheirLoginIsCased(t *testing.T) {
+	t.Parallel()
 	handler, database, root, _, _ := directConversationFrom(t, "Alice")
 	if retry := retryDelivery(t, handler, root.ID, "steer", "alice"); retry.Code != http.StatusCreated {
 		t.Fatalf("alice's retry: status=%d body=%s", retry.Code, retry.Body.String())
@@ -356,6 +359,7 @@ func TestAcceptTakesTheAuthorsOwnRetryHoweverTheirLoginIsCased(t *testing.T) {
 // construction). The deployment has no publisher, so Dispatch cannot queue the message itself for
 // a session the listener holds no record of (message_queue_publish.go), and the attempt fails.
 func TestAcceptRefusesASendDispatchCouldNotDeliver(t *testing.T) {
+	t.Parallel()
 	live := false
 	sent := []map[string]any{}
 	listener := sessionListener(t, &live, &sent)
@@ -406,6 +410,7 @@ func assertNothingAccepted(t *testing.T, database *store.Store, messageID string
 // never accepted. Otherwise a bearer could have the page say one of them reached the
 // conversation.
 func TestAcceptRefusesAMessageThatIsNotAPersonsDirectMessageToTheSession(t *testing.T) {
+	t.Parallel()
 	broadcastCopy := func(t *testing.T) (http.Handler, *store.Store, string) {
 		t.Helper()
 		listener, _ := newBroadcastListener(t, broadcastSessions)
@@ -482,6 +487,7 @@ func TestAcceptRefusesAMessageThatIsNotAPersonsDirectMessageToTheSession(t *test
 // A replayed frame can reach the session twice at once; both reads pass, both accept, and only
 // one may inject. The two race on the message's row lock and exactly one wins.
 func TestConcurrentAcceptsOfOneAttemptLetExactlyOneWin(t *testing.T) {
+	t.Parallel()
 	handler, database, root, _, _ := directConversationFrom(t, "alice")
 	ctx := context.Background()
 	holder, err := database.Pool.Begin(ctx)
@@ -521,6 +527,7 @@ func TestConcurrentAcceptsOfOneAttemptLetExactlyOneWin(t *testing.T) {
 // row FOR NO KEY UPDATE, which that key share does not wait for: whichever of the two holds the
 // message row while the reply holds the attempt, all three land and none deadlocks.
 func TestAcceptAClaimAndAReplyOfOneAttemptAllLand(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		// first takes the message row while the reply waits for the attempt; second queues behind it.
 		first, second string
@@ -593,6 +600,7 @@ func TestAcceptAClaimAndAReplyOfOneAttemptAllLand(t *testing.T) {
 // touching what the settle is scoped to, so the settle still records the send and appends its
 // receipt, and the accept's own event is appended for real under the conversation's owner.
 func TestAcceptDuringTheSendLeavesTheSettleItsReceipt(t *testing.T) {
+	t.Parallel()
 	var handler http.Handler
 	accepts := []acceptedAttempt{}
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["aside","btw","steer"]}]`
@@ -678,6 +686,7 @@ func TestAcceptDuringTheSendLeavesTheSettleItsReceipt(t *testing.T) {
 // mode that supersedes a stranded attempt, and a broadcast. A resumed attempt keeps the person
 // who first asked for it, whoever resumes it.
 func TestEveryPathThatOpensAnAttemptRecordsWhoAskedForIt(t *testing.T) {
+	t.Parallel()
 	alice := &model.Actor{Kind: "user", ID: "alice"}
 	bob := &model.Actor{Kind: "user", ID: "bob"}
 	session := &model.Actor{Kind: "session", ID: "s2"}

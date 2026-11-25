@@ -23,7 +23,7 @@ import (
 // the command that repairs it, as the switch's 409 PRIVATE_PROJECTS_INCOMPLETE does, and a
 // complete store is no report at all. A row or node the project census names is printed as
 // graphcensus.ProjectComplete answers it, with its own cure, and the report adds no cure of its
-// own: an orphaned node is removed by the erase its line names, never by the backfill.
+// own: an orphaned issue node no build removes names no in-band cure, never the backfill.
 func TestTheStoreReportNamesEveryBackfillNotRun(t *testing.T) {
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	for _, row := range []struct {
@@ -55,7 +55,7 @@ func TestTheStoreReportNamesEveryBackfillNotRun(t *testing.T) {
 			insert into session_projects_filled default values;
 			insert into access_events_scrubbed default values;`,
 			[]graphstore.Node{graphstore.IssueNode("PRIV-9", "PRIV", alice, time.Now().UTC())},
-			[]string{"issue PRIV-9: orphaned; remove it with: envoy-dispatch erase --node issue:PRIV-9"},
+			[]string{"issue PRIV-9: orphaned; no in-band cure: a delete outside the builds made it"},
 			[]string{"backfill-graph-store"}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -115,6 +115,7 @@ func startOfPeriodAfterNext(interval time.Duration) time.Time {
 // each pass records its period under the lease (duty.RunLeased), so the other process's tick
 // inside a period already served makes no statement of its own.
 func TestTheMaintenanceLoopSweepsOncePerPeriodAcrossTwoRunners(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
 	recorders := make([]*storetest.StatementRecorder, 0, 2)

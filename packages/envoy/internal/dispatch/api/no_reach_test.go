@@ -59,6 +59,7 @@ const (
 // reach: a new read that answers more than the read it stands beside, or an old read that
 // quietly answers something else. Each sub-test holds one half of that.
 func TestTheStoreAddsNoReachAndNoReadChangesShape(t *testing.T) {
+	t.Parallel()
 	t.Run("the person read is one route and takes no kind, filter or traversal", onePersonRead)
 	t.Run("the person read admits a person and nobody else", personReadReach)
 	t.Run("every route the table held before this child keeps the shape the contracts declare", declaredShapesUnchanged)
@@ -731,6 +732,7 @@ var routesNoSeedAnswers = map[string]string{
 	"GET /api/v1/access/person":                      "a service account DISPATCH_ACCESS_ACCOUNTS names",
 	"GET /api/v1/access/private-projects":            "a service account DISPATCH_ACCESS_ACCOUNTS names",
 	"GET /api/v1/access/projects/{key}/repositories": "a service account DISPATCH_ACCESS_ACCOUNTS names",
+	"GET /api/v1/artifacts/{id}/changes":             "two stored versions of one document",
 }
 
 // routeProbeQueries are the queries the reads that require one are sent, each naming the

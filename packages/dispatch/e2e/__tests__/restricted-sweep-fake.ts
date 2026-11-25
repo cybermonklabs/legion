@@ -65,6 +65,11 @@ export const tgt = {
 };
 /** The member's own session, in OWN, which the live check's control message is sent to. */
 export const ownSession = "ses-own-worker";
+/** The member's own issue, in OWN, which the live check's control writes on in place of a direct
+ *  message to their session (SWEEP_MEMBER_ISSUE), for a member who holds no session. */
+export const ownIssue = "OWN-1";
+/** A run's inputs that take that issue in place of the member's session. */
+export const issueMode = { SWEEP_MEMBER_SESSION: undefined, SWEEP_MEMBER_ISSUE: ownIssue };
 /** The restricted member's login, which whoami answers the member's cookie and OWN's access list
  *  names. */
 export const memberLogin = "bob@outside.example";
@@ -109,7 +114,11 @@ export function at(target: string, status: number, body: unknown): Leak {
  *  place of its `events_start`. `memberRefusal` refuses the member's live upgrade 404 with that
  *  body. `noise` sends the full member, in place of the comment, an event of TGT whose first field
  *  holds that text. `dmLeak` sends the member's feed the full member's direct message to TGT's
- *  session; `ownDmLost` leaves the member's own direct message out of their feed. An agent view
+ *  session; `ownDmLost` leaves the member's own direct message out of their feed. The member's
+ *  comment and message on an issue of OWN, the project whose list names them, are each sent to
+ *  both feeds, but those `ownIssueLost` names, which the member's feed is not sent, and the message
+ *  reads 200 to the member by GET /api/v1/messages/{id} unless `ownIssueUnread`; a write on an
+ *  issue of any other project answers the member 404, as an issue they do not see. An agent view
  *  of TGT's session answers the full member that the session responds, and its replay, and the
  *  member as no one answers for it, unless `agentLeak` sends the member the replay too. The
  *  document socket: not at all, or, with `doc`, a room for the member's own document that admits
@@ -125,6 +134,8 @@ export interface FeedShape {
   readonly noise?: string;
   readonly dmLeak?: boolean;
   readonly ownDmLost?: boolean;
+  readonly ownIssueLost?: readonly ("comment" | "message")[];
+  readonly ownIssueUnread?: boolean;
   readonly agentLeak?: boolean;
   readonly doc?: boolean;
   readonly docRefusal?: unknown;
@@ -134,14 +145,19 @@ export interface FeedShape {
 /** What a fake changes of its answers. `omit` leaves a kind out of the lookup; `issues` is how many
  *  issues TGT lists (1 by default, 2 with `sharedRepo`), and `handoffOn` the one whose handoff the
  *  lookup finds; `conversationGone` answers the conversation file as missing to the full member
- *  too; `proxyReadsCookies` makes the GitHub proxy read as the real one does, as the browser's
- *  person alone, so the full member's token is answered there as a repository the App is not
- *  installed on; `notInstalled` answers that the App is installed on no repository, TGT's
+ *  too; `proxyReadsCookies` makes the GitHub proxy read as a build before
+ *  cybermonklabs/legion#5079 does, as the browser's person alone, so the full member's token is
+ *  answered there 401 NO_IDENTITY; without it the proxy reads a token too, as a build from #5079
+ *  on does, and answers a token without the person scope (`tokenScope` none) 403
+ *  OAUTH_SCOPE_REQUIRED; `notInstalled` answers that the App is installed on no repository, TGT's
  *  included; `sharedRepo` puts TGT's first issue and OWN's on one repository the App is installed
  *  on, which both callers may see; `full` plants answers for the full member's requests;
  *  `createdAt` is when OWN was created, which GET /api/v1/projects answers either caller, so
  *  fills made at one fake and a runner at another whose OWN was created otherwise stand for two
- *  deployments; null lists OWN with no creation time. */
+ *  deployments; null lists OWN with no creation time. `tokenScope` answers the full member's
+ *  token, never their cookie, at the direct message and the agent view as the server answers a
+ *  token without the person scope (`none`: 403 OAUTH_SCOPE_REQUIRED, an `error` frame) or a
+ *  restricted member's (`restricted`: 404 SESSION_NOT_FOUND, no one answers). */
 export interface FakeShape {
   readonly omit?: ReadonlySet<string>;
   readonly issues?: number;
@@ -153,6 +169,7 @@ export interface FakeShape {
   readonly full?: readonly Leak[];
   readonly feed?: FeedShape;
   readonly createdAt?: string | null;
+  readonly tokenScope?: "none" | "restricted";
   /** The GET patterns of the route index a run reads, which the fake's own index (GET /api/v1)
    *  lists too, as a deployment's lists the routes its route table holds; the whole index when
    *  unset. */
@@ -261,10 +278,11 @@ function admitted(room: string): Uint8Array {
   return toUint8Array(frame);
 }
 
-/** What a socket of the fake is: the member's or the full member's, and, for the document
- *  socket, the room. */
+/** What a socket of the fake is: the member's or the full member's, whether its upgrade carried
+ *  the full member's token, and, for the document socket, the room. */
 interface SocketData {
   readonly member: boolean;
+  readonly bearer?: boolean;
   readonly room?: string;
 }
 
@@ -289,12 +307,18 @@ function notInstalledOn(repository: string): Response {
 function fakeDispatch(leaks: readonly Leak[], fake: FakeShape) {
   const feed = fake.feed ?? {};
   const memberPaths: string[] = [];
+  // Every write the member made, as `POST <path>`.
+  const memberWrites: string[] = [];
   // Every request the full member's credential made: a runner must make none.
   let fullRequests = 0;
   const fullFeeds: Feed[] = [];
   const memberFeeds: Feed[] = [];
   // Every direct message written to the fake, by id: whose it is, and the session it went to.
   const directMessages = new Map<string, { readonly member: boolean; readonly session: string }>();
+  // Every message the member wrote on an issue of OWN, by id: the issue it is on.
+  const issueMessages = new Map<string, string>();
+  // The credential of each direct message the full member wrote: `token` or `cookie`.
+  const directBy: string[] = [];
   let events = 0;
   const publish = (feeds: readonly Feed[], event: Record<string, unknown>) => {
     for (const { socket, sub } of feeds) {
@@ -309,14 +333,15 @@ function fakeDispatch(leaks: readonly Leak[], fake: FakeShape) {
       const target = decodeURIComponent(url.pathname + url.search);
       const member = request.headers.get("cookie") === memberCookie;
       const fullBrowser = request.headers.get("cookie") === fullCookie;
-      const full = fullBrowser || request.headers.get("authorization") === `Bearer ${fullToken}`;
+      const bearer = request.headers.get("authorization") === `Bearer ${fullToken}`;
+      const full = fullBrowser || bearer;
       if (full) fullRequests += 1;
       if (request.headers.get("upgrade") !== null) {
         if (member && feed.memberRefusal !== undefined && url.pathname === "/ws/live") {
           return Response.json(feed.memberRefusal, { status: 404 });
         }
         if (feed.live === true && url.pathname === "/ws/live" && (member || full)) {
-          if (served.upgrade(request, { data: { member } })) return undefined;
+          if (served.upgrade(request, { data: { member, bearer } })) return undefined;
         }
         if (feed.doc === true && member && url.pathname === `/ws/doc/${ownDocument}`) {
           if (served.upgrade(request, { data: { member, room: ownDocument } })) return undefined;
@@ -329,6 +354,7 @@ function fakeDispatch(leaks: readonly Leak[], fake: FakeShape) {
         return new Response("no socket here", { status: 404 });
       }
       if (!member && !full) return Response.json({ code: "NO_IDENTITY" }, { status: 401 });
+      if (member && request.method === "POST") memberWrites.push(`POST ${url.pathname}`);
       // Whether the App is installed on a repository, which the server answers a caller that may
       // not see the repository as for one the App is not installed on (the GitHub proxy's rule):
       // to the full member, installed on TGT's repository, unless `notInstalled`, and on the
@@ -345,6 +371,22 @@ function fakeDispatch(leaks: readonly Leak[], fake: FakeShape) {
       const direct = /^\/api\/v1\/agents\/([^/]+)\/messages$/.exec(url.pathname);
       const read = /^\/api\/v1\/messages\/([^/]+)(\/blocks)?$/.exec(url.pathname);
       if (request.method === "POST" && direct !== null) {
+        if (full) directBy.push(bearer ? "token" : "cookie");
+        if (bearer && fake.tokenScope === "none") {
+          return Response.json(
+            {
+              code: "OAUTH_SCOPE_REQUIRED",
+              error: "this request's credential does not hold the person scope",
+            },
+            { status: 403 }
+          );
+        }
+        if (bearer && fake.tokenScope === "restricted") {
+          return Response.json(
+            { code: "SESSION_NOT_FOUND", error: `no session ${direct[1]}` },
+            { status: 404 }
+          );
+        }
         events += 1;
         const id = crypto.randomUUID();
         const session = direct[1] ?? "";
@@ -365,6 +407,40 @@ function fakeDispatch(leaks: readonly Leak[], fake: FakeShape) {
           return Response.json({ code: "NOT_FOUND", error: "not found" }, { status: 404 });
         }
         return Response.json({ message: { id: read[1], target: `session:${written?.session}` } });
+      }
+      // The member's own comment and message on an issue: one of OWN, whose list names them, is
+      // written and sent on to the feeds; one of any other project is an issue they do not see.
+      const onIssue = /^\/api\/v1\/issues\/([^/]+)\/(comments|messages)$/.exec(url.pathname);
+      if (request.method === "POST" && member && onIssue !== null) {
+        const [, key = "", route = ""] = onIssue;
+        if (!key.startsWith("OWN-")) {
+          return Response.json(
+            { code: "ISSUE_NOT_FOUND", error: `no issue ${key}` },
+            { status: 404 }
+          );
+        }
+        events += 1;
+        const id = crypto.randomUUID();
+        const kind = route === "comments" ? "comment" : "message";
+        if (kind === "message") issueMessages.set(id, key);
+        const event = {
+          id: events,
+          type: `${kind}.created`,
+          issue_key: key,
+          project: "OWN",
+          payload: { id },
+        };
+        publish(fullFeeds, event);
+        if (!(feed.ownIssueLost ?? []).includes(kind)) publish(memberFeeds, event);
+        return Response.json({ id, issue_key: key }, { status: 201 });
+      }
+      if (read !== null && issueMessages.has(read[1] ?? "")) {
+        if (member && feed.ownIssueUnread === true) {
+          return Response.json({ code: "NOT_FOUND", error: "not found" }, { status: 404 });
+        }
+        return Response.json({
+          message: { id: read[1], issue_key: issueMessages.get(read[1] ?? "") },
+        });
       }
       if (member) {
         memberPaths.push(url.pathname);
@@ -414,9 +490,19 @@ function fakeDispatch(leaks: readonly Leak[], fake: FakeShape) {
       }
       if (proxied !== null) {
         const repository = proxied[1] ?? "";
-        if ((fake.proxyReadsCookies === true && !fullBrowser) || repository.includes("no-such-")) {
-          return notInstalledOn(repository);
+        if (bearer && fake.proxyReadsCookies === true) {
+          return Response.json({ code: "NO_IDENTITY", error: "unauthorized" }, { status: 401 });
         }
+        if (bearer && fake.tokenScope === "none") {
+          return Response.json(
+            {
+              code: "OAUTH_SCOPE_REQUIRED",
+              error: "this request's credential does not hold the person scope",
+            },
+            { status: 403 }
+          );
+        }
+        if (repository.includes("no-such-")) return notInstalledOn(repository);
       }
       const answer = lookup(target, fake);
       if (answer === null) return Response.json({ code: "NOT_FOUND" }, { status: 404 });
@@ -445,6 +531,21 @@ function fakeDispatch(leaks: readonly Leak[], fake: FakeShape) {
         if (frame.view?.kind === "agent") {
           const agent = (event: string, data: unknown) =>
             socket.send(JSON.stringify({ type: "agent", sub, event, data }));
+          if (socket.data.bearer === true && fake.tokenScope === "none") {
+            socket.send(
+              JSON.stringify({
+                type: "error",
+                sub,
+                code: "OAUTH_SCOPE_REQUIRED",
+                message: "no person scope",
+              })
+            );
+            return;
+          }
+          if (socket.data.bearer === true && fake.tokenScope === "restricted") {
+            agent("responder", { v: 1, responding: false });
+            return;
+          }
           if (frame.view.session_id !== tgt.session) {
             agent("responder", { v: 1, responding: false });
             return;
@@ -471,6 +572,8 @@ function fakeDispatch(leaks: readonly Leak[], fake: FakeShape) {
   });
   return {
     memberPaths,
+    memberWrites,
+    directBy,
     fullRequests: () => fullRequests,
     origin: `http://127.0.0.1:${server.port}`,
     server,
@@ -501,12 +604,16 @@ export interface RunShape extends FakeShape {
   readonly bound?: BoundName;
 }
 
-/** What one run of the sweep answered, the paths of every request the member sent, how many
- *  requests the full member's credential made, and the fake's origin. */
+/** What one run of the sweep answered, the paths of every request the member sent, every write
+ *  the member made (`POST <path>`), the credential of each direct message the full member wrote
+ *  (`token` or `cookie`), how many requests the full member's credential made, and the fake's
+ *  origin. */
 export interface SweptRun {
   readonly code: number;
   readonly stdout: string;
   readonly memberPaths: readonly string[];
+  readonly memberWrites: readonly string[];
+  readonly directBy: readonly string[];
   readonly fullRequests: number;
   readonly origin: string;
 }
@@ -549,6 +656,8 @@ export async function sweep(leaks: readonly Leak[], shape: RunShape = {}): Promi
     code: run.code,
     fullRequests: fake.fullRequests(),
     memberPaths: fake.memberPaths,
+    memberWrites: fake.memberWrites,
+    directBy: fake.directBy,
     origin: fake.origin,
     stdout: run.stdout,
   };

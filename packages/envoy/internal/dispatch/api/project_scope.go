@@ -181,15 +181,17 @@ func (s *server) callerSession(r *http.Request) (string, bool) {
 // holds (writesHeldTo), a full member's included, which reads those rows as an open viewer but does
 // not write them. The rows personsOwnAtTheBroker names end what is the caller's own at the secrets
 // broker, so a restricted member makes them as a full member does, and only a credential whose
-// writes a list holds is refused them; the broker decides whose each grant or sign-in is, for
-// every caller alike. The rows that decide, list or end a machine login (restrictedOwnLoginRoutes)
-// are a restricted member's at a browser alone (restrictedOwnLoginAtBrowser, the rule the read
-// gate reads too), whose handlers hold that member to a login of their own: never their personal
-// token and never a broker token, so no agent of theirs decides or ends a credential; any other
-// call of theirs there is refused restrictedOwnLoginRefusal. Every other row reaches its handler,
-// whose loaders answer an object the viewer does not see as missing (the file comment), but for a
-// full member's broker token scoped to one project, whose write to an object outside its project is
-// refused here as it was before (writeOutsideTheBrokerProject).
+// writes a list holds is refused them; whose each sign-in is the broker decides, and whose each
+// grant the broker decides for a full member and the handler for a restricted member
+// (revokeCredentialGrant, memberGrants). The rows that decide, list or end a machine login
+// (restrictedOwnLoginRoutes) are a restricted member's at a browser alone
+// (restrictedOwnLoginAtBrowser, the rule the read gate reads too), whose handlers hold that member
+// to a login of their own: never their personal token and never a broker token, so no agent of
+// theirs decides or ends a credential; any other call of theirs there is refused
+// restrictedOwnLoginRefusal. Every other row reaches its handler, whose loaders answer an object
+// the viewer does not see as missing (the file comment), but for a full member's broker token
+// scoped to one project, whose write to an object outside its project is refused here as it was
+// before (writeOutsideTheBrokerProject).
 func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
 	if route.Scope == scopeNoWrite {
 		return handler

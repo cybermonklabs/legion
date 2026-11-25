@@ -18,6 +18,7 @@ import (
 // control: the same walk over a fixture holding an unclassed mutating row, and over one classed
 // as a project's write whose address names no object, fails on each.
 func TestEveryMutatingRouteIsClassed(t *testing.T) {
+	t.Parallel()
 	served := &server{deps: Deps{TestHooksEnabled: true}}
 	routes := served.routes()
 	if undecidable := served.undecidableWrites(routes); len(undecidable) > 0 {
@@ -259,6 +260,7 @@ func hyphenatedEveryFour(id string) string {
 // Control: projectResolverFor's reads without their project clause: HIDE's objects resolve to
 // HIDE, the refusal names it, and the test fails naming the write.
 func TestAProjectScopedTokenWritesOnlyItsOwnProject(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-token-scoped-to-one-project"
@@ -316,6 +318,7 @@ func TestAProjectScopedTokenWritesOnlyItsOwnProject(t *testing.T) {
 // be private (TestABrokerTokenScopedToOneProjectAnswersAsBeforeWhileNoProjectIsPrivate), and never a
 // 500. A person, whose writes no scope holds, is answered by the handler.
 func TestATargetNobodyHoldsAnswersAProjectScopedTokenAsItAnswersAPerson(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-token-addressing-nothing"
@@ -359,6 +362,7 @@ func TestATargetNobodyHoldsAnswersAProjectScopedTokenAsItAnswersAPerson(t *testi
 // guess. The same write by a person and by a personal token, neither of which names a project,
 // is untouched.
 func TestADeploymentWriteIsRefusedToAProjectScopedToken(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-token-that-may-not-create-a-project"
@@ -388,6 +392,7 @@ func TestADeploymentWriteIsRefusedToAProjectScopedToken(t *testing.T) {
 // exists today. A person and a personal token write both projects, and the deployment-wide
 // create too.
 func TestCredentialsThatNameNoProjectAreUnaffected(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	own := seedProject(t, rig, brokerTestProject, "Broker")
 	other := seedProject(t, rig, "OTH", "Other")
@@ -432,6 +437,7 @@ func TestCredentialsThatNameNoProjectAreUnaffected(t *testing.T) {
 // address does not name. Its handler makes the same check, with the same refusal, before the
 // create does any work.
 func TestAProjectScopedTokenCreatesIssuesOnlyInItsOwnProject(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-token-creating-issues"
@@ -448,6 +454,18 @@ func TestAProjectScopedTokenCreatesIssuesOnlyInItsOwnProject(t *testing.T) {
 	refusal := decodeBody[refusalAnswer](t, refused)
 	if refusal.Code != codeProjectScope || !strings.Contains(refusal.Error, brokerTestProject) || !strings.Contains(refusal.Error, "OTH") {
 		t.Fatalf("refusal = %+v, want %s naming %s and OTH", refusal, codeProjectScope, brokerTestProject)
+	}
+
+	// An import that names no project is refused for that before the scope check, since there
+	// is no project to compare with the token's.
+	unnamed := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+		"external": "owner/repo#1",
+	}))
+	if unnamed.Code != http.StatusBadRequest {
+		t.Fatalf("importing an issue with no project: status=%d body=%s, want 400", unnamed.Code, unnamed.Body.String())
+	}
+	if refusal := decodeBody[refusalAnswer](t, unnamed); refusal.Code != "INVALID_ISSUE" || !strings.Contains(refusal.Error, "project is required when external is set") {
+		t.Fatalf("refusal = %+v, want INVALID_ISSUE naming project", refusal)
 	}
 
 	created := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{

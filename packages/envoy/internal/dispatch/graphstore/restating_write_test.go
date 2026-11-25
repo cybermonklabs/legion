@@ -122,6 +122,11 @@ func TestARestatingWriteKeepsTheValuesItDoesNotOwn(t *testing.T) {
 // which another write gave it. A node a plain write made with attributes keeps them when a
 // restating write states other attributes, and when one states none, as every restating writer
 // of this tree writes a node; a plain write still moves them.
+//
+// Neither of those two restating writes moves anything else of the row, so the move's condition
+// alone keeps them from updating it, whatever the update would set. A restating write that writes
+// the node gone moves its state, so the update runs, and the attributes it sets must still be the
+// row's: that step is what fails where the update sets the incoming attributes.
 func TestARestatingWriteKeepsTheStoredAttributes(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -148,8 +153,17 @@ func TestARestatingWriteKeepsTheStoredAttributes(t *testing.T) {
 	writeNode(t, ctx, database, bare)
 	requireNodeAttributes(t, ctx, database, stored, stored.Attributes, "a restating write stating none")
 
+	gone := restated
+	gone.State, gone.MadeAt = StateGone, at.Add(3*time.Minute)
+	writeNode(t, ctx, database, gone)
+	if row, held, err := ReadNode(ctx, database.Pool, gone.Kind, gone.ID); err != nil || !held || row.State != StateGone {
+		t.Fatalf("read node %s/%s after a restating write that writes it gone: state %q, held %t, %v; want it gone, so that write updated the row",
+			gone.Kind, gone.ID, row.State, held, err)
+	}
+	requireNodeAttributes(t, ctx, database, stored, stored.Attributes, "a restating write stating other attributes that writes it gone")
+
 	plain := restated
-	plain.Restates, plain.MadeAt = false, at.Add(3*time.Minute)
+	plain.Restates, plain.MadeAt = false, at.Add(4*time.Minute)
 	writeNode(t, ctx, database, plain)
 	requireNodeAttributes(t, ctx, database, stored, plain.Attributes, "a plain write stating other attributes")
 }

@@ -85,7 +85,7 @@ func removeAsTheReleaseBefore(t *testing.T, database *store.Store, artifact mode
 	var removal int64
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
 		owners := events.OwnerRows{}
-		owners.Add(*artifact.IssueKey, artifact.ID, "document "+artifact.ID)
+		owners.Add(*artifact.IssueKey, artifact.ID)
 		if err := events.LockOwnerRows(ctx, tx, owners); err != nil {
 			return err
 		}

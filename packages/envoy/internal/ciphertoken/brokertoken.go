@@ -415,7 +415,7 @@ func Presented(r *http.Request) (string, bool) {
 // Its error is one of the sentinels above, and the Caller it answers is only ever one the broker
 // called live and whose proof verified.
 func (v *Verifier) Verify(ctx context.Context, r *http.Request) (Caller, error) {
-	token, answer, caller, err := v.live(ctx, r)
+	token, answer, caller, err := v.live(ctx, r, true)
 	if err != nil {
 		return Caller{}, err
 	}
@@ -435,7 +435,7 @@ func (v *Verifier) Verify(ctx context.Context, r *http.Request) (Caller, error) 
 // and would close a sound connection; what is left to ask of an open connection is whether the
 // token is still live, which is this. Nothing admits a caller through it.
 func (v *Verifier) Live(ctx context.Context, r *http.Request) (Caller, error) {
-	_, _, caller, err := v.live(ctx, r)
+	_, _, caller, err := v.live(ctx, r, true)
 	return caller, err
 }
 
@@ -449,16 +449,37 @@ func (v *Verifier) Lapsed(caller Caller) bool {
 	return !caller.Held && !caller.NotHeldUntil.IsZero() && !caller.NotHeldUntil.After(v.now())
 }
 
+// LiveUntil is Live and the instant the broker's answer says the token stops being live: its
+// 'exp', or the zero time when the broker named none. A connection that outlives its request reads
+// it to tell a token whose life ended from one the broker ended early, since both answer
+// ErrNotActive once they are over and only the first was due: the listener's relay socket closes
+// the one for a fresh trade at once and the other as a refusal (cmd/listener, relay_socket.go).
+//
+// Unlike Live it spends nothing of the source address's bucket: its caller is a connection whose
+// opening request Verify admitted with its proof, which spent the bucket then, and which asks
+// again at an interval its own process sets (the relay socket's 20 s check, of at most
+// relaySocketMaxPerListener sockets). Charging it would let a stranger who empties the bucket of
+// an address, which every client behind one load balancer shares, close every connection opened
+// from it.
+func (v *Verifier) LiveUntil(ctx context.Context, r *http.Request) (Caller, time.Time, error) {
+	_, answer, caller, err := v.live(ctx, r, false)
+	if err != nil {
+		return Caller{}, time.Time{}, err
+	}
+	return caller, expiryOf(answer), nil
+}
+
 // live is the broker's half of both checks: the token r presents, the broker's answer about it,
 // and the caller sessionCaller reads that answer as, held to this verifier's read-only switch.
 // Verify and Live both read the answer through here, so an open connection's heartbeat is held to
-// the same rule as the request that opened it, the read-only switch included.
-func (v *Verifier) live(ctx context.Context, r *http.Request) (string, Introspection, Caller, error) {
+// the same rule as the request that opened it, the read-only switch included. spend says whether
+// an introspection spends the source address's bucket (known).
+func (v *Verifier) live(ctx context.Context, r *http.Request, spend bool) (string, Introspection, Caller, error) {
 	token, ok := Presented(r)
 	if !ok {
 		return "", Introspection{}, Caller{}, ErrNotPresented
 	}
-	answer, err := v.known(ctx, r, token)
+	answer, err := v.known(ctx, r, token, spend)
 	if err != nil {
 		return "", Introspection{}, Caller{}, err
 	}
@@ -582,8 +603,9 @@ func shapeOf(answer Introspection) tokenShape {
 // had just been given. A stranger still pays per distinct token, which is the flood the bucket
 // exists for. The introspection runs under the context of whichever request opened the flight,
 // so one that goes away takes the others' answer with it; they are answered ErrBrokerUnreachable
-// and come back, which is what every other lost answer does.
-func (v *Verifier) known(ctx context.Context, r *http.Request, token string) (Introspection, error) {
+// and come back, which is what every other lost answer does. With spend false the bucket is not
+// spent (LiveUntil).
+func (v *Verifier) known(ctx context.Context, r *http.Request, token string, spend bool) (Introspection, error) {
 	key := sha256.Sum256([]byte(token))
 	if answer, ok := v.cache.lookup(key, v.now()); ok {
 		return answer, nil
@@ -594,7 +616,7 @@ func (v *Verifier) known(ctx context.Context, r *http.Request, token string) (In
 		if answer, ok := v.cache.lookup(key, v.now()); ok {
 			return answer, nil
 		}
-		if !v.addresses.AllowAt(v.address(r), v.now()) {
+		if spend && !v.addresses.AllowAt(v.address(r), v.now()) {
 			return Introspection{}, ErrRateLimited
 		}
 		answer, err := v.introspect(ctx, token)

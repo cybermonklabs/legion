@@ -206,8 +206,8 @@ func TestTheBlockAndTheLinkThePreviousReleaseDroppedAreGoneAfterTheBackfill(t *t
 		}
 	}
 	if census.Refused() {
-		t.Fatalf("the census refused with %d difference(s) after the backfill over what the previous release dropped, want zero",
-			census.Differences())
+		t.Fatalf("the census refused with %d difference(s) after the backfill over what the previous release dropped, want zero:\n%s",
+			census.Differences(), censusFindings(census))
 	}
 }
 

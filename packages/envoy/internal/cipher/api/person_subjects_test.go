@@ -138,26 +138,26 @@ func (ts *testServer) approverAccountOf(t *testing.T, id string) store.IssuerSub
 	return account
 }
 
-// legacySignIn writes person's sign-in on thumbprint as a broker from before migration 0041 did:
+// legacySignIn writes person's sign-in on thumbprint as a broker from before migration 0042 did:
 // with no account recorded.
 func (ts *testServer) legacySignIn(t *testing.T, person, thumbprint, machine string) {
 	t.Helper()
 	if _, err := ts.Store.Pool.Exec(context.Background(), `insert into person_signins (person, thumbprint, machine_account)
 		values ($1, $2, $3)`, person, thumbprint, machine); err != nil {
-		t.Fatalf("write %s's sign-in from before migration 0041: %v", person, err)
+		t.Fatalf("write %s's sign-in from before migration 0042: %v", person, err)
 	}
 }
 
 // pageSession writes person's session on the approval page under the cookie secret secret,
 // signed in by account, as the page's callback does; nil writes it as a broker from before
-// migration 0041 did, with no account recorded.
+// migration 0042 did, with no account recorded.
 func (ts *testServer) pageSession(t *testing.T, person, secret string, account *store.IssuerSubject) {
 	t.Helper()
 	hash, expires := sha256.Sum256([]byte(secret)), time.Now().Add(time.Hour)
 	if account == nil {
 		if _, err := ts.Store.Pool.Exec(context.Background(), `insert into browser_sessions (secret_hash, login, expires_at)
 			values ($1, $2, $3)`, hash[:], person, expires); err != nil {
-			t.Fatalf("write %s's approval-page session from before migration 0041: %v", person, err)
+			t.Fatalf("write %s's approval-page session from before migration 0042: %v", person, err)
 		}
 		return
 	}

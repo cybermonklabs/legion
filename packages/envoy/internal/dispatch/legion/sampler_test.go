@@ -2,12 +2,14 @@ package legion
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -79,11 +81,14 @@ func stateOf(phase, role string) string {
 		"workers":{%q:{"claim":{"session":"s-1","state":"working"},"rounds":1}}}}}`, phase, role)
 }
 
-// configured is a store with project INFRA naming daemon, and a sampler on it.
+// configured is a store with project INFRA naming daemon, and a sampler on it. INFRA holds the two
+// issues the tests' daemons report, as Dispatch holds every issue a daemon learns of from it: the
+// sampler records a reported key only where Dispatch holds it as the project's (keepProject).
 func configured(t *testing.T, daemonURL string) (*store.Store, *Sampler) {
 	t.Helper()
 	database := storetest.Open(t)
 	seedLegionProject(t, database, "INFRA", daemonURL)
+	seedIssues(t, database, "INFRA", "INFRA-1", "INFRA-2")
 	return database, NewSampler(database.Pool)
 }
 
@@ -97,6 +102,33 @@ func seedLegionProject(t *testing.T, database *store.Store, project, daemonURL s
 		model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
 		t.Fatalf("set the Legion setting of %s: %v", project, err)
 	}
+}
+
+// seedIssues writes each key as an issue of project, the project row included.
+func seedIssues(t *testing.T, database *store.Store, project string, keys ...string) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(),
+		`insert into projects (key, name, default_assignee) values ($1, $1, 'alice') on conflict do nothing`, project); err != nil {
+		t.Fatalf("seed project %s: %v", project, err)
+	}
+	for index, key := range keys {
+		if _, err := database.Pool.Exec(context.Background(), `
+			insert into issues (key, project_key, number, title, status, rank, created_by)
+			values ($1, $2, $3, $1, 'in_progress', $4, '{"kind":"user","id":"alice"}'::jsonb)
+		`, key, project, issueNumber(t, key), fmt.Sprintf("r%03d", index)); err != nil {
+			t.Fatalf("seed issue %s of %s: %v", key, project, err)
+		}
+	}
+}
+
+// issueNumber is the number a key ends in.
+func issueNumber(t *testing.T, key string) int {
+	t.Helper()
+	var number int
+	if _, err := fmt.Sscanf(key[strings.LastIndex(key, "-")+1:], "%d", &number); err != nil {
+		t.Fatalf("read the number of %s: %v", key, err)
+	}
+	return number
 }
 
 // observations is every observation of project, oldest first, as "<issue>/<field>=<value>".
@@ -206,6 +238,96 @@ func TestAChangedValueWritesOneRowAndAnUnchangedValueWritesNone(t *testing.T) {
 				t.Errorf("read %d = %+v, want a successful read with its bytes", index, row)
 			}
 		}
+	}
+}
+
+// projectOnlyState is a daemon's answer naming, beside INFRA's issue INFRA-1, PRIV's issues and a
+// key no issue holds, as a daemon that serves both projects answers, and as any daemon does that
+// a member names as INFRA's: in its issues, every list of its admission block, and its settings'
+// `projects`. Its settings name the daemon's own project as daemonProject.
+func projectOnlyState(daemonProject string) string {
+	return fmt.Sprintf(`{
+		"admission": {"cap": 4, "active": ["INFRA-1", "PRIV-1"], "waiting": ["PRIV-2", "INFRA-99"], "trees": ["PRIV-1"],
+			"blocked": [{"issue": "PRIV-1", "blockedBy": ["PRIV-2"]}, {"issue": "INFRA-1", "blockedBy": ["PRIV-2"]}]},
+		"issues": {
+			"INFRA-1": {"key": "INFRA-1", "phase": "implementing", "slot": {"index": 0}},
+			"PRIV-1": {"key": "PRIV-1", "phase": "testing", "slot": {"index": 1},
+				"workers": {"tester": {"claim": {"state": "working"}}}},
+			"INFRA-99": {"key": "INFRA-99", "phase": "planning"}},
+		"settings": {"project": %q, "admission_cap": 4,
+			"projects": {"INFRA": {"slack_channels": ["C-INFRA"]}, "PRIV": {"slack_channels": ["C-PRIV"]}}}}`, daemonProject)
+}
+
+// TestAReadRecordsOnlyTheProjectsOwnIssues: INFRA's daemon reports PRIV's issues and a key no
+// issue holds beside INFRA-1 (projectOnlyState), and INFRA's record holds INFRA-1 alone, as
+// Dispatch's own record of each key decides: no observation of PRIV-1 or of INFRA-99, no slot,
+// waiting place, live tree or blocked entry of any of them in the admission block, and of the
+// settings INFRA's own `projects` entry alone, without the daemon's `project` where it names PRIV.
+// INFRA-1's blocker PRIV-2 stays as the daemon said it: a link across projects, which the board
+// holds to its reader. A daemon whose `project` spells INFRA in another case keeps it.
+//
+// Control: the sampler recording the daemon's whole answer (keepProject returning at once) records
+// PRIV-1 under INFRA, and the test fails naming it.
+func TestAReadRecordsOnlyTheProjectsOwnIssues(t *testing.T) {
+	daemon := newFakeDaemon(t, projectOnlyState("PRIV"))
+	database, sampler := configured(t, daemon.URL)
+	seedIssues(t, database, "PRIV", "PRIV-1", "PRIV-2")
+
+	sampler.Pass(t.Context())
+	if served := reads(t, database, "INFRA"); len(served) != 1 || !served[0].ok {
+		t.Fatalf("legion_reads = %+v, want the one good read", served)
+	}
+	recorded := observations(t, database, "INFRA")
+	var issueRows []string
+	for _, row := range recorded {
+		for _, foreign := range []string{"PRIV-1", "INFRA-99", "C-PRIV"} {
+			if strings.Contains(row, foreign) {
+				t.Errorf("INFRA's record holds %s, which names %s: no issue of INFRA, nor its block", row, foreign)
+			}
+		}
+		if !strings.HasPrefix(row, "/") {
+			issueRows = append(issueRows, row)
+		}
+	}
+	if want := []string{`INFRA-1/phase="implementing"`, `INFRA-1/slot=0`}; !slices.Equal(issueRows, want) {
+		t.Errorf("INFRA's issue observations are %v, want %v", issueRows, want)
+	}
+	newest := func(field string, into any) {
+		t.Helper()
+		var value []byte
+		if err := database.Pool.QueryRow(t.Context(), `
+			select value from legion_current where project = 'INFRA' and issue_key = $1 and field = $2
+		`, AdmissionKey, field).Scan(&value); err != nil {
+			t.Fatalf("read INFRA's newest %s: %v", field, err)
+		}
+		if err := json.Unmarshal(value, into); err != nil {
+			t.Fatalf("decode INFRA's newest %s %s: %v", field, value, err)
+		}
+	}
+	var admission Admission
+	newest(FieldAdmission, &admission)
+	if !slices.Equal(admission.Active, []string{"INFRA-1"}) || len(admission.Waiting) != 0 || len(admission.Trees) != 0 ||
+		len(admission.Blocked) != 1 || admission.Blocked[0].Issue != "INFRA-1" || !slices.Equal(admission.Blocked[0].BlockedBy, []string{"PRIV-2"}) {
+		t.Errorf("INFRA's admission block is %+v, want INFRA-1 alone active and blocked, by PRIV-2 as the daemon said", admission)
+	}
+	var settings map[string]json.RawMessage
+	newest(FieldSettings, &settings)
+	if _, held := settings["project"]; held {
+		t.Errorf("INFRA's settings hold the daemon's project %s, want none: it names PRIV", settings["project"])
+	}
+	if got := string(settings["projects"]); got != `{"INFRA": {"slack_channels": ["C-INFRA"]}}` {
+		t.Errorf("INFRA's settings hold the projects %s, want INFRA's own entry alone", got)
+	}
+	if got := string(settings["admission_cap"]); got != "4" {
+		t.Errorf("INFRA's settings hold the admission_cap %s, want the daemon's 4", got)
+	}
+
+	daemon.serves(projectOnlyState("infra"))
+	sampler.Pass(t.Context())
+	settings = nil
+	newest(FieldSettings, &settings)
+	if got := string(settings["project"]); got != `"infra"` {
+		t.Errorf("INFRA's settings hold the daemon's project %s, want the daemon's own spelling of INFRA", got)
 	}
 }
 

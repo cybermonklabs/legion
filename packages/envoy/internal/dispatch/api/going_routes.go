@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -386,10 +385,11 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 // what a reader with nothing in hand is answered too.
 func goingResumeFrom(r *http.Request) int {
 	resume, err := strconv.Atoi(strings.TrimSpace(r.Header.Get("Last-Event-ID")))
-	// Past math.MaxInt32 is no sequence this stream could have written either: going_events
-	// holds its sequence as an integer, so a larger value cannot bind against that column and
-	// the read that carries the stream would fail rather than answer the frames past it.
-	if err != nil || resume < 0 || resume > math.MaxInt32 {
+	// A number past an integer column's range (fitsIntegerColumn) is no sequence this stream could
+	// have written either: going_events holds its sequence as an integer, so a larger value cannot
+	// bind against that column and the read that carries the stream would fail rather than answer
+	// the frames past it.
+	if err != nil || resume < 0 || !fitsIntegerColumn(resume) {
 		return 0
 	}
 	return resume

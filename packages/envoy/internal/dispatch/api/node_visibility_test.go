@@ -110,6 +110,7 @@ func (f privateNodeFixture) sharedCommentPrefix() string {
 // verified (requireEveryCredentialReadsAsItsPerson), and for the shared bearer, which proves
 // none (requireOneAuthorRule).
 func TestNoReadAnswersANodeTheActingPersonMayNotSee(t *testing.T) {
+	t.Parallel()
 	held := seedPrivateNode(t, true)
 	// The same seed without the private node ever written, which the counts are compared
 	// against: every count the second person reads has to equal the count they would read in a
@@ -471,6 +472,7 @@ func TestNoReadAnswersANodeTheActingPersonMayNotSee(t *testing.T) {
 // may see both comments, so the same short id written by her is ambiguous, and her comment stores
 // it as she wrote it.
 func TestAWritersShortIDResolvesOnlyAmongTheNodesTheWriterMaySee(t *testing.T) {
+	t.Parallel()
 	fixture := seedPrivateNode(t, true)
 	shared := fixture.sharedCommentPrefix()
 	body := "See dispatch://" + fixture.issue + "/comment/" + shared + "."
@@ -514,6 +516,7 @@ func TestAWritersShortIDResolvesOnlyAmongTheNodesTheWriterMaySee(t *testing.T) {
 // may not see carries it; the question part's stays the short id the author wrote, ambiguous to
 // her.
 func TestAnAnswersShortIDResolvesAmongTheNodesTheAnswererMaySee(t *testing.T) {
+	t.Parallel()
 	fixture := seedPrivateNode(t, true)
 	shared := fixture.sharedCommentPrefix()
 	reference := "dispatch://" + fixture.issue + "/comment/" + shared

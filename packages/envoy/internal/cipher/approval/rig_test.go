@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -80,12 +81,14 @@ type rig struct {
 
 // rigSetup is what a test changes of the broker newRig wires: secrets served beside the four
 // every rig serves, the client of Dispatch's project access the request machine and the
-// enrollment ask (nil for none, as on a broker with no BROKER_PROJECT_ACCESS_URL), the group
-// reader every decision site asks (nil for none), and the hold gate (withHold). A rig holding a
-// client serves a secret tagged with a project, as cmd/cipherd's does (Loader.ProjectChecks).
+// enrollment ask (nil for none, as on a broker with no BROKER_PROJECT_ACCESS_URL), a profiles
+// file ("" for none), whose proxy blocks the request machine holds in force, the group reader
+// every decision site asks (nil for none), and the hold gate (withHold). A rig holding a client
+// serves a secret tagged with a project, as cmd/cipherd's does (Loader.ProjectChecks).
 type rigSetup struct {
 	secrets  []secrets.LocalSecret
 	projects projectaccess.Access
+	profiles string
 	groups   record.Directory
 	// hold builds, on the rig's own store, the hold gate the broker's approval page and its routes
 	// ask; nil is a broker with no gate, which holds nobody.
@@ -119,6 +122,9 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 	}, setup.secrets...)...)
 	loader := policytest.Loader(local)
 	loader.ProjectChecks = setup.projects != nil
+	if setup.profiles != "" {
+		loader.Profiles = policytest.Profiles(t, setup.profiles)
+	}
 	loader.Groups = setup.groups
 	current, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
@@ -147,6 +153,11 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 		Audience: srv.URL, Skew: time.Minute, Replay: enr.Replay, Projects: setup.projects,
 		Groups: setup.groups,
 	}
+	if setup.profiles != "" {
+		reqMachine.Airlock = loader.Profiles.ProxyRules()
+	}
+	// After the airlock rules, as cmd/cipherd orders them: the verifier holds the judge's rules
+	// (requests.NewChainVerifier) from the rules it is given.
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
 	reqMachine.Chain.Groups = setup.groups
 	provider := ciphertest.NewOAuthProvider(t, st, issuer)
@@ -446,6 +457,27 @@ func (r *rig) requirePending(t *testing.T, recordID string) {
 	t.Helper()
 	if state, grants := r.state(t, recordID), r.grants(t, recordID); state != "pending" || grants != 0 {
 		t.Fatalf("record %s is %s with %d grants, want still pending with none", recordID, state, grants)
+	}
+}
+
+// --- reading what the broker logged, through a logtest.Recorder the test made the default ---
+
+// logFields is a logged record's attributes by key.
+func logFields(line slog.Record) map[string]any {
+	fields := map[string]any{}
+	line.Attrs(func(a slog.Attr) bool { fields[a.Key] = a.Value.Any(); return true })
+	return fields
+}
+
+// requireNoErrorLine fails t for each of lines, what what logged, that is an error line: an
+// outcome the broker counts as ordinary, such as a refusal or a dependency that cannot answer,
+// writes none, since alerting reads error lines.
+func requireNoErrorLine(t *testing.T, what string, lines []slog.Record) {
+	t.Helper()
+	for _, line := range lines {
+		if line.Level >= slog.LevelError {
+			t.Errorf("%s wrote an error line %q: %v", what, line.Message, logFields(line))
+		}
 	}
 }
 

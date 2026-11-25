@@ -15,15 +15,19 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 )
 
-// TestARequestWhoseReasonNamesMoreThanSixteenProjectsIsRefusedAtTheCLI: `agent-secrets request`
-// with a reason naming the issue keys of 17 projects exits 1 with the broker's refusal, which
-// names the bound, and writes nothing; the same request naming 16 is granted at once.
+// TestARequestWhoseReasonNamesMoreThanSixteenProjectsIsRefusedAtTheCLI: on a broker that holds a
+// project-access client, `agent-secrets request` with a reason naming the issue keys of 17
+// projects exits 1 with the broker's refusal, which names the bound, and writes nothing; the same
+// request naming 16 is granted at once. A broker with no such client takes either
+// (requests.TestABrokerWithNoProjectAccessTakesAReasonNamingAnyNumberOfProjects).
 func TestARequestWhoseReasonNamesMoreThanSixteenProjectsIsRefusedAtTheCLI(t *testing.T) {
-	rig := ciphertest.NewRig(t)
+	dispatch := projectaccesstest.NewServer(t, nil, nil)
+	rig := ciphertest.NewRig(t, ciphertest.WithDispatchAccess(dispatch.URL, dispatch.Account, nil))
 	binary := buildAgentSecrets(t)
 	_, sock := serveRealHelper(t, rig.URL, rig.Operator)
 	if code, exit, stderr := machineLoginThen(t, rig, binary, sock, "approve", nil); exit != 0 {

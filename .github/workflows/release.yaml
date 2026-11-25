@@ -109,7 +109,8 @@ env:
     packages/envoy/internal/dispatch/bytelru/ packages/envoy/internal/dispatch/itemblocks/
     packages/envoy/internal/dispatch/model/ packages/envoy/internal/dispatch/pmdoc/
     packages/envoy/internal/dispatch/text/ packages/envoy/internal/fold/
-    packages/envoy/internal/googleidentity/ packages/envoy/internal/id/ packages/envoy/internal/redact/
+    packages/envoy/internal/googleidentity/ packages/envoy/internal/id/
+    packages/envoy/internal/oauthrefusal/ packages/envoy/internal/redact/
     packages/envoy/internal/redirects/ packages/envoy/internal/tlsalert/ packages/envoy/listenerwire/
     packages/envoy/listenfd/
     packages/envoy/migrationid/ packages/envoy/natsversion/ packages/envoy/roleholder/
@@ -172,6 +173,8 @@ jobs:
         if: steps.version.outputs.skip != 'true'
         with:
           go-version-file: packages/daemon/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # ci.yaml's go-daemon, restored and never saved: .github/workflows/ci-caches.yaml fills that
       # family on a push to main.
@@ -661,6 +664,8 @@ jobs:
       attestations: write
     # No cache is restored in a job that holds a credential.
     cache-mode: none
+    env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, which gh-read.sh's wait for a spent API budget stays within
     outputs:
       # Whether pi-envoy and pi-legion each published or had nothing to release in this run.
       pair_ok: ${{ steps.pair.outputs.ok }}
@@ -1201,6 +1206,7 @@ jobs:
     # No cache is restored in a job that holds a credential.
     cache-mode: none
     env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, which gh-read.sh's wait for a spent API budget stays within
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       IMAGE: ${{ needs.worker_image.outputs.image }}
       DIGEST: ${{ needs.worker_image.outputs.digest }}

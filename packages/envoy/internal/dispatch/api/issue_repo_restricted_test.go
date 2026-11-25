@@ -21,19 +21,57 @@ const restrictedRepoRefusal = `{"code":"RESTRICTED_MEMBER","error":"a restricted
 
 // newIssueRepoAccessServer is newAccessServer with outside sign-in on, so erin's personal token
 // acts for her as her sign-in does (TestARestrictedOwnersTokenActsOnlyWhileOutsideSignInAdmitsThem),
-// erin named on ACC's list, so she sees ACC, and acme/widgets mapped to ACC as its default
-// repository, so an issue of ACC with no repository of its own resolves to it.
+// erin named on ACC's list, so she sees ACC, and acme/widgets ACC's default repository, so an issue
+// of ACC with no repository of its own resolves to it.
 func newIssueRepoAccessServer(t *testing.T) (http.Handler, *store.Store) {
 	t.Helper()
 	handler, database := newAccessServerWith(t, testServerOptions{admitsRestricted: true})
 	if named := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); named.Code != http.StatusOK {
 		t.Fatalf("alice names erin on ACC: status=%d body=%s", named.Code, named.Body.String())
 	}
-	if mapped := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets",
-		map[string]any{"project": "ACC", "default": true}, "alice"); mapped.Code != http.StatusOK {
-		t.Fatalf("map acme/widgets to ACC as its default: status=%d body=%s", mapped.Code, mapped.Body.String())
+	if set := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/ACC/default-repository",
+		map[string]any{"repo": "acme/widgets"}, "alice"); set.Code != http.StatusOK {
+		t.Fatalf("make acme/widgets ACC's default repository: status=%d body=%s", set.Code, set.Body.String())
 	}
 	return handler, database
+}
+
+// TestARestrictedMemberSetsNoProjectsDefaultRepository: a project's default repository belongs to
+// the deployment, and every repository an issue of the project that names none resolves to is one
+// the project owns, so a restricted member who set it could make any repository the App reaches
+// theirs to read. erin, a restricted member ACC's list names, is refused the write, setting and
+// clearing alike, with 403 RESTRICTED_MEMBER (the deployment's class, refuseDeploymentWrite), and
+// ACC keeps acme/widgets. alice, a full member, sets it.
+//
+// Control: the route classed scopeProject in writeClasses, under which erin's writes reach the
+// handler: her clear ({"repo": null}) then changes ACC's default, and her acme/gadgets is 403
+// REPOSITORY_NOT_AVAILABLE rather than RESTRICTED_MEMBER.
+func TestARestrictedMemberSetsNoProjectsDefaultRepository(t *testing.T) {
+	handler, database := newIssueRepoAccessServer(t)
+	stored := func() string {
+		t.Helper()
+		var repo *string
+		if err := database.Pool.QueryRow(context.Background(), `select default_repo from projects where key = 'ACC'`).Scan(&repo); err != nil {
+			t.Fatalf("read ACC's default repository: %v", err)
+		}
+		if repo == nil {
+			return "<none>"
+		}
+		return *repo
+	}
+	for _, body := range []map[string]any{{"repo": "acme/gadgets"}, {"repo": nil}} {
+		refused := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/ACC/default-repository", body, accessErin)
+		if code, _ := refusalOf(t, refused); refused.Code != http.StatusForbidden || code != codeRestrictedMember {
+			t.Errorf("erin's default-repository write %v: status=%d body=%s, want 403 %s", body, refused.Code, refused.Body.String(), codeRestrictedMember)
+		}
+		if got := stored(); got != "acme/widgets" {
+			t.Errorf("after erin's write %v ACC's default repository is %s, want acme/widgets", body, got)
+		}
+	}
+	if set := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/ACC/default-repository",
+		map[string]any{"repo": "acme/gadgets"}, "alice"); set.Code != http.StatusOK || stored() != "acme/gadgets" {
+		t.Errorf("alice's write: status=%d body=%s, default %s; want 200 and acme/gadgets", set.Code, set.Body.String(), stored())
+	}
 }
 
 // createdIssueKey files body as login and answers the new issue's key, failing unless it is 201.

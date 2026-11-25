@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/wire"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -25,9 +26,10 @@ const (
 
 // ownRevokeBroker is a secrets broker that decides whose a grant or a sign-in is as the real one
 // does for a full member: a grant's revoke is its approver's or its enrollment's operator's (403
-// NOT_APPROVER for anyone else; the real broker ends a restricted member's revoke only of a grant
-// whose session acts for them, as its operator, requests' mayRevoke), and a sign-in's is its
-// person's (anyone else's is an unknown id, 404). It counts the revokes Dispatch sends it.
+// NOT_APPROVER for anyone else), and a sign-in's is its person's (anyone else's is an unknown id,
+// 404). Its grant list (GET /v1/grants) is a full member's, the grants a login approved or whose
+// session acts for it, which Dispatch holds a restricted member's to their own sessions'
+// (memberGrants). It counts the revokes Dispatch sends it.
 type ownRevokeBroker struct {
 	server  *httptest.Server
 	mu      sync.Mutex
@@ -48,10 +50,28 @@ func newOwnRevokeBroker(t *testing.T) *ownRevokeBroker {
 	broker.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		broker.mu.Lock()
 		defer broker.mu.Unlock()
-		broker.calls++
+		if r.Method == http.MethodPost {
+			broker.calls++
+		}
 		w.Header().Set("Content-Type", "application/json")
 		var body struct{ Approver, Person string }
 		_ = json.NewDecoder(r.Body).Decode(&body)
+		if r.URL.Path == "/v1/grants" && r.Method == http.MethodGet {
+			login := r.URL.Query().Get("approver")
+			listed := wire.ApproverGrantsResponse{Grants: []wire.ApproverGrantResp{}}
+			for id, held := range broker.grants {
+				if held[0] == login || held[1] == login {
+					approver := held[0]
+					listed.Grants = append(listed.Grants, wire.ApproverGrantResp{
+						GrantID: id, Granted: "approval", Approver: &approver,
+						Enrollment: wire.RecordEnrollmentResp{Kind: "session", RuntimeID: id, Operator: held[1]},
+						Names:      []string{"SECRET"},
+					})
+				}
+			}
+			_ = json.NewEncoder(w).Encode(listed)
+			return
+		}
 		if id, ok := strings.CutPrefix(r.URL.Path, "/v1/grants/"); ok && r.Method == http.MethodPost {
 			id = strings.TrimSuffix(id, "/revoke-by-approver")
 			held, exists := broker.grants[id]
@@ -172,22 +192,38 @@ func TestThePersonsOwnRowsAreTheTwoRevokesOfTheDeployment(t *testing.T) {
 
 // TestARestrictedMemberEndsTheirOwnGrantsAndSignIns: a person ends their own sign-in and revokes
 // their own grant whatever their member kind. erin, a restricted member at a browser, revokes the
-// grant of a session she operates and her sign-in, and the broker no longer holds either. The
-// person's-own check stays the broker's: her revoke of alice's grant or sign-in is answered as
-// carol's, a full member's, is - 403 NOT_APPROVER, and 404 for a sign-in of somebody else - and
-// leaves both held.
+// grant of a session she operates and her sign-in, and the broker no longer holds either. Her
+// revoke of alice's sign-in stays the broker's to refuse, answered as carol's, a full member's, is
+// (404 for a sign-in of somebody else). Her revoke of alice's grant is Dispatch's to refuse
+// (memberGrants): 403 RESTRICTED_MEMBER where carol is answered the broker's 403 NOT_APPROVER, and
+// no revoke of hers reaches the broker. Both of alice's stay held.
 func TestARestrictedMemberEndsTheirOwnGrantsAndSignIns(t *testing.T) {
 	broker := newOwnRevokeBroker(t)
 	handler, _ := newOwnRevokeServer(t, broker.server.URL)
 
-	for _, row := range []struct{ row, others, own string }{
-		{ownGrantRevoke, "grant-alice", "grant-erin"},
-		{ownSignInRevoke, "signin-alice", "signin-erin"},
+	for _, row := range []struct {
+		row, others, own string
+		// dispatchRefuses is whether Dispatch, not the broker, refuses erin's revoke of others.
+		dispatchRefuses bool
+	}{
+		{ownGrantRevoke, "grant-alice", "grant-erin", true},
+		{ownSignInRevoke, "signin-alice", "signin-erin", false},
 	} {
 		t.Run(row.row, func(t *testing.T) {
 			full := dispatchRequest(t, handler, http.MethodPost, revokePath(row.row, row.others), nil, accessCarol)
+			before := broker.revokes()
 			restricted := dispatchRequest(t, handler, http.MethodPost, revokePath(row.row, row.others), nil, accessErin)
-			if full.Code < 400 || restricted.Code != full.Code || restricted.Body.String() != full.Body.String() {
+			switch {
+			case full.Code < 400:
+				t.Errorf("carol revoking alice's %s = %d %s, want a refusal", row.others, full.Code, strings.TrimSpace(full.Body.String()))
+			case row.dispatchRefuses:
+				if restricted.Code != http.StatusForbidden || !strings.Contains(restricted.Body.String(), `"code":"`+codeRestrictedMember+`"`) {
+					t.Errorf("erin revoking alice's %s = %d %s, want 403 %s", row.others, restricted.Code, strings.TrimSpace(restricted.Body.String()), codeRestrictedMember)
+				}
+				if sent := broker.revokes() - before; sent != 0 {
+					t.Errorf("erin's revoke of alice's %s sent the broker %d revokes, want none", row.others, sent)
+				}
+			case restricted.Code != full.Code || restricted.Body.String() != full.Body.String():
 				t.Errorf("erin revoking alice's %s = %d %s, want carol's refusal %d %s",
 					row.others, restricted.Code, strings.TrimSpace(restricted.Body.String()), full.Code, strings.TrimSpace(full.Body.String()))
 			}
@@ -208,9 +244,10 @@ func TestARestrictedMemberEndsTheirOwnGrantsAndSignIns(t *testing.T) {
 
 // TestACredentialThatListsProjectsRevokesNoGrantOrSignIn: a revoke of a grant or a sign-in is
 // still the deployment's to a credential that lists projects, whoever its person is, so alice's
-// token that lists ACC is refused as before this change, byte for byte (R9), and so is erin's,
-// naming its list, which is the refusal's reason. Neither reaches the broker. alice at a browser
-// revokes her own grant and sign-in as before.
+// token that lists ACC is refused as before this change, byte for byte (R9), naming its list,
+// which is the refusal's reason. erin's token, a restricted member's, holds no scope (R16), so the
+// scope gate refuses it first, 403 OAUTH_SCOPE_REQUIRED. Neither reaches the broker. alice at a
+// browser revokes her own grant and sign-in as before.
 func TestACredentialThatListsProjectsRevokesNoGrantOrSignIn(t *testing.T) {
 	broker := newOwnRevokeBroker(t)
 	handler, tokens := newOwnRevokeServer(t, broker.server.URL)
@@ -222,12 +259,12 @@ func TestACredentialThatListsProjectsRevokesNoGrantOrSignIn(t *testing.T) {
 		t.Run(row.row, func(t *testing.T) {
 			want := `{"code":"PROJECT_SCOPE_DEPLOYMENT","error":"this request's credential may write project ACC and nothing else; ` + row.row + ` belongs to the deployment rather than to a project"}`
 			before := broker.revokes()
-			for login, id := range map[string]string{"alice": row.alices, accessErin: row.erins} {
-				refused := agentRequest(t, handler, http.MethodPost, revokePath(row.row, id), nil, tokens[login])
-				if got := strings.TrimSpace(refused.Body.String()); refused.Code != http.StatusForbidden || got != want {
-					t.Errorf("%s's token that lists ACC revoking %s = %d %s, want 403 %s", login, id, refused.Code, got, want)
-				}
+			refused := agentRequest(t, handler, http.MethodPost, revokePath(row.row, row.alices), nil, tokens["alice"])
+			if got := strings.TrimSpace(refused.Body.String()); refused.Code != http.StatusForbidden || got != want {
+				t.Errorf("alice's token that lists ACC revoking %s = %d %s, want 403 %s", row.alices, refused.Code, got, want)
 			}
+			wantRefusal(t, agentRequest(t, handler, http.MethodPost, revokePath(row.row, row.erins), nil, tokens[accessErin]),
+				http.StatusForbidden, codeScopeRequired, "erin's token that lists ACC", "revoking "+row.erins)
 			if calls := broker.revokes() - before; calls != 0 {
 				t.Fatalf("the broker was sent %d revokes by a credential that lists projects", calls)
 			}

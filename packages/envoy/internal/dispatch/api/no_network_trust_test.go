@@ -27,11 +27,11 @@ const (
 // holds the API alone, so a route of its own that answers with no credential fails here first.
 func apiWalk(t *testing.T) (http.Handler, []string) {
 	t.Helper()
-	deps, err := NewDeps(DepsInput{
+	deps, err := NewDeps(withDocumentService(t, DepsInput{
 		Identity:    identity.HeaderIdentity{Header: "X-Dispatch-User"},
 		AgentTokens: sharedAgentTokens(t, "agent-token"),
 		ServerURL:   "https://" + apiHost,
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build the API's dependencies: %v", err)
 	}

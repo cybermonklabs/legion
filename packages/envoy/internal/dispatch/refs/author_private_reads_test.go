@@ -58,6 +58,23 @@ func closureOf(t *testing.T, tx pgx.Tx, who model.Actor) []Member {
 	return references.Members
 }
 
+// linkedFromOf is the nodes that link to CORE-1 or to its own content, as who reads them, each as
+// the tests compare a row of linked_from (relatedSummary): its node, its name, the kinds of its
+// links and its via, sorted.
+func linkedFromOf(t *testing.T, tx pgx.Tx, who model.Actor) []string {
+	t.Helper()
+	references, err := Closure(context.Background(), tx, who, "CORE-1")
+	if err != nil {
+		t.Fatalf("read the references as %s: %v", who.ID, err)
+	}
+	rows := make([]string, 0, len(references.LinkedFrom))
+	for _, row := range references.LinkedFrom {
+		rows = append(rows, relatedSummary(row.Node.Kind, row.Node.ID, row.Name, row.Kinds, row.Via))
+	}
+	slices.Sort(rows)
+	return rows
+}
+
 // A private comment's links are no part of the closure another person reads, so it is neither
 // a member's via nor reaches a member, and a private document is no member at all. Its author
 // reads both.
@@ -85,27 +102,198 @@ func TestTheClosureAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *testing.
 	}
 }
 
-// The references read reads one hop, under the same visibility for every reader. An issue
-// comment links a public document A, and A links a document B reserved for its author. Another
-// person's read is A alone, at depth 1 through the comment, and nothing of B. Its author's is A
-// alone too: B is a link of A, which is no content of the issue, so no reader's read of the issue
-// reaches it (the read stopped walking past the first hop when it became one hop in each
-// direction; before that, the author's walk reached B at depth 2 through A).
-func TestTheClosureAnswersADocumentReservedForItsAuthorTwoHopsAwayToThatAuthorAlone(t *testing.T) {
+// The references read reads one hop, under the visibility of the reader. The issue's comment links
+// a public document A and, directly, a document B reserved for its author; A links a third
+// document C reserved for its author. Another person's read is A alone, at depth 1 through the
+// comment: nothing of B, which is reserved for its author, and nothing of C. The author's read is
+// A and B, each at depth 1 through the comment. C is in neither: it is two hops from the issue's
+// own content, and the read of one hop never reaches it, whoever reads.
+func TestTheReferencesReadAnswersADocumentReservedForItsAuthorToThatAuthorAlone(t *testing.T) {
 	tx := prefixFixture(t)
 	publicDocument, publicDocumentKey := createReferenceArtifact(t, tx, "", "CORE", "public-md")
 	_, privateDocumentKey := createReferenceArtifact(t, tx, "", "CORE", "private-md")
+	_, farDocumentKey := createReferenceArtifact(t, tx, "", "CORE", "far-private-md")
 	comment := createReferenceComment(t, tx, "CORE-1")
 	insertReference(t, tx, "comment", comment, "artifact", publicDocumentKey)
-	insertReference(t, tx, "artifact", publicDocument, "artifact", privateDocumentKey)
+	insertReference(t, tx, "comment", comment, "artifact", privateDocumentKey)
+	insertReference(t, tx, "artifact", publicDocument, "artifact", farDocumentKey)
+	reserveForAuthor(t, tx, "artifact", privateDocumentKey)
+	reserveForAuthor(t, tx, "artifact", farDocumentKey)
+
+	via := model.ReferenceVia{Kind: "comment", ID: comment}
+	public := Member{RefKey: publicDocumentKey, Depth: 1, Via: via}
+	if got, want := closureOf(t, tx, privateReader), []Member{public}; !reflect.DeepEqual(got, want) {
+		t.Errorf("another person's read = %#v; want %#v, without the private document %s and the far one %s",
+			got, want, privateDocumentKey, farDocumentKey)
+	}
+	want := []Member{public, {RefKey: privateDocumentKey, Depth: 1, Via: via}}
+	sort.Slice(want, func(left, right int) bool { return want[left].RefKey < want[right].RefKey })
+	if got := closureOf(t, tx, privateAuthor); !reflect.DeepEqual(got, want) {
+		t.Errorf("the author's read = %#v; want %#v, without the far document %s, which is two hops away",
+			got, want, farDocumentKey)
+	}
+}
+
+// The references read reads the links into the issue under the visibility of the reader too. A
+// public document A and a document B reserved for its author each link the issue CORE-1 itself.
+// Another person's read lists A alone among the nodes that link in, through the issue: nothing of
+// B, which is reserved for its author. The author's read lists A and B, each through the issue. A
+// link in carries no depth: its row is the node that links, the kinds of its links and its via,
+// the node of the issue's own at the near end (Closure's LinkedFrom, the in statement's rows).
+func TestTheReferencesReadAnswersALinkFromADocumentReservedForItsAuthorToThatAuthorAlone(t *testing.T) {
+	tx := prefixFixture(t)
+	publicDocument, _ := createReferenceArtifact(t, tx, "", "CORE", "public-md")
+	privateDocument, privateDocumentKey := createReferenceArtifact(t, tx, "", "CORE", "private-md")
+	insertReference(t, tx, "artifact", publicDocument, "issue", "CORE-1")
+	insertReference(t, tx, "artifact", privateDocument, "issue", "CORE-1")
 	reserveForAuthor(t, tx, "artifact", privateDocumentKey)
 
-	firstHop := Member{RefKey: publicDocumentKey, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: comment}}
-	if got, want := closureOf(t, tx, privateReader), []Member{firstHop}; !reflect.DeepEqual(got, want) {
-		t.Errorf("another person's closure = %#v; want %#v, without the private document %s", got, want, privateDocumentKey)
+	via := model.ReferenceVia{Kind: "issue", ID: "CORE-1"}
+	public := relatedSummary("artifact", publicDocument, "public-md", []string{"mentions"}, via)
+	if got, want := linkedFromOf(t, tx, privateReader), []string{public}; !slices.Equal(got, want) {
+		t.Errorf("another person's linked_from = %q; want %q, without the private document %s",
+			got, want, privateDocumentKey)
 	}
-	if got, want := closureOf(t, tx, privateAuthor), []Member{firstHop}; !reflect.DeepEqual(got, want) {
-		t.Errorf("the author's closure = %#v; want %#v: %s is a link of %s, no content of the issue", got, want, privateDocumentKey, publicDocumentKey)
+	want := []string{public, relatedSummary("artifact", privateDocument, "private-md", []string{"mentions"}, via)}
+	slices.Sort(want)
+	if got := linkedFromOf(t, tx, privateAuthor); !slices.Equal(got, want) {
+		t.Errorf("the author's linked_from = %q; want %q", got, want)
+	}
+}
+
+// insertBlockLink writes a mention that the block blockID of the document artifactID holds, to
+// the node toKind/toID, as IndexBlocks writes one into block_refs.
+func insertBlockLink(t *testing.T, tx pgx.Tx, artifactID, blockID, fromNode, toKind, toID string) {
+	t.Helper()
+	if _, err := tx.Exec(context.Background(), `
+		insert into block_refs (artifact_id, block_id, from_node, to_kind, to_id, kind, created_version)
+		values ($1::uuid, $2, $3, $4, $5, 'mentions', 1)
+	`, artifactID, blockID, fromNode, toKind, toID); err != nil {
+		t.Fatalf("insert the block link %s -> %s/%s: %v", fromNode, toKind, toID, err)
+	}
+}
+
+// The references read reads the issue's own documents only where the reader may see them. CORE-1's
+// document D, reserved for its author, links two public documents: A through the block b1 that
+// holds the mention (block_refs), and B through a refs row of its own that no block holds. Another
+// person reads neither, since the only link to each is D's; the author reads both, each at depth 1
+// through D. A is held by the out statement's arm of the documents' block links, and B by its arm
+// of their own refs rows, so the test fails when either arm stops holding D to the reader.
+func TestTheReferencesReadAnswersTheLinksOfTheIssuesDocumentReservedForItsAuthorToThatAuthorAlone(t *testing.T) {
+	tx := prefixFixture(t)
+	privateDocument, privateDocumentKey := createReferenceArtifact(t, tx, "CORE-1", "CORE", "spec")
+	_, blockTargetKey := createReferenceArtifact(t, tx, "", "CORE", "block-target-md")
+	_, rowTargetKey := createReferenceArtifact(t, tx, "", "CORE", "row-target-md")
+	insertDocumentBlock(t, tx, privateDocument, "b1", privateDocumentKey+"#b1")
+	insertBlockLink(t, tx, privateDocument, "b1", privateDocumentKey+"#b1", "artifact", blockTargetKey)
+	insertReference(t, tx, "artifact", privateDocument, "artifact", rowTargetKey)
+	reserveForAuthor(t, tx, "artifact", privateDocumentKey)
+
+	if got := closureOf(t, tx, privateReader); len(got) != 0 {
+		t.Errorf("another person's read = %#v; want no member, since every link is the private document %s's", got, privateDocumentKey)
+	}
+	via := model.ReferenceVia{Kind: "artifact", ID: privateDocument}
+	want := []Member{{RefKey: blockTargetKey, Depth: 1, Via: via}, {RefKey: rowTargetKey, Depth: 1, Via: via}}
+	sort.Slice(want, func(left, right int) bool { return want[left].RefKey < want[right].RefKey })
+	if got := closureOf(t, tx, privateAuthor); !reflect.DeepEqual(got, want) {
+		t.Errorf("the author's read = %#v; want %#v", got, want)
+	}
+}
+
+// The references read reads the links into the issue's own items only where the reader may see the
+// item. A public document links CORE-1's comment C, which is reserved for its author. Another
+// person's read lists no node linking in: the link's target, and so its via, is C. The author's
+// read lists the document, through C.
+func TestTheReferencesReadAnswersALinkToTheIssuesCommentReservedForItsAuthorToThatAuthorAlone(t *testing.T) {
+	tx := prefixFixture(t)
+	publicDocument, _ := createReferenceArtifact(t, tx, "", "CORE", "public-md")
+	privateComment := createReferenceComment(t, tx, "CORE-1")
+	insertReference(t, tx, "artifact", publicDocument, "comment", privateComment)
+	reserveForAuthor(t, tx, "comment", privateComment)
+
+	if got := linkedFromOf(t, tx, privateReader); len(got) != 0 {
+		t.Errorf("another person's linked_from = %q; want none, since the one link in ends at the private comment %s", got, privateComment)
+	}
+	want := []string{relatedSummary("artifact", publicDocument, "public-md", []string{"mentions"}, model.ReferenceVia{Kind: "comment", ID: privateComment})}
+	if got := linkedFromOf(t, tx, privateAuthor); !slices.Equal(got, want) {
+		t.Errorf("the author's linked_from = %q; want %q", got, want)
+	}
+}
+
+// The in statement's own target filter is the one clause that holds a link read from an item's
+// block: the arm of an ask's, a comment's or a message's block links binds its source block and
+// its item, and no target clause, where the refs and block_refs arms bind the target again. An ask
+// of a public document has a part, an option, that links CORE-1's comment C, reserved for its
+// author: an option's link is in ask_block_refs and in no refs row of the ask. Another person's
+// read lists no node linking in; the author's lists the ask, through C.
+func TestTheReferencesReadAnswersALinkFromAnAskPartToTheIssuesCommentReservedForItsAuthorToThatAuthorAlone(t *testing.T) {
+	tx := prefixFixture(t)
+	ctx := context.Background()
+	publicDocument, _ := createReferenceArtifact(t, tx, "", "CORE", "public-md")
+	privateComment := createReferenceComment(t, tx, "CORE-1")
+	const question = "Which option holds?"
+	var ask string
+	if err := tx.QueryRow(ctx, `
+		insert into asks (artifact_id, author, question)
+		values ($1::uuid, '{"kind":"user","id":"alice"}', $2)
+		returning id::text
+	`, publicDocument, question).Scan(&ask); err != nil {
+		t.Fatalf("create the document's ask: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		insert into ask_blocks (ask_id, block_id, node_id, position, type, text_sha256, excerpt,
+		                        made_at, changed_revision, changed_at)
+		values ($1::uuid, 'b2', 'ask/' || $1 || '#b2', 1, 'paragraph', 'sha', 'An option.', now(), 1, now())
+	`, ask); err != nil {
+		t.Fatalf("index the ask's option part: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		insert into ask_block_refs (ask_id, block_id, from_node, to_kind, to_id, kind)
+		values ($1::uuid, 'b2', 'ask/' || $1 || '#b2', 'comment', $2, 'mentions')
+	`, ask, privateComment); err != nil {
+		t.Fatalf("link the private comment from the ask's option: %v", err)
+	}
+	reserveForAuthor(t, tx, "comment", privateComment)
+
+	if got := linkedFromOf(t, tx, privateReader); len(got) != 0 {
+		t.Errorf("another person's linked_from = %q; want none, since the one link in ends at the private comment %s", got, privateComment)
+	}
+	want := []string{relatedSummary("ask", ask, question, []string{"mentions"}, model.ReferenceVia{Kind: "comment", ID: privateComment})}
+	if got := linkedFromOf(t, tx, privateAuthor); !slices.Equal(got, want) {
+		t.Errorf("the author's linked_from = %q; want %q", got, want)
+	}
+}
+
+// The references read reads a block of the issue's own document only where the reader may see the
+// block, whichever end of a link it is. CORE-1's document D is public and its block b1 is reserved
+// for its author. As a source, b1 holds D's mention of a public document A (block_refs, and D's own
+// refs row, which a block holds and so is read as the block's link alone). As a target, a public
+// document B links b1. Another person reads neither A among the links out nor B among the links
+// in; the author reads A, through D, and B, through D, the document b1 counts as.
+func TestTheReferencesReadAnswersALinkOfTheIssuesBlockReservedForItsAuthorToThatAuthorAlone(t *testing.T) {
+	tx := prefixFixture(t)
+	document, documentKey := createReferenceArtifact(t, tx, "CORE-1", "CORE", "spec")
+	_, targetKey := createReferenceArtifact(t, tx, "", "CORE", "target-md")
+	source, _ := createReferenceArtifact(t, tx, "", "CORE", "source-md")
+	privateBlock := documentKey + "#b1"
+	insertDocumentBlock(t, tx, document, "b1", privateBlock)
+	insertBlockLink(t, tx, document, "b1", privateBlock, "artifact", targetKey)
+	insertReference(t, tx, "artifact", document, "artifact", targetKey)
+	insertReference(t, tx, "artifact", source, "block", privateBlock)
+	reserveForAuthor(t, tx, "block", privateBlock)
+
+	if got := closureOf(t, tx, privateReader); len(got) != 0 {
+		t.Errorf("another person's read = %#v; want no member, since the one link out is the private block %s's", got, privateBlock)
+	}
+	if got := linkedFromOf(t, tx, privateReader); len(got) != 0 {
+		t.Errorf("another person's linked_from = %q; want none, since the one link in ends at the private block %s", got, privateBlock)
+	}
+	if got, want := closureOf(t, tx, privateAuthor), []Member{{RefKey: targetKey, Depth: 1, Via: model.ReferenceVia{Kind: "artifact", ID: document}}}; !reflect.DeepEqual(got, want) {
+		t.Errorf("the author's read = %#v; want %#v", got, want)
+	}
+	want := []string{relatedSummary("artifact", source, "source-md", []string{"mentions"}, model.ReferenceVia{Kind: "artifact", ID: documentKey})}
+	if got := linkedFromOf(t, tx, privateAuthor); !slices.Equal(got, want) {
+		t.Errorf("the author's linked_from = %q; want %q", got, want)
 	}
 }
 

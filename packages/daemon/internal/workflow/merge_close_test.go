@@ -476,7 +476,7 @@ func TestAnIssueReachingMergingOnAMergedPullRequestWaitsForItsTree(t *testing.T)
 //
 // A released child that has not started a phase holds it no longer. It stands at admitted
 // beneath a root in merging, a root the daemon has already accepted, so the daemon itself
-// pins the child there until that root closes (record.AcceptedAncestor), and a child the daemon
+// pins the child there while that root stands in merging (record.AcceptedAncestor), and a child the daemon
 // pins is left out of the set the close waits on (record.OpenBeneath). Counting it would
 // deadlock the pair. This is the one recorded departure from the spec of dispatch://INFRA-980,
 // decided on dispatch://INFRA-980/comment/d642164a-31d2-4d6c-ae5e-4da5dd0b9104.

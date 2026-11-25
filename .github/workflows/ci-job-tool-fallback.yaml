@@ -17,6 +17,8 @@ jobs:
     # why: .github/ci-notes/ci-job-tool-fallback.md#the-jobs-budget-and-the-bound-every-install-step-carries
     # 1 + 2 + 1 + 1 + 2 + 1 + 3 + 1 = 12 min + 10 = 22 min; an install step's 2 x 326 s -> 11 min.
     timeout-minutes: 22
+    env:
+      JOB_TIMEOUT_MINUTES: 22 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

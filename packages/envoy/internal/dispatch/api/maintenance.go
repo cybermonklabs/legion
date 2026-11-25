@@ -60,8 +60,8 @@ func storeIncomplete(ctx context.Context, q graphstore.Queryer) error {
 
 // incompleteRowsError says how many of the store's rows and nodes, those whose names ("rows of
 // PRIV"), a private project's reads would answer wrongly, and names the first of them as the
-// project census answers each line: with its own cure, the backfill, the erase that removes it, or
-// none. It adds no cure of its own, since no one command cures every class.
+// project census answers each line: with its own cure, the backfill, the block-index tick that
+// states an orphaned document gone, or none. It adds no cure of its own, since no one command cures every class.
 func incompleteRowsError(incomplete []string, whose string) error {
 	return fmt.Errorf("%d %s are incomplete in the graph store, so a private project's reads would answer them wrongly; "+
 		"each names its own cure, and envoy-dispatch census --store names them all: %s",

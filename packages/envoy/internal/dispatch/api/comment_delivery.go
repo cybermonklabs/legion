@@ -180,7 +180,10 @@ func (s *server) sendResolvedDelivery(
 	// stored for one it knows that is not running. A listener that predates the field answers
 	// none, which reads as connected. A kept send names no state and is sent (above).
 	queued := send.State == dispatchenvoy.SendStateStopped
-	// A duplicate names an envelope JetStream discarded, so the attempt records none.
+	// A duplicate stored nothing new. Its envelope id names the copy the stream holds under the
+	// same key on a listener of this release, which may be an earlier attempt's or another
+	// sender's, and the discarded envelope on an older one; the answer tells none of these apart,
+	// so the attempt records none (dispatchenvoy.SendResult).
 	if send.Duplicate {
 		return sendOutcome{duplicate: true, queued: queued}
 	}
@@ -1439,11 +1442,17 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// (lookUpRoleHolderReply). The mention is picked as the transaction below picks it, among the
 	// mentions the writer reads (replyRoleHolderOf). A read that finds no such mention asks
 	// nothing: the transaction below answers that comment, mention or attempt as it always has. A
-	// read that fails is the route's 500.
-	roleReply, err := s.replyRoleHolderOf(r.Context(), actor, who, r.PathValue("id"), input.Target, input.Attempt)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+	// read that fails is the route's 500. An attempt past comment_deliveries.attempt's range names
+	// no delivery, so no read is made with it: the bound below (fitsIntegerColumn) answers it,
+	// where it always has.
+	var roleReply roleHolderReply
+	var err error
+	if fitsIntegerColumn(input.Attempt) {
+		roleReply, err = s.replyRoleHolderOf(r.Context(), actor, who, r.PathValue("id"), input.Target, input.Attempt)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	// The role lookup above may have waited on the listener past what the refresh made with who
 	// covers, and the transaction below reads the comment by the session content rule.
@@ -1513,6 +1522,13 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The attempt is a number comment_deliveries keeps in an integer column, so one past that
+	// column (fitsIntegerColumn) is a delivery no comment has, answered as the read below answers
+	// one, before any query is made with it.
+	if !fitsIntegerColumn(input.Attempt) {
+		writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment delivery not found")
+		return
+	}
 	attempt, err := scanCommentDelivery(tx.QueryRow(r.Context(), `
 		select `+commentDeliveryColumns+`
 		from comment_deliveries where comment_id = $1 and target = $2 and attempt = $3 for update

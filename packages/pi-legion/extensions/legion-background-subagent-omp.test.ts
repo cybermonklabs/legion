@@ -8,7 +8,9 @@ import {
   type Cleanup,
   call,
   deliveryFor,
+  isSelfCheck,
   messageStream,
+  newestMessage,
   ompNatsGuard,
   ompRoot,
   type Request,
@@ -85,12 +87,6 @@ function conversation(request: Request): string {
   return JSON.stringify(request.body.messages ?? null);
 }
 
-/** A Messages request's last message, which is what started the turn it answers. */
-function lastMessage(request: Request): string {
-  const messages = Array.isArray(request.body.messages) ? request.body.messages : [];
-  return JSON.stringify(messages.at(-1) ?? null);
-}
-
 /** Whether a Messages request is the subagent's own: only its system prompt is deep-worker's. */
 function isSubagentRequest(request: Request): boolean {
   return JSON.stringify(request.body.system ?? null).includes(DEEP_WORKER_SYSTEM);
@@ -98,13 +94,12 @@ function isSubagentRequest(request: Request): boolean {
 
 /**
  * Whether a Messages request is a turn of the role's own conversation: it carries the daemon's
- * assignment and is not a side turn. A side turn (pi-envoy's run-end self-check) is an ordinary
- * Messages request over a snapshot of that same conversation whose last message is the `<btw>`
- * block, so the assignment alone would take it for a turn.
+ * assignment and is not a side turn. A side turn (pi-envoy's run-end self-check, `isSelfCheck`)
+ * is an ordinary Messages request over a snapshot of that same conversation, so the assignment
+ * alone would take it for a turn.
  */
 function isRoleTurn(request: Request): boolean {
-  if (isSubagentRequest(request)) return false;
-  if (lastMessage(request).includes("<btw>")) return false;
+  if (isSubagentRequest(request) || isSelfCheck(request)) return false;
   return conversation(request).includes("BGSUB-ROLE-ASSIGNMENT");
 }
 
@@ -622,7 +617,7 @@ test.skipIf(skip)(
     const woken = await pane.next("the role's turn woken by the finished job", (request) =>
       isRoleTurn(request) ? conversation(request).includes(SUBAGENT_REPORT) : false
     );
-    expect(lastMessage(woken.request)).toMatch(/[Bb]ackground job/);
+    expect(newestMessage(woken.request.body)).toMatch(/[Bb]ackground job/);
     expect(woken.arrived.order).toBeGreaterThan(released.order);
     woken.reply([{ type: "text", text: "The worker is done." }]);
 

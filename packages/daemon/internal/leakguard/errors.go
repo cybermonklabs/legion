@@ -1,6 +1,11 @@
 package leakguard
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/termsafe"
+)
 
 // RefusedBy is the check a refusal names. Its two values are the two constants below: a named
 // type rather than a bare string, so a reader of a Refusal sees which values the field holds. An
@@ -30,15 +35,28 @@ type Refusal struct {
 	Lines []string
 }
 
+// Error, and the Error of a *SetupFailure and a *NotFound, write each part of the answer that is
+// not this file's own words as shown writes it: through the URL rule (redact.URLCredentials), so
+// every URL in it keeps no userinfo and no query, and then escaped (termsafe.Escaped), so no
+// control byte in it reaches a log or a terminal raw. An answer's What can hold a URL with a
+// credential: git hands a pre-push hook the remote's URL as its name too for a push to a URL rather
+// than to a named remote, and PushName writes that name into What. It can hold a local path, which
+// the push's author chose, as can a refusal's line, which names a path. A SetupFailure's Why can
+// quote a caller's argument (a gh call's --body-file, readGhFile), and a failure underneath what
+// git wrote on its standard error, which can quote a URL or a path. `legion` passes every
+// command's stderr through the URL rule too (cmd/legion's newRoot), but an in-process caller can
+// write an answer anywhere, so each answer applies both itself. A backslash is written as it is,
+// so the shared check's report lines, already escaped by its own printer, pass unchanged. A
+// remote's name that is no URL ("origin") reads as written.
 func (r *Refusal) Error() string {
 	var b strings.Builder
 	b.WriteString("LEAK CHECK: refusing ")
-	b.WriteString(r.What)
+	b.WriteString(shown(r.What))
 	b.WriteString(": ")
 	b.WriteString(string(r.By))
 	for _, line := range r.Lines {
 		b.WriteString("\n  ")
-		b.WriteString(line)
+		b.WriteString(shown(line))
 	}
 	return b.String()
 }
@@ -58,10 +76,18 @@ type SetupFailure struct {
 	Err error
 }
 
+// Error is the setup failure as a log or a terminal shows it, with the write's name, the reason
+// and the failure underneath each written as shown writes it (Refusal.Error). The failure
+// underneath keeps its own line breaks, each of its lines shown alone, so a git's warnings and its
+// `fatal:` line still read as the lines they are.
 func (f *SetupFailure) Error() string {
-	message := "LEAK CHECK SETUP ERROR: " + f.What + ": " + f.Why
+	message := "LEAK CHECK SETUP ERROR: " + shown(f.What) + ": " + shown(f.Why)
 	if f.Err != nil {
-		message += ": " + f.Err.Error()
+		lines := strings.Split(f.Err.Error(), "\n")
+		for i, line := range lines {
+			lines[i] = shown(line)
+		}
+		message += ": " + strings.Join(lines, "\n")
 	}
 	return message
 }
@@ -83,11 +109,19 @@ type NotFound struct {
 }
 
 func (f *NotFound) Error() string {
-	return f.What + ": " + notFoundText(f.Repo)
+	return shown(f.What) + ": " + notFoundText(f.Repo)
 }
 
 // notFoundText is what a *NotFound and the read's own *notFoundError say of repo, a repository
 // GitHub answered 404 for, repo already masked.
 func notFoundText(repo string) string {
 	return "GitHub answers 404 for " + repo + ", so the repository does not exist or this credential cannot read it"
+}
+
+// shown is s, a part of an answer that is not this file's own words, as an answer writes it: every
+// URL in it without its userinfo and its query (redact.URLCredentials), and then each control byte
+// escaped (termsafe.Escaped), uncut. The URL rule runs first, on the text as it is: it ends a URL at
+// white space, which the escaping would write as letters.
+func shown(s string) string {
+	return termsafe.Escaped(redact.URLCredentials(s), 0)
 }

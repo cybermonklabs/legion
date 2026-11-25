@@ -21,10 +21,12 @@ func typeSecret(name, secretType, value string) secrets.LocalSecret {
 }
 
 // refusedAs fails t unless set refuses the secret a session asks for as name for reason, with the
-// owner tag typeSecret gives it.
+// owner tag typeSecret gives it and no superseded-by tag. A value refusal's detail, the decoder's
+// words, is the log lines' to pin (valueRefusedLine), so it is not compared here.
 func refusedAs(t *testing.T, set *policy.Set, name, reason string) {
 	t.Helper()
-	if got, want := set.Refused[policytest.ID(name)], (policy.Refusal{Reason: reason, Owner: typeOwner}); got != want {
+	got := set.Refused[policytest.ID(name)]
+	if want := (policy.Refusal{Reason: reason, Owner: typeOwner}); got.Reason != want.Reason || got.Owner != want.Owner || got.SupersededBy != "" {
 		t.Fatalf("%s refused as %+v, want %+v (all refused: %+v)", name, got, want, set.Refused)
 	}
 }

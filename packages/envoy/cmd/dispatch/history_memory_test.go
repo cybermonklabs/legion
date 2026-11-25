@@ -32,6 +32,7 @@ import (
 // as a deploy stops it, which compacts it once its rows are older than the tail a compaction
 // leaves as written (two minutes), as a document left at rest is.
 func TestAStoredHistoryCostsAColdReadOnlyTheDocumentItLeaves(t *testing.T) {
+	t.Parallel()
 	memory := newMemoryHarness(t)
 	words := make([]string, 0, 600)
 	for index := range 600 {

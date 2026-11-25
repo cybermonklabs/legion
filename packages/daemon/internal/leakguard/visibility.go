@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"golang.org/x/sys/unix"
 )
 
@@ -721,7 +722,7 @@ func (g *Guard) lsRemote(ctx context.Context, origin, slug string) (Visibility, 
 		return "", fmt.Errorf("the empty home for git ls-remote could not be made: %w", err)
 	}
 	defer os.RemoveAll(home)
-	ctx, cancel := context.WithTimeout(ctx, lsRemoteBound)
+	ctx, cancel := context.WithTimeout(ctx, programbound.Of(&lsRemoteBound))
 	defer cancel()
 	url := origin + "/" + slug + ".git"
 	status, printed, err := g.run(ctx, child{
@@ -745,8 +746,14 @@ func (g *Guard) lsRemote(ctx context.Context, origin, slug string) (Visibility, 
 
 // lsRemoteBound is the longest the read with no credential runs (Guard.lsRemote): as long as the
 // guard waits for a near reset, so a server that never answers costs no more than that wait would
-// have. It is a variable so that a test can shorten it.
+// have. It is a variable so that a test can shorten it, and so that cmd/legion's tests, whose
+// `legion gh` runs this read on a stand-in git, can give it their own deadline (programbound): a
+// stand-in slower than 2 min is stopped here and the read refused.
 var lsRemoteBound = rateLimitWaitBound
+
+func init() {
+	programbound.Register(&lsRemoteBound)
+}
 
 // lsRemoteInherits is which names of the caller's environment the read with no credential keeps
 // (Guard.lsRemote). It keeps every name that is not git's own, and of git's own the three that say

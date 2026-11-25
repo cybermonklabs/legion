@@ -375,7 +375,7 @@ func TestAnUnprovisionedPrivateProjectFailsClosed(t *testing.T) {
 		t.Run(fmt.Sprintf("the list %v", row.list), func(t *testing.T) {
 			handler, database, _ := newTestServer(t, testServerOptions{privateProjects: row.list})
 			seedPeople(t, database, accessCarol)
-			// bob's PRIV: carol on its access list, an issue whose spec is a document, and a mapped
+			// bob's PRIV: carol on its access list, an issue whose spec is a document, and a default
 			// repository; then private, as a deployment whose list held it left it.
 			for _, call := range []struct {
 				method, path string
@@ -397,8 +397,8 @@ func TestAnUnprovisionedPrivateProjectFailsClosed(t *testing.T) {
 				Key               string `json:"key"`
 				PrimaryArtifactID string `json:"primary_artifact_id"`
 			}](t, created)
-			if response := agentRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/priv", map[string]any{"project": "PRIV", "actor": sessionActor()}, "agent-token"); response.Code != http.StatusOK {
-				t.Fatalf("map acme/priv to PRIV: %d %s", response.Code, response.Body.String())
+			if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/PRIV/default-repository", map[string]any{"repo": "acme/priv"}, "bob"); response.Code != http.StatusOK {
+				t.Fatalf("make acme/priv PRIV's default repository: %d %s", response.Code, response.Body.String())
 			}
 			if _, err := database.Pool.Exec(context.Background(), `update projects set visibility = 'private' where key = 'PRIV'`); err != nil {
 				t.Fatalf("make PRIV private: %v", err)

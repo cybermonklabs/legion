@@ -47,7 +47,7 @@ func twoPeopleRouterAt(t *testing.T, outside string, insecure bool) (handler htt
 		}
 		values[email] = cookie.Value
 	}
-	ctx, err := BuildAppContext(AppContextOptions{
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey:     testSigningKey,
 		People:         people,
 		Sessions:       sessions,
@@ -57,7 +57,7 @@ func twoPeopleRouterAt(t *testing.T, outside string, insecure bool) (handler htt
 		OutsideOrigin:  outside,
 		InsecureCookie: insecure,
 		Lifetime:       t.Context(),
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}

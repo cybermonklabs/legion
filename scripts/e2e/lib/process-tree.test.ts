@@ -64,6 +64,17 @@ ended_pid() {
   { wait "$pid" || true; } 2>/dev/null
   printf '%s\\n' "$pid"
 }
+# laid_out PROGRAM PID… holds once each PID runs PROGRAM by the kernel's record and its environment
+# is laid out (environ_laid_out, lib/process-tree.sh): the kernel names PROGRAM in /proc/<pid>/exe
+# before it lays out PROGRAM's environment, and a row that reads the environment in between reads
+# none.
+laid_out() {
+  local want=$1 pid
+  shift
+  for pid; do
+    [ "$(readlink "/proc/$pid/exe" 2>/dev/null || :)" = "$want" ] && environ_laid_out "$pid" || return 1
+  done
+}
 program=$PROGRAM other=$OTHER
 ${body}`;
   const result = Bun.spawnSync(ownGroup(["bash", "-c", script]), {
@@ -518,7 +529,7 @@ pad=$(printf '%0100000d' 0)
 env -i LEGION_GRANT_FILE=/grant PADDING1="$pad" PADDING2="$pad" "$program" 600 </dev/null >/dev/null 2>&1 &
 pid=$!
 started+=("$pid")
-until_true 10 "the program's environment" sh -c '[ "$(readlink /proc/$1/exe)" = "$2" ]' sh "$pid" "$program"
+until_true 40 "the program's environment" laid_out "$program" "$pid"
 for name in LEGION_GRANT_FILE LEGION_GRANT; do st=0; env_has "$pid" "$name" || st=$?; echo "$name $st"; done
 echo "value $(env_of "$pid" LEGION_GRANT_FILE)"
 st=0; env_has "$(ended_pid)" HOME 2>/dev/null || st=$?; echo "unreadable $st"
@@ -628,7 +639,7 @@ started+=("$granted")
 env -i PADDING1="$pad" PADDING2="$pad" "$program" 600 </dev/null >/dev/null 2>&1 &
 clean=$!
 started+=("$clean")
-until_true 10 "both programs to run" sh -c '[ "$(readlink /proc/$1/exe)" = "$3" ] && [ "$(readlink /proc/$2/exe)" = "$3" ]' sh "$granted" "$clean" "$program"
+until_true 40 "both programs' environments" laid_out "$program" "$granted" "$clean"
 for p in "$granted" "$clean" "$(ended_pid)"; do
   st=0
   why=$(carries_no_grant "$p") || st=$?
@@ -669,7 +680,7 @@ keyed=$!
 env -i "\${rig[@]}" "$program" 600 </dev/null >/dev/null 2>&1 &
 ending=$!
 started+=("$clean" "$keyed" "$ending")
-until_true 10 "the three programs to run" sh -c 'p=$1; shift; for pid; do [ "$(readlink /proc/$pid/exe)" = "$p" ] || exit 1; done' sh "$program" "$clean" "$keyed" "$ending"
+until_true 40 "the three programs' environments" laid_out "$program" "$clean" "$keyed" "$ending"
 check() { local st=0; endpoint_mismatch "$2" >"$scratch/found" || st=$?; echo "$1: status $st: $(cat "$scratch/found")"; }
 check clean "$clean"
 check keyed "$keyed"
@@ -687,6 +698,76 @@ check "ended between the reads" "$ending"
           "keyed: status 0: ANTHROPIC_API_KEY set, want unset\n" +
           "unreadable: status 0: an environment that could not be read (env_of status 2)\n" +
           "ended between the reads: status 0: an environment that could not be read (env_has status 2)\n"
+      );
+    },
+    slow
+  );
+});
+
+// stage3-4b13b-acceptance.sh's and stage3-devbox-workflow.sh's pane_watcher check each pane's Oh My
+// Pi once it runs and its environment is laid out (environ_laid_out): the kernel names the program
+// an exec starts before it lays out that program's environment, and a read in between finds none.
+// An Oh My Pi found there is read again at the next poll and never counted; a mismatch the watcher
+// reads is a violation. The stand-in for one inside that window is an Oh My Pi started with an empty
+// environment, which reads as one inside the window reads, and stays so: the row waits until it runs
+// the program, and counts the watcher's environ_laid_out calls on it (a wrapper around the lib's),
+// so a watcher that skipped it, or read it once and never again, does not pass. A pane is a bash
+// whose child runs the Oh My Pi, a copy of sleep; `legion claims list` is a stub that prints the
+// claims a row writes. The first watcher's evidence is the harness's own, so a violation it records
+// aborts the row's next wait (until_true), as it aborts the stage scripts' waits.
+const noJq = hostTool("jq") === null;
+describe.skipIf(skip || noJq)("pane_watcher", () => {
+  test.each(["stage3-4b13b-acceptance.sh", "stage3-devbox-workflow.sh"])(
+    "%s's reads an Oh My Pi whose environment is not laid out again at the next poll, and records a mismatch it reads",
+    (script) => {
+      const watcher = ["omp_descendant", "endpoint_mismatch", "pane_watcher"]
+        .map(scriptFunctions(join(import.meta.dir, "..", script)))
+        .join("\n");
+      const r = run(`${watcher}
+port_dispatch=1 port_listener=2 port_nats=3 state=/rig ptoken=row omp_exe=$program
+rig=(DISPATCH_URL=http://127.0.0.1:1 DISPATCH_TOKEN_FILE=/rig/secrets/dispatch-token ENVOY_URL=http://127.0.0.1:2 ENVOY_NATS_URL=nats://127.0.0.1:3)
+# pane VAR=VALUE… starts a pane whose Oh My Pi runs with exactly those variables, and sets pane_pid
+# to the pane's pid and inc to its incarnation.
+pane() {
+  bash -c 'env -i "$@" 600 & wait' pane "$@" "$program" </dev/null >/dev/null 2>&1 &
+  started+=("$!")
+  pane_pid=$!
+  inc=$!:$(start_of "$!")
+}
+# claims DIR ROLE INC… gives DIR's stub one claim on I-1 for each ROLE and incarnation.
+claims() {
+  local dir=$1 sep=
+  shift
+  printf '#!/bin/sh\\ncat "%s/claims.json"\\n' "$dir" >"$dir/legion"
+  chmod +x "$dir/legion"
+  { printf '{"claims":['; while [ "$#" -gt 0 ]; do printf '%s{"issue":"I-1","role":"%s","locator":{"incarnation":"%s"}}' "$sep" "$1" "$2"; sep=,; shift 2; done; printf ']}\\n'; } >"$dir/claims.json"
+}
+pane
+empty=$inc
+until_true 15 "the empty pane's Oh My Pi to run" launched "$pane_pid" "$program"
+empty_omp=$(launched "$pane_pid" "$program")
+eval "real_$(declare -f environ_laid_out)"
+environ_laid_out() { [ "$1" != "$empty_omp" ] || echo read >>"$scratch/empty-reads"; real_environ_laid_out "$@"; }
+pane "\${rig[@]}"
+clean=$inc
+claims "$work" empty "$empty" clean "$clean"
+pane_watcher &
+started+=("$!")
+until_true 15 "the clean pane checked and the empty one read at two polls" sh -c 'grep -qF "$1 " "$2" && [ -s "$3" ] && [ "$(wc -l <"$3")" -ge 2 ]' sh "$clean" "$work/pane-endpoints-checked.txt" "$scratch/empty-reads"
+echo "checked: $(cut -d' ' -f3 "$work/pane-endpoints-checked.txt" | paste -sd, -)"
+pane "\${rig[@]}" ANTHROPIC_API_KEY=k
+keyed=$inc
+mkdir "$scratch/keyed"
+claims "$scratch/keyed" keyed "$keyed"
+(work=$scratch/keyed evidence=$scratch/keyed; pane_watcher) &
+started+=("$!")
+until_true 15 "the keyed pane's violation" test -s "$scratch/keyed/pane-endpoint-violation.txt"
+sed -e "s/$keyed/INC/" -e 's/OMP pid [0-9]*/OMP pid PID/' "$scratch/keyed/pane-endpoint-violation.txt"
+`);
+      expect(r.err).toBe("");
+      expect(r.out).toBe(
+        "checked: clean\n" +
+          "keyed pane on I-1 (incarnation INC, OMP pid PID) has ANTHROPIC_API_KEY set, want unset\n"
       );
     },
     slow
@@ -812,7 +893,12 @@ empty=$!
 env -i NAME=value "$program" 600 </dev/null >/dev/null 2>&1 &
 full=$!
 started+=("$empty" "$full")
-until_true 10 "both to run" sh -c '[ "$(readlink /proc/$1/exe)" = "$3" ] && [ "$(readlink /proc/$2/exe)" = "$3" ]' sh "$empty" "$full" "$program"
+until_true 20 "the full one's environment" laid_out "$program" "$full"
+# The empty one has no variable to wait for. Its command line reads once its exec has laid out its
+# arguments and set where its environment starts and ends (fs/proc/base.c reads neither before),
+# which for an empty environment is all of it.
+args_laid_out() { local -a words; [ "$(readlink "/proc/$1/exe" 2>/dev/null || :)" = "$program" ] && process_args "$1" words; }
+until_true 20 "the empty one's arguments" args_laid_out "$empty"
 for pid in "$empty" "$full"; do
   st=0; v=$(env_of "$pid" NAME) || st=$?; printf 'env_of %s [%s]; ' "$st" "$v"
   st=0; env_has "$pid" OTHER || st=$?; printf 'env_has %s; ' "$st"
@@ -825,6 +911,28 @@ done
         "env_of 2 []; env_has 2; env_length 2 []; names_dir 2\n" +
           "env_of 0 [value]; env_has 1; env_length 0 [5]; names_dir 1\n"
       );
+    },
+    slow
+  );
+});
+
+// A row that fails in until_true (lib/rig.sh) exits inside it, through the harness's `fail`, so the
+// harness's EXIT trap runs where until_true's locals are in scope. One of them was named `started`,
+// and the trap then read that number in place of the row's `started` pids and stopped none of them.
+describe.skipIf(skip)("the row harness", () => {
+  test(
+    "an EXIT trap that runs when until_true fails reads the row's own started pids",
+    () => {
+      const r = run(`
+"$program" 600 </dev/null >/dev/null 2>&1 &
+started+=("$!")
+(trap 'echo "the trap reads [\${started[*]}]"' EXIT; until_true 1 "nothing" false) 2>/dev/null || :
+echo "the row started [\${started[*]}]"
+`);
+      expect(r.err).toBe("");
+      const lines = r.out.trim().split("\n");
+      expect(lines).toHaveLength(2);
+      expect(lines[0].replace("the trap reads", "")).toBe(lines[1].replace("the row started", ""));
     },
     slow
   );

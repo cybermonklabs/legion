@@ -69,7 +69,7 @@ func byKey(members []Issue) map[string]Issue {
 // because an ancestor of it has already been accepted (HeldUnderAccepted). Without that
 // exclusion the three rules deadlock. A child held at admitted under a root in merging is
 // InWorkflow — a recorded member at admitted with status todo is — so it keeps that root open
-// through this set for ever, while the child itself is pinned at admitted until the root closes;
+// through this set for ever, while the child itself is pinned at admitted while the root is merging;
 // a child held under an ancestor above an issue in accepting deadlocks that issue's sign-off the
 // same way. Neither moves, and no act of a person short of parking the child breaks it.
 // Excluding exactly the issues the daemon's own hold has stopped costs nothing else: every other
@@ -80,8 +80,7 @@ func byKey(members []Issue) map[string]Issue {
 // The close this exclusion allows does not strand the issue it excluded: the expiry of the
 // closed tree's linger hands every member that is in the workflow and never started to Legion
 // as a root of its own (workflow's unfinishedHandOvers), whatever held it there, so the work a
-// person asked for runs once the ancestor that held it has closed, which is what the
-// architect's notice says it does. This is the one recorded departure from
+// person asked for is handed over once that linger ends. This is the one recorded departure from
 // the spec of dispatch://INFRA-980, decided by that tree's architect
 // (dispatch://INFRA-980/comment/d642164a-31d2-4d6c-ae5e-4da5dd0b9104).
 func OpenBeneath(issue Issue, members []Issue) []string {

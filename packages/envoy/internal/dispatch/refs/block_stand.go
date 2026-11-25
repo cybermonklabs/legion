@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -169,18 +170,8 @@ func readBlockStand(ctx context.Context, q Queryer, artifactID string) (blockSta
 // write was 9.7% of an hour's database time over 31,241 calls at a 114.3 ms mean on the load-test
 // deployment, and the writers queued behind it were waiting on that row.
 func (b BlockIndexing) queueStand(batch *store.WriteBatch) {
-	batch.Queue(fmt.Sprintf("record the blocks of %s indexed at version %d", b.artifactID, b.version), `
-		insert into document_block_versions (artifact_id, version, store_version, windows_owed_at) values ($1, $2, $2, now())
-		on conflict (artifact_id) do update set version = excluded.version, store_version = excluded.store_version,
-			store_owed_at = case when document_block_versions.store_owed_rule <= $3 then null
-				else document_block_versions.store_owed_at end,
-			windows_owed_at = coalesce(document_block_versions.windows_owed_at, excluded.windows_owed_at)
-		where document_block_versions.version is null or document_block_versions.version < excluded.version
-		   or document_block_versions.version = excluded.version and document_block_versions.store_owed_at is not null
-		      and (document_block_versions.store_owed_rule <= $3 or document_block_versions.store_version is null
-		           or document_block_versions.store_version < excluded.version)
-		returning 1
-	`, b.artifactID, b.version, b.rule).QueryRow(func(row pgx.Row) error {
+	batch.Queue(fmt.Sprintf("record the blocks of %s indexed at version %d", b.artifactID, b.version),
+		RevisionFenceStatement, b.artifactID, b.version, b.rule).QueryRow(func(row pgx.Row) error {
 		// The one column says the row was written; nothing reads its value.
 		if err := row.Scan(nil); !errors.Is(err, pgx.ErrNoRows) {
 			return err
@@ -188,4 +179,141 @@ func (b BlockIndexing) queueStand(batch *store.WriteBatch) {
 		return fmt.Errorf("the revision fence refused the block index of %s at version %d: its document_block_versions row moved after the pass read it, and the pass commits nothing",
 			b.artifactID, b.version)
 	})
+}
+
+// RevisionFenceStatement is the revision fence's statement (queueStand), which binds the document
+// as $1, the version the pass indexes as $2 and the pass's marking rule as $3. Its arm at the
+// version the row already stands at is OwedMarkListed over the row: that arm holds the row's
+// version equal to excluded.version, so the condition the owed listing reads (docs'
+// owedDocuments) decides there whether the pass wins, and a change to that rule lands in the
+// fence too. It is one of the statements that decide what a build of a marking rule owes, and it
+// is named so the test that holds the rule to them reads it (docs'
+// TestTheMarkingRuleNamesTheStatementsItMarksWith).
+var RevisionFenceStatement = `
+		insert into document_block_versions (artifact_id, version, store_version, windows_owed_at) values ($1, $2, $2, now())
+		on conflict (artifact_id) do update set version = excluded.version, store_version = excluded.store_version,
+			store_owed_at = case when document_block_versions.store_owed_rule <= $3 then null
+				else document_block_versions.store_owed_at end,
+			windows_owed_at = coalesce(document_block_versions.windows_owed_at, excluded.windows_owed_at)
+		where document_block_versions.version is null or document_block_versions.version < excluded.version
+		   or document_block_versions.version = excluded.version and ` + OwedMarkListed("document_block_versions", "$3") + `
+		returning 1
+	`
+
+// BlockIndexMarkingRule is the version of the marking rule this build applies: what a block-index
+// pass and the tick owe, which is which documents a build marks owed a block index
+// (store_owed_at) and which comments its tick writes. A change of what a pass owes raises it, and
+// TestTheMarkingRuleNamesTheStatementsItMarksWith holds it to the statements that decide it. A
+// mark records the rule of the build that set it (store_owed_rule), and so do the block-index
+// tick's cursor rows and the backfill's horizons (marking_rule, migration 20261120122600): a build
+// starts reading the event log where a build or a backfill of its own rule left off and never
+// where one of another rule did, since that build marked what its own rule owes and not what this
+// one owes, and a pass of one rule clears no mark of a higher rule. Rule 1 is the rule's first
+// value, and a build of rule 1 already honours the marks of every later rule. Rule 2 is rule 1
+// with the scope of every node: the tick's comment write and the backfill's block and comment
+// reads carry the project or the parties of each node they write (CommentsNamingNoNode,
+// graphcensus.BlockRowsStatement, graphstore's node write), so a build of rule 2 reads none of
+// rule 1's cursors or horizons, and a node a build of rule 1 wrote with no project is the
+// backfill's of rule 2 to fill (graphcensus.Backfill). It is declared here, where docs and
+// graphcensus both read it: docs' own tests import graphcensus, so graphcensus cannot import docs.
+const BlockIndexMarkingRule = 2
+
+// OwedMarkListed is the condition under which a pass of the marking rule rule, a SQL expression,
+// lists as owed the document whose document_block_versions row row holds a mark of this build's
+// (store_owed_at): a mark of rule or a lower rule (store_owed_rule), which is the pass's own to
+// drain, and a mark of a higher rule only where the store last stated the document below its
+// version (store_version null or below version), which is work of the pass's own there. A mark of
+// a higher rule on a document whose stand is at its version is that rule's alone: a pass of a
+// lower rule that listed it would index it, lose the fence's equal-version arm (queueStand) and
+// list it again on every pass, and would count it in a backlog that only grows. The owed listing
+// (docs' owedDocuments), its re-read under the owner's lock (docs' indexOwedDocument), both
+// readers of the backlog (OwedBlockIndexDebts, the count docs' ReconcileBlockIndex logs) and the
+// revision fence at the version the row stands at (RevisionFenceStatement) read this one
+// condition, so a build counts as its backlog exactly the documents it lists, and a pass wins the
+// fence at that version exactly where a build of its rule lists the document.
+func OwedMarkListed(row, rule string) string {
+	return row + `.store_owed_at is not null and (` + row + `.store_owed_rule <= ` + rule +
+		` or ` + row + `.store_version is null or ` + row + `.store_version < ` + row + `.version)`
+}
+
+// OwedRuleKept is the rule a statement that marks a document owed a block index at the marking
+// rule rule, a SQL expression, writes into store_owed_rule of the document_block_versions row row:
+// where a mark stands (store_owed_at), the higher of its rule and rule, so a mark of a higher rule
+// stays that rule's to drain; where none stands, rule, whatever rule a mark cleared before left
+// on the row, since the rule is read only where a mark stands. Every statement that keeps or
+// raises the rule of a mark standing on the row reads this one text: docs'
+// oweDocumentIndexStatement, RebuildMarkStatement and graphcensus's BlockBatchMarkStatement.
+//
+// row names the row as the statement reads it, or is empty where the statement names its columns
+// unqualified.
+func OwedRuleKept(row, rule string) string {
+	return `case when ` + owedColumn(row, "store_owed_at") + ` is null then ` + rule +
+		` else greatest(` + owedColumn(row, "store_owed_rule") + `, ` + rule + `) end`
+}
+
+// OwedMarkAbsent is the condition under which a statement that marks a document owed a block
+// index at the marking rule rule, a SQL expression, reads the document_block_versions row row as
+// holding no mark: the row holds none (store_owed_at null), or holds a mark of a lower rule, which
+// the statement raises to rule and whose time it keeps. A mark of rule or a higher rule is left as
+// it is, and so is its rule. docs' markVersionedDocuments, in its selection and its update alike,
+// and graphcensus's StaleDocumentsStatement and StaleBatchMarkStatement read this one condition.
+// row is as OwedRuleKept reads it.
+func OwedMarkAbsent(row, rule string) string {
+	return `(` + owedColumn(row, "store_owed_at") + ` is null or ` + owedColumn(row, "store_owed_rule") + ` < ` + rule + `)`
+}
+
+// owedColumn names column of the document_block_versions row row, or the column alone where row
+// is empty, as the statement reading it names its columns.
+func owedColumn(row, column string) string {
+	if row == "" {
+		return column
+	}
+	return row + "." + column
+}
+
+// OwedBlockIndexDebts is one row per document a build of the marking rule $1 owes a block index -
+// its version null, or this build's own mark on it that such a build lists (store_owed_at,
+// blockStand.owed, OwedMarkListed) - each dated by the write that owed it: the created_at of the
+// latest markdown version the document holds, which is the version a tick would index, or the
+// document's own created_at where it holds no markdown version at all.
+//
+// Nothing dates a null version - document_block_versions records no time it was set back to null
+// (migration 0121) - so the date is derived, and this build's mark is dated the same way, which
+// reads older than the mark, the safe direction for a backlog. The two readers of the backlog
+// derive it from this one text: the tick's own logged figure (docs.ReconcileBlockIndex) and the
+// one `envoy-dispatch census --store --sizing` prints for somebody holding the database and not
+// the log (graphcensus's blockIndexBacklogQuery). Each wraps it in its own aggregate and binds
+// its build's marking rule as $1.
+var OwedBlockIndexDebts = owedBlockIndexDebtsFrom + `
+		where b.version is null or ` + OwedMarkListed("b", "$1::integer")
+
+// OwedBlockIndexDebtsBeforeTheMark is OwedBlockIndexDebts over a database migration
+// 20261120122600 has not reached yet, which holds no store_owed_rule column: only a null version
+// is read as owed there. `census --store --sizing` takes its readings on such a database, before
+// this branch's migrations run (R4), where migration 20261116221539 has not added store_owed_at
+// either and the backfill has marked nothing, and reads this one there; the tick only ever runs
+// on a migrated database and reads the full text. It binds nothing.
+const OwedBlockIndexDebtsBeforeTheMark = owedBlockIndexDebtsFrom + `
+		where b.version is null`
+
+// owedBlockIndexDebtsFrom is the select both owed-debt texts share, so the two date a debt alike.
+const owedBlockIndexDebtsFrom = `
+		select coalesce(
+		         (select v.created_at from artifact_versions v
+		          where v.artifact_id = b.artifact_id and v.markdown is not null
+		          order by v.number desc limit 1),
+		         a.created_at) as owed_at
+		from document_block_versions b
+		left join artifacts a on a.id = b.artifact_id`
+
+// OwedTimeText writes a time the block-index backlog is dated by as both of its readers print
+// it - the tick's log line (docs.ReconcileBlockIndex) and the sizing's backlog lines
+// (graphcensus) - so the two say one time in one spelling: UTC to the nanosecond, so two runs over
+// one unchanged database print one byte sequence, and `none` where there is no such time, which a
+// zero value would otherwise print as a date in the year 1.
+func OwedTimeText(at time.Time) string {
+	if at.IsZero() {
+		return "none"
+	}
+	return at.UTC().Format(time.RFC3339Nano)
 }

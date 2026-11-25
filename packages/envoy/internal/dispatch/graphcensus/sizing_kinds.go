@@ -484,9 +484,7 @@ func reachesANode(topic string) string {
 // first arm reads one.
 //
 // The people are the ones the census holds to a node (commentWriterPeople), each with the time
-// the first comment naming them was written, and with no erasure taken out: an erase removes a
-// node and never moves the rate the node was written at, and graph_erasures is a table of this
-// branch, which the sizing reads none of.
+// the first comment naming them was written.
 var sizingWritesWith = `
 	with recursive sized_comments as (
 		select c.id, coalesce(c.ask_id, c.reply_to, c.id) as thread,

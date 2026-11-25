@@ -8,8 +8,9 @@ body: |-
   that made it (`approver_issuer`, `approver_subject`), never the account holding the address when
   it is relayed: a personal token records the account it was minted by (a new column,
   `agent_tokens.subject`). The broker records that account on the machine login it makes, so a later
-  revocation of that account ends the login too. Deploy the secrets broker that takes both fields
-  first: an older broker refuses such an approve `400 INVALID_DECISION`.
+  revocation of that account ends the login too. Dispatch names the account only to a broker whose
+  `GET /v1/settings` answers `approver_fields: true`, as the broker of this release does; an older
+  broker, which refuses such an approve `400 INVALID_DECISION`, is sent the approve without it.
 time: 2026-11-16T23:55:21.344357564Z
 custom:
     Issue: pr4199

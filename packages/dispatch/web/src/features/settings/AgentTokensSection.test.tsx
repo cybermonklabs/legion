@@ -9,6 +9,7 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
+import { whoAmIQuery } from "../../api/queries";
 import type { AgentToken, CreatedAgentToken, DispatchScope, Project } from "../../api/types";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { AgentTokensSection } from "./AgentTokensSection";
@@ -665,6 +666,91 @@ test("the mint form starts with both scopes and sends the set the reader chose",
     queryClient.clear();
     listAgentTokens.mockRestore();
     createAgentToken.mockRestore();
+  }
+});
+
+// A restricted member's token is their agent's: Dispatch gives it no scope and holds it to exactly
+// one project they see (403 RESTRICTED_MEMBER for a mint or an edit asking otherwise). Their
+// Settings offers no scope box, says what such a token may do, mints and edits sending no scope,
+// and a second project picked replaces the first rather than adding to it.
+//
+// Control: draw the full member's form for them (useRestrictedMember answering false), and the
+// row finds the scope boxes and the mint sends both scopes.
+test("a restricted member's form and rows offer no scope, send none, and name one project", async () => {
+  const user = userEvent.setup();
+  listProjects.mockResolvedValue([project("ACC", "Access"), project("OTH", "Other")]);
+  const theirs: AgentToken = { ...token, projects: ["ACC"], scopes: [] };
+  const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([theirs]);
+  const createAgentToken = spyOn(api, "createAgentToken").mockResolvedValue({
+    ...theirs,
+    id: "22222222-2222-2222-2222-222222222222",
+    name: "reviewer",
+    projects: ["OTH"],
+    token: "dsp_abcdefghijklmnopqrstuvwxyz0123456789-ABCDEFG",
+  });
+  const updateAgentToken = spyOn(api, "updateAgentToken").mockImplementation(
+    async (id: string, input: { projects?: string[] | null; scopes: DispatchScope[] }) => ({
+      ...theirs,
+      id,
+      projects: input.projects ?? theirs.projects,
+      scopes: input.scopes,
+    })
+  );
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(whoAmIQuery().queryKey, {
+    event_head: "0",
+    kind: "user",
+    login: "erin@outside.example",
+    member_kind: "restricted",
+  });
+
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AgentTokensSection />
+      </QueryClientProvider>
+    );
+
+    await screen.findByRole("cell", { name: "dsp_AbCdEf12…" });
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    expect(
+      screen.getAllByText(
+        "Works as you in the one project it names, and approves nothing: no login, no token, no credential request."
+      )
+    ).toHaveLength(2);
+    expect(projectsPicker("new token").textContent).toBe("Your one project");
+
+    await user.click(projectsPicker("new token"));
+    await user.click(await screen.findByRole("option", { name: "ACC, Access" }));
+    await user.click(screen.getByRole("option", { name: "OTH, Other" }));
+    await user.keyboard("{Escape}");
+    expect(projectsPicker("new token").textContent).toBe("OTH");
+    await user.click(screen.getByLabelText("Token label"));
+    await user.paste("reviewer");
+    await user.click(screen.getByRole("button", { name: "New token" }));
+    await waitFor(() =>
+      expect(createAgentToken).toHaveBeenCalledWith(
+        { name: "reviewer", projects: ["OTH"], scopes: [] },
+        keyedAttempt
+      )
+    );
+
+    await user.click(projectsPicker("architect"));
+    await user.click(await screen.findByRole("option", { name: "OTH, Other" }));
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(updateAgentToken).toHaveBeenCalledWith(
+        theirs.id,
+        { projects: ["OTH"], scopes: [] },
+        keyedAttempt
+      )
+    );
+  } finally {
+    cleanup();
+    queryClient.clear();
+    listAgentTokens.mockRestore();
+    createAgentToken.mockRestore();
+    updateAgentToken.mockRestore();
   }
 });
 

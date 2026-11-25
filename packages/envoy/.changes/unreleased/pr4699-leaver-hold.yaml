@@ -18,7 +18,7 @@ body: |-
   serves a held person's refresh grant, lease renewal and the calls that only end access. The
   broker asks Dispatch through `BROKER_PROJECT_ACCESS_URL`, whose person answer now carries `held`
   and `as_of`, and keeps each answer in its new table `person_standing` (migration
-  `0044_person_standing`), so an outage of Dispatch releases nobody it last knew as held and serves
+  `0045_person_standing`), so an outage of Dispatch releases nobody it last knew as held and serves
   everyone else, logging a WARN line a minute per person and counting
   `broker_hold_unchecked_total{last_answer}`. With `BROKER_PROJECT_ACCESS_URL` unset the broker
   holds nobody, and logs `hold of refused people state=off` at boot. A broker that cannot tell is

@@ -98,11 +98,31 @@ func (s *server) callerStillResolves(r *http.Request) (caller model.Actor, broke
 		case s.deps.BrokerTokens.Lapsed(live):
 			return model.Actor{}, true, errBrokerTokenLapsed()
 		}
+		if err := restrictedBrokerTokenList(admission, live); err != nil {
+			return model.Actor{}, true, err
+		}
 		person := live.Person
 		return model.Actor{Owner: &person, Viewer: &model.Viewer{Person: person, Restricted: admission.Restricted}}, true, nil
 	}
 	caller, _, err = s.optionalActor(r)
 	return caller, false, err
+}
+
+// restrictedBrokerTokenList is the refusal of a broker token naming a restricted member that lists
+// other than one project, admission being what brokerPersonAdmitted read of its person, or nil
+// (R16: an outside person's agent's token lists exactly one project). The broker mints a restricted
+// member's machine login the project scope named with the one project its trade names, and refuses
+// a trade naming none or several, but a broker whose project check is off, an older broker during a
+// rollout, or a token minted before that rule can still answer one, so Dispatch holds it here, as it
+// holds their personal token (personalTokenActor), with the same 403 RESTRICTED_MEMBER
+// (errRestrictedTokenList). Its every request and its socket's every heartbeat ask it
+// (brokerTokenActor, callerStillResolves).
+func restrictedBrokerTokenList(admission brokerAdmission, caller ciphertoken.Caller) error {
+	if !admission.Restricted || len(caller.Projects) == 1 {
+		return nil
+	}
+	return errRestrictedTokenList(len(caller.Projects),
+		"its machine trades its login for a token naming the one project its agent works in")
 }
 
 // brokerTokenHeld is the refusal of a broker token whose introspection answered its person held
@@ -173,10 +193,15 @@ func errBrokerTokenLapsed() error {
 // decides.
 //
 // That leaves no window to wait out while the broker pays a revocation: every credential the
-// replaced account holds records it or was made before the recording that replaced it, since
-// every credential the broker has made since it recorded accounts records the account that made
-// it, and the replacing sign-in sets sub_recorded_at in the transaction that records the
-// revocation (store.PgPeopleStore.SignInSubject). The broker revocation still ends those
+// replaced account holds records it, or records no account and was made before the recording that
+// replaced it or within brokerCredentialMargin after it, which refuses it. A credential the broker
+// made after it recorded accounts records none only where the approve that made it named none: the
+// approving credential is bound to no account, or Dispatch relayed it to a broker whose settings
+// answered without approver_fields (cipher.Client.TakesApproverFields: an older broker, or a pod of
+// one during a roll). An approve of the replaced account's passed its last check
+// (approverStanding) before the recording, and reaches the broker within the margin, so its login
+// is refused that way. The replacing sign-in sets sub_recorded_at in the transaction that records
+// the revocation (store.PgPeopleStore.SignInSubject). The broker revocation still ends those
 // credentials at the broker, for the secret reads Dispatch does not see (pass, broker_revocations).
 //
 // A restricted member is then held to restrictedOwnerAdmitted, the one check both credentials
@@ -286,8 +311,10 @@ func personCredential(caller ciphertoken.Caller) bool {
 // have to run unsynchronized for about 58 days to use it up, which monitoring of either database
 // meets long before. A skew refuses, never admits. The
 // cost is one sign-in at the broker again for a credential recording no account made within five
-// minutes after its address's account was recorded, which after the recording only an older broker
-// makes: every approve then names the account (credentialSubjectSQL).
+// minutes after its address's account was recorded, which after the recording a broker makes only
+// for an approve that named no account: one relayed to a broker whose settings answered without
+// approver_fields (an older broker, or a pod of one during a roll; cipher.Client.TakesApproverFields);
+// every other approve names the account (credentialSubjectSQL).
 const brokerCredentialMargin = 5 * time.Minute
 
 // brokerCredentialMarginSQL is brokerCredentialMargin as an SQL interval.
@@ -550,7 +577,9 @@ func (s *server) tieBrokerSession(ctx context.Context, session, person string, p
 // gives under the rule that signs people in. So a revocation and the admission rule answer before
 // a hold. A not-held answer whose deadline has passed (ciphertoken.Verifier.Lapsed, an IAP
 // deployment's person with no active Workspace Directory answer in 24 hours) is 503
-// BROKER_UNAVAILABLE, saying whether the token's person may still act could not be read.
+// BROKER_UNAVAILABLE, saying whether the token's person may still act could not be read. After
+// those, a token naming a restricted member that lists other than one project is 403
+// RESTRICTED_MEMBER (restrictedBrokerTokenList, R16).
 func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	if s.deps.BrokerTokens == nil {
 		return model.Actor{}, false, errNoBrokerConfigured()
@@ -597,6 +626,9 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	case s.deps.BrokerTokens.Lapsed(caller):
 		return model.Actor{}, false, errBrokerTokenLapsed()
 	}
+	if err := restrictedBrokerTokenList(admission, caller); err != nil {
+		return model.Actor{}, false, err
+	}
 	// A token the broker scoped to its person holds the person scope: that token is the person's
 	// own agent acting for them, so it reads, writes and answers their questions as they do. No
 	// broker-issued token holds approve, whatever its project scope (brokerPersonScopes): every
@@ -613,7 +645,8 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// broker scoped to their person gets none for the same reason: a broker whose project check is
 	// off, an older broker during a rollout, or a token minted before the broker held restricted
 	// members to one project can still answer one, and brokerPersonAdmitted has read the member's
-	// kind above, so the scope does not rest on the broker's check alone. A token that names a
+	// kind above, so the scope does not rest on the broker's check alone. Such a token that lists
+	// other than one project acts for nobody (restrictedBrokerTokenList, above). A token that names a
 	// service and no person gets none either, whatever scope the broker answered: there is no
 	// person for it to act as, and a scope that said otherwise would let it act as the session's
 	// own id on the routes that read what belongs to a person. A read-only token is one of those,

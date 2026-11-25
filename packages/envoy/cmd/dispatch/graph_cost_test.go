@@ -40,10 +40,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -72,15 +74,12 @@ const (
 	// statement on a fresh connection pays for the pages every run after it finds cached, and
 	// a measurement of a corpus is not a measurement of a cold cache (measureDismissedScale).
 	costWarmUp = 1
-	// costBudget is what c-write-cost and c-read-cost hold every path to: a path whose p99
-	// rises by more than this much above the same path at the commit before this child fails.
+	// costBudget is what c-read-cost holds every read to: a read whose p99 rises by more than
+	// this much above the same read at the commit before this child fails. c-write-cost holds
+	// its request paths to ratios instead (write_cost_test.go, writeCostEditRatio and the three
+	// beside it), and the 8,001-block version to this rise beside its ratio, the lower allowance
+	// deciding (writeCostOverAllowance).
 	costBudget = 100 * time.Millisecond
-	// writeCostEditBudget is what the edit of one block of a 1,999-block document carries
-	// instead of costBudget. Placement is a tuple and a projected column now, and the pass
-	// reads every block's placement to find the ones that moved, because a block that moved
-	// without its text changing is found no other way. Measured at +174.0 ms on this pod after
-	// the allocation cut; the rest is margin for this pod's own swing.
-	writeCostEditBudget = 250 * time.Millisecond
 	// writeCostRewriteRowBudget is what each store row of a whole-document rewrite may cost.
 	// The rewrite makes every block of the document new to the index, so it writes about 14,000
 	// rows the commit before this child writes none of: a total would refuse the model, where a
@@ -305,6 +304,34 @@ func (a *costArm) count(t *testing.T, statement string, args ...any) int64 {
 		t.Fatalf("%s: %s: %v", a.name, statement, err)
 	}
 	return counted
+}
+
+// documentUpload is the JSON body of an upload of content as the document issue holds under name,
+// sent as login. An upload replacing a document names the token of the version it replaces, which
+// Dispatch checks under the write's own locks (docs.Service.ReplaceText), so the body names the
+// token the document carries now; a document's first version replaces nothing and names none.
+func (p *dispatchProcess) documentUpload(t *testing.T, issue, name, content, login string) string {
+	t.Helper()
+	upload := map[string]any{"name": name, "content": content}
+	answer := p.send(t, http.MethodGet, "/api/v1/issues/"+issue+"/artifacts/"+url.PathEscape(name)+"/text", "", asUser(login))
+	switch answer.status {
+	case http.StatusNotFound:
+	case http.StatusOK:
+		var document struct {
+			Token string `json:"token"`
+		}
+		if err := json.Unmarshal(answer.body, &document); err != nil || document.Token == "" {
+			t.Fatalf("read the token of %s's document %s: %v: %s", issue, name, err, answer)
+		}
+		upload["precondition"] = map[string]string{"document": document.Token}
+	default:
+		t.Fatalf("read %s's document %s: %s", issue, name, answer)
+	}
+	body, err := json.Marshal(upload)
+	if err != nil {
+		t.Fatalf("encode the upload of %s: %v", name, err)
+	}
+	return string(body)
 }
 
 // costTableOf prints every reading of a measurement: the summary line of each path on each arm,

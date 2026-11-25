@@ -53,7 +53,7 @@ func newHoldRig(t *testing.T, rule SignInRule) *holdRig {
 	t.Helper()
 	database := storetest.Open(t)
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), "dispatch-client", "dispatch-secret")
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), "dispatch-client", "dispatch-secret", "https://dispatch.example/auth/callback")
 	// A domain-mode flow reads Google's Workspace claims (email, hd); the sign-in pool's reads none.
 	hostedDomain := ""
 	if rule.Holds() {

@@ -960,30 +960,37 @@ function documentTargets(event: DispatchEvent, viewer: string | undefined): Refr
 }
 
 function ownerTargets(event: DispatchEvent, viewer: string | undefined): RefreshTarget[] {
-  if (
-    event.type === "project.created" ||
-    event.type === "project.updated" ||
-    event.type === "settings.repo_project.updated"
-  ) {
+  if (event.type === "project.created" || event.type === "project.updated") {
     if (event.project === undefined) {
       throw new Error("project event is missing its project");
     }
     return [
       { queryKey: projectsKey },
       { queryKey: ["project", event.project] },
-      { queryKey: ["issues", "project", event.project] },
-      { queryKey: ["repo-projects"] },
-      // The project list carries no default assignee: a new project's is in the defaults read
-      // alone, which the Settings table reads it from and was answered before it existed.
       ...(event.type === "project.created"
-        ? [{ queryKey: projectDefaultAssigneesQuery().queryKey }]
-        : []),
-      // A mapping write can change the repository every issue of its project resolves to (a new
-      // default, one removed or moved away), which the issue header reads from the issue's
-      // detail. The detail's key names no project, so every loaded detail refreshes; mapping
-      // writes are rare settings changes.
-      ...(event.type === "settings.repo_project.updated" ? [{ queryKey: ["issue"] }] : []),
+        ? [
+            { queryKey: ["issues", "project", event.project] },
+            // The project list carries no default assignee: a new project's is in the defaults
+            // read alone, which the Settings table reads it from and was answered before it
+            // existed.
+            { queryKey: projectDefaultAssigneesQuery().queryKey },
+          ]
+        : [
+            // An update can change the project's default repository. Each issue of the project
+            // that names no repository, and whose parent issues name none, resolves to it, and
+            // every issue list and issue detail shows `resolved_repo`. Not every key of those
+            // reads names a project, so every loaded list and detail reads again. A project
+            // changes only when a person or a daemon changes one of its settings, which is rare.
+            { queryKey: ["issues"] },
+            { queryKey: ["issue"] },
+          ]),
     ];
+  }
+  // A retained event: no build writes it now, and the events an earlier build stored stay as
+  // history. A project's default repository is on the project now, so it changes nothing that a
+  // page reads.
+  if (event.type === "settings.repo_project.updated") {
+    return [];
   }
   // The Settings table always, and the Inbox, issue, document and Reply-thread reads of a question
   // the move carries: a project's default is the last step of the chain that decides who a

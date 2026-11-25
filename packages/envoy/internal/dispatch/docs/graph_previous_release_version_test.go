@@ -1006,7 +1006,7 @@ func requireCensusReadsZero(t *testing.T, database *store.Store, when string) {
 		}
 	}
 	if census.Refused() {
-		t.Fatalf("the census refused with %d difference(s) %s, want zero", census.Differences(), when)
+		t.Fatalf("the census refused with %d difference(s) %s, want zero:\n%s", census.Differences(), when, censusFindings(census))
 	}
 }
 

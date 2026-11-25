@@ -535,7 +535,9 @@ func Quiet(e model.Event) bool {
 		// the deployment's own configuration of what work advances, which open pages refetch on
 		// and nobody is asked anything by. A change of a project's access list, owner or
 		// visibility, or of a group, is who may see what: every reader resolves its viewer again
-		// on it, and nobody is asked anything by it.
+		// on it, and nobody is asked anything by it. This build writes no
+		// settings.repo_project.updated; the case stays for the events and outbox rows an earlier
+		// build wrote (outbox/publisher.go).
 		return true
 	case "ask.edited":
 		// A version move of an approval request that an earlier version already moved since it was

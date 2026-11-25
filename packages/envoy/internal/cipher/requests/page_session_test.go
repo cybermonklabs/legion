@@ -95,7 +95,7 @@ func benchmarkPageDecisions(b *testing.B, decisions, persons int, revoke bool) {
 		sessions := make([]store.BrowserSessionRef, decisions)
 		for k := range decisions {
 			enrollmentID, key := newEnrollment(b, m.Store, "session", fmt.Sprintf("bench-%d-%d", iteration, k), new(fixtureOperator), nil)
-			req, err := m.Create(ctx, enrollmentID, signRequest(b, m, key, "measure the lock", "SHARED_KEY"), "", nil)
+			req, err := m.Create(ctx, enrollmentID, signRequest(b, m, key, "measure the lock", "SHARED_KEY"), "")
 			if err != nil || req.State != "pending" || req.RecordID == nil {
 				b.Fatalf("Create = %+v, %v; want a pending request with a record", req, err)
 			}
