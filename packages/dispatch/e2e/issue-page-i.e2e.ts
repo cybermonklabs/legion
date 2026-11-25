@@ -720,24 +720,30 @@ test("with no filter the page is the conversation, each node edited once, every 
     ).toEqual([]);
     expectRowVocabulary(folded, await rowTags(page));
 
-    // No row repeats the issue: the first row is the first node under it (row 2), and it starts
-    // at most 15 px under the foot of what stands above the outline - the view row, or the
-    // children's section above the outline where the issue has children - the prototype's 14 px
-    // gap under `#tabs`, and 1 px for rounding.
+    // No row repeats the issue: the first row is the first node under it (row 2). What stands
+    // first under the view row starts at most 15 px under its foot, the prototype's 14 px gap
+    // under `#tabs`, and 1 px for rounding: the outline's first row, or, where the issue has
+    // children, the children's section above the outline (R14), which the outline's first row
+    // stands under.
     expect(
       rowOf(folded, seeded.key),
       "the outline draws a row for the issue itself"
     ).toBeUndefined();
-    // The seed files children under the issue, so the children's section stands above the
-    // outline (R14), and the view row above it where the issue has none.
-    const above = seeded.children.keys.length > 0 ? childrenSection(page) : filterRow(page);
-    const aboveBox = await above.boundingBox();
-    expect(aboveBox, "the page draws nothing above the outline").not.toBeNull();
+    const viewRowBox = await filterRow(page).boundingBox();
+    expect(viewRowBox, "the page draws no view row").not.toBeNull();
+    const viewRowFoot = (viewRowBox?.y ?? 0) + (viewRowBox?.height ?? 0);
     const firstTop = folded.find((row) => row.visible)?.box?.y ?? Number.POSITIVE_INFINITY;
+    // The seed files children under the issue, so the children's section stands first.
+    const sectionBox =
+      seeded.children.keys.length > 0 ? await childrenSection(page).boundingBox() : null;
     expect(
-      firstTop - ((aboveBox?.y ?? 0) + (aboveBox?.height ?? 0)),
-      "the outline's first row stands more than 15 px under the foot of what stands above it"
+      (sectionBox?.y ?? firstTop) - viewRowFoot,
+      "what stands first under the view row stands more than 15 px under its foot"
     ).toBeLessThanOrEqual(15);
+    expect(
+      firstTop,
+      "the outline's first row stands above the foot of the children's section"
+    ).toBeGreaterThanOrEqual((sectionBox?.y ?? 0) + (sectionBox?.height ?? 0));
 
     // The page opens with every node unfolded: no branch is folded but by the reader.
     expect(
@@ -991,14 +997,19 @@ test("a folded branch's line is its first line, cut at a word @phone @phone-only
         "aria-expanded",
         "false"
       );
+      // The fold is waited on just above, so the row stands folded and its count holds still.
       const required = rowOf(await drawnRows(page), nodeId);
       expectCutAtAWord(
         required,
         requirementText(1),
         `the two-sentence requirement's line at ${width} px`
       );
+      // The count reads as the page words it, "row" for one: no result is a row of Conversation
+      // (R9), so the requirement holds its one check alone.
+      const counted =
+        required?.foldedCount === "1" ? CONTROL_LABELS.folded_row : CONTROL_LABELS.folded_rows;
       expect(required?.text, `the folded requirement counts nothing at ${width} px`).toContain(
-        `${required?.foldedCount} ${CONTROL_LABELS.folded_rows}`
+        `${required?.foldedCount} ${counted}`
       );
       await assertPageFits(page);
 
@@ -2904,24 +2915,34 @@ test("a crumb draws its node's first line, cut at a word @phone @phone-only", as
   });
 });
 
-/** Reads that the outline holds no row the focus left any more, `after` something: no row draws
- *  its acts and no row has the focused look (`pageFocusedRow`), each of which the row kept while
- *  it was held (the architect's ruling on a press, as amended). A row's face is drawn whatever
- *  the focus, so the bodies stay. */
-async function expectRowLetGo(page: Page, after: string): Promise<void> {
-  await expect(
-    nodeRows(page).locator("[data-row-acts]"),
-    `a row still draws its acts after ${after}`
-  ).toHaveCount(0);
-  expect(
-    await nodeRows(page)
-      .locator("[data-node-card]")
-      .evaluateAll(
-        (cards, look) => cards.filter((card) => card.className.includes(look)).length,
-        pageFocusedRow
-      ),
-    `a row still looks focused after ${after}`
-  ).toBe(0);
+/** Reads that the outline holds no row the focus left any more, `after` something: no row has the
+ *  focused look (`pageFocusedRow`), which the row kept while it was held (the architect's ruling
+ *  on a press, as amended). A row's face is drawn whatever the focus, its acts with it (R11), so
+ *  the bodies stay, and the rows that draw their acts are `acts`, the rows that drew them with the
+ *  focus on the page. */
+async function expectRowLetGo(page: Page, after: string, acts: readonly string[]): Promise<void> {
+  await expect
+    .poll(
+      () =>
+        nodeRows(page)
+          .locator("[data-node-card]")
+          .evaluateAll(
+            (cards, look) => cards.filter((card) => card.className.includes(look)).length,
+            pageFocusedRow
+          ),
+      { message: `a row still looks focused after ${after}` }
+    )
+    .toBe(0);
+  expect(await rowsWithActs(page), `the rows draw other acts after ${after}`).toEqual(acts);
+}
+
+/** The ids of the rows that draw their acts (`[data-row-acts]`), in order. */
+function rowsWithActs(page: Page): Promise<string[]> {
+  return nodeRows(page).evaluateAll((rows) =>
+    rows.flatMap((row) =>
+      row.querySelector("[data-row-acts]") === null ? [] : [row.getAttribute("data-node-id") ?? ""]
+    )
+  );
 }
 
 /** The ids of the rows that draw a body, in order. */
@@ -2950,6 +2971,8 @@ test("a row draws its face whatever the focus, and nothing opens on hover", asyn
     await focusThePage(page);
     const faces = await rowsWithBodies(page);
     expect(faces.length, "no row draws a body with the focus on the page").toBeGreaterThan(0);
+    const acts = await rowsWithActs(page);
+    expect(acts.length, "no row draws its acts with the focus on the page").toBeGreaterThan(0);
     await page.keyboard.press("Tab");
     const focused = await focusedNodeId(page);
     expect(focused, "Tab put the focus on no row of the tree").not.toBeNull();
@@ -2974,7 +2997,7 @@ test("a row draws its face whatever the focus, and nothing opens on hover", asyn
       actions,
       "a press on the header's actions control, with a row's body open, did not open the actions"
     ).toHaveAttribute("aria-expanded", "true");
-    await expectRowLetGo(page, "the press on the header's actions control ended");
+    await expectRowLetGo(page, "the press on the header's actions control ended", acts);
     await page.keyboard.press("Escape");
     await expect(actions, "Escape did not close the issue's actions").toHaveAttribute(
       "aria-expanded",
@@ -3000,14 +3023,14 @@ test("a row draws its face whatever the focus, and nothing opens on hover", asyn
       await below.presses(),
       "a press on a control under the focused row, with the row's body open, did not fire it"
     ).toBe(1);
-    await expectRowLetGo(page, "the press on the control under the focused row ended");
+    await expectRowLetGo(page, "the press on the control under the focused row ended", acts);
     await below.remove();
 
     // Tab is no press: the focus leaving the outline by it lets go of the row at once.
     await focusRow(page, focused ?? "");
     await page.keyboard.press("Tab");
     expect(await focusedNodeId(page), "Tab left the focus on a row of the outline").toBeNull();
-    await expectRowLetGo(page, "Tab left the outline");
+    await expectRowLetGo(page, "Tab left the outline", acts);
 
     // Then a view control above the outline: Spec, pressed with a row's body open, draws the
     // Spec view in the outline's place, and Conversation draws the outline again.
@@ -3902,12 +3925,13 @@ test("the chain is reachable and only gaps that tell a node apart are drawn", as
 // stands behind - is drawn at the row it was pressed on, once, and the reader's next move lets
 // it go. At 1440 px Home on the first row, End on the last and Right on a row with nothing under
 // it moved nothing and said nothing, and at 390 px so did `.` on the row the tree is zoomed to:
-// each says so at its row, and the next move lets it go. On the zoom's own row Left zooms back
-// out, and Left on a child of the issue with the whole issue drawn says so. The tree draws every
-// level at every width, so the reader zooms into the thread with `.` from its head.
+// each says so at its row, and the next move lets it go. The tree draws every level at every
+// width (R11), so the reader zooms into the thread with `.` from its head, Left on the zoom's own
+// row has nowhere to go and says so as it does at 1440 px, `,` zooms back out, and Left on a
+// child of the issue with the whole issue drawn folds it and then says so.
 // SLOW(>=2s): a seeded thread loaded cold and one of its rows focused, for nine keys pressed,
 // then loaded again at a phone's size on a reply's address, waited on until the reply has the
-// focus, for six keys more and a zoom out waited on.
+// focus, for nine keys more and a zoom out waited on.
 test("a key with nowhere to go says so at its row, and the next move lets it go", async ({
   browser,
 }) => {
@@ -3992,11 +4016,43 @@ test("a key with nowhere to go says so at its row, and the next move lets it go"
     await reportedAt(". on the row the tree is zoomed to", KEY_REPORTS.already_zoomed);
     await expect(crumbs, ". on the row the tree is zoomed to zoomed elsewhere").toHaveCount(1);
     expect(await focusedNodeId(page), ". on the zoom's own row moved the focus").toBe(seeded.head);
+    // The next move lets the report go, and the move back to the zoom's own row says nothing.
+    await page.keyboard.press("j");
+    await expect
+      .poll(() => focusedNodeId(page), { message: "j on the zoom's own row did not move down" })
+      .not.toBe(seeded.head);
+    await expect(pageStatus(page), "the report of . stays after the reader moved on").toHaveCount(
+      0
+    );
+    await page.keyboard.press("k");
+    await expect
+      .poll(() => focusedNodeId(page), { message: "k did not move back to the zoom's own row" })
+      .toBe(seeded.head);
+    await expect(
+      pageStatus(page),
+      "the move back to the zoom's own row said something"
+    ).toHaveCount(0);
+    // Left on the zoom's own row: the row stays open over what it holds and its parent is above
+    // the zoom, which no row draws, so the key has nowhere to go and says so at the row.
     await page.keyboard.press("ArrowLeft");
-    await expect(crumbs, "Left on the zoom's own row did not zoom out").toHaveCount(0);
+    await reportedAt("Left on the row the tree is zoomed to", KEY_REPORTS.already_zoomed);
+    await expect(crumbs, "Left on the zoom's own row zoomed elsewhere").toHaveCount(1);
+    expect(await focusedNodeId(page), "Left on the zoom's own row moved the focus").toBe(
+      seeded.head
+    );
+    // `,` zooms back out to the whole issue, with the focus kept on the head.
+    await page.keyboard.press(",");
+    await expect(crumbs, ", on the zoom's own row did not zoom out").toHaveCount(0);
     await expect
       .poll(() => focusedNodeId(page), { message: "zooming out took the focus off the head" })
       .toBe(seeded.head);
+    // Left on the head, a child of the issue that holds the thread's replies, folds it; Left on
+    // it folded has nowhere to go with the whole issue drawn, and says so.
+    await page.keyboard.press("ArrowLeft");
+    await expect(
+      nodeRow(page, seeded.head).first(),
+      "Left on the open head of the thread did not fold it"
+    ).toHaveAttribute("aria-expanded", "false");
     await page.keyboard.press("ArrowLeft");
     await expect(
       nodeRow(page, seeded.head).first().locator("[data-row-report]"),
