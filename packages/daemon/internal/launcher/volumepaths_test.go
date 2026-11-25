@@ -17,6 +17,7 @@ import (
 // other half: this case says what may be deleted, that one says nothing on the volume was
 // forgotten.
 func TestTheTrimmerSweepsTheFourCacheRootsInOrder(t *testing.T) {
+	t.Parallel()
 	want := []ReclaimableRoot{
 		{Path: "/legion/scratch/tmp", Entry: GoBuildTrees},
 		{Path: "/legion/go/build", Entry: GoCacheEntries},
@@ -42,6 +43,7 @@ func TestTheTrimmerSweepsTheFourCacheRootsInOrder(t *testing.T) {
 // not on the volume is one outside it, and an exception carrying a separator equals no listed
 // name and protects nothing.
 func TestEveryTrimmerPathIsAnAbsoluteCleanPathOfThePodsVolume(t *testing.T) {
+	t.Parallel()
 	if VolumeRoot != "/legion" {
 		t.Fatalf("VolumeRoot is %q, want the issue volume's mount point /legion (sandbox.TreeRoot)", VolumeRoot)
 	}
@@ -85,6 +87,7 @@ func TestEveryTrimmerPathIsAnAbsoluteCleanPathOfThePodsVolume(t *testing.T) {
 // cache home. Each exception is named in both places, so a reader of either list alone sees them
 // kept.
 func TestTheProtectedPathsAndTheReclaimableRootsNestOnlyAsExceptions(t *testing.T) {
+	t.Parallel()
 	under := func(path, ancestor string) bool { return strings.HasPrefix(path, ancestor+"/") }
 	pairs := 0
 	for at, root := range ReclaimableRoots {

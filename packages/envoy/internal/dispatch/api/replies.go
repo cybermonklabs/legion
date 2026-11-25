@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -622,6 +623,17 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.Rows = append(response.Rows, rows...)
+	// Each row's subject carries the reading of its own line, for the caller that asked for the
+	// trees. The Inbox draws that line through the one renderer every body is drawn with
+	// (web/src/features/inbox/ThreadTitle.tsx), so the reading goes out beside it and no browser
+	// parses it. A subject is the thread root's first line cut by refs.FirstLine, which no writer
+	// stores a tree of, so each is read where it stands (shapeBuilt), neither asked of the table nor
+	// stored in it.
+	shapeBuilt(wantsDisplayTrees(r), func(reader *displayTreeReader) {
+		for index := range response.Rows {
+			reader.text(&response.Rows[index].SubjectTree, response.Rows[index].Subject)
+		}
+	})
 	WriteJSON(w, http.StatusOK, response)
 }
 
@@ -722,7 +734,7 @@ func (s *server) readMyReplyRows(
 		row.Project = &projectKey
 		row.ReadThrough = &readThrough
 		row.Version = &version
-		row.Subject = contracts.OneLineSummary(subject)
+		row.Subject = refs.FirstLine(subject, s.deps.ServerURL)
 		if replyID != nil {
 			row.Reply.ID = *replyID
 		}
@@ -738,7 +750,7 @@ func (s *server) readMyReplyRows(
 			}
 			row.Anchor = &value
 		}
-		row.Reply.FirstLine = contracts.OneLineSummary(body)
+		row.Reply.FirstLine = refs.FirstLine(body, s.deps.ServerURL)
 		read = append(read, row)
 	}
 	if err := rows.Err(); err != nil {
