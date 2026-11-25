@@ -41,12 +41,26 @@ const PUBLISH_COUNTS =
   "recipients_connected is how many of those are running now. A listener that counts neither " +
   "sends neither, and a role topic names its holder instead.";
 
-const STORED_DELIVERY =
-  "Every notification topic is stored (agent, dispatch, github, slack, legion, ghostwispr, " +
-  "whatsapp, team; a role message reaches its holder as a stored copy on the holder's agent " +
-  "topic), and reaches each subscribed session once from the durable consumer its listener " +
-  "relays to it, also one that was away or restarted. A 200 means the stream stored the message " +
-  "for each subscribed session's consumer, not that any recipient has read it.";
+/** The topic kinds the stream stores, as the two texts below list them. Each is a kind whose
+ *  topics `streamStores` answers true for. */
+export const STORED_TOPIC_KINDS = [
+  "agent",
+  "dispatch",
+  "github",
+  "slack",
+  "legion",
+  "ghostwispr",
+  "whatsapp",
+  "team",
+] as const;
+
+/** What a subscription and a publish reach, in envoy_subscribe's and envoy_publish's texts. */
+export const STORED_DELIVERY =
+  `Every notification topic is stored (${STORED_TOPIC_KINDS.join(", ")}; a role message reaches ` +
+  "its holder as a stored copy on the holder's agent topic), and reaches each subscribed session " +
+  "once from the durable consumer its listener relays to it, also one that was away or restarted. " +
+  "A 200 means the stream stored the message for each subscribed session's consumer, not that any " +
+  "recipient has read it.";
 
 const TOPIC_GUIDE =
   "Topic guide (all are under notifications.): agent.<session_id> (subscribe: own inbox); role.<role> " +

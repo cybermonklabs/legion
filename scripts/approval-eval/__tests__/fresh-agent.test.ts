@@ -12,6 +12,7 @@ import {
   type ArmName,
   answerOf,
   answersPath,
+  FILE_NOTE,
   type FreshCase,
   type FreshDeps,
   FreshError,
@@ -123,28 +124,14 @@ function document(name: string, markdown: string, requestedVersion: number): Rep
 }
 
 describe("the two shapes of the prompt", () => {
-  test("differ by one span the `with` shape adds, which names the file, and by no other word", async () => {
+  test("differ by the file note alone, which names the file", async () => {
     const row = caseRow("case-0");
     const documents = [document("spec.md", "# The spec\n\nIt says what it does.", 3)];
     const withFile = await promptOf(row, documents, "The issue", "with");
     const without = await promptOf(row, documents, "The issue", "without");
-    // The longest common start and end of the two: the `without` shape must be all of both, so
-    // the `with` shape is it with one span put in. The span is found by the two texts, never by
-    // its own words, which are prose for the agent.
-    let start = 0;
-    while (start < without.length && withFile[start] === without[start]) {
-      start += 1;
-    }
-    let end = 0;
-    while (
-      end < without.length - start &&
-      withFile[withFile.length - 1 - end] === without[without.length - 1 - end]
-    ) {
-      end += 1;
-    }
-    expect(start + end).toBe(without.length);
-    const added = withFile.slice(start, withFile.length - end);
-    expect(added).toContain("past-decisions.md");
+    expect(FILE_NOTE).toContain("past-decisions.md");
+    expect(withFile).toContain(` ${FILE_NOTE}`);
+    expect(withFile.replace(` ${FILE_NOTE}`, "")).toBe(without);
     expect(without).not.toContain("past-decisions.md");
   });
 });

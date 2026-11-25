@@ -16,6 +16,8 @@ import {
   messageMetadataShape,
   parseEnvoyToolArguments,
   publishConfirmationText,
+  STORED_DELIVERY,
+  STORED_TOPIC_KINDS,
   sendConfirmationText,
   sessionsOnMachine,
   toMessageMetadata,
@@ -139,32 +141,20 @@ describe("envoyToolSpecs", () => {
     expect(subscribe?.description).toContain("envoy.exceptions.<original-topic>");
   });
 
-  // Each topic kind of `kinds` is one the stream stores, and the two texts that say what a
-  // subscription and a publish reach name each in the one clause that lists them; a 200 is what a
-  // stored publish answers. `agent` and `team` stand in other sentences of both texts too, and the
-  // subscribe text's topic guide names github, slack, ghostwispr and whatsapp topics, so each kind
-  // is held in that clause: the run of comma-separated names that holds the most of them. The
-  // eight are written here, so a ninth kind the stream comes to store is one this case does not see.
-  test("names these eight topic kinds the stream stores in the clause that lists them, and the 200 a stored publish answers", () => {
-    const kinds = [
-      "agent",
-      "dispatch",
-      "github",
-      "slack",
-      "legion",
-      "ghostwispr",
-      "whatsapp",
-      "team",
-    ];
-    expect(kinds.filter((kind) => !streamStores(`notifications.${kind}.x`))).toEqual([]);
+  // The two texts that say what a subscription and a publish reach carry STORED_DELIVERY whole,
+  // and that clause lists STORED_TOPIC_KINDS, each a kind the stream stores, and names the 200 a
+  // stored publish answers. The kinds are one exported array, so the clause and this case read the
+  // same list. It is held one way: a ninth kind the stream comes to store is one this case does
+  // not see, since stream-topics.ts exports no list of its stored prefixes.
+  test("carries the stored-delivery clause, whose topic kinds are each one the stream stores", () => {
+    expect(STORED_TOPIC_KINDS.length).toBeGreaterThan(0);
+    expect(STORED_TOPIC_KINDS.filter((kind) => !streamStores(`notifications.${kind}.x`))).toEqual(
+      []
+    );
+    expect(namesMissing(STORED_DELIVERY, ["200"])).toEqual([]);
     for (const name of ["envoy_subscribe", "envoy_publish"]) {
       const description = envoyToolSpecs.find((spec) => spec.name === name)?.description ?? "";
-      let clause = "";
-      for (const [run] of description.matchAll(/\w+(?:, \w+)+/gu)) {
-        if (namesMissing(run, kinds).length < namesMissing(clause, kinds).length) clause = run;
-      }
-      expect(namesMissing(clause, kinds), name).toEqual([]);
-      expect(namesMissing(description, ["200"]), name).toEqual([]);
+      expect(description, name).toContain(STORED_DELIVERY);
     }
   });
 

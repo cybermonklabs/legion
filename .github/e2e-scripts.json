@@ -181,6 +181,28 @@
       "jj": true
     },
     {
+      "script": "provider-error-retry.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": true,
+      "omp": true,
+      "evidence_variable": "PROVIDER_ERROR_RETRY_EVIDENCE_DIR",
+      "timeout_minutes": 25,
+      "why_hosted": "Run it from a checkout on a Linux host with bash, go, git, jj 0.38 or later, awk, tar, python3 and bun (after bun install), as LEGION_OMP_PATH=... LEGION_TEST_PG_DSN=... bash scripts/e2e/provider-error-retry.sh; install-omp gives it the pinned Oh My Pi, CI's service is the PostgreSQL, the script installs the nats-server it needs with go install, and each pane's model is an HTTP stand-in of the driver's own, so it needs no model route, no tmux and no container",
+      "jj": true
+    },
+    {
+      "script": "refusal-fallback-omp.sh",
+      "go_version_file": "packages/envoy/go.mod",
+      "apt": [],
+      "bun": true,
+      "omp": true,
+      "evidence_variable": "REFUSAL_FALLBACK_EVIDENCE_DIR",
+      "timeout_minutes": 30,
+      "why_hosted": "Run it from a checkout on a Linux host with bash, go and bun (after bun install), as LEGION_OMP_PATH=... bash scripts/e2e/refusal-fallback-omp.sh; install-omp gives it the pinned Oh My Pi, the script builds its own JetStream server with go from packages/envoy, and each pane's model is an HTTP stand-in of the driver's own, so it needs no PostgreSQL, no model route, no tmux and no container; its four sessions drive for twenty-one minutes plus setup",
+      "jj": false
+    },
+    {
       "script": "plan-ratings.sh",
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
@@ -335,15 +357,6 @@
     {
       "script": "plan-ratings-read.sh",
       "needs": "a deployed Dispatch and the operator's own credential: the dispatch command on PATH, run in the operator's own shell with its session (DISPATCH_HOST and DISPATCH_SESSION_ID) and the deployed Dispatch and token its envoy.json or DISPATCH_URL and DISPATCH_TOKEN name, a project key, and the key of one issue of that project a deployed Legion ran to done after the release that rates each plan; it reads the project's finished issues and starts nothing, and needs no checkout of this repository, only lib/dispatch-read.sh beside it"
-    },
-    {
-      "script": "provider-error-retry.sh",
-      "needs": "go, git, jj 0.38 or later, awk, tar, python3, bun with this repository's node_modules, a loopback PostgreSQL (LEGION_TEST_PG_DSN) and the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which .github/actions/install-omp installs), each of which a GitHub-hosted runner has; it is not in `hosted` because it fails some runs on its own timing: the proof times each send by its own poll rather than by the daemon's record, and on 2026-11-24, on the build cluster, it passed 2 runs of 2 at 00da575ed27 and failed at main's 69fcd649a6f; #5411 fixes that timing"
-    },
-    {
-      "script": "refusal-fallback-omp.sh",
-      "needs": "go, which it builds its own natsd with, bun with this repository's node_modules and the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which .github/actions/install-omp installs), each of which a GitHub-hosted runner has, and about sixteen minutes of wall clock, which e2e.yaml's 25-minute job holds; it is not in `hosted` because it fails: on 2026-11-24, on the build cluster, at 17f24c20d23 and again at main's 69fcd649a6f, each run ended with `rate-limited-comes-back-on-the-suppression: it went back 348s after the fallback, which is the cooldown's own clock rather than the host's suppression`",
-      "timeout_minutes": 25
     },
     {
       "script": "share-volumes-kind.sh",

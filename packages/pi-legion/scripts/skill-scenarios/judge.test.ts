@@ -700,8 +700,10 @@ test("answer refuses a label the ask does not offer, and writes an empty file wh
 // fetch-spec-sources.ts heads each entry of messages.md with a line ENTRY_HEADER reads: a message,
 // a comment, or a comment anchored to the spec, whose quote follows it as `>` lines (its own test
 // holds the file). Each prompt whose judge reads messages.md names the file and each of those three
-// headers, each in a form ENTRY_HEADER reads, and no other. What a prompt tells the judge to do
-// with them is its instructions: the runner here is a stand-in, so no test of this file holds them.
+// headers, each in a form ENTRY_HEADER reads, and no other. A prompt writes each header as a code
+// span, so the headers are the spans that open with `<!-- ` and close with ` -->`. What a prompt
+// tells the judge to do with them is its instructions: the runner here is a stand-in, so no test of
+// this file holds them.
 test("each prompt that reads messages.md names the file and its three entry headers, as ENTRY_HEADER reads them", async () => {
   const asked: Seen[] = [];
   await answerTurn(runDir("spec-writing-head-5"), 1, { runner: fakeRunner(asked) });
@@ -714,9 +716,11 @@ test("each prompt that reads messages.md names the file and its three entry head
   ]);
   for (const judge of readers) {
     expect(judge.prompt).toContain("messages.md");
-    const headers = [...judge.prompt.matchAll(/<!-- [^\n]*? -->/g)].map(([line]) => {
-      const header = ENTRY_HEADER.exec(line);
-      return header === null ? line : `${header[1]}${header[3] ?? ""}`;
+    const parts = judge.prompt.split("`");
+    const spans = parts.filter((part) => part.startsWith("<!-- ") && part.endsWith(" -->"));
+    const headers = spans.map((span) => {
+      const header = ENTRY_HEADER.exec(span);
+      return header === null ? span : `${header[1]}${header[3] ?? ""}`;
     });
     expect([...new Set(headers)].sort()).toEqual(["comment", "comment anchored", "message"]);
   }
