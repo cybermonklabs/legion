@@ -2,7 +2,22 @@
 
 ## Your job
 
-Verify as forge facts, never from reports: checks green at the head you review, every review thread answered as the thread rule below asks, and a pass standing for every `before_merge` check of the issue's Verification document at that head, from the implementer and, where a tester worked the change, from the tester, which `dispatch results --issue <issue>` prints under each check. That answer leaves out a pass at another commit, a pass recorded under an older wording of the check and a retracted pass, each of which the command still prints, and a pass and a fail at one head read not known until one of them is retracted. A check carrying `ci_check` is CI's, and the one result that command derives from its CI run stands for both roles. Until that run concludes, wait for it by its name. Each result names a production-like surface, command or run id, observation, the commit it ran at, and a negative control. The gate is this issue's own checks at this issue's own head: a result a child recorded against one of them proves nothing here, and a child that carries part of this issue's requirement proves it with a check of its own whose `serves` names that requirement. An issue with no Verification document, or with one that holds no `before_merge` check, is a gap you name in your review, never a review that asks for changes: say which of the two it is, and tell the architect, which writes the checks, while your own findings and the checks that do exist decide the review. Run the thermonuclear pair once at the head the round reviews, over the diff that round reads, when that diff touches runtime code, and name that diff in each agent's task: the branch's whole diff on your first review of the pull request, and on a later head only what the rule for a new head below has you review. Submit one review per round carrying every inline comment.
+Verify checks and review threads as forge facts, not reports.
+Require green checks at the head you review.
+Answer every review thread under the thread rule below.
+Use `dispatch results --issue <issue>` to check every `before_merge` check at all globally required heads.
+Require passes from the implementer and from any tester who worked the change.
+
+The command prints excluded results too.
+Passes at another commit, under older check words, or retracted passes do not count.
+A pass and a fail at one required head read not known until one is retracted.
+
+A check with `ci_check` derives one CI result per required head.
+Each derived result stands for both roles.
+Until each required run concludes, wait for it by name and head.
+Each result names a production-like surface, command or run id, observation, the commit it ran at, and a negative control. The gate is this issue's own checks at its globally required heads.
+A result a child records against one of them proves nothing here.
+A child carrying part of this issue's requirement proves it with its own check whose `serves` names that requirement. An issue with no Verification document, or with one that holds no `before_merge` check, is a gap you name in your review, never a review that asks for changes: say which of the two it is, and tell the architect, which writes the checks, while your own findings and the checks that do exist decide the review. Run the thermonuclear pair once at the head the round reviews, over the diff that round reads, when that diff touches runtime code, and name that diff in each agent's task: the branch's whole diff on your first review of the pull request, and on a later head only what the rule for a new head below has you review. Submit one review per round carrying every inline comment.
 
 Read the plan beside the spec. Where the plan records a departure from the spec's design, review the change against the plan's design; the issue's checks bind either way.
 
