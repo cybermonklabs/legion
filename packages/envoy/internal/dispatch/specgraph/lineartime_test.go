@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cputest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // growthStep is how many times larger the full input of a row of this file is than its small
@@ -24,27 +25,23 @@ const (
 	linearSlack = 3
 )
 
-// callDeadline is the wall time within which one call of a row must end at any size: far over what
-// the call takes at the full size under -race on a loaded machine, under a minute, so that work
-// whose steps grow with the square of the input fails by its name rather than at the package's
-// timeout.
-const callDeadline = 3 * time.Minute
-
 // growsLinearly fails t unless the CPU time of the work at full grows from its time at
 // full/growthStep by at most linearSlack*growthStep times. prepare builds the input of one call at
 // a size, untimed, and returns the call. Each call's time is the CPU time of the thread that it runs
 // on (cputest.OnThread), so another test that runs beside it and the garbage collector's workers
 // are left out; the small size is timed three times and the fastest kept, and the full size again,
-// up to three times, only while its fastest is over the bound. Each call must end within
-// callDeadline.
+// up to three times, only while its fastest is over the bound. Each call runs on a goroutine of its
+// own, and its time is taken with testwait.Receive, whose one bound is the test binary's deadline
+// less its margin: a slow call on a loaded machine passes, and work whose steps grow with the square
+// of the input that has not ended by then fails by this row's name, not at the package's timeout.
 func growsLinearly(t *testing.T, what string, full int, prepare func(size int) func()) {
 	t.Helper()
 	small := full / growthStep
 	timed := func(size int) time.Duration {
 		call := prepare(size)
-		var took time.Duration
-		within(t, callDeadline, fmt.Sprintf("%s at %d", what, size), func() { took = cputest.OnThread(call) })
-		return took
+		took := make(chan time.Duration, 1)
+		go func() { took <- cputest.OnThread(call) }()
+		return testwait.Receive(t, fmt.Sprintf("%s at %d", what, size), took)
 	}
 	before := min(timed(small), timed(small), timed(small))
 	after := timed(full)
@@ -57,22 +54,6 @@ func growsLinearly(t *testing.T, what string, full int, prepare func(size int) f
 		return
 	}
 	t.Log(verdict)
-}
-
-// within runs f and fails t unless f returns within limit; f is left running where it does not, so
-// it must not use t.
-func within(t *testing.T, limit time.Duration, what string, f func()) {
-	t.Helper()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		f()
-	}()
-	select {
-	case <-done:
-	case <-time.After(limit):
-		t.Fatalf("%s did not end within %s", what, limit)
-	}
 }
 
 // longID is the id i of a set of ids that share their first 512 bytes, so that two of them read as
