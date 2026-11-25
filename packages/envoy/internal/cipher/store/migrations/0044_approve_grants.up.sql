@@ -1,4 +1,4 @@
--- packages/envoy/internal/cipher/store/migrations/0043_approve_grants.up.sql
+-- packages/envoy/internal/cipher/store/migrations/0044_approve_grants.up.sql
 -- A person's approve grant: what the token exchange decided when a session on a box where the
 -- person signed in traded that sign-in for a placeholder of Cipher's proxy for the approve
 -- capability (requests.MintedKind DISPATCH_APPROVE_TOKEN). The session holds only the
