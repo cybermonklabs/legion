@@ -173,8 +173,11 @@ func TestLiveSetupRunsBeforeTheAgent(t *testing.T) {
 // about the helper, so that reason, redacted, is the checkpoint's message.
 func TestLiveSetupNegativeControl(t *testing.T) {
 	for name, tc := range map[string]struct {
-		network               setupNetwork
-		helper                bool
+		network setupNetwork
+		helper  bool
+		// away, when set, is the template the rig's mktemp makes the setup's fresh directories
+		// from (setupRig.mktemp), in place of the real mktemp's random name.
+		away                  string
 		git, gitWithoutHelper string
 		problem               string
 	}{
@@ -183,6 +186,12 @@ func TestLiveSetupNegativeControl(t *testing.T) {
 		"a public repository": {network: public, helper: true, git: "ok", gitWithoutHelper: "ok", problem: "the negative control succeeded without the role's helper"},
 		"no DNS for the control": {
 			network: unresolved, helper: true, git: "ok", gitWithoutHelper: "failed",
+			problem: "the negative control failed for another reason: exit 128: fatal: unable to access 'https://***@github.com/sjawhar/legion-smoke/': Could not resolve host: github.com",
+		},
+		// mktemp's random name can open as a JWT does (a CI run's setup made tmp.eyJ2Sg7LkC), and
+		// it is a path the setup made, which carries no credential.
+		"no DNS for the control, from a directory whose name holds eyJ": {
+			network: unresolved, helper: true, away: "tmp.eyJXXXXXXX", git: "ok", gitWithoutHelper: "failed",
 			problem: "the negative control failed for another reason: exit 128: fatal: unable to access 'https://***@github.com/sjawhar/legion-smoke/': Could not resolve host: github.com",
 		},
 		"a GitHub 503 for the control": {
@@ -199,11 +208,17 @@ func TestLiveSetupNegativeControl(t *testing.T) {
 			if tc.helper {
 				r.roleEnv()
 			}
+			if tc.away != "" {
+				r.mktemp(tc.away)
+			}
 			_, lines := r.run(r.start, []string{"/bin/true"})
 			if strings.Contains(strings.Join(lines, "\n"), setupRigOutageToken) || strings.Contains(strings.Join(lines, "\n"), "eyJ") {
 				t.Fatalf("the marker holds the token the control's error carried: %q", lines)
 			}
 			setup := parseSetupMarkerOrFail(t, lines[0])
+			if tc.away != "" && !strings.HasPrefix(filepath.Base(setup.gitFrom), strings.TrimRight(tc.away, "X")) {
+				t.Fatalf("git_from = %q, want a directory the rig's mktemp made from %s", setup.gitFrom, tc.away)
+			}
 			if setup.git != tc.git || setup.gitWithoutHelper != tc.gitWithoutHelper {
 				t.Errorf("git = %q, git_without_helper = %q; want %q and %q", setup.git, setup.gitWithoutHelper, tc.git, tc.gitWithoutHelper)
 			}
@@ -829,6 +844,21 @@ func newSetupRig(t *testing.T, network setupNetwork) *setupRig {
 func (r *setupRig) roleEnv() {
 	for _, variable := range GitConfigEnv() {
 		r.t.Setenv(variable.Name, variable.Value)
+	}
+}
+
+// mktemp puts a mktemp first on the rig's PATH whose `mktemp -d` makes its directory from
+// template under TMPDIR, as the real one makes tmp.XXXXXXXXXX there, so a case chooses what the
+// setup's fresh directory's name holds. Any other call is the real mktemp's.
+func (r *setupRig) mktemp(template string) {
+	r.t.Helper()
+	real, err := exec.LookPath("mktemp")
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	script := fmt.Sprintf("#!/bin/sh\n[ \"$*\" = -d ] || exec %[1]s \"$@\"\nexec %[1]s -d \"${TMPDIR:-/tmp}\"/%[2]s\n", shellQuote(real), shellQuote(template))
+	if err := os.WriteFile(filepath.Join(r.bin, "mktemp"), []byte(script), 0o700); err != nil {
+		r.t.Fatal(err)
 	}
 }
 
