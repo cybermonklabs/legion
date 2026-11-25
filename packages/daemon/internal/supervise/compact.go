@@ -344,7 +344,7 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 		}
 		return fmt.Errorf("the claim's session is not held to it, so nothing is asked of that session: %w", err)
 	}
-	if m.claim.Pending != nil && (m.send != nil || m.resultPending()) {
+	if m.resultPending() {
 		m.log.Info("supervise: the compaction aborts the turn this task's prompt is running; the task goes back to waiting",
 			"delivery", m.claim.Pending.ID)
 		// The compaction aborts whatever run its session had, so no prompt of the task is left

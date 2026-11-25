@@ -1886,17 +1886,18 @@ type Machine struct {
 	turnsEnded atomic.Uint64
 }
 
-// sending is the send in flight (startSend): its delivery id and generation, and whether its
-// prompt's result has come (resulted). What its prompt carries of news of the approved design is
-// the pending delivery's own while the id is the pending one's (startSend says why), so the send
-// keeps no copy of it.
+// sending is the send in flight (startSend): its delivery id and generation, and whether a
+// result has made its outcome moot (resulted). What its prompt carries of news of the approved
+// design is the pending delivery's own while the id is the pending one's (startSend says why), so
+// the send keeps no copy of it.
 //
 // The send's outcome reaches the machine from the send's own goroutine, and the turn its prompt
 // starts, that turn's end and the prompt's result reach it from the stream's queue. Oh My Pi
 // writes the acknowledgement first, but the two goroutines hand the machine their events in
 // whatever order they are scheduled, so all three can be decided before the outcome. A result
-// decided first is the prompt's answer (promptResulted marks it here), and the outcome that
-// follows it ends the send and decides nothing (fenceOutcome).
+// decided first answers this prompt, or reports a turn of an earlier prompt of the same task
+// (promptResulted). In either case the send's outcome ends the send and decides nothing about
+// the task it was sent for (fenceOutcome).
 type sending struct {
 	id         string
 	generation uint64
@@ -2997,10 +2998,11 @@ func timesADelivery(kind TimerKind) bool {
 // is one of those: that answer took the task back under a new id (takeBackPending), so the
 // acknowledgement adds no prompt to the ones the task waits on a result for (Machine.outstanding),
 // and the same answer recorded the claim working (recordBusyTurn), so nothing goes from here into
-// the turn it named: the task waits for that turn's end. So is the outcome of a send whose
-// prompt's result was decided first (sending.resulted): the result answered the prompt, and settled
-// the task where its turn was over (promptResulted), so an acknowledgement after it would wait on a
-// result that has come already, and with the task held, nothing would retire it.
+// the turn it named: the task waits for that turn's end. So is the outcome of a send that a
+// result decided first has made moot (sending.resulted): its own prompt's result, or one reporting
+// a turn of an earlier prompt of the task, settled the task where its turn was over
+// (promptResulted), so an acknowledgement after it would wait on a result that has come already,
+// and with the task held, nothing would retire it.
 func (m *Machine) fenceOutcome(ctx context.Context, event string, generation uint64, deliveryID string) (bool, error) {
 	own := m.send != nil && m.send.id == deliveryID && m.send.generation == generation
 	resulted := own && m.send.resulted

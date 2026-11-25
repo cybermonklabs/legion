@@ -405,20 +405,43 @@ func TestAConfirmedNewsTaskANewerTaskReplacedBeforeItsTurnsResultGivesItsNewsBac
 // it, says the turn ran, which makes the credit of the news final: the reviewer took version 4
 // once, and the sweep queues no reconcile to tell it again. A task retired at that end has its
 // result dropped as stale and gives the news back, and the reviewer is told version 4 twice.
+// A pause held over that turn also waits: a stop before the result would delete the delivery's
+// only credit for version 4. The result folds the credit into the told row before the pause
+// stops the claim and the delivery is retired.
 func TestANewsTaskWhoseTurnEndsBeforeItsSendIsAcknowledgedIsToldOnce(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name        string
 		resultFirst bool
+		pause       bool
 	}{
 		{name: "the acknowledgement, then the result"},
 		{name: "the result, then the acknowledgement", resultFirst: true},
+		{name: "a held pause, then the result before the acknowledgement", resultFirst: true, pause: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
 			// The case holds the news task's send at the door while its turn starts and ends, so
 			// the send's own deadline is a hang guard here and no part of what the case reads.
 			r.sup.deps.Timeouts.RPC = testwait.Remaining(t)
+			var pauseID atomic.Int64
+			if tc.pause {
+				st := r.sup.deps.Store.(*store.Store)
+				pods, err := st.PodRecordsOf("LEGION")
+				if err != nil {
+					t.Fatal(err)
+				}
+				pauses := &projectPause{
+					store: st, records: projectRecords{Store: r.records, project: "LEGION"},
+					pods: pods, project: "LEGION", token: "legion", now: time.Now,
+					log: quietLogger(), workflow: &workflowRuntime{},
+				}
+				r.sup.deps.Paused = func() (int64, bool) {
+					id := pauseID.Load()
+					return id, id != 0
+				}
+				r.sup.deps.PauseStopped = pauses.stopped
+			}
 			r.told(pathRoot, record.AudienceHolder, 3)
 			r.told(pathRoot, record.AudienceArchitect, 4)
 			reviewer, _, token := r.reviewerBetweenTurns(pathRoot)
@@ -433,8 +456,19 @@ func TestANewsTaskWhoseTurnEndsBeforeItsSendIsAcknowledgedIsToldOnce(t *testing.
 			if held := reviewer.Claim().Pending; held == nil || held.ID != news || held.ConfirmedAt.IsZero() {
 				t.Fatalf("the reviewer holds %+v after its turn started, want the news task %s confirmed: its send is in flight", held, news)
 			}
+			if tc.pause {
+				id := openLegionPause(t, r.pool, time.Now())
+				pauseID.Store(id)
+				err := reviewer.Handle(r.ctx, supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByReleased, Pause: id})
+				if !errors.Is(err, supervise.ErrSuspendHeld) {
+					t.Fatalf("pause stop during the news task's turn = %v, want it held", err)
+				}
+			}
 			if err := reviewer.Handle(r.ctx, supervise.StreamTurnEnd{Claim: token}); err != nil {
 				t.Fatalf("the news task's turn ends: %v", err)
+			}
+			if tc.pause && reviewer.Claim().State != supervise.StateIdle {
+				t.Fatalf("reviewer state after turn end = %s, want idle until the result decides the task", reviewer.Claim().State)
 			}
 			acknowledge := func() {
 				gated.release <- struct{}{}
@@ -455,6 +489,20 @@ func TestANewsTaskWhoseTurnEndsBeforeItsSendIsAcknowledgedIsToldOnce(t *testing.
 			reviewer.Wait()
 			if held := reviewer.Claim().Pending; held != nil {
 				t.Fatalf("the reviewer holds %+v after its news task's result and acknowledgement, want nothing", held)
+			}
+			if tc.pause {
+				if state := reviewer.Claim().State; state != supervise.StateSuspended {
+					t.Fatalf("reviewer state after the result = %s, want suspended by the held pause stop", state)
+				}
+				var pending bool
+				if err := r.pool.QueryRow(r.ctx, `select exists (select 1 from pending_task_deliveries where claim_token = $1)`, token).Scan(&pending); err != nil {
+					t.Fatalf("read the reviewer's pending delivery: %v", err)
+				}
+				if pending {
+					t.Fatal("the store still holds the delivery, so the told version might only be its temporary credit")
+				}
+				endLegionPause(t, r.pool, pauseID.Load(), time.Now())
+				pauseID.Store(0)
 			}
 			r.wantTold("after the news task's result and acknowledgement", pathRoot, record.AudienceHolder, 4, false)
 			r.sweepNews()

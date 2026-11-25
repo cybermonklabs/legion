@@ -366,26 +366,28 @@ func (m *Machine) putStops(ctx context.Context, c Claim) error {
 
 // stopWaitsForResult is whether the end of the claim's turn leaves a project pause's held
 // suspension waiting for the result of the turn's prompt (turnEnded): the hold is a pause's, and
-// Oh My Pi has not said yet how that prompt's work ended (resultPending). The result is what
+// Oh My Pi has not said yet how that prompt's work ended (resultPending: the prompt's send is
+// still unanswered, or it was acknowledged and its result is still to come). The result is what
 // decides the task — a turn that finished it retires it, and a provider's refusal of it takes it
 // back for another prompt (providerErrored) — so a stop made at the turn's end would retire a
 // refused task and leave the role owed nothing at the resume (check k1 of dispatch://INFRA-3759: a
 // role whose turn a provider refuses keeps its task). Oh My Pi writes the result right behind the
-// turn's end, and a process that dies before it does ends the hold through its death (died).
+// turn's end, and a process that dies before it does ends the hold through its death (died). A
+// send that is refused or lost brings no result, and its refusal runs the stop (refused).
 func (m *Machine) stopWaitsForResult() bool {
 	return m.held != nil && m.held.Pause != 0 && m.resultPending()
 }
 
 // pauseHoldAtResult is whether a project pause's held suspension waited for the result that has
-// just come in (stopWaitsForResult): the turn it was held for is over, and the hold still stands,
-// so its pause is still the open one (dropEndedPauseHold dropped it at the start of this decision
-// had that pause ended).
+// just come in, or for a send's answer that brings none (stopWaitsForResult): the turn it was held
+// for is over, and the hold still stands, so its pause is still the open one (dropEndedPauseHold
+// dropped it at the start of this decision had that pause ended).
 func (m *Machine) pauseHoldAtResult() bool {
 	return m.claim.State == StateIdle && m.held != nil && m.held.Pause != 0
 }
 
-// stopAtResult runs the project pause's held suspension that waited for this result
-// (pauseHoldAtResult), once the result has decided the task, and does nothing otherwise.
+// stopAtResult runs the project pause's held suspension that waited for this result, or for this
+// refused send (pauseHoldAtResult), once it has decided the task, and does nothing otherwise.
 func (m *Machine) stopAtResult(ctx context.Context) error {
 	if !m.pauseHoldAtResult() {
 		return nil

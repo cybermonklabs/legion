@@ -1,5 +1,5 @@
 kind: Fixed
-body: 'A role could be told the same news of an approved design twice when its turn ended before the daemon had read the acknowledgement of the prompt that started it: the daemon took the turn''s end as the end of the task, dropped the prompt''s result that came after it, and sent the news again in a second task. A provider error in such a turn was lost the same way. The daemon now waits for the prompt''s acknowledgement or its result before it ends the task.'
+body: 'A role could be told the same news of an approved design twice when its turn ended before the daemon had read the acknowledgement of the prompt that started it: the daemon took the turn''s end as the end of the task, dropped the prompt''s result that came after it, and sent the news again in a second task. A provider error in such a turn was lost the same way. The daemon now ends such a task only at the prompt''s result, whichever of the result and the acknowledgement it reads first, and a project pause held over such a turn waits for that result before it stops the role.'
 time: 2026-11-25T16:03:55.673377676Z
 custom:
     Issue: pr5535
