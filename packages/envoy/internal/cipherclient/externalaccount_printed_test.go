@@ -328,7 +328,7 @@ func TestOnlyTheLibrarysOwnQuoteIsReadAsAnAnswer(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			var fields credentialFields
 			fields.TokenURL = row.tokenURL
-			fields.Source.Certificate = &certificateSource{}
+			fields.Source = &credentialSource{Certificate: &certificateSource{}}
 			if got := externalAccountFailure(fields, &oauthrefusal.Recorder{}, errors.New(row.text)); got != row.want {
 				t.Fatalf("externalAccountFailure(%q) = %q; want %q", row.text, got, row.want)
 			}
@@ -368,15 +368,15 @@ func subjectTokenFile(t *testing.T, token string) string {
 // library reads as an enterprise certificate proxy's, with a signer to run (`libs.ecp`), is refused
 // before the library reads it: the library would start that program with no setting that allows it,
 // as an executable credential_source needs, and no time limit, and leave it running. So is one that
-// names a workload certificate and key and then a null workload, in either case of its key: Go's
-// JSON decoder keeps the first in a struct and takes the null in a pointer, which is how the library
-// reads it, so the library sees no workload. Control: for each, the library alone, given the same
-// credential, starts the signer.
+// names a workload certificate and key and then a null workload, in either case of its key, which
+// the library reads as no workload: it repeats a key. Control: for each, the library alone, given
+// the same credential, starts the signer.
 func TestAnEnterpriseCertificateProxyConfigurationRunsNothing(t *testing.T) {
-	for _, row := range []struct{ name, workload string }{
-		{"an enterprise certificate proxy's configuration", ``},
-		{"a workload, then a null workload", `"workload":{"cert_path":%q,"key_path":%q},"workload":null,`},
-		{"a workload, then a null Workload", `"workload":{"cert_path":%q,"key_path":%q},"Workload":null,`},
+	const repeats = "the certificate configuration its credential_source names repeats a key"
+	for _, row := range []struct{ name, workload, want string }{
+		{"an enterprise certificate proxy's configuration", ``, "the certificate configuration its credential_source names holds no workload certificate and private key"},
+		{"a workload, then a null workload", `"workload":{"cert_path":%q,"key_path":%q},"workload":null,`, repeats},
+		{"a workload, then a null Workload", `"workload":{"cert_path":%q,"key_path":%q},"Workload":null,`, repeats},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -407,8 +407,8 @@ func TestAnEnterpriseCertificateProxyConfigurationRunsNothing(t *testing.T) {
 			identity := &ExternalAccountIdentity{CredentialsJSON: data, ServiceAccount: "robot@example.iam.gserviceaccount.com",
 				Audience: testAudience, HTTP: HTTPClient()}
 			_, _, err = identity.Token(context.Background())
-			if want := "the certificate configuration its credential_source names holds no workload certificate and private key"; err == nil || !strings.Contains(err.Error(), want) {
-				t.Fatalf("Token: %v; want %q", err, want)
+			if err == nil || !strings.Contains(err.Error(), row.want) {
+				t.Fatalf("Token: %v; want %q", err, row.want)
 			}
 			if _, err := os.Stat(ran); !errors.Is(err, fs.ErrNotExist) {
 				t.Fatalf("the enterprise certificate proxy's signer ran (stat: %v)", err)

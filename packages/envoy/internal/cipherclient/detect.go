@@ -20,6 +20,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -30,6 +31,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"unicode"
+	"unicode/utf8"
 
 	"cloud.google.com/go/auth/credentials"
 	"github.com/googleapis/enterprise-certificate-proxy/client/util"
@@ -101,6 +104,11 @@ func externalAccountFor(audience string) (Source, string, error) {
 	data, err := os.ReadFile(file)
 	if err != nil {
 		return nil, "", fmt.Errorf("read the credentials file %s names: %w", credentialsFileVar, redact.File(err))
+	}
+	if repeated, err := repeatsKey(data); err != nil {
+		return nil, "", fmt.Errorf("the credentials file %s names is not JSON", credentialsFileVar)
+	} else if repeated {
+		return nil, "", errCredentialRepeatsKey
 	}
 	var head struct {
 		Type          string `json:"type"`
@@ -201,6 +209,10 @@ func (e *ExternalAccountIdentity) account() string {
 // read.
 var errCredentialUnread = errors.New("the external_account credential " + credentialsFileVar + " names is not one this client reads")
 
+// errCredentialRepeatsKey is a credentials file that repeats a key (repeatsKey), which this client
+// and Google's library could read as two different credentials.
+var errCredentialRepeatsKey = errors.New("the credentials file " + credentialsFileVar + " names repeats a key, which Google's library could read as another credential than this client does")
+
 // Token mints the token generateIdToken spends, the account's access token or, for an X.509
 // certificate, the federated one (ExternalAccountIdentity), and spends it on one generateIdToken.
 // Every error names the step that failed and never a token, a part of the file or a library's
@@ -209,29 +221,41 @@ var errCredentialUnread = errors.New("the external_account credential " + creden
 // says: its log of a request holds the subject token or the federated token, and of an answer the
 // federated token or the account's.
 //
-// An X.509 certificate's files are checked before the library reads them (certificateFailure),
-// and its exchange goes out on the library's own client, which presents the certificate: the
-// library takes a client it is given in place of its own wherever the credential names no
-// certificate configuration (use_default_certificate_config), and that client presents none.
+// A credentials file that repeats a key is refused before anything reads it (repeatsKey). An
+// X.509 certificate's credential is given to the library less its impersonation URL, and its
+// files are checked (certificateFailure) as those bytes read, in the types the library decodes
+// them into, before the library reads them. Its exchange goes out on the library's own client,
+// which presents the certificate: the library takes a client it is given in place of its own
+// wherever the credential names no certificate configuration (use_default_certificate_config), and
+// that client presents none.
 func (e *ExternalAccountIdentity) Token(ctx context.Context) (string, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*poolTimeout)
 	defer cancel()
-	var fields credentialFields
-	if json.Unmarshal(e.CredentialsJSON, &fields) != nil {
+	if repeated, err := repeatsKey(e.CredentialsJSON); err != nil {
+		return "", "", errCredentialUnread
+	} else if repeated {
+		return "", "", errCredentialRepeatsKey
+	}
+	credential := e.CredentialsJSON
+	fields, err := readCredentialFields(credential)
+	if err != nil {
 		return "", "", errCredentialUnread
 	}
-	certified := fields.Source.Certificate != nil
-	credential := e.CredentialsJSON
+	certified := fields.certificate() != nil
 	answered := &oauthrefusal.Recorder{}
 	options := &credentials.DetectOptions{Scopes: []string{poolScope}, Logger: slog.New(slog.DiscardHandler)}
 	if !certified {
 		options.Client = oauthrefusal.Client(e.HTTP, answered)
-	} else if reason := certificateFailure(*fields.Source.Certificate); reason != "" {
-		return "", "", e.mintFailure(certified, reason)
-	} else if federation, err := withoutImpersonation(credential); err != nil {
-		return "", "", errCredentialUnread
 	} else {
-		credential = federation
+		if credential, err = withoutImpersonation(credential); err != nil {
+			return "", "", errCredentialUnread
+		}
+		if fields, err = readCredentialFields(credential); err != nil || fields.certificate() == nil {
+			return "", "", errCredentialUnread
+		}
+		if reason := certificateFailure(*fields.certificate()); reason != "" {
+			return "", "", e.mintFailure(certified, reason)
+		}
 	}
 	creds, err := credentials.NewCredentialsFromJSON(credentials.ExternalAccount, credential, options)
 	if err != nil {
@@ -282,14 +306,42 @@ func withoutImpersonation(credential []byte) ([]byte, error) {
 
 // credentialFields are the fields of an external_account credential file this client reads for
 // its own messages and checks: the token service, and the files its credential_source names. Each
-// has the type cloud.google.com/go/auth reads it as, so a file whose fields do not parse here is
-// one the library refuses too.
+// has the type cloud.google.com/go/auth decodes it into (internal/credsfile's
+// ExternalAccountFile), a pointer where the library's is one, so that a null reads as the library
+// reads it, and a file whose fields do not parse here is one the library refuses too.
 type credentialFields struct {
-	TokenURL string `json:"token_url"`
-	Source   struct {
-		File        string             `json:"file"`
-		Certificate *certificateSource `json:"certificate"`
-	} `json:"credential_source"`
+	TokenURL string            `json:"token_url"`
+	Source   *credentialSource `json:"credential_source"`
+}
+
+// credentialSource is a credential's credential_source, as far as this client reads it (the
+// library's CredentialSource).
+type credentialSource struct {
+	File        string             `json:"file"`
+	Certificate *certificateSource `json:"certificate"`
+}
+
+// readCredentialFields is the credentialFields of credential.
+func readCredentialFields(credential []byte) (credentialFields, error) {
+	var fields credentialFields
+	err := json.Unmarshal(credential, &fields)
+	return fields, err
+}
+
+// certificate is the X.509 certificate source the credential names, or nil.
+func (f credentialFields) certificate() *certificateSource {
+	if f.Source == nil {
+		return nil
+	}
+	return f.Source.Certificate
+}
+
+// file is the subject token file the credential names, or "".
+func (f credentialFields) file() string {
+	if f.Source == nil {
+		return ""
+	}
+	return f.Source.File
 }
 
 // certificateSource is an X.509 credential's credential_source: the certificate configuration it
@@ -320,7 +372,7 @@ func externalAccountFailure(fields credentialFields, answered *oauthrefusal.Reco
 	}
 	tokenURL, _ := url.Parse(token)
 	status, body, host := answered.Status, answered.Answer(), answered.Host
-	if status == 0 && fields.Source.Certificate != nil && tokenURL != nil {
+	if status == 0 && fields.certificate() != nil && tokenURL != nil {
 		if quoted := libraryAnswer.FindStringSubmatch(err.Error()); quoted != nil {
 			status, _ = strconv.Atoi(quoted[1])
 			body, host = []byte(quoted[2]), tokenURL.Host
@@ -354,19 +406,19 @@ var libraryAnswer = regexp.MustCompile(`(?s)\Acredentials: status code ([0-9]{3}
 // does not pass it a credential's universe_domain).
 const defaultTokenURL = "https://sts.googleapis.com/v1/token"
 
-// credentialFileFailure is why a file the credential's credential_source names cannot be read,
-// and "" where each can: the subject token file, or an X.509 certificate's files
-// (certificateFailure). The library's error quotes the path (and, for the subject token file, does
-// not wrap the file call's error), so each is opened again here and prints as the file call's
-// reason (redact.File).
+// credentialFileFailure is why a file the credential's credential_source names cannot be used,
+// and "" where each can be: the subject token file, whose read error prints as the file call's
+// reason (redact.File), or an X.509 certificate's files, as certificateFailure says. The library's
+// error quotes the path (and, for the subject token file, does not wrap the file call's error), so
+// each is read again here.
 func credentialFileFailure(fields credentialFields) string {
-	if file := fields.Source.File; file != "" {
+	if file := fields.file(); file != "" {
 		if err := opens(file); err != nil {
 			return "read the subject token file its credential_source names: " + redact.File(err).Error()
 		}
 	}
-	if fields.Source.Certificate != nil {
-		return certificateFailure(*fields.Source.Certificate)
+	if certificate := fields.certificate(); certificate != nil {
+		return certificateFailure(*certificate)
 	}
 	return ""
 }
@@ -377,11 +429,12 @@ func credentialFileFailure(fields credentialFields) string {
 // the certificate and private key that configuration names. A file that cannot be read prints as
 // the file call's reason (redact.File), and one that does not parse as Google's library parses it
 // as a fixed reason: the library fails on either before it sends the exchange, or in its TLS
-// handshake, with no answer to name. A configuration that names no workload certificate and key
-// is refused: the one other kind Google's library reads, an enterprise certificate proxy's, makes
-// it start the signer program the configuration names, with no setting that allows it (as
-// GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES allows an executable credential_source) and no time
-// limit.
+// handshake, with no answer to name. A configuration that repeats a key (repeatsKey), or names no
+// workload certificate and key, is refused: the one other kind Google's library reads, an
+// enterprise certificate proxy's, makes it start the signer program the configuration names, with
+// no setting that allows it (as GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES allows an executable
+// credential_source) and no time limit. So is a source that names a configuration and asks for
+// the default one too, which the library refuses, rather than read one of the two.
 func certificateFailure(source certificateSource) string {
 	var chain []byte
 	if source.TrustChain != "" {
@@ -389,6 +442,9 @@ func certificateFailure(source certificateSource) string {
 		if chain, err = os.ReadFile(source.TrustChain); err != nil {
 			return "read the trust chain its credential_source names: " + redact.File(err).Error()
 		}
+	}
+	if source.Config != "" && source.UseDefault {
+		return "its credential_source names a certificate configuration and asks for the default one too, which Google's library refuses"
 	}
 	config, what := source.Config, "the certificate configuration its credential_source names"
 	if config == "" && source.UseDefault {
@@ -404,6 +460,11 @@ func certificateFailure(source certificateSource) string {
 	data, err := os.ReadFile(config)
 	if err != nil {
 		return "read " + what + ": " + redact.File(err).Error()
+	}
+	if repeated, err := repeatsKey(data); err != nil {
+		return what + " is not JSON"
+	} else if repeated {
+		return what + " repeats a key"
 	}
 	var parsed certificateConfig
 	if json.Unmarshal(data, &parsed) != nil {
@@ -432,10 +493,9 @@ func certificateFailure(source certificateSource) string {
 }
 
 // certificateConfig is a certificate configuration decoded into the types Google's library decodes
-// it into (internal/transport/cert's certificateConfig), so that this client reads the workload the
-// library reads, whichever keys the file repeats: Go's JSON decoder reads a repeated key into a
-// struct and into a pointer differently (a later null leaves a struct as it was and sets a pointer
-// to nil). The library reads a nil Workload as an enterprise certificate proxy's configuration.
+// it into (internal/transport/cert's certificateConfig), a pointer where the library's is one, so
+// that a null reads as the library reads it. The library reads a nil Workload as an enterprise
+// certificate proxy's configuration.
 type certificateConfig struct {
 	CertConfigs struct {
 		Workload *struct {
@@ -486,7 +546,8 @@ func trustChainFailure(chain []byte, leaf *x509.Certificate) string {
 }
 
 // opens is nil where path opens for reading and is no directory, and the file call's error
-// otherwise. It reads none of the file, which can be a private key.
+// otherwise. It reads none of the file: the subject token file, which holds the credential the
+// exchange is sent.
 func opens(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -501,4 +562,88 @@ func opens(path string) error {
 		return &fs.PathError{Op: "read", Path: path, Err: syscall.EISDIR}
 	}
 	return nil
+}
+
+// repeatsKey is whether data, one JSON value, holds an object with two keys Go's JSON decoder
+// reads as one (foldKey), at any depth, and an error where data is not one JSON value. Such a key
+// is read differently by a decoder into a struct, into a pointer and into a map (the last of the
+// keys, a merge of them, or each spelling), so where this client checks a file that Google's
+// library then reads, a repeated key can make the two read different files: the file is refused
+// before either reads it. A file gcloud writes repeats none.
+func repeatsKey(data []byte) (bool, error) {
+	// objects holds, for each object or array the walk is in, innermost last, the folded keys
+	// read so far (nil for an array), and whether the next token is a key.
+	type open struct {
+		keys map[string]bool
+		key  bool
+	}
+	var objects []open
+	dec := json.NewDecoder(bytes.NewReader(data))
+	read := false
+	for {
+		token, err := dec.Token()
+		if err == io.EOF && read {
+			return false, nil
+		}
+		if err == io.EOF {
+			return false, io.ErrUnexpectedEOF
+		}
+		if err != nil {
+			return false, err
+		}
+		if read {
+			return false, errors.New("more than one JSON value")
+		}
+		inner := len(objects) - 1
+		if delim, ok := token.(json.Delim); ok {
+			switch delim {
+			case '{':
+				objects = append(objects, open{keys: map[string]bool{}, key: true})
+				continue
+			case '[':
+				objects = append(objects, open{})
+				continue
+			}
+			objects = objects[:inner]
+		} else if inner >= 0 && objects[inner].key {
+			folded := foldKey(token.(string))
+			if objects[inner].keys[folded] {
+				return true, nil
+			}
+			objects[inner].keys[folded], objects[inner].key = true, false
+			continue
+		}
+		// A value ended: the next token of the object around it is a key.
+		if outer := len(objects) - 1; outer < 0 {
+			read = true
+		} else if objects[outer].keys != nil {
+			objects[outer].key = true
+		}
+	}
+}
+
+// foldKey is key as Go's JSON decoder matches it with a field's name (encoding/json's foldName):
+// each ASCII letter in upper case, and each other rune as the least of the runes whose case folds
+// to it, so that two keys fold alike exactly where strings.EqualFold holds.
+func foldKey(key string) string {
+	var folded strings.Builder
+	for _, r := range key {
+		if r < utf8.RuneSelf {
+			if 'a' <= r && r <= 'z' {
+				r -= 'a' - 'A'
+			}
+			folded.WriteRune(r)
+			continue
+		}
+		for {
+			next := unicode.SimpleFold(r)
+			if next <= r {
+				r = next
+				break
+			}
+			r = next
+		}
+		folded.WriteRune(r)
+	}
+	return folded.String()
 }
