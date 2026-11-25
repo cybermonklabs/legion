@@ -41,16 +41,24 @@ function bash(script: string, args: string[], env: Record<string, string> = {}) 
 function batchToken(work: string): string {
   const up = bash(
     [
-      ...["note", "fail", "given_services", "safe_url", "services_up"].map(fn),
+      ...["note", "fail", "given_services", "connections_needed", "safe_url", "services_up"].map(
+        fn
+      ),
       'until_true() { shift 2; "$@"; }',
       "pg_sql() { printf '%s\\n' 100; }",
       "nats_ready() { :; }",
-      "work=$1 S=$1/services tag=t",
+      // One Dispatch server's connection count, which connections_needed asks the store for.
+      "go() { printf '%s\\n' 30; }",
+      "work=$1 S=$1/services root=$2 tag=t",
+      // services_up reads the given Postgres URL with pg-url.sh and loopback-dsn.sh, as rig.sh
+      // sources them.
+      '. "$root/packages/envoy/scripts/lib/pg-url.sh"',
+      '. "$root/scripts/e2e/lib/loopback-dsn.sh"',
       "services_postgres=$S/postgres-url tokens=$S/tokens",
       'mkdir -p "$S"',
       "services_up",
     ].join("\n"),
-    [work],
+    [work, path.resolve(import.meta.dir, "../../../..")],
     {
       SKILL_SCENARIOS_POSTGRES_URL: "postgres://rig@127.0.0.1:1/postgres",
       SKILL_SCENARIOS_NATS_URL: "nats://127.0.0.1:1",

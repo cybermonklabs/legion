@@ -92,8 +92,8 @@ import {
 // the calls it runs on the pane's own token: one reading for this stand-in's refusal and health's
 // judgement of it.
 import { capturedRead, runsOnPaneToken } from "./gh-pane-token";
-// The GraphQL reader the sweep of the role texts reads their queries with, and the executor that
-// answers a query from the world's graph: one reading of a query for the texts and the world.
+// The route a call reaches (routeOf, worldRouteOf) and the executor that answers a GraphQL query
+// from the world's graph, both on gh-routes.ts's one reading of a query (`parseDocument`).
 import {
   executeGraphql,
   type GraphAnswer,

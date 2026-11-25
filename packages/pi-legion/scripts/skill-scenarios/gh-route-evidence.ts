@@ -10,9 +10,9 @@
 // imports into each run's <run>/lib/gh.js, which the agent can read and launch's guard reads
 // (run-names.ts's `worldFiles`). At 9083afb5 the stand-in came to import WORLD_ROUTES with its evidence
 // in it, and the guard refused every reviewer of INFRA-764's round 30. The stand-in reads the
-// routes and their answers alone (gh-routes.ts); the evidence is read by gh-standin.test.ts's
-// both-ways pin, which holds each route no text names to it, and by the rows that cite a route's
-// run.
+// routes and their answers alone (gh-routes.ts); the evidence is read by the rows of
+// gh-standin.test.ts that cite a route's run. No test reads a role text, so none holds a route of
+// the table to a text that names it or to its evidence here.
 
 /** Why a world answers a route no role text of either label names: a recorded run whose agent
  * called it (`run`, `<batch>/<run>/calls.jsonl:<line>`), or, where no recorded run called it, why
@@ -23,10 +23,7 @@ export type Evidence =
   | { readonly world: string };
 
 /** The evidence of each route of gh-routes.ts's WORLD_ROUTES that carries one, by the route's key
- * as the table writes it. A route a role text names needs none; a route neither label's texts
- * name and that has none here fails gh-standin.test.ts's "every route the world answers is named
- * by a role text or declared with its evidence", and so does a key here that is no route of the
- * table. */
+ * as the table writes it. A route a role text names needs none. */
 export const ROUTE_EVIDENCE: Readonly<Partial<Record<string, Evidence>>> = {
   "GET repos/{owner}/{repo}/pulls/{number}/commits": {
     world:

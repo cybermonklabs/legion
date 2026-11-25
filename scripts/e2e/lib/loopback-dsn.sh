@@ -32,7 +32,9 @@
 # which reads LEGION_TEST_PG_DSN with this guard before it builds or extracts anything, through
 # that same copy. The twelfth is packages/pi-legion/scripts/skill-scenarios/rig.sh, which reads a
 # batch's SKILL_SCENARIOS_POSTGRES_URL with this guard in services_up and gives each run's
-# Dispatch the string run_database_url rebuilds, in own_dispatch. Ten of the twelve call sites
+# Dispatch the string run_database_url rebuilds, in own_dispatch, and the run's two readers of
+# Bun.SQL that string as a postgres:// URL (rig.sh's conninfo_url), never the given URL's text,
+# whose host Bun reads as a WHATWG URL does (below). Ten of the twelve call sites
 # call this function. envoy-session-delivery.sh and dispatch-session-settings.sh read their DSN
 # with run_database_url alone, which begins with this guard's own check. Every proof that writes
 # a server its caller's DSN names reads that DSN with this guard before it starts anything.

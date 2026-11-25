@@ -399,7 +399,11 @@ A batch also needs Docker, unless both `SKILL_SCENARIOS_POSTGRES_URL` and
 `SKILL_SCENARIOS_NATS_URL` are set: the batch then uses those two servers, starts no container,
 and needs `psql` and `python3` instead, to read the Postgres URL with libpq and to reach the
 server. `SKILL_SCENARIOS_POSTGRES_URL` must be a `postgres://` or `postgresql://` URL of the
-Postgres on this machine.
+Postgres on this machine. Each run's Dispatch gets the connection string libpq reads of it, for
+the run's own database (`run_database_url`), and the two readers that open that database with
+Bun.SQL, `seed.ts pull-request` and the head watcher, get that string as a `postgres://` URL with
+each value percent-encoded (`rig.sh`'s `conninfo_url`), never the given URL's own text, of which
+Bun can read another host than libpq does.
 A judge always runs in a Docker container. Every container a batch or a judge starts has CPU and
 memory limits. It runs a mise of
 its own, never the caller's, since a worker pod's image carries none (the image's `tools` stage
@@ -415,12 +419,8 @@ Every run's agent starts in a detached tmux session, and the rig brings no tmux 
 socket of their own under the work directory, and refuse, before they make any database, service
 or run directory, naming `tmux`, the step that failed and what tmux printed on stderr. A batch's
 runs take its PATH, and so the tmux it checked, and are not checked again. A worker pod's image
-carries no tmux, and a `tmux` binary put there alone does not start: it cannot load
-`libevent_core-2.1.so.7`. This gave a Debian 13 (trixie) pod a tmux on 2026-11-17, and it is a
-method, not a pin: unpack the `tmux` and `libevent-core-2.1-7t64` packages of the pod's own
-Debian release (`dpkg-deb -x <package>.deb <dir>`; there they were 3.5a-3 and
-2.1.12-stable-10+b1), and run the rig from a shell whose PATH starts with `<dir>/usr/bin` and
-whose `LD_LIBRARY_PATH` names `<dir>/usr/lib/x86_64-linux-gnu`.
+carries tmux, trixie's package (`packages/daemon/docker/worker.Dockerfile`'s apt list), which
+answered `tmux 3.5a` on 2026-11-25.
 `SKILL_SCENARIOS_WORK` must have no `.omp` in it or above it, so not under your home directory: Oh
 My Pi would load that directory's plugins and not the label's. Its bounded waits, port picks and
 process stops are
@@ -965,9 +965,11 @@ the run's namespace mounts it, by the world the run recorded (`<run>/namespace.t
 order `rig.sh`'s `private_world` mounts it. Under `/tmp` it is the run's own `<run>/tmp`, and a
 write to it is none outside the run, unless the run's world shows a path there (its own
 directory, its label's profile and the batch's services, on a host whose work directory is under
-`/tmp`), where it is that path. Under `/dev/shm`, a covered path or a credentials path it is a
-tmpfs of that agent's launch alone, so a write there is none outside the run and no other run
-reads it. The two rules that read another run read paths the same way, so a run in a namespace is
+`/tmp`), where it is that path. Under `/dev/shm` it is a tmpfs of that agent's launch alone,
+unless the run's world shows a path there (on a host whose work directory is under `/dev/shm`, as
+`rig.test.ts`'s is), where it is that path; under a covered path or a credentials path it is a
+tmpfs of that launch too. A write to such a tmpfs is none outside the run and no other run reads
+it. The two rules that read another run read paths the same way, so a run in a namespace is
 held to nothing another run's `/tmp` or `/dev/shm`, or the machine's, held; a run with no
 `<run>/namespace.txt` wrote and read the machine's paths, and is read so.
 Give a batch's runs in one call: given one run, `health` sees no other run's writes. It reads
@@ -2324,7 +2326,8 @@ The checks:
   source is content the rig made, bound over a path of the agent's world: the agent reads there
   what the rig declared, where production's pane reads the host's own file, as the empty file once
   bound over the system git configuration on the premise that the worker image had none. A bind
-  into the holder (`/dev/shm`), a held path bound back at its own path, and the run's own
+  into the holder (a tmpfs of its own at `/dev/shm/holder`, inside the run's own `/dev/shm`), a
+  held path bound back at its own path, and the run's own
   `<run>/tmp` bound onto `/tmp` are no finding. A file `rig.sh` builds into every run
   (`--outfile "$R/<path>"`, the `gh` bundle), whose words no reading of `rig.sh`'s text sees, is
   held by `rig.test.ts`'s row that builds and reads it (the launch guard's section above), and is

@@ -195,10 +195,15 @@ const WORLD_APPS = [
  * row that installs a route failed on that refusal. A tmpfs, because the file's afterAll removes
  * the whole directory under the file's 60 s: on the disk TMPDIR names, that removal of about 1,600
  * entries took 70 to 90 s at a five-minute load of about 2,200, and failed the file with "a
- * beforeEach/afterEach hook timed out" after every row had passed. `need` is about sixteen times
- * the 1.8 MiB a run held there at its largest (1,392 entries).
+ * beforeEach/afterEach hook timed out" after every row had passed. `need` is twice what this file
+ * held there at its largest, at its last row: 147,079 KiB in 39,643 entries (measured 2026-11-25,
+ * the whole file on a pod's disk: 366 rows passed, 9 skipped for want of docker, and its removal
+ * passed). Main's 32 MiB, sixteen times the 1.8 MiB its own file held, took a pod's /dev/shm of
+ * 64 MiB, which this file filled: from the describe "the issue workspace's remote" on, 90 rows
+ * failed on `ENOSPC`.
+ * Where no tmpfs has that room, the directory is the disk's.
  */
-const memory = memoryRoot({ need: 32 * 1024 * 1024 });
+const memory = memoryRoot({ need: 2 * 147_079 * 1024 });
 const workRoot = /^[A-Za-z0-9/._-]+$/.test(realpathSync(memory)) ? memory : "/tmp";
 if (workRoot !== memory) {
   console.error(
@@ -613,16 +618,13 @@ describe("a setup that fails after install_model_route", () => {
   test("judge_profiles refuses an unready build an earlier call left, and keeps it", () => {
     const work = freshDir("judge-route-unready");
     const co = checkout();
+    // The bare profile's route cannot be installed, after the ste profile's is, as the row above
+    // fails it: main's judge_profiles makes no home with make_omp_home (#5010).
     const script = [
-      "set -euo pipefail",
-      ...["fail", "on_exit", "drop_unready_keys", "install_model_route", "judge_profiles"].map(fn),
-      "checkout_commit() { printf 'fixture parents=base\\n'; }",
-      "root=$1; work=$2; judge_model=fixture; judge_thinking=high; judge_profiles",
+      fn("install_model_route").replace("install_model_route()", "installed_route()"),
+      'install_model_route() { [ "$2" != judge-bare ] || { echo "no route for bare" >&2; return 1; }; installed_route "$@"; }',
+      judgeProfiles,
     ].join("\n");
-    appendFileSync(
-      path.join(co, "scripts/e2e/lib/omp-home.sh"),
-      'make_omp_home() { [ "$(basename "$(dirname "$1")")" != bare ] || { echo "no home for bare" >&2; return 1; }; mkdir -p "$1/.omp"; }\n'
-    );
     expect(bash(script, [co, work], routeEnv()).code).toBe(1);
     const dir = path.join(work, "judge-profiles");
     writeFileSync(path.join(dir, "ste", "operator-notes"), "read before the rebuild\n");
@@ -1352,6 +1354,7 @@ describe("cmd_batch numbering", () => {
           "note",
           "on_exit",
           "given_services",
+          "connections_needed",
           "safe_url",
           "services_files",
           "lock_services",
@@ -1381,11 +1384,15 @@ describe("cmd_batch numbering", () => {
         "nats_ready() { :; }",
         'start_listener() { envoy_port=4100; : >"$work/listener_$1.port"; }',
         "services_from() { printf 'envoy-listener label %s -\\n' \"$co\"; }",
-        'go() { : >"$3"; }',
+        'go() { case "$*" in "run ./internal/dispatch/store/cmd/connections -process") echo 30 ;; *) : >"$3" ;; esac; }',
         "label_facts() { :; }",
         "label_contract() { :; }",
         "work=$1 here=$2 root=$3 tag=rig-test containers=()",
         "services_postgres=$work/services/postgres-url tokens=$work/services/tokens",
+        // services_up reads the given Postgres URL with pg-url.sh and loopback-dsn.sh, as rig.sh
+        // sources them.
+        '. "$root/packages/envoy/scripts/lib/pg-url.sh"',
+        '. "$root/scripts/e2e/lib/loopback-dsn.sh"',
         'cmd_batch "$4" 1 head',
       ].join("\n"),
       [work, here, root, scenario],
@@ -11558,7 +11565,9 @@ sleep() { command sleep 0.05; }`;
     "require_namespace() { :; }",
     "tmux_ready() { :; }",
     "until_true() { :; }",
-    'pg_sql() { [ "$2" != "SHOW max_connections" ] || echo 200; }',
+    // A given Postgres that admits exactly what the batch needs, whatever one Dispatch server's
+    // count is (services_up's `needs`, from connections_needed).
+    'pg_sql() { [ "$2" != "SHOW max_connections" ] || echo "$needs"; }',
     "start_listener() { envoy_port=1; }",
     'eval "rig_$(declare -f go_binary)"',
     "go_binary() {",
@@ -11589,6 +11598,13 @@ sleep() { command sleep 0.05; }`;
     'bun() { if [ "$1" = "$here/seed.ts" ]; then shift; seed_standin "$@"; else command bun "$@"; fi; }',
   ];
 
+  /** The directory, on the disk TMPDIR names and never under this file's work directory, of what
+   * composeRuns' batches hold that a tmpfs of a pod's size cannot: each batch's work directory,
+   * where its label's build of daemon-pane.go goes, and the native module cache its label installs
+   * link their homes' .omp/natives to (make_omp_home reads $XDG_DATA_HOME/omp/natives where
+   * $XDG_DATA_HOME/omp exists), where Oh My Pi extracts its addon, 123 MiB a version. A pod's
+   * /dev/shm of 64 MiB refused both (`ENOSPC`, 2026-11-25). */
+  const onDisk = temporaryDirectory("suite");
   /** Composes each run `runs` names (`<scenario>:<case>:<label>:<the case's variable>:<n>`, then
    * `:plant` for a run with PLANT set) as cmd_run composes it, with rig.sh sourced whole, over
    * WHOLE_WORLD_SERVICES and then `stubs`, under `env`: each of `labels` gets a profile on this
@@ -11598,12 +11614,12 @@ sleep() { command sleep 0.05; }`;
    * has. Each label's install is a real one, made as cmd_profile makes it (make_omp_home, then
    * install-plugin-profile.sh for pi-envoy and pi-legion, which packs each plugin and installs it
    * with the pinned Oh My Pi through the caller's mise, then install_model_route), so the HOME
-   * every run copies holds the plugins' links into the install and the natives link into the
-   * host's cache, as a batch's does: the route is the provider route, on a provider file of the
+   * every run copies holds the plugins' links into the install and the natives link into a cache
+   * (onDisk's), as a batch's does: the route is the provider route, on a provider file of the
    * row's own whose key command no run calls, since the gateway and key-file routes need
    * credentials no test holds; and no superpowers skills are copied, which a model's read probes.
-   * Returns bash's result and each run as the rig left it, archived (stop_run), by the name its
-   * record gives it. */
+   * Returns bash's result, the batch's work directory (under onDisk) and each run as the rig left
+   * it, archived (stop_run), by the name its record gives it. */
   function composeRuns(
     dir: string,
     labels: readonly string[],
@@ -11611,9 +11627,11 @@ sleep() { command sleep 0.05; }`;
     stubs: readonly string[],
     env: Record<string, string>
   ) {
-    const rigWork = path.join(dir, "work");
+    const rigWork = path.join(onDisk, path.basename(dir), "work");
+    const natives = path.join(onDisk, "natives");
     const bin = path.join(dir, "bin");
     mkdirSync(path.join(bin, "pin", "bin"), { recursive: true });
+    mkdirSync(path.join(natives, "omp"), { recursive: true });
     writeFileSync(path.join(bin, "pin", "bin", "omp"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     writeFileSync(
       path.join(bin, "mise"),
@@ -11701,6 +11719,9 @@ sleep() { command sleep 0.05; }`;
         INSTALL_MISE_DATA_DIR:
           process.env.MISE_DATA_DIR ??
           path.join(process.env.XDG_DATA_HOME ?? path.join(homedir(), ".local", "share"), "mise"),
+        // The host's native module cache, as make_omp_home and the launch guard read it
+        // (run-names.ts's `hostProvided`): $XDG_DATA_HOME/omp/natives.
+        XDG_DATA_HOME: natives,
         PROVIDER_FILE: providerFile,
         LABELS: labels.join(" "),
         SKILL_SCENARIOS_WORK: rigWork,
@@ -11718,7 +11739,7 @@ sleep() { command sleep 0.05; }`;
           JSON.parse(readFileSync(path.join(archive, file), "utf8")).name,
           path.join(archive, file.slice(0, -".json".length))
         );
-    return { result, composed };
+    return { result, composed, rigWork, natives };
   }
 
   // Catches: a word of the measurement in any file rig.sh writes, copies or builds into a run
@@ -11777,7 +11798,7 @@ sleep() { command sleep 0.05; }`;
           "",
         ].join("\n")
       );
-      const { result, composed } = composeRuns(
+      const { result, composed, rigWork, natives } = composeRuns(
         dir,
         labels,
         runs.map(({ argument }) => argument),
@@ -11789,8 +11810,8 @@ sleep() { command sleep 0.05; }`;
       );
       // Every file of each run as the guard reads it at the first launch, through its own walker
       // (run-names.ts's `worldFiles`), by its path and its text, with the trees the run's label
-      // and the host provide as the guard reads them (childEnv's HOME, which make_omp_home linked
-      // the install's natives under).
+      // and the host provide as the guard reads them (the batch's XDG_DATA_HOME, whose
+      // omp/natives make_omp_home linked the install's natives to).
       const vocab = vocabulary(labels);
       const named: string[] = [];
       const first: string[] = [];
@@ -11801,7 +11822,7 @@ sleep() { command sleep 0.05; }`;
         try {
           for (const { file, text, link } of worldFiles(
             run,
-            hostProvided(installOf(path.join(dir, "work"), label), childEnv)
+            hostProvided(installOf(rigWork, label), { ...childEnv, XDG_DATA_HOME: natives })
           )) {
             if (file.startsWith("home/")) home.add(`${link ? "link" : "file"} <run>/${file}`);
             const inName = textWords(file, vocab);
@@ -13090,9 +13111,9 @@ describe("nats_ready and the URL helpers", () => {
 // This row is that typecheck, over the one file of that directory this rig's modules reach, and
 // the pi-legion job of .github/workflows/ci.yaml runs it with every other row of this file
 // (`bun run test` in packages/pi-legion), on a pull request that changes the drive and nothing
-// else: that job's `pi_legion` filter names this file, and ci_job_reads.py declares it a read of
-// the gate, so the two say the same thing and check-ci-filters.sh holds them to it. The program
-// is written here rather than committed
+// else: .github/ci-gates/pi-legion.py declares this file a read of that job's `pi_legion` gate,
+// whose filter the changes job computes from it, and check-ci-filters.sh holds the two together.
+// The program is written here rather than committed
 // because the file belongs to no package: the compiler options are packages/pi-legion's own,
 // with the paths and type roots a configuration outside the tree needs.
 describe("the e2e drives that compose a pane through this rig", () => {
@@ -13147,7 +13168,10 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
   "each worker world, as the rig builds and seeds it",
   () => {
     /** The Dispatch server of this checkout, built once for every world here, as services_up
-     * builds a label's (go_binary). */
+     * builds a label's (go_binary), on the disk TMPDIR names and never under this file's work
+     * directory: the binary is larger than a pod's /dev/shm of 64 MiB holds (`no space left on
+     * device`, 2026-11-25). */
+    const serverDir = temporaryDirectory("suite-dispatch");
     let server = "";
     /** The caller's go caches, which a stand-in's read of its daemon's facts compiles with
      * (health's `goSettings` says why a HOME of childEnv's holds none), and the one work
@@ -13156,7 +13180,7 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
     let go: Record<string, string> = {};
     let factsWork = "";
     beforeAll(() => {
-      server = path.join(freshDir("world-dispatch-build"), "dispatch-e2e");
+      server = path.join(serverDir, "dispatch-e2e");
       const built = spawnChecked(["go", "build", "-o", server, "./cmd/dispatch"], {
         cwd: path.join(root, "packages", "envoy"),
         env: process.env,
@@ -13240,6 +13264,8 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
         "set -euo pipefail",
         "R=$1 work=$2 co=$3 server=$4 case_name=$5 pushed=$6 boot_role=$7 boot_phase=$8 boot_completed=$9 root=$3 here=$3/packages/pi-legion/scripts/skill-scenarios",
         `. ${JSON.stringify(path.join(root, "scripts/e2e/lib/rig.sh"))}`,
+        // pg_sql and safe_url take a URL's password out with pg-url.sh, which rig.sh sources.
+        `. ${JSON.stringify(path.join(root, "packages/envoy/scripts/lib/pg-url.sh"))}`,
         ...[
           "fail",
           "note",
@@ -13247,7 +13273,7 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
           "start_dispatch",
           ...(rigScript.includes("\ndispatch_whoami() {") ? ["dispatch_whoami"] : []),
           "pg_sql",
-          "pg_database_url",
+          "conninfo_url",
           "safe_url",
           "seed_ts",
           "start_heads",
@@ -13849,6 +13875,221 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
   }
 );
 
+// The run's two readers that open its own database with Bun.SQL, seed.ts pull-request and the
+// head watcher (seed-handoffs.ts's `pullRequestHead`), given its URL as rig.sh gives it on a given
+// server: own_dispatch's dispatch_database_url, the URL conninfo_url rebuilds from the keywords
+// libpq read of the given URL (run_database_url), handed to seed.ts by seed_ts and to the watcher
+// by start_heads. Each row runs rig.sh's own own_dispatch, seed_ts, start_heads and heads_stored,
+// with no Dispatch server (start_dispatch's port is 1) and no seed.ts project, which no reader
+// needs, then a push the watcher answers. Catches: a reader given run_database_url's keyword/value
+// string, which Bun.SQL refuses (`Invalid URL`), so no pull request's head is ever stored on a
+// given server; and a reader given the given URL's own text, of which Bun reads another host than
+// libpq read: of `postgres://evil.example?@127.0.0.1:5433/db`, Bun 1.4.4 read evil.example and
+// libpq 127.0.0.1, the user `evil.example?` (measured 2026-11-25).
+describe("the two Bun.SQL readers of a run's database, on a given server", () => {
+  const READER_DATABASE_PREFIX = "bunsqlrow_";
+  const readerDatabases = new Set<string>();
+  afterAll(async () => {
+    if (testPostgres === undefined || readerDatabases.size === 0) return;
+    const sql = new Bun.SQL({ url: testPostgres, max: 1 });
+    try {
+      for (const name of readerDatabases)
+        await sql.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
+    } finally {
+      await sql.close();
+    }
+  });
+
+  /** rig.sh's own_dispatch on the given Postgres GIVEN (the batch's $services_postgres), its
+   * database named with READER_DATABASE_PREFIX, then the run's pull request seeded (seed_ts
+   * pull-request, whose failure is kept, not fatal) and its head watcher started (start_heads),
+   * and one push to the pull request's branch, which the row waits for the watcher to answer
+   * (heads_stored). `stubs` replace rig.sh functions, `setup` runs after own_dispatch and
+   * `afterSeed` after the seed; the database is dropped as the script exits. Returns the run
+   * directory, the pushed commit and bash's result. */
+  function readersOn(
+    given: string,
+    options: {
+      stubs?: string[];
+      setup?: string[];
+      afterSeed?: string[];
+      env?: Record<string, string>;
+    }
+  ) {
+    const run = path.join(
+      freshDir("bun-sql-readers"),
+      `${Date.now().toString(16)}${dirs.toString(16).padStart(2, "0")}`
+    );
+    mkdirSync(path.join(run, "logs"), { recursive: true });
+    readerDatabases.add(`${READER_DATABASE_PREFIX}${path.basename(run)}`);
+    writeFileSync(path.join(run, "fixture.json"), `${JSON.stringify({ issue: "WID-1" })}\n`);
+    const view = {
+      number: 1001,
+      url: `https://github.com/${WORLD_REPO}/pull/1001`,
+      title: "feat: greet() (WID-1)",
+      state: "OPEN",
+      headRefName: "legion/WID-1",
+      baseRefName: "main",
+    };
+    writeFileSync(
+      path.join(run, "fixtures.json"),
+      `${JSON.stringify({ routes: [{ match: "^gh pr view", stdout: view }] })}\n`
+    );
+    const own = fn("own_dispatch");
+    expect(own).toContain("database=run_");
+    const script = [
+      "set -euo pipefail",
+      "R=$1 work=$2 root=$3 here=$4",
+      `. ${JSON.stringify(path.join(root, "scripts/e2e/lib/rig.sh"))}`,
+      `. ${JSON.stringify(path.join(root, "packages/envoy/scripts/lib/pg-url.sh"))}`,
+      ...["fail", "note", "safe_url", "pg_sql", "conninfo_url", "seed_ts", "start_heads"].map(fn),
+      fn("heads_stored"),
+      own.replace("database=run_", `database=${READER_DATABASE_PREFIX}`),
+      "start_dispatch() { dispatch_port=1; }",
+      'bun() { if [ "$#" = 2 ] && [ "$1" = "$here/seed.ts" ] && [ "$2" = project ]; then return 0; fi; command bun "$@"; }',
+      ...(options.stubs ?? []),
+      'evidence=$R services_postgres=$R/postgres-url watcher_pid=""',
+      `database=${READER_DATABASE_PREFIX}$(basename "$R")`,
+      'printf "%s\\n" "$GIVEN" >"$services_postgres"',
+      'trap \'stop_pid "$watcher_pid"; pg_sql "$GIVEN" "DROP DATABASE IF EXISTS $database WITH (FORCE)" >/dev/null 2>&1 || true\' EXIT',
+      "own_dispatch project",
+      ...(options.setup ?? []),
+      // The run's remote, its pull request's branch at a first commit.
+      'git init -q --bare "$R/remote.git"',
+      'g() { GIT_AUTHOR_NAME=n GIT_AUTHOR_EMAIL=n@n GIT_COMMITTER_NAME=n GIT_COMMITTER_EMAIL=n@n git -C "$R/remote.git" "$@"; }',
+      "tree=$(g hash-object -t tree -w --stdin </dev/null)",
+      'first=$(g commit-tree "$tree" -m first </dev/null)',
+      'g update-ref refs/heads/legion/WID-1 "$first"',
+      '( seed_ts pull-request "$R/fixture.json" "$R/fixtures.json" "$R/remote.git" ) || :',
+      ...(options.afterSeed ?? []),
+      ': >"$R/pushes.log"',
+      "start_heads",
+      // A push of a second commit, as the remote's post-receive hook logs it.
+      'second=$(g commit-tree "$tree" -p "$first" -m second </dev/null)',
+      'g update-ref refs/heads/legion/WID-1 "$second"',
+      'printf \'%s refs/heads/legion/WID-1 %s %s\\n\' "$(date -u +%FT%T.%3NZ)" "$first" "$second" >>"$R/pushes.log"',
+      'await_start watcher "$watcher_pid" 30 "the head watcher to answer the push" heads_stored',
+      'printf "%s\\n" "$second" >"$R/pushed.txt"',
+      // The database's head row, read through the same URL, by psql, which is libpq.
+      'pg_sql "$dispatch_database_url" "SELECT head_sha FROM pull_request_heads" >"$R/stored.txt" 2>&1 || :',
+    ].join("\n");
+    const result = bash(script, [run, path.dirname(run), root, import.meta.dir], {
+      GIVEN: given,
+      ...options.env,
+    });
+    const read = (name: string) =>
+      existsSync(path.join(run, name)) ? readFileSync(path.join(run, name), "utf8") : "";
+    return { run, result, read, pushed: read("pushed.txt").trim() };
+  }
+
+  // The hostile URL above, at a port of the row's own where a stand-in Postgres listens on the
+  // loopback: it records the startup message of every connection made to it, the user and the
+  // database each names, and refuses each login, so each reader fails there, having reached it.
+  test("a URL whose text Bun reads another host from reaches the loopback host libpq read, from both readers", () => {
+    const dir = freshDir("bun-sql-hostile");
+    const program = path.join(dir, "postgres.ts");
+    const portFile = path.join(dir, "port");
+    const record = path.join(dir, "startups.jsonl");
+    writeFileSync(
+      program,
+      [
+        'import { appendFileSync, writeFileSync } from "node:fs";',
+        "const [portFile, record] = Bun.argv.slice(2);",
+        "const held = new Map<unknown, Buffer>();",
+        "const listener = Bun.listen({",
+        '  hostname: "127.0.0.1",',
+        "  port: 0,",
+        "  socket: {",
+        "    data(socket, chunk) {",
+        "      let buffer = Buffer.concat([held.get(socket) ?? Buffer.alloc(0), Buffer.from(chunk)]);",
+        "      while (buffer.length >= 8 && buffer.length >= buffer.readInt32BE(0)) {",
+        "        const length = buffer.readInt32BE(0);",
+        "        const code = buffer.readInt32BE(4);",
+        '        const pairs = buffer.subarray(8, length).toString().split("\\0");',
+        "        buffer = buffer.subarray(length);",
+        '        if (code === 80877103 || code === 80877104) { socket.write("N"); continue; }',
+        "        const startup: Record<string, string> = {};",
+        '        for (let i = 0; i + 1 < pairs.length; i += 2) if (pairs[i]) startup[pairs[i] ?? ""] = pairs[i + 1] ?? "";',
+        '        appendFileSync(record ?? "", JSON.stringify({ user: startup.user, database: startup.database }) + "\\n");',
+        '        const fields = Buffer.from("SFATAL\\0VFATAL\\0C28000\\0Mthe stand-in refuses every login\\0\\0");',
+        "        const head = Buffer.alloc(5);",
+        '        head.write("E");',
+        "        head.writeInt32BE(4 + fields.length, 1);",
+        "        socket.write(Buffer.concat([head, fields]));",
+        "        socket.end();",
+        "      }",
+        "      held.set(socket, buffer);",
+        "    },",
+        "  },",
+        "});",
+        'writeFileSync(portFile ?? "", String(listener.port));',
+        "",
+      ].join("\n")
+    );
+    writeFileSync(record, "");
+    const server = Bun.spawn(["bun", program, portFile, record], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    try {
+      for (let waited = 0; !existsSync(portFile) && waited < 600; waited++) Bun.sleepSync(50);
+      const port = readFileSync(portFile, "utf8");
+      const hostile = `postgres://evil.example?@127.0.0.1:${port}/db`;
+      const { run, result, read, pushed } = readersOn(hostile, {
+        // The stand-in takes no CREATE DATABASE: psql is no reader of Bun.SQL.
+        stubs: ["pg_sql() { :; }"],
+        afterSeed: ['wc -l <"$RECORD" >"$R/after-seed.txt"'],
+        env: { RECORD: record },
+      });
+      expect({ code: result.code, err: result.stderr }).toMatchObject({ code: 0 });
+      const database = `${READER_DATABASE_PREFIX}${path.basename(run)}`;
+      const startups = readFileSync(record, "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+      // The seed's connection, then the watcher's: each named the user and the database libpq
+      // read, at the loopback host libpq read, the only listener they reached.
+      expect(Number(read("after-seed.txt").trim())).toBeGreaterThan(0);
+      expect(startups.length).toBeGreaterThan(Number(read("after-seed.txt").trim()));
+      expect(new Set(startups.map((startup) => JSON.stringify(startup)))).toEqual(
+        new Set([JSON.stringify({ user: "evil.example?", database })])
+      );
+      expect(read("fixture.log")).toContain("the stand-in refuses every login");
+      const answer = read("logs/heads.log")
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line))
+        .find((line) => line.pushed === pushed);
+      expect(answer).toMatchObject({
+        ok: false,
+        error: expect.stringContaining("the stand-in refuses every login"),
+      });
+    } finally {
+      server.kill();
+    }
+  }, 120_000);
+
+  // The pod's own Postgres (LEGION_TEST_PG_DSN), as the file's other Postgres rows take it: the
+  // run's database holds the two tables the head's write reads, as Dispatch's migration makes them
+  // (store/migrations/20261102122300_pull_request_heads.up.sql, as far as the write goes) and the
+  // issue it is attributed to; the seed stores the first head and the watcher the pushed one.
+  test.skipIf(testPostgres === undefined)(
+    "a seed and the head watcher store the pull request's head in the run's own database through its URL",
+    () => {
+      const { result, read, pushed } = readersOn(testPostgres ?? "", {
+        setup: [
+          `pg_sql "$dispatch_database_url" "CREATE TABLE issues (key text PRIMARY KEY); CREATE TABLE pull_request_heads (repo text NOT NULL, number integer NOT NULL, head_sha text NOT NULL, head_ref text NOT NULL DEFAULT '', base_ref text NOT NULL DEFAULT '', state text NOT NULL, issue_key text REFERENCES issues (key), attribution_source text NOT NULL DEFAULT 'none', title text NOT NULL DEFAULT '', url text NOT NULL DEFAULT '', checked_at timestamptz, PRIMARY KEY (repo, number)); INSERT INTO issues VALUES ('WID-1')" >/dev/null`,
+        ],
+      });
+      expect({ code: result.code, err: result.stderr }).toMatchObject({ code: 0 });
+      expect(read("fixture.log")).toMatch(/seeded WID-1's pull request #1001 at [0-9a-f]{40}/);
+      expect(read("logs/heads.log")).toContain(`"pushed":"${pushed}","ok":true`);
+      expect(read("stored.txt")).toBe(`${pushed}\n`);
+    },
+    120_000
+  );
+});
+
 // Health's "head" rule (rule 19) over a run's push log, its head watcher's record and its own
 // remote. Catches: a push whose head the run's Dispatch was never given read as healthy, whether
 // the watcher wrote no line for it or wrote that the write failed; a worker world whose record is
@@ -13988,7 +14229,7 @@ describe("worker_routes", () => {
     }
     const result = Bun.spawnSync(
       [process.execPath, path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
-      { env: { ...childEnv, SKILL_SCENARIO_RUN: run } }
+      { env: { ...childEnv, GH_DATA_DIR: run } }
     );
     return {
       code: result.exitCode,

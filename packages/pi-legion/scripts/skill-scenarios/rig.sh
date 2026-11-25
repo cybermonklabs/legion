@@ -300,11 +300,8 @@
 # of their own under the work directory (tmux_ready), and refuse, before they make any database,
 # service or run directory, naming tmux, the step that failed and what tmux printed on stderr. A
 # batch's runs take its PATH, and so the tmux it checked, and are not checked again. A worker
-# pod's image carries no tmux, and a tmux binary put there alone does not start: it cannot load
-# libevent_core-2.1.so.7. What gave a Debian 13 (trixie) pod a tmux on 2026-11-17, a method and
-# not a pin: unpack the tmux and libevent-core-2.1-7t64 packages of the pod's own Debian release
-# (`dpkg-deb -x <package>.deb <dir>`), and run the rig from a shell whose PATH starts with
-# <dir>/usr/bin and whose LD_LIBRARY_PATH names <dir>/usr/lib/x86_64-linux-gnu.
+# pod's image carries tmux, trixie's package (packages/daemon/docker/worker.Dockerfile's apt
+# list), which answered `tmux 3.5a` on 2026-11-25.
 # Optional:
 #   SKILL_SCENARIOS_WORK      work directory, outside any checkout, and with no `.omp` in it or in
 #                             any directory above it (default ${TMPDIR:-/tmp}/work); its path
@@ -1377,19 +1374,28 @@ world_paths() {
 # -p --fork --mount-proc`, with /proc mounted afresh, so the run sees its own processes alone),
 # under `env -i` with namespace_path alone, with this user's uid and gid, the run directory and its
 # cwd as its arguments, then the agent's command. It reads $R/namespace.txt (world_paths) and:
-#   1. mounts a tmpfs on /dev/shm, its holder, and binds each rw and ro directory there, $R first
-#      (a file shown, the system git configuration, is left where it is: world_paths);
+#   1. mounts a tmpfs on /dev/shm, the run's own, and a second on /dev/shm/holder, its holder, and
+#      binds each rw and ro directory into the holder, $R first (a file shown, the system git
+#      configuration, is left where it is: world_paths). A path under the machine's /dev/shm, which
+#      the first tmpfs now hides, is read by its path relative to the machine's /dev/shm, the
+#      script's working directory from before the mount, as $R/namespace.txt is where $R lies
+#      there: rig.test.ts's work directory is under /dev/shm (memoryRoot), as an operator's can be;
 #   2. covers each cover and credentials path with an empty tmpfs;
 #   3. binds each held path back onto its own path, read-only unless it is rw, $R first. A path a
 #      link the covers left visible still resolves elsewhere is left as it is: world_paths declared
 #      what it resolves to, which is bound back at that path, and the link reaches it there. The
 #      mount point is made for the target, never for the link, whose `mkdir -p` answers `File
-#      exists` once its target is covered;
+#      exists` once its target is covered. A shown path under /dev/shm that is a link on the
+#      machine is made again in the run's /dev/shm, which hides the machine's, as a link to what
+#      the machine's names: its target is shown too, and bound back at its own path;
 #   4. binds $R/tmp onto /tmp, and the held paths under /tmp again, since that bind hides them,
 #      then covers each hide directory with an empty read-only tmpfs, which $R's bind had shown
 #      again;
-#   5. drops the holder for an empty /dev/shm of the run's own, marks $R/namespace-ready, and
-#      starts the command in a second user namespace that maps it back to this user's uid and gid.
+#   5. drops the holder (`umount -l`, which takes its binds with it: a gVisor pod refuses to
+#      unmount one bind of a path the namespace did not mount, `not mounted`) and removes its mount
+#      point, so /dev/shm is the run's own tmpfs, empty but for each held path under /dev/shm,
+#      bound back there in step 3, marks $R/namespace-ready, and starts the command in a second
+#      user namespace that maps it back to this user's uid and gid.
 # The order is the record: covering first and binding $R onto itself afterwards binds the new
 # tmpfs's empty $R, and the agent writes every file of the run there and nowhere the host can see,
 # exit 0. The agent keeps this user's uid because one running as uid 0 meets git's ownership
@@ -1398,26 +1404,34 @@ world_paths() {
 # that command's own message on out.txt and no namespace-ready. No network namespace: the
 # stand-ins, NATS and Postgres are reached on the loopback as before.
 private_world='uid=$1 gid=$2 R=$3 cwd=$4; shift 4
-mount -t tmpfs tmpfs /dev/shm && cp "$R/namespace.txt" /dev/shm/plan && : >/dev/shm/held || exit 1
+h=/dev/shm/holder
+cd /dev/shm && mount -t tmpfs tmpfs /dev/shm && mkdir "$h" && mount -t tmpfs tmpfs "$h" || exit 1
+machine() { case $1 in /dev/shm/*) printf "%s\n" "${1#/dev/shm/}" ;; *) printf "%s\n" "$1" ;; esac; }
+cp "$(machine "$R/namespace.txt")" "$h/plan" && : >"$h/held" || exit 1
 i=0
 while read -r kind p; do
-  case $kind in rw | ro) [ -d "$p" ] || continue ;; *) continue ;; esac
+  case $kind in rw | ro) [ -d "$(machine "$p")" ] || continue ;; *) continue ;; esac
   i=$((i + 1))
-  mkdir "/dev/shm/$i" && mount --bind "$p" "/dev/shm/$i" && printf "%s %s %s\n" "$i" "$kind" "$p" >>/dev/shm/held || exit 1
-done </dev/shm/plan
+  mkdir "$h/$i" && mount --bind "$(machine "$p")" "$h/$i" && printf "%s %s %s\n" "$i" "$kind" "$p" >>"$h/held" || exit 1
+done <"$h/plan"
 while read -r kind p; do
   case $kind in cover | credentials) [ ! -d "$p" ] || mount -t tmpfs tmpfs "$p" || exit 1 ;; esac
-done </dev/shm/plan
-back() { [ "$(realpath -m -- "$3")" = "$3" ] || return 0; mkdir -p "$3" && mount --bind "/dev/shm/$1" "$3" && { [ "$2" = rw ] || mount -o remount,bind,ro "$3"; }; }
-while read -r i kind p; do back "$i" "$kind" "$p" || exit 1; done </dev/shm/held
+done <"$h/plan"
+back() { [ "$(realpath -m -- "$3")" = "$3" ] || return 0; mkdir -p "$3" && mount --bind "$h/$1" "$3" && { [ "$2" = rw ] || mount -o remount,bind,ro "$3"; }; }
+while read -r i kind p; do back "$i" "$kind" "$p" || exit 1; done <"$h/held"
+while read -r kind p; do
+  case $kind:$p in rw:/dev/shm/* | ro:/dev/shm/*) ;; *) continue ;; esac
+  [ -L "$(machine "$p")" ] && [ ! -e "$p" ] && [ ! -L "$p" ] || continue
+  mkdir -p "${p%/*}" && ln -s "$(readlink "$(machine "$p")")" "$p" || exit 1
+done <"$h/plan"
 mount --bind "$R/tmp" /tmp || exit 1
 while read -r i kind p; do
   case $p/ in /tmp/*) back "$i" "$kind" "$p" || exit 1 ;; esac
-done </dev/shm/held
+done <"$h/held"
 while read -r kind p; do
   case $kind in hide) [ ! -d "$p" ] || mount -t tmpfs -o ro tmpfs "$p" || exit 1 ;; esac
-done </dev/shm/plan
-umount -l /dev/shm && mount -t tmpfs tmpfs /dev/shm && : >"$R/namespace-ready" && cd "$cwd" || exit 1
+done <"$h/plan"
+umount -l "$h" && rmdir "$h" && : >"$R/namespace-ready" && cd "$cwd" || exit 1
 exec unshare -U --map-user="$uid" --map-group="$gid" "$@"
 '
 
@@ -1451,9 +1465,9 @@ require_namespace() {
 
 # tmux_ready refuses a run or a batch before it makes any database, service or run directory,
 # where the tmux on PATH cannot start the detached session every agent starts in (launch): a
-# worker pod's image carries no tmux, and a tmux binary that cannot load libevent_core-2.1.so.7
-# starts no session either, which a batch met only mid-run, once its databases and services were
-# up. It runs `tmux -V`, then starts one detached session as launch starts an agent's and kills
+# host can carry no tmux, and a tmux binary that cannot load libevent_core-2.1.so.7 starts no
+# session either, which a batch met only mid-run, once its databases and services were up. It
+# runs `tmux -V`, then starts one detached session as launch starts an agent's and kills
 # it, on a socket of its own in a directory it makes under the work directory and removes, never
 # the work directory's tmux server (tmux_socket), so it leaves nothing a run reads. A step that
 # fails is refused, naming tmux, the step and what tmux printed on stderr, and a tmux on PATH that
@@ -2354,16 +2368,46 @@ services_down() {
   rmdir -- "$tokens" 2>/dev/null || true
 }
 
+# conninfo_url CONNINFO prints the postgres:// URL of the keyword/value connection string CONNINFO
+# run_database_url printed (loopback-dsn.py's `--dbname` form, `key='value' ...`, each value as
+# libpq decoded it, a backslash before each `\` and `'`): the user and the password, the host (in
+# brackets where it is ::1), the port and the database, each value percent-encoded, and every
+# other keyword as a query parameter. It is the one URL the run's two readers that open its
+# database with Bun.SQL take (seed-handoffs.ts's `pullRequestHead`, which seed.ts pull-request
+# and head-watcher.ts run): Bun.SQL takes no keyword/value string (`Invalid URL`), and it reads
+# the host of a given URL's own text where libpq reads another one: of
+# `postgres://evil.example?@127.0.0.1:5433/db`, Bun 1.4.4 read the host evil.example and libpq
+# 127.0.0.1 (measured 2026-11-25). Rebuilt from what libpq read, the URL names the host the
+# loopback guard read, and a user `evil.example?` is `evil.example%3F`. CONNINFO reaches jq in its
+# environment, never on a command line, since it can hold the password.
+conninfo_url() {
+  CONNINFO=$1 jq -nr '
+    [env.CONNINFO | capture("(?<key>[a-z_]+)=\u0027(?<value>(?:[^\u0027\\\\]|\\\\.)*)\u0027"; "g")
+      | .value |= gsub("\\\\(?<c>.)"; "\(.c)")]
+    | from_entries
+    | "postgres://"
+      + (if .user or .password
+         then (.user // "" | @uri) + (if .password then ":" + (.password | @uri) else "" end) + "@"
+         else "" end)
+      + (if (.host | test(":")) then "[\(.host)]" else .host end)
+      + (if .port then ":\(.port)" else "" end)
+      + "/" + (.dbname | @uri)
+      + ([to_entries[] | select(.key | IN("user", "password", "host", "port", "dbname") | not)
+          | "\(.key | @uri)=\(.value | @uri)"]
+         | if length > 0 then "?" + join("&") else "" end)'
+}
+
 # own_dispatch SEED gives the run a Dispatch of its own and seeds it with `seed.ts SEED`, the world
 # the scenario needs (project, or brainstorm): a database named after the run in the batch's
 # Postgres, and a Dispatch server on it, which stop_run stops. It records the Postgres, the
 # database and the server in $R/dispatch.json, which score.ts reads, and sets dispatch_port and
-# dispatch_database_url, the database's URL, which seed_ts hands seed.ts. The batch's Postgres is
-# the server $services_postgres names, and the batch's own container when that file is absent.
+# dispatch_database_url, the database's postgres:// URL, which seed_ts and start_heads hand
+# seed.ts and the head watcher. The batch's Postgres is the server $services_postgres names, and
+# the batch's own container when that file is absent.
 # On a given server, the run's Dispatch gets the connection string
 # run_database_url (scripts/e2e/lib/loopback-dsn.sh) rebuilds from the given URL with libpq, with
 # the run's database as its dbname: pgx, which Dispatch opens it with, reads that keyword/value
-# form.
+# form. The two readers of Bun.SQL get that string as a URL (conninfo_url), never the given URL.
 own_dispatch() {
   local seed=$1 database=run_${R##*/} pg_port postgres url
   database=${database//-/_}
@@ -2372,6 +2416,8 @@ own_dispatch() {
   if [ -f "$services_postgres" ]; then
     postgres=$(<"$services_postgres")
     run_database_url url SKILL_SCENARIOS_POSTGRES_URL "$postgres" "$database" "this run creates a database there" || fail "$url"
+    dispatch_database_url=$(conninfo_url "$url") ||
+      fail "the connection string of $database on $(safe_url "$postgres") makes no URL (conninfo_url)"
     # A given server must let its login make a database. Nothing here checks that: the refusal a
     # server without the right gives is Postgres's own, in the run's fixture.log.
     pg_sql "$postgres" "CREATE DATABASE $database" >>"$R/fixture.log" 2>&1 ||
@@ -2384,9 +2430,9 @@ own_dispatch() {
     docker exec "$tag-pg" psql -U postgres -v ON_ERROR_STOP=1 -qc "CREATE DATABASE $database" >>"$R/fixture.log" 2>&1 ||
       fail "CREATE DATABASE $database failed; see $R/fixture.log"
     url="postgres://postgres:ci@127.0.0.1:$pg_port/$database?sslmode=disable"
+    dispatch_database_url=$url
   fi
   start_dispatch "$url"
-  dispatch_database_url=$url
   jq -n --arg postgres "$postgres" --arg database "$database" --argjson port "$dispatch_port" \
     '{postgres:$postgres, database:$database, port:$port, url:("http://127.0.0.1:" + ($port|tostring))}' >"$R/dispatch.json"
   (cd "$root/packages/dispatch" && DISPATCH_E2E_PORT=$dispatch_port bun "$here/seed.ts" "$seed") >>"$R/fixture.log" 2>&1 ||
@@ -3015,7 +3061,7 @@ tester_proof_world() {
   fixture_first_commit
   fixture_cli ''
   fixture_head_commit
-  fixture_implement '["greet.ts","greet.test.ts"]'
+  fixture_implement
   fixture_workspace
   fixture_body "**Threads:** 0 resolved, 0 unresolved." "$(fixture_checks implementer)"
   fixture_write '[]' '[]'
@@ -3035,7 +3081,7 @@ text_finding_trigger=' and on every push to main'
 # files such a round reads — docs/cli.md, whose last sentence is DOC_LINE, and
 # .github/workflows/greet.yml, whose comment names TRIGGER beside the pull request trigger `on:`
 # carries (a file the implement App may push and the review App may not) — the implementer's
-# handoff over the four files its change touches, the tester's handoff body at $R/test.json,
+# handoff at its commit, whose diff touches four files, the tester's handoff body at $R/test.json,
 # which the runner records beside the implementer's, and the issue workspace. DOC_LINE and
 # TRIGGER are the world's own and are required: every caller names the text findings it means
 # its world to carry, an empty TRIGGER being an honest comment and so a finding the world has
@@ -3060,7 +3106,7 @@ round_world() {
   fixture_cli "$guard"
   fixture_round_files "$doc_line" "$workflow_trigger"
   fixture_head_commit
-  fixture_implement '["greet.ts","greet.test.ts","docs/cli.md",".github/workflows/greet.yml"]'
+  fixture_implement
   fixture_test_handoff
   fixture_workspace
 }
@@ -3208,11 +3254,10 @@ $entries"
     body:(if $fix == "" then "Approved at this head. The open threads are text findings and are the work the merge waits for."
       else "Approved at this head, which carries my text commit " + $head + ": it rewrites the sentence of docs/cli.md the change made false. Each thread left open is a text finding I could not push." end)}]')
   # The reviewer's handoff body, as the round recorded it, which the runner records on the
-  # issue at the version the agents' tasks name.
-  jq -n --arg key "$worker_key" --arg head "$pr_head" --argjson threads "$threads" '
-    {schemaVersion:1, phase:"review", issue:$key, headReviewed:$head, decision:"approved",
-     critical:0, important:0, minor:($threads|length),
-     keyFindings:[$threads[] | {severity:"minor", file:.path, description:.open}]}' >"$R/review.json"
+  # issue at the version the agents' tasks name: `head`, the commit it reviewed. A handoff holds
+  # its head and a short note and nothing else (#5287): the decision and each finding are the
+  # review on GitHub, which `reviews` holds.
+  jq -n --arg head "$pr_head" '{head:$head}' >"$R/review.json"
   fixture_body "$threads_line" "$(fixture_checks implementer tester)"
   # A resolution succeeds, as GitHub answers a role with write access, and a reply goes through
   # the GraphQL mutation or the REST reply route, each answered from the threads as they stand
@@ -3623,22 +3668,24 @@ fixture_reviewer_commit() {
   fixture_git rev-parse HEAD
 }
 
-# fixture_implement CHANGED writes the implement handoff as the implementer records it with
-# `dispatch handoff-write`: the three stamps (schemaVersion, phase, issue) and the phase's fields;
-# Dispatch records when it was written. What the implementer ran is no part of it: seed.ts
-# implement-handoff records that as a result against the issue's check k1. The PR's head is the
-# implementer's code commit, since no handoff commit sits above it.
+# fixture_implement writes the implement handoff as the implementer records it with `dispatch
+# handoff-write`: `head`, the commit the implementer pushed, and nothing else, since the record
+# holds the issue and the phase and Dispatch records when it was written (#5287). What the
+# implementer changed is the diff (seed.ts plan reads its files from the remote) and what it ran
+# is no part of it: seed.ts implement-handoff records that as a result against the issue's check
+# k1. The PR's head is the implementer's code commit, since no handoff commit sits above it.
 fixture_implement() {
-  jq -n --arg key "$worker_key" --argjson files "$1" '
-    {schemaVersion:1, phase:"implement", issue:$key, filesChanged:$files}' >"$R/implement.json"
+  jq -n --arg head "$C1" '{head:$head}' >"$R/implement.json"
 }
 
 # fixture_test_handoff writes the tester's handoff body at $R/test.json, as the tester wrote it
-# before this round; the runner records it on the issue beside the implementer's.
+# before this round, in the shape main's tester role gives it (score.ts's TestHandoff): `head`,
+# the commit it tested, its verdict on the implementer's results and its failures, none. The
+# runner records it on the issue beside the implementer's.
 fixture_test_handoff() {
-  jq -n --arg key "$worker_key" --arg head "${C1:0:12}" '
-    {schemaVersion:1, phase:"test", issue:$key,
-     implementerProof:{verdict:"verified", how:("ran `bun greet.ts Ada` at " + $head)},
+  jq -n --arg head "$C1" '
+    {head:$head,
+     implementerProof:{verdict:"verified", how:("ran `bun greet.ts Ada` at " + ($head | .[0:12]))},
      failures:[]}' >"$R/test.json"
 }
 
@@ -4481,7 +4528,7 @@ worker_run_world() {
   worker_fixture "$index" "$start" "$case_name" >>"$R/fixture.log" 2>&1 ||
     fail "the fixture failed; see $R/fixture.log"
   read -r pr head < <(jq -r '"\(.pr) \(.head)"' "$R/world.json")
-  seed_ts plan "$R/fixture.json" "$R/implement.json" "$(git -C "$R/remote.git" rev-parse "$worker_base")"
+  seed_ts plan "$R/fixture.json" "$R/implement.json" "$(git -C "$R/remote.git" rev-parse "$worker_base")" "$R/remote.git"
   seed_ts pull-request "$R/fixture.json" "$R/fixtures.json" "$R/remote.git"
   seed_ts implement-handoff "$R/fixture.json" "$R/implement.json" "$head"
   start_heads
@@ -4493,10 +4540,13 @@ worker_run_world() {
 # cannot: the remote's post-receive hook runs inside the agent's namespace, which shows neither
 # this directory nor the run's database URL (world_paths), and a hook holding the URL would hand
 # it to the agent. Its record, <run>/logs/heads.log, is hidden from the agent like every log of the
-# run's, and health's "head" rule reads it (health.ts's headUnmoved). stop_run stops it.
+# run's, and health's "head" rule reads it (health.ts's headUnmoved). stop_run stops it. The
+# database's URL (own_dispatch's dispatch_database_url, which can hold the given server's
+# password) goes in the watcher's environment, never on `env`'s command line, which every user of
+# the box reads, as seed_ts's goes.
 start_heads() {
-  start_process watcher env --chdir="$root/packages/dispatch" DISPATCH_E2E_PORT="$dispatch_port" \
-    SEED_DATABASE_URL="$dispatch_database_url" bun "$here/head-watcher.ts" "$R"
+  SEED_DATABASE_URL=$dispatch_database_url start_process watcher \
+    env --chdir="$root/packages/dispatch" DISPATCH_E2E_PORT="$dispatch_port" bun "$here/head-watcher.ts" "$R"
   await_start watcher "$watcher_pid" 30 "the head watcher to open its record" \
     grep -q '"opened":"heads.log"' "$R/logs/heads.log"
 }

@@ -19,10 +19,12 @@
 //                                          <file>. `no-name` gives its check the words that miss
 //                                          R2's blank name (the world whose CLI dropped the
 //                                          blank-name guard); without it the check covers R2
-//   seed.ts plan <file> <implement body file> <base commit>
-//                                          the issue's plan.md, its plan review's approval of
-//                                          version 1 and its plan handoff at <base commit>, all
-//                                          under the session PLANNER; plan: {id, version} in <file>
+//   seed.ts plan <file> <implement body file> <base commit> <remote>
+//                                          the issue's plan.md, a task for each file the diff on
+//                                          <remote> from <base commit> to the implement body's
+//                                          head touches, its plan review's approval of version 1
+//                                          and its plan handoff at <base commit>, all under the
+//                                          session PLANNER; plan: {id, version} in <file>
 //   seed.ts pull-request <file> <gh answers file> <remote>
 //                                          the pull request the world's gh answers name, at the
 //                                          commit its branch is at on <remote>, as Dispatch's
@@ -920,7 +922,7 @@ async function captureBrainstorm(runDir: string): Promise<void> {
 }
 
 const USAGE =
-  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> [no-name] | plan <file> <implement body file> <base commit> | pull-request <file> <gh answers file> <remote> | implement-handoff <file> <body file> <commit> | tester-result <file> <body file> <commit> | review-handoff <file> <body file> | steps <file> <project> <phase> [model] | capture-handoffs <file> <run dir>";
+  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> [no-name] | plan <file> <implement body file> <base commit> <remote> | pull-request <file> <gh answers file> <remote> | implement-handoff <file> <body file> <commit> | tester-result <file> <body file> <commit> | review-handoff <file> <body file> | steps <file> <project> <phase> [model] | capture-handoffs <file> <run dir>";
 
 /** Runs the mode `argv` names; false when argv names no mode, with its arguments. The first six
  * modes take extra arguments and ignore them, as they always did; each new mode takes exactly its
@@ -960,9 +962,10 @@ async function main(argv: string[]): Promise<boolean> {
     file !== undefined &&
     second !== undefined &&
     third !== undefined &&
-    n === 4
+    argv[4] !== undefined &&
+    n === 5
   )
-    await planSeed(file, second, third);
+    await planSeed(file, second, third, argv[4]);
   else if (
     command === "pull-request" &&
     file !== undefined &&

@@ -1806,7 +1806,7 @@ describe("health: a path under /tmp, as the run's namespace mounts it", () => {
     );
   });
 
-  // The rest of private_world's mounts, each in its order (rig.sh:1265-1285), on the world
+  // The rest of private_world's mounts, each in its order (rig.sh's private_world), on the world
   // round 25's threads-closed-correct-head-1 (6f38c7583a6d) recorded: its covers, its
   // credentials, its own directory with its logs hidden again, and a path shown under a cover.
   // Catches: `mounted` reading /tmp alone, so a name under /dev/shm, a covered path, a credentials
@@ -1842,6 +1842,33 @@ describe("health: a path under /tmp, as the run's namespace mounts it", () => {
     ])
       expect(mounted(recorded, named)).toBe(named);
     expect(mounted(recorded, "/tmp/body.md")).toBe(`${own}/tmp/body.md`);
+  });
+
+  // A world whose work directory is under /dev/shm, as rig.test.ts's is (memoryRoot): each path it
+  // shows there is bound back into the launch's own /dev/shm (rig.sh's private_world). Catches:
+  // `mounted` reading every name under /dev/shm as the launch's tmpfs, so a write into the run's
+  // own directory there reads as kept nowhere; and the other way, the hidden logs, a sibling's
+  // directory or another name of the machine's /dev/shm read as a path of the machine's.
+  test("a path the world shows under /dev/shm is that path, and the rest of /dev/shm the launch's own", () => {
+    const work = "/dev/shm/suite-a1b2c3/work";
+    const own = `${work}/runs/threads-closed-correct-head-1`;
+    const world = {
+      ...bare,
+      own,
+      covers: [work],
+      shown: [own, `${work}/profiles/head`, "/usr/bin"],
+      hidden: [`${own}/logs`],
+    };
+    for (const named of [own, `${own}/ws/README.md`, `${work}/profiles/head/key/minted`])
+      expect(mounted(world, named)).toBe(named);
+    for (const named of [
+      `${own}/logs/dispatch.log`,
+      `${work}/runs/threads-closed-correct-base-1/out.txt`,
+      `${own}less/notes.md`,
+      "/dev/shm/LWEVAL-1-review.json",
+    ])
+      expect([named, mounted(world, named)]).toEqual([named, undefined]);
+    expect(mounted(world, "/tmp/body.md")).toBe(`${own}/tmp/body.md`);
   });
 });
 

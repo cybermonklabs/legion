@@ -22,6 +22,7 @@ import { pinnedRead, RECORD_READ, rolesListed, shapeDiff, shapeOf } from "./prod
 import { contractRefusal, issueRecord, sampleFacts } from "./standin-record";
 import { stepId } from "./step-records";
 import { bundled, spawnChecked, writeGhSelectors } from "./test-programs";
+import { WORLD_REPO } from "./world-issue";
 
 // The rows run the rig's programs as real processes, which a loaded pod slows past bun's 5 s
 // default, so each gets a minute, as rig.test.ts's do.
@@ -44,13 +45,12 @@ const skip = skipWithout("go");
 // makes it, and a hook cannot be registered from inside a test.
 const work = temporaryDirectory("skill-scenarios-standin");
 
-/** The repository rig.sh's worker world is on and the branch its pull request is open against
- * (its `worker_repo` and `worker_base`, which fixture_write writes into every world.json): the
- * rows below start the stand-in on a world of those, so the record they read is the one a run's
- * agents read. That rig.sh hands the stand-in the run's directory rather than either name, and
- * so can name neither a second time, is rig.test.ts's row "the stand-in is given the run's
- * project, the run's own directory and the phase". */
-const WORLD_REPO = "example/widgets";
+/** The repository rig.sh's worker world is on (world-issue.ts's WORLD_REPO) and the branch its
+ * pull request is open against (its `worker_repo` and `worker_base`, which fixture_write writes
+ * into every world.json): the rows below start the stand-in on a world of those, so the record
+ * they read is the one a run's agents read. That rig.sh hands the stand-in the run's directory
+ * rather than either name, and so can name neither a second time, is rig.test.ts's row "the
+ * stand-in is given the run's project, the run's own directory and the phase". */
 const WORLD_BASE = "main";
 /** The secret the stand-in's registration answers (daemon-standin.ts's SESSION_SECRET), which
  * `standin` names to it (SKILL_SCENARIOS_CLAIM_SECRET) and a claim's later requests carry: random,
@@ -541,7 +541,7 @@ function pullRequest(dir: string, state = "CLEAN") {
         "api",
         "--method",
         "POST",
-        "repos/example/widgets/pulls/1001/reviews",
+        `repos/${WORLD_REPO}/pulls/1001/reviews`,
         "--input",
         body,
       ],

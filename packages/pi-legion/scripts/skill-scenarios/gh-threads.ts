@@ -68,11 +68,12 @@ export function recordedCalls(record: string): Recorded[] {
 }
 
 /** The GraphQL operation a `gh api graphql` call sends, and its variables: the query its `query`
- * field or its `--input` body holds, read by the parser the sweep of the role texts reads them
- * with (gh-routes.ts's `readGraphql`), and every other field as a variable — a `-F` typed as gh
- * types one (`true`, `false`, `null`, an integer, the text of an `@file`), a `-f` as written — or
- * an `--input`'s own `variables`. `operation` is undefined for a query GitHub refuses, which it
- * runs none of — `refused` holds its errors — and for GraphQL the world does not read.
+ * field or its `--input` body holds, read by gh-routes.ts's `readGraphql`, on the parser routeOf
+ * reads a call's route by (`parseDocument`), and every other field as a variable — a `-F` typed
+ * as gh types one (`true`, `false`, `null`, an integer, the text of an `@file`), a `-f` as
+ * written — or an `--input`'s own `variables`. `operation` is undefined for a query GitHub
+ * refuses, which it runs none of — `refused` holds its errors — and for GraphQL the world does
+ * not read.
  *
  * A call to the endpoint written otherwise — `gh api /graphql`, `gh api 'graphql?…'` — is no
  * GraphQL call of gh's (gh reads one only where the endpoint is `graphql` itself) but a POST of

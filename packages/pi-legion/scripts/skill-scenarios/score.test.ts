@@ -3418,7 +3418,8 @@ const approval = (comments: object[] = findings, commit = head) => ({
   body: "The open threads are the work the merge waits for.",
   comments,
 });
-/** The review record the round leaves on the issue, whatever it submitted. */
+/** The review record the round leaves on the issue, whatever it submitted: its body is `head`, the
+ * commit reviewed, as a handoff holds since #5287; the decision is the review on GitHub. */
 const reviewRecord = {
   id: "h-review",
   issue_key: "LWEVAL-1",
@@ -3426,13 +3427,7 @@ const reviewRecord = {
   version: 1,
   author: { kind: "session", id: "01a0f2cc" },
   created_at: "2026-09-30T17:29:11.031234Z",
-  body: JSON.stringify({
-    schemaVersion: 1,
-    phase: "review",
-    issue: "LWEVAL-1",
-    headReviewed: head,
-    decision: "approved",
-  }),
+  body: JSON.stringify({ head }),
 };
 /** One message of `<run>/published.jsonl`: a message Envoy accepted on a role topic of this run,
  * which record-publishes.ts appends from the bus, with the session Envoy recorded as its sender.

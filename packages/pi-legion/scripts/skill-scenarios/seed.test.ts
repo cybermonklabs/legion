@@ -1176,6 +1176,39 @@ describe("project", () => {
 });
 
 describe("tester-proof", () => {
+  /** A remote in `dir` whose default branch holds a first commit and whose `legion/<KEY>` branch
+   * holds one more above it, which adds `files`: the base and the head of a change that touches
+   * exactly those files, as the world's remote holds the implementer's. */
+  function changedRemote(dir: string, files: readonly string[]) {
+    const remote = path.join(dir, "remote");
+    const git = (...args: string[]) => {
+      const ran = Bun.spawnSync([
+        "git",
+        "-C",
+        remote,
+        "-c",
+        "user.name=n",
+        "-c",
+        "user.email=n@n",
+        ...args,
+      ]);
+      expect(ran.exitCode).toBe(0);
+      return ran.stdout.toString().trim();
+    };
+    mkdirSync(remote);
+    git("init", "-q", "-b", "main");
+    git("commit", "-q", "--allow-empty", "-m", "a");
+    const base = git("rev-parse", "HEAD");
+    git("checkout", "-q", "-b", `legion/${KEY}`);
+    for (const file of files) {
+      mkdirSync(path.dirname(path.join(remote, file)), { recursive: true });
+      writeFileSync(path.join(remote, file), `${file}\n`);
+    }
+    git("add", "-A");
+    git("commit", "-q", "-m", "b");
+    return { remote, base, head: git("rev-parse", "HEAD") };
+  }
+
   // Catches: a seeding that shares one issue between a batch's runs, or that the duplicate check
   // refuses on the second run; a check that serves no requirement, which `dispatch read` prints as
   // a coverage gap on every requirement; and an issue left in triage with no `legion` label, which
@@ -1249,13 +1282,11 @@ describe("tester-proof", () => {
     const dir = freshDir("seed");
     const file = path.join(dir, "fixture.json");
     await seed.testerProofIssue(file);
-    writeFileSync(path.join(dir, "plan-body.json"), JSON.stringify({ filesChanged: ["greet.ts"] }));
-    await handoffSeeds.planSeed(file, path.join(dir, "plan-body.json"), "5".repeat(40));
+    const change = changedRemote(dir, ["greet.ts"]);
+    writeFileSync(path.join(dir, "plan-body.json"), JSON.stringify({ head: change.head }));
+    await handoffSeeds.planSeed(file, path.join(dir, "plan-body.json"), change.base, change.remote);
     for (const phase of ["implement", "test", "review"] as const) {
-      writeFileSync(
-        path.join(dir, `${phase}.json`),
-        JSON.stringify({ schemaVersion: 1, phase, issue: KEY })
-      );
+      writeFileSync(path.join(dir, `${phase}.json`), JSON.stringify({ head: "4".repeat(40) }));
       await handoffSeeds.phaseHandoff(file, path.join(dir, `${phase}.json`), phase, "4".repeat(40));
     }
     const actors = dispatch.calls
@@ -1335,10 +1366,14 @@ describe("tester-proof", () => {
     const dir = freshDir("seed");
     const file = path.join(dir, "fixture.json");
     await seed.testerProofIssue(file);
-    writeFileSync(path.join(dir, "implement.json"), JSON.stringify({ phase: "implement" }));
+    writeFileSync(path.join(dir, "implement.json"), JSON.stringify({ head: "3".repeat(40) }));
     const commit = "3333333333333333333333333333333333333333";
     await handoffSeeds.phaseHandoff(file, path.join(dir, "implement.json"), "implement", commit);
-    const body = { schemaVersion: 1, phase: "test", issue: KEY };
+    const body = {
+      head: commit,
+      implementerProof: { verdict: "verified", how: "ran bun greet.ts Ada at 333333333333" },
+      failures: [],
+    };
     writeFileSync(path.join(dir, "test.json"), JSON.stringify(body));
     await handoffSeeds.phaseHandoff(file, path.join(dir, "test.json"), "test", commit);
     expect(dispatch.handoffs[1]).toMatchObject({
@@ -1380,7 +1415,7 @@ describe("tester-proof", () => {
       const dir = freshDir("seed");
       const file = path.join(dir, "fixture.json");
       await seed.testerProofIssue(file, covers);
-      writeFileSync(path.join(dir, "implement.json"), JSON.stringify({ phase: "implement" }));
+      writeFileSync(path.join(dir, "implement.json"), JSON.stringify({ head: "6".repeat(40) }));
       await handoffSeeds.phaseHandoff(
         file,
         path.join(dir, "implement.json"),
@@ -1418,7 +1453,7 @@ describe("tester-proof", () => {
     const dir = freshDir("seed");
     const file = path.join(dir, "fixture.json");
     await seed.testerProofIssue(file);
-    const body = { schemaVersion: 1, phase: "review", issue: KEY, decision: "approved" };
+    const body = { head: "5".repeat(40) };
     writeFileSync(path.join(dir, "review.json"), JSON.stringify(body));
     await handoffSeeds.phaseHandoff(file, path.join(dir, "review.json"), "review");
     expect(dispatch.handoffs).toEqual([
@@ -1443,16 +1478,18 @@ describe("tester-proof", () => {
 
   // Catches: an issue past planning with no plan document, whose roles fall back to a plan record
   // no world held; a plan no review approved, which every later role is told to build from the
-  // approved version of; a plan that names a file the change leaves alone, a task left undone; and
-  // a plan handoff under the run's own session.
+  // approved version of; a plan that names a file the change leaves alone, a task left undone, or
+  // that reads the change's files from the implement handoff, which holds its head alone since
+  // #5287; a plan handoff that holds more than its head; and a plan handoff under the run's own
+  // session.
   test("plan records plan.md, its review's approval of the version it made, and the plan handoff, under the planner's session", async () => {
     const dir = freshDir("seed");
     const file = path.join(dir, "fixture.json");
     await seed.testerProofIssue(file);
     const files = ["greet.ts", "greet.test.ts", "docs/cli.md", ".github/workflows/greet.yml"];
-    writeFileSync(path.join(dir, "implement.json"), JSON.stringify({ filesChanged: files }));
-    const base = "7".repeat(40);
-    await handoffSeeds.planSeed(file, path.join(dir, "implement.json"), base);
+    const { remote, base, head } = changedRemote(dir, files);
+    writeFileSync(path.join(dir, "implement.json"), JSON.stringify({ head }));
+    await handoffSeeds.planSeed(file, path.join(dir, "implement.json"), base, remote);
     const plan = dispatch.artifacts.find((artifact) => artifact.name === "plan.md");
     expect(plan?.markdown).toBe(worldPlan(KEY, files));
     expect(plan?.markdown).toContain(":::plan_task{#t3 ");
@@ -1464,22 +1501,22 @@ describe("tester-proof", () => {
     expect(dispatch.handoffs).toEqual([
       expect.objectContaining({ phase: "plan", version: 1, author: handoffSeeds.PLANNER }),
     ]);
-    expect(JSON.parse(dispatch.handoffs[0]?.body ?? "{}")).toMatchObject({
-      schemaVersion: 1,
-      phase: "plan",
-      issue: KEY,
-      head: base,
-      planReview: { verdict: "approved", rounds: 1 },
-      specDepartures: [],
-    });
+    expect(JSON.parse(dispatch.handoffs[0]?.body ?? "{}")).toEqual({ head: base });
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
       issue: KEY,
       covers: "r2",
       plan: { id: dispatch.handoffs[0]?.id, version: 1 },
     });
     await expect(
-      handoffSeeds.planSeed(file, path.join(dir, "implement.json"), "main")
+      handoffSeeds.planSeed(file, path.join(dir, "implement.json"), "main", remote)
     ).rejects.toThrow("main is no 40-character commit");
+    // The change's files come from the remote: one that holds no such head is refused.
+    const empty = path.join(dir, "empty");
+    mkdirSync(empty);
+    expect(Bun.spawnSync(["git", "-C", empty, "init", "-q"]).exitCode).toBe(0);
+    await expect(
+      handoffSeeds.planSeed(file, path.join(dir, "implement.json"), base, empty)
+    ).rejects.toThrow(`${empty} holds no diff from ${base} to ${head}`);
   });
 
   // Catches: a head row Dispatch would attribute to no issue (another repository's pull request,
@@ -1548,7 +1585,7 @@ describe("tester-proof", () => {
     const dir = runDir();
     const file = path.join(dir, "fixture.json");
     await seed.testerProofIssue(file);
-    writeFileSync(path.join(dir, "implement.json"), JSON.stringify({ phase: "implement" }));
+    writeFileSync(path.join(dir, "implement.json"), JSON.stringify({ head: "2".repeat(40) }));
     await handoffSeeds.phaseHandoff(
       file,
       path.join(dir, "implement.json"),
@@ -1570,7 +1607,7 @@ describe("tester-proof", () => {
       captured.map((record: { id: string; body: string }) => [record.id, record.body])
     ).toEqual([
       ["h-test", '{"phase":"test"}'],
-      [dispatch.handoffs[0]?.id, '{"phase":"implement"}'],
+      [dispatch.handoffs[0]?.id, JSON.stringify({ head: "2".repeat(40) })],
     ]);
   });
 });

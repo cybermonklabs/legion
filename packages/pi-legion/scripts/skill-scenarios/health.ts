@@ -66,9 +66,9 @@
  *      last before the read (`otherRunWrite`). A run's own writes outside its directory, HOME and
  *      TMPDIR are recorded (`writesOf`) and are no verdict on it. Rules 8 and 9 and that record
  *      read a path as the mounts the run's namespace recorded make it (`mounted`): under /tmp it
- *      is the run's own <run>/tmp, but under a path its world shows there, where it is that
- *      path; under /dev/shm or a path its world covers it is a tmpfs of the agent's launch alone,
- *      which no other run reads, and rule 8 judges such a name as written. A run from before the
+ *      is the run's own <run>/tmp, and under /dev/shm or a path its world covers a tmpfs of the
+ *      agent's launch alone, which no other run reads, and rule 8 judges such a name as written;
+ *      under a path its world shows in either, it is that path. A run from before the
  *      rig gave each run a namespace (one with no <run>/namespace.txt) wrote and read the
  *      machine's paths, and is read so;
  *  10. outside its world: no tool call names a path its world hides — the scratch root, the issue
@@ -446,8 +446,9 @@ interface Run {
   readonly recorded: readonly string[];
   /** Whether the run's agents ran in a namespace of the run's own (NAMESPACE), whose mounts the
    * run recorded (`namespaceOf`): a path under /tmp is the run's own or one its world shows, a
-   * path under /dev/shm or a path its world covers is a tmpfs of the agent's launch alone
-   * (`mounted`), and every process /proc shows is the run's own (`otherProcess`). */
+   * path under /dev/shm is one its world shows or a tmpfs of the agent's launch alone, as a path
+   * its world covers is (`mounted`), and every process /proc shows is the run's own
+   * (`otherProcess`). */
   readonly namespaced: boolean;
   /** The git directories the caller named (`--repo`), which the sources of each run's label are
    * rebuilt from by the commit its built-from records (daemon-pane.ts's `recordedCheckout`),
@@ -1761,30 +1762,34 @@ function namespaceOf(run: Pick<Run, "dir" | "namespaced">): RunNamespace {
 /** The machine's path that `named`, a path a tool call names, reaches in a run's namespace, by
  * the mounts rig.sh's private_world makes from the run's world, in its order, where the last
  * mount that holds the name decides what it is:
- *   1. each cover and credentials path: an empty tmpfs;
- *   2. each path the world shows (`rw`, `ro`): bound back at its own path;
- *   3. /tmp: the run's own <run>/tmp, bound over the machine's;
- *   4. each shown path at or under /tmp: bound back at its own path again;
- *   5. each `hide` path: an empty read-only tmpfs;
- *   6. /dev/shm: an empty tmpfs.
+ *   1. /dev/shm: a tmpfs, the holder of the paths the world shows;
+ *   2. each cover and credentials path: an empty tmpfs;
+ *   3. each path the world shows (`rw`, `ro`): bound back at its own path, into that tmpfs too
+ *      where it lies under /dev/shm;
+ *   4. /tmp: the run's own <run>/tmp, bound over the machine's;
+ *   5. each shown path at or under /tmp: bound back at its own path again;
+ *   6. each `hide` path: an empty read-only tmpfs.
  * So a name under a shown path, and one outside every mount, is that path; a name under /tmp is
- * <run>/tmp's; and a name under a tmpfs (1, 5, 6) reaches no path of the machine's, which is
+ * <run>/tmp's; and a name under a tmpfs (1, 2, 6) reaches no path of the machine's, which is
  * undefined: each launch mounts tmpfs of its own, which the agent and the processes it starts
  * alone hold and which go when it exits, so no other run, and no later agent of the run, reads
  * what it wrote there. Read by /tmp alone, two runs that each wrote and read /dev/shm/x read as
- * one run reading the other's write (INFRA-764's class search of namespace reads, 2026-11-18). */
+ * one run reading the other's write (INFRA-764's class search of namespace reads, 2026-11-18). A
+ * shown path lies under /dev/shm where the work directory does, as rig.test.ts's does. */
 export function mounted(
   world: Pick<RunNamespace, "own" | "covers" | "credentials" | "shown" | "hidden">,
   named: string
 ): string | undefined {
   const under = (dirs: readonly string[]) => dirs.some((dir) => inside(named, dir));
-  if (inside(named, "/dev/shm") || under(world.hidden)) return undefined;
+  if (under(world.hidden)) return undefined;
   if (inside(named, "/tmp"))
     return under(world.shown.filter((shown) => inside(shown, "/tmp")))
       ? named
       : path.posix.join(world.own, named);
   if (under(world.shown)) return named;
-  return under([...world.covers, ...world.credentials]) ? undefined : named;
+  return inside(named, "/dev/shm") || under([...world.covers, ...world.credentials])
+    ? undefined
+    : named;
 }
 
 /** The machine's path a tool call of the run reaches by the name `named`: the name as the run's

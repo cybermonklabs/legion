@@ -5,7 +5,7 @@
 // because they are one world — one fixture file, one issue, one check — and seed.ts had grown
 // past a thousand lines around them.
 //
-//   seed.ts plan <file> <implement body file> <base commit>   planSeed
+//   seed.ts plan <file> <implement body file> <base commit> <remote>   planSeed
 //   seed.ts pull-request <file> <gh answers file>             pullRequestHead
 //   seed.ts implement-handoff <file> <body file> <commit>     phaseHandoff, phase implement
 //   seed.ts tester-result <file> <body file> <commit>         phaseHandoff, phase test
@@ -136,46 +136,47 @@ export async function phaseHandoff(
   );
 }
 
-/** The implement handoff's one field the plan reads: the files the change touches. */
-const ImplementBody = z.object({ filesChanged: z.array(z.string()) });
+/** The implement handoff's one field the plan reads: `head`, the commit the implementer pushed. A
+ * handoff holds its head and, where its role has one, a short note, and nothing else (#5287). */
+const ImplementBody = z.object({ head: z.string().regex(/^[0-9a-f]{40}$/) });
 
-/** `plan <file> <implement body file> <base commit>`: what the planner left before the
+/** `plan <file> <implement body file> <base commit> <remote>`: what the planner left before the
  * implementer began. The issue's plan.md (world-issue.ts's worldPlan, a task for each file the
- * implement body's `filesChanged` names beyond the CLI's own), which makes it the issue's plan
- * document; the plan review's approval of its version 1, which `dispatch plan-approve` records
- * and the `Approval:` line of `dispatch read --artifact plan-md` names, so every later role builds
- * from that version; and the `plan` handoff, at the head the workspace stood on, `base`, the
- * world's default branch before the implementer's commit. All three under the planner's session.
- * A base that is no full commit is the caller's fault, refused before anything is written. */
-export async function planSeed(file: string, implementFile: string, base: string): Promise<void> {
+ * implementer's change touches beyond the CLI's own: the files `git diff` names from `base` to the
+ * implement body's `head` on `remote`, the run's own remote, since what the implementer changed is
+ * the diff and no field of its handoff), which makes it the issue's plan document; the plan
+ * review's approval of its version 1, which `dispatch plan-approve` records and the `Approval:`
+ * line of `dispatch read --artifact plan-md` names, so every later role builds from that version;
+ * and the `plan` handoff, `head` alone, the head the workspace stood on, `base`, the world's
+ * default branch before the implementer's commit. All three under the planner's session. A base
+ * that is no full commit, and a remote that holds no diff from it to the head, are the caller's
+ * fault, refused before anything is written. */
+export async function planSeed(
+  file: string,
+  implementFile: string,
+  base: string,
+  remote: string
+): Promise<void> {
   if (!/^[0-9a-f]{40}$/.test(base)) throw new Error(`${base} is no 40-character commit`);
   const fixture = loadFixture(file);
-  const { filesChanged } = ImplementBody.parse(JSON.parse(readFileSync(implementFile, "utf8")));
+  const { head } = ImplementBody.parse(JSON.parse(readFileSync(implementFile, "utf8")));
+  const diff = Bun.spawnSync(["git", "-C", remote, "diff", "--name-only", "-z", base, head]);
+  if (diff.exitCode !== 0)
+    throw new Error(
+      `${remote} holds no diff from ${base} to ${head}: ${diff.stderr.toString().trim()}`
+    );
+  const files = diff.stdout.toString().split("\0").filter(Boolean);
   const options = { as: "agent", actor: PLANNER } as const;
   const { artifact, version } = await createIssueArtifact(
     fixture.issue,
-    { name: "plan.md", content: worldPlan(fixture.issue, filesChanged) },
+    { name: "plan.md", content: worldPlan(fixture.issue, files) },
     options
   );
   await agentPost(`/api/v1/artifacts/${encodeURIComponent(artifact.id)}/plan-reviews`, {
     actor: PLANNER,
     version: version.number,
   });
-  const recorded = await createHandoff(
-    fixture.issue,
-    "plan",
-    {
-      schemaVersion: 1,
-      phase: "plan",
-      issue: fixture.issue,
-      head: base,
-      requiredSkills: { implement: [], test: [], review: [] },
-      gapAnalysis: { findings: [] },
-      planReview: { verdict: "approved", rounds: 1 },
-      specDepartures: [],
-    },
-    PLANNER
-  );
+  const recorded = await createHandoff(fixture.issue, "plan", { head: base }, PLANNER);
   const record = { id: recorded.id, version: recorded.version };
   writeFileSync(file, `${JSON.stringify({ ...fixture, plan: record })}\n`);
   console.log(`seeded ${fixture.issue}'s plan.md, approved at version 1, and its plan handoff`);
