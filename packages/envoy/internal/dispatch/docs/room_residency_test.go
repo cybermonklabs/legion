@@ -170,7 +170,7 @@ func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
 					refuse("socket %d: response=%#v err=%v", round, response, err)
 					continue
 				}
-				connection.SetReadDeadline(time.Now().Add(time.Second))
+				connection.SetReadDeadline(socketDeadline(t))
 				if _, _, err := connection.ReadMessage(); err != nil {
 					refuse("socket %d: first frame %v", round, err)
 				}
