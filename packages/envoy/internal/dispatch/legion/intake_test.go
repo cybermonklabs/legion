@@ -479,6 +479,7 @@ func requireWholeRead(t *testing.T, row readRecord, reason string, ok bool) {
 
 // cursorRow is project's legion_event_cursors row.
 type cursorRow struct {
+	stateURL         string
 	lastSeq          *int64
 	readOwed         bool
 	run              *string
@@ -493,8 +494,8 @@ type cursorRow struct {
 }
 
 func (r cursorRow) String() string {
-	return fmt.Sprintf("{lastSeq=%s readOwed=%v readReasons=%v readHolder=%s readHolds=%d run=%s stateId=%s previousStateId=%s previousStateUrl=%s foreignStateIds=%v releasedHolder=%s}",
-		orNone(r.lastSeq), r.readOwed, r.readReasons, orNone(r.readHolder), r.readHolds, orNone(r.run), orNone(r.stateID), orNone(r.previousStateID),
+	return fmt.Sprintf("{stateUrl=%q lastSeq=%s readOwed=%v readReasons=%v readHolder=%s readHolds=%d run=%s stateId=%s previousStateId=%s previousStateUrl=%s foreignStateIds=%v releasedHolder=%s}",
+		r.stateURL, orNone(r.lastSeq), r.readOwed, r.readReasons, orNone(r.readHolder), r.readHolds, orNone(r.run), orNone(r.stateID), orNone(r.previousStateID),
 		orNone(r.previousStateURL), r.foreignStateIDs, orNone(r.releasedHolder))
 }
 
@@ -502,11 +503,11 @@ func cursorOf(t *testing.T, database *store.Store, project string) cursorRow {
 	t.Helper()
 	var row cursorRow
 	if err := database.Pool.QueryRow(context.Background(),
-		`select last_seq, read_owed, run, state_id, read_reasons, read_holder, read_holds, previous_state_id, previous_state_url,
-			foreign_state_ids, released_holder
+		`select state_url, last_seq, read_owed, run, state_id, read_reasons, read_holder, read_holds, previous_state_id,
+			previous_state_url, foreign_state_ids, released_holder
 		from legion_event_cursors where project = $1`, project).Scan(
-		&row.lastSeq, &row.readOwed, &row.run, &row.stateID, &row.readReasons, &row.readHolder, &row.readHolds, &row.previousStateID,
-		&row.previousStateURL, &row.foreignStateIDs, &row.releasedHolder); err != nil {
+		&row.stateURL, &row.lastSeq, &row.readOwed, &row.run, &row.stateID, &row.readReasons, &row.readHolder, &row.readHolds,
+		&row.previousStateID, &row.previousStateURL, &row.foreignStateIDs, &row.releasedHolder); err != nil {
 		t.Fatalf("read the cursor of %s: %v", project, err)
 	}
 	return row

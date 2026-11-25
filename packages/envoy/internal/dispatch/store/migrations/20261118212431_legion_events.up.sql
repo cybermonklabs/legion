@@ -135,7 +135,7 @@
 --   included. Such a write sets it to read_holder where read_holder is set, and every
 --   other write keeps it. At that message's next delivery the intake acknowledges it unapplied, it
 --   holds no read, its store goes into foreign_state_ids as above, and the intake clears this
---   column. So a write that names another daemon ends the hold of the message before it within one
+--   column. So a write that names another URL ends the hold of the message before it within one
 --   read's 60 s and a second, and a message of the newly named daemon may hold the read from a
 --   count of 1. Null for none.
 -- - skipped_state_ids and skipped_seqs are, pair by pair (the check holds them to one length), a

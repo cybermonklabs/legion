@@ -24,13 +24,13 @@ import (
 // once the inputs stop.
 
 // readRuleRow is one sequence the test runs: the seed its steps are drawn from, how many steps it
-// draws, and whether it draws the compound steps of a held starting read too (heldStartStep), from
-// a second stream of the seed, so a row that leaves held off draws the steps it drew before those
-// compound steps were added.
+// draws, and whether it draws the compound steps of a held starting read too (heldStarts,
+// heldStartStep), from a second stream of the seed, so a row that leaves heldStarts off draws the
+// steps it drew before those compound steps were added.
 type readRuleRow struct {
-	seed  uint64
-	steps int
-	held  bool
+	seed       uint64
+	steps      int
+	heldStarts bool
 }
 
 // readRuleRows is what the test runs with no variable set. Six rows are seeds that failed at
@@ -62,21 +62,21 @@ type readRuleRow struct {
 // ReadRetryAfter of real time more where its steps left the owed read's holder handed back with a
 // delay, which the steps alone do not decide.
 //
-// Seed 1 (30 steps, held on) draws the held starting read's steps (heldStartStep): with the rule
-// that a write of the same URL keeps the hold reverted (resetCursor kept the cursor only where it
-// followed the write's URL, as at 0a0ea48a), it fails invariant 3 at its last step, a take-over
+// Seed 1 (30 steps, heldStarts on) draws the held starting read's steps (heldStartStep): with the
+// rule that a write of the same URL keeps the hold reverted (resetCursor kept the cursor only where
+// it followed the write's URL, as at 0a0ea48a), it fails invariant 3 at its last step, a take-over
 // after two held starting reads that end with a third write of the same URL (steps 23 and 28): "the
 // message at stream sequence 9 went back to the stream as hand-back 1 after hand-back 1, and nothing
 // ended its hold between", the failure the model found on 8 seeds at 0dc86e28. It passes with the
-// rule (read-rule-cases row 6.1 while the cursor follows no daemon).
+// rule (read-rule-cases row 6.1b).
 //
-// Every other row leaves held off: each is cut to a recorded failure from before those steps were
-// added, so each draws exactly the steps it drew when it was cut. Each seed that
+// Every other row leaves heldStarts off: each is cut to a recorded failure from before those steps
+// were added, so each draws exactly the steps it drew when it was cut. Each seed that
 // LEGION_READ_RULE_SEED or LEGION_READ_RULE_SEEDS names turns them on.
 var readRuleRows = []readRuleRow{
 	{seed: 7, steps: 5}, {seed: 18, steps: 7}, {seed: 36, steps: 24}, {seed: 29, steps: 25},
 	{seed: 12, steps: 27}, {seed: 5, steps: 40}, {seed: 8, steps: 40}, {seed: 37, steps: 40},
-	{seed: 1030, steps: 120}, {seed: 1, steps: 30, held: true},
+	{seed: 1030, steps: 120}, {seed: 1, steps: 30, heldStarts: true},
 }
 
 // readRuleDefaultSteps is how many steps a seed named by LEGION_READ_RULE_SEED or
@@ -136,12 +136,12 @@ var readRuleInvariants = map[int]string{
 //   - a redeploy: the daemon behind the setting's URL comes to serve the old store, an earlier
 //     daemon's store or a store of its own, with no write, and boots there;
 //   - a take-over of the durable; the intake's clock moving on 5 to 70 seconds;
-//   - where the row turns held on, which every seed a variable names does, two compound steps
+//   - where the row turns heldStarts on, which every seed a variable names does, two compound steps
 //     drawn from a second stream of the seed (heldStartStep), each one step in 16: two writes of
 //     the same URL, the second once the intake is idle after the first's wake, and a message of the
 //     setting's daemon, which then holds the starting read where the cursor follows no daemon and
-//     that read is not due (read-rule-cases S0 with a holder); then a third write of the same URL
-//     (row 6.1 in S0), or the intake's clock moving past the minute and a take-over (row 7.3 in S0).
+//     that read is not due (read-rule-cases state S0h); then a third write of the same URL (row
+//     6.1b), or the intake's clock moving past the minute and a take-over (row 7.5).
 //
 // The model keeps each store's sequence, run, schema and INFRA-1's latest phase, and each fake
 // daemon serves the store it is behind (daemonStateIn): a daemon commits before it publishes, so no
@@ -173,11 +173,11 @@ var readRuleInvariants = map[int]string{
 //     the daemon answered (fetchWhole), not its start, so the start is last_read_started_at as
 //     recordWhole writes it beside the read's row (readStartsTrigger).
 //
-// With no variable set it runs readRuleRows, each with the held its row sets.
+// With no variable set it runs readRuleRows, each with the heldStarts its row sets.
 // LEGION_READ_RULE_SEED=<n> runs that seed alone, LEGION_READ_RULE_SEEDS=<from>-<to> each seed of
-// the range, both with held on, and LEGION_READ_RULE_STEPS=<n> sets the steps of every sequence. A
-// failure names the seed, the step, the invariant, every step drawn so far and how to run the
-// sequence alone.
+// the range, both with heldStarts on, and LEGION_READ_RULE_STEPS=<n> sets the steps of every
+// sequence. A failure names the seed, the step, the invariant, every step drawn so far and how to
+// run the sequence alone.
 func TestAnySequenceOfInputsAppliesNoOtherStoreCatchesUpHoldsNoMessageLongAndReadsOnceAMinute(t *testing.T) {
 	for _, row := range readRuleRowsOf(t) {
 		t.Run(fmt.Sprintf("seed=%d", row.seed), func(t *testing.T) {
@@ -187,8 +187,8 @@ func TestAnySequenceOfInputsAppliesNoOtherStoreCatchesUpHoldsNoMessageLongAndRea
 }
 
 // readRuleRowsOf is the sequences the variables name (LEGION_READ_RULE_SEED,
-// LEGION_READ_RULE_SEEDS, LEGION_READ_RULE_STEPS), each with held on, or readRuleRows with none
-// set. A value that does not parse fails the test, naming it.
+// LEGION_READ_RULE_SEEDS, LEGION_READ_RULE_STEPS), each with heldStarts on, or readRuleRows with
+// none set. A value that does not parse fails the test, naming it.
 func readRuleRowsOf(t *testing.T) []readRuleRow {
 	t.Helper()
 	steps := 0
@@ -212,7 +212,7 @@ func readRuleRowsOf(t *testing.T) []readRuleRow {
 	case one != "" && seeds != "":
 		t.Fatalf("LEGION_READ_RULE_SEED=%q and LEGION_READ_RULE_SEEDS=%q are both set: set one of them", one, seeds)
 	case one != "":
-		rows = []readRuleRow{{seed: parseSeed("LEGION_READ_RULE_SEED", one), held: true}}
+		rows = []readRuleRow{{seed: parseSeed("LEGION_READ_RULE_SEED", one), heldStarts: true}}
 	case seeds != "":
 		from, to, found := strings.Cut(seeds, "-")
 		if !found {
@@ -223,7 +223,7 @@ func readRuleRowsOf(t *testing.T) []readRuleRow {
 			t.Fatalf("LEGION_READ_RULE_SEEDS=%q ends before it begins", seeds)
 		}
 		for seed := first; seed <= last; seed++ {
-			rows = append(rows, readRuleRow{seed: seed, held: true})
+			rows = append(rows, readRuleRow{seed: seed, heldStarts: true})
 		}
 	default:
 		rows = append(rows, readRuleRows...)
@@ -281,28 +281,28 @@ type modelDaemon struct {
 // another (old), every store a URL served while the setting named it (behind), and the store each
 // phase value names (values). quiet is how long the check after the step drawn last waits for the
 // intake to be idle (checkIdleCursor). random is the seed's stream every step kind is drawn from,
-// and held the second stream the held starting read's steps are drawn from (heldStartStep), nil
-// where the row leaves them off.
+// and heldRandom the second stream the held starting read's steps are drawn from (heldStartStep),
+// nil where the row leaves them off.
 type readRuleModel struct {
-	t       *testing.T
-	rig     *intakeRig
-	random  *rand.Rand
-	held    *rand.Rand
-	seed    uint64
-	total   int
-	steps   []string
-	took    []time.Duration
-	failed  bool
-	stores  []*modelStore
-	foreign []*modelStore
-	daemons []*modelDaemon
-	setting *modelDaemon
-	old     *modelDaemon
-	behind  map[*modelStore]bool
-	values  map[string]*modelStore
-	commits int
-	runs    int
-	quiet   time.Duration
+	t          *testing.T
+	rig        *intakeRig
+	random     *rand.Rand
+	heldRandom *rand.Rand
+	seed       uint64
+	total      int
+	steps      []string
+	took       []time.Duration
+	failed     bool
+	stores     []*modelStore
+	foreign    []*modelStore
+	daemons    []*modelDaemon
+	setting    *modelDaemon
+	old        *modelDaemon
+	behind     map[*modelStore]bool
+	values     map[string]*modelStore
+	commits    int
+	runs       int
+	quiet      time.Duration
 }
 
 // newReadRuleModel opens row's rig with INFRA's setting naming daemon A, in store s0 at 10, starts
@@ -314,8 +314,8 @@ func newReadRuleModel(t *testing.T, row readRuleRow) *readRuleModel {
 		t: t, seed: seed, total: row.steps, random: rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15)),
 		behind: map[*modelStore]bool{}, values: map[string]*modelStore{},
 	}
-	if row.held {
-		m.held = rand.New(rand.NewPCG(seed^0xd1b54a32d192ed03, seed))
+	if row.heldStarts {
+		m.heldRandom = rand.New(rand.NewPCG(seed^0xd1b54a32d192ed03, seed))
 	}
 	t.Cleanup(func() {
 		if t.Failed() && !m.failed {
@@ -553,9 +553,9 @@ var readRuleSteps = []struct {
 }
 
 // run draws and runs the sequence's steps, each followed by the cheap invariants once its messages
-// reach the intake, and then ends the inputs and checks all four (finish). Where the row turns held
-// on, each step first draws from the second stream whether it is one of the held starting read's
-// (heldStartStep), and draws nothing from the seed's stream where it is.
+// reach the intake, and then ends the inputs and checks all four (finish). Where the row turns
+// heldStarts on, each step first draws from the second stream whether it is one of the held
+// starting read's (heldStartStep), and draws nothing from the seed's stream where it is.
 func (m *readRuleModel) run() {
 	total := 0
 	for _, kind := range readRuleSteps {
@@ -898,16 +898,16 @@ func (m *readRuleModel) clockStep() {
 	m.rig.clock.advance(by)
 }
 
-// heldStartStep: where the row turns held on, one step in 16, drawn from the second stream (held),
-// is a compound step that makes a held starting read on purpose (heldStart) and then ends either
-// with a third write of the same URL, read-rule-cases row 6.1 while the cursor follows no daemon,
-// or with the intake's clock moving past the minute and a take-over, row 7.3 there. It reports
-// whether it ran one; a row that leaves held off runs none and draws nothing.
+// heldStartStep: where the row turns heldStarts on, two steps in 16, drawn from the second stream
+// (heldRandom), one in 16 each, are a compound step that makes a held starting read on purpose
+// (heldStart): one ends with a third write of the same URL (read-rule-cases row 6.1b), the other
+// with the intake's clock moving past the minute and a take-over (row 7.5). It reports whether it
+// ran one; a row that leaves heldStarts off runs none and draws nothing.
 func (m *readRuleModel) heldStartStep() bool {
-	if m.held == nil {
+	if m.heldRandom == nil {
 		return false
 	}
-	switch m.held.IntN(16) {
+	switch m.heldRandom.IntN(16) {
 	case 0:
 		m.heldStart("a third write of the same URL")
 		m.write(m.setting)
@@ -1299,13 +1299,15 @@ func (m *readRuleModel) fail(index, invariant int, format string, args ...any) {
 }
 
 // alone is how to run the sequence alone. A seed that a variable names draws the held starting
-// read's steps (heldStartStep), as a fixed row with held on does, and a fixed row with held off
-// does not, so such a row runs alone by its subtest's name with no variable set.
+// read's steps (heldStartStep), as a fixed row with heldStarts on does, and a fixed row with
+// heldStarts off does not, so such a row runs alone by its subtest's name, with its steps and no
+// seed variable set.
 func (m *readRuleModel) alone() string {
-	if m.held != nil {
+	if m.heldRandom != nil {
 		return fmt.Sprintf("LEGION_READ_RULE_SEED=%d LEGION_READ_RULE_STEPS=%d", m.seed, m.total)
 	}
-	return fmt.Sprintf("-run '^%s$' and no LEGION_READ_RULE_ variable set", m.t.Name())
+	return fmt.Sprintf("-run '^%s$' with LEGION_READ_RULE_STEPS=%d and neither LEGION_READ_RULE_SEED nor LEGION_READ_RULE_SEEDS set",
+		m.t.Name(), m.total)
 }
 
 // stepList is the steps drawn so far, one line each.

@@ -649,10 +649,10 @@ func TestASettingDeletedDuringAHoldDropsTheHeldMessage(t *testing.T) {
 
 // TestAWriteOfTheSameURLKeepsTheHoldAndAWriteOfAnotherURLRecordsItsRelease: R3 says a reason that
 // arrives while a read is owed joins it, the message that holds the owed read makes it at its
-// redelivery, and that message goes back to the stream stateMaxHolds times at the most, so it
-// holds the durable's ack floor for about 11 minutes at the most (read-rule-cases rows 6.1 and
-// 6.3b, the architect's rulings of 2026-11-24T23:29Z and 2026-11-25T00:15Z: a write of the same
-// URL keeps the hold's count; a write of another URL records the release). The test writes INFRA's
+// redelivery, and that message goes back to the stream stateMaxHolds times at the most, so it holds
+// the durable's ack floor for about 11 minutes at the most (read-rule-cases rows 6.1, 6.1b and
+// 6.3b, the architect's rulings of 2026-11-24T23:29Z and 2026-11-25T00:15Z: a write of the same URL
+// keeps the hold's count; a write of another URL records the release). The test writes INFRA's
 // cursor by hand: it owes a read, names stream sequence 42 as the holder, gone back 3 times, keeps
 // a sequence skipped past the cap and one held part, and follows either the setting's URL (S1h,
 // after a failed read) or no daemon yet (S0h, a message that holds the starting read, which was not
@@ -734,6 +734,68 @@ func TestAWriteOfTheSameURLKeepsTheHoldAndAWriteOfAnotherURLRecordsItsRelease(t 
 				t.Errorf("%d parts held after a write of another URL, want none", parts)
 			}
 		})
+	}
+}
+
+// TestTwoFirstWritesOfOneURLTakeTurnsAndTheSecondKeepsTheHold: a write of the setting's own URL,
+// while a message holds the owed read, leaves the cursor as it is (read-rule-cases row 6.1b), so a
+// write must read the URL the setting named before it under a lock that the write before it held,
+// a project's first write included. The test holds a first write of LINUX's setting open: one
+// transaction inserts the setting, naming the daemon, and a cursor that follows no daemon yet,
+// owes the starting read and names stream sequence 42 as its holder, gone back 3 times, as a first
+// write whose starting read a message held would leave it. While that transaction is open,
+// PutSettings writes the same URL. It must wait for the first write, which then commits, and then
+// find the URL the first wrote: the cursor stays as it was, holder 42 and its 3 hand-backs.
+//
+// At 3ff616dd PutSettings read the URL before its write with `for update`, which locks no row of a
+// project that has no setting, so the second write read none, wrote behind the first, and reset
+// the cursor as a write of another URL would: it recorded 42 as released and dropped its count.
+func TestTwoFirstWritesOfOneURLTakeTurnsAndTheSecondKeepsTheHold(t *testing.T) {
+	const settingURL = "http://127.0.0.1:1"
+	database, _ := configured(t, settingURL)
+	seedProject(t, database, "LINUX")
+	first, err := database.Pool.Begin(t.Context())
+	if err != nil {
+		t.Fatalf("open the first write's transaction: %v", err)
+	}
+	defer func() { _ = first.Rollback(context.Background()) }()
+	if _, err := first.Exec(t.Context(), `
+		insert into legion_settings (project, state_url, created_by) values ('LINUX', $1, '{"kind":"user","id":"alice@example.com"}')
+	`, settingURL); err != nil {
+		t.Fatalf("write LINUX's first setting: %v", err)
+	}
+	if _, err := first.Exec(t.Context(), `
+		insert into legion_event_cursors (project, state_url, read_reasons, read_holder, read_holds) values ('LINUX', '', '{start}', 42, 3)
+	`); err != nil {
+		t.Fatalf("write LINUX's cursor: %v", err)
+	}
+
+	second := make(chan error, 1)
+	go func() {
+		_, err := PutSettings(context.Background(), database.Pool, "LINUX", settingURL, model.Actor{Kind: "user", ID: "bob@example.com"})
+		second <- err
+	}()
+	// A wait on another transaction's insert is a wait on its transaction id, a lock pg_locks names
+	// no database for, so the wait is found by the waiting backend's database.
+	testwait.Eventually(t, "the second write waits for the first", func() bool {
+		var waits int
+		if err := database.Pool.QueryRow(t.Context(), `
+			select count(*) from pg_locks l join pg_stat_activity a on a.pid = l.pid
+			where not l.granted and a.datname = current_database()
+		`).Scan(&waits); err != nil {
+			t.Fatalf("read the waits on the database: %v", err)
+		}
+		return waits > 0
+	})
+	if err := first.Commit(t.Context()); err != nil {
+		t.Fatalf("commit the first write: %v", err)
+	}
+	if err := <-second; err != nil {
+		t.Fatalf("write LINUX's setting a second time with the same URL: %v", err)
+	}
+	if c := cursorOf(t, database, "LINUX"); c.stateURL != "" || c.readHolder == nil || *c.readHolder != 42 || c.readHolds != 3 ||
+		!slices.Equal(c.readReasons, []string{ReadReasonStart}) || c.releasedHolder != nil {
+		t.Errorf("LINUX's cursor after the second write of the URL the first wrote is %s, want it as the first left it: following no daemon yet, the starting read owed and held by 42, gone back 3 times, and no release recorded", c)
 	}
 }
 

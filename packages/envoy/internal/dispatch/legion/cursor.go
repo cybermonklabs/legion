@@ -11,6 +11,7 @@ package legion
 // readPosition, Intake.position, lockPosition, lockCursor).
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -612,10 +613,8 @@ func resetCursor(ctx context.Context, tx pgx.Tx, project, before, stateURL strin
 //     and c's own pair otherwise.
 func (c cursor) reset(stateURL string) cursor {
 	next := emptyCursor()
-	next.exists, next.lastReadStartedAt, next.releasedHolder = true, c.lastReadStartedAt, c.releasedHolder
-	if c.readHolder != nil {
-		next.releasedHolder = c.readHolder
-	}
+	next.exists, next.lastReadStartedAt = true, c.lastReadStartedAt
+	next.releasedHolder = cmp.Or(c.readHolder, c.releasedHolder)
 	next.previousStateID, next.previousStateURL = c.previousStateID, c.previousStateURL
 	switch {
 	case c.previousStateURL != nil && *c.previousStateURL == stateURL:

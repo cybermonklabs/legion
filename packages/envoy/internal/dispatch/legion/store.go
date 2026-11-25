@@ -134,8 +134,8 @@ func GetSettings(ctx context.Context, db RowQueryer, project string) (Settings, 
 // names gives that same store (recordWhole). Such a message waits on the project's runner behind
 // the write's starting read, for one RequestTimeout at the most, as every message does, and is
 // judged against the cursor that read leaves. The write reads the URL the setting named before it
-// under a lock of its row (none for a new setting), so two writes of one project take turns and
-// each compares its URL with the one the write before it left.
+// under a lock of its row (writeSetting), a new setting's included, so two writes of one project
+// take turns and each compares its URL with the one the write before it left.
 func PutSettings(ctx context.Context, pool *store.Pool, project, stateURL string, actor model.Actor) (Settings, error) {
 	createdBy, err := json.Marshal(actor)
 	if err != nil {
@@ -146,18 +146,9 @@ func PutSettings(ctx context.Context, pool *store.Pool, project, stateURL string
 		return Settings{}, fmt.Errorf("open the transaction of the Legion setting of %s: %w", project, err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	var before string
-	err = tx.QueryRow(ctx, `select state_url from legion_settings where project = $1 for update`, project).Scan(&before)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return Settings{}, fmt.Errorf("read the Legion setting of %s before writing it: %w", project, err)
-	}
-	settings, err := scanSettings(tx.QueryRow(ctx, `
-		insert into legion_settings (project, state_url, created_by, updated_at)
-		values ($1, $2, $3, now())
-		on conflict (project) do update set state_url = excluded.state_url, updated_at = now()
-		returning `+settingsColumns, project, stateURL, createdBy))
+	settings, before, err := writeSetting(ctx, tx, project, stateURL, createdBy)
 	if err != nil {
-		return Settings{}, fmt.Errorf("write the Legion setting of %s: %w", project, err)
+		return Settings{}, err
 	}
 	if err := settingWritten(ctx, tx, project, before, stateURL); err != nil {
 		return Settings{}, err
@@ -166,6 +157,44 @@ func PutSettings(ctx context.Context, pool *store.Pool, project, stateURL string
 		return Settings{}, fmt.Errorf("commit the Legion setting of %s: %w", project, err)
 	}
 	return settings, nil
+}
+
+// writeSetting writes project's setting naming stateURL inside tx, and answers the row as it
+// stands and before, the URL the setting named before the write, "" for a new setting. It reads
+// before under the lock of the setting's row (`for update`), and writes the row while it holds that
+// lock. A project with no setting has no row to lock, so the write inserts one and holds the lock
+// of the row it inserted. Where another transaction inserted the row meanwhile, the insert waits
+// for it and does nothing, and writeSetting reads that row again under its lock. So no write takes
+// a setting another write left as new: two first writes of one URL take turns, and the second
+// finds the URL the first wrote.
+func writeSetting(ctx context.Context, tx pgx.Tx, project, stateURL string, createdBy []byte) (Settings, string, error) {
+	for {
+		var before string
+		err := tx.QueryRow(ctx, `select state_url from legion_settings where project = $1 for update`, project).Scan(&before)
+		if err == nil {
+			settings, err := scanSettings(tx.QueryRow(ctx, `
+				update legion_settings set state_url = $2, updated_at = now() where project = $1
+				returning `+settingsColumns, project, stateURL))
+			if err != nil {
+				return Settings{}, "", fmt.Errorf("write the Legion setting of %s: %w", project, err)
+			}
+			return settings, before, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return Settings{}, "", fmt.Errorf("read the Legion setting of %s before writing it: %w", project, err)
+		}
+		settings, err := scanSettings(tx.QueryRow(ctx, `
+			insert into legion_settings (project, state_url, created_by, updated_at)
+			values ($1, $2, $3, now())
+			on conflict (project) do nothing
+			returning `+settingsColumns, project, stateURL, createdBy))
+		if err == nil {
+			return settings, "", nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return Settings{}, "", fmt.Errorf("write the Legion setting of %s: %w", project, err)
+		}
+	}
 }
 
 // DeleteSettings removes a project's setting and reports whether it had one. The project's reads
@@ -195,9 +224,10 @@ func DeleteSettings(ctx context.Context, pool *store.Pool, project string) (bool
 }
 
 // settingWritten is what every write of project's setting does in its own transaction, before
-// being the URL the setting named before the write ("" for a new setting) and stateURL the daemon
-// the setting names from the write on, "" for a delete. It notifies SettingsChannel, which reaches
-// the intake at the write's commit (Intake.SettingsChanged), and:
+// being the URL the setting named before the write ("" for a new setting, and for a delete, which
+// reads none) and stateURL the daemon the setting names from the write on, "" for a delete. It
+// notifies SettingsChannel, which reaches the intake at the write's commit
+// (Intake.SettingsChanged), and:
 //   - A write of the URL the setting named already, while a message holds the cursor's owed read
 //     (read_holder), leaves the cursor as it is, whether the cursor follows that URL or no daemon
 //     yet (an empty state_url, before the starting read was first made): the holder, its count
