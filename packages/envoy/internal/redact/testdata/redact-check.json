@@ -12570,7 +12570,7 @@
       "mutation": {
         "file": "packages/daemon/internal/dispatch/client.go",
         "preimage": "if oauth2call.Echoes(answer, value) {",
-        "replacement": "if false {"
+        "replacement": "if false && oauth2call.Echoes(answer, value) {"
       }
     },
     {
