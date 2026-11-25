@@ -1,4 +1,5 @@
 import {
+  agentMention,
   agentRow,
   agentSessions,
   expectPickerOffers,
@@ -41,6 +42,12 @@ const messageRefused = `Couldn't send — ${MESSAGE_REFUSED.error}`;
 /** `seedAgents`' Planner and Reviewer, each under an id of the row's own (`rowSessionId`). */
 const sessions = agentSessions(rowSessionId);
 const plannerSession = sessions.planner;
+
+/** What a pick of that Planner writes into a draft (`agentMention`): its id is the running row's
+ *  own, so a row reads it inside itself. */
+function plannerMention(): string {
+  return agentMention(plannerSession);
+}
 
 /** The send the rows below make, and the path of the one `POST` it produces. A comment and a
  *  direct message share this shape, so the row that calls this names the path it expects. */
@@ -85,7 +92,7 @@ test.describe("agents page", () => {
       await page.keyboard.press("Enter");
       await expect(toggle).toContainText(`${core}-2`);
       await expect(field).toBeFocused();
-      await expect(field).toHaveValue("@Planner");
+      await expect(field).toHaveValue(`${plannerMention()} `);
 
       // Escape after an arrow takes nothing: the selection was never committed. (The field is
       // emptied first, since Escape over a written composer is its own discard prompt.)
@@ -218,7 +225,7 @@ test.describe("agents page", () => {
       await page.keyboard.press("Enter");
       await expect(toggle).toContainText(`${core}-1`);
       await expect(field).toBeFocused();
-      await expect(field).toHaveValue("@Planner");
+      await expect(field).toHaveValue(`${plannerMention()} `);
     } finally {
       await context.close();
     }
@@ -272,7 +279,7 @@ test.describe("agents page", () => {
       // The pick the reader could not make mid-send takes nothing from the message already sent.
       await picker.selectOption(`${core}-1`);
       await expect(toggle).toContainText(`${core}-1`);
-      await expect(field).toHaveValue("@Planner");
+      await expect(field).toHaveValue(`${plannerMention()} `);
       expect(send.posts()).toBe(1);
     } finally {
       await context.close();
@@ -390,7 +397,7 @@ test.describe("agents page", () => {
       await expectPickerOffers(picker, list);
       await page.keyboard.press("ArrowDown");
       await page.keyboard.press("Enter");
-      await expect(field).toHaveValue("@Planner");
+      await expect(field).toHaveValue(`${plannerMention()} `);
       // A reply to a direct exchange is a direct message, whatever issue is picked.
       await row.getByRole("button", { name: "Reply" }).first().click();
       await field.fill("Yes");
@@ -403,18 +410,18 @@ test.describe("agents page", () => {
       await expect(field).toHaveValue("Yes");
       await cancelReply.click();
       await expect(row.getByRole("button", { name: "Choose issue" })).toContainText(issueKey);
-      await expect(field).toHaveValue("@Planner Yes");
+      await expect(field).toHaveValue(`${plannerMention()} Yes`);
       const retried = page.waitForRequest(
         (request) =>
           request.method() === "POST" &&
           new URL(request.url()).pathname === `/api/v1/issues/${issueKey}/comments`
       );
       await row.getByRole("button", { name: "Retry" }).click();
-      // Planner takes Aside and BTW but not Send, so a plain message to it is an Aside.
+      // Planner takes Aside and BTW but not Send, so a plain message to it is an Aside. The
+      // party it names is in its own text, so no mentions array goes with it.
       expect((await retried).postDataJSON()).toEqual({
-        body: "@Planner Yes",
+        body: `${plannerMention()} Yes`,
         delivery: "aside",
-        mentions: [{ target: `session:${plannerSession.session_id}` }],
       });
     } finally {
       await context.close();
@@ -601,7 +608,7 @@ test.describe("agents page", () => {
       await expect(field).toBeFocused();
       await toggle.click();
       await picker.selectOption(`${core}-1`);
-      await expect(field).toHaveValue("@Planner");
+      await expect(field).toHaveValue(`${plannerMention()} `);
       await toggle.click();
       await expect(picker).toBeVisible();
       await row.evaluate((node, issueKey) => {
@@ -619,7 +626,7 @@ test.describe("agents page", () => {
       }, `${core}-2`);
 
       expect(new URL((await uploaded).url()).pathname).toBe(`/api/v1/issues/${core}-1/artifacts`);
-      await expect(field).toHaveValue(`@Planner dispatch://${core}-1/artifact/notes-md`);
+      await expect(field).toHaveValue(`${plannerMention()} dispatch://${core}-1/artifact/notes-md`);
       await expect(toggle).toContainText(`${core}-2`);
     } finally {
       await context.close();
@@ -881,12 +888,12 @@ test.describe("agents page", () => {
       await page.keyboard.press("ArrowDown");
       await page.keyboard.press("Enter");
       await expect(toggle).toContainText(issueKey);
-      await expect(field).toHaveValue("@Planner");
+      await expect(field).toHaveValue(`${plannerMention()} `);
 
-      await send(" first");
-      await expect(field).toHaveValue("@Planner");
-      await send(" second");
-      await expect(field).toHaveValue("@Planner");
+      await send("first");
+      await expect(field).toHaveValue(`${plannerMention()} `);
+      await send("second");
+      await expect(field).toHaveValue(`${plannerMention()} `);
 
       await toggle.click();
       await picker.selectOption("");
@@ -895,17 +902,16 @@ test.describe("agents page", () => {
       await expect(field).toHaveValue("");
 
       // Every send is keyed, each under a key of its own.
-      const mentions = [{ target: `session:${plannerSession.session_id}` }];
       const key = expect.any(String);
       expect(sends).toEqual([
         {
-          input: { body: "@Planner first", delivery: "aside", mentions },
+          input: { body: `${plannerMention()} first`, delivery: "aside" },
           key,
           ok: true,
           path: `/api/v1/issues/${issueKey}/comments`,
         },
         {
-          input: { body: "@Planner second", delivery: "aside", mentions },
+          input: { body: `${plannerMention()} second`, delivery: "aside" },
           key,
           ok: true,
           path: `/api/v1/issues/${issueKey}/comments`,

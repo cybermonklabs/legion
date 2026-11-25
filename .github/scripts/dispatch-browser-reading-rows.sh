@@ -101,8 +101,10 @@ how_ended() {
 # this workflow already holds it.
 # This run's attempt's jobs, read once here and read again by reading three below.
 # The call writes $RUNNER_TEMP/jobs.json: the array of {id, name, conclusion, legs}
-# that both readings take. The jobs API lists the caller's jobs too, and on a pull request
-# labelled full-ci the jobs of ci.yaml's other caller of this workflow, so the script holds the
+# that both readings take. The jobs API lists the caller's jobs too, and the jobs of ci.yaml's
+# other callers of this workflow that share the run - dispatch-browser beside
+# dispatch-browser-pr on a pull request labelled full-ci, dispatch-references beside
+# dispatch-browser-pr on one that changes what the reference rows test - so the script holds the
 # name to `<caller> / ` and one of seven of this workflow's nine jobs - binaries, shard, alone,
 # multiprocess, embedder, visual and merge - with a matrix leg in brackets after it. The other
 # two, `quarantine-rows` and `quarantine`, are outside that filter on purpose: they run on the
@@ -147,8 +149,9 @@ how_ended() {
 .github/scripts/dispatch-browser-run-reads.sh jobs "$jobs" "$caller"
 # The legs this lane owed, read from those jobs rather than written out a second time
 # here. A leg the lane does not run is skipped by its job's own `if:` - the alone and
-# multiprocess jobs on the pull-request lane - and owes nothing. A leg that failed
-# before it could upload is in the list and still owes its blob.
+# multiprocess jobs on the pull-request lane, and those two, the embedder job and the
+# visual job on the references lane - and owes nothing. A leg that failed before it
+# could upload is in the list and still owes its blob.
 # A read that fails leaves the list empty, and the check below says so: `|| true` keeps
 # pipefail and `set -e` from ending the script on jq's status first.
 legs=$(jq -r '.[] | select(.conclusion != "skipped") | .legs[]' "$jobs" |

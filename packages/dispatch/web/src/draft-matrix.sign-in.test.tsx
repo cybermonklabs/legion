@@ -55,7 +55,7 @@
  * make - are `REASONS` in `draft-matrix.sign-in.coverage.ts`, which holds each census item this
  * file answers for to a test above or to one of them.
  */
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { type MutationKey, QueryClient } from "@tanstack/react-query";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
@@ -85,6 +85,13 @@ import { buildIssuePath } from "./features/refs/routes";
 // spend moments of that clock, which a load on the real one does not keep pace with. So the page
 // is loaded here, with the test file, and no row waits for its load.
 import "./features/agents/AgentsPage";
+import { warmMarkdownRenderer } from "./features/refs/markdown-engine";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** When the page's first sign-in check answers, on the held clock. It is later than every wait
  *  before bob types moves that clock (a `findBy` moves it 50 ms a step), and within the 10 s a

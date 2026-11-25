@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
+import { readerStep } from "@legion/contracts";
 import { checkSync } from "recheck/lib/browser";
 
 import { expectOnePass } from "../../__tests__/one-pass";
 import { expressionsRunBy, readerExpressions } from "../../__tests__/reader-expressions";
-import { readerStep } from "./reader-steps";
 
 /**
  * Whether `expression` can take more than one pass over a text, decided from the expression as
@@ -21,7 +21,7 @@ function verdict(expression: { readonly flags: string; readonly source: string }
 
 // Every expression the one-pass rows' reads run over a text at least as long as their floor
 // (`__tests__/reader-expressions.ts`), which `expectOnePass` holds each one-pass row's reader to
-// (`composer-references.test.ts`, `Unfurl.test.tsx`, `text-references.test.ts`).
+// (`Unfurl.test.tsx`, `party-references.test.ts`, `text-references.test.ts`).
 test.each(
   readerExpressions
 )("the expression of %s reads a text in one pass", (_name, expression) => {

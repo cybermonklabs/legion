@@ -11,7 +11,7 @@ import {
 } from "./api";
 import { holdFirstRequest } from "./editor";
 import { clearedInbox } from "./inbox-drawn";
-import { inboxPane, paneScroller, selectedRow } from "./inbox-pane";
+import { inboxPane, inboxRow, paneScroller, selectedRow } from "./inbox-pane";
 import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
@@ -86,9 +86,9 @@ const RICH_SUMMARY = [
 /** The question the held row asks: one line, since that row is about when the block is drawn. */
 const HELD_SUMMARY = "The mirror takes the clock on Thursday.";
 
-/** The question the refused row asks. Its mark sits in the second paragraph on purpose: a short
- *  row shows the question's first line alone (`features/inbox/question-line.ts`), so a count of
- *  the mark over the whole page counts the drawn question body and nothing else. */
+/** The question the refused row asks. Its mark sits in the second paragraph on purpose: the
+ *  short row draws the whole question through the one renderer on one line, so the mark is in
+ *  the row's own list entry once and in the drawn question body once. */
 const FALLBACK_MARK = "The fallback note names the window and who signs it off.";
 const FALLBACK_SUMMARY = `The export window moves to Sunday.\n\n${FALLBACK_MARK}`;
 
@@ -296,12 +296,17 @@ test("an approval whose document cannot be read falls back to the card, which dr
     await expect.poll(() => refused).toBeGreaterThanOrEqual(3);
 
     // The card takes the document's place, and the block above it is not drawn: the card asks
-    // the whole question itself, so the question is on screen once.
+    // the whole question itself, so the question is in the pane once.
     const card = pane.getByTestId(`ask-${seed.askId}`);
     await expect(card).toBeVisible();
     await expect(pane.getByTestId("pane-approval-question")).toHaveCount(0);
     await expect(card.getByText(FALLBACK_MARK)).toHaveCount(1);
-    await expect(page.getByText(FALLBACK_MARK)).toHaveCount(1);
+    await expect(pane.getByText(FALLBACK_MARK)).toHaveCount(1);
+    // Once in the list row too: the list draws the same subject in its own line, which the one
+    // renderer flattens whole where the regular-expression stripper it replaced showed its first
+    // line alone. Scoped to this row's own entry so a retry or repeat in the same worker's
+    // cleared Inbox is not counted beside it.
+    await expect(inboxRow(page, seed.askId).getByText(FALLBACK_MARK)).toHaveCount(1);
   } finally {
     await alice.close();
   }

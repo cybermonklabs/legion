@@ -73,11 +73,12 @@ export async function listing(
 }
 
 /** The `--project` arguments naming `projects` on such a command line, in the list's own order.
- *  The four readers of a listing that names its projects - this directory's `no-browser-rows`,
- *  `pull-request-lane` and `row-configurations` tests, and `e2e/tools/row-map.ts` - spell them
- *  through this rather than each its own way, and they spell them attached, which is the one
- *  spelling this suite writes: the option is variadic, so `--project <name>` reads whatever
- *  follows it as a second name (`packages/dispatch/README.md`, "Projects"). */
+ *  The five readers of a listing that names its projects - this directory's `no-browser-rows`,
+ *  `pull-request-lane`, `reading-walk` and `row-configurations` tests, and
+ *  `e2e/tools/row-map.ts` - spell them through this rather than each its own way, and they spell
+ *  them attached, which is the one spelling this suite writes: the option is variadic, so
+ *  `--project <name>` reads whatever follows it as a second name (`packages/dispatch/README.md`,
+ *  "Projects"). */
 export function projectArguments(projects: readonly string[]): string[] {
   return projects.map((project) => `--project=${project}`);
 }

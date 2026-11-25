@@ -980,6 +980,17 @@ export function getArtifactBlocks(id: string, options: ApiOptions = {}) {
   return get("/api/v1/artifacts/{id}/blocks", { params: { id } }, options);
 }
 
+/** `GET /api/v1/references/questions` for a document's own text: each question block the
+ *  document's latest version declares, with the ask the server settled for it and that ask's
+ *  address, which is what a `#id` in a text of that document's scope names. */
+export function getDocumentQuestions(artifactID: string, options: ApiOptions = {}) {
+  return get(
+    "/api/v1/references/questions",
+    { query: { id: artifactID, kind: "artifact" } },
+    options
+  );
+}
+
 /** The same markdown by the slug route, `GET /api/v1/issues/{key}/artifacts/{slug}/text`. */
 export function getIssueArtifactText(issue: string, slug: string, options: ApiOptions = {}) {
   return get(

@@ -1,17 +1,18 @@
-import { afterEach, beforeEach, expect, jest, mock, test } from "bun:test";
+import { afterEach, beforeAll, expect, jest, mock, test } from "bun:test";
+import { dispatchWritingBox } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { BeforeEffects, stepBeforeEffects } from "../../__tests__/before-effects";
-import { displayTree } from "../../__tests__/display-trees";
+import { countEngineParses, displayTree } from "../../__tests__/display-trees";
 import { jump, onFakeClock, settle } from "../../__tests__/fake-clock";
 import { recordedEditors, selectText, writeAtEnd } from "../../__tests__/recorded-editors";
 import type { DisplayTree } from "../../api/types";
 import type { CreateEditor } from "../doc/editor";
 import { DocumentRuntime } from "../doc/runtime";
-import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import {
   flushTasks,
   installFakeParseWorker,
@@ -19,6 +20,14 @@ import {
 } from "../refs/parse-worker-fixture";
 import { SAVE_AFTER_MS } from "./InPlaceField";
 import { PriorityDescription } from "./PriorityDescription";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
+afterEach(restoreParseWorker);
 
 const OUTLINE = "# Why\n\n- Every machine runs the daemon\n- Nothing waits on the old build";
 /** `OUTLINE` as the editor writes it back: its own bullet, and a closing newline. */
@@ -488,33 +497,6 @@ const NESTED = `${"*a ".repeat(4_000)}b${" c*".repeat(4_000)}`;
  *  which `displayTree` reads with, is the parser this test keeps the page from running. */
 const NESTED_TREE = asText(NESTED);
 
-beforeEach(async () => {
-  await warmMarkdownRenderer();
-});
-
-afterEach(restoreParseWorker);
-
-/** Counts every call of the shared read-only engine's `parse`, the one entry a display surface
- *  parses markdown on the page through (`e2e/parse-counting.ts`), until the returned restore:
- *  the length of each text parsed, so a failure names how much and prints none of it. */
-function countPageParses(): { parsed: number[]; restore: () => void } {
-  const engine = loadedEngine();
-  if (engine === undefined) throw new Error("the row needs the shared engine loaded");
-  const counted = engine as { parse: typeof engine.parse };
-  const parse = counted.parse;
-  const parsed: number[] = [];
-  counted.parse = (markdown, softBreaks) => {
-    parsed.push(markdown.length);
-    return parse.call(engine, markdown, softBreaks);
-  };
-  return {
-    parsed,
-    restore: () => {
-      counted.parse = parse;
-    },
-  };
-}
-
 /** The line under a description drawn from the server's reading where its parser does not take
  *  the description whole. */
 const NOT_MARKDOWN =
@@ -567,7 +549,7 @@ test.each([
   ["a person who may write it", true],
 ] as const)("a description the server cannot read as markdown is drawn from its tree for %s, read-only, with the line that says why, and nothing parses it or is written from it", async (_reader, canWrite) => {
   const worker = installFakeParseWorker();
-  const { parsed, restore } = countPageParses();
+  const parses = countEngineParses();
   try {
     const { editor, imports, onSave, scope, view } = described(
       NESTED,
@@ -593,7 +575,7 @@ test.each([
     await onFakeClock(async () => {
       await act(() => flushTasks());
       expect(worker.requests.map((request) => request.markdown.length)).toEqual([]);
-      expect(parsed).toEqual([]);
+      expect(parses.count()).toBe(0);
       expect(imports).toEqual([]);
       // Nothing is written from that reading. A read-only editor takes no focus (ProseMirror
       // focuses an editable view alone), so no blur reaches it; what can is a change that
@@ -607,7 +589,7 @@ test.each([
     view.unmount();
     expect(onSave).not.toHaveBeenCalled();
   } finally {
-    restore();
+    parses.restore();
   }
 });
 
@@ -621,7 +603,7 @@ test("another person's text the server cannot read as markdown arrives in a writ
   );
   const { box, handle } = await editor();
   expect(box).toHaveAttribute("contenteditable", "true");
-  const { parsed, restore } = countPageParses();
+  const parses = countEngineParses();
   try {
     // The writer is in the editor as another person writes the nested text, and the server
     // answers with its reading of it, and says its parser does not take the text whole.
@@ -632,7 +614,7 @@ test("another person's text the server cannot read as markdown arrives in a writ
     expect(box).toHaveAttribute("aria-readonly", "true");
     expect(scope.getByText(NOT_MARKDOWN)).toBeDefined();
     expect(box.querySelector("em, strong")).toBeNull();
-    expect(parsed).toEqual([]);
+    expect(parses.count()).toBe(0);
     // Only the text the editor opened with, which the server's parser takes whole, went in as
     // markdown.
     expect(imports).toEqual([stored.length]);
@@ -641,7 +623,7 @@ test("another person's text the server cannot read as markdown arrives in a writ
     act(() => handle.view.dom.blur());
     expect(onSave).not.toHaveBeenCalled();
   } finally {
-    restore();
+    parses.restore();
   }
 });
 
@@ -930,4 +912,81 @@ test.each([
   // Nothing more is written: the editor holds the other person's text.
   act(() => handle.view.dom.blur());
   expect(onSave).toHaveBeenCalledTimes(1);
+});
+
+// A write of the description that ends without landing - refused, as here, or stopped - leaves
+// the reader's text in the editor, so nothing they wrote is lost, and the editor does not write
+// it again on its own: the shell's pending-writes line holds the refused write, with its Retry,
+// and a conflict's text is offered beside the editor (`ChangedMeanwhile`). So the next leave
+// writes nothing.
+test("a refused description stays the reader's text in the editor, and the next leave leaves it to the shell's Retry", async () => {
+  const { answering, editor, onSave } = described("Speedruns run again.");
+  const answer = answering();
+  const { box, handle } = await editor();
+  handle.view.focus();
+  writeAtEnd(handle, " More.");
+  act(() => handle.view.dom.blur());
+  expect(onSave.mock.calls).toEqual([["Speedruns run again. More.\n", "Speedruns run again."]]);
+  await answer(0, false);
+  expect(box.textContent).toBe("Speedruns run again. More.");
+  handle.view.focus();
+  act(() => handle.view.dom.blur());
+  expect(onSave).toHaveBeenCalledTimes(1);
+});
+
+// The read after the first of two writes lands while the reader still holds the editor: the
+// second text is what Dispatch is about to hold, so leaving writes nothing more.
+test("the answer to an earlier description write landing under the reader writes the later text once", async () => {
+  const { editor, onSave, rerender } = described("");
+  const { box, handle } = await editor();
+  handle.view.focus();
+  await onFakeClock(async () => {
+    writeAtEnd(handle, "A");
+    await jump(SAVE_AFTER_MS);
+    writeAtEnd(handle, "B");
+    await jump(SAVE_AFTER_MS);
+  });
+  expect(onSave.mock.calls).toEqual([
+    ["A\n", ""],
+    ["AB\n", ""],
+  ]);
+  rerender("A\n");
+  expect(box.textContent).toBe("AB");
+  act(() => handle.view.dom.blur());
+  expect(onSave).toHaveBeenCalledTimes(2);
+});
+
+// A description is a stored text its writer typed in a box with the reference picker, and the
+// priorities read sends the reading the server made of it (`description_tree`): a reader who may
+// not write reads that tree in the editor, and nothing on the page's thread parses the text. The
+// tree reads differently from the markdown beside it, so an editor filled from a parse of the
+// markdown would end `daemon.`.
+test("a description is drawn from the tree the priorities read sends", async () => {
+  const tree = displayTree("Ship the **daemon** first.");
+  const parses = countEngineParses();
+  try {
+    const { editor, imports } = described("Ship the **daemon**.", false, tree);
+    const { box } = await editor();
+    expect(box.textContent).toBe("Ship the daemon first.");
+    expect(box.querySelector("strong")?.textContent).toBe("daemon");
+    expect(imports).toEqual([]);
+    expect(parses.count()).toBe(0);
+  } finally {
+    parses.restore();
+  }
+});
+
+// A writer's editor hosts the reference picker every box has, under the writing list's row of a
+// priority's description, whose words stand under it; a reader who may not write it has nothing
+// to pick, and reads no such line.
+test("a writer's editor hosts the reference picker under the description's row of the writing list, and a reader's does not", async () => {
+  const hint = dispatchWritingBox("priority-description", "priority-description").hint;
+  const writer = described("Speedruns run again.");
+  await writer.editor();
+  expect(writer.scope.getByTestId("priority-description-hint").textContent).toBe(hint);
+  writer.view.unmount();
+
+  const reader = described("Speedruns run again.", false);
+  await reader.editor();
+  expect(reader.scope.queryByTestId("priority-description-hint")).toBeNull();
 });

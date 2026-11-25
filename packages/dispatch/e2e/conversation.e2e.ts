@@ -358,9 +358,10 @@ test("a reply in a session-authored comment thread pre-fills a deletable agent m
     await expect(composer.getByRole("link", { exact: true, name: "planner" })).toBeVisible();
     await expect(composer.getByRole("link", { name: "— Can this ship?" })).toBeVisible();
     const field = composer.getByLabel("Comment");
-    await expect(field).toHaveValue("@planner");
+    // The prefill ends in one space, so the reply's first word is a word of its own.
+    await expect(field).toHaveValue(`[@planner](dispatch://agent/${planner.session_id}) `);
     await field.press("End");
-    await field.pressSequentially(" It is green now - ship it.");
+    await field.pressSequentially("It is green now - ship it.");
     const response = page.waitForResponse(
       (candidate) =>
         candidate.request().method() === "POST" &&
@@ -368,11 +369,11 @@ test("a reply in a session-authored comment thread pre-fills a deletable agent m
     );
     await composer.getByRole("button", { name: "Send" }).click();
     expect((await response).request().postDataJSON()).toEqual({
-      body: "@planner It is green now - ship it.",
+      body: `[@planner](dispatch://agent/${planner.session_id}) It is green now - ship it.`,
       delivery: "steer",
-      mentions: [{ target: `session:${planner.session_id}` }],
       reply_to: parent.id,
     });
+    // The link's words, `@planner`, are what the reader sees in the stored reply (R8).
     await expect(threadReply(page, card, "@planner It is green now - ship it.")).toBeVisible();
     await expect
       .poll(() => getSentMessages())

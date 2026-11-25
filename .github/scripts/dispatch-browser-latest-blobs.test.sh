@@ -254,9 +254,9 @@ check "and the output holds one file per leg per directory" \
   "$(is "$(find "$root/out" -type f | wc -l)" 4)"
 
 echo "case: the pull-request caller's artifacts read under its own id"
-# ci.yaml calls dispatch-browser.yaml twice, and a pull request labelled full-ci runs both callers
-# in one run, so every artifact name starts with the caller's id: the pull-request lane's merge
-# job reads dispatch-browser-pr-blob-<leg>-<attempt>.
+# ci.yaml calls dispatch-browser.yaml three times, and one run of a pull request can run several
+# of those callers, so every artifact name starts with the caller's id: the pull-request lane's
+# merge job reads dispatch-browser-pr-blob-<leg>-<attempt>.
 caller=dispatch-browser-pr
 root=$(fixture pr-caller)
 leg "$root" shard-1 1 first-attempt
@@ -304,6 +304,33 @@ check "its blob lands under its own name" \
   "$(is "$(held "$root" 'blob-report/report-alone-chromium hidpi.zip')" spaced)"
 check "and its rows travel with it" \
   "$(is "$(held "$root" 'rows/alone-chromium hidpi.txt')" spaced)"
+
+echo "case: the references caller reads its own blobs and refuses the pull-request caller's"
+# ci.yaml's dispatch-browser-pr and dispatch-references jobs both call dispatch-browser.yaml on a
+# pull request that changes what the reference rows test, and an artifact name is unique within a
+# run, so the references lane's blobs are named under its caller's id and its merge job passes
+# that id here. A blob of the pull-request caller in its download directory is a download pattern
+# that took another lane's rows, which fails rather than merging them into this lane's report.
+caller=dispatch-references
+root=$(fixture references-caller)
+leg "$root" shard-1 1 references-first
+leg "$root" shard-1 2 references-second
+leg "$root" shard-4 1 references-shard-4
+run_select "$root"
+check "exits 0" "$(is "$status" 0)"
+check "the output holds attempt 2's blob" "$(is "$(held "$root" blob-report/report-shard-1.zip)" references-second)"
+check "and the other leg's" "$(is "$(held "$root" blob-report/report-shard-4.zip)" references-shard-4)"
+check "says which attempt it took" "$(contains "$out" '^shard-1: attempt 2, passing over attempt(s) 1$')"
+
+root=$(fixture references-caller-pull-request-blob)
+leg "$root" shard-1 1 references-blob
+caller=dispatch-browser-pr leg "$root" shard-1 1 pull-request-blob
+run_select "$root"
+check "a blob of the pull-request caller fails" "$(is "$status" 1)"
+check "naming it" "$(contains "$out" 'down/dispatch-browser-pr-blob-shard-1-1 is not a leg')"
+check "and the name it must have" "$(contains "$out" 'dispatch-references-blob-<leg>-<attempt>')"
+check "and merges nothing" "$(is "$(grep -rl references-blob "$root/out" | wc -l)" 0)"
+caller=dispatch-browser
 
 echo "case: a call that names no directories"
 set +e

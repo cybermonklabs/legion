@@ -1,5 +1,14 @@
-import { type FakeSession, getSentMessages, setLiveSessions, setSessionSendStatus } from "./agents";
+import { type Body, routePath } from "../web/src/api/paths";
+
+import {
+  agentMention,
+  type FakeSession,
+  getSentMessages,
+  setLiveSessions,
+  setSessionSendStatus,
+} from "./agents";
 import { createIssue, createProject, patchIssue } from "./api";
+import { pickReference } from "./ref-picker";
 import { expect, type Page, rowKey, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
@@ -32,21 +41,22 @@ const worker: FakeSession = {
 
 async function selectMention(page: Page, name: string): Promise<void> {
   const composer = page.getByRole("form", { name: "Comment composer" });
-  await composer.getByLabel("Comment").fill("@");
-  await composer.getByRole("option", { name }).click();
+  await pickReference(composer.getByLabel("Comment"), "@", name);
 }
 
-async function postPayload(page: Page): Promise<Record<string, unknown>> {
+type IssueCommentBody = Body<"/api/v1/issues/{key}/comments", "post">;
+
+async function postPayload(page: Page, issueKey: string): Promise<IssueCommentBody> {
+  const path = routePath("post", "/api/v1/issues/{key}/comments", { key: issueKey });
   const response = page.waitForResponse(
     (candidate) =>
-      candidate.request().method() === "POST" &&
-      /\/api\/v1\/issues\/[^/]+\/comments$/.test(candidate.url())
+      candidate.request().method() === "POST" && new URL(candidate.url()).pathname === path
   );
   await page
     .getByRole("form", { name: "Comment composer" })
     .getByRole("button", { name: "Send" })
     .click();
-  return (await response).request().postDataJSON() as Record<string, unknown>;
+  return (await response).request().postDataJSON() as IssueCommentBody;
 }
 
 // @pr: A write a person makes: the composer offers the live roles and sessions and posts the canonical mention target for the one picked.
@@ -63,11 +73,10 @@ test("the unified composer offers live roles and sessions and posts canonical me
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
     await selectMention(page, "worker");
-    const payload = await postPayload(page);
+    const payload = await postPayload(page, issue.key);
     expect(payload).toEqual({
-      body: "@worker",
+      body: agentMention(worker),
       delivery: "steer",
-      mentions: [{ target: `session:${worker.session_id}` }],
     });
   } finally {
     await alice.close();
@@ -90,7 +99,7 @@ test("an issue route remains an owner route, not a recipient control", async ({ 
       composer.getByRole("button", { name: /Choose recipient|BTW|Aside|Steer/ })
     ).toHaveCount(0);
     await composer.getByLabel("Comment").fill("Stored as a plain comment");
-    const payload = await postPayload(page);
+    const payload = await postPayload(page, issue.key);
     expect(payload).toEqual({ body: "Stored as a plain comment" });
   } finally {
     await alice.close();
@@ -111,8 +120,8 @@ test("an offline selected mention is posted and exposes its failed delivery", as
     await page.goto(`/issues/${issue.key}/conversation`);
     await selectMention(page, "worker");
     await setSessionSendStatus(worker.session_id, 404);
-    const payload = await postPayload(page);
-    expect(payload.mentions).toEqual([{ target: `session:${worker.session_id}` }]);
+    const payload = await postPayload(page, issue.key);
+    expect(payload.body).toBe(agentMention(worker));
     await expect(page.getByRole("list", { name: "Mention deliveries" })).toContainText("failed");
     // The sender retries a "no live session" answer under the one attempt and its key for the
     // listener take-over window - half a second under the harness's

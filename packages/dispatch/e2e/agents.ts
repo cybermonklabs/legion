@@ -465,6 +465,14 @@ export function agentSessions(sessionId: (logical: string) => string): AgentSess
   };
 }
 
+/** What a pick of `session` writes into a draft, and what a channel of its own seeds there: the
+ *  mention that names the party (`partyLink`), which is the whole record of who the write
+ *  addresses. A real-stack row passes its own session (`agentSessions`), so the mention names the
+ *  row's id, read when the row calls this. */
+export function agentMention(session: FakeSession): string {
+  return `[@${session.title}](dispatch://agent/${session.session_id})`;
+}
+
 /** Both sessions live, both with Dispatch activity, and two open issues for the picker to offer:
  *  a keyboard reader has to be able to pass the first to reach the second. Returns the first.
  *  `project` is the key of the project the issues are made in, the row's own (`rowKey`): it is

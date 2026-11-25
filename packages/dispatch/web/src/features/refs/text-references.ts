@@ -1,8 +1,7 @@
-import { isIdPrefix } from "@legion/contracts";
+import { isIdPrefix, readerStep, referenceSpans } from "@legion/contracts";
 
 import { routeItem } from "./block-reference";
-import { readerStep } from "./reader-steps";
-import { referenceSpans } from "./reference-spans";
+import { codeRanges, isInCode } from "./code-ranges";
 import {
   buildDispatchReference,
   type DispatchReferenceRoute,
@@ -49,6 +48,12 @@ export interface TextReference {
    *  those characters, which stay the author's own text. Absent where the reference needs every
    *  character it was written with. */
   readonly named?: number;
+  /** Whether a code context holds the reference - a fenced code block, an indented code block
+   *  or a code span, read from the text itself (`code-ranges.ts`), as the server reads it
+   *  (`text.Located.InCode`). It is read and cited as every other reference is, and a renderer
+   *  links none of them there; what the fact decides is who a write is delivered to, and
+   *  nothing else: a party written in code names nobody (`draftParties`). */
+  readonly inCode: boolean;
   /** Whether what it names is still open: an unknown key, an unknown question, or a prefix no
    *  item has been resolved for. A caller that has asked the server nothing sees every candidate
    *  unresolved. */
@@ -69,15 +74,21 @@ export interface TextReferenceNeeds {
 
 /** What the text belongs to, as the reference graph knows it: the record whose text it is, by
  *  the kind the server indexes that record under and its id - a document version's own text
- *  (`artifact`), an ask's question, answer or resolution reason, a comment, an issue message.
- *  Which document a `#id` in it resolves against is the server's to say
- *  (`refs.ScopeOf`, read through `GET /api/v1/references/questions`): the document itself, the
- *  document an ask or a comment is written on or anchored to, an issue message's spec. Text
- *  that is no record's - an agent's conversation, a broadcast, a search hit - names no source
- *  and gets no `#id` links, which is right: a `#id` there declares nothing. */
+ *  (`artifact`), an ask's question, answer or resolution reason, a comment, an issue message -
+ *  and the issue that record is on. Which document a `#id` in it resolves against is the
+ *  server's to say (`refs.ScopeOf`, read through `GET /api/v1/references/questions`): the
+ *  document itself, the document an ask or a comment is written on or anchored to, an issue
+ *  message's spec. Text that is no record's - an agent's conversation, a broadcast, a search
+ *  hit - names no source and gets no `#id` links, which is right: a `#id` there declares
+ *  nothing. */
 export interface TextSource {
   readonly kind: "artifact" | "ask" | "comment" | "message";
   readonly id: string;
+  /** The issue the record is on, its own `issue_key`; undefined for a record on no issue (a
+   *  project document, a direct message). A role reference in the text is known while this
+   *  issue's collaborators record the role (`role-holders.ts`), so every record names it, and
+   *  none leaves it out by accident. */
+  readonly issue: string | undefined;
 }
 
 /** The reference-source kind a string names, or none where it names no source. The route table
@@ -97,14 +108,16 @@ export function textSourceKind(kind: string): TextSource["kind"] | undefined {
 
 /** The source of one record's own text, or none where there is no record to name it by: a
  *  reply shown without its id, a row of text an issue owns but no record holds, or a kind that
- *  names no reference source (`textSourceKind`). */
+ *  names no reference source (`textSourceKind`). `issue` is the issue the record is on, its own
+ *  `issue_key`, and undefined only for a record on none. */
 export function textSourceOf(
   kind: TextSource["kind"] | undefined,
-  id: string | null | undefined
+  id: string | null | undefined,
+  issue: string | null | undefined
 ): TextSource | undefined {
   return kind === undefined || id === null || id === undefined || id === ""
     ? undefined
-    : { id, kind };
+    : { id, issue: issue ?? undefined, kind };
 }
 
 /** What a caller already knows about the text. Each is read only where the text holds a
@@ -527,6 +540,10 @@ function readAddress(
  * reference-shaped spans are read first, as the server reads them, and a bare key or `#id` only
  * in the gaps between them, so a key inside an address is part of that address and never a
  * mention of its own.
+ *
+ * The text's code contexts are read once here, by that same pass (`codeRanges`), and every
+ * reference - an address and a bare candidate alike, as the server marks both - carries whether
+ * one holds it. No consumer reads them a second time.
  */
 export function readTextReferences(text: string, facts: TextReferenceFacts = {}): TextReading {
   const origin = facts.origin ?? window.location.origin;
@@ -542,6 +559,9 @@ export function readTextReferences(text: string, facts: TextReferenceFacts = {})
   // The kind of every item a prefix resolved to, read on the first address that writes a short
   // id and kept for the rest of the text.
   const items = () => (kinds ??= itemKinds(facts.items ?? {}, origin));
+  // Where this text writes code, read once for the whole of it: a reference is marked by where
+  // its first character stands, which is how the server marks one.
+  const code = codeRanges(text);
 
   const spans = referenceSpans(text);
   let from = 0;
@@ -570,6 +590,7 @@ export function readTextReferences(text: string, facts: TextReferenceFacts = {})
     references.push({
       end: span.start + span.value.length,
       form: "address",
+      inCode: isInCode(code, span.start),
       named,
       reference: address.reference,
       route: address.route,
@@ -593,6 +614,7 @@ export function readTextReferences(text: string, facts: TextReferenceFacts = {})
       references.push({
         end: candidate.end,
         form: "key",
+        inCode: isInCode(code, candidate.start),
         reference: exists ? `dispatch://${key}` : undefined,
         route: exists ? { key, kind: "issue" } : undefined,
         start: candidate.start,
@@ -616,6 +638,7 @@ export function readTextReferences(text: string, facts: TextReferenceFacts = {})
     references.push({
       end: candidate.end,
       form: "question",
+      inCode: isInCode(code, candidate.start),
       named,
       reference,
       route: reference === undefined ? undefined : referenceRouteFromHref(reference, origin),

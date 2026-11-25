@@ -1,6 +1,6 @@
 import { expect } from "bun:test";
+import { countReaderSteps } from "@legion/contracts";
 
-import { countReaderSteps } from "../features/refs/reader-steps";
 import { expressionKey, expressionsRunBy, readerExpressions } from "./reader-expressions";
 
 /**
@@ -18,12 +18,13 @@ const checkedExpressions = new Set(
   readerExpressions.map(([, expression]) => expressionKey(expression))
 );
 
-/** The steps of this folder's text readers (`features/refs/reader-steps.ts`) that `read` takes
+/** The steps of the text readers (`@legion/contracts`' `reader-steps.ts`) that `read` takes
  *  on a text of `n` and on one of four times `n`, what `read` answered on the longer one, and the
  *  regular expressions it ran there over a text of at least `n` characters (`expressionsRunBy`).
  *  `n` is the row's own count of the units its text repeats, not of characters: a unit is one
- *  character in some rows (`")"`), two in others (`")_"`) and a scheme of 7 to 11 in `Unfurl`'s,
- *  so the floor is a quarter of the longer read's text or less, down to about a forty-fourth. */
+ *  character in some rows (`")"`), two in others (`")_"`), a scheme of 7 to 11 in `Unfurl`'s and
+ *  26 in `codeRanges`' row, so the floor is a quarter of the longer read's text or less, down to
+ *  about a hundredth. */
 export function stepsAtNAndFourN<Answer>(
   read: (n: number) => Answer,
   n: number

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the `error` events below are a picture failing to load, which user-event has no form for.
 import { act, fireEvent, waitFor, within } from "@testing-library/react";
@@ -27,6 +27,12 @@ import {
   installFakeParseWorker,
   restoreParseWorker,
 } from "./parse-worker-fixture";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 function withQueries(children: ReactNode): ReactNode {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -371,7 +377,9 @@ describe("Dispatch pictures", () => {
       const shot = await within(view.container).findByRole("img", { name: "shot" });
       expect(shot).toHaveAttribute("src", `/api/v1/issues/CORE-1/artifacts/${slug}/versions/1`);
       expect(shot.closest("a")).toHaveAttribute("href", `/issues/CORE-1/artifacts/${slug}?v=1`);
-      const link = await within(view.container).findByRole("link", { name: "design.md" });
+      // The link's words are its author's, so they stay (R8); what this row reads is which
+      // document a long name opens.
+      const link = await within(view.container).findByRole("link", { name: "design" });
       expect(link).toHaveAttribute("href", `/issues/CORE-1/artifacts/${slug}`);
       expect(link).toHaveAttribute("data-dispatch-ref", `dispatch://CORE-1/artifact/${slug}`);
     } finally {
@@ -411,7 +419,7 @@ describe("Dispatch pictures", () => {
     try {
       await waitFor(() => expect(worker.requests).toHaveLength(1));
       await act(() => worker.answer(0));
-      const designs = await within(view.container).findAllByRole("link", { name: "design.md" });
+      const designs = await within(view.container).findAllByRole("link", { name: "design" });
       expect(designs).toHaveLength(2);
       for (const link of designs) {
         expect(link).toHaveAttribute("href", `/issues/CORE-1/artifacts/${slug}`);
@@ -465,7 +473,7 @@ describe("Dispatch pictures", () => {
     try {
       await waitFor(() => expect(worker.requests).toHaveLength(1));
       await act(() => worker.answer(0));
-      const designs = await within(view.container).findAllByRole("link", { name: "design.md" });
+      const designs = await within(view.container).findAllByRole("link", { name: "design" });
       expect(designs).toHaveLength(1);
       expect(designs[0]).toHaveAttribute("href", `/issues/CORE-1/artifacts/${slug}`);
       expect(designs[0]).toHaveAttribute("data-dispatch-ref", long);
@@ -1138,6 +1146,22 @@ test("an external URL unrelated to the app renders as an ordinary link", async (
   }
 });
 
+// An email standing in text outside a `dispatch://` address is linked as before: the step that
+// keeps an address whole (`@legion/proof-editor`'s `whole-addresses.ts`) puts back as text only a
+// link that starts inside an address, so a dot or a hyphen in the local part cuts nothing here.
+test("a bare email in text renders as a link to its mailto: address", async () => {
+  const view = render(<MarkdownBody markdown="Mail john.doe@example.com for details" />);
+
+  try {
+    const link = await within(view.container).findByRole("link", {
+      name: "john.doe@example.com",
+    });
+    expect(link).toHaveAttribute("href", "mailto:john.doe@example.com");
+  } finally {
+    view.unmount();
+  }
+});
+
 test("two references in one body each resolve their own inline link and title, reading only what each shows", async () => {
   await warmMarkdownRenderer();
   const askRead: AskRead = {
@@ -1278,7 +1302,9 @@ test("a hand-authored Markdown link to a dispatch:// target resolves through dat
   );
 
   try {
-    const link = await within(view.container).findByRole("link", { name: "Ship it?" });
+    // The link's words are its author's and stay so; what this row reads is that the target
+    // behind `data-dispatch-href` is the one resolved and read.
+    const link = await within(view.container).findByRole("link", { name: "the ask" });
     expect(link).toHaveAttribute("href", "/issues/CORE-1/asks/ask-1");
     expect(link).toHaveAttribute("data-dispatch-ref", "dispatch://CORE-1/ask/ask-1");
     expect(getAsk).toHaveBeenCalledWith("ask-1");

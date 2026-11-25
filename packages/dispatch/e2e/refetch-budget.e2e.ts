@@ -1,18 +1,25 @@
 import { writeFile } from "node:fs/promises";
 
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
+import { agentSessions, setLiveSessions } from "./agents";
 import {
+  createAgentMessage,
   createAsk,
   createComment,
   createIssue,
   createMessage,
   createProject,
   patchIssue,
+  putArchitectureSource,
   putIssueState,
   putProjectDefaultAssignee,
+  syncArchitectureSource,
 } from "./api";
+import { blockId } from "./editor";
+import { seedFakeGithub } from "./fake-github-helpers";
 import { inboxCountBadge, inboxCountText } from "./inbox-threads";
-import { expect, type Page, type Request, rowKey, rowPerson, test } from "./test";
+import { COMPONENT_MODEL, COMPONENT_REPO, componentReference } from "./reference-surfaces";
+import { expect, type Page, type Request, rowKey, rowPerson, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 // INFRA-492: how many reads one open tab sends while other sessions write. As #2324 wrote it, the
@@ -89,7 +96,9 @@ async function until(at: number): Promise<void> {
  *  `MIN_REFETCH_INTERVAL_MS` after the fetch before it (`web/src/api/query-refresh.ts`), a page
  *  timer, so the page's clock fires it at once rather than the row waiting that long; `settled`
  *  then waits out whatever it sent. A read the page sends late is still counted, and one it never
- *  owed cannot appear. */
+ *  owed cannot appear. Each window also opens with it: the barrier's own write lands within a
+ *  second of the page's first reads, so the refresh it owes waits for the interval, longer than
+ *  `settled`'s quiet, and would otherwise be sent inside the window it does not belong to. */
 async function drainRefreshWindow(page: Page, traffic: Traffic): Promise<void> {
   await page.clock.runFor(MIN_REFETCH_INTERVAL_MS);
   await settled(traffic);
@@ -182,6 +191,15 @@ test("budget: 20 title writes to issues the page does not show send at most 5 re
   test.setTimeout(120_000);
   await createProject({ key: coreKey, name: "Core" });
   await createProject({ key: other, name: "Other" });
+  // The two sources the new references read from: the live session the registry holds, the
+  // row's own (`rowSessionId`), and the core project's one architecture component.
+  const planner = agentSessions(rowSessionId).planner;
+  await setLiveSessions([planner]);
+  await seedFakeGithub({
+    [COMPONENT_REPO]: { contents: "read", files: COMPONENT_MODEL, installation_id: 101 },
+  });
+  await putArchitectureSource(coreKey, { branch: "main", repo: COMPONENT_REPO });
+  expect((await syncArchitectureSource(coreKey, COMPONENT_REPO)).last_error).toBeNull();
   const pad = (index: number) => String(index + 1).padStart(2, "0");
   const targets = await createIssues(50, (index) => ({
     project: coreKey,
@@ -192,12 +210,39 @@ test("budget: 20 title writes to issues the page does not show send at most 5 re
     title: `Unshown issue ${pad(index)}`,
   }));
   const links = targets.map((target) => `dispatch://${target.key}`).join("\n");
-  const source = await createIssue({ project: coreKey, spec: links, title: "Budget source" });
+  const anchor = "The budget anchor sits here.";
+  const source = await createIssue({
+    project: coreKey,
+    spec: [anchor, links].join("\n\n"),
+    title: "Budget source",
+  });
   const child = await createIssue({ parent: source.key, project: coreKey, title: "Budget child" });
   await patchIssue(child.key, { status: "todo" });
+  // One reference of each kind whose target is read from somewhere other than an issue: a
+  // party, whose name the shell's own registry poll already holds; a component, read with its
+  // project's architecture; and a block, read with the document holding it. A page that read
+  // once per party, per component or per block at the mount would be over the budget below,
+  // which a body of issue references alone would never notice.
+  // Three bare session references besides: two sessions that ended, which Dispatch holds a
+  // record of (a message sent to each) and the registry no longer lists, and one id no agent ever
+  // held, the row's own (`rowSessionId`), which no write names. Each one the registry does not
+  // list is asked about in the page's one batched read (`GET /api/v1/agents/known`), which a page
+  // reading once per session would exceed.
+  const ended = [crypto.randomUUID(), crypto.randomUUID()];
+  for (const session of ended) {
+    await createAgentMessage(session, { body: "Before you go: the hand-off.", delivery: "aside" });
+  }
+  const neverHeld = rowSessionId("neverheld");
+  const extras = [
+    `[${planner.title}](dispatch://agent/${planner.session_id})`,
+    ...ended.map((session) => `dispatch://agent/${session}`),
+    `dispatch://agent/${neverHeld}`,
+    componentReference(coreKey),
+    `dispatch://${source.key}/spec#b-${await blockId(source.primary_artifact_id, anchor)}`,
+  ].join("\n");
   // The live spec editor renders a link with its author's text and reads nothing, so the 50
   // references that each read their target are this message's, on the Conversation tab.
-  await createMessage(source.key, { body: links }, bob);
+  await createMessage(source.key, { body: [links, extras].join("\n") }, bob);
 
   const alice = await asUser(browser, "alice");
   try {
@@ -213,8 +258,22 @@ test("budget: 20 title writes to issues the page does not show send at most 5 re
     await expect(
       turns.getByRole("link", { name: new RegExp(`^${coreKey}-\\d+ Budget reference \\d\\d$`) })
     ).toHaveCount(50, { timeout: 60_000 });
+    for (const session of ended) {
+      await expect(
+        turns.getByRole("link", { exact: true, name: `dispatch://agent/${session}` })
+      ).toHaveCount(1);
+    }
+    await expect(
+      turns.getByRole("link", { exact: true, name: `dispatch://agent/${neverHeld}` })
+    ).toHaveCount(0);
     await eventBarrier(page, traffic, source.key, source.title);
-    await settled(traffic);
+    await drainRefreshWindow(page, traffic);
+    // The page asked about every session the registry does not list in one read, whatever their
+    // number: three here.
+    expect(
+      traffic.gets.filter((get) => get.startsWith("/api/v1/agents/known")),
+      "batched session reads at the mount"
+    ).toHaveLength(1);
     traffic.reset();
 
     const written = new Set<string>();
@@ -364,7 +423,7 @@ test("pin: a pin from another tab shows in this tab's sidebar within 2 s with on
     const navigation = page.getByRole("navigation", { name: "Navigation" });
     await expect(navigation.locator(`a[href="/projects/${coreKey}"]`)).toBeVisible();
     const title = await eventBarrier(page, traffic, issue.key, issue.title);
-    await settled(traffic);
+    await drainRefreshWindow(page, traffic);
     pinnedReads = 0;
 
     // The other tab: alice's own write through the API, which this page did not make.
@@ -417,7 +476,7 @@ test("replies: a reply in a thread alice wrote in moves her Inbox count, and one
     await page.goto(`/issues/${strangers.key}/conversation`);
     const title = await eventBarrier(page, traffic, strangers.key, strangers.title);
     await expect(inboxCount).toHaveText(inboxCountText(0));
-    await settled(traffic);
+    await drainRefreshWindow(page, traffic);
     repliesReads = 0;
 
     await createComment(
@@ -496,7 +555,7 @@ test("assignee write: an assignee moved between two other people sends no read f
     // the one on her other issue.
     await expect(inboxCountBadge(page)).toHaveText(inboxCountText(1));
     const title = await eventBarrier(page, traffic, open.key, open.title);
-    await settled(traffic);
+    await drainRefreshWindow(page, traffic);
     traffic.reset();
     inboxReads = 0;
 
@@ -566,7 +625,7 @@ test("project default: a project's default moved between two other people reads 
     await page.goto(`/issues/${open.key}`);
     await expect(inboxCountBadge(page)).toHaveText(inboxCountText(1));
     let title = await eventBarrier(page, traffic, open.key, open.title);
-    await settled(traffic);
+    await drainRefreshWindow(page, traffic);
 
     // Each write, made by its project's default as themself: the route takes a person, and the
     // default it moves is the last step of the chain that decides who a question reaches.
@@ -680,7 +739,7 @@ test("project board: 20 title writes 250 ms apart send at most 7 list reads and 
         { intervals: [0], timeout: 30_000 }
       )
       .toBe(true);
-    await settled(traffic);
+    await drainRefreshWindow(page, traffic);
     listReads = 0;
 
     const startedAt = Date.now();
@@ -766,7 +825,7 @@ test("project issues table: 20 title writes 250 ms apart send at most 7 project 
         { intervals: [0], timeout: 30_000 }
       )
       .toBe(true);
-    await settled(traffic);
+    await drainRefreshWindow(page, traffic);
     projectReads = 0;
 
     // Rows are virtualized, so the window's own first row is the one a title change is read

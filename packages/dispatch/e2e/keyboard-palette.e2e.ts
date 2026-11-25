@@ -5,6 +5,7 @@ import type { Result } from "../web/src/api/paths";
 import type { SearchResponse } from "../web/src/api/types";
 import { groupResults, optionId } from "../web/src/features/search/search-model";
 import {
+  agentMention,
   agentSessions,
   expectPickerOffers,
   openAgents,
@@ -511,7 +512,8 @@ test("the Agents page offers a row's picker, which then commits a keyboard pick 
   const core = rowKey("CORE");
   // The Planner and the Reviewer are sessions of the row's own (`rowSessionId`), and the issues
   // the picker's steps reach are the row's own, at the head of the list (`seedPickerList`).
-  const issueKey = await seedAgents(core, agentSessions(rowSessionId));
+  const sessions = agentSessions(rowSessionId);
+  const issueKey = await seedAgents(core, sessions);
   const list = await seedPickerList(core, [issueKey, `${core}-2`]);
   const context = await asUser(browser, "alice");
 
@@ -555,7 +557,7 @@ test("the Agents page offers a row's picker, which then commits a keyboard pick 
     await expect(toggle).toContainText(`${core}-2`);
     const field = row.getByRole("textbox", { name: "Comment" });
     await expect(field).toBeFocused();
-    await expect(field).toHaveValue("@Planner");
+    await expect(field).toHaveValue(`${agentMention(sessions.planner)} `);
   } finally {
     await context.close();
   }

@@ -1,0 +1,109 @@
+import { readerStep } from "./reader-steps";
+
+export interface ReferenceSpan {
+  start: number;
+  /** Where the span the pattern matched ends, before `spanReference` cut it to the reference it
+   *  holds: the gap a bare key or `#id` may stand in starts here (the dashboard's
+   *  `text-references.ts`), as the server's `Mentions` reads the gaps between the same matches. */
+  end: number;
+  value: string;
+}
+
+/**
+ * The reference-shaped spans in text: `dispatch://` references and `http(s)://` URLs, each ending
+ * at whitespace (Unicode space separators included), an angle or square bracket, a quote, a
+ * backtick or a pipe, then cut to the reference it holds by `spanReference`. The one bracket a
+ * span may hold is a bracketed IPv6 host right after `http(s)://`, so a server at an IPv6 literal
+ * keeps its dashboard URLs as references. The whitespace is spelled out rather than written `\s`,
+ * which in JavaScript also matches a vertical tab and U+FEFF, where Go's `\s` matches neither. It
+ * is the rule the server's `text.ExtractAt` indexes mentions by, and `DISPATCH_TEXT_REFERENCES`
+ * in `@legion/contracts` is the table both are tested against.
+ */
+export const referencePattern =
+  /(?:dispatch:\/\/|https?:\/\/(?:\[[0-9A-Fa-f:.]+\])?)[^\t\n\f\r \p{Z}<>"'`[\]|]+/gu;
+
+/**
+ * Every reference span in text that starts with `prefix`, cut by `spanReference`; a span starting
+ * otherwise is omitted from the result. The spans are the same whatever the prefix, so a
+ * `dispatch://` inside a URL is never a span of its own, as the server reads it. The
+ * `dispatch://` spans are the addresses the document engine keeps whole (`@legion/proof-editor`'s
+ * `whole-addresses.ts`), as the server's `text.DispatchSpans` reads them.
+ */
+export function referenceSpans(text: string, prefix = ""): ReferenceSpan[] {
+  const spans: ReferenceSpan[] = [];
+  for (const match of text.matchAll(referencePattern)) {
+    readerStep();
+    if (match[0].startsWith(prefix)) {
+      spans.push({
+        end: match.index + match[0].length,
+        start: match.index,
+        value: spanReference(text, match.index, match.index + match[0].length),
+      });
+    }
+  }
+  return spans;
+}
+
+/**
+ * The reference `text` writes at `[start, end)`, one span the pattern matched, as the server's
+ * `text.spanReference` reads it. A span that stands as an inline link's or a picture's address -
+ * it starts right after the `](` of `[words](` or `![caption](` - ends at the link's own `)`, the
+ * first in it that no `(` in it opened, as CommonMark reads a link's address (`linkAddress`): a
+ * word written straight after the link, `[@Bob](dispatch://agent/abc)hello`, is the link's next
+ * word to every renderer, never more of its address. What is left of a span is trimmed as any
+ * span is (`trimReference`), so `[w](dispatch://CORE-1.)` reads CORE-1 as
+ * `(see dispatch://CORE-1.)` does.
+ */
+function spanReference(text: string, start: number, end: number): string {
+  const value = text.slice(start, end);
+  return trimReference(start >= 2 && text.startsWith("](", start - 2) ? linkAddress(value) : value);
+}
+
+/** `value` up to its first `)` that no `(` before it in `value` opened, or all of it where every
+ *  `)` closes one: a link's address read from the first character after its `(`. */
+function linkAddress(value: string): string {
+  let depth = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    readerStep();
+    const char = value.charAt(index);
+    if (char === "(") depth += 1;
+    else if (char === ")") {
+      if (depth === 0) return value.slice(0, index);
+      depth -= 1;
+    }
+  }
+  return value;
+}
+
+/**
+ * Drops what trails a reference in prose: sentence punctuation, the `*`, `_` and `~` that close
+ * emphasis and strikethrough around it (GFM's autolinks drop the same characters, keeping them
+ * inside a link), and a closing parenthesis that opens nowhere in the reference. It counts the
+ * parentheses once and walks back from the end, so a run of closers costs one pass.
+ *
+ * It is also the one list of what a word may hold beyond its reference and still be that
+ * reference: the dashboard's unfurl cards read it rather than keeping a second copy of these
+ * characters (`Unfurl.tsx`).
+ */
+export function trimReference(value: string): string {
+  let opened = 0;
+  let closed = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    readerStep();
+    const char = value.charAt(index);
+    if (char === "(") opened += 1;
+    else if (char === ")") closed += 1;
+  }
+  let end = value.length;
+  for (; end > 0; end -= 1) {
+    readerStep();
+    const char = value.charAt(end - 1);
+    if (char === ")") {
+      if (opened >= closed) break;
+      closed -= 1;
+    } else if (!".,;:!?*_~".includes(char)) {
+      break;
+    }
+  }
+  return value.slice(0, end);
+}

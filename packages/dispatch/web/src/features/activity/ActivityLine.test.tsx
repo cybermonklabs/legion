@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
@@ -6,7 +6,14 @@ import { MemoryRouter } from "react-router-dom";
 import { api } from "../../api/client";
 import type { Artifact, DispatchEvent, IssueDetails } from "../../api/types";
 import type { AgentPart } from "../refs/AgentName";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ActivityLine } from "./ActivityLine";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 // This document is carried by an `artifact.created` frame below as well as read as a route's
 // answer, and a frame's payload states the kinds Dispatch writes where the route states a plain

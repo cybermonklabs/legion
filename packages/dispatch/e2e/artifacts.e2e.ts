@@ -182,12 +182,18 @@ test.describe(() => {
     await diagram.getByRole("link", { name: "diagram.png" }).click();
     await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/diagram-png`);
     // The panel names the record that cites this artifact and quotes it; its link goes to that
-    // source, not back to the artifact the reader is already on.
+    // source, not back to the artifact the reader is already on. The quote is the head of the
+    // comment's body, drawn by the renderer, so the citation in it is a reference to the artifact
+    // and no address is left as text.
     const diagramReferencedBy = page.getByRole("region", { name: "Referenced by" });
     await expect(diagramReferencedBy).toContainText(`Comment · ${issue.key}`);
-    await expect(diagramReferencedBy).toContainText(
-      `See dispatch://${issue.key}/artifact/diagram-png before deciding.`
+    const diagramExcerpt = diagramReferencedBy.locator(".dispatch-markdown");
+    await expect(diagramExcerpt).toContainText("before deciding.");
+    await expect(diagramExcerpt.locator("[data-dispatch-ref]")).toHaveAttribute(
+      "data-dispatch-ref",
+      `dispatch://${issue.key}/artifact/diagram-png`
     );
+    await expect(diagramExcerpt).not.toContainText("dispatch://");
     await diagramReferencedBy.getByRole("link", { name: `Comment · ${issue.key}` }).click();
     await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}/comments/`));
 
@@ -198,9 +204,13 @@ test.describe(() => {
     await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/notes-md`);
     const notesReferencedBy = page.getByRole("region", { name: "Referenced by" });
     await expect(notesReferencedBy).toContainText(`Comment · ${issue.key}`);
-    await expect(notesReferencedBy).toContainText(
-      `See dispatch://${issue.key}/artifact/notes-md@v1 before deciding.`
+    const notesExcerpt = notesReferencedBy.locator(".dispatch-markdown");
+    await expect(notesExcerpt).toContainText("before deciding.");
+    await expect(notesExcerpt.locator("[data-dispatch-ref]")).toHaveAttribute(
+      "data-dispatch-ref",
+      `dispatch://${issue.key}/artifact/notes-md@v1`
     );
+    await expect(notesExcerpt).not.toContainText("dispatch://");
     await navigateInApp(page, `/issues/${issue.key}`);
     await openArtifacts(page, testInfo.project.name === "iphone");
     await page.screenshot({ path: testInfo.outputPath("artifacts-tab.png"), fullPage: true });

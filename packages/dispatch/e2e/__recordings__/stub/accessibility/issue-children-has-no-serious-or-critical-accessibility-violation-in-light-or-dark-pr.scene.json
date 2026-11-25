@@ -1,12 +1,23 @@
 {
-  "broadcast": "63d5dd9c-b230-4425-8cff-1322859a5231",
+  "broadcast": "78b874ce-8816-4b90-ab01-e9a1341c19ce",
   "deliveryQuery": "from=2024-06-01T00%3A00%3A00Z&to=2024-06-02T00%3A00%3A00Z",
   "issue": "CORE-1",
   "issueArtifactSlug": "requirements-md",
   "machine": "build-host",
+  "person": "alice",
   "pipelineAt": "2026-10-02T12:00:00Z",
-  "priority": "local-testing-is-one-command",
+  "readMarks": {
+    "agents": {
+      "019a1c01-0d7b-7a2a-8e93-4a5b6c7d8e01": [
+        "0901cd0a-dc2f-4b96-8006-77e43e40b50a"
+      ]
+    },
+    "documents": {
+      "482fd5f8-82a9-468b-bffe-b83e5f895f2f": 1
+    }
+  },
+  "priority": "every-change-that-reaches-the-build-fleet-is-verified-before-a-person-reads-it",
   "project": "CORE",
   "projectDocumentSlug": "runbook",
-  "seededAt": "2026-11-19T14:40:03.710Z"
+  "seededAt": "2026-11-25T21:57:07.963Z"
 }

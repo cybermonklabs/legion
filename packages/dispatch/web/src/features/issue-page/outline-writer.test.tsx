@@ -1,9 +1,16 @@
-import { expect, setSystemTime, spyOn, test } from "bun:test";
+import { beforeAll, expect, setSystemTime, spyOn, test } from "bun:test";
 import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 
 import { api } from "../../api/client";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { OutlineWriterProvider } from "./outline-writer";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 // R7: the writer adds no request. It reads the issue's asks, comments and messages under the keys
 // the tree reads them by (`useIssueTree.ts`), and keeps them fresh as the tree does, by events

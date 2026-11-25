@@ -1,5 +1,5 @@
 import { expect, setSystemTime, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -7,13 +7,12 @@ import { MemoryRouter } from "react-router-dom";
 import { tick } from "../../__tests__/fake-clock";
 import { api } from "../../api/client";
 import type { IssueDetails } from "../../api/types";
-import { MarginProvider } from "../margin/margin-context";
-import { KeymapProvider } from "../shell/KeymapProvider";
 import { issueDetails } from "./decisions-filter/decisions-fixtures";
 import { TWO_THREADS, zeroDelaysOnFakeClock } from "./outline-fixtures";
 import * as outlineReads from "./outline-reads";
 import { BodySlot } from "./slots/body";
 import { ProvidersSlot } from "./slots/providers";
+import { AppProviders } from "./slots/stage-fixtures";
 import { nodesInOrder } from "./tree-keys";
 
 /**
@@ -83,16 +82,12 @@ test("the body and a second caller of the outline's reads send each read once an
   const body = spyOn(outlineReads, "useOutlineReads").mockImplementation(bodyReads(held));
   const draw = (second: boolean) => (
     <MemoryRouter>
-      <QueryClientProvider client={client}>
-        <KeymapProvider>
-          <MarginProvider>
-            <ProvidersSlot issue={issue} route={route}>
-              <BodySlot issue={issue} route={route} />
-            </ProvidersSlot>
-            {second ? <SecondCaller held={held} issue={issue} /> : null}
-          </MarginProvider>
-        </KeymapProvider>
-      </QueryClientProvider>
+      <AppProviders client={client}>
+        <ProvidersSlot issue={issue} route={route}>
+          <BodySlot issue={issue} route={route} />
+        </ProvidersSlot>
+        {second ? <SecondCaller held={held} issue={issue} /> : null}
+      </AppProviders>
     </MemoryRouter>
   );
   try {
@@ -140,15 +135,11 @@ function renderReads(issue: IssueDetails, client: QueryClient, held: Held) {
   const route = { key: issue.key, kind: "issue" } as const;
   return render(
     <MemoryRouter>
-      <QueryClientProvider client={client}>
-        <KeymapProvider>
-          <MarginProvider>
-            <ProvidersSlot issue={issue} route={route}>
-              <SecondCaller held={held} issue={issue} />
-            </ProvidersSlot>
-          </MarginProvider>
-        </KeymapProvider>
-      </QueryClientProvider>
+      <AppProviders client={client}>
+        <ProvidersSlot issue={issue} route={route}>
+          <SecondCaller held={held} issue={issue} />
+        </ProvidersSlot>
+      </AppProviders>
     </MemoryRouter>
   );
 }

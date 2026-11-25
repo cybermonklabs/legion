@@ -1,6 +1,8 @@
+import { type Body, routePath } from "../web/src/api/paths";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 
 import {
+  agentMention,
   type FakeSession,
   getSentMessages,
   setLiveSessions,
@@ -21,8 +23,9 @@ import {
   retryCommentDelivery,
 } from "./api";
 import { barAction, documentEditor, selectEditorText } from "./editor";
+import { pickReference } from "./ref-picker";
 import { holdPosts, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
-import { expect, type Locator, type Page, rowKey, rowSessionId, test } from "./test";
+import { expect, type Page, rowKey, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 /** The planner session. Its id is the running row's own (`rowSessionId`, e2e/test.ts), read from
@@ -43,26 +46,21 @@ const planner: FakeSession = {
   title: "Planner",
 };
 
-async function selectMention(page: Page, field: Locator, text: string, option: string) {
-  await field.fill(text);
-  await page
-    .getByRole("listbox", { name: "Mention suggestions" })
-    .getByRole("option", { name: option })
-    .click();
-}
+type IssueCommentBody = Body<"/api/v1/issues/{key}/comments", "post">;
 
-async function issueCommentPayload(page: Page, issueKey: string): Promise<Record<string, unknown>> {
+async function issueCommentPayload(page: Page, issueKey: string): Promise<IssueCommentBody> {
+  const path = routePath("post", "/api/v1/issues/{key}/comments", { key: issueKey });
   const response = page.waitForResponse(
     (candidate) =>
       candidate.request().method() === "POST" &&
-      candidate.url().endsWith(`/api/v1/issues/${issueKey}/comments`) &&
+      new URL(candidate.url()).pathname === path &&
       candidate.status() === 201
   );
   await page
     .getByRole("form", { name: "Comment composer" })
     .getByRole("button", { name: "Send" })
     .click();
-  return (await response).request().postDataJSON() as Record<string, unknown>;
+  return (await response).request().postDataJSON() as IssueCommentBody;
 }
 
 /** Types a comment, then clicks Send and the Reply on the turn reading `parent` in one task,
@@ -95,8 +93,9 @@ async function sendBesideReply(page: Page, issueKey: string, parent: string): Pr
   }, reply);
 
   const request = await sent;
-  expect(new URL(request.url()).pathname).toBe(`/api/v1/issues/${issueKey}/comments`);
-  expect(request.postDataJSON()).toEqual({ body: "Status please" });
+  const path = routePath("post", "/api/v1/issues/{key}/comments", { key: issueKey });
+  expect(new URL(request.url()).pathname).toBe(path);
+  expect(request.postDataJSON() as IssueCommentBody).toEqual({ body: "Status please" });
   await expect(field).toHaveValue("Status please");
   await expect(cancelReply).toHaveCount(0);
   refuse();
@@ -119,11 +118,10 @@ test("E1 and E2: explicit role mentions deliver once while /btw without a mentio
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
     const field = page.getByRole("form", { name: "Comment composer" }).getByLabel("Comment");
-    await selectMention(page, field, "/btw @", "role-x");
+    await pickReference(field, "/btw @", "role-x");
     expect(await issueCommentPayload(page, issue.key)).toEqual({
-      body: "@role-x",
+      body: "[@role-x](dispatch://role/role-x)",
       delivery: "btw",
-      mentions: [{ target: "role:role-x" }],
     });
     await expect
       .poll(() => getSentMessages())
@@ -155,7 +153,7 @@ test("E2b: a project-document comment preserves the canonical mention and strips
     await selectEditorText(page, "Mention this");
     await barAction(page, "Comment");
     const composer = page.getByRole("form", { name: "Comment composer" });
-    await selectMention(page, composer.getByLabel("Comment"), "/aside @", "Planner");
+    await pickReference(composer.getByLabel("Comment"), "/aside @", "Planner");
     const response = page.waitForResponse(
       (candidate) =>
         candidate.request().method() === "POST" &&
@@ -163,19 +161,20 @@ test("E2b: a project-document comment preserves the canonical mention and strips
         candidate.status() === 201
     );
     await composer.getByRole("button", { name: "Send" }).click();
-    expect((await response).request().postDataJSON()).toMatchObject({
-      body: "@Planner",
+    const body = (await response).request().postDataJSON() as Body<
+      "/api/v1/artifacts/{id}/comments",
+      "post"
+    >;
+    expect(body).toMatchObject({
+      body: agentMention(planner),
       delivery: "aside",
-      mentions: [{ target: `session:${planner.session_id}` }],
     });
   } finally {
     await alice.close();
   }
 });
 
-test("a conversation send holds Reply and refuses Ctrl+K from the same task", async ({
-  browser,
-}) => {
+test("a conversation send holds Reply from the same task", async ({ browser }) => {
   const core = rowKey("CORE");
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({ project: core, title: "Held conversation" });
@@ -192,19 +191,13 @@ test("a conversation send holds Reply and refuses Ctrl+K from the same task", as
     await field.fill("Status please");
     await form.evaluate((node) => {
       const sendButton = node.querySelector<HTMLButtonElement>('button[type="submit"]');
-      const field = node.querySelector<HTMLTextAreaElement>('textarea[aria-label="Comment"]');
-      if (sendButton === null || field === null) throw new Error("expected conversation controls");
+      if (sendButton === null) throw new Error("expected conversation controls");
       sendButton.click();
-      field.dispatchEvent(
-        new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ctrlKey: true, key: "k" })
-      );
     });
 
     await expect(reply).toBeDisabled();
-    await expect(page.getByRole("dialog", { name: "Reference picker" })).toHaveCount(0);
     send.release();
     await expect(field).toHaveValue("");
-    await expect(page.getByRole("dialog", { name: "Reference picker" })).toHaveCount(0);
   } finally {
     await alice.close();
   }
@@ -541,7 +534,7 @@ test("E7b and Retry: removing a prefilled mention creates a plain reply, and ret
       .filter({ hasText: "Parent" });
     await card.getByRole("button", { name: "Reply" }).click();
     const composer = page.getByRole("form", { name: "Comment composer" });
-    await expect(composer.getByLabel("Comment")).toHaveValue("@Planner");
+    await expect(composer.getByLabel("Comment")).toHaveValue(`${agentMention(planner)} `);
     await composer.getByLabel("Comment").fill("Plain reply");
     expect(await issueCommentPayload(page, issue.key)).toEqual({
       body: "Plain reply",
@@ -550,10 +543,15 @@ test("E7b and Retry: removing a prefilled mention creates a plain reply, and ret
     const retry = page.waitForResponse(
       (candidate) =>
         candidate.request().method() === "POST" &&
-        candidate.url().endsWith(`/api/v1/comments/${parent.id}/deliveries`)
+        new URL(candidate.url()).pathname ===
+          routePath("post", "/api/v1/comments/{id}/deliveries", { id: parent.id })
     );
     await card.getByRole("button", { name: "Retry" }).click();
-    expect((await retry).request().postDataJSON()).toEqual({
+    const body = (await retry).request().postDataJSON() as Body<
+      "/api/v1/comments/{id}/deliveries",
+      "post"
+    >;
+    expect(body).toEqual({
       delivery: "steer",
       target: `session:${planner.session_id}`,
     });
@@ -639,14 +637,13 @@ test("a mention reaches a session the listener's list has dropped while its reco
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
     const field = page.getByRole("form", { name: "Comment composer" }).getByLabel("Comment");
-    await selectMention(page, field, "/btw @", "Planner");
+    await pickReference(field, "/btw @", "Planner");
     // The composer offered the mention off the listener's list, and the list drops the session
     // between that read and the send, with the session's own record untouched.
     await setSessionLive(planner.session_id, false);
     expect(await issueCommentPayload(page, issue.key)).toEqual({
-      body: "@Planner",
+      body: agentMention(planner),
       delivery: "btw",
-      mentions: [{ target: `session:${planner.session_id}` }],
     });
     await expect
       .poll(() => getSentMessages())
@@ -674,12 +671,11 @@ test("a mention of a session the listener holds no record of is still refused as
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
     const field = page.getByRole("form", { name: "Comment composer" }).getByLabel("Comment");
-    await selectMention(page, field, "/btw @", "Planner");
+    await pickReference(field, "/btw @", "Planner");
     await setSessionRecord(planner.session_id, "absent");
     expect(await issueCommentPayload(page, issue.key)).toEqual({
-      body: "@Planner",
+      body: agentMention(planner),
       delivery: "btw",
-      mentions: [{ target: `session:${planner.session_id}` }],
     });
     await expect(page.getByRole("list", { name: "Mention deliveries" })).toContainText(
       `no live session ${planner.session_id}`
@@ -708,14 +704,13 @@ test("a mention of a session the listener could not read is refused with the lis
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
     const field = page.getByRole("form", { name: "Comment composer" }).getByLabel("Comment");
-    await selectMention(page, field, "/btw @", "Planner");
+    await pickReference(field, "/btw @", "Planner");
     // The session is there as far as anyone knows; it is the read that fails, which the
     // listener answers 503 with the bus's reason.
     await setSessionRecord(planner.session_id, "unreadable");
     expect(await issueCommentPayload(page, issue.key)).toEqual({
-      body: "@Planner",
+      body: agentMention(planner),
       delivery: "btw",
-      mentions: [{ target: `session:${planner.session_id}` }],
     });
     const deliveries = page.getByRole("list", { name: "Mention deliveries" });
     await expect(deliveries).toContainText("failed");

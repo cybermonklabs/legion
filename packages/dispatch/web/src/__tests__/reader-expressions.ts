@@ -1,6 +1,5 @@
-import { controlCharacterPattern, PROJECT_KEY_PATTERN } from "@legion/contracts";
+import { controlCharacterPattern, PROJECT_KEY_PATTERN, referencePattern } from "@legion/contracts";
 
-import { referencePattern } from "../features/refs/reference-spans";
 import {
   dispatchReferencePattern,
   issueArtifactReferencePattern,
