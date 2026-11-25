@@ -6264,6 +6264,8 @@ go vet ./...
 `internal/dispatch/api` alone takes close to `go test`'s default ten-minute package deadline (about 600 s), so it runs first and on its own, with 20 minutes, as CI's `envoy-go` job runs it (`docs/testing.md`, "Go's package deadline").
 
 `./scripts/dev-postgres.sh` prints the database URL to set (Local Postgres, above).
+Its server preloads `pg_stat_statements` (`-c shared_preload_libraries=pg_stat_statements`), which the priorities read's bound test, `TestThePrioritiesReadAnswersWithinItsBoundOnEveryPlan`, reads each statement's database time from; that test stops where the server does not preload the module.
+A `dispatch-pg` the script created before it passed that argument is reused as it is and preloads nothing, so that test stops on it until the container is created again.
 One test: `go test -run TestName ./internal/dispatch/api`, which needs no deadline of its own.
 
 Three suites build only under a tag, and the commands above run none of them.

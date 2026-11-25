@@ -88,10 +88,10 @@ read_only() {
 }
 
 run_case FAKE_CONTAINER=absent
-if [ "$status" -ne 0 ] || [ "$(cat "$out")" != "$url" ] || ! grep -qxF "run -d --name dispatch-pg --cpus 2 --memory 2g -e POSTGRES_PASSWORD=dispatch -e POSTGRES_DB=dispatch -p 127.0.0.1:55432:5432 $pinned" "$calls"; then
-  fail "no dispatch-pg: created from the pinned image"
+if [ "$status" -ne 0 ] || [ "$(cat "$out")" != "$url" ] || ! grep -qxF "run -d --name dispatch-pg --cpus 2 --memory 2g -e POSTGRES_PASSWORD=dispatch -e POSTGRES_DB=dispatch -p 127.0.0.1:55432:5432 $pinned -c shared_preload_libraries=pg_stat_statements" "$calls"; then
+  fail "no dispatch-pg: created from the pinned image, preloading pg_stat_statements"
 else
-  printf 'PASS: no dispatch-pg: created from the pinned image, URL printed\n'
+  printf 'PASS: no dispatch-pg: created from the pinned image, preloading pg_stat_statements, URL printed\n'
 fi
 
 run_case
@@ -129,7 +129,7 @@ readonly sequence=(
   "$trailer_command"
   "docker stop dispatch-pg"
   "docker rename dispatch-pg $backup"
-  "docker run -d --name dispatch-pg --cpus 2 --memory 2g -e POSTGRES_PASSWORD=dispatch -e POSTGRES_DB=dispatch -p 127.0.0.1:55432:5432 $pinned"
+  "docker run -d --name dispatch-pg --cpus 2 --memory 2g -e POSTGRES_PASSWORD=dispatch -e POSTGRES_DB=dispatch -p 127.0.0.1:55432:5432 $pinned -c shared_preload_libraries=pg_stat_statements"
   "$wait_ready"
   "docker exec -i dispatch-pg psql -h 127.0.0.1 -U postgres -q -f - < '$dump'"
   "$list_databases"
@@ -224,7 +224,7 @@ replayed_run="$(replay "$printed_run" </dev/null)"
 replayed_restore="$(replay "$printed_restore" </dev/null)"
 want_list="$(printf '%s\n' exec dispatch-pg psql -U postgres -Atc 'select datname from pg_database where not datistemplate order by 1')"
 want_dump="$(printf '%s\n' exec dispatch-pg pg_dumpall -U postgres --clean --if-exists)"
-want_run="$(printf '%s\n' run -d --name dispatch-pg --cpus 2 --memory 2g -e POSTGRES_PASSWORD=dispatch -e POSTGRES_DB=dispatch -p 127.0.0.1:55432:5432 "$pinned")"
+want_run="$(printf '%s\n' run -d --name dispatch-pg --cpus 2 --memory 2g -e POSTGRES_PASSWORD=dispatch -e POSTGRES_DB=dispatch -p 127.0.0.1:55432:5432 "$pinned" -c shared_preload_libraries=pg_stat_statements)"
 want_restore="$(printf '%s\n' exec -i dispatch-pg psql -h 127.0.0.1 -U postgres -q -f - "$want_dump")"
 if [ -z "$printed_list" ] || [ -z "$printed_dump" ] || [ -z "$printed_trailer" ] || [ -z "$printed_run" ] \
   || [ -z "$printed_restore" ] || [ "$replayed_list" != "$want_list" ] || [ -n "$replayed_dump" ] \

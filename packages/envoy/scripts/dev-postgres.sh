@@ -21,6 +21,12 @@ image="mirror.gcr.io/pgvector/pgvector@sha256:2358fcba361ed2233a5ed81b5fe4ca779c
 # Two CPUs and 2 GiB, as every container on a shared devbox carries limits; a dev database's
 # working set fits, and its data stays on the volume, outside that memory.
 run_flags=(-d --name "$container" --cpus 2 --memory 2g -e POSTGRES_PASSWORD=dispatch -e POSTGRES_DB=dispatch -p 127.0.0.1:55432:5432)
+# The server's own arguments, after the image. It preloads pg_stat_statements: a server loads the
+# module only at its start, and the priorities read's bound test, which `go test
+# ./internal/dispatch/api` runs, reads each statement's database time from it and stops where the
+# server does not preload it (prioritiesReadQueryIDs in api/priority_read_harness_test.go). A
+# `dispatch-pg` created before this argument is reused as it is, and preloads nothing.
+server_args=(-c shared_preload_libraries=pg_stat_statements)
 database_url="postgres://postgres:dispatch@127.0.0.1:55432/dispatch?sslmode=disable"
 
 refuse() {
@@ -45,7 +51,7 @@ quote() {
 }
 
 if ! docker container inspect "$container" >/dev/null 2>&1; then
-  docker run "${run_flags[@]}" "$image" >/dev/null
+  docker run "${run_flags[@]}" "$image" "${server_args[@]}" >/dev/null
   printf '%s\n' "DATABASE_URL=$database_url"
   exit 0
 fi
@@ -100,7 +106,7 @@ steps+=(
   "Then move the old container aside:"
   "  $(quote docker stop "$container")"
   "  $(quote docker rename "$container" "$backup")"
-  "  $(quote docker run "${run_flags[@]}" "$image")"
+  "  $(quote docker run "${run_flags[@]}" "$image" "${server_args[@]}")"
   "Repeat this until it reports accepting connections. It asks over TCP because the new container's first-start setup server listens only on its socket, and stops before the server that keeps running starts:"
   "  $(quote "${wait_ready[@]}")"
   "Then restore the dump. psql reports two errors, which are expected: role \"postgres\" already exists, and current user cannot be dropped."
