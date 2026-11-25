@@ -101,31 +101,32 @@ func TestTheCIMessageNamesEachStatus(t *testing.T) {
 
 // The notice of a head GitHub will not merge names every commit status the record keeps for that
 // head, with its state, after the head's own check runs, when the checked head is the current
-// head; it names none of another head's. Three records: the head settled with two statuses; the
-// branch moved on to a new head whose own settlement names none, which starts the head's fence
-// afresh and the statuses with it; and the record an earlier release leaves after a rollback,
-// whose checked head and runs it moved to the head while the statuses stayed stamped with the head
-// before, which the stamp alone keeps out of the notice.
+// head; it names none of another head's. Three records, each of a head GitHub answers `behind`
+// for, a state the round does not end on: the head settled with two statuses; the branch moved on
+// to a new head whose own settlement names none, which starts the head's fence afresh and the
+// statuses with it; and the record an earlier release leaves after a rollback, whose checked head
+// and runs it moved to the head while the statuses stayed stamped with the head before, which the
+// stamp alone keeps out of the notice.
 func TestTheStuckNoticeNamesStatusesOfTheCurrentHeadAlone(t *testing.T) {
 	t.Parallel()
 	const earlier = "0000000000000000000000000000000000000abc"
 	t.Run("the current head's statuses", func(t *testing.T) {
 		pool := migratedPool(t)
-		seedMergeStateRound(t, pool, record.MergeStateBlocked)
+		seedMergeStateRound(t, pool, record.MergeStateBehind)
 		apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 		apply("settled", naming(settledRunsAt(headOne, 1, []record.AttemptRun{{Name: "unit tests", ID: 2}}),
 			status("deploy", "success", 1), status("ci", "failure", 1)))
 		apply("approve", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne,
 			HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)})
 		told := reviewStuckNotices(t, pool)
-		want := "GitHub reported on head " + headOne + `: "unit tests" succeeded; commit statuses: "ci" failure, "deploy" success. The daemon reads the base's rules only on a conflicting read`
+		want := "GitHub reported on head " + headOne + `: "unit tests" succeeded; commit statuses: "ci" failure, "deploy" success. The issue waits in reviewing`
 		if len(told) != 1 || !strings.Contains(told[0].Reason, want) {
 			t.Fatalf("review-stuck notices %+v, want one reading %q", told, want)
 		}
 	})
 	t.Run("a new head whose settlement names none", func(t *testing.T) {
 		pool := migratedPool(t)
-		seedMergeStateRound(t, pool, record.MergeStateBlocked)
+		seedMergeStateRound(t, pool, record.MergeStateBehind)
 		apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 		apply("settled", naming(settledRunsAt(headOne, 1, []record.AttemptRun{{Name: "unit tests", ID: 2}}), status("ci", "failure", 1)))
 		apply("push", intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: headOne, After: headTwo, Pusher: "legion-implementer[bot]"})
@@ -136,27 +137,27 @@ func TestTheStuckNoticeNamesStatusesOfTheCurrentHeadAlone(t *testing.T) {
 		apply("settled-new-head", settledRunsAt(headTwo, 1, []record.AttemptRun{{Name: "unit tests", ID: 3}}))
 		apply("approve", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headTwo,
 			HeadSHA: headTwo, Author: testReviewApp, Body: reviewBody("ship it", headTwo)})
-		apply("blocked", intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: headTwo,
-			Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateBlocked})
+		apply("behind", intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: headTwo,
+			Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateBehind})
 		told := reviewStuckNotices(t, pool)
-		want := "GitHub reported on head " + headTwo + `: "unit tests" succeeded. The daemon reads the base's rules only on a conflicting read`
+		want := "GitHub reported on head " + headTwo + `: "unit tests" succeeded. The issue waits in reviewing`
 		if len(told) != 1 || !strings.Contains(told[0].Reason, want) {
 			t.Fatalf("review-stuck notices %+v, want one reading %q and naming no status of %s", told, want, headOne)
 		}
 	})
 	t.Run("a list an earlier release left beside its checked head", func(t *testing.T) {
 		pool := migratedPool(t)
-		seedMergeStateRound(t, pool, record.MergeStateBlocked)
+		seedMergeStateRound(t, pool, record.MergeStateBehind)
 		seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion",
 			Number: 42, Branch: "legion/LEGION-208", HeadSHA: headOne, Failing: []string{}, Cancelled: []string{},
-			Mergeability: record.MergeabilityMergeable, MergeState: record.MergeStateBlocked,
+			Mergeability: record.MergeabilityMergeable, MergeState: record.MergeStateBehind,
 			CheckedHead: headOne, CheckRuns: []record.AttemptRun{{Name: "unit tests", ID: 1, Head: headOne, Conclusion: record.RunSucceeded}},
 			Statuses: []record.CommitStatus{keptStatus("ci", "failure", 1, earlier)}})
 		apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 		apply("approve", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne,
 			HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)})
 		told := reviewStuckNotices(t, pool)
-		want := "GitHub reported on head " + headOne + `: "unit tests" succeeded. The daemon reads the base's rules only on a conflicting read`
+		want := "GitHub reported on head " + headOne + `: "unit tests" succeeded. The issue waits in reviewing`
 		if len(told) != 1 || !strings.Contains(told[0].Reason, want) {
 			t.Fatalf("review-stuck notices %+v, want one reading %q and naming no status of %s", told, want, earlier)
 		}

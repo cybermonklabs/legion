@@ -63,7 +63,7 @@ func TestAWriteLeavesNothingOwed(t *testing.T) {
 	}
 
 	located := NewReader(ctx, tx, prefixAuthor, "comment", comment, refsGrammarServer).Mentions("Blocked on CORE-1.")
-	if _, err := replaceRefs(ctx, tx, "comment", comment, text.Refs(located), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, "comment", comment, text.Refs(located), nil, false); err != nil {
 		t.Fatalf("index the comment: %v", err)
 	}
 
