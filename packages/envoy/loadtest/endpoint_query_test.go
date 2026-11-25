@@ -16,16 +16,10 @@ import (
 // names it as the URL rule names a URL a request asked (redactURL: scheme, host and path, no
 // userinfo, no query), where it kept every query value but password's: meta.json's flags
 // (recorded), each -nats server (nats), the NATS monitor's refusal (nats-mon-line), Dispatch's
-// refusal (dispatch-line) and the dashboard's socket line (socket). The endpoint as given holds
-// the credential (twin). The control: each still names its host and path. Captures
-// loadtest.endpoint-query/<case>.
+// refusal (dispatch-line) and the dashboard's socket line (socket). The control: each still names
+// its host and path. Captures loadtest.endpoint-query/<case>.
 func TestAnEndpointIsNamedWithNoneOfItsQuery(t *testing.T) {
 	query := "?access" + "_token=" + redacttest.Token
-	t.Run("twin", func(t *testing.T) {
-		if !strings.Contains("http://127.0.0.1:1/prefix"+query, redacttest.Token) {
-			t.Fatal("the endpoint as given holds no credential, so the row cannot see one printed")
-		}
-	})
 	t.Run("recorded", func(t *testing.T) {
 		fs := flag.NewFlagSet("run", flag.ContinueOnError)
 		var ef endpointFlags
