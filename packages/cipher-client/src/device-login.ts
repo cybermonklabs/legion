@@ -164,14 +164,11 @@ function seconds(value: number): string {
  * digits {@link seconds} prints, the point moved three places and what follows cut off. Nothing
  * parses and floors a product or a shifted string, since either rounds to the nearest double.
  * `value * 1000` in floating point can fall short of the milliseconds the broker's own digits
- * name, as 1.001 gives 1000.9999999999999, so the poll's test would reach a code that ends
- * 1001 ms on and {@link unpollableRemedy} would read that interval as the 1 s floor; a shifted
- * string can round up to the next millisecond, as 1.0999999999999999 gives 1100 where its digits
- * name 1099.9999999999999 ms, so the test would refuse a code its interval's own digits reach.
- * Every reader of the poll's test here ({@link codeLeft}'s test, the floor's test in
- * {@link unpollableRemedy}, a code's end) takes this one, so they agree. The poll's wait is not
- * one of them ({@link waitMillisecondsOf}). Exported for the tests, which hand a refused code to
- * the poll the way the start would have.
+ * name, as 1.001 gives 1000.9999999999999; a shifted string can round up to the next millisecond,
+ * as 1.0999999999999999 gives 1100 where its digits name 1099.9999999999999 ms. The end of a code
+ * is counted so ({@link startDeviceLogin}), and a refusal reads the code's lifetime by that end
+ * ({@link unpollableRemedy}'s `left`); the interval is counted by {@link waitMillisecondsOf}.
+ * Exported for the tests, which hand a refused code to the poll the way the start would have.
  */
 export function wholeMillisecondsOf(value: number): number {
   const [whole = "", fraction = ""] = seconds(value).split(".");
@@ -183,10 +180,11 @@ export function wholeMillisecondsOf(value: number): number {
  * milliseconds, and one more where any digit past the third is not 0, so the wait is never shorter
  * than the interval (RFC 8628 Section 3.5: "at least the number of seconds specified by the
  * 'interval' parameter"): 4.9997 s waits 5000 ms, 1.001 s 1001 ms, 5 s 5000 ms. No product here
- * either: 2.007 gives 2007.0000000000002, which `Math.ceil` would wait a millisecond long. It is
- * not {@link wholeMillisecondsOf}, which the refusal reads: that cuts the interval down, as it
- * cuts the code's end, so the start and the poll refuse the same codes; this rounds it up. They
- * answer different questions, so do not fold the two into one.
+ * either: 2.007 gives 2007.0000000000002, which `Math.ceil` would wait a millisecond long.
+ * Whether a poll fits in a code is decided by this count, the wait the poll will actually take
+ * ({@link codeLeft}), and not by the interval cut down ({@link wholeMillisecondsOf}): a code whose
+ * end holds a millisecond past the cut count, as 4.9997 s against a 5 s code, would be shown and
+ * then found lapsed at its first poll.
  */
 function waitMillisecondsOf(value: number): number {
   return wholeMillisecondsOf(value) + (/\.\d{3}\d*[1-9]/.test(seconds(value)) ? 1 : 0);
@@ -406,11 +404,12 @@ export interface DeviceAuthorization {
  * What is left, at `now`, of a code that lapses at `expiresAt`: in milliseconds as its end names
  * it (`named`) and {@link MOST_LIFETIME_SECONDS} at most (`left`), and whether a poll
  * `intervalSeconds` apart reaches it: a poll waits the interval first (RFC 8628 Section 3.5),
- * so a code that lapses no later than that is one no poll reaches. {@link startDeviceLogin} and
- * {@link finishDeviceLogin} both read a code by this test, on the whole millisecond its end, a
- * `Date`, holds, against the interval's whole milliseconds as its digits name them
- * ({@link wholeMillisecondsOf}), so a code the one shows the other polls, but for the time between
- * the two calls, and an interval of 1.001 s reaches no code that ends 1001 ms on.
+ * {@link waitMillisecondsOf} of it, and reaches the code only where the code's end, a `Date`'s
+ * whole millisecond, holds more than that wait, so a code that lapses no later than the wait is
+ * one no poll reaches. {@link startDeviceLogin} and {@link finishDeviceLogin} both read a code by
+ * this test, and {@link finishDeviceLogin} waits by that same count, so a code the one shows the
+ * other polls, but for the time between the two calls, and an interval of 1.001 s reaches no code
+ * that ends 1001 ms on.
  */
 function codeLeft(
   expiresAt: Date,
@@ -419,7 +418,7 @@ function codeLeft(
 ): { readonly named: number; readonly left: number; readonly reached: boolean } {
   const named = expiresAt.getTime() - now;
   const left = Math.min(named, MOST_LIFETIME_SECONDS * 1000);
-  return { named, left, reached: wholeMillisecondsOf(intervalSeconds) < left };
+  return { named, left, reached: waitMillisecondsOf(intervalSeconds) < left };
 }
 
 /**
@@ -427,19 +426,19 @@ function codeLeft(
  * named the interval `named`, or none where it is undefined, that this machine polls at
  * `intervalSeconds`, and a code that lives `lifetimeSeconds` here, its end holding `left`
  * milliseconds ({@link codeLeft}), past no hour (the caller names the hour where it ends the code).
- * It decides on the whole milliseconds the poll's test reads: an interval reaches a code only where
- * its own whole milliseconds are fewer than those the code's end holds. This machine polls at the
- * interval named, 1 s at least, so where that is 1 s in whole milliseconds, or the code's end holds
- * 1 s or less, no shorter interval alone helps: the code must live longer, and where the interval
- * is an hour or more, the interval must also be shorter than an hour. A lifetime limit reads "a
- * millisecond or more longer" in two cases, whichever limit the arm names: where the interval used
- * is shorter than the code by less than a millisecond, which the code's end does not hold (there an
- * interval must also be shorter than the lifetime's whole milliseconds); and where the code lives
- * longer than 1 s but its end holds 1 s or less, as one of 1.0005 s does: a plain "longer than
- * 1 s" would name a limit it already passes. The floor's own limit always reads so, as does the
- * no-interval arm's limit of "both 1 s and a poll interval it names": a code that outlives 1 s by
- * less than a millisecond holds only 1 s, which no interval in [1, 1.001) s reaches, so a plain
- * "longer" would send a broker that names 1 s, or 1.0005 s, round again.
+ * It decides on the count the poll's test reads: an interval reaches a code only where its wait,
+ * rounded up to a whole millisecond, is fewer milliseconds than the code's end, cut down, holds.
+ * This machine polls at the interval named, 1 s at least, so where that waits 1 s, or the code's
+ * end holds 1 s or less, no shorter interval alone helps: the code must live longer, and where the
+ * interval is an hour or more, the interval must also be shorter than an hour. A lifetime limit
+ * reads "a millisecond or more longer" in three cases, whichever limit the arm names: where the
+ * interval used is shorter than the code, which the test still refuses (there the interval, up,
+ * must also be below the lifetime, down); where the interval has digits past the millisecond; and
+ * where the code lives longer than 1 s but its end holds 1 s or less, as one of 1.0005 s does: a
+ * plain "longer than 1 s" would name a limit it already passes. The floor's own limit always reads
+ * so, as do the no-interval arm's limits ("longer than 5 s", and "both 1 s and a poll interval it
+ * names"): a code that outlives a wait by less than a millisecond holds only that wait, which no
+ * interval reaches, so a plain "longer" would send a broker that follows it round again.
  */
 function unpollableRemedy(
   named: number | undefined,
@@ -449,19 +448,24 @@ function unpollableRemedy(
 ): string {
   const underAMillisecond = intervalSeconds < lifetimeSeconds;
   const outlivesLeast = left > LEAST_POLL_SECONDS * 1000;
+  const wait = waitMillisecondsOf(intervalSeconds);
   const longer =
-    underAMillisecond || (!outlivesLeast && lifetimeSeconds > LEAST_POLL_SECONDS)
+    underAMillisecond ||
+    wait !== wholeMillisecondsOf(intervalSeconds) ||
+    (!outlivesLeast && lifetimeSeconds > LEAST_POLL_SECONDS)
       ? "a millisecond or more longer"
       : "longer";
   const lifetime = underAMillisecond
-    ? "its codes' lifetime in whole milliseconds"
+    ? "its codes' lifetime, the interval counted up and the lifetime down to a whole millisecond"
     : "its codes' lifetime";
   if (named === undefined) {
+    // A code that outlives the default 5 s by less than a millisecond holds only 5 s, so neither
+    // limit is a plain "longer".
     return outlivesLeast
-      ? `it names a poll interval shorter than ${lifetime}, or its codes live ${longer} than ${DEFAULT_POLL_SECONDS} s`
-      : `its codes live ${longer} than ${DEFAULT_POLL_SECONDS} s, or a millisecond or more longer than both ${LEAST_POLL_SECONDS} s and a poll interval it names`;
+      ? `it names a poll interval shorter than ${lifetime}, or its codes live a millisecond or more longer than ${DEFAULT_POLL_SECONDS} s`
+      : `its codes live a millisecond or more longer than ${DEFAULT_POLL_SECONDS} s, or a millisecond or more longer than both ${LEAST_POLL_SECONDS} s and a poll interval it names`;
   }
-  if (wholeMillisecondsOf(intervalSeconds) === LEAST_POLL_SECONDS * 1000) {
+  if (wait === LEAST_POLL_SECONDS * 1000) {
     return `its codes live a millisecond or more longer than ${LEAST_POLL_SECONDS} s, the least poll interval this machine keeps`;
   }
   if (outlivesLeast) return `its poll interval is shorter than ${lifetime}`;
@@ -477,8 +481,8 @@ function unpollableRemedy(
  * this machine's bounds set it; the code's lifetime, that it had already lapsed, or the hour this
  * machine polls a code at most where that ends it first; and what must change at the broker,
  * worded from what ends the code, since asking again would meet the same answer. An interval used
- * shorter than its code's life by less than a millisecond, which the code's end does not hold, is
- * said to be so.
+ * shorter than its code's life, which the test still refuses (the interval counted up to a
+ * millisecond, the end down), is said to be so.
  */
 function unpollableAnswer(
   answered: DeviceAuthorizationResponse,
@@ -503,9 +507,9 @@ function unpollableAnswer(
     ? `${interval}, and this machine polls a device code for an hour at most`
     : `a device code that lives ${seconds(lifetimeSeconds)} s, with ${interval}`;
   // The hour is whole seconds and the end whole milliseconds, so only a lifetime the broker named
-  // can fall under a millisecond past the interval.
+  // can fall under two milliseconds past the interval.
   if (intervalSeconds < lifetimeSeconds) {
-    return `${answer}, under a millisecond apart: ${lapses}, as this machine counts a code's time in whole milliseconds; ${verdict} ${unpollableRemedy(named, intervalSeconds, lifetimeSeconds, left)}`;
+    return `${answer}, under two milliseconds apart: ${lapses}, as this machine counts a poll's wait up and a code's end down to a whole millisecond; ${verdict} ${unpollableRemedy(named, intervalSeconds, lifetimeSeconds, left)}`;
   }
   const remedy = hour
     ? "its poll interval is shorter than an hour"
@@ -722,7 +726,7 @@ export async function finishDeviceLogin(
   // The polls in a row the broker did not answer or answered with an outage.
   let outages = 0;
   // The wait before the next poll: the interval rounded up to a whole millisecond, never shorter
-  // than the broker asked (waitMillisecondsOf, which is not the cut the code's test reads), or an
+  // than the broker asked (waitMillisecondsOf, the count the code's test reads too), or an
   // outage's longer `Retry-After`.
   let waitMs = waitMillisecondsOf(interval);
   // What is left of the code, read once from the wall clock, and the hour at most, which a step

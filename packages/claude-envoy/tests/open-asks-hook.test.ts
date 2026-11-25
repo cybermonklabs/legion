@@ -1657,7 +1657,7 @@ const DEVICE_LOGIN_LOCK_SOURCE = "packages/cipher-client/src/device-login-lock.t
 /** The device-login route's waits, the one route the hook's exit leaves to run
  *  (`endOnceWritten`): its trade holds the login's lock and may yet save a rotated refresh token.
  *  So its waits run to their bounds: the trade's attempt, the refresh's two requests
- *  (device-login.ts:132's BROKER_REQUEST_MS, at :323), the lock's heartbeat
+ *  (device-login.ts:132's BROKER_REQUEST_MS, at :321), the lock's heartbeat
  *  (device-login-lock.ts:63) and the retry's jittered first wait. */
 const DEVICE_LOGIN_ROUTE: readonly CensusEntry[] = [
   DISPATCH_READ,
@@ -2053,7 +2053,7 @@ const REVIEWED_WAIT_SITES: readonly {
     count: 1,
     bound:
       "requestInit merges openid-client's own signal and `signal` into the request's (:112); its " +
-      "callers pass AbortSignal.timeout(BROKER_REQUEST_MS) (device-login.ts:323) and the trade's " +
+      "callers pass AbortSignal.timeout(BROKER_REQUEST_MS) (device-login.ts:321) and the trade's " +
       "AbortSignal.any([closed, attempt]) (token-client.ts:560), attempt being " +
       "AbortSignal.timeout(this.#attemptMs) (token-client.ts:557)",
   },
@@ -2062,7 +2062,7 @@ const REVIEWED_WAIT_SITES: readonly {
     text: "fetchImpl(url, requestInit(options, deadline, options.headers))",
     count: 1,
     bound:
-      "requestInit (broker-request.ts:112) merges `deadline`, AbortSignal.timeout(BROKER_REQUEST_MS) at :323",
+      "requestInit (broker-request.ts:112) merges `deadline`, AbortSignal.timeout(BROKER_REQUEST_MS) at :321",
   },
   {
     file: "packages/cipher-client/src/person-identity.ts",
@@ -2126,7 +2126,7 @@ const REVIEWED_WAIT_SITES: readonly {
     kind: "fetch handed on as a value",
     count: 3,
     bound:
-      "a device login's default fetch (:566, :705, :995), handed to brokerConfiguration, whose requests are made at :325 under AbortSignal.timeout(BROKER_REQUEST_MS)",
+      "a device login's default fetch (:570, :709, :999), handed to brokerConfiguration, whose requests are made at :323 under AbortSignal.timeout(BROKER_REQUEST_MS)",
   },
   {
     file: "packages/cipher-client/src/person-identity.ts",
