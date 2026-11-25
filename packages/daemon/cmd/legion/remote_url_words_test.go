@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -36,7 +37,7 @@ func TestAGitRemoteTheGhWrapperCannotReadIsNamedThroughTheRule(t *testing.T) {
 			fixture.Run(repository, append([]string{"git"}, fixturegit.InitWorkTree("", "")[1:]...)...)
 			fixture.Run(repository, "git", "remote", "add", "origin", url)
 			t.Chdir(repository)
-			_, err := readGitRemotes()
+			_, err := readGitRemotes(context.Background())
 			return err
 		}
 	}
