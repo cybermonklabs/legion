@@ -30,33 +30,23 @@ export interface Response {
 }
 
 /**
- * The tool that carries a completion call on each harness: Oh My Pi's `legion` tool, and the same
- * tool as Claude Code names it under its MCP server `legion`
- * (packages/claude-envoy/src/legion-tool.ts).
- */
-const COMPLETION_TOOL: Readonly<Record<Harness, string>> = {
-  omp: "legion",
-  claude: "mcp__legion__legion",
-};
-
-/**
  * The ops of a completion call. The daemon's end line says `endedBy` `agent` only for the facts
  * these two make (`endedBy` in packages/daemon/internal/workflow/step_models.go).
  */
 const COMPLETION_OPS: readonly unknown[] = ["handoff_complete", "sign_off"];
 
 /**
- * Whether a message's content holds a completion call: a block of `type` that calls the harness's
- * completion tool with one of the completion ops in its arguments, `field`.
+ * Whether a message's content holds a completion call: a block of `type` that calls `tool` with
+ * one of the completion ops in its arguments, `field`.
  */
-function holdsCompletion(content: unknown, harness: Harness, type: string, field: string): boolean {
+function holdsCompletion(content: unknown, type: string, tool: string, field: string): boolean {
   if (!Array.isArray(content)) return false;
   return content.some((value) => {
     const block = object(value);
     return (
       block !== null &&
       block.type === type &&
-      block.name === COMPLETION_TOOL[harness] &&
+      block.name === tool &&
       COMPLETION_OPS.includes(object(block[field])?.op)
     );
   });
@@ -130,7 +120,7 @@ function transcriptLines(path: string, what: string): Array<[number, Json]> {
  * An Oh My Pi session file. Each `message` entry of the role `assistant` is a response, named
  * `<provider>/<model>`, at the entry's `timestamp`. It counts unless its stop reason is `error`.
  * It holds a completion call where a `toolCall` block of its content calls `legion`, as the
- * session names the tool, with a completion op in its `arguments`.
+ * session names the tool of packages/pi-legion, with a completion op in its `arguments`.
  * A `model_change` entry holds its model too. A `model_usage` entry is an upkeep call and holds none.
  */
 function ompTranscript(path: string): Transcript {
@@ -161,7 +151,7 @@ function ompTranscript(path: string): Transcript {
       time: String(entry.timestamp),
       at,
       counts: message.stopReason !== "error",
-      completes: holdsCompletion(message.content, "omp", "toolCall", "arguments"),
+      completes: holdsCompletion(message.content, "toolCall", "legion", "arguments"),
     });
     held.add(model);
   }
@@ -172,9 +162,10 @@ function ompTranscript(path: string): Transcript {
  * A Claude Code transcript or `stream-json` output. Each assistant line belongs to one response,
  * once by its `message.id`, named `anthropic/<model>`, at the time of its last line. It counts
  * unless its model is `<synthetic>`. It holds a completion call where a `tool_use` block of any of
- * its lines calls `mcp__legion__legion` with a completion op in its `input`. A `system` `init`
- * line holds its model too. A line whose `parent_tool_use_id` is a string, or whose `isSidechain`
- * is true, is a subagent's and holds none.
+ * its lines calls `mcp__legion__legion` with a completion op in its `input`: the `legion` tool of
+ * packages/claude-envoy under its MCP server `legion`. A `system` `init` line holds its model too.
+ * A line whose `parent_tool_use_id` is a string, or whose `isSidechain` is true, is a subagent's
+ * and holds none.
  */
 function claudeTranscript(path: string): Transcript {
   const what = "the Claude Code transcript";
@@ -209,13 +200,13 @@ function claudeTranscript(path: string): Transcript {
         `line ${line} of ${what} ${path} gives response ${message.id} the model ${model}, and an earlier line gives it ${seen.model}`,
       ]);
     }
+    const completes = holdsCompletion(message.content, "tool_use", "mcp__legion__legion", "input");
     responses.set(message.id, {
       model,
       time: String(entry.timestamp),
       at,
       counts: message.model !== "<synthetic>",
-      completes:
-        seen?.completes === true || holdsCompletion(message.content, "claude", "tool_use", "input"),
+      completes: completes || seen?.completes === true,
     });
     held.add(model);
   }
@@ -597,7 +588,10 @@ function whyNot(
   }
   const completion = end.endedBy === "agent" ? completionOf(responses, start, end) : undefined;
   const leftOut = completion ?? null;
-  for (const [read, without] of [[start, null], [end, leftOut]] as const) {
+  for (const [read, without] of [
+    [start, null],
+    [end, leftOut],
+  ] as const) {
     const { before, after } = gapsOf(read.readAt, responses, without);
     if ((before !== null && before < NEAR) || (after !== null && after < NEAR)) {
       return { why: `a response ended within 2 s of its ${read.side} read`, completion };
@@ -607,12 +601,16 @@ function whyNot(
   return { why: "", completion };
 }
 
-/** What a step's `GAP:` line says of the completion's response, where `whyNot` looked for one. */
-function leftOutText(completion: Response | null | undefined, end: ReadLine): string {
+/**
+ * What a step's `GAP:` line says of the completion's response, where `whyNot` looked for one: then
+ * `ends` holds the one end read.
+ */
+function leftOutText(completion: Response | null | undefined, ends: ReadLine[]): string {
   if (completion === undefined) return "";
   if (completion === null) {
     return " No response holds the completion call, so the end read leaves out none.";
   }
+  const [end] = ends;
   const [gap, side] =
     completion.at <= end.readAt
       ? [end.readAt - completion.at, "before"]
@@ -807,7 +805,7 @@ function stepModelsCheck(argv: string[]): { lines: string[]; code: number } {
       transcript,
       ends,
       window: why === "" ? { start: starts[0], end: ends[0], completion: leftOut } : null,
-      gaps: `${startGaps}. ${endGaps}.${leftOutText(completion, ends[0])}`,
+      gaps: `${startGaps}. ${endGaps}.${leftOutText(completion, ends)}`,
       why,
     });
   }
