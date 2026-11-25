@@ -102,11 +102,12 @@ export const ArtifactApprovalSchema = z
     /** The latest review's kind, so a reader can say an approval is a plan review's rather than a
      *  person's; absent while no review stands, and from a Dispatch older than review kinds. */
     kind: ArtifactReviewKindSchema.optional(),
-    /** The version a carried approval was carried from (`artifact_review_carries`); absent for a
-     *  person's own approval, for no review, and from a Dispatch older than the carry record. A
-     *  carried person's approval reads `kind: person` with the person as its actor, so this member
-     *  is how a reader tells the carry from the person's own act. */
-    carried_from_version: z.number().int().optional(),
+    /** The version a carried approval was carried from (`artifact_review_carries`), and `null`
+     *  for a person's own approval, for a plan review's approval, and where no review stands.
+     *  Absent only from a Dispatch older than the carry record during a roll. A carried person's
+     *  approval reads `kind: person` with the person as its actor, so this member is how a reader
+     *  tells the carry from the person's own act. */
+    carried_from_version: z.number().int().nullable().optional(),
     /** Every document the open request covers, each at the version the request names, this one
      *  included; absent when it covers this document alone. It is the request's own list
      *  (`AskApprovalDocument`), so each entry carries the `requested_version` the request records
@@ -292,6 +293,10 @@ export const artifactReviewEventPayloadFields = {
   kind: ArtifactReviewKindSchema.optional(),
   content_sha256: z.string().optional(),
   content_sha256_source: z.enum(["insert", "backfill"]).optional(),
+  /** The version a carried approval was carried from (`artifact_review_carries`), and `null` for a
+   *  person's own review or a plan review's; absent only from a Dispatch older than the carry
+   *  record during a roll. */
+  carried_from_version: z.number().int().nullable().optional(),
 };
 
 export const WrittenArtifactReviewEventPayloadSchema = z
@@ -312,6 +317,7 @@ export const ArtifactReviewEventPayloadSchema = z.object({
   ask_id: artifactReviewEventPayloadFields.ask_id.optional(),
   content_sha256: artifactReviewEventPayloadFields.content_sha256,
   content_sha256_source: artifactReviewEventPayloadFields.content_sha256_source,
+  carried_from_version: artifactReviewEventPayloadFields.carried_from_version,
 });
 
 /** A server-owned typed-block attribute was restored from its indexed row. */
