@@ -293,12 +293,16 @@ func populatedState(t *testing.T) State {
 		StartedAt:     time.Date(2026, 9, 22, 9, 17, 12, 0, time.UTC),
 	}
 	// What the daemon last saw of the architect's turns and of its launches (contract 86): the
-	// turn it began and ended, the ready that dates the death's cause beside them, the cause its
-	// process was last found gone under, and the failure of a start since that ready. One claim
-	// view of the fixture carries all five, so every record describes each key.
+	// turn it began and ended, the ready, the cause its process was last found gone under, and the
+	// failure of a start since that ready, with the time the daemon recorded each of the two
+	// causes (causeTimesContract): LastDeathAt dates the death, before the ready, so the running
+	// agent survived it. One claim view of the fixture carries all seven, so every record
+	// describes each key.
 	architectTurnStart := time.Date(2026, 9, 22, 9, 16, 40, 0, time.UTC)
 	architectTurnEnd := time.Date(2026, 9, 22, 9, 16, 58, 0, time.UTC)
 	architectReady := time.Date(2026, 9, 22, 9, 15, 44, 0, time.UTC)
+	architectDied := time.Date(2026, 9, 22, 9, 15, 21, 0, time.UTC)
+	architectStartFailed := time.Date(2026, 9, 22, 9, 15, 50, 0, time.UTC)
 	state := State{
 		Daemon: DaemonInfo{
 			Project:       "legion",
@@ -383,15 +387,18 @@ func populatedState(t *testing.T) State {
 					UpdateState: UpdateStateNone,
 					Step:        StepViewOf(architectStep),
 					Wake:        &WakeView{Kind: supervise.WakeCatchUp, DueAt: time.Date(2026, 9, 22, 9, 18, 3, 0, time.UTC)},
-					// The turns this agent began and ended, the ready that dates the death, and
-					// the two causes (contract 86). This view carries every key so each record
-					// describes it: a live claim carries a start failure only while its agent
-					// has not been ready since, which a ready claim never is.
-					LastTurnStart:    &architectTurnStart,
-					LastTurnEnd:      &architectTurnEnd,
-					LastReady:        &architectReady,
-					LastDeathCause:   "the pane's process was gone at the daemon's read",
-					LastStartFailure: "the pod was not ready within the worker boot timeout",
+					// The turns this agent began and ended, its ready, and the two causes with
+					// the time each was recorded, LastDeathAt dating the death (contracts 86 and
+					// 256). This view carries every key so each record describes it: a live claim
+					// carries a start failure only while its agent has not been ready since, which
+					// a ready claim never is.
+					LastTurnStart:      &architectTurnStart,
+					LastTurnEnd:        &architectTurnEnd,
+					LastReady:          &architectReady,
+					LastDeathCause:     "the pane's process was gone at the daemon's read",
+					LastDeathAt:        &architectDied,
+					LastStartFailure:   "the pod was not ready within the worker boot timeout",
+					LastStartFailureAt: &architectStartFailed,
 				},
 				Workers: map[claim.Role]PhaseView{
 					claim.RolePlanner: {

@@ -159,6 +159,14 @@ jobs:
       - name: Typecheck pi-legion
         run: bun run typecheck
         working-directory: packages/pi-legion
+      # The skills' guard: every skill within its budget, every link resolving and every pinned
+      # sentence present. It is a text check of under a second, so a pull request runs it here
+      # rather than leave it to pi-legion's suite in the merge queue
+      # (.github/ci-notes/ci.md#the-pi-legion-plugins-suite-and-its-build). It runs before the pack,
+      # which rewrites package.json.
+      - name: Check the skills against their guard
+        run: bun test src/skills-guard.test.ts
+        working-directory: packages/pi-legion
       # The release's pack (release.yaml's pi_legion_build job), which is also this job's build: the
       # manifest pointed at the one bundle, then scripts/pi-plugin-prepack.sh, which bundles
       # legion.ts, writes dist/THIRD_PARTY_NOTICES (failing the pack on a bundled package whose

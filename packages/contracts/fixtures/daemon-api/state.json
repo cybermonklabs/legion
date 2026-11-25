@@ -183,7 +183,9 @@
         "lastTurnStart": "2026-09-22T09:16:40Z",
         "lastTurnEnd": "2026-09-22T09:16:58Z",
         "lastDeathCause": "the pane's process was gone at the daemon's read",
+        "lastDeathAt": "2026-09-22T09:15:21Z",
         "lastStartFailure": "the pod was not ready within the worker boot timeout",
+        "lastStartFailureAt": "2026-09-22T09:15:50Z",
         "lastReady": "2026-09-22T09:15:44Z",
         "step": {
           "at": "2026-09-22T09:16:58Z",

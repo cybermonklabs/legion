@@ -580,6 +580,7 @@ var stateNarrowings = []stateNarrowing{
 	{contract: intakeGiveUpsContract, state: withoutIntakeGiveUps, dropped: "intakeGiveUps"},
 	{contract: podHoldContract, issue: withoutPodHold, dropped: "the issues' podHold"},
 	{contract: priorityContract, issue: withoutPriority, dropped: "the issues' priority and their waitingLine's priority"},
+	{contract: causeTimesContract, issue: withoutCauseTimes, dropped: "the claim views' lastDeathAt and lastStartFailureAt"},
 	{contract: admissionCapContract, state: withoutAdmissionCap,
 		dropped: "admission.ceiling, admission.override and admission.capChanges"},
 }
@@ -1083,8 +1084,8 @@ func withoutPodHold(issue Issue) (Issue, bool) {
 // priorityContract is the daemon contract that added each issue's own Dispatch `priority` and
 // its waitingLine's `priority`, the priority that placed it in the line (version.go's 250). A
 // plugin before it is served every issue without either key (withoutPriority). It is a literal
-// of its own and never DaemonAPIVersion, for the reason assignmentPlanContract is, and it is the
-// last number of answers.go's SupportedContracts.
+// of its own and never DaemonAPIVersion, for the reason assignmentPlanContract is, and answers.go's
+// SupportedContracts names the constant.
 const priorityContract = 250
 
 // withoutPriority is the issue with no `priority` and a waitingLine with no `priority`, the two
@@ -1100,6 +1101,25 @@ func withoutPriority(issue Issue) (Issue, bool) {
 	}
 	return issue, moved
 }
+
+// causeTimesContract is the daemon contract that added each claim view's `lastDeathAt` and
+// `lastStartFailureAt`, the time the daemon recorded the claim's `lastDeathCause` and its
+// `lastStartFailure` (version.go's 256). A plugin before it is served
+// every claim view without the two keys (withoutCauseTimes): its reader strips a key it does not
+// name, so the band is what keeps the times from a caller that did not ask for them rather than
+// what keeps such a caller reading. The two are one band because each dates the cause beside it
+// and both arrive at this one number. The causes themselves stay as stateMachineContract serves
+// them. The contract removed no key and added no value to an enumeration: the two are times. It
+// put the same keys on the operator claim too, and the operator routes are not served down,
+// because their reader is the `legion` built with this daemon. priorityContract stands below it
+// with no row of stateNarrowings between the two, so a caller from that contract to 255 is served
+// 250's keys.
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
+// that constant, and the contract the keys arrived at stays where it is. It moves only with this
+// change's own number, and it is the last number of answers.go's SupportedContracts, which names
+// the constant rather than its number for that reason.
+const causeTimesContract = 256
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
@@ -1173,6 +1193,16 @@ func withoutAssignmentPlans(issue Issue) (Issue, bool) {
 		issue.Assignments[i].Plan = ""
 	}
 	return issue, true
+}
+
+// withoutCauseTimes is the issue with no claim view carrying `lastDeathAt` or
+// `lastStartFailureAt`, the two keys causeTimesContract added to the claim views; every other key
+// of each view stays, its causes among them.
+func withoutCauseTimes(issue Issue) (Issue, bool) {
+	return withEachClaimView(issue, func(view ClaimView) ClaimView {
+		view.LastDeathAt, view.LastStartFailureAt = nil, nil
+		return view
+	})
 }
 
 // withoutRepositoryApps is state whose `repositories` block carries no `apps` on any entry of

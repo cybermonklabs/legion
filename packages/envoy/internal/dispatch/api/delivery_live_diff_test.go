@@ -23,9 +23,10 @@ import (
 )
 
 // updateFixtures is this package's one -update flag: a test binary takes one flag of a name, and
-// three tests here write files the repository commits: packages/contracts/fixtures/live,
-// packages/contracts/fixtures/ask-reply-recipients.json and testdata/routes.txt.
-var updateFixtures = flag.Bool("update", false, "rewrite the fixtures the tests of this package commit: packages/contracts/fixtures/live, packages/contracts/fixtures/ask-reply-recipients.json and testdata/routes.txt")
+// four tests here write files the repository commits: packages/contracts/fixtures/live,
+// packages/contracts/fixtures/ask-reply-recipients.json, testdata/routes.txt and
+// testdata/status-change.
+var updateFixtures = flag.Bool("update", false, "rewrite the fixtures the tests of this package commit: packages/contracts/fixtures/live, packages/contracts/fixtures/ask-reply-recipients.json, testdata/routes.txt and testdata/status-change")
 
 // liveJSONField is one JSON field of a struct as encoding/json writes it: its name and type.
 type liveJSONField struct {

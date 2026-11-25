@@ -6,6 +6,7 @@ import type { IssueSummary } from "../../api/types";
 import { AnchoredPanel } from "../../components/AnchoredPanel";
 import type { RowNoun } from "../../components/DataTable";
 import { MultiSelect } from "../../components/MultiSelect";
+import { useFootInset } from "../../hooks/useFootInset";
 import {
   borderDefault,
   card,
@@ -19,6 +20,7 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { useMediaQuery } from "../shell/useDialog";
 import { issueStatuses, statusLabel } from "./board-model";
 import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
 import { useIssueFilters } from "./issue-filters";
@@ -449,6 +451,12 @@ export function IssueTablePager<TData>({
   );
 }
 
+/** Tailwind's `sm` itself: true exactly when the selection bar's `sm:` classes put it at the foot
+ *  of the screen rather than under the header. In `rem`, for `MD_VIEWPORT_QUERY`'s reason
+ *  (`features/shell/useDialog.ts`): Tailwind declares `sm` as `40rem`, so only a `rem` query
+ *  switches with those classes at any default font size. */
+const SM_VIEWPORT_QUERY = "(min-width: 40rem)";
+
 export function IssueTableSelection({
   table,
   epics,
@@ -473,12 +481,21 @@ export function IssueTableSelection({
   const setSelection = table.setRowSelection;
   /** The epic the reader has picked to move the selection into; no write has been sent yet. */
   const [epic, setEpic] = useState("");
+  // From `sm` up the bar sits at the foot of the screen, in the foot's page layer
+  // (`hooks/useFootInset.ts` lists the foot's layers and the elements in each), so the hook holds
+  // its band, its box on the screen, and the floats keep clear of its controls. Below `sm` the
+  // bar sits under the header, at the top of the screen and not at its foot, so it counts nothing
+  // there.
+  const barRef = useRef<HTMLDivElement>(null);
+  const atFoot = useMediaQuery(SM_VIEWPORT_QUERY);
+  useFootInset(barRef, selectedKeys.length > 0 && atFoot, "page");
   return (
     <>
       {/* Over the page, not in it: selecting a row moves nothing else. */}
       {selectedKeys.length === 0 ? null : (
         <div
           className={`fixed inset-x-2 top-14 z-30 mx-auto flex w-fit max-w-[calc(100vw-1rem)] flex-nowrap items-center gap-2 overflow-x-auto whitespace-nowrap rounded-2xl border px-4 py-2 text-sm shadow-xl sm:top-auto sm:bottom-4 [&>*]:shrink-0 ${card} ${textPrimaryOnCanvas}`}
+          ref={barRef}
           role="toolbar"
         >
           <span className="mr-1 font-semibold">{selectedKeys.length} selected</span>

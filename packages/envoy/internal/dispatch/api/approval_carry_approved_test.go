@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 )
 
 // The version a human approved is held to the asks rows as the version his answer writes is
@@ -18,9 +17,12 @@ import (
 //
 // Each test approves inside the window a live write opens, so each guards the race it could lose:
 // the review route pins the latest version, and a settlement that fires first writes the row back
-// and moves the latest on. The review's version must be the one the test meant, and that
-// version's markdown must show what the test put there, or the test fails as setup rather than
-// passing over a version that was as its row has it all along.
+// and moves the latest on. The window is pastTheRun, longer than any run of this package's test
+// binary, and the test settles the document at once (docs.SettleNow) wherever it needs a
+// settlement, so no settlement fires between the write and the approval however slow the machine
+// is. The review's version must still be the one the test meant, and that version's markdown must
+// show what the test put there, or the test fails as setup rather than passing over a version that
+// was as its row has it all along.
 
 // approveVersion approves the document as login through the review route, which pins its latest
 // version, and fails t unless that is version number: the version the test meant.
@@ -56,7 +58,7 @@ func TestAnApprovedVersionShowingADecisionOtherThanItsRowsCarriesNothing(t *test
 		{"copied_from_document", "dispatch://TEST/artifact/other", `copied_from_document="dispatch://TEST/artifact/other"`},
 	} {
 		t.Run(tc.attribute, func(t *testing.T) {
-			handler, database, documents := settlingCarryDocuments(t, 2*time.Second)
+			handler, database, documents := settlingCarryDocuments(t, pastTheRun)
 			issue := createInteractionIssue(t, handler, "TEST", "Approved "+tc.attribute+" other than the row's", "Context\n\n"+regionAsk)
 			asks := settledDecisionBlocks(t, handler, documents, issue.Key, issue.PrimaryArtifactID, map[string]string{"region": "Which region goes first?"})
 			answerDecisionBlock(t, handler, asks["region"], "alice", []string{"East"}, "", nil)
@@ -93,7 +95,7 @@ func TestAnApprovedVersionShowingADecisionOtherThanItsRowsCarriesNothing(t *test
 		})
 	}
 	t.Run("row-true", func(t *testing.T) {
-		handler, _, documents := settlingCarryDocuments(t, 2*time.Second)
+		handler, _, documents := settlingCarryDocuments(t, pastTheRun)
 		issue := createInteractionIssue(t, handler, "TEST", "Approved as the row has it", "Context\n\n"+regionAsk)
 		asks := settledDecisionBlocks(t, handler, documents, issue.Key, issue.PrimaryArtifactID, map[string]string{"region": "Which region goes first?"})
 		answerDecisionBlock(t, handler, asks["region"], "alice", []string{"East"}, "", nil)
@@ -121,7 +123,7 @@ func TestAnApprovedVersionShowingADecisionOtherThanItsRowsCarriesNothing(t *test
 // approval: nothing is carried.
 func TestAnApprovedVersionShowingADecidedBlockUnderOtherWordingCarriesNothing(t *testing.T) {
 	t.Parallel()
-	handler, _, documents := settlingCarryDocuments(t, 2*time.Second)
+	handler, _, documents := settlingCarryDocuments(t, pastTheRun)
 	issue := createInteractionIssue(t, handler, "TEST", "Approved under other wording", "Context\n\n"+regionAsk)
 	asks := settledDecisionBlocks(t, handler, documents, issue.Key, issue.PrimaryArtifactID, map[string]string{"region": "Which region goes first?"})
 	answerDecisionBlock(t, handler, asks["region"], "alice", []string{"East"}, "", nil)

@@ -348,10 +348,13 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 		if mark.SuspendsNoRole {
 			kind, role = releaseKindUnowned, ""
 		}
+		// The mark starts with no teardown noted (TeardownNotReached), written here because the
+		// column's default is TeardownReached, the note of every mark an earlier release writes.
 		if _, err := tx.Exec(ctx, `insert into issue_releases
-			(project, issue, generation, first_row, boundary_row, last_row, started_row, wake_row, role, kind, marked_at, turn_start)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now(), $11)`,
-			project, issue, int64(mark.Generation), first, boundary, last, started, wake, role, kind, turned); err != nil {
+			(project, issue, generation, first_row, boundary_row, last_row, started_row, wake_row, role, kind, marked_at, turn_start, teardown)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now(), $11, $12)`,
+			project, issue, int64(mark.Generation), first, boundary, last, started, wake, role, kind, turned,
+			string(TeardownNotReached)); err != nil {
 			return fmt.Errorf("mark the release of %s: %w", issue, err)
 		}
 		// The pod this release stops is gone, so a resume of it still open — a wake whose pod
@@ -876,6 +879,20 @@ func (s *Store) ClearIssueRelease(ctx context.Context, project, issue string) er
 		return deleteIssueRelease(ctx, tx, project, issue)
 	}); err != nil {
 		return fmt.Errorf("clear the release mark of %s: %w", issue, err)
+	}
+	return nil
+}
+
+// NoteReleaseTeardown notes on the mark of release, issue's release, whether an attempt of its
+// teardown came to the runtime's first write (ReleaseTeardown). A mark that is gone, or that
+// belongs to another release, takes nothing: that release is over, and its teardown reads it so.
+func (s *Store) NoteReleaseTeardown(ctx context.Context, project, issue string, release int64, teardown ReleaseTeardown) error {
+	if err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `update issue_releases set teardown = $4 where project = $1 and issue = $2 and id = $3`,
+			project, issue, release, string(teardown))
+		return err
+	}); err != nil {
+		return fmt.Errorf("note the teardown of the release of %s: %w", issue, err)
 	}
 	return nil
 }

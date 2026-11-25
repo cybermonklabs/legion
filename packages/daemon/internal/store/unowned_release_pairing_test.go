@@ -32,12 +32,12 @@ func TestAReleaseThatSuspendsNoRoleEndsNoWake(t *testing.T) {
 		st := migratedStore(t)
 		ctx := context.Background()
 		at := time.Now().UTC().Truncate(time.Millisecond)
-		idle, err := st.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue,
+		idle, _, err := st.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue,
 			Generation: 1, Roles: []string{"architect"}, At: at.Add(-time.Hour)})
 		if err != nil {
 			t.Fatalf("record the idle release: %v", err)
 		}
-		unowned, err := st.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue,
+		unowned, _, err := st.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue,
 			Generation: 1, At: at.Add(-30 * time.Minute)})
 		if err != nil {
 			t.Fatalf("record the release of the pod no claim owns: %v", err)
@@ -68,7 +68,7 @@ func TestAReleaseThatSuspendsNoRoleEndsNoWake(t *testing.T) {
 		st := migratedStore(t)
 		ctx := context.Background()
 		at := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
-		idle, err := st.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue,
+		idle, _, err := st.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue,
 			Generation: 1, Roles: []string{"architect"}, At: at})
 		if err != nil {
 			t.Fatalf("record the idle release: %v", err)
@@ -85,7 +85,7 @@ func TestAReleaseThatSuspendsNoRoleEndsNoWake(t *testing.T) {
 		// been released again since. A release that changes no claim makes that premise false:
 		// the architect is still released, still woken, and still without a first turn, which is
 		// exactly the stranded claim the report is for.
-		if _, err := st.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue,
+		if _, _, err := st.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue,
 			Generation: 1, At: at.Add(30 * time.Minute)}); err != nil {
 			t.Fatalf("record the release of the pod no claim owns: %v", err)
 		}

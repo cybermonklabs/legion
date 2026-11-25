@@ -101,7 +101,7 @@ func TestTheStateNamesAPodsStandingHold(t *testing.T) {
 	}
 	view := &source{
 		store: st, records: record.NewStore(), project: cfg.Project, projectToken: project,
-		runtime: "tmux", admissionCeiling: cfg.AdmissionCap, startedAt: time.Now(),
+		runtime: "tmux", admissionCap: cfg.AdmissionCap, admissionCeiling: cfg.AdmissionCeiling, startedAt: time.Now(),
 		deployment: func([]sandbox.CacheStatus) capabilities.Deployment { return capabilities.Deployment{} },
 		reports:    func() map[claim.Token]capabilities.Report { return nil },
 	}
@@ -159,7 +159,7 @@ func TestTheStateNamesAPodsStandingHold(t *testing.T) {
 	t.Run("released", func(t *testing.T) {
 		hold(t, released, workflow.IdleHoldImage, "", first)
 		shown(t, released, workflow.IdleHoldImage)
-		if _, err := st.RecordPodRelease(ctx, store.PodRelease{Project: project, Issue: released, At: first.Add(time.Minute)}); err != nil {
+		if _, _, err := st.RecordPodRelease(ctx, store.PodRelease{Project: project, Issue: released, At: first.Add(time.Minute)}); err != nil {
 			t.Fatalf("record the release of %s: %v", released, err)
 		}
 		if got := servedHolds(t, server, released)[released]; got != nil {

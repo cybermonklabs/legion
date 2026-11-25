@@ -35,7 +35,7 @@ func refreshCountSource(t *testing.T, cfg config.Config, st *store.Store) *sourc
 	}
 	return &source{
 		store: st, records: record.NewStore(), project: cfg.Project, projectToken: project,
-		runtime: "tmux", admissionCeiling: cfg.AdmissionCap, startedAt: time.Now(),
+		runtime: "tmux", admissionCap: cfg.AdmissionCap, admissionCeiling: cfg.AdmissionCeiling, startedAt: time.Now(),
 		deployment: func([]sandbox.CacheStatus) capabilities.Deployment { return capabilities.Deployment{} },
 		reports:    func() map[claim.Token]capabilities.Report { return nil },
 		noPluginInstall: func(c supervise.Claim) bool {

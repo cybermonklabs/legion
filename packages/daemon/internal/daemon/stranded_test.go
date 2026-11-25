@@ -471,7 +471,7 @@ func TestStateSnapshotKeepsStrandedClaimsConsistentWithWorkerStates(t *testing.T
 		t.Fatal(err)
 	}
 	view := &source{
-		store: st, records: record.NewStore(), project: cfg.Project, projectToken: project, runtime: "tmux", admissionCeiling: cfg.AdmissionCap,
+		store: st, records: record.NewStore(), project: cfg.Project, projectToken: project, runtime: "tmux", admissionCap: cfg.AdmissionCap, admissionCeiling: cfg.AdmissionCeiling,
 		startedAt: time.Now(), deployment: func([]sandbox.CacheStatus) capabilities.Deployment { return capabilities.Deployment{} },
 		reports: func() map[claim.Token]capabilities.Report { return nil },
 	}

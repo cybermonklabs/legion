@@ -274,7 +274,7 @@ func TestTheArchitectSweepsStallArmsAreServedOnTheStateWhetherOrNotTheController
 		t.Fatal(err)
 	}
 	view := &source{
-		store: st, records: records, project: quietStallProject, projectToken: project, runtime: "tmux", admissionCeiling: 1,
+		store: st, records: records, project: quietStallProject, projectToken: project, runtime: "tmux", admissionCap: 1, admissionCeiling: 1,
 		startedAt: time.Now(), deployment: func([]sandbox.CacheStatus) capabilities.Deployment { return capabilities.Deployment{} },
 		reports:         func() map[claim.Token]capabilities.Report { return nil },
 		architectStalls: admission.ArchitectStallArms,
