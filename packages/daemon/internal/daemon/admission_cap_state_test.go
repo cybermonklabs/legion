@@ -26,7 +26,7 @@ import (
 func TestTheStateNamesTheCapInForceTheCeilingAndEveryChange(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig(t)
-	cfg.AdmissionCap = 4
+	cfg.AdmissionCap, cfg.AdmissionCeiling = 4, 4
 	ctx := context.Background()
 	st, err := store.Open(ctx, cfg.PostgresDSN)
 	if err != nil {
