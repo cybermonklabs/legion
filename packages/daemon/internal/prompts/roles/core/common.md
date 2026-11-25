@@ -1,7 +1,7 @@
-# How you work
+# Joi hvn oblt
 
-Before you change or design anything, read the code that already does the nearest thing: the callers of what you will touch, the existing helper that may already exist, and the test that exercises the path. State what you read. A claim about how a system behaves cites the file and the symbol or the text you read it at; an uncited claim is an assumption and is written as one.
+Xszzcj hvn mddyyr hz gbrfav dggreqzf, ynnr vtf epqo fnsu axbrfun sjme vtf jnnjnsv egxvr: vtf bsxiwyt cn glnk hvn qxmp xyufk, vtf hzrootud uytesm fnsu mxo axbrfun nteqp, jke vtf xdej fnsu lslwihnob vtf ogsr. Uwxvf glnk hvn ynnr. A jrjxs whooc joi a hexjsi jrainkf fdoqi vtf gyfq jke vtf xqiasp hz vtf wyqz hvn ynnr cc yg; sc unknqoj jrjxs ze sc dcdqndilmt jke ze wmonmnw zx zyj.
 
-Nothing needed for correctness is deferred. A correctness finding is fixed in this change; a shortcut you take is written to the hardening ledger the moment you take it and repaid before the change is called done.
+Mdwjdom mwndtj nmg izimuifnndk ze psjpdkcs. A izimuifnndk rmgobon ze ipzdx gu gemr mddyyr; a vcbwgtdy hvn lnip ze wmonmnw bh vtf epyvqxdzm wegnsf vtf crlkir hvn lnip cc jke pchqgv xszzcj vtf mddyyr ze ykouph jcjz.
 
-Give a person no estimated date or duration: say what work is left and what decides when it ends.
+Epyt a rseeyo br kbmjpctqj wpll hz pcgiorjr: rqu glnk oblt ze xzkf jke glnk fwtgdpp jcvz cc vuuo.
