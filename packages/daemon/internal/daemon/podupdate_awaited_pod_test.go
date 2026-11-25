@@ -159,6 +159,7 @@ func (r *podUpdateRig) retryLaunch() {
 // its line names the launcher's read and the waiting implementer under
 // waitingOnThePodNotWaitedFor, and nobody is told, since nothing went with the pod.
 func TestPodUpdateReplacesThePodItsOnlyClaimsLaunchWaitsOn(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	token := rig.tokens[claim.RoleImplementer]
 	rig.drifts(podUpdateExchangeDrift)
@@ -227,6 +228,7 @@ func TestPodUpdateReplacesThePodItsOnlyClaimsLaunchWaitsOn(t *testing.T) {
 // the pod waits on its answer, and the pod is replaced through its process, not through the
 // waiting claim's locator. The waiting claim is recorded in the round and asked nothing.
 func TestPodUpdateGoesThroughAProcessASecondClaimStartsWhileTheFirstWaits(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),
 		podUpdateRole{role: claim.RoleTester, state: supervise.StateQueued},
@@ -334,6 +336,7 @@ func wantReadThroughTheTester(t *testing.T, rig *podUpdateRig, line map[string]a
 // keepAtLaunch). So this replacement is the one that names the implementer, and it names it only
 // where its read found work or failed, as it names a claim the round passed over.
 func TestPodUpdateReadsTheWorkspaceForAWaitingClaimBesideAProcess(t *testing.T) {
+	t.Parallel()
 	rig, line := replacedThroughAProcessBesideAWaitingClaim(t,
 		runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1}, roundBreakingDrift, claim.RoleImplementer)
 	wantReadThroughTheTester(t, rig, line, "found work")
@@ -348,6 +351,7 @@ func TestPodUpdateReadsTheWorkspaceForAWaitingClaimBesideAProcess(t *testing.T) 
 // The same round over a workspace whose read finds no work: the replacement reads the workspace
 // through the tester, and nobody is told, since the read found nothing that went with the pod.
 func TestPodUpdateWritesNothingWhereTheReadForAWaitingClaimFindsNoWork(t *testing.T) {
+	t.Parallel()
 	rig, line := replacedThroughAProcessBesideAWaitingClaim(t, runtime.WorkspaceWork{Head: passedOverHead}, podUpdateExchangeDrift, claim.RoleImplementer)
 	wantReadThroughTheTester(t, rig, line, "found no work")
 	if messages, told := rig.messages(), rig.architectNotices(record.WorkspaceTakenNotice); len(messages) != 0 || len(told) != 0 {
@@ -368,6 +372,7 @@ func TestPodUpdateWritesNothingWhereTheReadForAWaitingClaimFindsNoWork(t *testin
 // The controls are the notice's list built as either of those two lists joined: this test then
 // fails, and its message names the planner last, or first.
 func TestPodUpdateNamesEachClaimItDidNotWaitForInTheGroupsOrder(t *testing.T) {
+	t.Parallel()
 	failed := func(role claim.Role) podUpdateRole {
 		return podUpdateRole{role: role, state: supervise.StateFailed, session: true, contract: readyWorker(role).contract}
 	}
@@ -394,6 +399,7 @@ func TestPodUpdateNamesEachClaimItDidNotWaitForInTheGroupsOrder(t *testing.T) {
 // waitingOnThePodNotWaitedFor, the architect's workspace-taken notice names no role, and the issue
 // is written nothing.
 func TestPodUpdateNamesNoWaitingMemberThatAnsweredWhileItsMachineDecides(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	token, tester := rig.tokens[claim.RoleImplementer], rig.tokens[claim.RoleTester]
 	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
@@ -464,6 +470,7 @@ func TestPodUpdateNamesNoWaitingMemberThatAnsweredWhileItsMachineDecides(t *test
 // The control is a line with one of the two fields empty: this test then fails and names that
 // field.
 func TestPodUpdateReplacementLineNamesEachClaimTheRoundDidNotWaitFor(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),
 		podUpdateRole{role: claim.RolePlanner, state: supervise.StateFailed, session: true,
@@ -508,6 +515,7 @@ func TestPodUpdateReplacementLineNamesEachClaimTheRoundDidNotWaitFor(t *testing.
 // The negative controls are #4392 before its fix, where the round read the workspace through the
 // waiting implementer, and the read failed.
 func TestPodUpdateReadsThroughTheLauncherForAClaimWhoseLaunchWaitsOnThePod(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),
 		suspendedRole(claim.RolePlanner, supervise.SuspendedByDaemon),
@@ -580,6 +588,7 @@ func wantToldTaken(t *testing.T, rig *podUpdateRig, named ...string) string {
 // has no second sentence for one that made none: the claims it names, whoever replaced the pod,
 // are roles that had not answered and whose process did not run in the pod.
 func TestTheWorkspaceTakenNoticeNamesItsRolesUnderOneSentence(t *testing.T) {
+	t.Parallel()
 	planner := supervise.Claim{Token: mustClaimToken(t, podUpdateIssue, claim.RolePlanner), Issue: podUpdateIssue, Role: claim.RolePlanner,
 		State: supervise.StateSuspended, Session: "ses_planner", UpdateRound: podUpdateRound}
 	for name, tc := range map[string]struct {
@@ -638,6 +647,7 @@ func registeredIn(c supervise.Claim, set supervise.RegisteredPods) supervise.Cla
 // one pod, and an awaited pod other than a process's is two pods, a replacement in flight. Its
 // drift is read through the awaited locator, which carries the claim's own token.
 func TestTheRoundReadsThePodAClaimsLaunchWaitsOn(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		group []supervise.Claim
 		pod   string
@@ -705,6 +715,7 @@ func TestTheRoundReadsThePodAClaimsLaunchWaitsOn(t *testing.T) {
 // shared workspace. A claim with neither is not named. A claim with no session that waits on
 // another pod is not a way to find this round's pod, so the round is not posted to it.
 func TestTheRoundWaitsOnNoAnswerOfAClaimWhoseLaunchWaitsOnItsPod(t *testing.T) {
+	t.Parallel()
 	round := podUpdateRound
 	clock := roundClock{now: podUpdateStart, grace: podUpdateGrace}
 	inPod := supervise.RegisteredPods{Pods: []string{podUpdatePod}}
@@ -811,6 +822,7 @@ func TestTheRoundWaitsOnNoAnswerOfAClaimWhoseLaunchWaitsOnItsPod(t *testing.T) {
 // the process it records or the pod its launch waits on (podKnown). Each row writes that locator
 // from the pod and the generation it built its claim with (runningIn, waitingOn).
 func TestTheRoundReplacesThePodThroughAClaimWhoseLaunchWaitsOnIt(t *testing.T) {
+	t.Parallel()
 	round := podUpdateRound
 	waiting := waitingOn(t, claim.RoleImplementer, podUpdatePod, round, true)
 	elsewhere := waitingOn(t, claim.RoleImplementer, podUpdateReplacementPod, round, true)
@@ -870,6 +882,7 @@ func TestTheRoundReplacesThePodThroughAClaimWhoseLaunchWaitsOnIt(t *testing.T) {
 // the pod through a waiting claim that never registered there). What it records at the
 // end, a process in the new pod and no wait on the round's pod, decides nothing.
 func TestPodUpdateNamesNothingForAClaimWithNoSessionWhoseOwnRetryReplacesThePod(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, podUpdateRole{role: claim.RoleImplementer, state: supervise.StateQueued})
 	token := rig.tokens[claim.RoleImplementer]
 	rig.drifts(podUpdateExchangeDrift)
@@ -956,6 +969,7 @@ func TestPodUpdateNamesNothingForAClaimWithNoSessionWhoseOwnRetryReplacesThePod(
 // there, so workOnRoundPod answers no for both, and the issue is written nothing about
 // either. By the end both record a process in the new pod, which decides nothing.
 func TestPodUpdateNamesNothingForAnotherClaimWithNoSessionWhoseRetryFollowsTheReplacement(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateQueued},
 		podUpdateRole{role: claim.RoleTester, state: supervise.StateQueued},
@@ -1061,6 +1075,7 @@ func TestPodUpdateNamesNothingForAnotherClaimWithNoSessionWhoseRetryFollowsTheRe
 // (docs/kubernetes.md: every end of a round names a role that had not answered only where that
 // role's unpushed work may be on the round's pod's disk).
 func TestPodUpdateNamesNoClaimRefusedForThePodWithNoSessionWhenThePodDies(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateQueued},
 		readyWorker(claim.RoleTester),

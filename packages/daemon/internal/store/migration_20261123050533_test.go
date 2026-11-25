@@ -53,6 +53,7 @@ const workspaceBundlesShape = `select c.column_name || ' ' || c.data_type || ' '
 // again with every column and constraint they had, and a roll forward runs the migration once
 // more: the table goes and idle_release_declines and turn_start come back.
 func TestTheWayBackOfTheReleaseThatKeepsNoSavedWorkspace(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, keepsNoWorkspaceVersion-1)

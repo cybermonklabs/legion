@@ -29,6 +29,7 @@ import (
 //   - a_pod_the_runtime_could_not_name_then_its_uid: a decline whose pod the runtime could not
 //     name, then the same pod by its uid, tell once; another named pod tells again.
 func TestTheArchitectIsToldOnceForEachKeptPod(t *testing.T) {
+	t.Parallel()
 	type read struct {
 		pod    string
 		role   claim.Role

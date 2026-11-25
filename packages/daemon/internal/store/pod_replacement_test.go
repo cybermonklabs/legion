@@ -22,6 +22,7 @@ import (
 // target too: the read before the act that took the target is the last word of what it held. A
 // record of another target stands.
 func TestTheFinishOfAnActFinishesEveryRecordOfItsTarget(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -67,6 +68,7 @@ func TestTheFinishOfAnActFinishesEveryRecordOfItsTarget(t *testing.T) {
 // Important 1 on #5285 at acda4d1e). The same delete recorded with no pod taken with it leaves the
 // pod's records, as a launch's delete over a Sandbox that ran no pod of its own does.
 func TestTheFinishOfAVolumeActWithItsPodFinishesThatPodsRecords(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		withPod  bool
@@ -110,6 +112,7 @@ func TestTheFinishOfAVolumeActWithItsPodFinishesThatPodsRecords(t *testing.T) {
 // record of the pod that Sandbox ran. A finish that may yield and finds no record to yield to takes
 // as any finish does. A record of another pod stands in each case.
 func TestTheFinishOfAnActTakesTheRecordsOfEveryTargetItTook(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		operation string
@@ -174,6 +177,7 @@ func TestTheFinishOfAnActTakesTheRecordsOfEveryTargetItTook(t *testing.T) {
 // that took the older record's row first: it asks for the newer record's row once the finish of the
 // newer record waits.
 func TestTwoFinishesOfOneIssueAtOnceBothCommit(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
