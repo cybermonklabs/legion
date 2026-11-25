@@ -1099,7 +1099,7 @@ test("pending without check_opened_at is refused before a record is read", async
     executePhaseOp(ops, { op: "handoff_complete", summary: "Waiting.", verdict: "pending" })
   ).rejects.toThrow(
     new Error(
-      "handoff_complete's pending verdict reports a production check: send check_opened_at from the look task, or pass or fail to complete a step"
+      "handoff_complete's pending verdict reports a production check. Send check_opened_at with the time from the look task or check.openedAt from read_record. To complete a step, send pass or fail."
     )
   );
   expect(routes).toEqual([]);
@@ -1117,7 +1117,7 @@ test("wake_at is a check report's: a phase completion carrying one is refused, s
     })
   ).rejects.toThrow(
     new Error(
-      "handoff_complete's wake_at reports a production check: send check_opened_at from the look task; a step's completion carries no wake"
+      "handoff_complete's wake_at reports a production check. Send check_opened_at with the time from the look task or check.openedAt from read_record. A step's completion carries no wake."
     )
   );
   expect(routes).toEqual([]);

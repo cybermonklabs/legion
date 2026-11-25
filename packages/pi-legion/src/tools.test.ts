@@ -1257,7 +1257,7 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
   expect(pendingOnPhase.content).toEqual([
     {
       type: "text",
-      text: "handoff_complete's pending verdict reports a production check: send check_opened_at from the look task, or pass or fail to complete a step",
+      text: "handoff_complete's pending verdict reports a production check. Send check_opened_at with the time from the look task or check.openedAt from read_record. To complete a step, send pass or fail.",
     },
   ]);
   expect(calls).toHaveLength(before);
