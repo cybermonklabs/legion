@@ -104,9 +104,8 @@ func productionEnv(t *testing.T) []string {
 
 // TestAnHTTPEdgeURLIsRefusedOutsideALocalRun: a BROKER_EDGE_URL or BROKER_EDGE_MACHINE_LOGIN_URL
 // that is not https, however its scheme is written, refuses a start that is not a local run,
-// naming that setting and never the rest of the URL's text but what redact.URL keeps; https ones
-// start, a broker with no edge is refused nothing, and a local run (BROKER_FAKE_SECRETS_FILE set)
-// may use http for either.
+// naming that setting and never the URL; https ones start, a broker with no edge is refused
+// nothing, and a local run (BROKER_FAKE_SECRETS_FILE set) may use http for either.
 //
 // The named reverts: drop refuseHTTPEdgeURLsInProduction's scheme check, and the http rows start;
 // check BROKER_EDGE_URL alone, as before, and the plain-http machine login page starts.
