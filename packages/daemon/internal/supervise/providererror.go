@@ -27,6 +27,27 @@ const (
 	providerErrorRunTold = 6
 )
 
+// The two classes of a failed prompt (StreamPromptResult.Code, shimwire.PromptError.Code) that
+// decide something here. Oh My Pi declares them on `RpcPromptError.code`
+// (packages/coding-agent/src/modes/rpc/rpc-types.ts of cybermonklabs/oh-my-pi at the pinned tag).
+const (
+	// codeCyberPolicy is OpenAI refusing the session's content for cybersecurity risk, or Oh My Pi
+	// holding the request because such a refusal earlier in the session still holds OpenAI's
+	// routes. Oh My Pi sends it with retryable false and with whatever status a gateway relayed the
+	// refusal under, a 503 among them. It cannot clear: each copy of the content sent to OpenAI
+	// again adds a refusal to the organization's record, and the next prompt the daemon sends is
+	// input from outside the session, which ends Oh My Pi's own hold
+	// (packages/coding-agent/src/session/cyber-policy-closure.ts there). So it holds the issue,
+	// whatever its status (holdsTheIssue).
+	codeCyberPolicy = "cyber_policy"
+	// codeCostCap is the session reaching Oh My Pi's `session.maxCost`: Oh My Pi sent no request,
+	// and every later one ends the same way until the cap is raised, which applies to the next
+	// request (cost-gate.ts there). It can clear, and a send that is refused costs nothing, so it
+	// goes on the ladder; it is named as the cause (providerErrorCause), so the controller's notice
+	// says what a person has to raise.
+	codeCostCap = "cost_cap"
+)
+
 // promptRetryDelay is the wait before the attempt-th send of a task a provider error took back,
 // from attempt 1: 30 s, 60 s, 120 s, 240 s, 480 s, and 10 minutes from the sixth send on. There
 // is no jitter — the ladder is one claim's own, not a herd's — and no attempt limit, so it
@@ -55,17 +76,18 @@ func promptRetryDelay(attempt int) time.Duration {
 //
 // The decision is made here, from this prompt's own result and nothing else
 // (dispatch://INFRA-956/comment/4fa88c00-3313-4008-8eea-d7f95a04e24d): the status the provider
-// answered either holds the issue (holdsTheIssue) or the task goes to the same session again on
-// the ladder. Oh My Pi's Retryable flag is logged and read by nothing: the status alone decides.
+// answered, or Oh My Pi's class of the failure, either holds the issue (holdsTheIssue) or the task
+// goes to the same session again on the ladder. Oh My Pi's Retryable flag is logged and read by
+// nothing: the status and the class decide.
 //
 // The cause is named once here and handed to whoever writes it down, since one failed turn has
 // one cause and the words are the same in the claim's failure, in the prompt the task goes
 // behind and in the controller's notice.
 func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) error {
 	cause, failed, err := m.providerErrorTurnEnded(ctx, providerErrorTurn{
-		status: r.HTTPStatus, model: r.Model,
+		status: r.HTTPStatus, code: r.Code, model: r.Model,
 		line:  "supervise: the turn this task's prompt ran ended in a provider error; the task is kept and sent again",
-		attrs: []any{"delivery", r.DeliveryID, "retryable", r.Retryable, "provider", r.Provider},
+		attrs: []any{"delivery", r.DeliveryID, "retryable", r.Retryable, "provider", r.Provider, "code", r.Code},
 		turn:  "this claim's turn",
 		next:  fmt.Sprintf("the daemon keeps the task and sends it again every %s at most", promptRetryMax),
 		// The prompt's turn ran and is over, and its result has ended the wait for results
@@ -106,11 +128,13 @@ func (m *Machine) unpromptedTurnEnded(ctx context.Context, r RequestTurnOutcome)
 }
 
 // providerErrorTurn is one turn that ended in a provider error, as providerErrorTurnEnded counts
-// it: the status and the model the error named (each zero where it named none), the warning
-// line's message and its own attributes, the failure sentence's words for the turn, the notice's
-// words for what the daemon does now, and what runs before a failure, if anything.
+// it: the status, Oh My Pi's class of the failure and the model the error named (each zero where
+// it named none), the warning line's message and its own attributes, the failure sentence's words
+// for the turn, the notice's words for what the daemon does now, and what runs before a failure,
+// if anything. A turn-outcome report carries no class, so an unprompted turn's code is empty.
 type providerErrorTurn struct {
 	status int
+	code   string
 	model  string
 	line   string
 	attrs  []any
@@ -121,13 +145,13 @@ type providerErrorTurn struct {
 
 // providerErrorTurnEnded is what every turn that ended in a provider error does, whatever ran it
 // (providerErrored, unpromptedTurnEnded), so that both kinds make the claim's one run: the cause
-// built from the status alone (providerErrorCause), one more turn in the run, the warning line,
-// the controller's notice at providerErrorRunTold, then t.before, and, for a status that cannot
-// clear (holdsTheIssue), the claim's failure under CauseProviderError, which holds the issue for
-// its architect. It answers the cause, and whether it failed the claim; what a turn whose error
-// can clear does next is its caller's.
+// built from the status and the class alone (providerErrorCause), one more turn in the run, the
+// warning line, the controller's notice at providerErrorRunTold, then t.before, and, for an error
+// that cannot clear (holdsTheIssue), the claim's failure under CauseProviderError, which holds the
+// issue for its architect. It answers the cause, and whether it failed the claim; what a turn
+// whose error can clear does next is its caller's.
 func (m *Machine) providerErrorTurnEnded(ctx context.Context, t providerErrorTurn) (string, bool, error) {
-	cause := providerErrorCause(t.status)
+	cause := providerErrorCause(t.status, t.code)
 	m.claim.ProviderErrorRun++
 	m.log.Warn(t.line, append(t.attrs, "httpStatus", t.status, "model", t.model, "providerErrorRun", m.claim.ProviderErrorRun)...)
 	m.tellControllerOfProviderErrors(t.model, cause, t.next)
@@ -136,7 +160,7 @@ func (m *Machine) providerErrorTurnEnded(ctx context.Context, t providerErrorTur
 			return cause, false, err
 		}
 	}
-	if !holdsTheIssue(t.status) {
+	if !holdsTheIssue(t.status, t.code) {
 		return cause, false, nil
 	}
 	return cause, true, m.fail(ctx, CauseProviderError, "a provider error that cannot clear ended "+t.turn+": "+cause)
@@ -155,10 +179,11 @@ func (m *Machine) providerErrorRunOver(line string, attrs ...any) bool {
 	return true
 }
 
-// holdsTheIssue is whether an error of this HTTP status fails the claim, so that the workflow
-// holds the issue for its architect: a client error, 400 to 499, that is none of 401, 403, 408
-// and 429. A malformed request is the case this exists for. Every other error sends the task
-// again:
+// holdsTheIssue is whether an error of this HTTP status and this class fails the claim, so that
+// the workflow holds the issue for its architect, and nothing is sent again: a cyber-policy
+// refusal (codeCyberPolicy), whatever its status, and a client error, 400 to 499, that is none of
+// 401, 403, 408 and 429. A malformed request is the case the second exists for. Every other error
+// sends the task again:
 //
 //   - 5xx, 408 and 429 are the provider saying "not now", which the ladder waits out;
 //   - 401 and 403 are a credential, which is the fleet's and not this claim's work
@@ -166,7 +191,7 @@ func (m *Machine) providerErrorRunOver(line string, attrs ...any) bool {
 //     whose turn hits one is worse than sending the task again, and the notice the project's
 //     controller is given at six such turns in a row is what tells a person
 //     (tellControllerOfProviderErrors);
-//   - no status at all is a turn that ends with nothing but a message, two kinds among them.
+//   - no status at all is a turn that ends with nothing but a message, three kinds among them.
 //     A content-filter refusal clears because the plugin has already moved the session down its
 //     model chain, so the next prompt goes to another model. A turn whose provider key could not
 //     be read (a `!command` apiKey that printed nothing, such as `!cat` of a token file not yet
@@ -174,9 +199,18 @@ func (m *Machine) providerErrorRunOver(line string, attrs ...any) bool {
 //     serve for a while) ends with the error of its last auto-retry, `retryable` and with no
 //     status; the plugin reads it as a provider error and moves nothing, and the key, like a
 //     401 or a 403, is the fleet's to restore, so the task goes again on the same model. A
-//     Claude Code worker's bridge names a status only for a result Claude Code marked api_error
+//     session past its cost cap (codeCostCap) clears when a person raises the cap. A Claude Code
+//     worker's bridge names a status only for a result Claude Code marked api_error
 //     (internal/claudebridge's result), so its statusless turns go again here too.
-func holdsTheIssue(status int) bool {
+//
+// A cyber-policy refusal is the one class that decides alone. Sending it again on the ladder is
+// what Oh My Pi's hold exists to stop, and the ladder cannot stop it itself: each send is a prompt
+// from outside the session, which ends that hold, and the session's content goes to OpenAI again.
+// Only a person can change what the session sends or where, so the architect gets the issue.
+func holdsTheIssue(status int, code string) bool {
+	if code == codeCyberPolicy {
+		return true
+	}
 	switch status {
 	case http.StatusUnauthorized, http.StatusForbidden, http.StatusRequestTimeout, http.StatusTooManyRequests:
 		return false
@@ -212,13 +246,23 @@ func promptRetryDue(m *Machine, ctx context.Context, _ Event) error {
 	return m.sendPending(ctx)
 }
 
-// providerErrorCause names what ended the turn, in words built from the status alone: the HTTP
-// status the provider answered, else nothing more than that a provider failed. A refusal's
-// own explanation is itself refused when it is sent back
+// providerErrorCause names what ended the turn, in words built from the status and Oh My Pi's
+// class alone: a cyber-policy refusal or the session's cost cap by name, with the status when the
+// refusal carried one, else the HTTP status the provider answered, else nothing more than that a
+// provider failed. A refusal's own explanation is itself refused when it is sent back
 // (dispatch://INFRA-956/artifact/cause-evidence-md), so the provider's text reaches neither the
 // prompt this is written into nor the controller's notice. A content filter's refusal carries no
-// status, so it is the second of the two.
-func providerErrorCause(status int) string {
+// status, so it is the last of these.
+func providerErrorCause(status int, code string) string {
+	switch code {
+	case codeCyberPolicy:
+		if status != 0 {
+			return "OpenAI's cyber_policy refusal of this session's content (HTTP " + strconv.Itoa(status) + ")"
+		}
+		return "OpenAI's cyber_policy refusal of this session's content"
+	case codeCostCap:
+		return "the session's cost cap (Oh My Pi's session.maxCost, cost_cap)"
+	}
 	if status != 0 {
 		return "a provider error (HTTP " + strconv.Itoa(status) + ")"
 	}

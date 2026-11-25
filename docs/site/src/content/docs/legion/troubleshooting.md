@@ -584,19 +584,28 @@ fallback chain, so the next prompt goes to another model
 ([Starting fresh when a session is lost or wedged](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#starting-fresh-when-a-session-is-lost-or-wedged));
 a 429, a 408, a 401, a 403, a 5xx and an error the provider answered no status for are sent again
 too: a credential error is the fleet's rather than this claim's work, so it climbs the ladder like
-any other and the controller's notice at six is what tells a person. A newer
+any other and the controller's notice at six is what tells a person. A session that reached Oh My
+Pi's cost cap (`session.maxCost`; Oh My Pi gives the result the code `cost_cap` and sends no
+request) climbs the ladder too: the re-sent prompt and the notice name the cost cap, and the next
+send after a person raises the cap goes through. A newer
 task for that claim replaces the one the error took back and is sent at once, so it does not wait
 out a ladder that reaches ten minutes a step; while that claim's session is being compacted it
 waits for the compaction's end instead, as everything the claim is owed does. An update round
 waits for none of this: the daemon publishes the round's message to the role's own topic, and the
 round ends at its bound whether or not a turn of that role succeeds.
 
-**One provider error does hold the issue**, for its architect: one whose HTTP status is a client
-error, 400 to 499, that is none of 401, 403, 408 and 429. A malformed request is
-the case it exists for. The claim fails with `why` reading `a provider error that cannot clear
-ended this claim's turn: <cause>`, where the cause names that status, and the hold is the
-architect's to retry or escalate as any held phase is. The claim's own record carries that
-failure under the cause word `provider_error`, with the same sentence as its `detail`.
+**Two provider errors do hold the issue**, for its architect. One is an error whose HTTP status is
+a client error, 400 to 499, that is none of 401, 403, 408 and 429. A malformed request is the case
+it exists for. The other is OpenAI's cyber-policy refusal of the session's content, which Oh My Pi
+gives the code `cyber_policy`, whatever status it came with (a gateway relays it as a 503, and a
+request Oh My Pi held after such a refusal carries none). Each copy of that content sent to OpenAI
+again adds a refusal to the organization's record, and a prompt from the daemon is input from
+outside the session, which ends Oh My Pi's own hold, so the daemon sends nothing again. The claim
+fails with `why` reading `a provider error that cannot clear ended this claim's turn: <cause>`,
+where the cause names that status, or `OpenAI's cyber_policy refusal of this session's content`,
+and the hold is the architect's to retry or escalate as any held phase is. The claim's own record
+carries that failure under the cause word `provider_error`, with the same sentence as its
+`detail`.
 
 **A turn that no prompt of the daemon's ran** — a phase reminder the plugin starts itself, an Envoy
 message, a background job's result — has no prompt result, so the daemon judges it from the

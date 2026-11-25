@@ -99,13 +99,14 @@ type StreamAnswered struct {
 // extension answered locally — which is the definitive form of what the wait for the turn
 // (TimerTurn) otherwise only times out on.
 //
-// Error is Oh My Pi's message for the failure, and Retryable, HTTPStatus, Provider and Model the
-// rest of its error object: Oh My Pi's own word for a failure that may succeed on a later try,
+// Error is Oh My Pi's message for the failure, and Retryable, HTTPStatus, Provider, Model and Code
+// the rest of its error object: Oh My Pi's own word for a failure that may succeed on a later try,
 // the status of the provider request that failed (zero when it had none, as a content-filter
-// refusal does), and the provider and the model that request went to. The message is prose of
-// the provider's and is never parsed, and HTTPStatus alone decides what such a failure means
-// (providerErrored); the other three are logged, and the model is named in the controller's
-// notice.
+// refusal does), the provider and the model that request went to, and Oh My Pi's class of the
+// failure (shimwire.PromptError.Code; empty when it gives none). The message is prose of the
+// provider's and is never parsed; HTTPStatus and Code decide what such a failure means
+// (providerErrored, holdsTheIssue); Retryable and the provider are logged, and the model is named
+// in the controller's notice.
 type StreamPromptResult struct {
 	Claim        claim.Token
 	DeliveryID   string
@@ -115,6 +116,7 @@ type StreamPromptResult struct {
 	HTTPStatus   int
 	Provider     string
 	Model        string
+	Code         string
 }
 
 // StreamClosed is the claim's connection closing. It says nothing about the process by itself.

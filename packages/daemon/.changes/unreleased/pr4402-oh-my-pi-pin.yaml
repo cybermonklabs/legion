@@ -42,8 +42,8 @@ body: |-
     `set +e +u +o pipefail;`, so a `set -e`, `set -u` or `set -o pipefail` in one call no longer
     cuts a later call, and the daemon's own worker, architect and controller prompts say never to
     set `-e`, `-u` or `pipefail` at the top level of the shell. The worker stream keeps the `code`
-    that Oh My Pi gives a refused or failed prompt (`session_busy`, `cost_cap`), which no daemon
-    decision reads. The daemon reads `OMP_CONFIG_ROOT` where it finds Oh My Pi's directories.
+    that Oh My Pi gives a refused or failed prompt (`session_busy`, `cost_cap`). The daemon reads
+    `OMP_CONFIG_ROOT` where it finds Oh My Pi's directories.
 time: 2026-11-18T10:13:00Z
 custom:
     Issue: pr4402
