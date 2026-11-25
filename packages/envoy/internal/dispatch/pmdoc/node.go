@@ -443,6 +443,34 @@ func askContentBreak(children []*Node) string {
 	return ""
 }
 
+// TypedContentBreak is the content rule of block, a typed block, and what of children breaks it
+// were they block's children: the first that is no paragraph where the rule is paragraph+ ("a
+// heading"), the first that is no block where it is block+, and what askContentBreak names where
+// it is an ask's ("a paragraph after its options"); broken is "" where children keep the rule, and
+// both are "" where block is of no typed block's type.
+func TypedContentBreak(block *Node, children []*Node) (rule BlockContentRule, broken string) {
+	typ, typed := typedBlock(block.Type)
+	if !typed {
+		return "", ""
+	}
+	if typ.Content == BlockContentParagraphsOptionalBulletList {
+		return typ.Content, askContentBreak(children)
+	}
+	if len(children) == 0 {
+		return typ.Content, "nothing"
+	}
+	for _, child := range children {
+		switch {
+		case child == nil:
+			return typ.Content, "a missing block"
+		case typ.Content == BlockContentParagraphs && child.Type != "paragraph",
+			typ.Content == BlockContentBlocks && !isBlockNodeType(child.Type):
+			return typ.Content, blockName(child.Type)
+		}
+	}
+	return typ.Content, ""
+}
+
 // blockName is a block type as a reader names it, with its article: "a code block", "an
 // ordered list", "a horizontal rule".
 func blockName(nodeType string) string {

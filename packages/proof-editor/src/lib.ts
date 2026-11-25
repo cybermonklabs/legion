@@ -106,6 +106,7 @@ import { remarkSoftBreakAsSpace } from './dispatch-soft-breaks';
 import { configureDispatchLinks } from './dispatch-links';
 import { trailingNewlineInputPlugin } from './trailing-newline-input';
 import { recordMarkHistoryPlugin } from './record-mark-history';
+import { keptStoredMarksPlugin } from './kept-stored-marks';
 import {
   editorHighlightsPlugin,
   pulseHighlight,
@@ -493,6 +494,9 @@ export async function createProofEditor(
     .use(trailingNewlineInputPlugin)
     // The composer's own record-mark writes are never undo steps
     .use(recordMarkHistoryPlugin)
+    // A mark's input rule closes its mark for the text typed next, which the authored tracker's
+    // appended transaction would undo (./kept-stored-marks.ts)
+    .use(keptStoredMarksPlugin)
     .use(editorHighlightsPlugin)
     .use(editorChangeDecorationsPlugin)
     .use(referenceDecorationsPlugin)

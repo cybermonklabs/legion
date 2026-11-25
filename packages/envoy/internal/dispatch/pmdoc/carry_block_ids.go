@@ -26,12 +26,51 @@ import "slices"
 // from EnsureBlockIDs. An id next names anywhere is not carried, nor is one no ask row or anchor
 // could store (storedBlockID). A repeat live carries may be carried to both holders, and
 // EnsureBlockIDs keeps it for the first, as it would have.
+//
+// live is compared, too, without the empty paragraphs the live text shows as blank lines alone
+// (withoutBlankParagraphs), which an upload of that text therefore holds no block for: paired
+// with next, each would set every later block of next against live's block before it, and cost
+// each its id.
 func carryBlockIDs(next, live *Node) {
 	if next == nil || live == nil {
 		return
 	}
 	carrier := blockIDCarrier{named: blockIDCounts(next)}
-	carrier.carryChildren(next.Children, StripAnchorMarks(live).Children)
+	carrier.carryChildren(next.Children, withoutBlankParagraphs(StripAnchorMarks(live)).Children)
+}
+
+// withoutBlankParagraphs is node without each empty paragraph that has a sibling, at every depth:
+// the live text writes such a paragraph as blank lines between its neighbours, which the
+// markdown's parse reads as no block. An empty paragraph that is its parent's only child, as an
+// empty table cell's is, is what the parse makes there, and stays. The nodes it leaves unchanged
+// are shared with node, which carryBlockIDs never writes.
+func withoutBlankParagraphs(node *Node) *Node {
+	var children []*Node
+	for index, child := range node.Children {
+		kept := child
+		if isEmptyParagraph(child) && len(node.Children) > 1 {
+			kept = nil
+		} else if len(child.Children) > 0 {
+			kept = withoutBlankParagraphs(child)
+		}
+		if kept != child && children == nil {
+			children = slices.Clone(node.Children[:index])
+		}
+		if children != nil && kept != nil {
+			children = append(children, kept)
+		}
+	}
+	if children == nil {
+		return node
+	}
+	copied := *node
+	copied.Children = children
+	return &copied
+}
+
+// isEmptyParagraph reports whether node is a paragraph that holds nothing.
+func isEmptyParagraph(node *Node) bool {
+	return node.Type == "paragraph" && len(node.Children) == 0
 }
 
 // blockIDCarrier carries live's ids onto next (carryBlockIDs). named counts every id next names

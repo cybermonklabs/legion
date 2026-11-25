@@ -259,6 +259,11 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		writeError(w, "TARGET_SPANS_BLOCKS", http.StatusBadRequest, err.Error())
 		return
 	}
+	var doesNotFit *docs.ErrInsertDoesNotFit
+	if errors.As(err, &doesNotFit) {
+		writeError(w, "INSERT_DOES_NOT_FIT", http.StatusBadRequest, doesNotFit.Error())
+		return
+	}
 	if errors.Is(err, pmdoc.ErrTableWidth) {
 		writeError(w, "TABLE_WIDTH", http.StatusBadRequest, err.Error())
 		return

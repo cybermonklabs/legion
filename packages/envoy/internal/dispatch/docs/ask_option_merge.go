@@ -117,16 +117,16 @@ func mergeAskOptions(list *pmdoc.Node, options []model.AskOption) []mergedOption
 	if list != nil {
 		items = list.Children
 	}
-	held := heldAskOptions(items)
+	held, lines := heldAskOptions(items), heldOptionLines(items)
 	merged := make([]mergedOption, 0, len(options))
-	for sent, match := range pairedAskOptions(held, options) {
+	for sent, match := range pairedAskOptions(held, lines, options) {
 		option := options[sent]
 		if match < 0 {
 			merged = append(merged, mergedOption{written: optionItem(option)})
 			continue
 		}
 		item := items[match]
-		if held[match].Description == option.Description {
+		if held[match].Description == option.Description || lines[match] == optionLine(option) {
 			merged = append(merged, mergedOption{written: item, held: item, whole: true})
 			continue
 		}
@@ -142,17 +142,20 @@ func mergeAskOptions(list *pmdoc.Node, options []model.AskOption) []mergedOption
 
 // pairedAskOptions is the item each sent option is written in, by its index in the list, -1 for
 // an option no item holds. It pairs in two passes over the options, in the order sent: each
-// option first takes the first item no earlier option took that says exactly what it says, and
-// then an option still unpaired takes the first item no option took holding its label. Two items
-// can carry one label, and the words a person wrote belong to the item they wrote them under:
-// pairing on the label alone would give the first of them to the first option sent, so an edit
-// changing the other's description would move a person's sub-list under the line it rewrote and
-// drop the item that says what it left alone.
+// option first takes the first item no earlier option took that says exactly what it says - its
+// text as parseAskBlock reads it, or its line as the document stores it (lines), inline code
+// included, so an option sent back as its stored line is the item it came from (INFRA-4345 R4,
+// from dispatch://INFRA-2374, where such an option read as a rewrite of that line and was
+// refused) - and then an option still unpaired takes the first item no option took holding its
+// label. Two items can carry one label, and the words a person wrote belong to the item they
+// wrote them under: pairing on the label alone would give the first of them to the first option
+// sent, so an edit changing the other's description would move a person's sub-list under the
+// line it rewrote and drop the item that says what it left alone.
 //
 // held is what each item of the list says, read as parseAskBlock reads it (heldAskOptions). It
 // is read once, by the merge, and the ask-edit route's refusals weigh the merge's result
 // (refuseLostOptionWords), so the words the route weighs are the words the merge writes over.
-func pairedAskOptions(held, options []model.AskOption) []int {
+func pairedAskOptions(held []model.AskOption, lines []string, options []model.AskOption) []int {
 	pairs := make([]int, len(options))
 	for index := range pairs {
 		pairs[index] = -1
@@ -164,7 +167,8 @@ func pairedAskOptions(held, options []model.AskOption) []int {
 				continue
 			}
 			for index, item := range held {
-				if taken[index] || item.Label != option.Label || whole && item != option {
+				same := item == option || lines[index] != "" && lines[index] == optionLine(option)
+				if taken[index] || whole && !same || !whole && item.Label != option.Label {
 					continue
 				}
 				pairs[sent], taken[index] = index, true
@@ -183,6 +187,22 @@ func heldAskOptions(items []*pmdoc.Node) []model.AskOption {
 		held[index] = optionOfItem(item)
 	}
 	return held
+}
+
+// heldOptionLines is each item's line as the document stores it, its first paragraph's markdown
+// with inline code and every other markup it writes, or "" for an item whose first block is no
+// paragraph or does not render.
+func heldOptionLines(items []*pmdoc.Node) []string {
+	lines := make([]string, len(items))
+	for index, item := range items {
+		if len(item.Children) == 0 || item.Children[0].Type != "paragraph" {
+			continue
+		}
+		if markdown, err := renderBlock(item.Children[0]); err == nil {
+			lines[index] = strings.TrimSpace(markdown)
+		}
+	}
+	return lines
 }
 
 // refuseLostOptionWords refuses an options edit of current that would delete words only the
@@ -397,9 +417,10 @@ func optionLine(option model.AskOption) string {
 	return option.Label + ": " + option.Description
 }
 
-// optionParagraph is the paragraph an option's list item opens with, holding its line alone.
+// optionParagraph is the paragraph an option's list item opens with, holding its line alone, a
+// code span in it as inline code (inlineWithCode).
 func optionParagraph(option model.AskOption) *pmdoc.Node {
-	return &pmdoc.Node{Type: "paragraph", Children: inlineWithHardBreaks(optionLine(option))}
+	return &pmdoc.Node{Type: "paragraph", Children: inlineWithCode(optionLine(option))}
 }
 
 // optionItem is the list item an option no list item holds is written as.

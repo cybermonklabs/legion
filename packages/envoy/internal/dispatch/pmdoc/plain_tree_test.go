@@ -26,7 +26,8 @@ func blockBoundary(doc *Node, target Range, after bool) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return valid.BlockBoundary(target, after)
+	boundary, err := valid.BlockBoundary(target, after)
+	return boundary.Position, err
 }
 
 func listBoundary(doc *Node, target Range, after bool) (int, bool, error) {
@@ -39,13 +40,14 @@ func listBoundary(doc *Node, target Range, after bool) (int, bool, error) {
 
 // blockIndex is the index of the document-level block holding target, the answer
 // ValidDocument.BlockIndexes gives for a range whose endpoints lie in one block, found the way
-// documentBlock finds it. The tests that hold BlockIndexes to its rule read it from here.
+// childBlock finds it over the document. The tests that hold BlockIndexes to its rule read it from
+// here.
 func blockIndex(doc *Node, target Range) (int, error) {
 	valid, err := ValidateDocument(doc, "BlockIndexes")
 	if err != nil {
 		return 0, err
 	}
-	index, _, _, err := documentBlock(valid.Node(), target)
+	index, _, _, err := childBlock(valid.Node(), 0, target)
 	return index, err
 }
 

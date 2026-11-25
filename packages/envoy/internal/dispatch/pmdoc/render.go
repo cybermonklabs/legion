@@ -21,7 +21,7 @@ import (
 // A hash also moves when the corpus itself gains or loses a document, which changes nothing a
 // stored rendering holds: that writes the new hash and leaves this number where it is. Only a
 // change to what the renderer writes of a document the corpus already held raises it.
-const RendererVersion = 1
+const RendererVersion = 2
 
 type renderer struct {
 	b                bytes.Buffer
@@ -33,9 +33,10 @@ type renderer struct {
 	labelBrackets labelBrackets
 	// heldLineStart is the current line's first text character, held until the line is written.
 	heldLineStart *lineCandidate
-	// openers is each text `<` the inline run being written wrote as it is (angleOpener), and
-	// escapedOpeners those of them its writing again escapes (writeInlineRun).
-	openers, escapedOpeners []angleOpener
+	// openers is each text `<` and backtick the inline run being written wrote as it is
+	// (textOpener), and escapedOpeners those of them its writing again escapes (writeInlineRun).
+	openers        []textOpener
+	escapedOpeners map[openerKey]bool
 	// footnoteLineAt is where the last footnote definition's first line begins in the markdown,
 	// and footnoteLabel is its label as written, so that the line is read after a reference to it.
 	footnoteLineAt int

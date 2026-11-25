@@ -556,13 +556,13 @@ func encodeTypedAttribute(blockType, name string, definition BlockAttributeSchem
 // escapeDirectiveAttribute writes a value's characters as the browser editor's parser reads them
 // back: that parser ends a quoted value at the first quote and decodes character references alone
 // (micromark-extension-directive), so the characters that would end the value or decode are
-// written as references and every other character, a backslash among them, is written as it is. A
-// line ending is written as a reference too, since the attributes stand on the block's one
-// opening line.
+// written as references, and a backslash and a `<` are written as they are, so a check's
+// `run="a < b"` reads back as written (INFRA-4345 R11). A `>` is still written `&gt;`, as every
+// stored attribute holds it, though neither parser needs it so. A line ending is written as a
+// reference too, since the attributes stand on the block's one opening line.
 func escapeDirectiveAttribute(value string) string {
 	value = strings.ReplaceAll(value, "&", "&amp;")
 	value = strings.ReplaceAll(value, "\"", "&#x22;")
-	value = strings.ReplaceAll(value, "<", "&lt;")
 	value = strings.ReplaceAll(value, ">", "&gt;")
 	value = strings.ReplaceAll(value, "\n", "&#xA;")
 	return strings.ReplaceAll(value, "\r", "&#xD;")

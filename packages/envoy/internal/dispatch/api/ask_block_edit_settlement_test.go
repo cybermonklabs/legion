@@ -519,7 +519,8 @@ func TestEditBlockAskCarriesAQuestionWhoseLineLooksLikeABlock(t *testing.T) {
 
 // Acceptance 7, accepted half: everything the block can carry is accepted, normalised exactly as
 // the block parses it back - a description-less option renders as a bare label, a single newline
-// survives as a line break, and surrounding whitespace is trimmed rather than refused.
+// survives as a line break, surrounding whitespace is trimmed rather than refused, and a code span
+// is code in the block, which the row reads as its text (INFRA-4345 R4).
 func TestEditBlockAskAcceptsWhatTheBlockCanCarry(t *testing.T) {
 	t.Parallel()
 	handler, _ := blockAskHandler(t)
@@ -539,7 +540,7 @@ func TestEditBlockAskAcceptsWhatTheBlockCanCarry(t *testing.T) {
 	settleDocument(t, handler, issue.PrimaryArtifactID, issue.Key, "after-normalise")
 
 	ask := readBlockAsk(t, handler, askID)
-	if ask.Question != "Which *transport* ships `first`?\nSay which.\n\nSay why." {
+	if ask.Question != "Which *transport* ships first?\nSay which.\n\nSay why." {
 		t.Fatalf("question = %q", ask.Question)
 	}
 	if len(ask.Options) != 2 || ask.Options[0].Label != "REST" || ask.Options[0].Description != "" ||
@@ -547,6 +548,9 @@ func TestEditBlockAskAcceptsWhatTheBlockCanCarry(t *testing.T) {
 		t.Fatalf("options = %#v", ask.Options)
 	}
 	markdown := documentMarkdown(t, handler, issue.PrimaryArtifactID)
+	if !strings.Contains(markdown, "Which \\*transport\\* ships `first`?") {
+		t.Fatalf("the question's code span must be code in the block:\n%s", markdown)
+	}
 	if !strings.Contains(markdown, "- REST\\n") && !strings.Contains(markdown, "- REST\n") {
 		t.Fatalf("a description-less option must render as a bare label:\n%s", markdown)
 	}

@@ -6,9 +6,9 @@ import (
 )
 
 // BlockIndexes finds both endpoints of a range in one walk of a document's blocks, where a write
-// looked each one up on its own, each through documentBlock. This test holds the walk to that
-// lookup (blockIndex, plain_tree_test.go, which is documentBlock for one position), over every
-// document of the corpus and every position in it.
+// looked each one up on its own, each through childBlock over the document. This test holds the
+// walk to that lookup (blockIndex, plain_tree_test.go, which is childBlock for one position),
+// over every document of the corpus and every position in it.
 func TestBlockIndexesAnswerTwoBlockIndexLookups(t *testing.T) {
 	t.Parallel()
 	for _, document := range corpusMarkdown(t) {

@@ -3,6 +3,7 @@ package pmdoc
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -638,14 +639,17 @@ func listItemRemoval(parent *Node, textblockPath []int) (removePath []int, hoist
 	}
 }
 
-// MoveBlock returns a copy of doc with the block carrying blockID relocated to
-// the document-level boundary before or after the top-level block containing
-// target, the boundary a block insert uses. A list item is relocated inside the
-// list holding target instead, the boundary an insert of list content takes
-// there (ListBoundary, moveListItem). An empty target at the document
-// start or end selects that edge. A target inside the moved block is
-// ErrMoveInsideItself; a block that cannot stand at document level is ErrSchema.
-// It validates doc first (ValidateDocument).
+// MoveBlock returns a copy of doc with the block carrying blockID relocated to the boundary an
+// insert of blocks takes beside target (ValidDocument.BlockBoundary): beside the block holding
+// target among the children of the innermost typed block whose content holds it, or of the
+// document where none does, so a block moved before a requirement's paragraph lands in that
+// requirement, and one moved beside a top-level block out of a typed block lands at the top level
+// (INFRA-4345 R13). A list item is relocated inside the list holding target instead, the boundary
+// an insert of list content takes there (ListBoundary, moveListItem). An empty target at the
+// document start or end selects that edge. A target inside the moved block is
+// ErrMoveInsideItself; a block that cannot stand where the boundary is, or that the typed block
+// there cannot hold by its content rule, is ErrSchema, naming why. It validates doc first
+// (ValidateDocument).
 func MoveBlock(doc *Node, blockID string, target Range, after bool) (*Node, error) {
 	valid, err := ValidateDocument(doc, "MoveBlock")
 	if err != nil {
@@ -671,47 +675,56 @@ func (d ValidDocument) MoveBlock(blockID string, target Range, after bool) (*Nod
 	if out, relocated, err := moveListItem(doc, path, blockID, target, after); err != nil || relocated {
 		return out, err
 	}
-	if node := nodeAtPath(doc, path); !isBlockNodeType(node.Type) {
-		return nil, fmt.Errorf("%w: %s %q cannot stand at document level; move its enclosing block", ErrSchema, node.Type, blockID)
+	boundary, err := d.BlockBoundary(target, after)
+	if err != nil {
+		return nil, err
 	}
-	anchorIndex := -1
-	position := 0
-	for index, block := range doc.Children {
-		end := position + nodeSize(block)
-		if target.From >= position && target.To <= end {
-			anchorIndex = index
-			break
+	node := nodeAtPath(doc, path)
+	if !isBlockNodeType(node.Type) {
+		place := "at document level"
+		if boundary.Holder != nil {
+			place = "in the " + blockNoun(boundary.Holder.Type) + " block " + strconv.Quote(blockIDOf(boundary.Holder))
 		}
-		position = end
-	}
-	if anchorIndex < 0 {
-		return nil, ErrTargetNotFound
+		return nil, fmt.Errorf("%w: %s %q cannot stand %s; move its enclosing block", ErrSchema, node.Type, blockID, place)
 	}
 	out := cloneNode(doc)
-	if len(path) == 1 && path[0] == anchorIndex {
+	holder := out
+	if boundary.Holder != nil {
+		holder = nodeAtPath(out, boundary.Path)
+	}
+	// The child of holder the block lands beside: the one after the boundary, or the one before
+	// it where the boundary is past holder's last child.
+	anchorIndex, beside := boundary.Index, false
+	if anchorIndex == len(holder.Children) {
+		anchorIndex, beside = anchorIndex-1, true
+	}
+	anchor := holder.Children[anchorIndex]
+	block := nodeAtPath(out, path)
+	if anchor == block {
 		return out, nil
 	}
-	anchor := out.Children[anchorIndex]
-	block := nodeAtPath(out, path)
 	removeAtPath(out, path)
-	insertIndex := -1
-	for index, child := range out.Children {
-		if child == anchor {
-			insertIndex = index
-			break
-		}
+	if !holdsNode(out, holder) {
+		return nil, fmt.Errorf("%w: the %s block holding the anchor was emptied by moving block %q out of it", ErrSchema, blockNoun(holder.Type), blockID)
 	}
+	insertIndex := slices.Index(holder.Children, anchor)
 	if insertIndex < 0 {
 		return nil, fmt.Errorf("%w: the anchor block was emptied by moving block %q out of it", ErrSchema, blockID)
 	}
-	if after {
+	if beside {
 		insertIndex++
 	}
-	children := make([]*Node, 0, len(out.Children)+1)
-	children = append(children, out.Children[:insertIndex]...)
+	children := make([]*Node, 0, len(holder.Children)+1)
+	children = append(children, holder.Children[:insertIndex]...)
 	children = append(children, block)
-	children = append(children, out.Children[insertIndex:]...)
-	out.Children = children
+	children = append(children, holder.Children[insertIndex:]...)
+	if holder != out {
+		if rule, broken := TypedContentBreak(holder, children); broken != "" {
+			return nil, fmt.Errorf("%w: block %q would land inside the %s block %q, whose content rule, %s, cannot hold %s there; move it beside the %s block instead",
+				ErrSchema, blockID, blockNoun(holder.Type), blockIDOf(holder), rule, broken, blockNoun(holder.Type))
+		}
+	}
+	holder.Children = children
 	if err := out.Validate(); err != nil {
 		return nil, err
 	}

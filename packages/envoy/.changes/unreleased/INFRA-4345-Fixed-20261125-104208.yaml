@@ -1,0 +1,27 @@
+kind: Fixed
+body: |-
+  Dispatch stores more of what a writer sent. A `<` that opens no HTML tag and no autolink, such
+  as `<at most 2x>`, and a backtick that no other backtick closes are stored with no backslash
+  before them, so a find that quotes the text as sent matches it; a `<` that opens a tag or an
+  autolink, and backticks that would pair into a code span, are still escaped. A `<` in a typed
+  block's attribute, such as a check's `run="a < b"`, reads back as `<`, not `&lt;`; a `>` there is
+  still written `&gt;`. The renderer version rises to 2, so every stored rendering is rendered
+  again on its next read. An `insert` whose anchor quotes a block inside a typed block, and a
+  `move` whose anchor names or quotes one, put the blocks inside that typed block beside the
+  anchor; markdown the block's content rule cannot hold there is refused `400 INSERT_DOES_NOT_FIT`
+  for an insert and `400 INVALID_OP` for a move, naming the rule, with the document unchanged. A
+  move's answer names the block it moved, also where it moved the block into or out of a typed
+  block, and a move into a typed block from just before it no longer answers that it changed
+  nothing. A whole-document upload of a document that holds empty paragraphs keeps the block id,
+  and so the kept decision, of every block it leaves unchanged after them. A `[^label]` that a
+  `doc-edit` insert or replace writes is a footnote reference where the document, or any operation
+  of the same batch, defines that label, so `doc-read` prints `[^1]` with no backslash; one that no
+  definition names is stored as before. `dispatch edit-ask` takes an option sent back as its stored
+  line, inline code included, as unchanged, writes an option's or a question's inline code as code
+  rather than as escaped backticks, and a `doc-edit` move of an option out of an open ask is
+  refused `400 INVALID_OP`, naming the ask. In the browser editor, text typed after a mark's
+  closing `**`, `*` or backtick is no longer under that mark, so typing `**Status quo is not an
+  excuse.** Reject historical mistakes.` stores exactly that.
+time: 2026-11-25T10:42:08Z
+custom:
+    Issue: INFRA-4345
