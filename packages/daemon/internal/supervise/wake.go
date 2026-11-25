@@ -741,11 +741,11 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 // would charge another launch failure, the death it already charged excepted (died).
 //
 // Three things it does not touch. A request the table refuses or ignores decides nothing, so it
-// starts no launch either: the row is read here, before anything runs, exactly as Handle reads
-// it after. A task the row acts on but queue refuses decides nothing either, and for an
-// operator's task that refusal is exactly a claim holding a delivery no provider error took
-// back: the deliver route sends the task with no id of its own and no outbox row
-// (operatorDelivery, RequestDeliver.ID, Claim.DeliveredRows), so neither of the two repeats
+// starts no launch either: the row is read here, before anything runs, exactly as Handle reads it
+// after, its guard included (rule.of). A task the row acts on but queue refuses decides nothing
+// either, and for an operator's task that refusal is exactly a claim holding a delivery no
+// provider error took back: the deliver route sends the task with no id of its own and no outbox
+// row (operatorDelivery, RequestDeliver.ID, Claim.DeliveredRows), so neither of the two repeats
 // queue accepts over a pending delivery — the repeat of that very delivery under its id, and a
 // row whose task the claim has already taken — can be what arrived, and what is left is "a
 // delivery is already pending" (queue, ErrDeliveryPending). Running the launch for such a task
@@ -782,7 +782,7 @@ func (m *Machine) runParkedLaunchNow(ctx context.Context, ev Event) error {
 	if !operatorDelivery(ev) || !m.launchWaits() || m.wake.pause != 0 || m.claim.Locator == nil || m.held != nil {
 		return nil
 	}
-	if r, ok := table[key{m.claim.State, kindOf(ev)}]; !ok || r.act == nil {
+	if r, ok := table[key{m.claim.State, kindOf(ev)}]; !ok || r.of(m).act == nil {
 		return nil
 	}
 	if pending := m.claim.Pending; pending != nil {
@@ -808,9 +808,9 @@ func (m *Machine) runParkedLaunchNow(ctx context.Context, ev Event) error {
 }
 
 // runDroppedLaunchForRetry is an operator's retry of a claim whose launch the pacing or the pause's
-// gate parked over no process, where the state the gate found is one no retry row acts on: queued,
-// which every spawn and the boot's relaunch of an unfinished launch park from; suspended, which a
-// rule's resume parks from; and launching, which a try the pause met after its write
+// gate parked over no process, where no retry row acts on the claim in the state the gate found:
+// queued, which every spawn and the boot's relaunch of an unfinished launch park from; suspended,
+// which a rule's resume parks from; and launching, which a try the pause met after its write
 // (pauseHeldTry) and a start whose pod grant the pause met (podStartDue) are held in, their wake
 // already past the pacing (wake.ran), whose run is a fresh try. The claim reads launching for the
 // whole wait, so a person who sees it stuck reaches for `legion claims retry`; refusing that retry
@@ -820,12 +820,13 @@ func (m *Machine) runParkedLaunchNow(ctx context.Context, ev Event) error {
 // runs it, so that launch runs here, unpaced, exactly as its turn would have run it: the claim is
 // put back launching, where the park wrote it (waitOnMachine), and the wake goes through runWake,
 // lifecycle recheck and all. ran is false, and nothing is done, for every other request, for a
-// claim whose gate-found state a retry row decides (failed, retired), and for any launch while a
-// project pause holds the claim (pauseHolds): the API refuses the operator's retry while the
-// project is paused (refusedWhilePaused), and a pause that opened after that refusal was read
-// holds this launch as it holds every other, so the retry is refused and the wake parked again,
-// for its turn, or the pause's gate, to take it (wakeNow, pauseGate). A launch the pause's gate
-// held whose pause has ended, before the gate's own stop or the resume's event let it out
+// claim a retry row decides in the state the gate found (failed, retired, and suspended by the
+// work hold, whose row's guard admits that claim alone: retriesOnlyAWorkHeldClaim), and for any
+// launch while a project pause holds the claim (pauseHolds): the API refuses the operator's retry
+// while the project is paused (refusedWhilePaused), and a pause that opened after that refusal was
+// read holds this launch as it holds every other, so the retry is refused and the wake parked
+// again, for its turn, or the pause's gate, to take it (wakeNow, pauseGate). A launch the pause's
+// gate held whose pause has ended, before the gate's own stop or the resume's event let it out
 // (pauseStopDue, resumePause), is let out here as those let it out (letOutHeldLaunch), unpaced.
 //
 // The launch takes no second token, as an operator's task over a parked launch takes none

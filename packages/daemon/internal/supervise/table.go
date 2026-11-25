@@ -1004,13 +1004,29 @@ type key struct {
 
 // rule is one cell of the table: a row — what the event does in that state, named, with the states
 // it may leave the claim in besides the one it found — or an ignore, with the reason the event
-// means nothing there. Handle refuses a request that meets an ignore, and holds every row to its
-// destinations.
+// means nothing there. A row may also carry a guard (rowWhere), for a cell whose claims the row
+// decides only some of: the guard reads the claim and answers "" where the row decides it and,
+// for every other claim of that state, the reason the event means nothing there, so the cell is
+// that named ignore for it (rule.of). Handle refuses a request that meets an ignore, and holds
+// every row to its destinations.
 type rule struct {
 	name   string
 	to     []ClaimState
 	act    func(m *Machine, ctx context.Context, ev Event) error
 	ignore string
+	guard  func(m *Machine) string
+}
+
+// of is the cell as it decides m's claim: the rule itself, or, for a row whose guard names a
+// reason for this claim, the named ignore of that reason. Handle reads every cell through it right
+// after the table's lookup, and runParkedLaunchNow reads it the same way.
+func (r rule) of(m *Machine) rule {
+	if r.guard != nil {
+		if reason := r.guard(m); reason != "" {
+			return rule{ignore: reason}
+		}
+	}
+	return r
 }
 
 var (
@@ -1057,11 +1073,13 @@ func FailedOrRetired(state ClaimState) bool { return state == StateFailed || sta
 // TakesCompaction is whether the machine takes a compaction of a claim in this state, read off
 // the table's own onCompact rows rather than from a second list of them: the api's refusals
 // name the states a compaction reaches, and this is what their test holds those words to
-// (api's compactOp, the onCompact rows below). An ignore is no take, so a state the table
-// names a reason for reads false here, as does a state the table does not cover at all.
+// (api's compactOp, the onCompact rows below). An ignore is no take, and nor is a guarded row
+// (rowWhere), which takes only the claims of the state its guard admits, so a state the table
+// names a reason for, for any claim of it, reads false here, as does a state the table does not
+// cover at all.
 func TakesCompaction(state ClaimState) bool {
 	r, ok := table[key{state, onCompact}]
-	return ok && r.act != nil
+	return ok && r.act != nil && r.guard == nil
 }
 
 const (
@@ -1365,9 +1383,11 @@ func fillTable(t *builder) {
 	t.ignore(onOperatorRetry, "the previous launch's pane is still uncertain", StateLaunchUncertain)
 	t.ignore(onOperatorRetry, "the claim has not failed", live...)
 	// The work hold's stop is the one suspension the operator's retry ends, since an operator's
-	// act on a claim overrides the hold (operatorRetryHeld); every other suspended claim is
-	// resumed, not retried.
-	t.row(onOperatorRetry, "the operator's retry of a claim the work hold stopped: fresh budgets, and the same session relaunched unless the retry asked for a new one, the provider refused it out of the launch budget, or no store holds it; any other suspended claim is resumed, not retried", operatorRetryHeld,
+	// act on a claim overrides the hold (operatorRetryHeld). Every other suspended claim is
+	// resumed, not retried: the row's guard (retriesOnlyAWorkHeldClaim) makes the cell that ignore
+	// for it, so Handle decides it as it did before the hold existed, a launch the pacing parked
+	// over the claim run for the retry first (runDroppedLaunchForRetry).
+	t.rowWhere(retriesOnlyAWorkHeldClaim, onOperatorRetry, "the operator's retry of a claim the work hold stopped: fresh budgets, and the same session relaunched unless the retry asked for a new one, the provider refused it out of the launch budget, or no store holds it", operatorRetryHeld,
 		[]ClaimState{StateLaunching, StateFailed}, StateSuspended)
 
 	t.row(onForgetSession, "drop the session so the next launch is fresh", forgetSession, nil,
@@ -1445,8 +1465,16 @@ func (b *builder) put(k key, r rule) {
 }
 
 func (b *builder) row(kind eventKind, name string, act func(*Machine, context.Context, Event) error, to []ClaimState, states ...ClaimState) {
+	b.rowWhere(nil, kind, name, act, to, states...)
+}
+
+// rowWhere is row for the claims of these states that guard admits: guard answers "" for a claim
+// the row decides and, for every other claim of the states, the reason the event means nothing
+// there, which Handle then answers as the named ignore of that reason (rule.of). A nil guard
+// admits every claim, which is row.
+func (b *builder) rowWhere(guard func(*Machine) string, kind eventKind, name string, act func(*Machine, context.Context, Event) error, to []ClaimState, states ...ClaimState) {
 	for _, state := range states {
-		b.put(key{state, kind}, rule{name: name, to: to, act: act})
+		b.put(key{state, kind}, rule{name: name, to: to, act: act, guard: guard})
 	}
 }
 
@@ -2924,16 +2952,23 @@ func operatorRetry(m *Machine, ctx context.Context, ev Event) error {
 	return retry(m, ctx, ev)
 }
 
-// operatorRetryHeld is the operator's retry of a suspended claim. The work hold's suspension is
-// the one it ends: an operator's own act on a claim overrides the hold, so a claim the hold
-// stopped is retried as a stopped one is (operatorRetry), with the task it kept: its session is
-// relaunched unless the retry asks for a new one, the provider refused it out of the launch
-// budget, or no store holds it. Every other suspended claim is refused in the words the row of
-// that state gave before the hold existed: it is resumed, not retried.
-func operatorRetryHeld(m *Machine, ctx context.Context, ev Event) error {
-	if m.claim.SuspendedBy != SuspendedByHold {
-		return &RefusedError{State: m.claim.State, Request: "retry", Reason: "a suspended claim is resumed, not retried"}
+// retriesOnlyAWorkHeldClaim is the guard of the operator's retry of a suspended claim (rowWhere):
+// the row decides a claim the work hold stopped, and every other suspended claim meets the ignore
+// the row of that state was before the hold existed, since such a claim is resumed, not retried.
+func retriesOnlyAWorkHeldClaim(m *Machine) string {
+	if m.claim.SuspendedBy == SuspendedByHold {
+		return ""
 	}
+	return "a suspended claim is resumed, not retried"
+}
+
+// operatorRetryHeld is the operator's retry of a claim the work hold stopped, the one suspension
+// that retry ends (its row's guard, retriesOnlyAWorkHeldClaim, leaves every other suspended claim
+// to the named ignore): an operator's own act on a claim overrides the hold, so the claim is
+// retried as a stopped one is (operatorRetry), with the task it kept: its session is relaunched
+// unless the retry asks for a new one, the provider refused it out of the launch budget, or no
+// store holds it.
+func operatorRetryHeld(m *Machine, ctx context.Context, ev Event) error {
 	m.log.Info("supervise: the operator's retry starts a claim the work hold stopped")
 	return operatorRetry(m, ctx, ev)
 }

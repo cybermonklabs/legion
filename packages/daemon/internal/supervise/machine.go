@@ -2106,14 +2106,15 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // the claim's state does not allow is refused with a RefusedError; a fenced request is refused
 // with the claim refusal it violates (claim.StaleGeneration, claim.SameAgentRefusal). Any other
 // event that is stale is logged once and dropped. A suspension of a claim whose agent is in a turn
-// answers ErrSuspendHeld (holdSuspension). A request the wake pacing never makes wait, reaching a
-// claim a paced wake parked with no process, drops that wake before the lookup and is then
-// decided against the state the gate found (dropWakeFor); an operator's retry no row of that state
-// decides — queued, suspended, or launching for a try the pause held after its write or a start
-// whose pod grant the pause met — runs the dropped launch itself (runDroppedLaunchForRetry); an
-// operator's task the claim can take, over a launch parked above a process the claim still records,
-// runs that launch first, so the row that queues the task is the row of the claim that launch
-// leaves (runParkedLaunchNow).
+// answers ErrSuspendHeld (holdSuspension). A row whose guard names a reason for this claim is
+// that named ignore here (rule.of, rowWhere). A request the wake pacing never makes wait,
+// reaching a claim a paced wake parked with no process, drops that wake before the lookup and is
+// then decided against the state the gate found (dropWakeFor); an operator's retry no row of that
+// state decides for the claim — queued, suspended by anything but the work hold, or launching for
+// a try the pause held after its write or a start whose pod grant the pause met — runs the
+// dropped launch itself (runDroppedLaunchForRetry); an operator's task the claim can take, over a
+// launch parked above a process the claim still records, runs that launch first, so the row that
+// queues the task is the row of the claim that launch leaves (runParkedLaunchNow).
 //
 // Handle returns when the decision is made, which includes the runtime call it makes: a stop
 // waits out its grace, a resume waits out the previous incarnation. A caller feeding many claims
@@ -2253,6 +2254,7 @@ func (m *Machine) handle(ctx context.Context, ev Event, read func()) (err error)
 	if !ok {
 		return fmt.Errorf("supervise: no row for %s in %s", k.kind, k.state)
 	}
+	r = r.of(m)
 	if r.act == nil {
 		if ran, err := m.runDroppedLaunchForRetry(ctx, ev, dropped); ran {
 			return err

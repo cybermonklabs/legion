@@ -407,13 +407,15 @@ func fenced(ev Event, c Claim) Event {
 
 // Every named ignore does what it says: the claim does not move, nothing is asked of the runtime
 // or the agent, nothing is written — and a request the state does not allow is refused, naming
-// the state, rather than answered as if it had happened.
+// the state, rather than answered as if it had happened. A guarded row is read as Handle reads it
+// for the fixture's claim (rule.of), so a row whose guard turns it into an ignore for that claim
+// is held to the same.
 func TestEveryNamedIgnoreChangesNothingAndRefusesARequest(t *testing.T) {
 	_, states, _ := sealed(t)
 	for _, events := range samples(t) {
 		for _, sample := range events {
 			for _, state := range states {
-				r := table[key{state, kindOf(sample)}]
+				r := table[key{state, kindOf(sample)}].of(&Machine{claim: fixture(state)})
 				if r.ignore == "" {
 					continue
 				}
