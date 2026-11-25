@@ -26,6 +26,7 @@ import (
 // The negative control is the notice queued beside it: a kind this release still decodes stands
 // untouched after the migration, so the delete takes the unrunnable row and nothing else.
 func TestTheQueuedWaitingForSlotNoticeIsGoneAfter20261109060737(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, dropSlotNoticeVersion-1)

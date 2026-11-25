@@ -243,12 +243,17 @@ func newChainBroker(t *testing.T, settings map[string]any) *chainBroker {
 	mux.HandleFunc("POST /v1/grants/grant-chain/values", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, map[string]any{"values": map[string]string{"TEST_KEY": chainValue}, "expires_at": time.Now().Add(time.Hour)})
 	})
-	b.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// The handlers read b.server (b.URL) on the server's goroutines, and the request that reaches
+	// them comes from another process, which orders nothing in this one. So b.server is set before
+	// the server serves: built unstarted, assigned, then started (Start sets its URL before it
+	// serves).
+	b.server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b.mu.Lock()
 		b.calls++
 		b.mu.Unlock()
 		mux.ServeHTTP(w, r)
 	}))
+	b.server.Start()
 	t.Cleanup(b.server.Close)
 	return b
 }
@@ -1263,7 +1268,9 @@ func TestIdentitySourceNamesTheSourceItWouldUse(t *testing.T) {
 		}},
 		{name: "metadata", setup: func(t *testing.T, r *chainRig) string {
 			r.withMetadata()
-			return "machine: " + cipherclient.NewMetadataIdentity("agent-secrets-vm").Describe() + "\n"
+			// Found with no setting, so the audience is the broker's and AGENT_SECRETS_MACHINE_AUDIENCE
+			// is not named; the rig's metadata server is the one GCE_METADATA_HOST names.
+			return "machine: this machine's Google identity token for the Google exchange audience the broker names (GCE_METADATA_HOST names the metadata server)\n"
 		}},
 		{name: "machine cache", setup: func(t *testing.T, r *chainRig) string {
 			r.writeMachineCacheFixture("cached-enrollment")

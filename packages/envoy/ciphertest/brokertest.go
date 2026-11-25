@@ -4,20 +4,30 @@
 // package whose own import path does not start with github.com/sjawhar/envoy import a package
 // under github.com/sjawhar/envoy/internal/..., which blocks a foreign module from importing
 // internal/cipher/ciphertest directly, however workspace-linked the two modules are. This facade
-// changes no behavior — Rig is a type alias for the internal package's own type, and NewRig
-// simply forwards to it — so every exported field and method internal/cipher/ciphertest.Rig
-// carries (Req, UI, MintPodToken, Store, Operator, ...) stays reachable exactly as documented
-// there; that file remains the one place the rig's own behavior is described and changed.
+// changes no behavior — Rig, Option and Introspection are type aliases for the internal packages'
+// own types, and NewRig and WithAccessLifetime simply forward to it — so every exported field and
+// method internal/cipher/ciphertest.Rig carries (Req, UI, Introspect, MintPodToken, Store,
+// Operator, ...) stays reachable exactly as documented there; that file remains the one place the
+// rig's own behavior is described and changed.
 package ciphertest
 
 import (
 	"testing"
+	"time"
 
 	internal "github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 )
 
 // Rig is internal/cipher/ciphertest.Rig under a name a foreign module may import.
 type Rig = internal.Rig
+
+// Option is internal/cipher/ciphertest.Option: one change to how NewRig wires its broker.
+type Option = internal.Option
+
+// Introspection is internal/cipher/oauthwire.Introspection: what the broker's introspection reads
+// one of its access tokens back as, which Rig.Introspect answers.
+type Introspection = oauthwire.Introspection
 
 // DaemonAccount is internal/cipher/ciphertest.DaemonAccount: the ServiceAccount every Rig lets log
 // in as legion-daemon with its token.
@@ -29,8 +39,37 @@ const DaemonAccount = internal.DaemonAccount
 // Rig.MintSubjectToken the token that pod trades.
 const ExchangeRolesAccount = internal.ExchangeRolesAccount
 
+// DaemonExchangeAccount is internal/cipher/ciphertest.DaemonExchangeAccount: the account the
+// Rig's exchange lists for a Legion daemon's own pod, whose entry fixes the session
+// legion-daemon:EXAMPLE for project EXAMPLE and names the Rig's Operator as its person.
+// Rig.MintSubjectToken mints the token that pod trades.
+const DaemonExchangeAccount = internal.DaemonExchangeAccount
+
+// OtherProjectAccount is internal/cipher/ciphertest.OtherProjectAccount: the account the Rig's
+// exchange lists for a pod of a second project, whose entry fixes the session
+// other-project-worker for project OTHER and names the Rig's Operator as its person.
+const OtherProjectAccount = internal.OtherProjectAccount
+
+// OtherProject is internal/cipher/ciphertest.OtherProject: the project OtherProjectAccount's entry
+// names, and OtherProjectSession the session that entry fixes.
+const (
+	OtherProject        = internal.OtherProject
+	OtherProjectSession = internal.OtherProjectSession
+)
+
+// ExchangeProject is internal/cipher/ciphertest.ExchangeProject: the project every account of the
+// Rig's exchange but OtherProjectAccount names, ExchangeRolesAccount's and DaemonExchangeAccount's
+// among them.
+const ExchangeProject = internal.ExchangeProject
+
 // NewRig forwards to internal/cipher/ciphertest.NewRig, including its own skip when
 // BROKER_TEST_DATABASE_URL is unset.
-func NewRig(t *testing.T) *Rig {
-	return internal.NewRig(t)
+func NewRig(t *testing.T, opts ...Option) *Rig {
+	return internal.NewRig(t, opts...)
+}
+
+// WithAccessLifetime forwards to internal/cipher/ciphertest.WithAccessLifetime: how long an
+// access token the Rig's broker issues lasts, fifteen minutes unless a test says otherwise.
+func WithAccessLifetime(d time.Duration) Option {
+	return internal.WithAccessLifetime(d)
 }

@@ -14,11 +14,12 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // searchRequestOn is one search sent to one of the two paths the search handler serves
 // (routes_table.go): GET /api/v1/search, which declares the four members every build has read,
-// and GET /api/v1/search/results, which declares all nine.
+// and GET /api/v1/search/results, which declares all ten.
 func searchRequestOn(t *testing.T, handler http.Handler, path, query string) *httptest.ResponseRecorder {
 	t.Helper()
 	return dispatchRequest(t, handler, http.MethodGet, path+"?"+query, nil, "alice")
@@ -295,20 +296,13 @@ func TestSearchReadsOnlyTheLatestDocumentVersion(t *testing.T) {
 		t.Fatalf("edit document: status=%d body=%s", edit.Code, edit.Body.String())
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
-	for {
+	testwait.UntilPolling(t, 10*time.Millisecond, "the edit's second version of the document (the versions last counted)", func() (int, bool) {
 		var versions int
 		if err := database.Pool.QueryRow(context.Background(), "select count(*) from artifact_versions where artifact_id = $1", issue.PrimaryArtifactID).Scan(&versions); err != nil {
 			t.Fatalf("count artifact versions: %v", err)
 		}
-		if versions >= 2 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("waiting for second artifact version")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return versions, versions >= 2
+	})
 
 	// The issue carries its primary document's words too (20261105145242), so neither it nor the
 	// document may answer the word the edit replaced, and both answer the word that replaced it.

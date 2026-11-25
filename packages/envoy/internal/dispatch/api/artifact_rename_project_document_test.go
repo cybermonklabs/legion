@@ -5,10 +5,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestARenameOfAProjectDocumentBesideACommentOnItBothSucceed meets the title correction of a
@@ -38,13 +38,16 @@ func TestARenameOfAProjectDocumentBesideACommentOnItBothSucceed(t *testing.T) {
 	held.armed.Store(true)
 	renamed := make(chan *httptest.ResponseRecorder, 1)
 	go func() { renamed <- correctTitle(t, fixture.handler, document.ID, corrected) }()
-	select {
-	case <-held.reached:
-	case response := <-renamed:
-		t.Fatalf("the correction answered before its update was held: status=%d body=%s", response.Code, response.Body.String())
-	case <-time.After(10 * time.Second):
-		t.Fatal("the correction never ran its update of the document's title")
-	}
+	testwait.Until(t, "the correction's update of the document's title to be held", func() (string, bool) {
+		select {
+		case <-held.reached:
+			return "held", true
+		case response := <-renamed:
+			t.Fatalf("the correction answered before its update was held: status=%d body=%s", response.Code, response.Body.String())
+		default:
+		}
+		return "not yet run", false
+	})
 
 	commented := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
@@ -53,14 +56,13 @@ func TestARenameOfAProjectDocumentBesideACommentOnItBothSucceed(t *testing.T) {
 			"anchor": map[string]any{"artifact": document.Slug, "quote": quote}, "actor": sessionActor(),
 		})
 	}()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.Until(t, "the comment to wait on a lock the correction's transaction holds (the waiting sessions)", func() (int, bool) {
 		waiting, err := storetest.CountLockWaits(context.Background(), fixture.database, "%")
 		if err != nil {
 			t.Fatal(err)
 		}
 		if waiting > 0 {
-			break
+			return waiting, true
 		}
 		select {
 		case response := <-commented:
@@ -68,11 +70,8 @@ func TestARenameOfAProjectDocumentBesideACommentOnItBothSucceed(t *testing.T) {
 				response.Code, response.Body.String())
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("the comment never waited on a lock the correction's transaction holds")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return waiting, false
+	})
 	held.let()
 
 	renameResponse := awaitAnswer(t, renamed, "the title correction")

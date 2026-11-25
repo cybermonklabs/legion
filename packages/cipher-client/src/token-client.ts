@@ -13,10 +13,11 @@
 // trade rather than once.
 //
 // What it refuses to do: hand out a token it could not renew. `token()` answers the token in hand
-// while that token is live and the broker is merely unreachable, busy (its 429), refusing this
-// moment's proof (`invalid_dpop_proof`, `use_dpop_nonce`), refusing a person Dispatch holds until
-// they sign in again (`membership_held`), or holding no registration for this pod's session yet
-// (`pod_session_not_registered:`), or the source of the identity could not be read this once.
+// while that token is live and the broker is merely unreachable, busy (a 408 or its 429),
+// refusing this moment's proof (`invalid_dpop_proof`, `use_dpop_nonce`), refusing a person
+// Dispatch holds until they sign in again (`membership_held`), or holding no registration for
+// this pod's session yet (`pod_session_not_registered:`), or the source of the identity could not
+// be read this once.
 // With nothing live in hand, a caller that fails fast (the default) is told the
 // retry loop's last failure at once, and one that waits for ready, or for a missing registration,
 // waits until a token lands or its own signal ends; it is then told what the last trade came to,
@@ -115,9 +116,9 @@ export interface BrokerToken {
 }
 
 /** The first wait before trading again after a trade the broker did not answer, answered with a
- *  5xx, its 429 or a DPoP refusal, or that failed before it reached the broker, doubling to
- *  {@link RETRY_MAX_WAIT_MS} until a trade lands: the Go client's `defaultRetryWait` and
- *  `maxRetryWait` (packages/envoy/internal/cipherclient/brokerclient.go). */
+ *  5xx, a 408 or a 429, a DPoP refusal or a 4xx naming no OAuth error, or that failed before it
+ *  reached the broker, doubling to {@link RETRY_MAX_WAIT_MS} until a trade lands: the Go client's
+ *  `defaultRetryWait` and `maxRetryWait` (packages/envoy/internal/cipherclient/brokerclient.go). */
 export const RETRY_FIRST_WAIT_MS = 15_000;
 export const RETRY_MAX_WAIT_MS = 5 * 60_000;
 
@@ -164,10 +165,11 @@ export function sleep(ms: number, signal?: AbortSignal, holdsProcess = false): P
 /**
  * A failed trade of the retry loop that a later trade may cure, by its class, with the text that
  * says what it was (`#failure`): `pending`, a pod session the broker holds no registration for
- * yet; `busy`, the broker's 429, a DPoP refusal or a person Dispatch holds (`membership_held`,
- * which the person's next Dispatch sign-in ends); `unanswered`, no answer within the attempt's
- * time, no connection, a 5xx, or an answer that is not this grant's; `unsent`, a trade that
- * failed before it reached the broker, its identity's source unreadable this once.
+ * yet; `busy`, an outage the broker or a proxy answered with an OAuth error (a 408 or a 429), a
+ * DPoP refusal or a person Dispatch holds (`membership_held`, which the person's next Dispatch
+ * sign-in ends); `unanswered`, no answer within the attempt's time, no connection, a 5xx, a 4xx
+ * naming no OAuth error, or an answer that is not this grant's; `unsent`, a trade that failed
+ * before it reached the broker, its identity's source unreadable this once.
  */
 type Retried =
   | { readonly kind: "pending"; readonly said: string; readonly refusal: BrokerRefusedError }
@@ -226,9 +228,9 @@ export interface BrokerTokenClientOptions {
    * TypeScript clients want a Dispatch access token and nothing else, and none of them reads
    * `credentialId`. Each trade that asks writes a `launcher_credentials` row keyed by the
    * machine and the key it proved and a `launcher_credential.token_login` audit row, and this
-   * client makes a key per process and per session, so asking would put a row on an operator's
-   * machine-logins list for every `dispatch` call, every hook run and every session of a
-   * long-lived process — rows nothing removes.
+   * client proves a key of one process, or a pod role's own agent-secrets key, so asking would
+   * put a row on an operator's machine-logins list for every `dispatch` call, every hook run and
+   * every session of a long-lived process — rows nothing removes.
    *
    * A person's client leaves it unset, because the broker refuses a person's trade that declines
    * with `400 invalid_request` (`personDeclinesNothing`,
@@ -535,9 +537,10 @@ export class BrokerTokenClient {
    * - a refusal no trade cures: the loop ends, answering every caller with it;
    * - a pod session the broker holds no registration for yet: traded again on its own schedule,
    *   {@link PENDING_FIRST_WAIT_MS} doubling to {@link PENDING_MAX_WAIT_MS};
-   * - no answer, no connection, a 5xx, the broker's 429 or a DPoP refusal, an answer that is not
-   *   this grant's, or a trade that could not be made: traded again on the Go client's schedule,
-   *   {@link RETRY_FIRST_WAIT_MS} doubling to {@link RETRY_MAX_WAIT_MS}.
+   * - no answer, no connection, a 5xx, a 408 or a 429, a DPoP refusal, a 4xx naming no OAuth
+   *   error, an answer that is not this grant's, or a trade that could not be made: traded again
+   *   on the Go client's schedule, {@link RETRY_FIRST_WAIT_MS} doubling to
+   *   {@link RETRY_MAX_WAIT_MS}.
    *
    * It says at each wait what the trade came to, naming the session, and when it trades again.
    * Only a token landing starts a schedule over: no caller arriving, and no trade failing

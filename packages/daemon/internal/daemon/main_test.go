@@ -16,8 +16,11 @@ import (
 )
 
 // daemonTestParallelism is how many of this package's tests run at once when the command line
-// names no -parallel. Every test calls t.Parallel but those that change something the whole
-// process shares (each says what in a `Not parallel:` comment), which run first, one at a time.
+// names no -parallel. Every test calls t.Parallel but those that cannot run beside the others,
+// each of which says why in a `Not parallel:` comment: it changes something the whole process
+// shares, it is a helper process that exits the binary, or it holds a wall-clock bound the
+// parallel tests' load could make it miss (docs/testing.md says which). Those run first, one at a
+// time.
 // Each parallel test clones a database and boots daemons whose pools hold up to four connections
 // each, and go test's default of GOMAXPROCS would run as many at once as the machine has cores:
 // four on CI's runner, hundreds on a dev box, where it would open more connections than a test
@@ -42,8 +45,8 @@ var processDSN string
 // LEGION_NEWS_MODEL_SEED, LEGION_NEWS_MODEL_RUNS, LEGION_NEWS_MODEL_STEPS and
 // LEGION_NEWS_MODEL_TRACE, which prints each seed's steps. It
 // drops the migrated template testDSN and isolatedOutboxPool clone their databases from
-// (testpg.Main), removes the directory the tests' Envoy binaries were built into
-// (testbuild.Main), and removes the NATS container the package's tests share (testnats.Main).
+// (testpg.Main), removes the directory the tests' Envoy binaries were built into (testbuild.Main),
+// and removes the NATS container the package's tests share (testnats.Main).
 //
 // It names one gh for every daemon the tests boot, LEGION_GH_PATH, this test binary: a boot
 // resolves gh from the process's environment (resolveTools), and the first gh on a machine's PATH

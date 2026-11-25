@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, beforeAll, expect, test } from "bun:test";
 import {
   AssistantRuntimeProvider,
   type ThreadMessageLike,
@@ -10,9 +10,16 @@ import type { ReactNode } from "react";
 
 import { renderWithQueries as render } from "../../__tests__/query-provider";
 import { NO_SESSION_SENDS } from "../conversation/useSessionSends";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { AgentThread } from "./AgentThread";
 import { applyFrames, EMPTY_CONVERSATION, toThreadMessages } from "./conversation";
 import { type KeyedMessage, turnKey } from "./dispatch-marks";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /**
  * assistant-ui throws "Unsupported user message part type: reasoning" when a user message carries

@@ -1,0 +1,24 @@
+kind: Changed
+body: |-
+  A `token` or `natsSeed` value in envoy.json that starts with `!` runs its command asynchronously:
+  the read waits for it while the process goes on serving its timers, deliveries and NATS pings,
+  where it used to hold the whole process for up to the command's 10 s. The files the read reads
+  are read the same way: envoy.json and a checkout's, the files the `*_FILE` variables name, and the
+  command's own output. `fileValue`, `fileBearer`, `dispatchSettings`, `envoySettings`,
+  `sessionSettings`, `sessionDispatchSettings`, `sessionEnvoySettings`, `readEnvoyConfig`,
+  `askgateSetting`, `readSecretFile`, `bearerSource`, `natsSeedFromEnvironment`, `dispatchUrl` and
+  `sessionDispatchUrl` return Promises of what they returned before; a `deviceOf` option answers a
+  Promise. A read that starts while the same command runs, in any copy of this module at or after
+  this change, waits for that run, so a command still runs once per process among such copies (a
+  copy bundled before this change starts a run of its own); a read with `commands: "kept"` still
+  never runs one. `sessionSettings`
+  resolves Dispatch and Envoy at once.
+  A command's process group ends with the process however the process ends, a signal or a crash
+  included, and its output is in a file with no name, so no exit leaves the value on disk.
+  `@legion/envoy-client/process-group` holds the group kill (`killGroup`) and `spawnWatched`, which
+  starts a command detached in a group a watch ends with the process; every detached shell command
+  of the plugins starts that way. `readEnvoyConfig` reads the chosen file, the checkout's and the
+  OpenCode-era checkout file at once.
+time: 2026-11-17T12:31:04Z
+custom:
+  Issue: pr4318
