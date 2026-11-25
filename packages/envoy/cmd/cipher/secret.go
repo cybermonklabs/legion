@@ -1201,7 +1201,7 @@ type secretView struct {
 	Type       string `json:"type"`
 	// GitHubOwners is a github-app secret's github-owners tag, the accounts the broker mints for.
 	GitHubOwners string `json:"github_owners"`
-	// Requesters is the requesters tag without either rollback guard (requestersList): the people
+	// Requesters is the requesters tag without either rollback guard (policy.SplitGuards): the people
 	// and services that may ask for the secret at all, or "" where any session its owner and tier
 	// allow may.
 	Requesters string `json:"requesters"`
@@ -1280,7 +1280,7 @@ func (v secretView) withTags(tags map[string]string) secretView {
 	v.Scopes, v.Admin = tags[policy.TagScopes], tags[policy.TagAdmin]
 	v.Judge, v.Guidance = tags[policy.TagJudge], tags[policy.TagGuidance]
 	v.Proxy, v.ProxyNarrowed = tags[policy.TagProxy], tags[policy.TagProxyNarrowed]
-	v.Requesters, v.RollbackGuard, v.KindsRollbackGuard = requestersList(tags[policy.TagRequesters])
+	v.Requesters, v.RollbackGuard, v.KindsRollbackGuard = policy.SplitGuards(tags[policy.TagRequesters])
 	if project, tagged := tags[policy.TagProject]; tagged {
 		v.Project = &project
 	}

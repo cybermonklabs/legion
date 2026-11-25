@@ -7,6 +7,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -330,16 +331,15 @@ func guidanceTooLong(guidance string) error {
 // adminTrue; a stored admin tag holding anything else is no rule of TagRules but
 // policy.ReasonAdminMalformed, which the broker answers to the reread that follows the write,
 // exactly as it answers for a stored requesters or scopes tag this CLI cannot repair. The
-// requesters are read without either rollback guard (requestersList), as the broker reads them:
-// a guard has no @, so the rules would otherwise weigh it as a service on
-// the list. The one
+// requesters are read without either rollback guard (policy.SplitGuards), as the broker reads
+// them: a guard has no @, so the rules would otherwise weigh it as a service on the list. The one
 // field of the set left empty is BoundAccount, the deployment's BROKER_SERVICE_ACCOUNT_SECRETS
 // binding, which `agent-secrets` never sees, just as it never sees BROKER_SERVICES and so calls
 // ParseRequesterShapes rather than ParseRequesters: the rule it feeds, the one refusing a
 // service on a secret bound to a dev-<name> account, is the broker's to apply on that reread.
 func checkTagsFor(tags map[string]string) error {
 	duration, _ := policy.ParseMaxGrant(tags[policy.TagMaxGrant])
-	requesters, _, _ := requestersList(tags[policy.TagRequesters])
+	requesters, _, _ := policy.SplitGuards(tags[policy.TagRequesters])
 	set := policy.TagSet{
 		Type:         policy.TypeFromTags(tags),
 		Owner:        tags[policy.TagOwner],
@@ -354,46 +354,60 @@ func checkTagsFor(tags map[string]string) error {
 	return tagRefusal(policy.TagRules(set), set, tags)
 }
 
+// rollbackGuard is one rollback guard this CLI writes into a secret's requesters tag: the entry,
+// the tags whose presence brings it, and what a message says of a broker from before those tags:
+// era, which names the tags as "the release before <era>" does, and risk, what such a broker
+// would do with the secret were the guard not there.
+type rollbackGuard struct {
+	guard     string
+	tags      []string
+	era, risk string
+}
+
+// rollbackGuards is the two guards, in the order policy.SplitGuards answers them and
+// policy.WithGuards takes them: the project tags' first, then the kinds'. A broker from before
+// either pair of tags reads the guard as a service no deployment can register and refuses the
+// secret, rather than serve it by owner and tier to every session, or release a secret behind
+// the proxy as its value; this broker takes both out before it reads the list. guardRequesters
+// writes them and reportRewriteFailure says what a failed write left of them, each by looping
+// over this one table.
+var rollbackGuards = [2]rollbackGuard{
+	{policy.RequestersRollbackGuard, []string{policy.TagProject, policy.TagProjectChannels}, "the project tags", "serve this secret by owner and tier alone"},
+	{policy.KindsRollbackGuard, []string{policy.TagProxy, policy.TagProxyNarrowed}, "the kinds", "release this secret as its value"},
+}
+
 // guardRequesters puts the rollback guards into the requesters tag of tags, the tags a secret
-// holds once a write lands, after the list the tag holds and never in place of it: the project
-// tags' (policy.RequestersRollbackGuard) when they carry a dispatch-project or a project-channels
-// tag, and the kinds' (policy.KindsRollbackGuard) when they carry a proxy or a proxy-narrowed tag,
-// the project guard first. It takes each out when they carry none of its tags, removing the
-// requesters tag when the guards were all it held. A requesters tag no guard was written into, on
-// a secret that carries none of those tags, is left exactly as it is, a malformed one included,
-// which the broker refuses on the reread. A broker from before the project tags, or from before
-// the kinds, reads the guard as a service no deployment can register and refuses the secret,
-// rather than serve it by owner and tier to every session, or release a secret behind the proxy
-// as its value; this broker takes both out before it reads the list.
+// holds once a write lands, after the list the tag holds and never in place of it: each of
+// rollbackGuards where tags carry one of its tags, in the table's order (policy.WithGuards). It
+// takes each out where they carry none of its tags, removing the requesters tag when the guards
+// were all it held. A requesters tag no guard was written into, on a secret that carries none of
+// those tags, is left exactly as it is, a malformed one included, which the broker refuses on the
+// reread.
 func guardRequesters(tags map[string]string) {
-	list, projectGuarded, kindsGuarded := requestersList(tags[policy.TagRequesters])
-	_, project := tags[policy.TagProject]
-	_, channels := tags[policy.TagProjectChannels]
-	_, proxy := tags[policy.TagProxy]
-	_, narrowed := tags[policy.TagProxyNarrowed]
-	wantProject, wantKinds := project || channels, proxy || narrowed
-	if !wantProject && !wantKinds && !projectGuarded && !kindsGuarded {
+	list, project, kinds := policy.SplitGuards(tags[policy.TagRequesters])
+	held := [2]bool{project, kinds}
+	var want [2]bool
+	for i, g := range rollbackGuards {
+		want[i] = slices.ContainsFunc(g.tags, func(tag string) bool { _, carried := tags[tag]; return carried })
+	}
+	if want == ([2]bool{}) && held == ([2]bool{}) {
 		return
 	}
-	if wantProject {
-		list = policy.WithRequestersGuard(list)
-	}
-	if wantKinds {
-		list = policy.WithKindsGuard(list)
-	}
-	if list == "" {
+	if list = policy.WithGuards(list, want[0], want[1]); list == "" {
 		delete(tags, policy.TagRequesters)
 		return
 	}
 	tags[policy.TagRequesters] = list
 }
 
-// requestersList is a requesters tag as the broker reads it, without either rollback guard
-// (policy.SplitRequestersGuard, policy.SplitKindsGuard), and whether it held each.
-func requestersList(raw string) (list string, projectGuarded, kindsGuarded bool) {
-	rest, projectGuarded := policy.SplitRequestersGuard(raw)
-	list, kindsGuarded = policy.SplitKindsGuard(rest)
-	return list, projectGuarded, kindsGuarded
+// guardTags is every tag that brings a rollback guard (rollbackGuards), as a message names them:
+// "dispatch-project, project-channels, proxy or proxy-narrowed".
+func guardTags() string {
+	var names []string
+	for _, g := range rollbackGuards {
+		names = append(names, g.tags...)
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " or " + names[len(names)-1]
 }
 
 // tagRefusal says one cross-tag refusal as the flag that fixes it: reason is what
@@ -487,7 +501,7 @@ func tagRefusal(reason string, set policy.TagSet, tags map[string]string) error 
 // tagFlags is the value of each tag flag a create or a retag names, one field per flag. It is a
 // struct rather than thirteen string parameters for the reason policy.TagSet is one: a caller
 // passing that many values in order would transpose two of them, and every transposition
-// compiles and writes each value as another tag.
+// compiles and writes each value as another tag. tagFlagTable names each field's flag and tag.
 type tagFlags struct {
 	Type            string
 	GitHubOwners    string
@@ -504,77 +518,90 @@ type tagFlags struct {
 	ProxyNarrowed   string
 }
 
-// optionalTags is the type, github-owners, requesters, scopes, admin, dispatch-project,
-// project-channels, max-grant, default-grant, judge, guidance, proxy and proxy-narrowed tags the
-// flags set: each flag's value when it names one, and nothing for one left unset or set to none.
-// A type brings the rollback guard with it (policy.TagRollbackGuard), which only the brokers from
-// legion-envoy-v13.19.0 to the release before v16.0.0 read, and refuse: every broker from v16.0.0
-// to the release before the type tag ignores it and serves a secret that carries type alone as a
-// stored secret. What keeps a type secret's key from such a broker is requireTypeTag, before this
-// CLI writes, and a rollback floor at the release that reads the type tag, which the deployment
-// keeps.
+// tagFlag is one tag flag of `secret create` and `secret retag`: the flag as a command line names
+// it, the tag it writes, and the field of tagFlags that holds its value.
+type tagFlag struct {
+	flag, tag string
+	field     func(*tagFlags) *string
+}
+
+// tagFlagTable is every tag flag, in the order the usage lines name them: the one list of them
+// that the tags a write sends (optionalTags), the tags a retag's none removes (noneRemoves), a
+// create's printed command line (createCommand) and the flags a retag must name one of
+// (retagFlagsRequired) are each read from, so a flag can be left out of none of them alone.
+var tagFlagTable = []tagFlag{
+	{"--type", policy.TagType, func(f *tagFlags) *string { return &f.Type }},
+	{"--github-owners", policy.TagGitHubOwners, func(f *tagFlags) *string { return &f.GitHubOwners }},
+	{"--requesters", policy.TagRequesters, func(f *tagFlags) *string { return &f.Requesters }},
+	{"--scopes", policy.TagScopes, func(f *tagFlags) *string { return &f.Scopes }},
+	{"--admin", policy.TagAdmin, func(f *tagFlags) *string { return &f.Admin }},
+	{"--project", policy.TagProject, func(f *tagFlags) *string { return &f.Project }},
+	{"--project-channels", policy.TagProjectChannels, func(f *tagFlags) *string { return &f.ProjectChannels }},
+	{"--max-grant", policy.TagMaxGrant, func(f *tagFlags) *string { return &f.MaxGrant }},
+	{"--default-grant", policy.TagDefaultGrant, func(f *tagFlags) *string { return &f.DefaultGrant }},
+	{"--judge", policy.TagJudge, func(f *tagFlags) *string { return &f.Judge }},
+	{"--guidance", policy.TagGuidance, func(f *tagFlags) *string { return &f.Guidance }},
+	{"--proxy", policy.TagProxy, func(f *tagFlags) *string { return &f.Proxy }},
+	{"--proxy-narrowed", policy.TagProxyNarrowed, func(f *tagFlags) *string { return &f.ProxyNarrowed }},
+}
+
+// optionalTags is the tag of each flag of tagFlagTable that names a value: that value, and
+// nothing for a flag left unset or set to none. A type brings the rollback guard with it
+// (policy.TagRollbackGuard), which only the brokers from legion-envoy-v13.19.0 to the release
+// before v16.0.0 read, and refuse: every broker from v16.0.0 to the release before the type tag
+// ignores it and serves a secret that carries type alone as a stored secret. What keeps a type
+// secret's key from such a broker is requireTypeTag, before this CLI writes, and a rollback floor
+// at the release that reads the type tag, which the deployment keeps.
 func optionalTags(f tagFlags) map[string]string {
-	named := func(value string) bool { return value != "" && value != tagNone }
 	tags := map[string]string{}
-	if named(f.Type) {
-		tags[policy.TagType] = f.Type
+	for _, t := range tagFlagTable {
+		if value := *t.field(&f); value != "" && value != tagNone {
+			tags[t.tag] = value
+		}
+	}
+	if _, typed := tags[policy.TagType]; typed {
 		tags[policy.TagRollbackGuard] = policy.RollbackGuardValue
-	}
-	if named(f.GitHubOwners) {
-		tags[policy.TagGitHubOwners] = f.GitHubOwners
-	}
-	if named(f.Requesters) {
-		tags[policy.TagRequesters] = f.Requesters
-	}
-	if named(f.Scopes) {
-		tags[policy.TagScopes] = f.Scopes
-	}
-	if named(f.Admin) {
-		tags[policy.TagAdmin] = f.Admin
-	}
-	if named(f.Project) {
-		tags[policy.TagProject] = f.Project
-	}
-	if named(f.ProjectChannels) {
-		tags[policy.TagProjectChannels] = f.ProjectChannels
-	}
-	if named(f.MaxGrant) {
-		tags[policy.TagMaxGrant] = f.MaxGrant
-	}
-	if named(f.DefaultGrant) {
-		tags[policy.TagDefaultGrant] = f.DefaultGrant
-	}
-	if named(f.Judge) {
-		tags[policy.TagJudge] = f.Judge
-	}
-	if named(f.Guidance) {
-		tags[policy.TagGuidance] = f.Guidance
-	}
-	if named(f.Proxy) {
-		tags[policy.TagProxy] = f.Proxy
-	}
-	if named(f.ProxyNarrowed) {
-		tags[policy.TagProxyNarrowed] = f.ProxyNarrowed
 	}
 	return tags
 }
 
+// noneRemoves is the tags a retag's none removes: the tag of each flag of tagFlagTable set to
+// none, in the table's order. --type none also removes the old kind tag and the rollback guard
+// written with the type, since a stored secret is safe on every broker.
+func noneRemoves(f tagFlags) []string {
+	var remove []string
+	for _, t := range tagFlagTable {
+		if *t.field(&f) != tagNone {
+			continue
+		}
+		remove = append(remove, t.tag)
+		if t.tag == policy.TagType {
+			remove = append(remove, policy.LegacyTypeTag, policy.TagRollbackGuard)
+		}
+	}
+	return remove
+}
+
+// retagFlagsRequired is the usage error of a retag that names no flag: --owner, --tier and each
+// flag of tagFlagTable.
+func retagFlagsRequired() error {
+	flags := []string{"--owner", "--tier"}
+	for _, t := range tagFlagTable {
+		flags = append(flags, t.flag)
+	}
+	return usageErr{errors.New(strings.Join(flags, ", ") + " or a combination is required")}
+}
+
 // createCommand is the `secret create` command line a create prints for piping its value in
-// (pipeCommand): the name, the owner and tier as the command named them, and every tag flag it
-// named with its value, in the order the usage line lists them. A flag left out of it would be
+// (pipeCommand): the name, the owner and tier as the command named them, and each flag of
+// tagFlagTable it named, with its value, in the table's order. A flag left out of it would be
 // left out of the secret the printed command creates, and a dropped --proxy releases that secret
 // as its value.
 func createCommand(name, owner, tier string, f tagFlags) []string {
 	command := []string{"secret", "create", name, "--owner", owner, "--tier", tier}
-	for _, flag := range []struct{ name, value string }{
-		{"--type", f.Type}, {"--github-owners", f.GitHubOwners}, {"--requesters", f.Requesters},
-		{"--scopes", f.Scopes}, {"--admin", f.Admin}, {"--project", f.Project},
-		{"--project-channels", f.ProjectChannels}, {"--max-grant", f.MaxGrant},
-		{"--default-grant", f.DefaultGrant}, {"--judge", f.Judge}, {"--guidance", f.Guidance},
-		{"--proxy", f.Proxy}, {"--proxy-narrowed", f.ProxyNarrowed},
-	} {
-		if flag.value != "" {
-			command = append(command, flag.name, flag.value)
+	for _, t := range tagFlagTable {
+		if value := *t.field(&f); value != "" {
+			command = append(command, t.flag, value)
 		}
 	}
 	return command

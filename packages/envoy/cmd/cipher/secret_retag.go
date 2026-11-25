@@ -148,9 +148,28 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
+	// given is the tag flags as they stand: the checks below write the canonical form of some of
+	// them back, so the tags are read through it once they have run.
+	given := func() tagFlags {
+		return tagFlags{
+			Type:            *newType,
+			GitHubOwners:    *newGitHubOwners,
+			Requesters:      *newRequesters,
+			Scopes:          *newScopes,
+			Admin:           *newAdmin,
+			Project:         *newProject,
+			ProjectChannels: *newProjectChannels,
+			MaxGrant:        *newMaxGrant,
+			DefaultGrant:    *newDefaultGrant,
+			Judge:           *newJudge,
+			Guidance:        *newGuidance,
+			Proxy:           *newProxy,
+			ProxyNarrowed:   *newProxyNarrowed,
+		}
+	}
 	name, slug, err := secretName(positional)
-	if err == nil && *newOwner == "" && *newTier == "" && *newType == "" && *newGitHubOwners == "" && *newRequesters == "" && *newScopes == "" && *newAdmin == "" && *newProject == "" && *newProjectChannels == "" && *newMaxGrant == "" && *newDefaultGrant == "" && *newJudge == "" && *newGuidance == "" && *newProxy == "" && *newProxyNarrowed == "" {
-		err = usageErr{errors.New("--owner, --tier, --type, --github-owners, --requesters, --scopes, --admin, --project, --project-channels, --max-grant, --default-grant, --judge, --guidance, --proxy, --proxy-narrowed or a combination is required")}
+	if err == nil && *newOwner == "" && *newTier == "" && given() == (tagFlags{}) {
+		err = retagFlagsRequired()
 	}
 	if err == nil {
 		*newOwner, err = checkOwnerTier(*newOwner, *newTier)
@@ -194,62 +213,8 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	if err == nil {
 		err = checkProxyNarrowed(*newProxyNarrowed, true)
 	}
-	var remove []string
-	if *newType == tagNone {
-		// The rollback guard goes with the type: a stored secret is safe on every broker.
-		remove = append(remove, policy.TagType, policy.LegacyTypeTag, policy.TagRollbackGuard)
-	}
-	if *newGitHubOwners == tagNone {
-		remove = append(remove, policy.TagGitHubOwners)
-	}
-	if *newRequesters == tagNone {
-		remove = append(remove, policy.TagRequesters)
-	}
-	if *newScopes == tagNone {
-		remove = append(remove, policy.TagScopes)
-	}
-	if *newAdmin == tagNone {
-		remove = append(remove, policy.TagAdmin)
-	}
-	if *newProject == tagNone {
-		remove = append(remove, policy.TagProject)
-	}
-	if *newProjectChannels == tagNone {
-		remove = append(remove, policy.TagProjectChannels)
-	}
-	if *newMaxGrant == tagNone {
-		remove = append(remove, policy.TagMaxGrant)
-	}
-	if *newDefaultGrant == tagNone {
-		remove = append(remove, policy.TagDefaultGrant)
-	}
-	if *newJudge == tagNone {
-		remove = append(remove, policy.TagJudge)
-	}
-	if *newGuidance == tagNone {
-		remove = append(remove, policy.TagGuidance)
-	}
-	if *newProxy == tagNone {
-		remove = append(remove, policy.TagProxy)
-	}
-	if *newProxyNarrowed == tagNone {
-		remove = append(remove, policy.TagProxyNarrowed)
-	}
-	set := optionalTags(tagFlags{
-		Type:            *newType,
-		GitHubOwners:    *newGitHubOwners,
-		Requesters:      *newRequesters,
-		Scopes:          *newScopes,
-		Admin:           *newAdmin,
-		Project:         *newProject,
-		ProjectChannels: *newProjectChannels,
-		MaxGrant:        *newMaxGrant,
-		DefaultGrant:    *newDefaultGrant,
-		Judge:           *newJudge,
-		Guidance:        *newGuidance,
-		Proxy:           *newProxy,
-		ProxyNarrowed:   *newProxyNarrowed,
-	})
+	remove := noneRemoves(given())
+	set := optionalTags(given())
 	if err == nil && len(remove) > 0 && (*newOwner != "" || *newTier != "" || len(set) > 0) {
 		err = usageErr{errors.New("none removes a tag in a retag of its own: run the removal and the other changes as two retags")}
 	}
@@ -374,10 +339,10 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 // requesters tag: a guard left on a secret with none of its tags, by a console's removal of
 // them, stays until a removal retag takes it out.
 //
-// --requesters none on a secret that keeps a project, a proxy or a proxy-narrowed tag removes
-// the list and keeps the guards, so the requesters tag is written as the guards alone: a write,
-// not a removal. Beside another removal that is two writes of the user's own asking, which a
-// retag refuses, so it is refused here too, before any write.
+// --requesters none on a secret that keeps a tag of rollbackGuards removes the list and keeps the
+// guards, so the requesters tag is written as the guards alone: a write, not a removal. Beside
+// another removal that is two writes of the user's own asking, which a retag refuses, so it is
+// refused here too, before any write.
 func guardRetag(heldTags, after, set map[string]string, remove *[]string) (rewrite string, err error) {
 	guardRequesters(after)
 	heldList, heldListed := heldTags[policy.TagRequesters]
@@ -387,7 +352,7 @@ func guardRetag(heldTags, after, set map[string]string, remove *[]string) (rewri
 	case afterListed && removing:
 		*remove = slices.DeleteFunc(*remove, func(key string) bool { return key == policy.TagRequesters })
 		if len(*remove) > 0 {
-			return "", usageErr{fmt.Errorf("--requesters none on a secret that keeps a %s, %s, %s or %s tag writes the requesters tag as %s alone, which holds its rollback guards and is a write, no removal: run --requesters none in a retag of its own", policy.TagProject, policy.TagProjectChannels, policy.TagProxy, policy.TagProxyNarrowed, afterList)}
+			return "", usageErr{fmt.Errorf("--requesters none on a secret that keeps a %s tag writes the requesters tag as %s alone, which holds its rollback guards and is a write, no removal: run --requesters none in a retag of its own", guardTags(), afterList)}
 		}
 		set[policy.TagRequesters] = afterList
 	case afterListed && len(*remove) == 0:
@@ -524,23 +489,20 @@ func reportRewriteFailure(s *secretSession, stderr io.Writer, form, name, rewrit
 	default:
 		// The store refused the rewrite before acting on it, or the read made before it failed
 		// and nothing was sent, so what the requesters tag holds now is what it held before this
-		// retag: the removal did not touch it. A guard was either leaving it (harmless to leave)
-		// or joining it (the secret keeps a project tag or a proxy tag with no guard, which a
-		// broker from before those tags would serve), and the two need different words.
-		_, heldProject, heldKinds := requestersList(held.tags[policy.TagRequesters])
-		_, wantProject, wantKinds := requestersList(rewrite)
+		// retag: the removal did not touch it. Each of rollbackGuards was either leaving it
+		// (harmless to leave) or joining it (the secret keeps one of its tags with no guard,
+		// which a broker from before those tags would serve), and the two need different words.
+		_, heldProject, heldKinds := policy.SplitGuards(held.tags[policy.TagRequesters])
+		_, wantProject, wantKinds := policy.SplitGuards(rewrite)
+		holds, wants := [2]bool{heldProject, heldKinds}, [2]bool{wantProject, wantKinds}
 		var states []string
-		switch {
-		case heldProject && !wantProject:
-			states = append(states, fmt.Sprintf("The requesters tag still holds %s, which only a broker from legion-envoy-v29.23.0 up to the release before the project tags reads, as a refusal", policy.RequestersRollbackGuard))
-		case wantProject && !heldProject:
-			states = append(states, fmt.Sprintf("The requesters tag does not hold %s yet, so a broker from before the project tags would serve this secret by owner and tier alone", policy.RequestersRollbackGuard))
-		}
-		switch {
-		case heldKinds && !wantKinds:
-			states = append(states, fmt.Sprintf("The requesters tag still holds %s, which only a broker from legion-envoy-v29.23.0 up to the release before the kinds reads, as a refusal", policy.KindsRollbackGuard))
-		case wantKinds && !heldKinds:
-			states = append(states, fmt.Sprintf("The requesters tag does not hold %s yet, so a broker from before the kinds would release this secret as its value", policy.KindsRollbackGuard))
+		for i, g := range rollbackGuards {
+			switch {
+			case holds[i] && !wants[i]:
+				states = append(states, fmt.Sprintf("The requesters tag still holds %s, which only a broker from legion-envoy-v29.23.0 up to the release before %s reads, as a refusal", g.guard, g.era))
+			case wants[i] && !holds[i]:
+				states = append(states, fmt.Sprintf("The requesters tag does not hold %s yet, so a broker from before %s would %s", g.guard, g.era, g.risk))
+			}
 		}
 		state := "The requesters tag holds what it held before this retag"
 		if len(states) > 0 {

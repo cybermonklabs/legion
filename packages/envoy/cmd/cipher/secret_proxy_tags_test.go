@@ -55,7 +55,7 @@ func TestCreateAndRetagWriteTheProxyTags(t *testing.T) {
 		with := func(tags map[string]string) map[string]string {
 			out := maps.Clone(held)
 			maps.Copy(out, tags)
-			out[policy.TagRequesters] = policy.WithKindsGuard(held[policy.TagRequesters])
+			out[policy.TagRequesters] = policy.WithGuards(held[policy.TagRequesters], false, true)
 			return out
 		}
 		for _, step := range []struct {

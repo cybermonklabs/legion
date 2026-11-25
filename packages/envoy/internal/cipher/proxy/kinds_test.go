@@ -244,15 +244,18 @@ func TestCipherRepositoryNeverReachesTheService(t *testing.T) {
 }
 
 // TestAPathTwoReadersResolveApartIsRefused: an allow prefix bounds the path and the method the
-// service reads, and a service that merges "//", decodes "%2F", reads "\" or "%5C" as "/", or takes
-// its method from a "_method" parameter reads another request than the one the allow list holds.
-// So where the kind or the profile has an allow, the proxy refuses a path with an empty segment,
-// an encoded slash or a backslash, and a query with a method override parameter, 403 in the
-// decision's own words, before anything is sent: each refused row's path is under /v1/, which the
-// list allows, so the rule that refuses it is the path or query rule and not the list. Where
-// neither has one there is no prefix to bound, so the same forms go to the service as the command
-// sent them, an object name's "%2F" through the gcp kind included. The controls: the path with one
-// slash, and a parameter whose name only ends in _method, are carried under the allow.
+// service reads, and a service that merges "//", decodes "%2F", reads "\" or "%5C" as "/", drops a
+// ";" parameter off a ".." segment (a Java servlet container reads "/..;/" as "/../"), decodes a
+// path twice, or takes its method from a "_method" parameter reads another request than the one
+// the allow list holds. A "_method" name counts as such a framework reads it: percent-decoded, a
+// "+" or a leading space dropped, and "." or "[" read as "_" (Express's querystring and PHP's
+// $_GET), and a name that does not decode counts too. So where the kind or the profile has an
+// allow, the proxy refuses each of these, 403 in the decision's own words, before anything is
+// sent: each refused row's path is under /v1/, which the list allows, so the rule that refuses it
+// is the path or query rule and not the list. Where neither has one there is no prefix to bound,
+// so the same forms go to the service as the command sent them, an object name's "%2F" through the
+// gcp kind included. The controls: the path with one slash, and parameters whose name is no
+// "_method" however it is read, are carried under the allow.
 //
 // The named revert: read the decoded path as the raw one (proxy-raw-path-decoded), and the
 // encoded slash is carried.
@@ -287,12 +290,42 @@ func TestAPathTwoReadersResolveApartIsRefused(t *testing.T) {
 		{"an encoded _method parameter", underKind, "/v1/things?%5Fmethod=DELETE", false, "request carries a method override parameter"},
 		{"an empty segment under the profile's allow alone", underProfile, "/v1//things", false, "path has an empty segment"},
 		{"a _method parameter under the profile's allow alone", underProfile, "/v1/things?_method=DELETE", false, "request carries a method override parameter"},
+		{"a _method parameter with an escaped letter", underKind, "/v1/things?_meth%6Fd=DELETE", false, "request carries a method override parameter"},
+		{"a _method parameter escaped whole", underKind, "/v1/things?%5F%6Detho%64=DELETE", false, "request carries a method override parameter"},
+		{"a .method parameter, PHP's _method", underKind, "/v1/things?.method=DELETE", false, "request carries a method override parameter"},
+		{"a [method parameter, PHP's _method", underKind, "/v1/things?[method=DELETE", false, "request carries a method override parameter"},
+		{"a +_method parameter, a space before _method", underKind, "/v1/things?+_method=DELETE", false, "request carries a method override parameter"},
+		{"a %20_method parameter", underKind, "/v1/things?%20_method=DELETE", false, "request carries a method override parameter"},
+		{"a parameter name that does not decode", underKind, "/v1/things?_method%zz=1", false, "request carries a method override parameter"},
+		{"a parameter on a .. segment", underKind, "/v1/..;/admin", false, "path has a parameter on a dot segment"},
+		{"a parameter after a .. segment's text", underKind, "/v1/..;foo/x", false, "path has a parameter on a dot segment"},
+		{"a parameter on a . segment", underKind, "/v1/.;/x", false, "path has a parameter on a dot segment"},
+		{"an encoded ; on a .. segment", underKind, "/v1/..%3B/admin", false, "path has a parameter on a dot segment"},
+		{"an encoded .. segment with a parameter", underKind, "/v1/%2e%2e;/admin", false, "path has a parameter on a dot segment"},
+		{"a double-encoded slash", underKind, "/v1/ada%252Fproofs", false, "path has a double-encoded character"},
+		{"a double-encoded dot", underKind, "/v1/%252e%252e/admin", false, "path has a double-encoded character"},
+		{"a double-encoded backslash", underKind, "/v1/ada%255cproofs", false, "path has a double-encoded character"},
+		{"a parameter on a .. segment under the profile's allow alone", underProfile, "/v1/..;/admin", false, "path has a parameter on a dot segment"},
 		{"the control: one slash", underKind, "/v1/things", false, ""},
 		{"the control: a parameter whose name ends in _method", underKind, "/v1/things?x_method=PUT", false, ""},
+		{"the control: a parameter whose name starts with _method", underKind, "/v1/things?_methods=PUT", false, ""},
+		{"the control: a _method value", underKind, "/v1/things?a=_method", false, ""},
+		{"the control: a +method parameter, a space before method", underKind, "/v1/things?+method=PUT", false, ""},
+		{"the control: a ; in a segment that is no dot segment", underKind, "/v1/things;v=1", false, ""},
 		{"no allow: an object name's encoded slash", underNone, "/storage/v1/b/b/o/dir%2Fobj", false, ""},
 		{"no allow: an empty segment", underNone, "/a//b", false, ""},
 		{"no allow: an encoded backslash", underNone, "/a%5Cb", false, ""},
 		{"no allow: a _method parameter", underNone, "/v1/things?_method=PUT", false, ""},
+		{"no allow: a _method parameter with an escaped letter", underNone, "/v1/things?_meth%6Fd=DELETE", false, ""},
+		{"no allow: a _method parameter escaped whole", underNone, "/v1/things?%5F%6Detho%64=DELETE", false, ""},
+		{"no allow: a .method parameter", underNone, "/v1/things?.method=DELETE", false, ""},
+		{"no allow: a +_method parameter", underNone, "/v1/things?+_method=DELETE", false, ""},
+		{"no allow: a %20_method parameter", underNone, "/v1/things?%20_method=DELETE", false, ""},
+		{"no allow: a parameter name that does not decode", underNone, "/v1/things?_method%zz=1", false, ""},
+		{"no allow: a parameter on a .. segment", underNone, "/v1/..;/admin", false, ""},
+		{"no allow: an encoded ; on a .. segment", underNone, "/v1/..%3B/admin", false, ""},
+		{"no allow: a double-encoded slash", underNone, "/v1/ada%252Fproofs", false, ""},
+		{"no allow: a double-encoded backslash", underNone, "/v1/ada%255cproofs", false, ""},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			r := newRuledRig(t, row.rules, Options{})

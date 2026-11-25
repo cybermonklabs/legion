@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -13,30 +15,98 @@ import (
 )
 
 // kindsGuarded is list, a requesters tag's text ("" for none), with the kinds' rollback guard after
-// it, as the requesters tag a secret carrying a proxy or a proxy-narrowed tag holds.
-func kindsGuarded(list string) string { return policy.WithKindsGuard(list) }
+// it and no project guard, as the requesters tag a secret carrying a proxy or a proxy-narrowed tag
+// and no project tag holds.
+func kindsGuarded(list string) string { return policy.WithGuards(list, false, true) }
 
-// TestTheCreateCommandToPipeAValueNamesEveryFlag: the command line a create prints for piping its
-// value in names every tag flag the create named, --proxy and --proxy-narrowed among them, with its
-// value, so the printed command creates the secret the first one meant: one without --proxy would
-// create a secret the broker releases as its value.
-func TestTheCreateCommandToPipeAValueNamesEveryFlag(t *testing.T) {
-	got := createCommand("API_KEY", "me", "human", tagFlags{
-		Type: policy.TypeGoogleServiceAccount, GitHubOwners: "acme", Requesters: "ada@example.com", Scopes: "cloud-platform",
-		Admin: policy.AdminTrue, Project: "PRIV", ProjectChannels: policy.ProjectChannelsSlack, MaxGrant: "1h",
-		DefaultGrant: policy.DefaultGrantSession, Judge: "300", Guidance: "grant for the release job",
-		Proxy: "gcp", ProxyNarrowed: policy.ProxyNarrowedTrue,
-	})
-	want := []string{"secret", "create", "API_KEY", "--owner", "me", "--tier", "human",
-		"--type", policy.TypeGoogleServiceAccount, "--github-owners", "acme", "--requesters", "ada@example.com", "--scopes", "cloud-platform",
-		"--admin", policy.AdminTrue, "--project", "PRIV", "--project-channels", policy.ProjectChannelsSlack, "--max-grant", "1h",
-		"--default-grant", policy.DefaultGrantSession, "--judge", "300", "--guidance", "grant for the release job",
-		"--proxy", "gcp", "--proxy-narrowed", policy.ProxyNarrowedTrue}
-	if !slices.Equal(got, want) {
-		t.Fatalf("createCommand = %q\nwant %q", got, want)
+// bothGuarded is list with both rollback guards after it, the project tags' first, as the
+// requesters tag of a secret carrying a project tag and a proxy tag holds.
+func bothGuarded(list string) string { return policy.WithGuards(list, true, true) }
+
+// TestTheTagFlagTableHoldsEveryTagFlag: tagFlagTable is the one list of the tag flags, and each
+// field of tagFlags is in it once. For each field, set alone, the table's flag is what the create's
+// printed command names (createCommand), its tag is what optionalTags writes, and what a retag's
+// none removes (noneRemoves), and the flag is one create and retag register, their synopses name
+// and a retag naming no flag asks for. The fields are read from tagFlags itself, so a field the
+// table leaves out fails here rather than drop out of a printed command or a retag's removal.
+func TestTheTagFlagTableHoldsEveryTagFlag(t *testing.T) {
+	fields := reflect.TypeOf(tagFlags{})
+	if len(tagFlagTable) != fields.NumField() {
+		t.Fatalf("tagFlagTable holds %d flags and tagFlags %d fields", len(tagFlagTable), fields.NumField())
 	}
-	if bare := createCommand("API_KEY", "me", "agent", tagFlags{}); !slices.Equal(bare, []string{"secret", "create", "API_KEY", "--owner", "me", "--tier", "agent"}) {
-		t.Fatalf("createCommand with no tag flag = %q; want the name, owner and tier alone", bare)
+	help := map[string]string{}
+	for _, form := range []string{"create", "retag"} {
+		_, stderr, code := runSecret(form, "-h")
+		if code != 0 {
+			t.Fatalf("secret %s -h: exit %d, stderr %q", form, code, stderr)
+		}
+		help["secret "+form] = stderr
+	}
+	required := retagFlagsRequired().Error()
+	for i := range fields.NumField() {
+		field := fields.Field(i).Name
+		var f tagFlags
+		value := fmt.Sprintf("value%02d", i)
+		reflect.ValueOf(&f).Elem().Field(i).SetString(value)
+		var rows []tagFlag
+		for _, row := range tagFlagTable {
+			if *row.field(&f) == value {
+				rows = append(rows, row)
+			}
+		}
+		if len(rows) != 1 {
+			t.Fatalf("tagFlags.%s is the field of %d rows of tagFlagTable; want one", field, len(rows))
+		}
+		row := rows[0]
+		if got, want := createCommand("API_KEY", "me", "agent", f), []string{"secret", "create", "API_KEY", "--owner", "me", "--tier", "agent", row.flag, value}; !slices.Equal(got, want) {
+			t.Errorf("tagFlags.%s alone: createCommand = %q, want %q", field, got, want)
+		}
+		want := map[string]string{row.tag: value}
+		if row.tag == policy.TagType {
+			want[policy.TagRollbackGuard] = policy.RollbackGuardValue
+		}
+		if got := optionalTags(f); !maps.Equal(got, want) {
+			t.Errorf("tagFlags.%s alone: optionalTags = %v, want %v", field, got, want)
+		}
+		reflect.ValueOf(&f).Elem().Field(i).SetString(tagNone)
+		if removed := noneRemoves(f); len(removed) == 0 || removed[0] != row.tag {
+			t.Errorf("tagFlags.%s set to none: noneRemoves = %q, want %s first", field, removed, row.tag)
+		}
+		if got := optionalTags(f); len(got) != 0 {
+			t.Errorf("tagFlags.%s set to none: optionalTags = %v, want nothing set", field, got)
+		}
+		for form, text := range help {
+			if !strings.Contains(lookupCommand(form).synopsis, "["+row.flag+" ") {
+				t.Errorf("%s's synopsis names no %s", form, row.flag)
+			}
+			if !strings.Contains(text, "  -"+strings.TrimPrefix(row.flag, "--")+" string") {
+				t.Errorf("%s -h registers no %s", form, row.flag)
+			}
+		}
+		if !strings.Contains(required, row.flag+",") && !strings.Contains(required, row.flag+" or") {
+			t.Errorf("a retag naming no flag is refused %q, which names no %s", required, row.flag)
+		}
+	}
+	if removed := noneRemoves(tagFlags{Type: tagNone}); !slices.Equal(removed, []string{policy.TagType, policy.LegacyTypeTag, policy.TagRollbackGuard}) {
+		t.Errorf("--type none removes %q; want the type, the old kind tag and the type's rollback guard", removed)
+	}
+}
+
+// TestTheRollbackGuardsAreInSplitGuardsOrder: rollbackGuards is read at the index policy.SplitGuards
+// answers each guard at and policy.WithGuards takes it at, so each row's guard is the one that
+// index answers, and the table's tags name each tag that brings a guard once.
+func TestTheRollbackGuardsAreInSplitGuardsOrder(t *testing.T) {
+	for i, g := range rollbackGuards {
+		_, project, kinds := policy.SplitGuards(g.guard)
+		if got, want := [2]bool{project, kinds}, [2]bool{i == 0, i == 1}; got != want {
+			t.Errorf("rollbackGuards[%d] is %s, which SplitGuards answers as %v; want %v", i, g.guard, got, want)
+		}
+		if got := policy.WithGuards("", i == 0, i == 1); got != g.guard {
+			t.Errorf("WithGuards for index %d writes %q; want rollbackGuards[%d], %s", i, got, i, g.guard)
+		}
+	}
+	if got, want := guardTags(), "dispatch-project, project-channels, proxy or proxy-narrowed"; got != want {
+		t.Errorf("guardTags = %q, want %q", got, want)
 	}
 }
 
@@ -96,7 +166,7 @@ func TestRetagKeepsTheKindsGuardWhileAProxyTagRemains(t *testing.T) {
 				t.Fatalf("after retag %v the requesters tag is %q, want %q", args, got, want)
 			}
 		}
-		both := func(list string) string { return kindsGuarded(guarded(list)) }
+		both := bothGuarded
 		step(kindsGuarded("ada@example.com"), "--proxy", "github")
 		step(kindsGuarded("ada@example.com"), "--proxy-narrowed", "true")
 		step(both("ada@example.com"), "--project", "PRIV")
@@ -213,7 +283,7 @@ func TestShowPrintsTheKindsGuardApart(t *testing.T) {
 	both := policytest.Secret("BOTH_KEY", "ada@example.com", policy.TierHuman, "v1")
 	both.Tags[policy.TagProject] = "PRIV"
 	both.Tags[policy.TagProxy] = "github"
-	both.Tags[policy.TagRequesters] = kindsGuarded(guarded("ada@example.com"))
+	both.Tags[policy.TagRequesters] = bothGuarded("ada@example.com")
 	proxied := policytest.Secret("PROXIED_KEY", "ada@example.com", policy.TierHuman, "v1")
 	proxied.Tags[policy.TagProxyNarrowed] = policy.ProxyNarrowedTrue
 	proxied.Tags[policy.TagRequesters] = kindsGuarded("")
