@@ -27,9 +27,9 @@ export interface ReviewSeed {
   readonly broadcast: string;
   readonly projectDocumentSlug: string;
   readonly issueArtifactSlug: string;
-  /** The priority `/priorities/:id` is opened on: the one `e2e/review-seed.ts` writes, which
-   *  carries work in flight under it and work parked under it, so both pages draw rows rather
-   *  than the sentence a deployment that has written no priority draws. */
+  /** The priority `/priorities/:id` is opened on: the first of the thirteen `e2e/review-seed.ts`
+   *  writes, which carries work in flight under it and work in backlog under it, so both pages
+   *  draw rows rather than the sentence a deployment that has written no priority draws. */
   readonly priority: string;
   /** The `from=…&to=…` query string, without the leading "?". */
   readonly deliveryQuery: string;
@@ -329,45 +329,62 @@ export const reviewRoutes: readonly ReviewRoute[] = [
       page.locator('[data-testid="artifact-header"]:not([data-highlighted])'),
     ],
   },
+  // `/priorities` draws one table at a time, on one of three tabs the address names (`?tab=`,
+  // `web/src/features/priorities/PrioritiesPage.tsx`), so each tab is an entry of its own. The
+  // page's own heading is on the screen while the priorities read is still out, over `Loading
+  // priorities`, and a fault's tab stands over its table while that fault list's own issue
+  // listing is still out, so each entry waits for a row the seed wrote: the first priority of
+  // the order, the issue active under no priority, and the issue in backlog that advances one.
+  // Each fault list is the Issues table, named by the label the page passes it with " table"
+  // after it (`features/project/IssuesTable.tsx`). The rows are `e2e/review-seed.ts`'s, so a
+  // change to that corpus fails these entries rather than a baseline.
   {
     kind: "reviewed",
-    layers: bothLayers,
+    layers: [...bothLayers, "shoot-phone"],
     name: "priorities",
     path: () => "/priorities",
     pattern: "/priorities",
-    // Three facts, because the page draws three tables and a heading proves none of them: the
-    // page's own heading is on the screen while the priorities read is still out, over `Loading
-    // priorities`, and both fault headings stand over their tables while each fault list's own
-    // issue listing is still out (`web/src/features/priorities/PrioritiesPage.tsx`). So each
-    // locator is a row the seed wrote - the first priority of the order, the in-flight issue
-    // that advances none, and the parked issue that advances one - and together they say the
-    // priorities table and both fault lists have their rows rather than their empty words. Each
-    // fault list is the Issues table, named by the label the page passes it with " table"
-    // after it (`features/project/IssuesTable.tsx`). The three issues are
-    // `e2e/review-seed.ts`'s, so a change to that corpus fails this row rather than a baseline.
     ready: (page) => [
-      page.getByRole("table", { name: "Priorities table" }).getByRole("row", { name: /^P1 / }),
+      page.getByRole("table", { name: "Priorities table" }).getByRole("row", { name: /^#1 / }),
+    ],
+  },
+  {
+    kind: "reviewed",
+    layers: [...bothLayers, "shoot-phone"],
+    name: "priorities-in-flight",
+    path: () => "/priorities?tab=none",
+    pattern: "/priorities",
+    ready: (page) => [
       page
-        .getByRole("table", { exact: true, name: "Issues in flight under no priority table" })
+        .getByRole("table", { exact: true, name: "Active under no priority table" })
         .getByRole("row", { name: /Broadcast recipients keep their send order/ }),
+    ],
+  },
+  {
+    kind: "reviewed",
+    layers: [...bothLayers, "shoot-phone"],
+    name: "priorities-backlog",
+    path: () => "/priorities?tab=backlog",
+    pattern: "/priorities",
+    ready: (page) => [
       page
-        .getByRole("table", { exact: true, name: "Priority issues in backlog or icebox table" })
+        .getByRole("table", { exact: true, name: "Priority work in backlog or icebox table" })
         .getByRole("row", { name: /Agents page freshness folds/ }),
     ],
   },
   {
     kind: "reviewed",
-    layers: bothLayers,
+    layers: [...bothLayers, "shoot-phone"],
     name: "priority",
     path: (seed) => `/priorities/${seed.priority}`,
     pattern: "/priorities/:id",
-    // The title field, which is drawn with the priority itself and not with the skeleton; the
-    // margin's first act, which arrives with the history read beside it rather than with the
-    // page; and the work table's row for the in-flight issue the seed places under this
-    // priority, which is a second read again (`advancesIssuesQuery`). A page read on the title
-    // alone would be a page whose margin and whose work are both still empty boxes.
+    // The title's heading in the page's header, which is drawn with the priority itself and not
+    // with the skeleton; the margin's first act, which arrives with the history read beside it
+    // rather than with the page; and the work table's row for the in-flight issue the seed places
+    // under this priority, which is a second read again (`advancesIssuesQuery`). A page read on
+    // the title alone would be a page whose margin and whose work are both still empty boxes.
     ready: (page) => [
-      page.getByRole("textbox", { name: "Title" }),
+      page.getByTestId("priority-header").getByRole("heading", { level: 1 }),
       page.getByRole("complementary", { name: "Margin" }).getByRole("listitem").first(),
       page
         .getByRole("table", { name: "Priority issues table" })
@@ -573,8 +590,14 @@ export const shotRoutes: readonly ReviewedRoute[] = reviewed.filter((route) =>
  *  the shell hides the sidebar behind the navigation drawer and shows the compact top bar. That
  *  alone changes every page, so the entries that carry `shoot-phone` are those whose own content
  *  the width rearranges rather than only its frame: the Inbox becomes the compact row list with
- *  no reading pane beside it, and the Spec's margin becomes a bottom sheet rather than a column
- *  beside the document.
+ *  no reading pane beside it, the Spec's margin becomes a bottom sheet rather than a column
+ *  beside the document, and every page of the priorities draws its table for a phone. The
+ *  Priorities tab's toolbar stacks its search box over its controls, each at the 44 px a phone's
+ *  target takes, and its table draws each priority as its place beside one cell, which names
+ *  the owner, the three counts and the newest event under the title; each fault tab's table
+ *  keeps the key and the title pinned, the title's filter under its words and the title whole,
+ *  and scrolls its other columns sideways under them; and a priority's own page stands its work
+ *  table, drawn the same way, under its description, with the margin's entries below it.
  *
  *  An issue's Conversation belongs in that company and is deliberately absent. At a phone width
  *  it draws a floating "Jump to latest" pill counting what has arrived since the reader last

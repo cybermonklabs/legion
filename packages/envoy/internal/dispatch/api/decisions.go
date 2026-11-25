@@ -795,6 +795,7 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 	if onNode {
 		keep, event, err = s.keepDecisionNode(r.Context(), tx, actor, document, decision)
 	} else {
+		// kept for one release: heading-keep
 		keep, event, err = s.keepDecisionHeading(r.Context(), tx, actor, document, decision)
 	}
 	if err != nil {

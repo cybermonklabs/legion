@@ -1,7 +1,8 @@
 package api
 
-// DaemonAPIVersion is the contract this daemon speaks with the Legion plugin (@sjawhar/pi-legion):
-// the claim, credential, workflow, controller and state shapes the plugin's client parses
+// This file is the history of DaemonAPIVersion (contracts.go), the contract this daemon speaks
+// with the Legion plugin (@sjawhar/pi-legion): the claim, credential, workflow, controller and
+// state shapes the plugin's client parses
 // (`packages/pi-shared/src/daemon-client.ts`, through
 // `packages/contracts/src/legion-api.ts`), the pane environment it reads — every variable
 // the tmux runtime sets on a pane (`internal/runtime/tmux/spawn.go`'s `panePairs`) and the Sandbox
@@ -11,29 +12,35 @@ package api
 // and the command line of a pod's `legion launcher` container (each pod kind's
 // `launcherContainer` in `internal/runtime/sandbox/podkind.go`, and `sessionProxyFlags`), both of
 // which the image's own `legion` reads. The installed plugin declares the
-// number it was built against as `legion.daemonApiVersion` in its `package.json`, and the boot
-// gate (`internal/daemon/bootgate.go`) refuses to start unless the two are equal.
+// number it was built against as `legion.daemonApiVersion` in the `package.json` its pack writes,
+// and the boot gate (`internal/daemon/bootgate.go`) refuses to start unless the two are equal.
 //
-// Bump rule: a change to any of these surfaces raises this constant above the number its base
-// carries. The same commit writes the number in every other file that holds it:
-// `legion.daemonApiVersion` in `packages/pi-legion/package.json` and
-// `packages/claude-envoy/package.json`, and the two fixtures
-// that this package's golden tests write, `packages/contracts/fixtures/daemon-api/version.json`
-// and `packages/contracts/fixtures/daemon-api/state.json`. In `packages/daemon`,
-// `go test ./internal/api -run '^(TestDaemonAPIVersionGolden|TestStateGolden)$' -update` writes
-// the two fixtures. The plugin's test reads `version.json`, so that fixture holds this constant
-// and the plugin's field together. The bump's history is its numbered entry in this file, below.
-// `.github/scripts/check-daemon-api-contract.sh` refuses a change in which one of those files
-// disagrees with this constant, and, naming a free number, a change that touches the contract
-// below (that script's header says which edits do) and declares no number above its base's.
+// Entry rule: a change to any of these surfaces adds one entry, and edits no number by hand.
+// `scripts/daemon-contract-entry.sh <slug>` writes the entry's file in this package,
+// `contract_<id>_<slug>.go`, whose id is the UTC second it was made; the author writes the
+// entry's text there, what the change does to the contract and why, with every row the change
+// adds to a table the daemon serves from, each naming the entry by its constant. In
+// `packages/daemon`, `go test ./internal/api -update` then writes the entry's fixture,
+// `packages/contracts/fixtures/daemon-api/contracts/<id>_<slug>.json`. The numbered entries below
+// end at LastNumberedContract, and no change adds one or moves one: each build numbers its new
+// entries LastNumberedContract plus their rank in the order main's first-parent history merged
+// them, which the release and worker-image builds stamp into the binary (contracts.go), so no
+// committed file holds a new entry's number. `legion version --contracts` prints each entry's
+// number in a build. `.github/scripts/check-daemon-api-contract.sh` refuses six changes: a
+// numbered entry added to this file or renumbered in it; an entry's file or fixture deleted or
+// renamed; an entry with no fixture, or a fixture with no entry; `legion.daemonApiVersion` in a
+// manifest, a `version.json`, or a `daemon` mark in a state golden; a changelog fragment that
+// names a number above LastNumberedContract; and an edit of an entry's fixture or of a frozen
+// record with no paragraph starting `Correction:` in that entry's text.
 //
 // Serving rule: a change that moves the shape of an answer a plugin parses serves the old shape to
-// each contract of `SupportedContracts` below this constant, through shaping.go's `shapeAnswer`: a
-// band takes off a key the change adds (`stateNarrowings`), a stand-in writes back a key it removes
-// (`withFixAttempts` is one), and a value strip holds back a value newer than that contract's
-// enumeration (`valueStrips`, which reads answers.go's `EnumeratedFields`). The shape gate in this
-// package's tests (`contract_shapes_test.go`) refuses a change that does not, and a record of an
-// earlier contract changed with the serving-down that produces it passes, which a reviewer reads.
+// each contract of `SupportedContracts` below DaemonAPIVersion, through shaping.go's
+// `shapeAnswer`: a band takes off a key the change adds (`stateNarrowings`), a stand-in writes
+// back a key it removes (`standIns`), and a value strip holds back a value newer than that
+// contract's enumeration (`valueStrips`, which reads answers.go's `EnumeratedFields`). The shape
+// gate in this package's tests (`contract_shapes_test.go`) refuses a change that does not, and a
+// record of an earlier contract changed with the serving-down that produces it passes, which a
+// reviewer reads.
 // Under `settings` the rule covers only the top-level keys a supported reader types (answers.go's
 // `typedSettings`): a settings key no reader types needs no band, stand-in or contract number,
 // only its row in settings_test.go's classification and the fixture values the field walk asks for.
@@ -3736,120 +3743,16 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 286: the `decisions` design-gate step is gone, since a person's
-// decisions are nodes of the spec, which the `spec` step's approval covers. `gates.design` refuses
-// that step by name (config's readDesignSteps), so the step of `POST /legion/v1/gates/register` is
-// `criteria` or `spec`, and a call naming `decisions` is refused as a step the deployment does not
-// gate (`GATE_STEP_NOT_CONFIGURED`); each `gatedSteps[].step` of `GET /legion/v1/state` and each
-// entry of `designGateSteps` on `POST /legion/v1/controller/secret` is one of the same two. The
-// plugin narrows with it: `legionDesignStep` (`packages/contracts/src/legion-api.ts`) takes the two
-// names of `DESIGN_GATE_STEPS`, and `register_gate` offers no other step. The `design_gates` rows
-// and the kept approvals an earlier release wrote of the step stay in the store, which no reader
-// of this release is handed (record.Postgres.GatesOf), so no state of this daemon names the step.
-// A plugin of the release before (275, the number main declares at 830cfacbbc) reads that state
-// as before, since it parses the three names, and the boot
-// gate and `legion probe-image` pair a daemon with a plugin of its own number. A loader of this release
-// refuses a file whose `gates.design` names `decisions`, so a deployment takes the step out of the
-// file before it pins an image of this release.
-// (This change took 161 at the forward merge of 2026-11-18, which brought main in at 0b2769e553
-// and 152, 170 at the forward merge of 2026-11-19 that brought main in at e5e4900fe7 and 160, and
-// 176 at the forward merge of 2026-11-19 that brought main in at 5f3d552e37 and 168. At the
-// forward merge of 2026-11-20 that brings main in at c7e1cbd532, main declares 178 (the entry
-// above), and 176 is declared by #4030, #4180, #4182, #4193, #4251, #4259, #4261, #4269 and #4290
-// beside this change, so it takes 182, the lowest number above main's 178 that no open pull
-// request declares, in a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the
-// 243 open pull requests, made between 2026-11-20T01:06:37Z and 01:12:42Z: 169 #4273 and #4543,
-// 170 #4495, 171 #2230 and #4065, 172 #3659, 173 #4493, 174 #3993, 175 #3712, #4432 and #4539, 176
-// #4030, #4173 (this change, before this merge), #4180, #4182, #4193, #4251, #4259, #4261, #4269
-// and #4290, 177 #4017, 178 #3831, #4552 and #4554, 179 #4392 and #4540, 180 #4049 and #4175, 181
-// #4553, and nothing above 181. That is a reading and never the rule: read main's own number and
-// every open head again at the next forward merge rather than from this line.)
-// (At the later forward merge of 2026-11-20 that brings main in at 1c7c825367, main declares 188,
-// the entry before this one, and this change takes 192 in place of 182: the lowest number above
-// main's 188 that no open pull request declares, in a reading of `const DaemonAPIVersion` at
-// refs/pull/<n>/head for each of the 264 open pull requests, made between 2026-11-20T10:32:14Z and
-// 10:44:17Z: 189 #3831, #4592 and #4596, 190 #4493 and #4578, 191 #4495, and nothing above 191.)
-// (At the forward merge of 2026-11-20 that brings main in at a4cd4949fce7, main declares 189, the
-// entry before this one, and 192 is declared by seven open pull requests, so this change takes
-// the number 196, the lowest above main's 189 that no open pull request declares, in a reading of
-// `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 283 open pull requests, made
-// between 2026-11-20T16:04:34Z and 16:14:35Z: 189 #4592, #4596 and #4611, 190 #4578, 191 #2230,
-// #4049, #4495 and #4573, 192 #3993, #4175, #4182, #4193, #4273, #4392 and #4580, 193 #3659,
-// #3712, #4065, #4432, #4539 and #4553, 194 #3831 and #4030, 195 #4493 and #4590, and nothing
-// above 195.)
-// (At the forward merge of 2026-11-21 that brings the node store's branch in at f0d08bf24f, which holds
-// main at f3e26096c7, main declares 202, the entry before this one, and this change takes 204 in
-// place of 196: the lowest number above main's 202 that no open pull request declares, in a
-// reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 358 pull requests
-// open during the reading, made between 2026-11-21T06:38:03Z and 07:20:32Z: 203 #4175 and
-// #4661, 205 #3712, #4539 and #4573, 207 #3831, #3993, #4030, #4065, #4273, #4392, #4432, #4590,
-// #4592 and #4596, 208 #2230 and #4611, 209 #4049, #4540, #4553 and #4580, and nothing above 209.)
-// (At the forward merge of 2026-11-21 that brings main in at 98987d3f3d, main declares 205, the
-// entry before this one, and this change takes 216 in place of 204: the lowest number above main's
-// 205 that no open pull request declares, in a reading of `const DaemonAPIVersion` at the head of
-// each of the 411 open pull requests, made between 2026-11-21T20:11:41Z and 20:18:15Z: 206 #3712
-// and #4539, 207 #3993, #4273, #4392, #4432, #4590, #4682, #4723 and #4805, 208 #2230, 209 #4049,
-// #4540 and #4580, 210 #4661, 211 #4611, 212 #3831 and #4771, 213 #4030 and #4553, 214 #4592 and
-// #4596, 215 #4065, and nothing above 215.)
-// (At the forward merge of 2026-11-23 that brings main in at 8f33268286, main declares 217, the
-// entry before this one, and this change takes 232 in place of 216: the lowest number above main's
-// 217 that no open pull request declares, in a reading of `const DaemonAPIVersion` at the head of
-// each of the 525 open pull requests, made between 2026-11-23T01:12:30Z and 01:25Z: 218 #3831, 219
-// #4611, #4902 and #4948, 220 #4930 and #5014, 221 #3993, #4049, #4392, #4432, #4682, #4771, #4940
-// and #4942, 222 #4661, 223 #4805, 224 #4960, 225 #3712 and #4539, 226 #4175 and #5017, 227 #4065,
-// 228 #4590, 229 #2230, 230 #4580, 231 #4540, and nothing above 231.)
-// (At the forward merge of 2026-11-23 that brings main in at 2a86374ad4, main declares 219, the
-// entry before this one, and 232 is declared by #4592 and #4771 for changes of their own, so this
-// change takes 236 in place of 232: the lowest number above main's 219 that no open pull request
-// declares, in a reading of `const DaemonAPIVersion` at the head of each of the 502 open pull
-// requests, made between 2026-11-23T17:24:57Z and 17:27:16Z: 220 #4930, 221 #4049, #4392, #4432,
-// #4940 and #5164, 222 #5156, #5157, #5158 and #5160, 223 #3993 and #4661, 224 #4960 and #5165,
-// 225 #3712, 226 #4175, 227 #5162, 228 #4590, 229 #2230, 230 #4580, 231 #4540, 232 #4592 and
-// #4771 beside this change's own entry, which #4180, #4182, #4193, #4932 and #4984 carry, 233
-// #4596, 234 #4065, 235 #5204, and 237 #5168.)
-// (At the forward merge of 2026-11-24 that brings main in at 58251571dd, main declares 220, the
-// entry before this one, and this change takes 233 in place of 236: the lowest number above main's
-// 220 that no open pull request declares, in a reading of `const DaemonAPIVersion` at the head of
-// each of the 510 open pull requests, made between 2026-11-24T00:16:14Z and 00:18:08Z: 221 #4049,
-// #4392, #4432, #4940 and #5164, 222 #5156, #5157, #5158 and #5160, 223 #3993 and #4661, 224 #4960
-// and #5165, 225 #3712, 226 #4175, 227 #5162, 228 #4590, 229 #2230, 230 #4580, 231 #4540, 232
-// #4180 and #4984, 234 #4065, 235 #5204, 236 #4182, #4193 and #4932 beside this change's own
-// entry, 237 #5168 and #5169, 238 #4771 and #5285, 239 #4592, and 240 #4596 and #5271.)
-// (At the forward merge of 2026-11-24 that brings main in at 15338e75e3, main declares 228, the
-// entry before this one, and this change keeps 233: the lowest number above main's 228 that no
-// open pull request declares beside this change's own entry, in a reading of `const
-// DaemonAPIVersion` at the head of each of the 492 open pull requests, made between
-// 2026-11-24T09:53:08Z and 09:55:39Z: 229 #2230, 230 #4580, 231 #4540, 232 #5271, 233 #4180,
-// #4182, #4193 and #4932, which carry this change's own entry, 234 #4065, 235 #5204, 236 #4984,
-// 237 #5168 and #5169, 238 #5285, 239 #4592, 241 #4771 and #5307, 242 #4596, 243 #5349 and 244
-// #3831.)
-// (At the forward merge of 2026-11-24 that brings main in at d27405712c, main declares 232, the
-// entry before this one, and this change keeps 233: the lowest number above main's 232 that no
-// open pull request declares beside this change's own entry, in a reading of `const
-// DaemonAPIVersion` at the head of each of the 479 open pull requests, made between
-// 2026-11-24T12:40:10Z and 12:42:17Z: 233 #4180, #4182, #4193 and #4932, which carry this
-// change's own entry, 234 #4065, 235 #5204, 236 #4984, 237 #5168 and #5169, 238 #5285, 239 #4592,
-// 240 #3712, #3993, #4049 and #4771, 242 #4596, 243 #5349, 244 #3831 and #5365, 245 #5158 and 246
-// #4960.)
-// (At the forward merge of 2026-11-24 that brings main in at 25cbe2b315, main declares 246, the
-// entry before this one, and this change takes 249 in place of 233: the lowest number above main's
-// 246 that no open pull request declares, in a reading of `const DaemonAPIVersion` at the head of
-// each of the 477 open pull requests, made between 2026-11-24T16:11:08Z and 16:15:28Z: 245 #5158,
-// 246 #4194, 247 #5384, 248 #3993, #4049, #4065 and #4392, 250 #5365, 251 #5307, 252 #4540, 254
-// #4432, 255 #5164, 256 #5349, 257 #4580 and 261 #5332.)
-// (At the forward merge of 2026-11-24 that brings main in at 5df00e2f13, main declares 250, the
-// entry before this one, and 249 is declared by #4592 and #4771 beside this change, so it takes
-// 253 in place of 249: the lowest number above main's 250 that no open pull request declares, in a
-// reading of `const DaemonAPIVersion` at the head of each of the 488 open pull requests, made
-// between 2026-11-24T17:55:31Z and 17:58:10Z: 251 #5307, 252 #4540, 254 #4432, 255 #5164, 256
-// #5349, 257 #4580, 261 #5332, 262 #5204 and 265 #5285.)
-// (After that merge #4049 and #4065 declared 253 as well. This change takes the allocated number
-// 271 at the forward merge of main at fd2f03fb07, where main still declares 250.)
-// (At the forward merge of main at 0c368b3907, main declares 256, the entry before this one, and
-// this change keeps 271.)
-// (At the forward merge of main at 830cfacbbc, main declares 275, the entry before this one, and
-// this change takes 286 in place of 271: the lowest number above main's 275 that no open pull
-// request declares, in the reading .github/scripts/check-daemon-api-contract.sh made between
-// 2026-11-25T10:47:17Z and 10:53:18Z: 276 #4592, 277 #4771, 278 #4596, 279 #4580, 280 #5307, 281
-// #4540, 282 #5488, 283 #5463, 284 #5157 and 285 #5158.)
-const DaemonAPIVersion = 286
+// Each change after LastNumberedContract is an entry of its own file, and takes no number here
+// (contracts.go).
+
+/*
+The line below is no Go and no contract number of this build. Main's contract check from before
+this change reads every open pull request's head for `const\s+DaemonAPIVersion\s*=\s*(\d+)` and
+fails each pull request it checks while one open head declares none, so this head keeps a line it
+reads, at the number main declared when the line was written. Its tab keeps it out of every reader
+of the number after the cutover (legion-pins, scripts/daemon-contract.sh and
+scripts/daemon-contract-convert.sh), which read `const DaemonAPIVersion = <n>` with one space, and
+the check of this change reads no open pull request.
+const	DaemonAPIVersion = 275
+*/

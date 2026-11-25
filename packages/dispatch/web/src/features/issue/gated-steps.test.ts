@@ -35,6 +35,7 @@ const ungated: Project = {
   created_at: "2026-09-09T00:00:00Z",
   open_asks: 0,
   gated_steps: [],
+  proven_sessions: false,
 };
 
 function gating(...gated_steps: GatedStep[]): Project {

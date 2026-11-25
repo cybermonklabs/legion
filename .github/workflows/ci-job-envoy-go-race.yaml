@@ -58,9 +58,13 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+    # BROKER_TEST_DATABASE_URL names the same service for the NATS auth service's hold rows
+    # (internal/cipher/natscallout), which read the broker's hold row from Postgres and skip
+    # without it; envoy-go's unit step runs the package again to count those skips.
     env:
       JOB_TIMEOUT_MINUTES: 80 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -73,6 +77,11 @@ jobs:
           cache: false
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      # No commit, checkpoint or database copy here waits for the runner's disk: why every
+      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
+      - name: Turn crash safety off on the service
+        timeout-minutes: 2
+        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
       # The store package's tests run eight at once (storeTestParallelism, store_test.go), each with
       # a database and pools of its own, beside the step's other packages, so this samples the
       # service's client connections every 2 s while the next step runs and the step after it prints

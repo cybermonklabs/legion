@@ -2247,6 +2247,11 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     written: "text",
   },
   {
+    file: `${FEATURES}/priorities/PriorityDescription.tsx`,
+    holds: "the documents' editor's own error for a description it could not draw",
+    written: "failed",
+  },
+  {
     file: `${FEATURES}/project/IssuesTable.tsx`,
     holds: "the table's own notice of what a table action did",
     written: "notice?.text",

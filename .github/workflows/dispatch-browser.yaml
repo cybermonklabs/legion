@@ -65,6 +65,7 @@ jobs:
           token: ''
           cache: false
       # why: .github/ci-notes/dispatch-browser.md#why-the-binaries-job-restores-go-envoy-test
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -321,6 +322,7 @@ jobs:
           token: ''
           cache: false
       # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-restores-go-envoy-test
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -401,6 +403,7 @@ jobs:
           cache: false
       # go-envoy, restored only, as the multiprocess job restores it and for the same reason:
       # run-server.sh builds the Dispatch server, which the family's saving jobs do not.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -470,6 +473,7 @@ jobs:
           token: ''
           cache: false
       # why: .github/ci-notes/dispatch-browser.md#why-the-visual-job-restores-go-envoy-test
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

@@ -121,7 +121,7 @@ func TestAnIssueCreateStoresItsNodeBeforeItsRow(t *testing.T) {
 // before its row: an issue's document and file, a project's document, each in that project and
 // caused by the artifact.created event, and a file or document sent in an agent's conversation,
 // which no project owns, between the parties of that conversation and at the sentinel, since such
-// an upload appends no event (agentArtifactTarget.ownsEvents).
+// an upload appends no event (artifactTarget.ownsEvents).
 func TestEveryUploadStoresItsDocumentsNode(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)

@@ -319,7 +319,6 @@ export function usePlainHeadline(
  */
 export function PlainText({
   children,
-  firstLine = false,
   markdown,
   max = Number.POSITIVE_INFINITY,
   source,
@@ -329,10 +328,6 @@ export function PlainText({
   /** Draws whatever holds the line: the control the label names, the element the title is on.
    *  `undefined` until the engine has answered. */
   children: (text: string | undefined) => ReactNode;
-  /** Reads the text's first line alone rather than the whole of it (`useMarkdownHeadline`):
-   *  a closed row of the priorities table, which shows the first line of a description and no
-   *  more of it, is the one caller that asks. */
-  firstLine?: boolean;
   markdown: string | undefined;
   max?: number;
   /** The record the text is (`PlainHeadlineOptions`). */
@@ -343,7 +338,7 @@ export function PlainText({
    *  Dispatch does not store, whose `markdown` is parsed instead. */
   tree?: DisplayTree;
 }): ReactNode {
-  const { reads, text } = usePlainHeadline(tree, markdown, { firstLine, max, source, surface });
+  const { reads, text } = usePlainHeadline(tree, markdown, { max, source, surface });
   return (
     <>
       {reads}

@@ -489,6 +489,7 @@ func main() {
 	// catch-up, its count of what the restore and the conversion owe, and its later passes run on
 	// its own tick once the server listens, below: the boot reads only what the first phase reads,
 	// so a table it does not need, held by another transaction, keeps no process from serving.
+	// kept for one release: decisions-step
 	decisionStep := docs.NewDecisionStep(database, buildCommit, nil)
 	// kept for one release: decisions-step
 	if !boot.HoldDecisionsStep {
@@ -575,6 +576,7 @@ func main() {
 	// The decisions step's third phase writes the issues' documents through this service: the
 	// restore of the answered asks that left their specs and the conversion of the decisions
 	// documents, on the step's tick below.
+	// kept for one release: decisions-step
 	decisionStep.UseDocuments(documentService)
 	restoreDecidedWordings(ctx, documentService, decidedWordingRestoreTimeout)
 	// The asks a close or a reopen by a release older than the withdrawal left: at boot, then on an
@@ -1347,7 +1349,10 @@ func main() {
 			githubreads.CIReconcile:        reconciler != nil,
 		}}
 	}
-	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer, decisionStep, issuers{signIn: signIn, serviceTokens: serviceTokens}, reads)
+	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer,
+		// kept for one release: decisions-step
+		decisionStep,
+		issuers{signIn: signIn, serviceTokens: serviceTokens}, reads)
 	server := newHTTPServer(handler, time.Now)
 	// The server serves on the socket it inherited (DISPATCH_LISTEN_FD) or binds its address, and
 	// does either before serving, so a socket it cannot serve on or an address it cannot take ends
@@ -2295,9 +2300,15 @@ func serverClient(extra ...bus.ConnectOption) []bus.ConnectOption {
 // it says only that the process answers, for a liveness or startup probe, which must not wait on
 // or fail with Postgres, NATS or the file store. /metrics is unauthenticated like the other two,
 // so whoever reaches Dispatch's HTTP port can read it, and registry serves it.
-func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, decisions *docs.DecisionStep, issuers issuers, reads *gitHubReads) http.Handler {
+func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer,
+	// kept for one release: decisions-step
+	decisions *docs.DecisionStep,
+	issuers issuers, reads *gitHubReads) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer, decisions, issuers, reads))
+	mux.Handle("GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer,
+		// kept for one release: decisions-step
+		decisions,
+		issuers, reads))
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.Handle("GET /metrics", registry.Handler())
 	mux.Handle("/", handler)
@@ -2569,7 +2580,10 @@ func proofOrigins(serverURL string, added []string) []string {
 // has counted - the boot's pass counts nothing (docs.DecisionStep.Boot), and
 // DISPATCH_TEST_HOLD_DECISIONS_STEP holds the tick for as long as it is set - and it is read from
 // the step, so the probe adds no statement to the database. It never decides `ok`.
-func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, decisions *docs.DecisionStep, issuers issuers, reads *gitHubReads) http.HandlerFunc {
+func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer,
+	// kept for one release: decisions-step
+	decisions *docs.DecisionStep,
+	issuers issuers, reads *gitHubReads) http.HandlerFunc {
 	var reportedCommit *string
 	if commit != "" {
 		reportedCommit = &commit
@@ -2645,7 +2659,9 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 		}{
 			OK: ok, DB: databaseOK, NATS: natsOK, Files: filesOK, SignIn: signInOK, ServiceTokens: serviceTokensOK,
 			GitHub: reads.member(), Commit: reportedCommit, FleetCommit: announcer.FleetCommit(), SchemaVersion: schemaVersion,
-			OutboxPublisher: publisher.Publishing(), IdempotencyKeys: true, DecisionsStepOwed: decisions.OwedTotal(),
+			OutboxPublisher: publisher.Publishing(), IdempotencyKeys: true,
+			// kept for one release: decisions-step
+			DecisionsStepOwed: decisions.OwedTotal(),
 		})
 	}
 }

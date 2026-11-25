@@ -55,7 +55,7 @@ var (
 // suspendedRole is a claim with a session that by suspended, as the store holds it and a boot
 // restores it: the session is kept, and no process runs.
 func suspendedRole(role claim.Role, by supervise.SuspendSource) podUpdateRole {
-	return podUpdateRole{role: role, state: supervise.StateSuspended, session: true, contract: api.DaemonAPIVersion, suspendedBy: by}
+	return podUpdateRole{role: role, state: supervise.StateSuspended, session: true, contract: api.DaemonAPIVersion(), suspendedBy: by}
 }
 
 // replacedOverPassedOverClaims carries R3's round to its replacement: two ready workers and two
@@ -423,7 +423,7 @@ func TestAnUpdateRoundReadsTheWorkspaceOncePerRound(t *testing.T) {
 	// passed over left work that no role was asked to push.
 	t.Run("no claim passed over", func(t *testing.T) {
 		rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester),
-			podUpdateRole{role: claim.RolePlanner, state: supervise.StateFailed, session: true, contract: api.DaemonAPIVersion})
+			podUpdateRole{role: claim.RolePlanner, state: supervise.StateFailed, session: true, contract: api.DaemonAPIVersion()})
 		rig.drifts(podUpdateDrift)
 
 		rig.tick()

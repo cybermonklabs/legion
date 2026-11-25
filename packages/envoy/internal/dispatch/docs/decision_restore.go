@@ -998,7 +998,9 @@ func ReturnDeclined(ctx context.Context, q graphstore.Queryer, work graphcensus.
 
 // answerersVersion is the login of ask's answerer where a version written at at, whose previous
 // version was written at previousAt, is the one that first holds the answer - written after the
-// answer's time, its previous version before it - and "" otherwise (removalOf).
+// answer's time, its previous version before it - and "" otherwise (removalOf). Its one caller,
+// readSpecRemoval, serves the store census's dangling counter as well as the restore
+// (ReturnDeclined).
 func answerersVersion(ask model.Ask, at, previousAt time.Time) string {
 	if ask.Answer == nil || !at.After(ask.Answer.At) || !previousAt.Before(ask.Answer.At) {
 		return ""

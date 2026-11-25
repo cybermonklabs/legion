@@ -1004,6 +1004,8 @@ func (s *Service) Join(ctx context.Context, tx pgx.Tx) (context.Context, *Ledger
 // advisory lock (takeRestoreLock) whose reads must see its own writes - an ask row it moved, a
 // version it wrote before the event that names it, a node it stated - and which no request waits
 // on, as the block-id backfill is (backfillBlockIDs). Every other caller joins with Join.
+//
+// kept for one release: decisions-step
 func (s *Service) joinAtOnce(ctx context.Context, tx pgx.Tx) (context.Context, *Ledger) {
 	ledger := &Ledger{service: s, tx: tx}
 	return withLedger(ctx, ledger), ledger
@@ -1159,9 +1161,16 @@ func (l *Ledger) commit(ctx context.Context) error {
 		captures = append(captures, flushCapture(flush))
 	}
 	// Each write leaves its room a shadow (roomShadow), installed by the commit under its state's
-	// lock, after the flushes' classes are marked stored.
+	// lock, after the flushes' classes are marked stored. The shadow's document is the write's
+	// fork, so here is the last point the fork is the write's own, where its rendering is checked
+	// (checkRendering): once the commit drops the document's advisory lock, the room's worker
+	// stores the browser updates that lock held back and measures each on the shadow
+	// (roomShadow.measure), before the publish or after it.
 	for _, artifactID := range l.order {
 		write := l.live[artifactID]
+		if l.service.checkRendering != nil {
+			l.service.checkRendering("commit", write)
+		}
 		if shadow := write.newShadow(); shadow != nil {
 			captures = append(captures, roomCapture{room: artifactID, capture: authorCapture{state: write.state}, shadow: shadow})
 		}
