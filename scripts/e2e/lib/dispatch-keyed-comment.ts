@@ -21,6 +21,7 @@ import {
   IDEMPOTENCY_KEY_HEADER,
   IDEMPOTENCY_REPLAYED_HEADER,
 } from "../../../packages/contracts/src/dispatch-api";
+import { joinUrl } from "../../../packages/contracts/src/url-join";
 
 const USAGE =
   "usage: bun scripts/e2e/lib/dispatch-keyed-comment.ts --url <dispatch> --bearer-file <file> --issue <KEY> [--session <id>] [--cli]";
@@ -108,7 +109,7 @@ async function optionsFrom(argv: readonly string[]): Promise<Options> {
 /** Dispatch's `/healthz` says it judges the key (`idempotency_keys: true`), whatever its status:
  *  a Dispatch that does not would make a repeated write a second time. */
 async function checkHealthz(base: URL): Promise<void> {
-  const response = await fetch(new URL("/healthz", base));
+  const response = await fetch(joinUrl(base.href, "/healthz"));
   const body: unknown = await response.json().catch(() => null);
   const keys =
     typeof body === "object" && body !== null && "idempotency_keys" in body
@@ -141,7 +142,7 @@ async function postTwice(options: Options, key: string, body: string): Promise<v
   const post = async (): Promise<Answer> =>
     answerOf(
       await fetch(
-        new URL(`/api/v1/issues/${encodeURIComponent(options.issue)}/comments`, options.url),
+        joinUrl(options.url.href, `/api/v1/issues/${encodeURIComponent(options.issue)}/comments`),
         {
           body: JSON.stringify({ actor: { id: options.session, kind: "session" }, body }),
           headers: {
@@ -180,7 +181,7 @@ async function postThroughCli(options: Options, body: string): Promise<void> {
   const proxy = Bun.serve({
     async fetch(request) {
       const incoming = new URL(request.url);
-      const target = new URL(incoming.pathname + incoming.search, options.url);
+      const target = joinUrl(options.url.href, incoming.pathname + incoming.search);
       const headers = new Headers(request.headers);
       headers.delete("host");
       // Asked unencoded, so the answer passes on as it came, with no encoding to undo twice.
@@ -269,7 +270,7 @@ async function postThroughCli(options: Options, body: string): Promise<void> {
 /** How many of the issue's comments carry `body`: the check's, which names its key. */
 async function countComments(options: Options, body: string): Promise<void> {
   const response = await fetch(
-    new URL(`/api/v1/issues/${encodeURIComponent(options.issue)}/comments`, options.url),
+    joinUrl(options.url.href, `/api/v1/issues/${encodeURIComponent(options.issue)}/comments`),
     { headers: { Authorization: `Bearer ${options.bearer}` } }
   );
   if (!response.ok) {
