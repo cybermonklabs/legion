@@ -386,7 +386,10 @@ func (r *providerErrorLive) token(key string, role claim.Role) claim.Token {
 // what its phase's start left there (seed), so the first take is of the daemon's own value and
 // this step waits for it rather than delivering a task of its own. It is read off the start of
 // the turn that first take began (awaitFirstTake), so every gap below is measured from the rung
-// that began the ladder and not from a later one.
+// that began the ladder and not from a later one. Each later rung is the instant the daemon wrote
+// its record that the wait is over, never the instant this step's poll read that record: the poll
+// reads each record up to its interval late, so the difference of two reads can fall under the
+// wait the daemon kept, or hide a rung that came early.
 func (r *providerErrorLive) ladderWalks() {
 	t := r.t
 	token := r.token(r.ladder, claim.RolePlanner)
@@ -402,7 +405,7 @@ func (r *providerErrorLive) ladderWalks() {
 		if driven, ok := ladderDriven(delay); ok {
 			within = driven + ladderTolerance
 		}
-		r.awaitLog("the ladder's rung "+strconv.Itoa(attempt+1), within+time.Minute, func(record loggedRecord) bool {
+		again := r.awaitLog("the ladder's rung "+strconv.Itoa(attempt+1), within+time.Minute, func(record loggedRecord) bool {
 			return record.Message == providerWaitOverMessage &&
 				record.at.After(given[attempt-1])
 		})
@@ -416,9 +419,8 @@ func (r *providerErrorLive) ladderWalks() {
 		if wait, want := armed.Attrs["wait"], delay.String(); wait != want {
 			t.Fatalf("the ladder armed %v before rung %d, want %s", wait, attempt+1, want)
 		}
-		now := time.Now()
-		gap := now.Sub(given[attempt-1])
-		given = append(given, now)
+		gap := again.at.Sub(given[attempt-1])
+		given = append(given, again.at)
 		if driven, ok := ladderDriven(delay); ok {
 			r.note("rung %d came %s after rung %d; its %s wait was driven on the daemon's clock to %s",
 				attempt+1, gap.Round(time.Second), attempt, delay, driven)
@@ -426,7 +428,7 @@ func (r *providerErrorLive) ladderWalks() {
 		}
 		if gap < delay || gap > delay+ladderTolerance {
 			t.Fatalf("rung %d of the ladder came %s after rung %d, want between %s and %s",
-				attempt+1, gap.Round(time.Second), attempt, delay, delay+ladderTolerance)
+				attempt+1, gap.Round(time.Millisecond), attempt, delay, delay+ladderTolerance)
 		}
 		r.note("rung %d came %s after rung %d, and the daemon had armed %s (cause %q)",
 			attempt+1, gap.Round(time.Second), attempt, delay, armed.Attrs["cause"])
@@ -454,9 +456,11 @@ func (r *providerErrorLive) ladderWalks() {
 	}
 	r.note("%s is %s, still holding its task (%d retries counted on the delivery), and %s is %s",
 		token, held.State, ladderTakes-1, r.ladder, r.issue(r.ladder).Phase)
-	if got := r.stands[overloadedProvider].requestsHolding(marker); got < ladderTakes {
-		t.Fatalf("the overloaded stand-in was asked %d times for a request carrying the task, want %d", got, ladderTakes)
-	}
+	// The rung's record precedes the HTTP request of the turn it gives: wait for the stand-in
+	// itself, not for the poll of that record to happen late enough for the request to arrive.
+	r.await("the overloaded stand-in to receive every take's request carrying the task", paneReady, func() bool {
+		return r.stands[overloadedProvider].requestsHolding(marker) >= ladderTakes
+	})
 	r.note("the overloaded stand-in answered 529 to %d requests, %d of them carrying the task itself",
 		r.stands[overloadedProvider].count(), r.stands[overloadedProvider].requestsHolding(marker))
 }
@@ -519,7 +523,6 @@ func (r *providerErrorLive) refusalGoesAgain() {
 	if status != http.StatusOK {
 		t.Fatalf("deliver the refused task = %d %s, want 200", status, body)
 	}
-	delivered := time.Now()
 	errored := r.awaitLogFrom("the turn a content filter ended", from, 4*time.Minute, func(record loggedRecord) bool {
 		return record.Message == providerErroredMessage &&
 			record.Attrs["claim"] == string(token)
@@ -545,14 +548,28 @@ func (r *providerErrorLive) refusalGoesAgain() {
 	}
 	r.note("the content filter ended the turn with no HTTP status and the daemon armed %v: %q",
 		armed.Attrs["wait"], cause)
+	// The first rung is the start of the turn the content filter ended: the daemon's own record of
+	// it, which names the task number the error names too. It is a record the daemon wrote before
+	// the wait was armed, so no later rung stands in for it, and it is no moment this step read:
+	// both ends of the gap are the daemon's own instants, as in ladderWalks. The wait is armed when
+	// the turn ends, so the gap from that turn's start is at least the armed wait.
+	started := r.daemon.firstAfter(from, func(record loggedRecord) bool {
+		return record.Message == "supervise: a turn started" && record.Attrs["claim"] == string(token) &&
+			record.Attrs["task"] == errored.Attrs["task"]
+	})
+	if started == nil {
+		t.Fatalf("the daemon recorded no start of the turn of task %v that the content filter ended",
+			errored.Attrs["task"])
+	}
+	firstTurn := started.at
 
-	r.awaitLogFrom("the refused task given again", from, ladderDelays[0]+ladderTolerance+time.Minute, func(record loggedRecord) bool {
+	again := r.awaitLogFrom("the refused task given again", from, ladderDelays[0]+ladderTolerance+time.Minute, func(record loggedRecord) bool {
 		return record.Message == providerWaitOverMessage &&
 			record.Attrs["claim"] == string(token)
 	})
-	gap := time.Since(delivered)
+	gap := again.at.Sub(firstTurn)
 	if gap < ladderDelays[0] {
-		t.Fatalf("the refused task was given again %s after it was delivered, want at least %s", gap.Round(time.Second), ladderDelays[0])
+		t.Fatalf("the refused task was given again %s after its first turn started, want at least %s", gap.Round(time.Millisecond), ladderDelays[0])
 	}
 	held := r.claim(token)
 	if held.Pending == nil || held.Pending.Task != task {
