@@ -1820,9 +1820,10 @@ describe("renderInbound dispatch events", () => {
       });
       // The host still gets the whole actor.
       expect(render(session).dispatchActor).toEqual(session);
-      // An origin with no title, or an empty one, leaves nothing of it on the card.
+      // An origin with no title, an empty one, or an origin that is no object leaves nothing of
+      // it on the card.
       const { session_title: _title, ...untitled } = session.origin;
-      for (const origin of [untitled, { ...untitled, session_title: "" }]) {
+      for (const origin of [untitled, { ...untitled, session_title: "" }, "x"]) {
         expect(actorOf({ ...session, origin })).toEqual({
           kind: "session",
           id: "01a06666-7777-7888-8999-aaaaaaaaaaaa",
