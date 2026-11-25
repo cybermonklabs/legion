@@ -562,7 +562,7 @@ func TestCheckImageMarksEveryImageRowUnansweredUnderAnEndedContext(t *testing.T)
 // deadline's stop, and the rows after it are unanswered. The deadline passes at a fact, not at a
 // time (testwait.StandInDeadline): once Chromium has started, which is after eval-python's check
 // returned, so no load can pass it before that check has answered. Chromium runs until a signal
-// ends it or the row's cleanup writes held, never on a timer of its own.
+// ends it, the row's cleanup writes held, or this test process is gone, never on a timer of its own.
 func TestCheckImageKeepsARowMissingBeforeTheDeadlineAndMarksTheRestUnanswered(t *testing.T) {
 	s := newStubs(t)
 	sleep, err := exec.LookPath("sleep")
@@ -570,7 +570,7 @@ func TestCheckImageKeepsARowMissingBeforeTheDeadlineAndMarksTheRestUnanswered(t 
 		t.Fatal(err)
 	}
 	ctx, started, held, bound, ran := passedOnceStarted(t, context.DeadlineExceeded)
-	s.install("chromium", "#!/bin/sh\n: >"+shellprefix.Literal(started)+"\nuntil [ -e "+shellprefix.Literal(held)+" ]; do "+shellprefix.Literal(sleep)+" 0.01; done\n")
+	s.install("chromium", "#!/bin/sh\n: >"+shellprefix.Literal(started)+"\nwhile [ ! -e "+shellprefix.Literal(held)+" ] && kill -0 "+strconv.Itoa(os.Getpid())+" 2>/dev/null; do "+shellprefix.Literal(sleep)+" 0.01; done\n")
 
 	states, err := CheckImage(ctx, s.image("LEGION_TEST_NO_PYTHON=1"))
 
@@ -618,10 +618,10 @@ func TestCheckImageKeepsARowItsOwnTimeoutEndedMissingThoughItsStopOutlastsTheDea
 		t.Fatal(err)
 	}
 	// Each run's files are in the directory LEGION_TEST_RUN names. Chromium runs until a signal
-	// ends it or the row's cleanup writes held, never on a timer of its own.
-	s.install("chromium", "#!/bin/sh\nSLEEP="+shellprefix.Literal(sleep)+"\n"+
-		"trap ': >\"$LEGION_TEST_RUN/stopped\"; until [ -e \"$LEGION_TEST_RUN/release\" ]; do \"$SLEEP\" 0.01; done; : >\"$LEGION_TEST_RUN/released\"; exit 1' TERM\n"+
-		"until [ -e \"$LEGION_TEST_RUN/held\" ]; do \"$SLEEP\" 0.01; done\n")
+	// ends it, the row's cleanup writes held, or this test process is gone, never on a timer of its own.
+	s.install("chromium", "#!/bin/sh\nSLEEP="+shellprefix.Literal(sleep)+"\nOWNER="+strconv.Itoa(os.Getpid())+"\n"+
+		"trap ': >\"$LEGION_TEST_RUN/stopped\"; while [ ! -e \"$LEGION_TEST_RUN/release\" ] && kill -0 \"$OWNER\" 2>/dev/null; do \"$SLEEP\" 0.01; done; : >\"$LEGION_TEST_RUN/released\"; exit 1' TERM\n"+
+		"while [ ! -e \"$LEGION_TEST_RUN/held\" ] && kill -0 \"$OWNER\" 2>/dev/null; do \"$SLEEP\" 0.01; done\n")
 	watch := testwait.Bounded(t, 2*answerBudget, time.Second)
 	until := time.Now().Add(testwait.Bounded(t, 3*answerBudget, 2*answerBudget))
 	for runs := 1; ; runs++ {
@@ -695,7 +695,7 @@ func TestRunReportsTheCommandsOwnExitWhenAChildHoldsItsOutputPastItsExit(t *test
 	img := Image{Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: t.TempDir()}
 
 	started := time.Now()
-	r := img.runWithin(context.Background(), answerBudget, "sh", "-c", `echo 1.2.3; (until [ -e "$2" ]; do sleep 0.01; done) & echo $! >"$1"; exit 0`, "sh", pidFile, held)
+	r := img.runWithin(context.Background(), answerBudget, "sh", "-c", `echo 1.2.3; (while [ ! -e "$2" ] && kill -0 "$3" 2>/dev/null; do sleep 0.01; done) & echo $! >"$1"; exit 0`, "sh", pidFile, held, strconv.Itoa(os.Getpid()))
 	elapsed := time.Since(started)
 
 	if r.err != nil || r.exit != 0 || strings.TrimSpace(r.stdout) != "1.2.3" {
@@ -741,9 +741,15 @@ func TestRunReportsTheCommandsOwnExitWhenItsBudgetPassesWhileAChildOutsideItsGro
 
 		started := time.Now()
 		r := img.runWithin(context.Background(), budget, "sh", "-c",
-			`echo $$ >"$1"; echo 1.2.3; setsid sh -c 'echo $$ >"$1.tmp" && mv "$1.tmp" "$1"; until [ -e "$2" ]; do sleep 0.01; done' sh "$2" "$3" & until [ -s "$2" ]; do sleep 0.01; done; exit 0`,
-			"sh", leaderFile, holderFile, held)
+			`echo $$ >"$1"; echo 1.2.3; setsid sh -c 'echo $$ >"$1.tmp" && mv "$1.tmp" "$1"; while [ ! -e "$2" ] && kill -0 "$3" 2>/dev/null; do sleep 0.01; done' sh "$2" "$3" "$4" & until [ -s "$2" ]; do sleep 0.01; done; exit 0`,
+			"sh", leaderFile, holderFile, held, strconv.Itoa(os.Getpid()))
 		elapsed := time.Since(started)
+		// The run is over: its child is released now, not at the row's end, and it also ends once
+		// this test process is gone, so neither a run that is not judged nor a timeout's panic
+		// leaves it running.
+		if err := os.WriteFile(held, nil, 0o644); err != nil {
+			t.Errorf("release run %d's child: %v", runs, err)
+		}
 		at := <-reaped
 
 		if at.IsZero() {
@@ -842,7 +848,7 @@ func TestRunReportsACommandItsBudgetCutOffAsTimedOut(t *testing.T) {
 
 			done := make(chan ran, 1)
 			go func() {
-				done <- img.runWithin(context.Background(), budget, "sh", "-c", `: >"$1"; until [ -e "$2" ]; do sleep 0.01; done`, "sh", started, held)
+				done <- img.runWithin(context.Background(), budget, "sh", "-c", `: >"$1"; while [ ! -e "$2" ] && kill -0 "$3" 2>/dev/null; do sleep 0.01; done`, "sh", started, held, strconv.Itoa(os.Getpid()))
 			}()
 			var r ran
 			far := testwait.Bounded(t, answerBudget, time.Second)
@@ -873,7 +879,7 @@ func TestRunReportsACommandItsBudgetCutOffAsTimedOut(t *testing.T) {
 		ctx, started, held, bound, ran := passedOnceStarted(t, errCommandTimeout)
 		img := Image{Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: t.TempDir()}
 
-		r := img.runWithin(ctx, answerBudget, "sh", "-c", `: >"$1"; until [ -e "$2" ]; do sleep 0.01; done`, "sh", started, held)
+		r := img.runWithin(ctx, answerBudget, "sh", "-c", `: >"$1"; while [ ! -e "$2" ] && kill -0 "$3" 2>/dev/null; do sleep 0.01; done`, "sh", started, held, strconv.Itoa(os.Getpid()))
 
 		if !<-ran {
 			t.Fatalf("the command never started within %s, so its budget passed at no fact of the run (run = exit %d, error %v)", bound, r.exit, r.err)
@@ -910,7 +916,7 @@ func TestRunDoesNotReportACommandItsCallerStoppedAsTimedOut(t *testing.T) {
 		}
 	}()
 
-	r := img.runWithin(ctx, time.Minute, "sh", "-c", `: >"$1"; until [ -e "$2" ]; do sleep 0.01; done`, "sh", started, held)
+	r := img.runWithin(ctx, time.Minute, "sh", "-c", `: >"$1"; while [ ! -e "$2" ] && kill -0 "$3" 2>/dev/null; do sleep 0.01; done`, "sh", started, held, strconv.Itoa(os.Getpid()))
 
 	if r.err == nil || r.err.Error() != "signal: terminated" {
 		t.Errorf("run = exit %d, error %v; want the error \"signal: terminated\": the caller's context ended the command inside its minute, which is no timeout and leaves no exit", r.exit, r.err)

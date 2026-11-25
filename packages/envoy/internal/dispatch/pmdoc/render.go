@@ -20,8 +20,11 @@ import (
 // corpus's document tokens, and TestRendererVersionGoldenHoldsTheCorpus holds this build to both.
 // A hash also moves when the corpus itself gains or loses a document, which changes nothing a
 // stored rendering holds: that writes the new hash and leaves this number where it is. Only a
-// change to what the renderer writes of a document the corpus already held raises it.
-const RendererVersion = 1
+// change to what the renderer writes of a document the corpus already held raises it, and a change
+// to the parser can be one: the writer keeps a run's spelling only where the run reads back as
+// written (inlineWithEscapes), so a parser change that moves what a run reads back as moves what
+// the renderer writes of it, and raises this number too.
+const RendererVersion = 3
 
 type renderer struct {
 	b                bytes.Buffer

@@ -23,6 +23,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -407,7 +408,7 @@ env -0 >%[1]s/env
 pwd >%[1]s/cwd
 exit %[2]d
 `, record, opts.exitCode, waitForFileScript(opts.waitForFile), releaseWait(`"$LEGION_TEST_HOLD"`, `"$hold_dir"`))
-	if err := os.WriteFile(omp, []byte(script), 0o700); err != nil {
+	if err := testexec.WriteFile(omp, []byte(script), 0o700); err != nil {
 		t.Fatalf("write the recording omp: %v", err)
 	}
 	// Oh My Pi's directories are this HOME's: the plugin gate reads the process environment through
@@ -425,7 +426,7 @@ exit %[2]d
 	// The real gh the controller's `legion gh` runs, which the operator's environment names here so
 	// the run never depends on a gh this machine may or may not have.
 	c.gh = filepath.Join(record, "gh")
-	if err := os.WriteFile(c.gh, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+	if err := testexec.WriteFile(c.gh, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("LEGION_GH_PATH", c.gh)
@@ -528,7 +529,7 @@ func (c *operatorMachine) installPluginAt(root string, contract int) string {
 func (c *operatorMachine) write(name, contents string, mode os.FileMode) {
 	c.t.Helper()
 	path := filepath.Join(c.dir, name)
-	if err := os.WriteFile(path, []byte(contents), mode); err != nil {
+	if err := testexec.WriteFile(path, []byte(contents), mode); err != nil {
 		c.t.Fatalf("write %s: %v", path, err)
 	}
 	if err := os.Chmod(path, mode); err != nil {
@@ -878,7 +879,7 @@ fi
 echo "stand-in mise: unexpected argv: $*" >&2
 exit 64
 `, shellprefix.Word(tool), shellprefix.Word(install), shellprefix.Word(shims))
-	if err := os.WriteFile(mise, []byte(script), 0o700); err != nil {
+	if err := testexec.WriteFile(mise, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("LEGION_OMP_PATH", "")
@@ -1618,6 +1619,24 @@ func TestControllerStartDropsAnInheritedBootToken(t *testing.T) {
 	}
 }
 
+// A start from inside a Legion pane or pod inherits that role's table of every role's identity
+// (LEGION_ROLE_IDENTITIES, runtime.RoleIdentitiesVariable), which the push step of `legion jj`
+// reads. A controller pushes nothing and carries no table, as the daemon's own controller carries
+// none, so neither the operator's controller nor its load probe is handed it.
+func TestControllerStartDropsAnInheritedRoleIdentityTable(t *testing.T) {
+	d := newControllerDaemon(t)
+	c := newControllerStart(t, d, controllerOptions{})
+	t.Setenv("LEGION_ROLE_IDENTITIES", `{"implementer":{"name":"legion-implementer[bot]","email":"7+legion-implementer[bot]@users.noreply.github.com"}}`)
+	if code, _, errb := c.run(); code != 0 {
+		t.Fatalf("legion controller start = %d, stderr %q", code, errb)
+	}
+	for kind, env := range map[string]map[string]string{"load probe": c.probeEnv(), "controller": c.env()} {
+		if value, set := env["LEGION_ROLE_IDENTITIES"]; set {
+			t.Errorf("the %s's environment carries LEGION_ROLE_IDENTITIES=%q", kind, value)
+		}
+	}
+}
+
 // A start from inside the daemon-launched controller's pod, or from any shell that exported it,
 // inherits LEGION_SLACK_CHANNELS: another project's channels, or this project's, whose mentions only
 // the daemon's controller hears. Neither the operator's controller nor its load probe is handed it.
@@ -2186,14 +2205,14 @@ func TestControllerStartResolvesTheRealGh(t *testing.T) {
 		c := newControllerStart(t, d, controllerOptions{})
 		bin := t.TempDir()
 		real := filepath.Join(bin, "gh")
-		if err := os.WriteFile(real, []byte("\x7fELF\x02\x01\x01\x00"), 0o700); err != nil {
+		if err := testexec.WriteFile(real, []byte("\x7fELF\x02\x01\x01\x00"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		wrapper := filepath.Join(c.defaultDir, "bin")
 		if err := os.MkdirAll(wrapper, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(wrapper, "gh"), []byte("#!/bin/sh\nexit 97\n"), 0o700); err != nil {
+		if err := testexec.WriteFile(filepath.Join(wrapper, "gh"), []byte("#!/bin/sh\nexit 97\n"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		fixtureenv.Unset(t, "LEGION_GH_PATH")
@@ -2210,10 +2229,10 @@ func TestControllerStartResolvesTheRealGh(t *testing.T) {
 		c := newControllerStart(t, d, controllerOptions{})
 		shims, bin := t.TempDir(), t.TempDir()
 		shim := filepath.Join(shims, "gh")
-		if err := os.WriteFile(shim, []byte("#!/bin/bash\nexec knives gh -- \"$@\"\n"), 0o700); err != nil {
+		if err := testexec.WriteFile(shim, []byte("#!/bin/bash\nexec knives gh -- \"$@\"\n"), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("\x7fELF\x02\x01\x01\x00"), 0o700); err != nil {
+		if err := testexec.WriteFile(filepath.Join(bin, "gh"), []byte("\x7fELF\x02\x01\x01\x00"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		fixtureenv.Unset(t, "LEGION_GH_PATH")

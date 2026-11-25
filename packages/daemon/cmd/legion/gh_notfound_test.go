@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
@@ -49,7 +50,7 @@ func visibilityReadGh(t *testing.T, read string) (stub, record string) {
 		"printf '%s\\n' \"$*\" >> " + shellWord(record) + "\n" +
 		"if [ \"$*\" = " + shellWord(restRead) + " ]; then\n" + read + "fi\n" +
 		"echo 'gh ran'\n"
-	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+	if err := testexec.WriteFile(stub, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return stub, record
@@ -221,7 +222,7 @@ func pushVisibilityReadEnv(t *testing.T, root, defaultDir string, read visibilit
 	useForkRead(t, curl.program, forkReadBound)
 	bin := t.TempDir()
 	gitRecord = filepath.Join(t.TempDir(), "git")
-	if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> "+shellWord(gitRecord)+"\nexit 1\n"), 0o700); err != nil {
+	if err := testexec.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> "+shellWord(gitRecord)+"\nexit 1\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Chdir(t.TempDir())

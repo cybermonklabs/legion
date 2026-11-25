@@ -304,9 +304,9 @@ func newFakeOmp(t *testing.T, plan ...string) fakeOmp {
 	}
 	script := `#!/bin/sh
 dir=` + shellprefix.Literal(dir) + `
-# held stands in for a process that hangs: it runs until a signal ends it or the test's cleanup
-# writes release, and never ends on a timer of its own.
-held() { until [ -e "$dir/release" ]; do sleep 0.05; done; }
+# held stands in for a process that hangs: it runs until a signal ends it, the test's cleanup
+# writes release, or the test process is gone, and never ends on a timer of its own.
+held() { while [ ! -e "$dir/release" ] && kill -0 ` + strconv.Itoa(os.Getpid()) + ` 2>/dev/null; do sleep 0.05; done; }
 n=$(( $(cat "$dir/count" 2>/dev/null || echo 0) + 1 ))
 # Renamed into place: the test reads this file while a later attempt writes it, and a plain
 # redirection truncates before it writes, so the reader can see it empty.
@@ -671,7 +671,7 @@ func TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildHoldingItsPipePastIt(t
 		var watch *groupWatch
 		gate.expire, watch = budgetPassedOnceTheProbeIsGone(leader, gate.timeout, until)
 
-		r, err := gate.run(context.Background(), `echo $$ >"$2"; echo answered >&2; setsid sh -c 'echo $$ >"$0"; until [ -e "$1" ]; do sleep 0.01; done' "$1" "$3" & while [ ! -s "$1" ]; do sleep 0.01; done; exit 0`, pidFile, leader, release)
+		r, err := gate.run(context.Background(), `echo $$ >"$2"; echo answered >&2; setsid sh -c 'echo $$ >"$0"; while [ ! -e "$1" ] && kill -0 "$2" 2>/dev/null; do sleep 0.01; done' "$1" "$3" "$4" & while [ ! -s "$1" ]; do sleep 0.01; done; exit 0`, pidFile, leader, release, strconv.Itoa(os.Getpid()))
 
 		<-watch.done
 		// The run is over: its child is released, and killed in case the release does not reach it.
@@ -824,7 +824,7 @@ func TestABudgetThatPassesWhileTheProbeRunsStopsItsWholeGroup(t *testing.T) {
 		return attempt, cancel
 	}
 
-	r, err := gate.run(context.Background(), `echo $$ >"$1"; (until [ -e "$4" ]; do sleep 0.01; done) & echo $! >"$2"; while [ ! -e "$3" ]; do sleep 0.01; done; exit 0`, leader, child, release, held)
+	r, err := gate.run(context.Background(), `echo $$ >"$1"; (while [ ! -e "$4" ] && kill -0 "$5" 2>/dev/null; do sleep 0.01; done) & echo $! >"$2"; while [ ! -e "$3" ] && kill -0 "$5" 2>/dev/null; do sleep 0.01; done; exit 0`, leader, child, release, held, strconv.Itoa(os.Getpid()))
 	w := <-saw
 
 	if !w.passed {

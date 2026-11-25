@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -61,7 +62,7 @@ func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 		dir := t.TempDir()
 		gh, ghPid := filepath.Join(dir, "gh"), filepath.Join(dir, "gh.pid")
 		const ghSeconds = "86398"
-		if err := os.WriteFile(gh, []byte("#!/bin/sh\n"+holdsStandIn(ghPid, ghSeconds)), 0o700); err != nil {
+		if err := testexec.WriteFile(gh, []byte("#!/bin/sh\n"+holdsStandIn(ghPid, ghSeconds)), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		killRecordedHelper(t, ghPid, ghSeconds)
@@ -80,7 +81,7 @@ func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 	t.Run("a timeout that passed before gh started is said as the timeout", func(t *testing.T) {
 		dir := t.TempDir()
 		gh, ran := filepath.Join(dir, "gh"), filepath.Join(dir, "ran")
-		if err := os.WriteFile(gh, []byte("#!/bin/sh\n: >'"+ran+"'\n"), 0o700); err != nil {
+		if err := testexec.WriteFile(gh, []byte("#!/bin/sh\n: >'"+ran+"'\n"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		timeout := ghHelpTimeout
@@ -100,7 +101,7 @@ func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 		gh, ghPid, helperPid := filepath.Join(dir, "gh"), filepath.Join(dir, "gh.pid"), filepath.Join(dir, "helper.pid")
 		const ghSeconds, helperSeconds = "86400", "86399"
 		script := "#!/bin/sh\nsleep " + helperSeconds + " </dev/null >/dev/null 2>&1 &\necho $! >" + shellprefix.Literal(helperPid) + "\n" + holdsStandIn(ghPid, ghSeconds)
-		if err := os.WriteFile(gh, []byte(script), 0o700); err != nil {
+		if err := testexec.WriteFile(gh, []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		killRecordedHelper(t, helperPid, helperSeconds)
@@ -262,7 +263,7 @@ func TestASignalToLegionGhsGroupStopsWhatItStartedBeforeGh(t *testing.T) {
 				dir := t.TempDir()
 				pidFile := filepath.Join(dir, "stand-in")
 				stub := filepath.Join(dir, "gh")
-				if err := os.WriteFile(stub, []byte(held.gh(pidFile, held.seconds)), 0o700); err != nil {
+				if err := testexec.WriteFile(stub, []byte(held.gh(pidFile, held.seconds)), 0o700); err != nil {
 					t.Fatal(err)
 				}
 				state := t.TempDir()
@@ -273,7 +274,7 @@ func TestASignalToLegionGhsGroupStopsWhatItStartedBeforeGh(t *testing.T) {
 				}
 				if held.git != nil {
 					bin := t.TempDir()
-					if err := os.WriteFile(filepath.Join(bin, "git"), []byte(held.git(pidFile, held.seconds)), 0o700); err != nil {
+					if err := testexec.WriteFile(filepath.Join(bin, "git"), []byte(held.git(pidFile, held.seconds)), 0o700); err != nil {
 						t.Fatal(err)
 					}
 					env["PATH"] = bin + string(os.PathListSeparator) + ghWrapperDir(t) + string(os.PathListSeparator) + os.Getenv("PATH")

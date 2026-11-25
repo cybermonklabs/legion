@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -24,7 +25,7 @@ func stubTestPG(t *testing.T) (calls string) {
 	script := "#!/bin/sh\nif [ -f \"$" + testPGLogVariable + "\" ]; then log=present; else log=absent; fi\n" +
 		"printf '%s %s %s %s %s\\n' \"$1\" \"$" + TestPGVariable + "\" \"$" + testPGDirVariable + "\" \"$" + testPGLogVariable + "\" \"$log\" >> " + calls +
 		"\nexit $(cat " + filepath.Join(dir, "exit") + ")\n"
-	if err := os.WriteFile(filepath.Join(dir, testPGProgram), []byte(script), 0o755); err != nil {
+	if err := testexec.WriteFile(filepath.Join(dir, testPGProgram), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "exit"), []byte("0\n"), 0o644); err != nil {
@@ -56,6 +57,7 @@ func (g *rig) toldTestPG(generation uint64, env []string) string {
 // the log at, under the fixed root, over whatever its environment carried, and a launcher that
 // serves none tells its generation of no log.
 func TestEveryGenerationIsToldTheDSNItsOwnLauncherServes(t *testing.T) {
+	t.Parallel()
 	// What a daemon of another build sends: the database every image's server serves. No daemon
 	// sends the log's path; a value a start command carried all the same is replaced by this
 	// launcher's own, or dropped, as the DSN is.
@@ -87,6 +89,7 @@ func TestEveryGenerationIsToldTheDSNItsOwnLauncherServes(t *testing.T) {
 // log in it, which is a file before the first `ensure` runs: every role started after it has the
 // log to bind, whatever that `ensure` came to.
 func TestTheLauncherServesTheTestDatabaseBeforeAnyRoleAndKeepsAsking(t *testing.T) {
+	// Not parallel: it writes the package variable testPGInterval, which parallel tests read.
 	calls := stubTestPG(t)
 	testPGInterval = 20 * time.Millisecond
 	t.Cleanup(func() { testPGInterval = 15 * time.Second })
@@ -125,6 +128,7 @@ func TestTheLauncherServesTheTestDatabaseBeforeAnyRoleAndKeepsAsking(t *testing.
 // logged and nothing else, as a script that fails is: the script still runs, and the pod still
 // runs its roles.
 func TestATestDatabaseLogIsKeptAndOneThatCannotBeMadeOnlyLogs(t *testing.T) {
+	// Not parallel: it writes the package variable testPGInterval, which parallel tests read.
 	calls := stubTestPG(t)
 	testPGInterval = time.Hour
 	t.Cleanup(func() { testPGInterval = 15 * time.Second })
@@ -172,6 +176,7 @@ func TestATestDatabaseLogIsKeptAndOneThatCannotBeMadeOnlyLogs(t *testing.T) {
 // runs its roles, where a launcher that failed its container would cost the issue every role it
 // serves.
 func TestATestDatabaseThatCannotStartOnlyLogs(t *testing.T) {
+	// Not parallel: it writes the package variable testPGInterval, which parallel tests read.
 	calls := stubTestPG(t)
 	if err := os.WriteFile(filepath.Join(filepath.Dir(calls), "exit"), []byte("1\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -193,6 +198,7 @@ func TestATestDatabaseThatCannotStartOnlyLogs(t *testing.T) {
 // The guard holds a running child out of the reaper's pass and forgets it once its own wait has
 // read its exit, so nothing of the launcher's own is left in the skip list between calls.
 func TestTheGuardForgetsAChildOnceItsWaitHasRead(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (stubTestPG).
 	calls := stubTestPG(t)
 	guard := &pidGuard{}
 	if err := runTestPG(context.Background(), Config{RolesDir: t.TempDir(), TestPostgres: true}, &roleLog{}, guard, "ensure"); err != nil {
@@ -210,9 +216,10 @@ func TestTheGuardForgetsAChildOnceItsWaitHasRead(t *testing.T) {
 // costs a pod one wait and a log line, not its whole boot: the launcher's first `ensure` runs
 // before any role starts, inside the daemon's boot timeout.
 func TestATestDatabaseRunThatHangsIsBounded(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	dir := t.TempDir()
 	script := "#!/bin/sh\nsleep 30\n"
-	if err := os.WriteFile(filepath.Join(dir, testPGProgram), []byte(script), 0o755); err != nil {
+	if err := testexec.WriteFile(filepath.Join(dir, testPGProgram), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -233,11 +240,12 @@ func TestATestDatabaseRunThatHangsIsBounded(t *testing.T) {
 // leaves nothing running. A step that fails is answered with its output, and the server is stopped
 // all the same.
 func TestCheckTestPostgresRunsEveryStepAndStopsTheServer(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	dir := t.TempDir()
 	calls := filepath.Join(dir, "calls")
 	for _, program := range []string{testPGProgram, "psql"} {
 		script := "#!/bin/sh\nprintf '%s %s\\n' \"$(basename \"$0\")\" \"$*\" >> " + calls + "\nexit $(cat " + filepath.Join(dir, "exit") + ")\n"
-		if err := os.WriteFile(filepath.Join(dir, program), []byte(script), 0o755); err != nil {
+		if err := testexec.WriteFile(filepath.Join(dir, program), []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}

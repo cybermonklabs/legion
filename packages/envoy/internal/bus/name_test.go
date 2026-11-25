@@ -18,16 +18,17 @@ import (
 // client's lifecycle log lines carry the same name, so a line such as `envoy nats connection
 // closed` says which of a process's clients it came from.
 func TestWithNameNamesEveryConnectionTheClientDials(t *testing.T) {
-	logs := captureBusLogs(t)
+	t.Parallel()
+	logs := captureBusLogs()
 	srv, uri := testnats.Start(t)
 	connections := serverConnections(t, srv)
 
-	named, err := bus.Connect([]string{uri}, bus.WithName("dispatch-intake"))
+	named, err := bus.Connect([]string{uri}, bus.WithName("dispatch-intake"), bus.WithLogger(logs.logger))
 	if err != nil {
 		t.Fatalf("connect a named client: %v", err)
 	}
 	t.Cleanup(named.Close)
-	unnamed, err := bus.Connect([]string{uri})
+	unnamed, err := bus.Connect([]string{uri}, bus.WithLogger(logs.logger))
 	if err != nil {
 		t.Fatalf("connect an unnamed client: %v", err)
 	}

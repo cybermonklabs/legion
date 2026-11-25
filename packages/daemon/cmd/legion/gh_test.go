@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -1291,7 +1292,7 @@ func legionGh(t *testing.T, env map[string]string, args ...string) (code int, st
 func ghWrapperDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte("#!/bin/sh\nexec '"+os.Args[0]+"' gh \"$@\"\n"), 0o700); err != nil {
+	if err := testexec.WriteFile(filepath.Join(dir, "gh"), []byte("#!/bin/sh\nexec '"+os.Args[0]+"' gh \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return dir
@@ -1391,7 +1392,7 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 		"\"$GIT_CONFIG_KEY_0\" \"$GIT_CONFIG_VALUE_0\" \"$GIT_CONFIG_KEY_1\" \"$GIT_CONFIG_VALUE_1\" \"$GIT_CONFIG_KEY_2\" \"$GIT_CONFIG_VALUE_2\" " +
 		"\"$GIT_CONFIG_KEY_3\" \"$GIT_CONFIG_VALUE_3\" \"$GIT_CONFIG_KEY_4\" \"$GIT_CONFIG_VALUE_4\" " +
 		"\"$GH_NO_UPDATE_NOTIFIER\" \"$GH_PROMPT_DISABLED\" \"$GH_EDITOR\" \"$GH_TELEMETRY\" \"$GIT_CONFIG_GLOBAL\" \"$GIT_CONFIG_NOSYSTEM\"\n"
-	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+	if err := testexec.WriteFile(stub, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	wrappers := ghWrapperDir(t)
@@ -1484,7 +1485,7 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 	}
 	// Nor may another wrapper of the machine's own lead PATH: gh would make it its git helper.
 	shims := t.TempDir()
-	if err := os.WriteFile(filepath.Join(shims, "gh"), []byte("#!/bin/sh\nGH_TOKEN=$(cat ~/.token) exec '"+stub+"' \"$@\"\n"), 0o700); err != nil {
+	if err := testexec.WriteFile(filepath.Join(shims, "gh"), []byte("#!/bin/sh\nGH_TOKEN=$(cat ~/.token) exec '"+stub+"' \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	shimmed := map[string]string{"PATH": shims + ":" + wrappers + ":" + os.Getenv("PATH")}
@@ -1563,7 +1564,7 @@ func TestLegionGhRefusesARealGhThatRunsLegionGhAgain(t *testing.T) {
 		filepath.Join(elsewhere, "gh"): "#!/bin/sh\nexec '" + legion + "' gh \"$@\"\n",
 		shim:                           "#!/bin/sh\nexec '" + filepath.Join(wrappers, "gh") + "' \"$@\"\n",
 	} {
-		if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		if err := testexec.WriteFile(path, []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1694,7 +1695,7 @@ func TestLegionGhRefusesARealGhThatRunsLegionGhAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 	stub := filepath.Join(t.TempDir(), "gh")
-	if err := os.WriteFile(stub, []byte(ghStandInPrefix(help)+"printf 'run by %s\\n' \"$"+leakguard.RunByRealGhVar+"\"\n"), 0o700); err != nil {
+	if err := testexec.WriteFile(stub, []byte(ghStandInPrefix(help)+"printf 'run by %s\\n' \"$"+leakguard.RunByRealGhVar+"\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if code, stdout, stderr := legionGh(t, envFor(stub), "pr", "list"); code != 0 || stdout != "run by "+stub+"\n" {
@@ -1902,7 +1903,7 @@ func TestLegionGhChecksTheCallWithTheLeakGuard(t *testing.T) {
 		"printf 'gh %s\\n' \"$*\" >>\"$GH_STANDIN_RECORD\"\n" +
 		"printf 'stdin %s\\n' \"$(cat)\" >>\"$GH_STANDIN_RECORD\"\n" +
 		"exit 7\n"
-	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+	if err := testexec.WriteFile(stub, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	wrappers := ghWrapperDir(t)
@@ -2234,7 +2235,7 @@ func TestLegionGhRunsTheGuardsVisibilityReadsWithTheRepositorysOrTheCallersToken
 	stub := filepath.Join(t.TempDir(), "gh")
 	script := "#!/bin/sh\nprintf '%s|%s|%s|%s\\n' \"$GH_CONFIG_DIR\" \"$GH_TOKEN\" \"$GITHUB_TOKEN\" \"$*\" >>\"${GH_STANDIN_RECORD:-/dev/null}\"\n" +
 		strings.TrimPrefix(ghStandInPrefix(help), "#!/bin/sh\n") + "exit 0\n"
-	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+	if err := testexec.WriteFile(stub, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	wrappers := ghWrapperDir(t)
@@ -2295,7 +2296,7 @@ func TestLegionGhRefusesTheGuardsVisibilityReadForAnUnheldOwnerWithoutACallerTok
 		t.Fatal(err)
 	}
 	stub := filepath.Join(t.TempDir(), "gh")
-	if err := os.WriteFile(stub, []byte(ghStandInPrefix(help)+"exit 0\n"), 0o700); err != nil {
+	if err := testexec.WriteFile(stub, []byte(ghStandInPrefix(help)+"exit 0\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	wrappers := ghWrapperDir(t)
@@ -2472,17 +2473,17 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 				"  exec cat '" + help + "'/\"${path:-gh}\".txt\nfi\n" +
 				"if [ \"$4\" = graphql ]; then\n  :\n" + tc.graphql + "fi\n" +
 				"echo rest >> \"$GH_STANDIN_RECORD\"\n" + tc.rest
-			if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+			if err := testexec.WriteFile(stub, []byte(script), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\necho git >> \"$GH_STANDIN_RECORD\"\n"+tc.git), 0o700); err != nil {
+			if err := testexec.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\necho git >> \"$GH_STANDIN_RECORD\"\n"+tc.git), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			// The stand-in curl runs with only the names leakguard.TokenChildKeeps keeps, which hold
 			// no GH_STANDIN_RECORD, so its record's path is written into it. It reads the token the
 			// guard hands it on its standard input, as curl does, and keeps none of it.
 			curl := filepath.Join(t.TempDir(), "curl")
-			if err := os.WriteFile(curl, []byte("#!/bin/sh\ncat >/dev/null\necho curl >> '"+record+"'\n"+cmp.Or(tc.curl, curlUnreached)), 0o700); err != nil {
+			if err := testexec.WriteFile(curl, []byte("#!/bin/sh\ncat >/dev/null\necho curl >> '"+record+"'\n"+cmp.Or(tc.curl, curlUnreached)), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			code, stdout, stderr := legionGh(t, map[string]string{
@@ -2522,7 +2523,7 @@ func TestLegionGhKeepsVisibilityAndLogsCalls(t *testing.T) {
 	state := t.TempDir()
 	record := filepath.Join(t.TempDir(), "gh")
 	stub := filepath.Join(t.TempDir(), "gh")
-	if err := os.WriteFile(stub, []byte(ghStandInPrefix(help)+"exit 0\n"), 0o700); err != nil {
+	if err := testexec.WriteFile(stub, []byte(ghStandInPrefix(help)+"exit 0\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	env := map[string]string{
@@ -2654,7 +2655,7 @@ func TestLegionGhLetsOnlyTheRateLimitReadBypassTheGuard(t *testing.T) {
 	if !strings.Contains(script, "echo unavailable") {
 		t.Fatal("the stand-in's visibility answer was not replaced, so this test would read a visibility")
 	}
-	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+	if err := testexec.WriteFile(stub, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	root, defaultDir := gitCredentialBundle(t)
@@ -2732,7 +2733,7 @@ func TestLegionGhForwardsATerminatingSignalToGh(t *testing.T) {
 				": >\"$GH_STANDIN_RUNNING\"\n" +
 				"ticks=0\nwhile [ \"$ticks\" -lt 600 ]; do sleep 0.05; ticks=$((ticks+1)); done\n" +
 				"printf 'gh caught nothing\\n' >>\"$GH_STANDIN_RECORD\"\nexit 9\n"
-			if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+			if err := testexec.WriteFile(stub, []byte(script), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			command := legionGhCommand(t, t.TempDir(), map[string]string{
@@ -2831,7 +2832,7 @@ func TestLegionGhLeavesAnIgnoredHangupIgnoredForGh(t *testing.T) {
 		": >\"$GH_STANDIN_RUNNING\"\n" +
 		"while [ ! -f \"$GH_STANDIN_RELEASE\" ] && kill -0 \"$GH_STANDIN_TEST_PID\" 2>/dev/null; do sleep 0.05; done\n" +
 		"printf 'gh survived the hangup\\n' >>\"$GH_STANDIN_RECORD\"\nexit 0\n"
-	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+	if err := testexec.WriteFile(stub, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	command := legionGhCommand(t, t.TempDir(), map[string]string{
@@ -3068,7 +3069,7 @@ func TestLegionGhStartsNoGhForASignalThatCameBeforeTheForwarding(t *testing.T) {
 			// The stand-in is the prefix alone: it records the visibility read it would answer
 			// if it were ever started as gh.
 			stub := filepath.Join(t.TempDir(), "gh")
-			if err := os.WriteFile(stub, []byte(ghStandInPrefix(help)), 0o700); err != nil {
+			if err := testexec.WriteFile(stub, []byte(ghStandInPrefix(help)), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			bin := t.TempDir()
@@ -3076,11 +3077,11 @@ func TestLegionGhStartsNoGhForASignalThatCameBeforeTheForwarding(t *testing.T) {
 			holding := "#!/bin/sh\nprintf 'legion gh held\\n' >>\"$GH_STANDIN_RECORD\"\nticks=0\n" +
 				"while [ ! -f \"$GH_STANDIN_RELEASE\" ] && [ \"$ticks\" -lt 200 ]; do sleep 0.05; ticks=$((ticks+1)); done\n" +
 				"sleep 0.05\nexec '" + os.Args[0] + "' \"$@\"\n"
-			if err := os.WriteFile(hold, []byte(holding), 0o700); err != nil {
+			if err := testexec.WriteFile(hold, []byte(holding), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			wrappers := t.TempDir()
-			if err := os.WriteFile(filepath.Join(wrappers, "gh"), []byte("#!/bin/sh\nexec '"+hold+"' gh \"$@\"\n"), 0o700); err != nil {
+			if err := testexec.WriteFile(filepath.Join(wrappers, "gh"), []byte("#!/bin/sh\nexec '"+hold+"' gh \"$@\"\n"), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			command := legionGhCommand(t, t.TempDir(), map[string]string{

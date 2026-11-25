@@ -24,6 +24,7 @@ import (
 // claims' states and contracts, the rows queued for a role of the pod, and the issue's place in
 // the workflow beside its root's.
 func TestTheIdleViewReadsTheStoredActivityReportAndTheQueuedRows(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -112,6 +113,7 @@ func TestTheIdleViewReadsTheStoredActivityReportAndTheQueuedRows(t *testing.T) {
 // this read, and ending streaks a pod does not have would cost a write transaction per pod per
 // tick.
 func TestTheIdleViewReadsTheDeclinedReleaseTheTurnStartAndTheRunningHoldStreak(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -181,6 +183,7 @@ func idleViewOf(t *testing.T, st *Store, issue string) pods.IdleView {
 // reads it from the store: this pins that a PutClaim after a report leaves the four columns
 // standing, so a view taken later still sees what the session said.
 func TestAClaimWriteAfterAReportLeavesTheReportStanding(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -209,6 +212,7 @@ func TestAClaimWriteAfterAReportLeavesTheReportStanding(t *testing.T) {
 // records it commit together, and the mark's boundary is the first row's id. A decision that
 // releases nothing writes nothing, and a second release never starts behind the first.
 func TestReleaseIdleIssueWritesItsRowsAndItsMarkTogether(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -314,6 +318,7 @@ func TestReleaseIdleIssueWritesItsRowsAndItsMarkTogether(t *testing.T) {
 // (claim.ErrKeyOfAnotherProject), with neither a row nor its mark written. The same release of this
 // project's own issue is marked.
 func TestTheIdleReleaseQueuesNoRowOfAnotherProjectsIssue(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	const theirs = "OTHERPROJECT-9"
@@ -344,6 +349,7 @@ func TestTheIdleReleaseQueuesNoRowOfAnotherProjectsIssue(t *testing.T) {
 // that names no role and is not that release is the rule's own fault, and is refused before
 // anything is written.
 func TestAReleaseThatSuspendsNoRoleMarksItsKindAndNamesNoRole(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -401,6 +407,7 @@ func TestAReleaseThatSuspendsNoRoleMarksItsKindAndNamesNoRole(t *testing.T) {
 // issue whose roles have all stopped — there is no role there to read the workspace through and
 // no claim to suspend.
 func TestIdlePodsListsOnlyIssuesWithALiveClaim(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -431,6 +438,7 @@ func TestIdlePodsListsOnlyIssuesWithALiveClaim(t *testing.T) {
 // the issue whose own phase is done and the one closed long ago all hold claims that have
 // stopped and are no candidates, and the pod with a live claim is the idle rule's.
 func TestTheCandidateAnswerForIssuesWithNoLiveClaim(t *testing.T) {
+	t.Parallel()
 	const (
 		lingeringRoot = "LEGION-300"
 		unowned       = "LEGION-301"
@@ -491,6 +499,7 @@ func TestTheCandidateAnswerForIssuesWithNoLiveClaim(t *testing.T) {
 // Both outcomes are read here rather than only the wait, so the failure the lock prevents is
 // reported as the end state it leaves.
 func TestACancelRacingAParkLeavesNoResumeAboveTheClose(t *testing.T) {
+	t.Parallel()
 	const first, boundary, last = 18, 20, 22
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -586,6 +595,7 @@ func TestACancelRacingAParkLeavesNoResumeAboveTheClose(t *testing.T) {
 // kind added to the lane and left out of the idle list lets the daemon release the pod out from
 // under a row nobody has read yet.
 func TestEveryRoleMessageKindWaitsForARoleOfThePod(t *testing.T) {
+	t.Parallel()
 	for _, kind := range record.LaneKinds(record.LaneRoleMessage) {
 		if !slices.Contains(idleWaitingKinds, string(kind)) {
 			t.Errorf("the role-message kind %q stands in no idleWaitingKinds %v: a release would stop the role before it reads the row", kind, idleWaitingKinds)
@@ -601,6 +611,7 @@ func TestEveryRoleMessageKindWaitsForARoleOfThePod(t *testing.T) {
 // waiting, and such a start queued after the release was marked does not cancel it at its
 // boundary. A start that carries a task of the phase still does both.
 func TestAStartQueuedForNewsAloneHoldsNoPodAndCancelsNoRelease(t *testing.T) {
+	t.Parallel()
 	const newsOnly = `{"op":"start","tree":"LEGION-208","role":"architect","generation":1,"news":true}`
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -648,6 +659,7 @@ func TestAStartQueuedForNewsAloneHoldsNoPodAndCancelsNoRelease(t *testing.T) {
 // or after them. A start of a role of the pod queued beside it does both, which shows the reads
 // see the queue at all.
 func TestAPendingStepRecordHoldsNoIdlePod(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		attempts int
