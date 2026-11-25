@@ -2020,13 +2020,15 @@ PY
 # that fails, a Dispatch that is unreachable, a curl or git transport error, a count.py that
 # raised on a read and exited non-zero, is no answer at all: the mode cannot run, of the kind
 # source, and it ends here, naming the source, exit 2, or exit 1 after a FAIL, by the
-# precedence of the header.
+# precedence of the header. The command reads /dev/null as its input, so a reader that reads
+# its input, as a dispatch or a git can, never takes the lines a loop around live_read has
+# not reached (case 241).
 LIVE_ANSWER_NO='^(NOT_FOUND: )?(not found$|No block |no version [0-9]+ of |document "[^"]*" not found|dispatch [a-z-]+ was not called)'
 LIVE_STOP_ENVIRONMENT='check.sh stop environment: '
 live_read() {
     local source="$1" file="$2" stop
     shift 2
-    "$@" >"$file" 2>"$file.err" && return 0
+    "$@" >"$file" 2>"$file.err" </dev/null && return 0
     head -1 "$file" "$file.err" 2>/dev/null | grep -qE "$LIVE_ANSWER_NO" && return 1
     stop="$(head -1 "$file.err" 2>/dev/null)"
     [[ "$stop" == "$LIVE_STOP_ENVIRONMENT"* ]] && cannot_run environment " --$MODE: ${stop#"$LIVE_STOP_ENVIRONMENT"}"
@@ -2757,7 +2759,7 @@ run_recorded() {
     rm -rf "$out.tmp" && mkdir -p "$out.tmp"
     (
         cd "$ROOT" || exit 1
-        __IOC_FAILED="$out.failed" IOC_CLONES="$CLONES" EVIDENCE="$EVIDENCE" TMPDIR="$out.tmp" bounded_run "$BOUND_ROW" bash "$script" 9>"$out.pipe" </dev/null
+        __IOC_FAILED="$out.failed" IOC_CLONES="$CLONES" EVIDENCE="$EVIDENCE" TMPDIR="$out.tmp" bounded_run "$BOUND_ROW" bash "$script" 9>"$out.pipe" </dev/null 3<&-
         status=$?
         printf '%s|%s\n' "$BOUND_TOOK" "$BOUND_ENDED" >"$out.ended"
         exit "$status"
@@ -5151,8 +5153,10 @@ mode_replay() {
     # "Every child the gate waits on ends"), and on descriptor 3, so that nothing the loop runs
     # can read the rows it has not reached yet from its input.
     claims >"$work/rows"
+    : >"$work/reached"
     while IFS= read -r -u 3 row; do
         id="$(printf '%s' "$row" | jq -r '.id')"
+        printf '%s\n' "$id" >>"$work/reached"
         kind="$(printf '%s' "$row" | jq -r '.kind // ""')"
         mark="$(printf '%s' "$row" | jq -r '.mark // ""')"
         case " $kinds " in *" $kind "*) ;; *)
@@ -5268,6 +5272,17 @@ mode_replay() {
         fi
     done 3<"$work/rows"
 
+    # Every row that carries a command is one the loop reached, so a row that ran no command
+    # because something took it from the loop fails replay-command by name, and the PASS line
+    # states how many rows carry a command beside how many ran.
+    local with_command unreached
+    with_command="$(jq -r 'select((.command // "") != "") | .id' "$work/rows")"
+    unreached="$(printf '%s\n' "$with_command" | grep -vxF -f "$work/reached" | grep -v '^$')"
+    if [ -n "$unreached" ]; then
+        command_failures="$command_failures unreached"
+        fail replay-command "$(printf '%s\n' "$unreached" | wc -l | tr -d ' ') of the $(printf '%s\n' "$with_command" | grep -c .) rows that carry a command were never reached by the loop, so none of them ran: the first is $(printf '%s\n' "$unreached" | head -1)"
+    fi
+
     # unpinned_installs runs the reader reader_load loaded above, so one that stops here
     # stopped on a row the one parse read, a failure of the gate and no mode that cannot run.
     local unpinned unpinned_id unpinned_what
@@ -5297,7 +5312,7 @@ mode_replay() {
     [ "$bad_mark" -eq 0 ] && pass claim-mark "every claim of $rows carries a mark its requirement fixes"
     [ "$bad_predicate" -eq 0 ] && pass predicate-form "every one of the $ran rows with a command carries exactly one predicate, and each is a bound, a set membership or an exit status"
     [ "$bad_quotation" -eq 0 ] && pass quotation-marked "every one of the $quotations quotations is marked a claim of the project and not of its code"
-    [ -z "$command_failures" ] && pass replay-command "$ran recorded commands ran again, no read inside one failed, and each met the predicate its row carries"
+    [ -z "$command_failures" ] && pass replay-command "$ran recorded commands ran again, of the $(printf '%s\n' "$with_command" | grep -c .) rows that carry a command, every one of which the loop reached; no read inside one failed, and each met the predicate its row carries"
     [ -z "$absence_failures" ] && pass absence-still-empty "every one of the $absences absence searches still finds nothing"
 
     # The id list is read by three of the assertions below and built once here.
@@ -7761,8 +7776,10 @@ mode_landed() {
             continue
         fi
         # The proof runs as a row's command does, under BOUND_ROW (the header's "Every child
-        # the gate waits on ends"): a signal or the bound ends the mode cannot run.
-        if ! (cd "$ROOT" && bounded "$BOUND_ROW" "the committed proof of the page '$title'" bash -c "$want_command" >/dev/null 2>&1); then
+        # the gate waits on ends"): a signal or the bound ends the mode cannot run. It reads
+        # /dev/null as its input, so a proof that reads its input never takes the pages the
+        # loop has not reached (case 242).
+        if ! (cd "$ROOT" && bounded "$BOUND_ROW" "the committed proof of the page '$title'" bash -c "$want_command" </dev/null >/dev/null 2>&1); then
             bad_proof=$((bad_proof + 1))
             fail landed-proof "the committed proof of the page '$title', '$want_command', exits non-zero"
         fi

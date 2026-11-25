@@ -7590,18 +7590,74 @@ one_failure_result "a landed step's file the default branch's commit lacks fails
 # command with the loop's input, the rest of the rows file, as its own: omp -p reads its input
 # and puts it before its prompt, so the first prompt of i-skills-run's session, of 1551525
 # characters, held the 778 rows after it, and none of those rows ran (the fresh-clone --replay of
-# 8944c0af, its transcript kept). The case appends two rows to the fixture: f-stdin-1, whose
-# command counts the bytes on its input and must print 0, then f-stdin-2, whose command prints
-# what its row does not claim. --replay must fail replay-command naming f-stdin-2 alone. At
-# 8944c0af f-stdin-1 read f-stdin-2's line, failed, and f-stdin-2 never ran.
-dir="$(fresh stdin-row)"
-printf '%s\n' \
-    '{"id":"f-stdin-1","requirement":"r7","source":"this tree'"'"'s measurement","kind":"behaviour","claim":"The command reads nothing on its input.","mark":"verified","evidence":{"surface":"cli"},"command":"wc -c","expect":{"equals":"0"},"output":"0","note":"ran again"}' \
-    '{"id":"f-stdin-2","requirement":"r7","source":"this tree'"'"'s measurement","kind":"behaviour","claim":"The script prints ran once.","mark":"verified","evidence":{"surface":"cli"},"command":"printf '"'"'ran twice\\n'"'"'","expect":{"contains":"ran once"},"output":"ran once","note":"ran again"}' \
-    >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
-one_failure_result "a row whose command reads its input reads nothing, and the rows after it run: the row after it fails replay-command alone, naming itself" replay-command \
-    '^1 of 18 assertions failed: replay-command$' '^FAIL replay-command: f-stdin-2 ran ' \
-    "$(fixture_run "$dir" --replay)"
+# 8944c0af, its transcript kept). The case appends two rows to the fixture, in two forms, and
+# runs --replay over each. The first row's command reads its input: in the form "counted" it
+# counts the bytes there and must print 0; in the form "swallowed" it reads the input away and
+# prints what its row claims, so it passes whatever it read. The second row, f-stdin-2, prints
+# what its row does not claim. --replay must fail replay-command naming f-stdin-2 alone, in
+# each form. At 8944c0af, in the counted form, f-stdin-1 read f-stdin-2's line and failed, and
+# f-stdin-2 never ran; in the swallowed form f-stdin-1 passed, f-stdin-2 never ran, and the run
+# ended all passed (the architect's condition (a) of 2026-11-25T05:29Z). The gate also counts
+# the rows the loop reached against the rows that carry a command, so a row taken from the loop
+# any other way fails replay-command naming it.
+for form in counted swallowed; do
+    case "$form" in
+    counted) first='"command":"wc -c","expect":{"equals":"0"},"output":"0"' ;;
+    swallowed) first='"command":"cat >/dev/null; printf '"'"'ran once\\n'"'"'","expect":{"contains":"ran once"},"output":"ran once"' ;;
+    esac
+    dir="$(fresh "stdin-row-$form")"
+    printf '%s\n' \
+        '{"id":"f-stdin-1","requirement":"r7","source":"this tree'"'"'s measurement","kind":"behaviour","claim":"The command reads nothing on its input.","mark":"verified","evidence":{"surface":"cli"},'"$first"',"note":"ran again"}' \
+        '{"id":"f-stdin-2","requirement":"r7","source":"this tree'"'"'s measurement","kind":"behaviour","claim":"The script prints ran once.","mark":"verified","evidence":{"surface":"cli"},"command":"printf '"'"'ran twice\\n'"'"'","expect":{"contains":"ran once"},"output":"ran once","note":"ran again"}' \
+        >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+    one_failure_result "a row whose command reads its input reads nothing, and the rows after it run ($form): the row after it fails replay-command alone, naming itself" replay-command \
+        '^1 of 18 assertions failed: replay-command$' '^FAIL replay-command: f-stdin-2 ran ' \
+        "$(fixture_run "$dir" --replay)"
+done
+
+# 241. A Dispatch read inside --citations' loop over the directory's references reads nothing
+# on its input, so a dispatch that reads its input never takes the references the loop has not
+# reached (the architect's condition (b) of 2026-11-25T05:29Z). At 2867db32 live_read ran its
+# command with the loop's input. The case puts a dispatch of its own first on PATH, which reads
+# its input away and then runs the real one, appends case 22's reference to a version Dispatch
+# does not hold after the fixture's own references, and runs --citations: it must fail
+# citation-dispatch naming that reference. At 2867db32 the first read took every reference
+# after it, and citation-dispatch passed.
+READING_DISPATCH="$WORK/reading-dispatch"
+mkdir -p "$READING_DISPATCH"
+printf '#!/bin/sh\ncat >/dev/null\nexec %s "$@"\n' "$(command -v dispatch)" >"$READING_DISPATCH/dispatch"
+chmod +x "$READING_DISPATCH/dispatch"
+dir="$(fresh dispatch-reads-input)"
+printf '\nSee dispatch://INFRA-3134/spec#b-61117349-45b4-496f-af67-24b0d4063953@v9999.\n' \
+    >>"$dir/repo/docs/research/internet-of-cognition/tests/concord.md"
+case_result "a dispatch that reads its input takes no reference from --citations' loop: a reference Dispatch does not hold, after others, fails citation-dispatch" \
+    'citation-dispatch: .*INFRA-3134/spec#b-61117349-45b4-496f-af67-24b0d4063953@v9999' \
+    "$(PATH="$READING_DISPATCH:$PATH" fixture_run "$dir" --citations)"
+
+# 242. A landed page's committed proof reads nothing on its input, so a proof that reads its
+# input never takes the pages --landed's loop has not reached (the architect's condition (b)).
+# At 2867db32 the proof ran with the loop's input, the rest of the judgement's pages. The case
+# makes the fixture's landed step's proof, in sources.json and on its page, a command that
+# reads its input away and exits 0, and appends after that page a page that costs one
+# engineer-day and carries no state, which --landed must fail landed-proof naming. At
+# 2867db32 the proof took the page, and --landed passed.
+dir="$(fresh proof-reads-input)"
+jq '(.landed[] | select(.title == "An execution record under the gen_ai. names") | .command) = "cat >/dev/null; true"' \
+    "$dir/repo/docs/research/internet-of-cognition/sources.json" >"$dir/sources.json" &&
+    mv "$dir/sources.json" "$dir/repo/docs/research/internet-of-cognition/sources.json" &&
+    sed -i 's|^- \*\*Proven by:\*\* `true`$|- **Proven by:** `cat >/dev/null; true`|' "$dir/judgement.md" &&
+    printf '%s\n' '' '### A step that costs one day' '' \
+        '- **Question:** Q1 When a role writes a fact it read somewhere else, what carries the way back?' \
+        '- **Proposal:** One line.' '- **Verdict:** port' '- **Landing component:** Envoy' '- **Cost:** 1 engineer-day' \
+        '- **Deletes or replaces:** nothing.' '- **Cost of reversing it:** one commit.' '- **Default if nobody answers:** nothing changes.' \
+        '- **Owner:** the Envoy tree.' >>"$dir/judgement.md" &&
+    grep -qxF -- '- **Proven by:** `cat >/dev/null; true`' "$dir/judgement.md" || {
+    printf 'FAIL the proof that reads its input could not be planted\n'
+    exit 1
+}
+one_failure_result "a landed proof that reads its input takes no page from --landed's loop: a page after it that costs one day and carries no state fails landed-proof" landed-proof \
+    '^1 of 7 assertions failed: landed-proof$' "^FAIL landed-proof: the page 'A step that costs one day' gives its first step a cost of 1 engineer-day" \
+    "$(fixture_run "$dir" --landed)"
 
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
