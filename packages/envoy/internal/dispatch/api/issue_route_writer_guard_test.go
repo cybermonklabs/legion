@@ -325,6 +325,7 @@ var statusLabelsOrParentWriters = []struct{ path, reason string }{
 	{judgedIssueWriter, "the PATCH's write core, whose every write R26 judges: it calls " + issueWritePlanCheck + ", which opens with " + legionStatusGuard + ", before its first write"},
 	{"internal/dispatch/api/issue_create.go", "the creation of an issue, which R26 never refuses: it writes the new issue's parent and labels, and no status"},
 	{"cmd/dispatch-seed/", "the seeding tool, which fills an empty database before a server runs on it, and which no request reaches"},
+	{"going/eval/write.go", "the command bar eval's seed (eval.WriteSeed), which fills a database that holds none of its projects before a server runs on it, as cmd/dispatch-seed does, and which no request reaches"},
 }
 
 // statusLabelsOrParentWriter answers the index in statusLabelsOrParentWriters of the writer that
