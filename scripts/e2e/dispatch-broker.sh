@@ -19,8 +19,16 @@
 #     the daemon's token, every method of the daemon's client, each answered 2xx; with a token of
 #     another project each write that names an issue or a document of the first is refused 403
 #     PROJECT_SCOPE, and an upload into another session's conversation 403 SESSION_SCOPE.
+#   - dispatch://INFRA-5567's c-ds-e2e, TestARoleOpensADocumentWithItsOwnToken: the document socket
+#     GET /ws/doc/<room>, opened through the proxy with the Authorization and DPoP headers the
+#     daemon's client puts on that upgrade, admits a broker-issued token as the API scopes it. The
+#     daemon's token of its project gets 101 with X-Dispatch-Process on a document of that project,
+#     and the room's answer to its token message is read-write; another project's daemon token gets
+#     101 and readonly on the same document; the shared bearer alone is refused 401
+#     DOC_SOCKET_CREDENTIAL_REFUSED and no credential 401 NO_IDENTITY, each as JSON with
+#     X-Dispatch-Process.
 #   - K3, TestEveryClientRenewsAndStopsOnARefusal, with LEGION_E2E_TOKEN_RENEWAL=1 and in place of
-#     the two above: the three long-lived clients write over three lifetimes of a 420 s token,
+#     the three above: the three long-lived clients write over three lifetimes of a 420 s token,
 #     renewing it with no restart, and stop with the broker's refusal once their pod's token is
 #     one the broker refuses for good, sending Dispatch nothing. It takes about fifteen minutes.
 # Each test writes its tables to TMPDIR and logs the file's path; `go test -v` prints each test's
@@ -64,7 +72,7 @@ if [ ! -d "$root/node_modules" ]; then
 fi
 
 export BROKER_TEST_DATABASE_URL=$LEGION_TEST_PG_DSN
-run='^(TestTheDaemonWritesAsItselfOnlyInItsProject|TestARoleWritesEveryKindWithItsOwnToken)$'
+run='^(TestTheDaemonWritesAsItselfOnlyInItsProject|TestARoleWritesEveryKindWithItsOwnToken|TestARoleOpensADocumentWithItsOwnToken)$'
 if [ "${LEGION_E2E_TOKEN_RENEWAL:-}" = 1 ]; then
   run='^TestEveryClientRenewsAndStopsOnARefusal$'
 fi
