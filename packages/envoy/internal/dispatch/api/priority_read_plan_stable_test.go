@@ -271,13 +271,10 @@ func requireWalkWithinMains(t testing.TB, plan json.RawMessage, subject string, 
 
 // newestEventWalkRelationsBuffers is the shared buffers, hit plus read, that the walk over the
 // members in plan counts in its own (newestEventWalk) for the read of the relations it is seeded
-// from. A node's buffers count every read made while it runs, so the walk counts the relations'
-// read wherever it runs it: the scans of priority_tuples inside it, where the planner folds the
-// relations' term (members_seed) into the walk, and, where the term is a CTE of its own, as it is
-// once the second fault's climb reads it too (priorityBacklogTerms), the buffers of that CTE's
-// plan, which the walk's scan of the CTE runs when it reads the CTE first. A scan of the CTE that
-// another node ran first counts none of the CTE's reads, so the walk's scan counts at most the
-// CTE's own buffers.
+// from. A node's buffers count every read made while it runs, so where the walk's scan of
+// members_seed runs that CTE first, it counts the CTE's own buffers; a scan of the CTE that
+// another node ran first counts none of them, so the walk's scan counts at most the CTE's own
+// buffers.
 func newestEventWalkRelationsBuffers(t testing.TB, plan json.RawMessage, subject string) float64 {
 	t.Helper()
 	seed := 0.0
@@ -287,10 +284,7 @@ func newestEventWalkRelationsBuffers(t testing.TB, plan json.RawMessage, subject
 	}
 	relations := 0.0
 	for _, node := range explaintest.Nodes(t, newestEventWalk(t, plan, subject)) {
-		switch {
-		case node.Relation == "priority_tuples":
-			relations += node.SharedHitBlocks + node.SharedReadBlocks
-		case node.Type == "CTE Scan" && node.CTE == "members_seed":
+		if node.Type == "CTE Scan" && node.CTE == "members_seed" {
 			relations += min(node.SharedHitBlocks+node.SharedReadBlocks, seed)
 		}
 	}

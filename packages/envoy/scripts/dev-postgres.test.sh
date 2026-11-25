@@ -10,8 +10,10 @@
 # a new container on the pinned image, list and count them again there, and remove the dump, while
 # the old container stays, stopped and renamed, its removal left to the person as the refusal's
 # last line of text; the script itself never stops, renames, removes, starts or creates anything
-# for it. The printed listing, dump, dump check, run and restore lines are replayed through bash to
-# prove they paste as they read.
+# for it. A `dispatch-pg` on the pinned image is reused only where its server, read once it accepts
+# connections, preloads pg_stat_statements; one whose server does not is refused with the same
+# commands. The printed listing, dump, dump check, run and restore lines are replayed through bash
+# to prove they paste as they read.
 # Its `quote`, which prints those commands, is held to fixtures/shell-quote.json, the table
 # packages/dispatch's shellQuote test reads too, so the two copies of the rule cannot drift apart.
 set -euo pipefail
@@ -32,7 +34,8 @@ readonly stale_id="sha256:eb4759788a2182f08257135e61a34f2cfc3c2914079f3465d64ee6
 readonly url="DATABASE_URL=postgres://postgres:dispatch@127.0.0.1:55432/dispatch?sslmode=disable"
 
 # The fake docker. FAKE_CONTAINER=absent makes `container inspect` fail; otherwise the container
-# runs image FAKE_IMAGE_ID (created as FAKE_CONFIG_IMAGE) and is running when FAKE_RUNNING=true.
+# runs image FAKE_IMAGE_ID (created as FAKE_CONFIG_IMAGE) and is running when FAKE_RUNNING=true,
+# and its server accepts connections and preloads FAKE_PRELOAD (its shared_preload_libraries).
 # The pinned image is present when FAKE_PINNED_PRESENT=true.
 cat >"${temporary_dir}/bin/docker" <<'EOF'
 #!/usr/bin/env bash
@@ -51,6 +54,13 @@ case "$1 $2" in
   "image inspect")
     [ "$FAKE_PINNED_PRESENT" = true ] || { echo "Error: No such image" >&2; exit 1; }
     printf '%s\n' "${FAKE_PINNED_ID:?}"
+    ;;
+  "exec dispatch-pg")
+    case "$*" in
+      *" pg_isready -h 127.0.0.1 -U postgres") printf '127.0.0.1:5432 - accepting connections\n' ;;
+      *" psql -h 127.0.0.1 -U postgres -Atc show shared_preload_libraries") printf '%s\n' "$FAKE_PRELOAD" ;;
+      *) echo "fake docker: unexpected exec: $*" >&2; exit 2 ;;
+    esac
     ;;
   "run -d"|"start dispatch-pg") ;;
   *) echo "fake docker: unexpected command: $*" >&2; exit 2 ;;
@@ -78,7 +88,7 @@ run_case() {
   : >"$calls"
   status=0
   env PATH="${temporary_dir}/bin:${PATH}" FAKE_CALLS="$calls" FAKE_PINNED_ID="$pinned_id" \
-    FAKE_CONTAINER=present FAKE_PINNED_PRESENT=true FAKE_RUNNING=true \
+    FAKE_CONTAINER=present FAKE_PINNED_PRESENT=true FAKE_RUNNING=true FAKE_PRELOAD=pg_stat_statements \
     FAKE_IMAGE_ID="$pinned_id" FAKE_CONFIG_IMAGE="$pinned" \
     "$@" bash "$script" >"$out" 2>"$err" || status=$?
 }
@@ -106,6 +116,20 @@ if [ "$status" -ne 0 ] || [ "$(cat "$out")" != "$url" ] || ! grep -qxF "start di
   fail "a stopped dispatch-pg on the pinned image: started"
 else
   printf 'PASS: a stopped dispatch-pg on the pinned image: started, not recreated\n'
+fi
+
+# A stopped dispatch-pg on the pinned image whose server preloads pg_stat_statements among other
+# modules: started, waited for, its shared_preload_libraries read from the server, then reused.
+readonly preload_read="exec dispatch-pg psql -h 127.0.0.1 -U postgres -Atc show shared_preload_libraries"
+run_case FAKE_RUNNING=false FAKE_PRELOAD=auto_explain,pg_stat_statements
+started="$(grep -nxF "start dispatch-pg" "$calls" | cut -d: -f1 || true)"
+waited="$(grep -nxF "exec dispatch-pg pg_isready -h 127.0.0.1 -U postgres" "$calls" | cut -d: -f1 || true)"
+read_at="$(grep -nxF "$preload_read" "$calls" | cut -d: -f1 || true)"
+if [ "$status" -ne 0 ] || [ "$(cat "$out")" != "$url" ] || grep -q '^run ' "$calls" || [ -z "$started" ] \
+  || [ -z "$waited" ] || [ -z "$read_at" ] || [ "$started" -ge "$waited" ] || [ "$waited" -ge "$read_at" ]; then
+  fail "a stopped dispatch-pg on the pinned image preloading pg_stat_statements: started, waited for, its preload read, reused"
+else
+  printf 'PASS: a stopped dispatch-pg on the pinned image preloading pg_stat_statements: started, waited for, shared_preload_libraries read, reused\n'
 fi
 
 # The stale container this script's previous pin made: pgvector on PostgreSQL 16. Its dump goes
@@ -143,10 +167,10 @@ readonly sequence=(
 line_of() {
   grep -nxF -- "dev-postgres:   $1" "$err" | cut -d: -f1 | awk -v after="${2:-0}" '$1 > after { print; exit }' || true
 }
-# Fails unless every line of `sequence` is printed, each after the one before it.
+# Fails unless every line given is printed, each after the one before it.
 in_order() {
   local previous=0 line want
-  for want in "${sequence[@]}"; do
+  for want in "$@"; do
     line="$(line_of "$want" "$previous")"
     if [ -z "$line" ]; then
       printf '  missing or out of order: %s\n' "$want"
@@ -180,7 +204,7 @@ for want in \
 done
 if [ "$status" -ne 1 ] || [ -s "$out" ] || ! read_only || grep -qF "no pgvector" "$err" \
   || [ -n "$(line_of "docker start dispatch-pg")" ] || [ "$(grep -cxF -- "dev-postgres:   $wait_ready" "$err")" -ne 1 ] \
-  || ! in_order; then
+  || ! in_order "${sequence[@]}"; then
   fail "a running dispatch-pg on the old pin: refused (exit 1, no URL, nothing changed), the dump-and-restore sequence in order with no start and one readiness wait, no claim it lacks pgvector"
 else
   printf 'PASS: a running dispatch-pg on the old pin: refused naming both images and the dump-and-restore sequence in order, nothing changed\n'
@@ -251,7 +275,7 @@ list_line="$(line_of "$list_databases")"
 dump_line="$(line_of "$dump_command")"
 if [ "$status" -ne 1 ] || [ -s "$out" ] || ! read_only || [ -z "$start_line" ] || [ -z "$ready_line" ] \
   || [ -z "$list_line" ] || [ -z "$dump_line" ] || [ "$ready_line" -ge "$list_line" ] \
-  || ! grep -qF "a dump taken before then is refused and leaves an empty file" "$err" || ! in_order; then
+  || ! grep -qF "a dump taken before then is refused and leaves an empty file" "$err" || ! in_order "${sequence[@]}"; then
   fail "a stopped dispatch-pg on the old pin: refused, the sequence starting it and waiting for it before the listing and the dump, nothing changed"
 else
   printf 'PASS: a stopped dispatch-pg on the old pin: refused, the sequence starts it, waits for it, then lists and dumps, nothing changed\n'
@@ -266,6 +290,34 @@ if [ "$status" -ne 1 ] || [ -s "$out" ] || ! read_only \
   fail "a postgres:16 dispatch-pg with no pinned image pulled: refused"
 else
   printf 'PASS: a postgres:16 dispatch-pg with the pinned image never pulled: refused with the dump-and-restore sequence, nothing changed\n'
+fi
+
+# A running dispatch-pg on the pinned image whose server preloads nothing, as one this script made
+# before it passed server_args does: its shared_preload_libraries read from the server, refused
+# (exit 1, no URL, nothing changed), naming the missing module, with the same dump-and-restore
+# sequence, whose `docker run` passes the preload; the old container stays, stopped, as its backup.
+readonly pinned_backup="dispatch-pg-${pinned_id:7:12}"
+readonly pinned_sequence=("${sequence[@]//"$backup"/"$pinned_backup"}")
+run_case TMPDIR="$spaced_tmp" FAKE_PRELOAD=
+if [ "$status" -ne 1 ] || [ -s "$out" ] || ! read_only || ! grep -qxF "$preload_read" "$calls" \
+  || ! grep -qF "dev-postgres: dispatch-pg runs the pinned $pinned, but its server does not preload pg_stat_statements (shared_preload_libraries is ''), which the priorities read's bound test" "$err" \
+  || [ -n "$(line_of "docker start dispatch-pg")" ] || [ "$(grep -cxF -- "dev-postgres:   $wait_ready" "$err")" -ne 1 ] \
+  || [ "$(tail -n1 "$err")" != "dev-postgres: The old container stays, stopped, as $pinned_backup; once Dispatch works on the new container, \`docker rm -v $pinned_backup\` deletes it and its data." ] \
+  || ! in_order "${pinned_sequence[@]}"; then
+  fail "a running dispatch-pg on the pinned image preloading nothing: refused with the dump-and-restore sequence, whose run passes the preload, nothing changed"
+else
+  printf 'PASS: a running dispatch-pg on the pinned image preloading nothing: refused with the dump-and-restore sequence in order, whose run passes the preload, nothing changed\n'
+fi
+
+# The same, stopped, with another module preloaded: the script starts it, as it starts any
+# dispatch-pg on the pinned image, to read its server, so the printed sequence starts nothing.
+run_case TMPDIR="$spaced_tmp" FAKE_RUNNING=false FAKE_PRELOAD=auto_explain
+if [ "$status" -ne 1 ] || [ -s "$out" ] || ! grep -qxF "start dispatch-pg" "$calls" || grep -qE '^(run|stop|rm|rename|create) ' "$calls" \
+  || ! grep -qF "dev-postgres: dispatch-pg runs the pinned $pinned, but its server does not preload pg_stat_statements (shared_preload_libraries is 'auto_explain')" "$err" \
+  || [ -n "$(line_of "docker start dispatch-pg")" ] || ! in_order "${pinned_sequence[@]}"; then
+  fail "a stopped dispatch-pg on the pinned image preloading another module: started to be read, refused with the dump-and-restore sequence, which starts nothing"
+else
+  printf 'PASS: a stopped dispatch-pg on the pinned image preloading another module: started to be read, refused with the dump-and-restore sequence in order, which starts nothing\n'
 fi
 
 # dev-postgres.sh's own `quote`, taken from the script as it ships (it runs on load, so it is not

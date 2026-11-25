@@ -133,8 +133,14 @@ const priorityProjectFilter = `(cardinality($2::text[]) = 0 or i.project_key = a
 // every one of the 1,600 relations of the corpus of production's counts before it kept the 393
 // of issues in backlog or icebox, scanning the relations again inside each test: 278 ms of the
 // summary's 294 (c-both-forms, Job infra5791-fin-both-forms-5rcm8, PostgreSQL 18.6,
-// 2026-11-25). Here the test is one anti-join against a set the planner builds once, from a climb
-// of a few rows, over relations already narrowed to those issues.
+// 2026-11-25). Here the test is one anti-join against `backlog_carried`, from a climb of a few
+// rows, over `backlog_stated`. `backlog_stated` is read once, in `backlog_origins`, so without
+// `materialized` Postgres would fold it into that join; the fence keeps it a set of its own,
+// narrowed to `backlog_keys` before the anti-join reads it. With the fence, on the corpus of
+// production's counts the summary reads a p90 of 15.6 ms under
+// the generic plan and 15.7 ms under the plan made for its values, and the full read 34.7 and
+// 34.0 ms (c-both-forms, Job infra5791-fin-both-forms-rvfsv, PostgreSQL 18.6, 2026-11-25); this
+// anti-join was not measured without the fence.
 func priorityBacklogTerms(stated string) string {
 	return `backlog_keys as (
 		select distinct s.key

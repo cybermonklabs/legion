@@ -2,8 +2,8 @@
 # packages/envoy/scripts/dev-postgres.sh
 #
 # The local dev Postgres, `dispatch-pg` on 127.0.0.1:55432: created from the pinned image, pgvector
-# on PostgreSQL 18, when absent, started when stopped, reused when running. Prints the
-# DATABASE_URL it serves.
+# on PostgreSQL 18, when absent, started when stopped, and reused where its server preloads
+# pg_stat_statements. Prints the DATABASE_URL it serves.
 #
 # The pinned image is pgvector on PostgreSQL 18, the version Dispatch's tests and dev databases
 # run; Dispatch's migrations need its `vector` extension. They also need `btree_gin`, a contrib
@@ -11,9 +11,11 @@
 # `dispatch-pg` running any other image (an older version of this script created it from
 # postgres:16, then from pgvector on PostgreSQL 16) is refused, naming both images and the commands
 # that dump every database in it, check the dump finished, and restore them into a new container
-# on the pinned image, which works from any image or major and needs no volume. This script never
-# starts, stops, renames, removes or recreates a stale container itself: the container can hold
-# other work's databases, and moving it is its owner's call.
+# on the pinned image, which works from any image or major and needs no volume. A `dispatch-pg` on
+# the pinned image whose server does not preload pg_stat_statements is refused with the same
+# commands, once it is started (when stopped) and its server read. This script never starts,
+# stops, renames, removes or recreates a stale container itself, beyond that start: the container
+# can hold other work's databases, and moving it is its owner's call.
 set -euo pipefail
 
 container="dispatch-pg"
@@ -25,7 +27,9 @@ run_flags=(-d --name "$container" --cpus 2 --memory 2g -e POSTGRES_PASSWORD=disp
 # module only at its start, and the priorities read's bound test, which `go test
 # ./internal/dispatch/api` runs, reads each statement's database time from it and stops where the
 # server does not preload it (prioritiesReadQueryIDs in api/priority_read_harness_test.go). A
-# `dispatch-pg` created before this argument is reused as it is, and preloads nothing.
+# `dispatch-pg` created before this argument runs the pinned image and preloads nothing, so the
+# reuse below reads shared_preload_libraries from its server and refuses it where the module is
+# missing.
 server_args=(-c shared_preload_libraries=pg_stat_statements)
 database_url="postgres://postgres:dispatch@127.0.0.1:55432/dispatch?sslmode=disable"
 
@@ -62,18 +66,34 @@ fi
 container_image_id="$(docker container inspect -f '{{.Image}}' "$container")"
 pinned_image_id="$(docker image inspect -f '{{.Id}}' "$image" 2>/dev/null || true)"
 running="$(docker container inspect -f '{{.State.Running}}' "$container")"
+wait_ready=(docker exec "$container" pg_isready -h 127.0.0.1 -U postgres)
 if [ "$container_image_id" = "$pinned_image_id" ]; then
   if [ "$running" != "true" ]; then
     docker start "$container" >/dev/null
+    running=true
   fi
-  printf '%s\n' "DATABASE_URL=$database_url"
-  exit 0
+  # Whether the server preloads pg_stat_statements, read from the server as the bound test reads
+  # it, by the same substring. A server just started refuses connections for a moment, so it is
+  # waited for first, over TCP as the printed steps ask it.
+  for _ in $(seq 1 30); do
+    if "${wait_ready[@]}" >/dev/null; then
+      break
+    fi
+    sleep 1
+  done
+  preload="$(docker exec "$container" psql -h 127.0.0.1 -U postgres -Atc 'show shared_preload_libraries')"
+  if [[ "$preload" == *pg_stat_statements* ]]; then
+    printf '%s\n' "DATABASE_URL=$database_url"
+    exit 0
+  fi
+  reason="$container runs the pinned $image, but its server does not preload pg_stat_statements (shared_preload_libraries is '$preload'), which the priorities read's bound test, run by \`go test ./internal/dispatch/api\`, reads each statement's database time from. A server loads the module only at its start, from the arguments its container was created with, so $container must be created again."
+else
+  container_image="$(docker container inspect -f '{{.Config.Image}}' "$container")"
+  reason="$container runs $container_image (image $container_image_id), not the pinned $image, which is pgvector on PostgreSQL 18, the version Dispatch's tests and dev databases run."
 fi
 
-container_image="$(docker container inspect -f '{{.Config.Image}}' "$container")"
 backup="$container-$(printf '%s' "${container_image_id#sha256:}" | cut -c1-12)"
 dump="${TMPDIR:-/tmp}/$backup.sql"
-wait_ready=(docker exec "$container" pg_isready -h 127.0.0.1 -U postgres)
 steps=()
 # pg_dumpall reads from a running server: a stopped container is started first, as it is, and
 # waited for, since a server still starting refuses the dump and the redirect leaves an empty file.
@@ -121,7 +141,7 @@ steps+=(
   "Once the checks match, the dump can go:"
   "  $(quote rm "$dump")"
 )
-refuse "$container runs $container_image (image $container_image_id), not the pinned $image, which is pgvector on PostgreSQL 18, the version Dispatch's tests and dev databases run." \
+refuse "$reason" \
   "To move every database in it to a new $container on the pinned image, from any image or PostgreSQL major and with no volume needed, run these in order; the old container stays, stopped, as $backup:" \
   "${steps[@]}" \
   "The old one can come back: once it is renamed, \`$(quote docker rm -f -v "$container")\` removes the new one, with its anonymous data volume, if you created it, then \`$(quote docker rename "$backup" "$container")\` and \`$(quote docker start "$container")\` put the old one back." \

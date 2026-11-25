@@ -304,16 +304,15 @@ func TestStatementTimings(t *testing.T) {
 	measureParkedMoveAndMemberWalk(t, runner, ids, keys, priorities)
 }
 
-// priorityNewestEventTiming names the newest event's pair, priorityKeyedWalkTiming the report of
-// the newest event alone with its walk keyed, and mainKeyedWalkTiming the report of main's text
-// with its walk keyed. Every other reading of the three carries one of the names as a prefix, and
-// each name carries the first, so one -run pattern of the first selects them all. The pair's
-// before side is main's newest event alone, and its after side is the whole of the priorities
-// read's statement (priorityReadQuery), which reads the newest event among the four parts of the
-// full read: the pair times and counts that whole statement, not its newest event alone.
+// priorityNewestEventTiming names the pair of the priorities read's whole statement
+// (priorityReadQuery) against main's newest-event statement (mainPriorityNewestEventQuery),
+// priorityKeyedWalkTiming the report of the newest event alone with its walk keyed, and
+// mainKeyedWalkTiming the report of main's text with its walk keyed. Every other reading of the
+// three carries one of the names as a prefix, and each name carries the first, so one -run
+// pattern of the first selects them all.
 const (
-	priorityNewestEventTiming = "the newest event under each priority"
-	priorityKeyedWalkTiming   = priorityNewestEventTiming + ", with the walk keyed"
+	priorityNewestEventTiming = "the priorities read's whole statement against main's newest event"
+	priorityKeyedWalkTiming   = priorityNewestEventTiming + ", newest event alone with the walk keyed"
 	mainKeyedWalkTiming       = priorityNewestEventTiming + ", main's text with the walk keyed"
 )
 
@@ -429,11 +428,11 @@ const mainPriorityNewestEventKeyedWalkQuery = `with recursive members_seed as (
 func measurePriorityNewestEvent(t *testing.T, runner *benchtime.Runner, database *store.Store, ids, keys, priorities []string) {
 	t.Helper()
 	arguments := []any{keys, priorities, []string{}}
-	texts := []struct{ name, sql string }{
-		{"main's text (mainPriorityNewestEventQuery)", mainPriorityNewestEventQuery},
-		{"the priorities read's statement (priorityReadQuery)", priorityReadQuery},
-		{"the keyed-walk text (priorityNewestEventKeyedWalkQuery)", priorityNewestEventKeyedWalkQuery},
-		{"main's text with the walk keyed (mainPriorityNewestEventKeyedWalkQuery)", mainPriorityNewestEventKeyedWalkQuery},
+	texts := []struct{ name, sql, memberIssueSubplan string }{
+		{"main's text (mainPriorityNewestEventQuery)", mainPriorityNewestEventQuery, ""},
+		{"the priorities read's statement (priorityReadQuery)", priorityReadQuery, priorityMemberIssueCTE},
+		{"the keyed-walk text (priorityNewestEventKeyedWalkQuery)", priorityNewestEventKeyedWalkQuery, ""},
+		{"main's text with the walk keyed (mainPriorityNewestEventKeyedWalkQuery)", mainPriorityNewestEventKeyedWalkQuery, ""},
 	}
 	for _, text := range texts {
 		t.Logf("%s: %s, sha256 %x:\n%s", priorityNewestEventTiming, text.name, sha256.Sum256([]byte(text.sql)), text.sql)
@@ -475,7 +474,7 @@ func measurePriorityNewestEvent(t *testing.T, runner *benchtime.Runner, database
 		mainsKeyedBuffers := runner.ReportBuffers(t, mainKeyedWalkTiming, mainBuffers, mainsKeyed)
 		for index, buffers := range []benchtime.Buffers{mainBuffers, readBuffers, keyedBuffers, mainsKeyedBuffers} {
 			for _, plan := range buffers.Plans() {
-				logNewestEventWalk(t, texts[index].name, plan)
+				logNewestEventWalk(t, texts[index].name, texts[index].memberIssueSubplan, plan)
 			}
 		}
 	})
@@ -642,31 +641,24 @@ const newestEventWalkCTE = "CTE members_spread"
 
 // logNewestEventWalk logs the walk's share of plan's top-node buffers: the buffers of the plan of
 // newestEventWalkCTE, which descends from the stated issues to every member, and the buffers of
-// the reads of issues that read each member's own row. In the priorities read's statement those
-// are the reads inside its CTE member_issue (priorityMemberIssueCTE) alone: the statement reads
-// issues outside the walk for other parts too - the first fault's scan of the open issues in
-// flight, issueAdvancesTerms' climb from the listed rows of the second fault and that fault's own
-// climb (priorityBacklogTerms) - and none of those is a member's row. In a text with no such CTE,
-// main's and the keyed walks, every read of issues outside the walk reads a member's row: in the
-// keyed walk the probes through issues_pkey, and in main's walk its join to issues. A node's
-// buffers count every node under it, so a CTE's are its own top node's. A plan with no one plan
-// of the walk fails the test, since its share would then be read off nothing.
-func logNewestEventWalk(t *testing.T, text string, plan benchtime.PlanBuffers) {
+// the reads of issues that read each member's own row. Where memberIssueSubplan is non-empty (the
+// priorities read's statement, whose subplan is priorityMemberIssueCTE), those are the reads
+// inside that subplan alone: the statement reads issues outside the walk for other parts too -
+// the first fault's scan of the open issues in flight, issueAdvancesTerms' climb from the listed
+// rows of the second fault and that fault's own climb (priorityBacklogTerms) - and none of those
+// is a member's row. Where memberIssueSubplan is empty (main's text and the keyed walks), every
+// read of issues outside the walk reads a member's row: in the keyed walk the probes through
+// issues_pkey, and in main's walk its join to issues. A node's buffers count every node under it,
+// so a CTE's are its own top node's. A plan with no one plan of the walk, or with no one plan of
+// memberIssueSubplan where one is named, fails the test, since its share would then be read off
+// nothing.
+func logNewestEventWalk(t *testing.T, text, memberIssueSubplan string, plan benchtime.PlanBuffers) {
 	t.Helper()
 	var top analyzedNode
 	if err := json.Unmarshal(plan.Plan, &top); err != nil {
 		t.Fatalf("read the plan of %s under %s: %v", text, plan.Mode, err)
 	}
-	hasMemberIssue := false
-	var find func(node analyzedNode)
-	find = func(node analyzedNode) {
-		hasMemberIssue = hasMemberIssue || node.SubplanName == priorityMemberIssueCTE
-		for _, child := range node.Plans {
-			find(child)
-		}
-	}
-	find(top)
-	var walks int
+	var walks, memberIssues int
 	var walk, members int64
 	var visit func(node analyzedNode, inWalk, inMemberIssue bool)
 	visit = func(node analyzedNode, inWalk, inMemberIssue bool) {
@@ -675,10 +667,11 @@ func logNewestEventWalk(t *testing.T, text string, plan benchtime.PlanBuffers) {
 			walks++
 			walk += int64(node.SharedHitBlocks + node.SharedReadBlocks)
 			inWalk = true
-		case node.SubplanName == priorityMemberIssueCTE:
+		case memberIssueSubplan != "" && node.SubplanName == memberIssueSubplan:
+			memberIssues++
 			inMemberIssue = true
 		}
-		if !inWalk && node.RelationName == "issues" && (inMemberIssue || !hasMemberIssue) {
+		if !inWalk && node.RelationName == "issues" && (memberIssueSubplan == "" || inMemberIssue) {
 			members += int64(node.SharedHitBlocks + node.SharedReadBlocks)
 		}
 		for _, child := range node.Plans {
@@ -688,6 +681,10 @@ func logNewestEventWalk(t *testing.T, text string, plan benchtime.PlanBuffers) {
 	visit(top, false, false)
 	if walks != 1 {
 		t.Errorf("%s under %s holds %d plans of %s, want one:\n%s", text, plan.Mode, walks, newestEventWalkCTE, plan.Explained)
+		return
+	}
+	if memberIssueSubplan != "" && memberIssues != 1 {
+		t.Errorf("%s under %s holds %d plans of %s, want one:\n%s", text, plan.Mode, memberIssues, memberIssueSubplan, plan.Explained)
 		return
 	}
 	share := func(buffers int64) string {

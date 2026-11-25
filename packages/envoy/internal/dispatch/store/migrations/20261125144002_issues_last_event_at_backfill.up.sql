@@ -10,9 +10,10 @@
 --
 -- It is one statement in a migration of its own rather than a pass in batches
 -- (store.FillEmbeddingProjectKeys is that shape, for work of hours) or a boot pass: issues holds
--- one row per issue, 13,298 in a seed of production's counts, far below
--- pgmigrate.CensusTableLimit, which the census holds the table this statement writes to before a
--- deploy applies it; its census answers 0, for the reason its census file gives. The statement
+-- one row per issue, 13,298 in a seed of production's counts. The census taken before a deploy
+-- applies this migration refuses it if issues' pg_total_relation_size, its table, indexes and
+-- TOAST together, is above pgmigrate.CensusTableLimit, 1 GiB, which is about 79 KiB for each
+-- of those 13,298 rows. Its census answers 0, for the reason its census file gives. The statement
 -- costs one index probe of events and one new tuple for each row. It takes issues' ROW
 -- EXCLUSIVE lock, which holds off no read and no write of another table, and a lock on each row
 -- it writes until it commits: an append to an issue waits at most for this one statement. The
