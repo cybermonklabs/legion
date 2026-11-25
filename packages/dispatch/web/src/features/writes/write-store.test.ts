@@ -1477,6 +1477,39 @@ test("a take-up that a kept refusal's Discard leaves nothing to take up ends, an
   });
 });
 
+// The sign-in page reads what the reload kept through the store's listeners (`useNotTakenUp`).
+// The store holds every person's kept records from its making, and the take-up keeps only the
+// records of the person signed in (`resume`). The listeners hear of that change, or a reader
+// would still show the other person's writes.
+test("a take-up that keeps only the signed-in person's records of the reload tells the store's listeners", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const alices = keyMinted(Date.now());
+    const bobs = keyMinted(Date.now() + 1);
+    keepWrite(tab.storage, alices, { state: { refusal: { kind: "stopped" }, status: "refused" } });
+    keepWrite(tab.storage, bobs, {
+      login: "bob",
+      state: { refusal: { kind: "stopped" }, status: "refused" },
+    });
+    const writes = new Writes(signedIn(), tab.page(), memoryFiles());
+    // What `useNotTakenUp` reads each time the store tells its listeners: `notTakenUp`.
+    const heard: string[][] = [];
+    const stop = writes.subscribe(() => heard.push(writes.notTakenUp().map((write) => write.key)));
+    try {
+      expect(new Set(writes.notTakenUp().map((write) => write.key))).toEqual(
+        new Set([alices, bobs])
+      );
+      writes.resume("alice", () => Promise.withResolvers<never>().promise);
+      expect(heard, "the take-up changed the list and told no listener").toEqual([[alices]]);
+    } finally {
+      stop();
+      kindsRegistered();
+      await settle();
+      tab.close();
+    }
+  });
+});
+
 // W25. The page never keeps, and never sends, anything that points at an upload's file before
 // that file is kept: a record naming a key IndexedDB holds no file under is a write a reload
 // drops with nothing shown and nothing sent. The press still joins at once - the indicator

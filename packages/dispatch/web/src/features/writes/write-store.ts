@@ -437,7 +437,8 @@ export class Writes {
    *  is among them in the app: the take-up begins before any page can press one (`app.tsx`), and
    *  a write it takes up leaves them as it joins the store. A store with no app around it can
    *  hold a write pressed before its take-up began, which the take-up and `unsent` leave out as
-   *  the store's own. */
+   *  the store's own. Each change after the store's making goes through `#setNotTakenUp`, which
+   *  tells every listener. */
   #notTakenUp: readonly KeptWrite[];
   /** Whether the session of the person signed in has lapsed: no write starts until someone signs
    *  in again. */
@@ -753,9 +754,8 @@ export class Writes {
     const kept = this.#notTakenUp.find((write) => write.key === key);
     if (kept?.state.status !== "refused") return false;
     this.#forgetKept(kept);
-    this.#notTakenUp = this.#notTakenUp.filter((write) => write !== kept);
+    this.#setNotTakenUp(this.#notTakenUp.filter((write) => write !== kept));
     if (this.#notTakenUp.length === 0) this.#endTakeUp();
-    this.#notify();
     return true;
   }
 
@@ -845,10 +845,8 @@ export class Writes {
     this.#resetKinds();
     void this.#files.keepOnly(undefined);
     this.#kept.clear();
-    const dropped = this.#notTakenUp.length > 0;
-    if (dropped) this.#notTakenUp = [];
+    this.#setNotTakenUp([]);
     this.#endTakeUp();
-    if (dropped) this.#notify();
   }
 
   /** This page's sign-out of `login` landed: every write goes (`clear`), what the reload kept of
@@ -1002,7 +1000,7 @@ export class Writes {
     this.#resumed = true;
     // Read for what it drops - every entry of another person's - for leaving the page to ask for
     // the person's own, and for what the take-up takes up once the kinds are in (`#takeUp`).
-    this.#notTakenUp = this.#kept.load(login);
+    this.#setNotTakenUp(this.#kept.load(login));
     void this.#files.keepOnly(login);
     if (this.#notTakenUp.length === 0) return;
     if (loadKinds === undefined) {
@@ -1098,21 +1096,15 @@ export class Writes {
             // or their sign-out landing here or in another tab - forgot this one already
             // (`#dropKept`, `clear`): it is not taken up.
             if (!this.#notTakenUp.includes(kept)) return;
-            this.#notTakenUp = this.#notTakenUp.filter((write) => write !== kept);
+            this.#setNotTakenUp(this.#notTakenUp.filter((write) => write !== kept));
             this.#resume(kept, kind, detail, now, file);
-            this.#notify();
           })
         );
       } else {
         this.#resume(kept, kind, detail, now, undefined);
       }
     }
-    // What is left is a part of `#notTakenUp`, in its order, so one as long holds the same writes:
-    // nothing was taken up or let go, and the list stays one array.
-    if (reading.length !== this.#notTakenUp.length) {
-      this.#notTakenUp = reading;
-      this.#notify();
-    }
+    this.#setNotTakenUp(reading);
     // Settled rather than all: a write pressed meanwhile goes on whatever a read made.
     return Promise.allSettled(files);
   }
@@ -1127,15 +1119,14 @@ export class Writes {
    *  in the tab from its press - and goes on as its press asked; and a sweep of every file but
    *  `login`'s would delete the files of the uploads someone signed in since pressed meanwhile. */
   #dropKept(login: string): void {
-    const left = this.#notTakenUp.filter((kept) => {
-      if (kept.login !== login) return true;
-      this.#forgetKept(kept);
-      return false;
-    });
-    const dropped = left.length < this.#notTakenUp.length;
-    if (dropped) this.#notTakenUp = left;
+    this.#setNotTakenUp(
+      this.#notTakenUp.filter((kept) => {
+        if (kept.login !== login) return true;
+        this.#forgetKept(kept);
+        return false;
+      })
+    );
     if (this.#takingUp?.login === login) this.#endTakeUp();
-    if (dropped) this.#notify();
   }
 
   /** Lets go of what the tab keeps of `kept`, a write the reload kept: its entry, and an
@@ -1577,8 +1568,19 @@ export class Writes {
     this.#notify();
   }
 
+  /** Puts `next` in the place of what the reload kept that the store has not taken up
+   *  (`#notTakenUp`), and tells every listener. A list with the same records in the same order is
+   *  no change: the store keeps the array it has and tells no one, so a reader of `notTakenUp`
+   *  draws again only for a change (`useNotTakenUp`). */
+  #setNotTakenUp(next: readonly KeptWrite[]): void {
+    const was = this.#notTakenUp;
+    if (next.length === was.length && next.every((write, index) => write === was[index])) return;
+    this.#notTakenUp = next;
+    this.#notify();
+  }
+
   /** Tells every listener of a change: of the rows (`#publish`), or of what the reload kept that
-   *  the store has not taken up (`#notTakenUp`) alone, which leaves the rows one array. */
+   *  the store has not taken up alone (`#setNotTakenUp`), which leaves the rows one array. */
   #notify(): void {
     for (const listener of this.#listeners) listener();
   }
