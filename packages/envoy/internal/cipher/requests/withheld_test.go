@@ -11,7 +11,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
@@ -916,7 +915,6 @@ func TestWithholdingAProfileWithholdsEachNameOfItsSource(t *testing.T) {
 // The judge tag is the source's, which its profile APP_KEY_ADA is decided by.
 func TestTheJudgeSettlesNoProfileOfAWithheldSource(t *testing.T) {
 	m, enr, key := sourceFixture(t)
-	m.Airlock = proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "APP_KEY_ADA", Hosts: []string{"api.github.example"}}}}
 	policytest.JudgeTags(t, fixtureStore(m), m.Policy, "APP_KEY", 900, "")
 	m.Judge = func(PendingRequest) {}
 	source, err := m.Create(t.Context(), enr, signRequest(t, m, key, "the source's own name", "APP_KEY"), "")

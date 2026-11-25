@@ -15,7 +15,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/groups/groupstest"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
@@ -47,7 +46,6 @@ func TestAGroupsSecretOfAPrivateProject(t *testing.T) {
 	}
 	m.Chain = NewChainVerifier(st, testAudience, time.Minute, m.Policy)
 	m.Chain.Groups = directory
-	m.Airlock = proxyrules.Rules{}
 	answerFrom(t, m, dispatchRows(publicTeam))
 	nameProjects(t, m, enrollmentID, privProject)
 

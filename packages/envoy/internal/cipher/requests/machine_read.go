@@ -320,6 +320,13 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 		if held := set.Secrets[g.name].ProfileDigest; held != g.profileDigest {
 			return grantRelease{}, m.endGrant(ctx, grantID, profileChanged(set, g.name, decidedBy))
 		}
+		// Nor does a name whose kind has lost a host or a header the grant was decided under:
+		// the grant would reach less than it did, or travel where the request did not, and no
+		// fingerprint of the file says so, since a kind that only gains one must end nothing.
+		// It too runs on every release, for the same reason as the comparison above.
+		if lost := kindLost(set.ProxyRules(), g.name, g.kind); lost != nil {
+			return grantRelease{}, m.endGrant(ctx, grantID, kindNarrowed(g.name, lost))
+		}
 	}
 	return grantRelease{enrollmentID: enrollmentID, requestID: requestID, reason: reason, expires: expires, granted: granted, set: set, facts: facts, enr: enr}, nil
 }
@@ -450,7 +457,7 @@ func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, call
 	}
 	release := Release{Values: values, Expires: checked.expires, GitHubLeftOut: leftOut, Locations: grantLocations(checked.granted)}
 	if len(splits) > 0 {
-		if release.Airlock, err = m.airlockRelease(ctx, grantID, checked.expires, splits); err != nil {
+		if release.Airlock, err = m.airlockRelease(ctx, grantID, checked.expires, splits, checked.set.ProxyRules()); err != nil {
 			m.giveBack(ctx, read)
 			return Release{}, err
 		}
@@ -484,22 +491,22 @@ func grantLocations(granted []requestedSecret) []string {
 	return nil
 }
 
-// readValue is one granted name's value and, for a minted type, when that value stops working,
-// with the refusals every release answers: a name the store no longer holds
-// (ErrSecretNotInStore), a profile's scope the minter refused, which is logged as a refused scope
-// and handed back as it is, and any other failure named with the secret.
-func (m *Machine) readValue(ctx context.Context, grantID, enrollmentID string, g requestedSecret, served policy.Secret) (secrets.Minted, error) {
-	minted, err := m.release(ctx, g, served)
+// readValue is one granted name's value and, for a minted type, when that value stops working and
+// what it was minted from (mintedFrom), with the refusals every release answers: a name the store
+// no longer holds (ErrSecretNotInStore), a profile's scope the minter refused, which is logged as
+// a refused scope and handed back as it is, and any other failure named with the secret.
+func (m *Machine) readValue(ctx context.Context, grantID, enrollmentID string, g requestedSecret, served policy.Secret) (secrets.Minted, mintedFrom, error) {
+	minted, from, err := m.release(ctx, g, served)
 	if errors.Is(err, secrets.ErrNotFound) {
-		return secrets.Minted{}, fmt.Errorf("%w: %s", ErrSecretNotInStore, g.name)
+		return secrets.Minted{}, mintedFrom{}, fmt.Errorf("%w: %s", ErrSecretNotInStore, g.name)
 	}
 	if errors.Is(err, secrets.ErrMintNarrowingRefused) {
 		slog.Warn(NarrowingRefusedMessage, "grant", grantID, "enrollment", enrollmentID, "name", g.name, "error", err)
 	}
 	if err != nil {
-		return secrets.Minted{}, fmt.Errorf("read %s: %w", g.name, err)
+		return secrets.Minted{}, mintedFrom{}, fmt.Errorf("read %s: %w", g.name, err)
 	}
-	return minted, nil
+	return minted, from, nil
 }
 
 // recheckStoredSources checks every name of grantID that releases its stored value (a source no
@@ -539,20 +546,40 @@ func sourceMoved(name string) error {
 	return fmt.Errorf("%w: %w: %s is now served from another source than this grant's", ErrGrantNotLive, errSourceMoved, name)
 }
 
-// profileChanged is the refusal of a granted name whose profile is not the one its request
+// profileChanged is the refusal of a granted name whose fingerprint is not the one its request
 // recorded (requestedSecret.profileDigest against policy.Secret.ProfileDigest), which ends the
 // grant for good: at its release (checkRelease) and at Create's reuse of it (reuseLiveGrant). A
-// profile with a proxy block carries its source key's judge seconds in its fingerprint
-// (policy.Profiles.servedDigest), so where that tag can be what moved - the source carries one
-// now, or the model judge decided the grant (decidedBy), so it carried one then - the refusal names
-// the tag beside the entry: either may be what moved, and the fingerprint does not say which.
+// profile's fingerprint holds its entry and, beside it, tags of its source key
+// (policy.Profiles.servedDigest), so where such a tag can be what moved the refusal names it beside
+// the entry: either may be what moved, and the fingerprint does not say which. The proxy tag can
+// be, where it is the source's tag and not the profile's own proxy string that puts the profile
+// behind its kind, since the kind it is behind is in the fingerprint; so can the judge tag of a
+// profile behind the proxy, whose judge seconds are in it, where the source carries one now or the
+// model judge decided the grant (decidedBy), so it carried one then. A stored secret served by its
+// own name behind the proxy has its own proxy tag in its fingerprint, and no judge seconds. The
+// proxy-narrowed tag, which a fingerprint behind the proxy holds too, is never named: a change of
+// it refuses the name (policy.ReasonProxyNarrowedProfiles, policy.ReasonProfileAllowNotNarrowed)
+// rather than serve it with another fingerprint.
 func profileChanged(set *policy.Set, name, decidedBy string) error {
 	served := set.Secrets[name]
-	_, judged := record.JudgeLogin(decidedBy)
-	if served.Profile != nil && served.Profile.Proxy != nil && (served.Judge != 0 || judged) {
-		return fmt.Errorf("%w: %s's profile changed since this grant was decided: its entry in the profiles file, or the judge tag of its source key %s", ErrGrantNotLive, name, served.Profile.Source)
+	const changed = "%w: %s's profile changed since this grant was decided"
+	if served.Profile == nil {
+		if served.Proxy != "" {
+			return fmt.Errorf(changed+": its entry in the profiles file, or its own %s tag", ErrGrantNotLive, name, policy.TagProxy)
+		}
+		return fmt.Errorf(changed, ErrGrantNotLive, name)
 	}
-	return fmt.Errorf("%w: %s's profile changed since this grant was decided", ErrGrantNotLive, name)
+	var tags []string
+	if served.Proxy != "" && served.Profile.ProxyKind == "" {
+		tags = append(tags, policy.TagProxy)
+	}
+	if _, judged := record.JudgeLogin(decidedBy); served.Proxy != "" && (served.Judge != 0 || judged) {
+		tags = append(tags, policy.TagJudge)
+	}
+	if len(tags) == 0 {
+		return fmt.Errorf(changed, ErrGrantNotLive, name)
+	}
+	return fmt.Errorf(changed+": its entry in the profiles file, or the %s tag of its source key %s", ErrGrantNotLive, name, strings.Join(tags, " or "), served.Profile.Source)
 }
 
 // requesterNotListed is the refusal of a granted name whose requesters tag no longer names the
@@ -641,24 +668,24 @@ func (m *Machine) endGrant(ctx context.Context, grantID string, reason error) er
 // to the decode of its new type. The failure line and this release's answer are every
 // other mint failure's. A deleted secret stops releasing once the policy drops it:
 // `agent-secrets secret delete` rereads the name at once.
-func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.Secret) (secrets.Minted, error) {
+func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.Secret) (secrets.Minted, mintedFrom, error) {
 	secretType, source, minted, err := policy.ParseTypeSource(g.source)
 	if err != nil {
-		return secrets.Minted{}, fmt.Errorf("secret %s: %w", g.name, err)
+		return secrets.Minted{}, mintedFrom{}, fmt.Errorf("secret %s: %w", g.name, err)
 	}
 	if !minted {
 		stored, err := m.Secrets.Read(ctx, source)
 		if err != nil {
-			return secrets.Minted{}, err
+			return secrets.Minted{}, mintedFrom{}, err
 		}
-		return secrets.Minted{Value: trimmedValue(stored, g.name)}, nil
+		return secrets.Minted{Value: trimmedValue(stored, g.name)}, mintedFrom{}, nil
 	}
 	if secretType == policy.TypeAzureLogin && g.decision != policy.Approval {
-		return secrets.Minted{}, fmt.Errorf("%w: %w: Azure login requires a person's approval", ErrMintFailed, secrets.ErrMintRefused)
+		return secrets.Minted{}, mintedFrom{}, fmt.Errorf("%w: %w: Azure login requires a person's approval", ErrMintFailed, secrets.ErrMintRefused)
 	}
 	mint := m.Minters[secretType]
 	if mint == nil {
-		return secrets.Minted{}, fmt.Errorf("secret %s is a minted type %q, but this broker has no token minter for it", g.name, secretType)
+		return secrets.Minted{}, mintedFrom{}, fmt.Errorf("secret %s is a minted type %q, but this broker has no token minter for it", g.name, secretType)
 	}
 	// The scope in effect of the GitHub profile the name is served as: its request's target's, or
 	// the profile's own. Create refused a target the profile cannot serve (checkTarget), and an
@@ -666,18 +693,19 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 	// reaches; it is answered rather than minted, since a scope it cannot build is never widened.
 	scope, err := gitHubScope(g.name, served, g.target)
 	if err != nil {
-		return secrets.Minted{}, err
+		return secrets.Minted{}, mintedFrom{}, err
 	}
 	// The version the policy lists for the value this release reads, which a refusal of that
 	// value below is keyed on: a load that lists a newer one meanwhile decodes that one itself.
 	version := m.Policy.Get().ValueVersion(g.name)
 	value, err := m.Secrets.Read(ctx, source)
 	if err != nil {
-		return secrets.Minted{}, err
+		return secrets.Minted{}, mintedFrom{}, err
 	}
-	token, err := mint(ctx, mintRequest(g.name, secretType, served, trimmedValue(value, g.name), scope))
+	spend := trimmedValue(value, g.name)
+	token, err := mint(ctx, mintRequest(g.name, secretType, served, spend, scope))
 	if errors.Is(err, secrets.ErrMintNarrowingRefused) {
-		return secrets.Minted{}, err
+		return secrets.Minted{}, mintedFrom{}, err
 	}
 	if err != nil {
 		// The minter's error names its class and why, never the stored value or a token, so the
@@ -686,14 +714,14 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 		if errors.Is(err, secrets.ErrMintStoredValue) {
 			m.Policy.RefuseValue(ctx, g.name, version, secretType, err)
 		}
-		return secrets.Minted{}, fmt.Errorf("%w: %w", ErrMintFailed, err)
+		return secrets.Minted{}, mintedFrom{}, fmt.Errorf("%w: %w", ErrMintFailed, err)
 	}
 	for _, account := range slices.Sorted(maps.Keys(token.LeftOut)) {
 		for _, permission := range token.LeftOut[account] {
 			slog.Warn(ProfilePermissionLeftOutMessage, "name", g.name, "account", account, "permission", permission)
 		}
 	}
-	return token, nil
+	return token, mintedFromOf(secretType, spend, scope), nil
 }
 
 // mintRequest is the input one granted name's release gives its minter: the name, the stored
@@ -737,10 +765,12 @@ func trimmedValue(value, name string) string {
 // requestedSecret is one name a request asked for that the policy did not deny when the request
 // was made: the secret it froze (source), the decision the policy gave it then, the fingerprint
 // of the profile it was served as then (profileDigest, from the column airlock_digest; "" for a
-// stored secret served by its own name), and the target the request narrowed that profile to
-// (target, the zero record.Target for none).
+// stored secret served by its own name behind no kind), the hosts and headers of the kind it was
+// behind then (kind, from the column airlock_kind; nil for none), and the target the request
+// narrowed that profile to (target, the zero record.Target for none).
 type requestedSecret struct {
 	name, source, decision, profileDigest string
+	kind                                  *kindReach
 	target                                record.Target
 }
 
@@ -749,7 +779,7 @@ type requestedSecret struct {
 // waits to have approved (currentPolicyAdmits, and Create's join of a pending request), since one
 // denied name denies the whole request.
 func requestedSecrets(ctx context.Context, q querier, requestID string) ([]requestedSecret, error) {
-	rows, err := q.Query(ctx, `select name, source, decision, airlock_digest, coalesce(target_account, ''), target_repositories
+	rows, err := q.Query(ctx, `select name, source, decision, airlock_digest, airlock_kind, coalesce(target_account, ''), target_repositories
 		from request_secrets where request_id=$1 and decision <> 'deny' order by name`, requestID)
 	if err != nil {
 		return nil, err
@@ -758,7 +788,11 @@ func requestedSecrets(ctx context.Context, q querier, requestID string) ([]reque
 	var requested []requestedSecret
 	for rows.Next() {
 		var g requestedSecret
-		if err := rows.Scan(&g.name, &g.source, &g.decision, &g.profileDigest, &g.target.Account, &g.target.Repositories); err != nil {
+		var kind []byte
+		if err := rows.Scan(&g.name, &g.source, &g.decision, &g.profileDigest, &kind, &g.target.Account, &g.target.Repositories); err != nil {
+			return nil, err
+		}
+		if g.kind, err = kindReachOf(kind); err != nil {
 			return nil, err
 		}
 		requested = append(requested, g)
@@ -1456,11 +1490,18 @@ candidates:
 					return Request{}, false, err
 				}
 			}
-			// The entry this name was granted under is not the one served now, which every
-			// release of the grant would end it for (checkRelease): end it here, as that
-			// release would, and answer no reusable grant.
+			// The entry this name was granted under is not the one served now, or its kind has
+			// lost a host or a header it was granted under, which every release of the grant
+			// would end it for (checkRelease): end it here, as that release would, and answer
+			// no reusable grant.
+			var why error
 			if set.Secrets[g.name].ProfileDigest != g.profileDigest {
-				if ended := m.endGrant(ctx, match.grantID, profileChanged(set, g.name, decidedBy)); !errors.Is(ended, ErrGrantNotLive) {
+				why = profileChanged(set, g.name, decidedBy)
+			} else if lost := kindLost(set.ProxyRules(), g.name, g.kind); lost != nil {
+				why = kindNarrowed(g.name, lost)
+			}
+			if why != nil {
+				if ended := m.endGrant(ctx, match.grantID, why); !errors.Is(ended, ErrGrantNotLive) {
 					return Request{}, false, ended
 				}
 				return Request{}, false, nil

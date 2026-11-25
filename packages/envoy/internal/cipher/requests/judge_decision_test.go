@@ -14,7 +14,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
@@ -48,9 +47,10 @@ func federationSecret() secrets.LocalSecret {
 }
 
 // newJudgeFixture is newFixture with judge tags that let the judge decide up to 900 seconds of
-// DEEL_API_KEY, the operator's own human-tier secret, and of SHARED_KEY, the shared one, each
-// behind a proxy entry: the two records' approvers are a person's login and record.AnyoneApprover,
-// which is the difference the grant's approver turns on. adminSecret and federationSecret carry a
+// DEEL_API_KEY, the operator's own human-tier secret, and of SHARED_KEY, the shared one: the two
+// records' approvers are a person's login and record.AnyoneApprover, which is the difference the
+// grant's approver turns on. The judge tag alone makes a key the judge's; whether the key is
+// behind the proxy is no part of who decides it. adminSecret and federationSecret carry a
 // judge tag of their own, the tags no owner must be able to write past, since a secret whose
 // release a person approves (policy.Secret.PersonApprovesEveryRelease) does not answer to its
 // judge tag. The chain verifier reads the same live policy (record.ChainVerifier.JudgeSeconds). A
@@ -59,10 +59,6 @@ func federationSecret() secrets.LocalSecret {
 func newJudgeFixture(t *testing.T) (*Machine, string, *ecdsa.PrivateKey) {
 	t.Helper()
 	m, enrollmentID, key, _ := newFixture(t)
-	m.Airlock = proxyrules.Rules{Secrets: []proxyrules.SecretRule{
-		{Name: "DEEL_API_KEY", Hosts: []string{"api.deel.example"}},
-		{Name: "SHARED_KEY", Hosts: []string{"shared.example"}},
-	}}
 	policytest.JudgeTags(t, fixtureStore(m), m.Policy, "DEEL_API_KEY", 900, "")
 	policytest.JudgeTags(t, fixtureStore(m), m.Policy, "SHARED_KEY", 900, "")
 	m.Judge = func(PendingRequest) {}

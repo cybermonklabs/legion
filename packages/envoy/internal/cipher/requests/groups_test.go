@@ -18,7 +18,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/groups/groupstest"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
@@ -528,7 +527,6 @@ func TestAMemberDismissesAnExpiredGroupRequest(t *testing.T) {
 func TestAJudgedGroupGrantStaysOnAMembersListWhileTheGroupIsStale(t *testing.T) {
 	f := newGroupFixture(t)
 	ctx := context.Background()
-	f.m.Airlock = proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "TEAM_KEY", Hosts: []string{"team.example"}}}}
 	policytest.JudgeTags(t, f.m.Secrets.(secrets.AWS).Client.(*secrets.Local), f.m.Policy, "TEAM_KEY", 900, "")
 	f.m.Chain = NewChainVerifier(f.m.Store, testAudience, time.Minute, f.m.Policy)
 	f.m.Chain.Groups = f.directory

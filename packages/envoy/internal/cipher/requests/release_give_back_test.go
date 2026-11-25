@@ -43,19 +43,31 @@ type giveBackFixture struct {
 	minted []string
 }
 
+// newGiveBackFixture is the fixture of APP_KEY served through a profile of its own name, with each
+// name rules binds behind its binding's kind of policytest.Kinds, by its secret's proxy tag.
 func newGiveBackFixture(t *testing.T, rules proxyrules.Rules) *giveBackFixture {
 	t.Helper()
-	return newGiveBackFixtureOf(t, rules, policytest.ProfilesFile(policytest.AppProfile("APP_KEY")))
+	return newGiveBackFixtureOf(t, rules, policytest.KindsFile(policytest.AppProfile("APP_KEY")))
 }
 
-// newGiveBackFixtureOf is newGiveBackFixture serving APP_KEY through the profiles of file.
+// newGiveBackFixtureOf is newGiveBackFixture serving APP_KEY through the profiles of file, which
+// declares the kinds the bindings of rules name: each binding is the proxy tag its secret carries
+// (policytest.Proxied), so the policy puts that name behind that kind.
 func newGiveBackFixtureOf(t *testing.T, rules proxyrules.Rules, file string) *giveBackFixture {
 	t.Helper()
 	st := storetest.Open(t)
-	local := secrets.NewLocal(
-		policytest.TypeSecret("APP_KEY", checkOperator, policy.TierAgent, policy.TypeGitHubApp, standInAppValue(t)),
-		policytest.Secret("ZED_KEY", checkOperator, policy.TierAgent, "zed-v1"),
-	)
+	stored := map[string]secrets.LocalSecret{
+		"APP_KEY": policytest.TypeSecret("APP_KEY", checkOperator, policy.TierAgent, policy.TypeGitHubApp, standInAppValue(t)),
+		"ZED_KEY": policytest.Secret("ZED_KEY", checkOperator, policy.TierAgent, "zed-v1"),
+	}
+	for _, binding := range rules.Names {
+		secret, held := stored[binding.Name]
+		if !held {
+			t.Fatalf("the binding %+v names no secret of the fixture", binding)
+		}
+		stored[binding.Name] = policytest.Proxied(secret, binding.Kind)
+	}
+	local := secrets.NewLocal(stored["APP_KEY"], stored["ZED_KEY"])
 	enrollmentID, key := newEnrollment(t, st)
 	service, err := proxyrulestest.NewService(proxyrulestest.ServiceOptions{Plain: true})
 	if err != nil {
@@ -96,7 +108,6 @@ func newGiveBackFixtureOf(t *testing.T, rules proxyrules.Rules, file string) *gi
 		Replay:     replayer(st),
 		Minters:    map[string]requests.Minter{policy.TypeGitHubApp: app.Mint},
 		GiveBacks:  map[string]requests.GiveBack{policy.TypeGitHubApp: app.GiveBack},
-		Airlock:    rules,
 	}
 	f.Chain = requests.NewChainVerifier(st, checkAudience, time.Minute, f.Policy)
 	session := &profileFixture{Machine: f.Machine, enrollmentID: enrollmentID, key: key}
@@ -145,9 +156,9 @@ func (f *giveBackFixture) live(t *testing.T) (minted, live []string) {
 // back, the proxy's for one it does - revokes nothing, which is what says the revoke is for a token
 // nobody holds.
 func TestAReleaseThatFailsGivesBackTheTokensItMinted(t *testing.T) {
-	zedForAWS := proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "ZED_KEY", Kind: proxyrules.KindAWS, Hosts: []string{"aws.example.com"}}}}
-	zedBehind := proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "ZED_KEY", Hosts: []string{"api.example.com"}}}}
-	appBehind := proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "APP_KEY", Hosts: []string{"api.example.com"}}}}
+	zedForAWS := proxyrules.Rules{Names: []proxyrules.Binding{{Name: "ZED_KEY", Kind: "aws"}}}
+	zedBehind := proxyrules.Rules{Names: []proxyrules.Binding{{Name: "ZED_KEY", Kind: "example"}}}
+	appBehind := proxyrules.Rules{Names: []proxyrules.Binding{{Name: "APP_KEY", Kind: "example"}}}
 	for _, tc := range []struct {
 		name  string
 		rules proxyrules.Rules
@@ -251,7 +262,7 @@ func TestAReleaseThatFailsGivesBackTheTokensItMinted(t *testing.T) {
 // back, and the release whose grant.used row fails, which gives it back too, each answer while
 // it is still held; once it is let go it runs, with the secret's name and the value minted.
 func TestAReleaseDoesNotWaitOnItsGiveBack(t *testing.T) {
-	appBehind := proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "APP_KEY", Hosts: []string{"api.example.com"}}}}
+	appBehind := proxyrules.Rules{Names: []proxyrules.Binding{{Name: "APP_KEY", Kind: "example"}}}
 	for _, failing := range []bool{false, true} {
 		t.Run(fmt.Sprintf("a release that fails: %t", failing), func(t *testing.T) {
 			f := newGiveBackFixture(t, appBehind)
@@ -293,13 +304,13 @@ func TestAReleaseDoesNotWaitOnItsGiveBack(t *testing.T) {
 // of either form, behind the airlock so the session's release gives its token back, is given back
 // as its own form, and the token it minted is revoked at GitHub.
 func TestAGiveBackIsHandedTheProfilesValueForm(t *testing.T) {
-	appBehind := proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "APP_KEY", Hosts: []string{"api.example.com"}}}}
+	appBehind := proxyrules.Rules{Names: []proxyrules.Binding{{Name: "APP_KEY", Kind: "example"}}}
 	for form, profile := range map[string]string{
 		githubname.ValueInstallations: policytest.AppProfile("APP_KEY"),
 		githubname.ValueToken:         `{"name": "APP_KEY", "github": {"accounts": ["` + standInOwner + `"], "permissions": {"metadata": "read"}, "value": "token"}}`,
 	} {
 		t.Run(form, func(t *testing.T) {
-			f := newGiveBackFixtureOf(t, appBehind, policytest.ProfilesFile(profile))
+			f := newGiveBackFixtureOf(t, appBehind, policytest.KindsFile(profile))
 			giveBack := f.GiveBacks[policy.TypeGitHubApp]
 			var forms []string
 			f.GiveBacks = map[string]requests.GiveBack{policy.TypeGitHubApp: func(ctx context.Context, name, value, given string) {

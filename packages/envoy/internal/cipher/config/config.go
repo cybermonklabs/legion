@@ -351,6 +351,17 @@ type Config struct {
 	// at a stand-in Google. For the broker's local stack alone: a production start, which is
 	// one with BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
 	AirlockTestGoogleTokenURL string
+	// BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL: the token exchange an anthropic-federation secret
+	// is minted at, in place of https://api.anthropic.com/v1/oauth/token, so a release of one
+	// mints at a stand-in Anthropic (cmd/dev-proxy-stands). For the broker's local stack alone: a
+	// production start, which is one with BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
+	AirlockTestAnthropicTokenURL string
+	// BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL: the origin the anthropic-federation minter reads
+	// a bound account's Google identity token at (IAM Service Account Credentials'
+	// generateIdToken), in place of https://iamcredentials.googleapis.com, so a release of one
+	// presents an identity token a stand-in IAM minted. For the broker's local stack alone: a
+	// production start, which is one with BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
+	AirlockTestIAMCredentialsURL string
 	// BROKER_AIRLOCK_TEST_DIAL_ALLOW: whitespace-separated <host>:<port> addresses the airlock
 	// proxy may dial although the address they resolve to is one it never dials - a loopback,
 	// cluster, link-local or private address. It is a list rather than a switch for loopback
@@ -1932,14 +1943,15 @@ func parseAirlockClusterRanges(value string) ([]netip.Prefix, error) {
 	return ranges, nil
 }
 
-// RequireAirlock is the check of the airlock's settings against the profiles the boot read, proxied
-// naming each profile that has a proxy block, in the file's order. A broker whose profiles hold a
-// proxy block but that cannot proxy would hold back the value of every name such a block names and
-// release nothing in its place, so with any such profile the three settings the proxy cannot run
-// without are required, the refusal naming the ones missing and the profiles that need them, and,
-// in a cluster, so are the cluster's own ranges, which no fixed rule of the proxy covers
-// (requireClusterRanges). With none, there is no proxy and nothing is required: a deployment that
-// serves GitHub Apps through profiles with no proxy block runs no airlock.
+// RequireAirlock is the check of the airlock's settings against the profiles file the boot read,
+// proxied naming what of it puts a credential behind the proxy: each kind it declares and each
+// dpop block, in the file's order (AirlockSubjects). A broker whose file declares a kind but that
+// cannot proxy would hold back the value of every secret tagged with that kind and release
+// nothing in its place, so with any of them the three settings the proxy cannot run without are
+// required, the refusal naming the ones missing and what needs them, and, in a cluster, so are the
+// cluster's own ranges, which no fixed rule of the proxy covers (requireClusterRanges). With none,
+// there is no proxy and nothing is required: a deployment that serves GitHub Apps through
+// profiles and declares no kind runs no airlock.
 func (c Config) RequireAirlock(proxied []string) error {
 	if len(proxied) == 0 {
 		return nil
@@ -1955,10 +1967,27 @@ func (c Config) RequireAirlock(proxied []string) error {
 		}
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("BROKER_PROFILES_FILE gives %s a proxy block, so the broker runs the airlock's proxy for them and needs %s; missing %s",
+		return fmt.Errorf("BROKER_PROFILES_FILE declares %s, so the broker runs the airlock's proxy for them and needs %s; missing %s",
 			strings.Join(proxied, ", "), strings.Join(airlockProxySettings, ", "), strings.Join(missing, ", "))
 	}
 	return requireClusterRanges(c.AirlockClusterRanges, c.kubernetesServiceHost)
+}
+
+// AirlockSubjects names what of the profiles file's rules (policy.Profiles.FileRules) puts a
+// credential behind the proxy, for RequireAirlock and the boot's choice to bind a proxy port:
+// "kind <name>" for each kind, then "dpop block <profile>" for each dpop block, in the file's
+// order. A file of neither answers nil.
+func AirlockSubjects(rules proxyrules.Rules) []string {
+	var subjects []string
+	for _, k := range rules.Kinds {
+		subjects = append(subjects, "kind "+k.Name)
+	}
+	for _, b := range rules.Names {
+		if b.Inline != nil {
+			subjects = append(subjects, "dpop block "+b.Name)
+		}
+	}
+	return subjects
 }
 
 // requireClusterRanges is the check of BROKER_AIRLOCK_CLUSTER_RANGES against the cluster a broker
@@ -2113,55 +2142,55 @@ func PrivateUpstreamDialable(upstream PrivateUpstream, dialAllow []string) error
 }
 
 // profilesFileSetting is BROKER_PROFILES_FILE, which the dpop block checks name as the file the
-// proxy blocks come from.
+// dpop blocks come from.
 const profilesFileSetting = "BROKER_PROFILES_FILE"
 
-// MintedEntryRules is every rule of the proxy blocks of kind dpop that the profiles file alone
-// decides, over its proxy blocks (policy.Profiles.ProxyRules). Each such block is a capability the
-// broker mints and holds (requests.MintedKind), whose token goes to every host the block binds,
-// with a DPoP proof of the broker's own key. So each binds one exact host and no "*." name, has a
-// non-empty allow list, the one list that holds every request of its grant, none of whose entries
-// names the path prefix "" or "/", which is every path; is carried in the Authorization header
-// alone (a block naming no headers carries the default, Authorization); and
-// no block of another kind binds its host (proxyrules.HostBound, so a "*." block over it counts),
-// so that every request that reaches that host through the proxy is a minted grant's, held to its
-// allow list. Two dpop blocks may share one host, each its own capability. The boot runs it through
-// ProxyMintedRules, and `profiles check` runs it whatever its arguments.
+// MintedEntryRules is every rule of the dpop blocks that the profiles file alone decides, over its
+// rules (policy.Profiles.FileRules), where each dpop block is a binding with an inline rule of way
+// dpop. Each such block is a capability the broker mints and holds (requests.MintedKind), whose
+// token goes to every host the block binds, with a DPoP proof of the broker's own key. So each
+// binds one exact host and no "*." name, has a non-empty allow list, the one list that holds every
+// request of its grant, none of whose entries names the path prefix "" or "/", which is every
+// path; is carried in the Authorization header alone (a block naming no headers carries the
+// default, Authorization); and no kind binds its host (proxyrules.HostBound, so a "*." host over it
+// counts), so that every request that reaches that host through the proxy is a minted grant's,
+// held to its allow list. Two dpop blocks may share one host, each its own capability. The boot
+// runs it through ProxyMintedRules, and `profiles check` runs it whatever its arguments.
 func MintedEntryRules(rules proxyrules.Rules) error {
-	for _, entry := range rules.Secrets {
-		if entry.Kind != proxyrules.KindDPoP {
+	for _, entry := range rules.Names {
+		block := entry.Inline
+		if block == nil || entry.Way != proxyrules.WayDPoP {
 			continue
 		}
 		switch {
-		case len(entry.Hosts) != 1 || strings.HasPrefix(entry.Hosts[0], "*."):
-			return fmt.Errorf("the profile %s of %s is of kind %s and must bind one exact host and no `*.` name, since the token the broker mints for its grant goes to every host it binds; it binds %q", entry.Name, profilesFileSetting, proxyrules.KindDPoP, entry.Hosts)
-		case len(entry.Allow) == 0:
-			return fmt.Errorf("the profile %s of %s is of kind %s and must have a non-empty allow list, the one list that holds every request of its grant, and it has none", entry.Name, profilesFileSetting, proxyrules.KindDPoP)
+		case len(block.Hosts) != 1 || strings.HasPrefix(block.Hosts[0], "*."):
+			return fmt.Errorf("the profile %s of %s is of kind %s and must bind one exact host and no `*.` name, since the token the broker mints for its grant goes to every host it binds; it binds %q", entry.Name, profilesFileSetting, proxyrules.WayDPoP, block.Hosts)
+		case len(block.Allow) == 0:
+			return fmt.Errorf("the profile %s of %s is of kind %s and must have a non-empty allow list, the one list that holds every request of its grant, and it has none", entry.Name, profilesFileSetting, proxyrules.WayDPoP)
 		}
-		for _, allow := range entry.Allow {
+		for _, allow := range block.Allow {
 			if allow.PathPrefix == "" || allow.PathPrefix == "/" {
-				return fmt.Errorf("the profile %s of %s is of kind %s and allows %s on the path prefix %q, which is every path of its host: each allow entry names the routes its grant needs", entry.Name, profilesFileSetting, proxyrules.KindDPoP, allow.Method, allow.PathPrefix)
+				return fmt.Errorf("the profile %s of %s is of kind %s and allows %s on the path prefix %q, which is every path of its host: each allow entry names the routes its grant needs", entry.Name, profilesFileSetting, proxyrules.WayDPoP, allow.Method, allow.PathPrefix)
 			}
 		}
-		if headers := entry.HeaderNames(); len(headers) != 1 || fold.ASCII(headers[0]) != "authorization" {
-			return fmt.Errorf("the profile %s of %s is of kind %s and must be carried in the Authorization header alone, and it names the headers %q", entry.Name, profilesFileSetting, proxyrules.KindDPoP, headers)
+		if headers := block.HeaderNames(); len(headers) != 1 || fold.ASCII(headers[0]) != "authorization" {
+			return fmt.Errorf("the profile %s of %s is of kind %s and must be carried in the Authorization header alone, and it names the headers %q", entry.Name, profilesFileSetting, proxyrules.WayDPoP, headers)
 		}
-		host := fold.ASCII(entry.Hosts[0])
-		for _, other := range rules.Secrets {
-			if other.Kind != proxyrules.KindDPoP && proxyrules.HostBound(other.Hosts, host) {
-				return fmt.Errorf("the profile %s of %s binds %s, the host of the profile %s of kind %s: no block of another kind may bind a host a minted capability's token goes to, so that the minted grant's allow list holds every request there", other.Name, profilesFileSetting, host, entry.Name, proxyrules.KindDPoP)
+		host := fold.ASCII(block.Hosts[0])
+		for _, kind := range rules.Kinds {
+			if proxyrules.HostBound(kind.Hosts, host) {
+				return fmt.Errorf("the kind %s of %s binds %s, the host of the profile %s of kind %s: no kind may bind a host a minted capability's token goes to, so that the minted grant's allow list holds every request there", kind.Name, profilesFileSetting, host, entry.Name, proxyrules.WayDPoP)
 			}
 		}
 	}
 	return nil
 }
 
-// ProxyMintedRules is the start check of the proxy blocks of kind dpop: MintedEntryRules, then
-// the private destinations' part (BROKER_PROXY_PRIVATE_UPSTREAM). cmd/cipherd runs it on every
-// broker with a profiles file, whatever capabilities it grants itself: every broker with an
-// airlock port serves every minted grant of the database it shares and mints that grant's token,
-// so a pod that grants none still sends a token, and a DPoP proof of its own key, to every host a
-// dpop block binds.
+// ProxyMintedRules is the start check of the dpop blocks: MintedEntryRules, then the private
+// destinations' part (BROKER_PROXY_PRIVATE_UPSTREAM). cmd/cipherd runs it on every broker with a
+// profiles file, whatever capabilities it grants itself: every broker with an airlock port serves
+// every minted grant of the database it shares and mints that grant's token, so a pod that grants
+// none still sends a token, and a DPoP proof of its own key, to every host a dpop block binds.
 //
 // A dpop block is held to the one place its service is named. No broker setting names a service's
 // public URL; a private destination names the service's address inside the cluster, and the proxy
@@ -2178,22 +2207,22 @@ func ProxyMintedRules(rules proxyrules.Rules, upstreams []PrivateUpstream) error
 	for _, upstream := range upstreams {
 		bound[upstream.Host] = false
 	}
-	for _, entry := range rules.Secrets {
-		if entry.Kind != proxyrules.KindDPoP {
+	for _, entry := range rules.Names {
+		if entry.Inline == nil || entry.Way != proxyrules.WayDPoP {
 			continue
 		}
-		host := fold.ASCII(entry.Hosts[0])
+		host := fold.ASCII(entry.Inline.Hosts[0])
 		if _, named := bound[host]; !named {
 			if len(upstreams) == 0 {
-				return fmt.Errorf("the profile %s of %s is of kind %s and binds %s, and %s is unset: a dpop block's host must be a private destination's, the one setting that names where its service is, so the token the broker mints goes to that service's own address and nowhere a name resolves to", entry.Name, profilesFileSetting, proxyrules.KindDPoP, host, privateUpstreamSetting)
+				return fmt.Errorf("the profile %s of %s is of kind %s and binds %s, and %s is unset: a dpop block's host must be a private destination's, the one setting that names where its service is, so the token the broker mints goes to that service's own address and nowhere a name resolves to", entry.Name, profilesFileSetting, proxyrules.WayDPoP, host, privateUpstreamSetting)
 			}
-			return fmt.Errorf("the profile %s of %s is of kind %s and binds %s, which no entry of %s names: a dpop block's host must be a private destination's, so the token the broker mints goes to that service's own address and nowhere a name resolves to", entry.Name, profilesFileSetting, proxyrules.KindDPoP, host, privateUpstreamSetting)
+			return fmt.Errorf("the profile %s of %s is of kind %s and binds %s, which no entry of %s names: a dpop block's host must be a private destination's, so the token the broker mints goes to that service's own address and nowhere a name resolves to", entry.Name, profilesFileSetting, proxyrules.WayDPoP, host, privateUpstreamSetting)
 		}
 		bound[host] = true
 	}
 	for _, upstream := range upstreams {
 		if !bound[upstream.Host] {
-			return fmt.Errorf("%s names the host %s, and no profile of %s of kind %s binds it: a private destination takes the allowed requests of dpop blocks alone", privateUpstreamSetting, upstream.Host, profilesFileSetting, proxyrules.KindDPoP)
+			return fmt.Errorf("%s names the host %s, and no profile of %s of kind %s binds it: a private destination takes the allowed requests of dpop blocks alone", privateUpstreamSetting, upstream.Host, profilesFileSetting, proxyrules.WayDPoP)
 		}
 	}
 	return nil
@@ -2443,6 +2472,10 @@ func Load(getenv func(string) string) (Config, error) {
 	// whatever the rules file says, since the two minter bases are read with no airlock at all.
 	// cmd/cipherd refuses every one of them on a production start; what is refused here is a
 	// value the broker could not act on.
+	// The anthropic-federation minter's two stand-ins are read as given, as the GitHub and Google
+	// minter bases above are: a URL no exchange can be made at fails that release, at the minter.
+	cfg.AirlockTestAnthropicTokenURL = strings.TrimSpace(getenv("BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL"))
+	cfg.AirlockTestIAMCredentialsURL = strings.TrimSpace(getenv("BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL"))
 	var testSwitchErr error
 	if cfg.AirlockTestDialAllow, testSwitchErr = parseAirlockTestDialAllow(getenv("BROKER_AIRLOCK_TEST_DIAL_ALLOW")); testSwitchErr != nil {
 		return Config{}, testSwitchErr

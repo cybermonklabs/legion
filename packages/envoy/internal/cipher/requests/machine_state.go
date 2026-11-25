@@ -52,7 +52,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/store"
@@ -191,6 +190,11 @@ type SecretDecision struct {
 	// The request records it in request_secrets.airlock_digest, and a release ends the grant once
 	// it differs from the one the policy holds then.
 	ProfileDigest string `json:"-"`
+	// Kind is the hosts and headers of the kind the name was behind when the request was decided
+	// (reachOf), nil for a name behind no kind. The request records it in
+	// request_secrets.airlock_kind, and a release ends the grant once the kind the policy holds
+	// then has lost one of them (kindLost).
+	Kind *kindReach `json:"-"`
 	// Target is the target the request's signed locations narrow this name's GitHub profile to
 	// (record.AuthorizationDetail.Target), the zero record.Target for none. The request records
 	// it in request_secrets.target_account and target_repositories, which the release mints for.
@@ -351,12 +355,6 @@ type Machine struct {
 	// which a release calls for each such value it read and hands to nobody (giveBack, heldBack,
 	// release.go). A type with none, and a Machine with no map, leaves such a value to lapse.
 	GiveBacks map[string]GiveBack
-	// Airlock is the airlock's rules as the broker read them at boot: the proxy blocks of the
-	// profiles file (BROKER_PROFILES_FILE, policy.Profiles.ProxyRules), and the zero value for a
-	// deployment with no profiles file. A granted name the rules name is released as placeholders
-	// rather than as its value (Values), and the proxy port puts the real value back into the
-	// requests the entry allows.
-	Airlock proxyrules.Rules
 	// AirlockProxyURL is BROKER_AIRLOCK_PROXY_URL, the URL a command reaches that port at, and
 	// AirlockCACertificate the PEM certificate of its certificate authority
 	// (BROKER_AIRLOCK_CA_CERT_FILE, read at boot). Every release that holds a name back carries
@@ -1319,7 +1317,7 @@ func (m *Machine) evaluate(set *policy.Set, names []string, requester policy.Req
 			}
 			e.approver = d.Approver
 		}
-		e.decisions = append(e.decisions, SecretDecision{Name: name, Decision: d.Outcome, Source: d.Source, ProfileDigest: set.Secrets[name].ProfileDigest})
+		e.decisions = append(e.decisions, SecretDecision{Name: name, Decision: d.Outcome, Source: d.Source, ProfileDigest: set.Secrets[name].ProfileDigest, Kind: reachOf(set, name)})
 	}
 	switch {
 	case denied:
@@ -1459,8 +1457,8 @@ func (m *Machine) insertRequest(ctx context.Context, tx pgx.Tx, r newRequest) er
 		return err
 	}
 	for _, d := range r.decisions {
-		if _, err := tx.Exec(ctx, `insert into request_secrets (request_id, name, decision, source, airlock_digest, target_account, target_repositories) values ($1,$2,$3,$4,$5,$6,$7)`,
-			r.id, d.Name, d.Decision, d.Source, d.ProfileDigest, nullable(d.Target.Account), d.Target.Repositories); err != nil {
+		if _, err := tx.Exec(ctx, `insert into request_secrets (request_id, name, decision, source, airlock_digest, airlock_kind, target_account, target_repositories) values ($1,$2,$3,$4,$5,$6::jsonb,$7,$8)`,
+			r.id, d.Name, d.Decision, d.Source, d.ProfileDigest, d.Kind.column(), nullable(d.Target.Account), d.Target.Repositories); err != nil {
 			return err
 		}
 	}
@@ -2761,12 +2759,14 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 }
 
 // decidedUnder records, for each name of a request an approval is granting, the fingerprint of
-// the profile that name is served as in set, the policy snapshot the approval was made against. A
-// request freezes each name's fingerprint when it is created (insertRequest), which is the whole
-// of it for a request the policy grants or denies at once; one that waits for a person — up to
-// PendingTTL, half a day — can be approved across a profiles roll, and what a release compares
-// against must be the entry the approval was given under, else the grant the person just made
-// ends on its first release with a reason that is not true (checkRelease's per-name comparison).
+// the profile that name is served as in set, the policy snapshot the approval was made against,
+// and the hosts and headers of the kind it is behind there (reachOf). A request freezes both for
+// each name when it is created (insertRequest), which is the whole of it for a request the policy
+// grants or denies at once; one that waits for a person — up to PendingTTL, half a day — can be
+// approved across a profiles roll, and what a release compares against must be the entry and the
+// kind the approval was given under, else the grant the person just made ends on its first release
+// with a reason that is not true (checkRelease's per-name comparisons), or a kind narrowed after
+// the request but before the approval leaves the grant wider than what the person approved.
 //
 // The requests row's rules_version is left as the request was written under, and is not moved
 // to this snapshot: it is what makes a release re-check the whole grant (checkRelease), and the
@@ -2775,19 +2775,20 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 // Moving it would skip the re-check for exactly those approvals. A version left behind only
 // makes the re-check run more often than it must, and the fingerprint it compares is this one.
 //
-// One statement over every name of the request, by name, since every row's digest is read from
-// the one snapshot: a stored secret served by its own name records "", as it does at creation.
-// The column keeps its name, airlock_digest, from before profiles. granted is the request's names,
-// read once by the approve path that calls this.
+// One statement over every name of the request, by name, since every row is read from the one
+// snapshot: a stored secret served by its own name behind no kind records "" and no kind, as it
+// does at creation. The column keeps its name, airlock_digest, from before profiles. granted is
+// the request's names, read once by the approve path that calls this.
 func decidedUnder(ctx context.Context, tx pgx.Tx, requestID string, granted []requestedSecret, set *policy.Set) error {
 	names := make([]string, len(granted))
 	digests := make([]string, len(granted))
+	kinds := make([]*string, len(granted))
 	for i, g := range granted {
-		names[i], digests[i] = g.name, set.Secrets[g.name].ProfileDigest
+		names[i], digests[i], kinds[i] = g.name, set.Secrets[g.name].ProfileDigest, reachOf(set, g.name).column()
 	}
-	_, err := tx.Exec(ctx, `update request_secrets s set airlock_digest = v.digest
-		from unnest($2::text[], $3::text[]) as v(name, digest)
-		where s.request_id = $1 and s.name = v.name`, requestID, names, digests)
+	_, err := tx.Exec(ctx, `update request_secrets s set airlock_digest = v.digest, airlock_kind = v.kind::jsonb
+		from unnest($2::text[], $3::text[], $4::text[]) as v(name, digest, kind)
+		where s.request_id = $1 and s.name = v.name`, requestID, names, digests, kinds)
 	return err
 }
 

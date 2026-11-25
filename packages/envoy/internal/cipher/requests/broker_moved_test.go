@@ -25,7 +25,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 )
@@ -128,16 +127,14 @@ func requireJudgedAlone(t *testing.T, watched *judged, id string) {
 }
 
 // watchJudgeOf makes each of names a key the model judge decides on m — a judge tag of 900
-// seconds, as its owner's retag writes it, beside a proxy entry binding a host — and watches the
-// judge. Create hands the judge only a request whose every key needing a decision is such a key
-// (judgeDecides); every other pending request is a person's from the start, so a test that reads
-// whether the new request was judged names its keys here. A request m wrote before the call,
-// while m ran no judge, is a person's.
+// seconds, as its owner's retag writes it — and watches the judge. Create hands the judge only a
+// request whose every key needing a decision is such a key (judgeDecides); every other pending
+// request is a person's from the start, so a test that reads whether the new request was judged
+// names its keys here. A request m wrote before the call, while m ran no judge, is a person's.
 func watchJudgeOf(t *testing.T, m *Machine, names ...string) *judged {
 	t.Helper()
 	local := m.Secrets.(secrets.AWS).Client.(*secrets.Local)
 	for _, name := range names {
-		m.Airlock.Secrets = append(m.Airlock.Secrets, proxyrules.SecretRule{Name: name, Hosts: []string{"api.example"}})
 		policytest.JudgeTags(t, local, m.Policy, name, 900, "")
 	}
 	return watchJudge(m)
