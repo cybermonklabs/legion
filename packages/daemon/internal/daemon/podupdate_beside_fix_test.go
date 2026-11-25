@@ -253,16 +253,25 @@ func TestAnUpdateRoundBesideARunningFixAsksEachRoleToPushToItsOwnBranch(t *testi
 	})
 }
 
-// startStanding writes the start of the step the rig's issue stands in through the engine
-// (workflow.(*Engine).StartStepRecord), in a transaction opened and settled as a fact's is: the
-// start a move into that step writes, which binds that step to its own branch beside a fix that
-// reads or runs.
+// startStanding writes the start of the step the rig's issue stands in, by the engine's own path
+// for that step, in a transaction opened and settled as a fact's is. The owner's acceptance, which
+// starts no worker, starts through its named start (workflow.(*Engine).StartStepRecord), as the
+// move into accepting writes it. A phase worker's step starts through the worker's start
+// (StartPromotedWorker), which raises the worker's entry and starts the run of its step as a
+// transition's start does (enter). Each binds that step to its own branch beside a fix that reads
+// or runs.
 func (r *podUpdateRig) startStanding() {
 	r.t.Helper()
 	issue := r.issue()
 	r.inTx("start the step of "+string(issue.Phase), func(ctx context.Context, tx pgx.Tx) error {
 		fact := r.engine.OpenFact(ctx)
-		if err := r.engine.StartStepRecord(fact, tx, issue); err != nil {
+		var err error
+		if issue.Phase == phase.Accepting {
+			err = r.engine.StartStepRecord(fact, tx, issue)
+		} else {
+			err = r.engine.StartPromotedWorker(fact, tx, issue, workflow.RoleFor(issue.Phase))
+		}
+		if err != nil {
 			return err
 		}
 		return r.engine.SettleFact(fact, tx)
