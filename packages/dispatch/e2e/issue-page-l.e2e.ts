@@ -11,6 +11,7 @@ import {
 import { DWELL_MS } from "../web/src/features/shell/useDwell";
 import {
   answerAsk,
+  createComment,
   createIssue,
   createIssueArtifact,
   createProject,
@@ -531,6 +532,52 @@ test("a reply on a resolved ask is drawn under the ask", async ({ browser }) => 
     await expect(nodeRow(page, reply.id).first()).toContainText(
       "Still worth a word after it was resolved."
     );
+  });
+});
+
+// The tester's red row (round 15), R4 and c-use step 4: Reply on an agent's reply writes a mention
+// of that agent into the box (`replyPrefill`), and a person types their words at once after it,
+// as a person does. Dispatch stores those words as the reply, and the outline draws it under the
+// agent's reply, with no refusal in the box. A send that `fill`s the field writes over the
+// mention, so the rows above never type after it.
+test("a reply typed at once after the mention the box writes for an agent is stored and drawn under the agent's reply", async ({
+  browser,
+}) => {
+  await phase(browser, seedReplyNesting, async (page, seeded) => {
+    const agents = await createComment(
+      seeded.key,
+      { body: "An agent's answer to the first entry.", reply_to: seeded.head },
+      { actor: { id: "e2e-nesting-asker", kind: "session" }, as: "agent" }
+    );
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await unfoldEveryBranch(page);
+    await openEveryDeeperBranch(page);
+    const row = await focusRow(page, agents.id);
+    await rowAct(row, "reply").click();
+    const field = composerField(page).first();
+    await expect(field, "Reply on the agent's reply put no caret in the box").toBeFocused();
+    await expect(field, "the box wrote no mention of the agent").toHaveValue(
+      /dispatch:\/\/agent\/e2e-nesting-asker/
+    );
+    const words = "Typed at once after the mention the box wrote.";
+    await page.keyboard.press("End");
+    await page.keyboard.type(words);
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(
+        async () =>
+          (await listComments(seeded.key)).find((comment) => comment.body.includes(words))?.id ??
+          null,
+        { message: "Dispatch stored no reply holding the words typed at once after the mention" }
+      )
+      .not.toBeNull();
+    await expect(
+      composer(page).getByRole("alert"),
+      "the box shows a refusal of the reply typed at once after the mention"
+    ).toHaveCount(0);
+    const reply = (await listComments(seeded.key)).find((comment) => comment.body.includes(words));
+    await expect.poll(() => parentOfRow(page, reply?.id ?? "")).toBe(agents.id);
   });
 });
 
