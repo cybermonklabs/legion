@@ -31,12 +31,11 @@ const specWriterCheck = "api.refuseSpecWriter"
 const specWriterGuardPkg = "api"
 
 // specWriterSinks are the writes of the document service that make or change a version of a
-// document, by method name: the nine the spec's Design names, with KeepAskBlockInStep in place of
-// its SetBlockAttributes, which KeepAskBlockInStep replaced as the answer, resolve and decline
-// routes' write of an ask's state into the ask's block; and the accept and the reject of a
-// suggestion, which change a document's text too (plan, "Where the plan departs from the spec's
-// words"). A call names one through the interface the handlers hold (docs.API) or through the
-// service itself (docs.Service), and either is a call of the sink.
+// document, by method name: the nine the spec's Design names, with KeepAskBlockInStep, the answer,
+// resolve and decline routes' write of an ask's state into the ask's block, among them; and the
+// accept and the reject of a suggestion, which change a document's text too (plan, "Where the plan
+// departs from the spec's words"). A call names one through the interface the handlers hold
+// (docs.API) or through the service itself (docs.Service), and either is a call of the sink.
 var specWriterSinks = []string{
 	"AcceptSuggestion", "ApplyOps", "KeepAskBlockInStep", "NamedVersion", "RebuildDocument",
 	"RejectSuggestion", "ReplaceText", "SeedText", "SetAskBlockText", "SnapshotVersion",

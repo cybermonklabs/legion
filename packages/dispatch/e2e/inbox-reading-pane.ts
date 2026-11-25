@@ -18,10 +18,10 @@ import {
   createProject,
   createProjectDocument,
   editArtifact,
-  getArtifact,
   getArtifactText,
   getInbox,
   handAskOn,
+  latestVersion,
   listMyReplies,
   patchIssue,
   requestApproval,
@@ -431,9 +431,7 @@ export async function seedOpenPage(): Promise<OpenPageSeed> {
   // passed (`DISPATCH_TEST_SETTLE_DELAY`, `e2e/run-server.sh`). The live text's markdown holds no
   // ask's state, so the seed waits until the text answers the ask answered in its `asks`, read
   // from the ask, and until a version past the newest one before the answer is saved.
-  const newestTalkVersion = async () =>
-    Math.max(...((await getArtifact(talk.id)).versions ?? []).map(({ number }) => number));
-  const beforeAnswer = await newestTalkVersion();
+  const beforeAnswer = await latestVersion(talk.id);
   await answerAsk(
     answered.id,
     { expected_edited_at: null, selected: [ANSWERED_OPTIONS[0]] },
@@ -445,7 +443,7 @@ export async function seedOpenPage(): Promise<OpenPageSeed> {
       return asks?.find((entry) => entry.block_id === OPEN_ANSWERED)?.state;
     }, INDEX_PROBE)
     .toBe("answered");
-  await expect.poll(newestTalkVersion, INDEX_PROBE).toBeGreaterThan(beforeAnswer);
+  await expect.poll(() => latestVersion(talk.id), INDEX_PROBE).toBeGreaterThan(beforeAnswer);
 
   const quoted = await createAsk(
     issue.key,

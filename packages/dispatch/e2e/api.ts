@@ -927,6 +927,12 @@ export function getArtifact(id: string, options: ApiOptions = {}) {
   return get("/api/v1/artifacts/{id}", { params: { id } }, options);
 }
 
+/** The number of the newest version of the document `id`, or `-Infinity` where it holds none. */
+export async function latestVersion(id: string): Promise<number> {
+  const artifact = await getArtifact(id);
+  return Math.max(...(artifact.versions ?? []).map((version) => version.number));
+}
+
 /**
  * `POST /api/v1/artifacts/{id}/approval-requests`: the request that asks a person to approve the
  * document's latest settled version, with an optional summary of what they are approving.

@@ -629,8 +629,9 @@ func (s *Service) warmFork(write *liveWrite, live *crdt.Doc) (*crdt.Doc, error) 
 
 // coldFork returns the fork of a write to a document no room holds, or whose room stands behind
 // head (readFork): the stored document, which is all of it then. It loads no room, which would hold
-// a second copy of the document for as long as the write runs; the room loads when the
-// write is published, from the store, which by then holds the write. A browser's room load takes no
+// a second copy of the document for as long as the write runs, and the publish loads none
+// (publishLiveWrite): a room that loads later loads from the store, which by then holds the
+// write. A browser's room load takes no
 // lock the write holds (onLoadDocument), so a room can load while this reads the store: a room
 // found once the read is done, and not behind head, is forked from instead (warmFork), and the copy
 // read from the store is dropped undecoded, so the document is never held both in a room and in a
@@ -925,9 +926,9 @@ func (s *Service) publishLiveWrite(write *liveWrite) {
 	if s.beforePublish != nil {
 		s.beforePublish(write)
 	}
-	// Committed, the write has no more use for its fork, so the fork goes before the publish,
-	// which loads the room when no room holds the document (coldFork). The room's shadow keeps it
-	// (newShadow).
+	// Committed, the write has no more use for its fork, so the fork goes before the publish. The
+	// publish loads no room: where no room holds the document, it schedules the settlement of the
+	// write's updates and returns (coldFork). The room's shadow keeps the fork (newShadow).
 	write.releaseFork()
 	if !s.roomHeld(write.artifactID) {
 		if len(write.updates) > 0 {
