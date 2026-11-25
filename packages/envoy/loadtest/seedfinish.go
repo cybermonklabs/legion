@@ -88,11 +88,7 @@ type coverageReader interface {
 //
 // The embedder's identity, place and model are Dispatch's words, or the words of whatever answers
 // in its place, which can echo the read's bearer or quote a URL with a credential in it. The gate
-// decides only whether each is null, and its record (coverageRecord) prints them. So the body is
-// decoded once, with those three members held as the rule reads them with the read's record
-// (redact.RemoteText, which redact.Answer.Decode holds so) behind a pointer each, which is nil
-// for the null a deployment with no embedder answers; the report this answers holds each as that
-// reading (shownEmbedder), since the model type the gate's readers share holds a plain string.
+// decides only whether each is null, and its record (coverageRecord) prints them.
 type dispatchCoverage struct{ a *api }
 
 func (c dispatchCoverage) readCoverage(ctx context.Context) (model.SearchCoverage, error) {
