@@ -601,16 +601,21 @@ function holdLandedPlace(target: string, frames: number): () => void {
       claim?.();
       claim = undefined;
     };
+    // The hold moves Details' box alone, never the page under it, and marks each move its own.
+    const own = ownScrollMark();
+    const scrollOwn = (by: number) => {
+      const before = scroller.scrollTop;
+      scroller.scrollTop += by;
+      own.move(before, scroller.scrollTop);
+    };
     // A focused element no taller than the view is brought into it before its top is kept, as
     // this function's doc states: the opener brings the control's row into the view, not the
-    // control. One taller than the view is left where it is.
-    const own = ownScrollMark();
+    // control. It comes in by its top from above the view and by its foot from below it. One
+    // taller than the view is left where it is.
     const landing = control.getBoundingClientRect();
     const view = scroller.getBoundingClientRect();
     if (landing.height <= view.height && (landing.top < view.top || landing.bottom > view.bottom)) {
-      const before = scroller.scrollTop;
-      control.scrollIntoView({ block: "nearest" });
-      own.move(before, scroller.scrollTop);
+      scrollOwn(landing.top < view.top ? landing.top - view.top : landing.bottom - view.bottom);
     }
     keepTop();
     // What of the box's content around the control is watched, brought up to that content as it
@@ -629,10 +634,7 @@ function holdLandedPlace(target: string, frames: number): () => void {
       watch();
       if (kept === null) return;
       const drift = control.getBoundingClientRect().top - kept;
-      if (drift === 0) return;
-      const before = scroller.scrollTop;
-      scroller.scrollTop += drift;
-      own.move(before, scroller.scrollTop);
+      if (drift !== 0) scrollOwn(drift);
     });
     const scrolled = () => {
       if (!own.take(scroller.scrollTop)) keepTop();
