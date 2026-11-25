@@ -1040,8 +1040,7 @@ func (e *Engine) drawExperiments(ctx context.Context, tx pgx.Tx, issue string) e
 // reads it). Admitted is the architect's own phase (phase.RoleFor), which completes nothing
 // (handoff), and it comes before every phase a worker works, so no worker's phase there is one the
 // issue moved on from: the guard keeps the refusal a completion at admitted had while no role was
-// named for that phase.
-// The two holds of an owner's plan are read where their
+// named for that phase. The two holds of an owner's plan are read where their
 // issue stands (record.StandsAt), so each report of a run an event ended before the hold is taken
 // as it is without the hold. A parent held for its children stands at its retro: the pass of its
 // last step moved it there in place of the retro, as an approval moves an issue into accepting, so

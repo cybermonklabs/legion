@@ -2608,7 +2608,7 @@ export const LegionTaskStopRequest = z.strictObject({
  * issue's phase for a fieldless `handoff_complete`; a named check report reads no record.
  * `phase-reminder.ts` and `pi-legion/src/stall-evidence.ts` read the architect's claim state.
  * The controller's `read_state` summary (`pi-legion/src/tools.ts`) reads each issue's status, hold
- * reason, slot, design gate, and the spec step's entry in its gated steps (its step, status and
+ * reason, slot and design gate, and the spec step's entry in its gated steps (its step, status and
  * basis). It also reads the state and both turn times of the architect's claim and every worker's
  * claim.
  * The record route and the state's `issues{}` answer the same node, so the read set below names
