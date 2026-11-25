@@ -777,10 +777,10 @@ func readReport(t *testing.T, workspace string, pid int) map[string]any {
 	return got.Report
 }
 
-// sweepReport is the next report on observations. Observe closes its channel when its context
+// awaitSweepReport is the next report on observations. Observe closes its channel when its context
 // ends, and testwait.Context ends at the moment a wait gives up, so a closed channel is a sweep
 // that never came, said so, not a report of zero.
-func sweepReport(t *testing.T, what string, observations <-chan runtime.Observation) runtime.Observation {
+func awaitSweepReport(t *testing.T, what string, observations <-chan runtime.Observation) runtime.Observation {
 	t.Helper()
 	type read struct {
 		obs  runtime.Observation
@@ -1332,7 +1332,7 @@ func TestRealTmuxUncertainOnABrokenSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := range 2 {
-		if obs := sweepReport(t, fmt.Sprintf("sweep %d's report", i), observations); obs.Kind != runtime.Uncertain || obs.Locator.Incarnation != loc.Incarnation {
+		if obs := awaitSweepReport(t, fmt.Sprintf("sweep %d's report", i), observations); obs.Kind != runtime.Uncertain || obs.Locator.Incarnation != loc.Incarnation {
 			t.Errorf("sweep %d reported %+v, want uncertain", i, obs)
 		}
 	}
@@ -1505,7 +1505,7 @@ func TestRealTmuxReconcileOrphans(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if obs := sweepReport(t, "the restarted daemon's sweep to report", observations); obs.Kind != runtime.Alive || obs.Locator.Incarnation != live.Incarnation {
+	if obs := awaitSweepReport(t, "the restarted daemon's sweep to report", observations); obs.Kind != runtime.Alive || obs.Locator.Incarnation != live.Incarnation {
 		t.Errorf("the restarted daemon's sweep reported %+v, want the known pane alive", obs)
 	}
 }
@@ -1523,7 +1523,7 @@ func TestRealTmuxObserveReportsGoneOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if obs := sweepReport(t, "the first sweep's report", observations); obs.Kind != runtime.Alive {
+	if obs := awaitSweepReport(t, "the first sweep's report", observations); obs.Kind != runtime.Alive {
 		t.Fatalf("first sweep = %+v, want alive", obs)
 	}
 	r.mustTmux("kill-pane", "-t", loc.Tmux.Pane)
