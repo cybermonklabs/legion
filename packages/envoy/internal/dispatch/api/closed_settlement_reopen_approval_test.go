@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A close withdraws the spec's approval request and a reopen restores it with the turn it had, so
@@ -183,16 +184,10 @@ func TestAReopenedApprovalRequestNamesTheVersionAClosedSettlementWrote(t *testin
 
 	seq := latestIssueSeq(t, database, issue.Key)
 	reopenAndSettle(t, f, issue.Key)
-	var restored carriedAsk
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
-		if restored = readCarriedAsk(t, handler, request.ID); restored.Approval.Version == closed {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("after the reopen the restored request names version %d (requested %d), want version %d, the one the closed issue's settlement wrote",
-				restored.Approval.Version, restored.Approval.RequestedVersion, closed)
-		}
-	}
+	restored := testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("the restored request to name version %d, the one the closed issue's settlement wrote (the request)", closed), func() (carriedAsk, bool) {
+		read := readCarriedAsk(t, handler, request.ID)
+		return read, read.Approval.Version == closed
+	})
 	if ask := readBlockAsk(t, handler, request.ID); ask.State != "open" || ask.WaitingOn != "agent" || restored.Approval.RequestedVersion != named {
 		t.Fatalf("restored request = %s waiting on %q requested at version %d, want open waiting on its agent, requested at %d, since version %d changed the text",
 			ask.State, ask.WaitingOn, restored.Approval.RequestedVersion, named, closed)

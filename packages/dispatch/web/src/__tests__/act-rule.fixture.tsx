@@ -63,7 +63,9 @@ test("an act inside a waitFor callback fails its row", async () => {
   const held = heldCount();
   render(<CountSetInWaitFor held={held} />);
   await waitFor(() => {
-    reactAct(() => {
+    // React's act over a synchronous callback has nothing to wait for: the row's verdict is the
+    // message the update draws.
+    void reactAct(() => {
       held.set(1);
     });
   });

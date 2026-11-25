@@ -135,6 +135,7 @@ var closedSupertags = []string{
 // store, fails here. A pointer is listed by its target's type as that type stands at each read,
 // and a pointer whose rows name its node by the targets its attribute node holds at that read.
 func TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt(t *testing.T) {
+	// Not parallel: it installs pmdoc's process-wide block schema.
 	database := storetest.Open(t)
 	ctx := context.Background()
 	pool := database.Pool
@@ -173,6 +174,7 @@ func TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt(t *testing.T) {
 // TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt holds a fresh one, and to leaving every
 // node and tuple the backfill wrote as it was.
 func TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema(t *testing.T) {
+	t.Parallel()
 	requireTheUnreleasedBelowTheBackfillAreTheFiles(t)
 	database := openAtTheBackfill(t)
 	ctx := context.Background()

@@ -419,7 +419,7 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
     // The server's own listener client, so the notice reaches the one this session already talks
     // to; Envoy off for the session leaves it undefined, the runner says so once at debug, and
     // the reminder keeps coming without a notice.
-    publisher: () => deps.publish,
+    publisher: async () => deps.publish,
     project: configuredValue(deps.env["LEGION_PROJECT"]),
     limits,
     log: deps.log,
