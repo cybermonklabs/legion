@@ -1410,7 +1410,7 @@ func main() {
 	evalStore := evals.New(database, documentService, broker, attributor)
 	// The first paint of every cut of the stored eval figures a move of a default repository or the
 	// rename pass above marked stale, folded before the server serves, so the first read of one
-	// after a restart or a deploy reads its stored figures inside R14's 150 ms rather than the fold
+	// after a restart or a deploy reads its stored figures inside R8's 150 ms rather than the fold
 	// of its day rows (evals.FoldFirstPaintsAtBoot): under the refresher's lease, which this process
 	// takes where no process holds it, and otherwise waiting for the process whose refresher pass
 	// holds it to fold them, bounded by firstPaintBootTimeout.

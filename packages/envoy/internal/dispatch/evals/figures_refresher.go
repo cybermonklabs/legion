@@ -239,14 +239,14 @@ func (r *refresh) refoldChanged(ctx context.Context, project string, spans map[s
 	return nil
 }
 
-// lockLogged takes the lock of each logged eval of entries (lockEvals), and answers whether it took
-// any: a computed eval's rows are the refresher's alone, whose passes the refresher's lease runs one
-// at a time, and a logged eval's rows are its readings writes' and its zero fill's too, which each
-// take its lock before they read or write a row. The fold that takes them has read its entries
-// before, and holds no transaction id while it waits; a register write that commits between the
-// two moves the eval's fold key, which a read compares, and logs the eval_versions change that
-// folds it again.
-func lockLogged(ctx context.Context, tx pgx.Tx, entries []Entry) (bool, error) {
+// lockLogged takes the lock of each logged eval of entries (lockEvals), and answers when it took
+// them, the zero time where entries hold no logged eval and it took none: a computed eval's rows
+// are the refresher's alone, whose passes the refresher's lease runs one at a time, and a logged
+// eval's rows are its readings writes' and its zero fill's too, which each take its lock before
+// they read or write a row. The fold that takes them has read its entries before, and holds no
+// transaction id while it waits; a register write that commits between the two moves the eval's
+// fold key, which a read compares, and logs the eval_versions change that folds it again.
+func lockLogged(ctx context.Context, tx pgx.Tx, entries []Entry) (time.Time, error) {
 	var logged []string
 	for _, entry := range entries {
 		if !entry.Definition.Computed() {
@@ -254,9 +254,21 @@ func lockLogged(ctx context.Context, tx pgx.Tx, entries []Entry) (bool, error) {
 		}
 	}
 	if len(logged) == 0 {
-		return false, nil
+		return time.Time{}, nil
 	}
-	return true, lockEvals(ctx, tx, logged)
+	if err := lockEvals(ctx, tx, logged); err != nil {
+		return time.Time{}, err
+	}
+	return time.Now(), nil
+}
+
+// heldUntil is how long the locks lockLogged took at locked were held at end, 0 where locked is
+// the zero time: it took none.
+func heldUntil(locked, end time.Time) time.Duration {
+	if locked.IsZero() {
+		return 0
+	}
+	return end.Sub(locked)
 }
 
 // noteWalked records that the pass's walk of family wrote project's rows of day, whose figures it
@@ -636,20 +648,23 @@ func compareStaleCuts(a, b staleCut) int {
 // names, a refold begun before the move folds again, under the defaults it moved to, every eval
 // either move moved, and no mark the move set is cleared (refoldStaleCuts). A cut of a project
 // deleted since is left. In statements of at most statementBytes, each in the byte order of the
-// marks' keys, the order every writer of them takes them in.
-func markStaleCuts(ctx context.Context, tx pgx.Tx, marks map[staleCut][]string) error {
+// marks' keys, the order every writer of them takes them in. It answers the mark it wrote of each
+// cut, by cut, as readCutMark would read it in tx after it: its generation and its evals, its
+// first paint and its refold to begin (ready and next nil); a cut it left has none.
+func markStaleCuts(ctx context.Context, tx pgx.Tx, marks map[staleCut][]string) (map[staleCut]cutMark, error) {
 	cuts := slices.SortedFunc(maps.Keys(marks), compareStaleCuts)
 	joined := make(map[staleCut]string, len(marks))
 	for cut, evals := range marks {
 		joined[cut] = strings.Join(evals, ",")
 	}
+	written := make(map[staleCut]cutMark, len(marks))
 	size := func(cut *staleCut) int { return 3*4 + len(cut.project) + len(cut.repo) + len(joined[*cut]) }
 	for chunk := range statementChunks(cuts, paramBytes(3), size) {
 		projects, repos, evals := make([]string, len(chunk)), make([]string, len(chunk)), make([]string, len(chunk))
 		for index, cut := range chunk {
 			projects[index], repos[index], evals[index] = cut.project, cut.repo, joined[cut]
 		}
-		if _, err := tx.Exec(ctx, `
+		rows, err := tx.Query(ctx, `
 			insert into eval_figure_cuts_stale (project_key, repo, generation, ready_through, next_day, evals)
 			select given.project_key, given.repo, 1, null, null, string_to_array(given.evals, ',')
 			from unnest($1::text[], $2::text[], $3::text[]) with ordinality as given(project_key, repo, evals, sent)
@@ -658,11 +673,21 @@ func markStaleCuts(ctx context.Context, tx pgx.Tx, marks map[staleCut][]string) 
 			on conflict (project_key, repo) do update set generation = eval_figure_cuts_stale.generation + 1, ready_through = null, next_day = null,
 				evals = case when eval_figure_cuts_stale.evals is not null and excluded.evals is not null then array(
 					select id from unnest(eval_figure_cuts_stale.evals || excluded.evals) as id group by id order by id collate "C") end
-		`, projects, repos, evals); err != nil {
-			return fmt.Errorf("mark %d cuts of the stored figures stale: %w", len(chunk), err)
+			returning project_key, repo, generation, evals
+		`, projects, repos, evals)
+		if err != nil {
+			return nil, fmt.Errorf("mark %d cuts of the stored figures stale: %w", len(chunk), err)
+		}
+		var cut staleCut
+		var mark cutMark
+		if _, err := pgx.ForEachRow(rows, []any{&cut.project, &cut.repo, &mark.generation, &mark.evals}, func() error {
+			written[cut] = mark
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("mark %d cuts of the stored figures stale: %w", len(chunk), err)
 		}
 	}
-	return nil
+	return written, nil
 }
 
 // refoldBatchBudget is about how long the server's schedule holds one batch of a stale cut's refold
@@ -803,9 +828,7 @@ func FoldFirstPaint(ctx context.Context, pool *store.Pool, build, project, repo 
 		return FirstPaint{}, fmt.Errorf("commit the first paint of %s's stale cut of %s: %w", project, repo, err)
 	}
 	paint.Transaction = time.Since(began)
-	if !locked.IsZero() {
-		paint.LocksHeld = time.Since(locked)
-	}
+	paint.LocksHeld = heldUntil(locked, time.Now())
 	logFirstPaint(cut, paint)
 	return paint, nil
 }
@@ -820,13 +843,9 @@ func foldFirstPaint(ctx context.Context, tx pgx.Tx, scope figureScope, cut stale
 	if err != nil {
 		return FirstPaint{}, time.Time{}, err
 	}
-	var locked time.Time
-	took, err := lockLogged(ctx, tx, entries)
+	locked, err := lockLogged(ctx, tx, entries)
 	if err != nil {
 		return FirstPaint{}, time.Time{}, err
-	}
-	if took {
-		locked = time.Now()
 	}
 	paint, err := foldFirstPaintOf(ctx, tx, scope, cut, mark, entries)
 	return paint, locked, err
@@ -883,18 +902,11 @@ func owedFirstPaints(ctx context.Context, q delivery.Querier) ([]staleCut, error
 		return nil, fmt.Errorf("read the stale cuts of the stored figures: %w", err)
 	}
 	var owed []staleCut
-	scopes := map[string]*figureScope{}
+	scopeOf := figureScopeReader(ctx, q, "")
 	for _, one := range marks {
-		scope, read := scopes[one.cut.project]
-		if !read {
-			folded, ok, err := readFigureScope(ctx, q, "", one.cut.project)
-			if err != nil {
-				return nil, err
-			}
-			if ok {
-				scope = &folded
-			}
-			scopes[one.cut.project] = scope
+		scope, err := scopeOf(one.cut.project)
+		if err != nil {
+			return nil, err
 		}
 		if scope != nil && one.mark.owesFirstPaint(*scope) {
 			owed = append(owed, one.cut)
@@ -929,7 +941,7 @@ func (p FirstPaintsAtBoot) LogArgs() []any {
 // FoldFirstPaintsAtBoot has the first paint of every stale cut whose mark owes one folded before
 // the server serves (owedFirstPaints), so the first read after a restart or a deploy of a cut that
 // a move of a default repository or the boot's rename pass marked reads the stored figures of its
-// first paint, inside R14's 150 ms of database time, where a fold of the day rows of every eval of
+// first paint, inside R8's 150 ms of database time, where a fold of the day rows of every eval of
 // a marked cut took up to 435 ms at INFRA's size (the bench's k16 fallback, -stale-all). Where no
 // process holds the refresher's lease (RefresherLease) it takes it, as a refresher pass does
 // (duty.Exclusive with no period), reads the owed marks again under it and folds each one's first
@@ -997,9 +1009,10 @@ func FoldFirstPaintsAtBoot(ctx context.Context, pool *store.Pool, leases duty.Le
 
 // refoldStaleCuts folds again each stale cut to its end, whichever build's process runs it, the
 // cuts in the byte order of their keys, each batch a transaction of its own. It folds first the
-// first paint of each cut whose mark owes one (FoldFirstPaint), a batch of its own, so a first
-// paint of every marked cut reads the stored figures from that batch's commit on, and then each
-// cut's refold, batch after batch until its mark is cleared (refoldStaleBatch), newest end day
+// first paint of each cut whose mark owes one (owedFirstPaints, one read of the marks and of each
+// marked project's scope), a batch of its own that reads the mark again (FoldFirstPaint), so a
+// first paint of every marked cut reads the stored figures from that batch's commit on, and then
+// each cut's refold, batch after batch until its mark is cleared (refoldStaleBatch), newest end day
 // first. The pass's first batch of a refold folds one end day, short wherever the refold stands (a
 // pass that goes on after a stop begins where the mark left it, however far back in the cut's
 // history), and each later one as many as the schedule's budget (refresh.refoldBudget) holds at the
@@ -1025,8 +1038,15 @@ func (r *refresh) refoldStaleCuts(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("read the stale cuts of the stored figures: %w", err)
 	}
+	if len(cuts) == 0 {
+		return false, nil
+	}
+	owed, err := owedFirstPaints(ctx, pool)
+	if err != nil {
+		return false, err
+	}
 	folded := false
-	for _, cut := range cuts {
+	for _, cut := range owed {
 		if folded && r.yields(ctx) {
 			return true, nil
 		}
@@ -1125,10 +1145,7 @@ func (r *refresh) refoldStaleBatch(ctx context.Context, cut staleCut, days int) 
 		return staleBatch{}, err
 	}
 	batch.took = time.Since(began)
-	var held time.Duration
-	if !locked.IsZero() {
-		held = time.Since(locked)
-	}
+	held := heldUntil(locked, time.Now())
 	if batch.painted {
 		paint.Transaction, paint.LocksHeld = batch.took, held
 		logFirstPaint(cut, paint)
@@ -1161,12 +1178,8 @@ func refoldCut(ctx context.Context, tx pgx.Tx, scope figureScope, repo string, e
 	if err != nil {
 		return time.Time{}, false, time.Time{}, err
 	}
-	took, err := lockLogged(ctx, tx, entries)
-	if err != nil {
+	if locked, err = lockLogged(ctx, tx, entries); err != nil {
 		return time.Time{}, false, time.Time{}, err
-	}
-	if took {
-		locked = time.Now()
 	}
 	start, err := cutStart(ctx, tx, scope.project, repo)
 	if err != nil || start == nil {

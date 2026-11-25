@@ -197,14 +197,15 @@ func publishDefaults(ctx context.Context, tx pgx.Tx, build string, move *default
 	if err != nil {
 		return movePublished{}, err
 	}
-	if err := markStaleCuts(ctx, tx, marks); err != nil {
+	written, err := markStaleCuts(ctx, tx, marks)
+	if err != nil {
 		return movePublished{}, err
 	}
 	published := movePublished{projects: len(moved), cuts: len(marks)}
 	for _, evals := range marks {
 		published.evals += len(evals)
 	}
-	if published.paints, err = foldMarkedFirstPaints(ctx, tx, build, slices.SortedFunc(maps.Keys(marks), compareStaleCuts)); err != nil {
+	if published.paints, err = foldMarkedFirstPaints(ctx, tx, build, slices.SortedFunc(maps.Keys(marks), compareStaleCuts), written); err != nil {
 		return movePublished{}, err
 	}
 	if move.judgingWas != move.judge {
@@ -229,10 +230,7 @@ type movePublished struct {
 // long the transaction took, and how long it held the locks of the logged evals they fold, from
 // their one take (foldMarkedFirstPaints) to the commit, 0 where they took none.
 func (p movePublished) log(began, committed time.Time) {
-	var held time.Duration
-	if !p.paints.locked.IsZero() {
-		held = committed.Sub(p.paints.locked)
-	}
+	held := heldUntil(p.paints.locked, committed)
 	slog.Info("dispatch: the eval day-row refresher published a move of the default repositories", "projects", p.projects, "cuts_marked", p.cuts,
 		"evals", p.evals, "first_paints", p.paints.folded, "first_paint_ms", p.paints.took.Milliseconds(),
 		"transaction_ms", committed.Sub(began).Milliseconds(), "locks_held_ms", held.Milliseconds())
@@ -248,18 +246,20 @@ type markedPaints struct {
 }
 
 // foldMarkedFirstPaints folds, in tx, as build, the first paint of each of cuts, in their order, the
-// cuts the commit of a move of the default repositories marked stale in tx (publishDefaults): each
-// whose mark owes one, of a project whose figures are folded (readFigureScope), is folded under the
-// new defaults and recorded with its mark (foldFirstPaintOf), so a first paint of each reads the
-// stored figures from the move's commit on. It reads every such cut's mark and evals first, and
-// then takes the locks of the logged evals of all of them in one take (lockLogged, lockEvals: each
-// lock once, in the order of its key) before the first fold, the one order every writer of an
-// eval's rows takes eval locks in, so the commit waits on a writer that holds one of them rather
-// than holding one and waiting for another, whichever cuts the move marks and whatever evals their
-// marks name; the folds take none of them again. It is the one place the commit folds stored
-// figures: a fold of them after the commit, in a transaction of its own, is FoldFirstPaint of each
-// cut.
-func foldMarkedFirstPaints(ctx context.Context, tx pgx.Tx, build string, cuts []staleCut) (markedPaints, error) {
+// cuts the commit of a move of the default repositories marked stale in tx (publishDefaults), whose
+// marks are marks, those markStaleCuts wrote (a cut it left has none): each whose mark owes one, of
+// a project whose figures are folded (readFigureScope), is folded under the new defaults and
+// recorded with its mark (foldFirstPaintOf), so a first paint of each reads the stored figures from
+// the move's commit on. It reads every such cut's evals first, each project's in one read of the
+// evals the marks of all its owed cuts name (owedEvals), of which each cut takes those its mark
+// names (entriesNamed), and then takes the locks of the logged evals of all of them in one take
+// (lockLogged, lockEvals: each lock once, in the order of its key) before the first fold, the one
+// order every writer of an eval's rows takes eval locks in, so the commit waits on a writer that
+// holds one of them rather than holding one and waiting for another, whichever cuts the move marks
+// and whatever evals their marks name; the folds take none of them again. It is the one place the
+// commit folds stored figures: a fold of them after the commit, in a transaction of its own, is
+// FoldFirstPaint of each cut.
+func foldMarkedFirstPaints(ctx context.Context, tx pgx.Tx, build string, cuts []staleCut, marks map[staleCut]cutMark) (markedPaints, error) {
 	began := time.Now()
 	type owed struct {
 		cut     staleCut
@@ -269,41 +269,33 @@ func foldMarkedFirstPaints(ctx context.Context, tx pgx.Tx, build string, cuts []
 	}
 	var folds []owed
 	var logged []Entry
-	scopes := map[string]*figureScope{}
+	scopeOf := figureScopeReader(ctx, tx, build)
+	read := map[string][]Entry{}
 	for _, cut := range cuts {
-		mark, held, err := readCutMark(ctx, tx, cut)
+		mark, held := marks[cut]
+		scope, err := scopeOf(cut.project)
 		if err != nil {
 			return markedPaints{}, err
-		}
-		scope, read := scopes[cut.project]
-		if !read {
-			folded, ok, err := readFigureScope(ctx, tx, build, cut.project)
-			if err != nil {
-				return markedPaints{}, err
-			}
-			if ok {
-				scope = &folded
-			}
-			scopes[cut.project] = scope
 		}
 		if !held || scope == nil || !mark.owesFirstPaint(*scope) {
 			continue
 		}
-		entries, err := readEntries(ctx, tx, cut.project, mark.evals)
-		if err != nil {
-			return markedPaints{}, err
+		entries, done := read[cut.project]
+		if !done {
+			if entries, err = readEntries(ctx, tx, cut.project, owedEvals(cuts, marks, *scope)); err != nil {
+				return markedPaints{}, err
+			}
+			read[cut.project] = entries
 		}
+		entries = entriesNamed(entries, mark.evals)
 		folds = append(folds, owed{cut: cut, mark: mark, scope: *scope, entries: entries})
 		logged = append(logged, entries...)
 	}
-	var paints markedPaints
-	took, err := lockLogged(ctx, tx, logged)
+	locked, err := lockLogged(ctx, tx, logged)
 	if err != nil {
 		return markedPaints{}, err
 	}
-	if took {
-		paints.locked = time.Now()
-	}
+	paints := markedPaints{locked: locked}
 	for _, one := range folds {
 		if _, err := foldFirstPaintOf(ctx, tx, one.scope, one.cut, one.mark, one.entries); err != nil {
 			return markedPaints{}, err
@@ -312,6 +304,39 @@ func foldMarkedFirstPaints(ctx context.Context, tx pgx.Tx, build string, cuts []
 	}
 	paints.took = time.Since(began)
 	return paints, nil
+}
+
+// owedEvals is every eval named by the mark (in marks) of each cut of cuts that is of scope's
+// project and owes a first paint under scope (cutMark.owesFirstPaint), nil where one of those marks
+// names every eval: the evals of the project whose first paints foldMarkedFirstPaints folds.
+func owedEvals(cuts []staleCut, marks map[staleCut]cutMark, scope figureScope) []string {
+	evals := []string{}
+	for _, cut := range cuts {
+		mark, held := marks[cut]
+		if cut.project != scope.project || !held || !mark.owesFirstPaint(scope) {
+			continue
+		}
+		if mark.evals == nil {
+			return nil
+		}
+		evals = append(evals, mark.evals...)
+	}
+	return evals
+}
+
+// entriesNamed is each entry of entries whose eval id ids names, in their order, or entries where
+// ids is nil, which names every eval.
+func entriesNamed(entries []Entry, ids []string) []Entry {
+	if ids == nil {
+		return entries
+	}
+	var named []Entry
+	for _, entry := range entries {
+		if slices.Contains(ids, entry.Definition.EvalID) {
+			named = append(named, entry)
+		}
+	}
+	return named
 }
 
 // movedCut is what a move of the default repositories moves of one cut of a project's stored

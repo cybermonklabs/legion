@@ -25,10 +25,11 @@ import (
 // key as one more project, its walks, pages, spans, settings rewrites and rebuilds alike, and every
 // read of a project folds its own rows with those of the owner keys it reads under the published
 // defaults (eval_project_owners, which eval_owner_readers decides for a key that carries lists), so
-// a move of a default repository moves what each project reads and rewrites no row: the commit that
-// publishes it folds the stored figures of each moved project's own rows again, and marks the
-// stored cut of each repository whose owner keys the project gains or loses stale until the
-// refresher folds it again (publishDefaults, figures.go).
+// a move of a default repository moves what each project reads and rewrites no day row: the commit
+// that publishes it marks stale every cut of the stored figures it moves rows into or out of, the
+// project's own cut ('') as much as a repository's, and folds only each marked cut's first paint
+// (foldMarkedFirstPaints); the refresher folds the rest of each marked cut again (publishDefaults,
+// refoldStaleCuts, figures.go).
 //
 // An owner key carries what decides its readers. Its sharers: a deploy run that ships pull
 // requests that count for projects whatever the defaults are (a constant list's terminal) counts

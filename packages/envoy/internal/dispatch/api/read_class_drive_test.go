@@ -81,8 +81,8 @@ const evalWindowNow = "the default window ends at the moment the read was answer
 // counted to that moment (evals.RefresherAgeIn).
 var (
 	evalWindowVolatile = []volatileMember{{"window.from", evalWindowNow}, {"window.to", evalWindowNow}}
-	evalReadVolatile   = []volatileMember{{"window.from", evalWindowNow}, {"window.to", evalWindowNow},
-		{"freshness.refresher_age_seconds", "the refresher's age, counted to the moment the read was answered"}}
+	evalReadVolatile   = slices.Concat(evalWindowVolatile,
+		[]volatileMember{{"freshness.refresher_age_seconds", "the refresher's age, counted to the moment the read was answered"}})
 )
 
 // postHistoryStatement is the one read of a post's kept bodies (postHistory): the lateral page of

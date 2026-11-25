@@ -195,7 +195,7 @@ func expectPaintTruth(t *testing.T, what string, through time.Time, marked map[s
 		case ranged:
 			return paint.holds(day)
 		}
-		return !day.Before(paint.days.From) && day.Before(paint.days.To)
+		return dayIn(day, paint.days)
 	}
 	checked := 0
 	var wrong []string

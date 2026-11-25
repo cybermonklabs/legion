@@ -449,16 +449,9 @@ func (g *figureGroup) dayFigure(day time.Time) ([]byte, int64, bool) {
 // foldEnds folds the group's stored figures of each end day from first through last, of evalID in
 // cut, as the figures walk folds them: the range of each of FigureLengths that ends on it, each
 // into ranged, and the day before it, into daily, each where it holds a row of the group
-// (foldFigures of endsThrough).
+// (figureEnds.keys of endsThrough).
 func (g *figureGroup) foldEnds(evalID string, cut figureCut, first, last time.Time, ranged func(rangeFigureRow), daily func(dayFigureRow)) {
-	g.foldFigures(evalID, cut, endsThrough(first, last), ranged, daily)
-}
-
-// foldFigures folds what ends names of the group's stored figures, of evalID in cut: the range of
-// each of FigureLengths that ends on each of its end days, each into ranged, and each of its days,
-// into daily, each where it holds a row of the group (figureEnds.keys).
-func (g *figureGroup) foldFigures(evalID string, cut figureCut, ends figureEnds, ranged func(rangeFigureRow), daily func(dayFigureRow)) {
-	ends.keys(evalID, cut, func(key rangeFigureKey) {
+	endsThrough(first, last).keys(evalID, cut, func(key rangeFigureKey) {
 		if figures, oldest, held := g.rangeFigure(key.days, key.end); held {
 			ranged(rangeFigureRow{rangeFigureKey: key, key: g.key, figures: figures, oldest: oldest})
 		}
@@ -470,7 +463,7 @@ func (g *figureGroup) foldFigures(evalID string, cut figureCut, ends figureEnds,
 }
 
 // figureEnds is what one fold of a project's stored figures folds of each eval's rows of each cut
-// it reads (buildFigureEnds, figureGroup.foldFigures): the ranges of every length of FigureLengths
+// it reads (buildFigureEnds, figureGroup.foldEnds): the ranges of every length of FigureLengths
 // that end on each of its end days, from first through last, every one of them where picked is nil
 // and only those picked names, in day order, where it is not; and the day row of each day of days.
 // A batch of the figures walk or of a stale cut's refold folds each end day of a run of them and
@@ -518,7 +511,7 @@ func (f figureEnds) holds(end time.Time) bool {
 // keys calls ranged with the key of each range f names of evalID in cut, for each of its end days
 // in day order the range of each of FigureLengths that ends on it, and then daily with the key of
 // each of its days, in day order: what a fold of f folds of one eval's group of rows
-// (figureGroup.foldFigures, figurePlan.addEnds).
+// (figureGroup.foldEnds, figurePlan.addEnds).
 func (f figureEnds) keys(evalID string, cut figureCut, ranged func(rangeFigureKey), daily func(dayFigureKey)) {
 	for end := range f.endDays() {
 		for _, n := range FigureLengths {
@@ -572,6 +565,28 @@ func readFigureScope(ctx context.Context, q delivery.Querier, build, project str
 		return figureScope{}, false, nil
 	}
 	return figureScope{build: build, project: project, through: measures.Midnight(*through)}, true, nil
+}
+
+// figureScopeReader answers a read, in q, of each project's figureScope for a write by build
+// (readFigureScope) that reads each project's once: its first call for a project reads it, and each
+// later call answers what that read answered, nil where the project's figures are folded nowhere.
+func figureScopeReader(ctx context.Context, q delivery.Querier, build string) func(project string) (*figureScope, error) {
+	scopes := map[string]*figureScope{}
+	return func(project string) (*figureScope, error) {
+		if scope, read := scopes[project]; read {
+			return scope, nil
+		}
+		folded, ok, err := readFigureScope(ctx, q, build, project)
+		if err != nil {
+			return nil, err
+		}
+		var scope *figureScope
+		if ok {
+			scope = &folded
+		}
+		scopes[project] = scope
+		return scope, nil
+	}
 }
 
 // readEntries reads, in q, project's evals as Current reads each, those of ids where ids is not
@@ -1557,8 +1572,9 @@ func compareDayFigureKeys(a, b dayFigureKey) int {
 // The stored day rows are read through eval_day_figures_eval_day, one range of the days for each
 // eval, the project's evals in statements of at most statementBytes: no route bounds how many
 // evals a project holds. So are entries' stored range rows where every is not set. The read of the
-// stored range rows reads every end day from the first of ends through its last, and passes over
-// those of an end day it does not fold.
+// stored range rows reads the end days of ends: every one from its first through its last, or,
+// where it picks them, those it picks alone (a first paint's 19 of the 88 from its first to its
+// last, firstPaintOf), and passes over those of an end day it does not fold.
 //
 // Each cut's ranges and days are folded once its rows are read, on up to figureFoldWorkers
 // goroutines at once (foldInChunks of figurePlan.fold, whose folds of one group share it as a
@@ -1619,9 +1635,14 @@ func buildFigureEnds(ctx context.Context, tx pgx.Tx, scope figureScope, entries 
 	if repo != nil {
 		ofCut, rangeArgs, base = ` and repo = $4`, append(rangeArgs, *repo), base+4+len(*repo)
 	}
+	ofEnds, rangeBase := "", base
+	if ends.picked != nil {
+		ofEnds, rangeArgs = fmt.Sprintf(` and end_day = any($%d::date[])`, len(rangeArgs)+1), append(rangeArgs, ends.picked)
+		rangeBase += 4 + arrayHeaderBytes + (4+8)*len(ends.picked)
+	}
 	readRanges := func(ofEvals string, args []any) error {
 		rows, err := tx.Query(ctx, `
-			select repo, days, end_day, eval_id, deploy_repo from eval_range_figures where project_key = $1 and end_day >= $2 and end_day <= $3`+ofCut+ofEvals,
+			select repo, days, end_day, eval_id, deploy_repo from eval_range_figures where project_key = $1 and end_day >= $2 and end_day <= $3`+ofCut+ofEnds+ofEvals,
 			args...)
 		if err != nil {
 			return fmt.Errorf("read %s's stored range figures ending %s to %s: %w", scope.project, ends.first.Format(time.DateOnly), ends.last.Format(time.DateOnly), err)
@@ -1645,7 +1666,7 @@ func buildFigureEnds(ctx context.Context, tx pgx.Tx, scope figureScope, entries 
 		}
 	} else {
 		ofEvals := fmt.Sprintf(` and eval_id = any($%d)`, len(rangeArgs)+1)
-		for chunk := range statementChunks(evalIDs, base, textBytes) {
+		for chunk := range statementChunks(evalIDs, rangeBase, textBytes) {
 			if err := readRanges(ofEvals, append(slices.Clip(rangeArgs), chunk)); err != nil {
 				return err
 			}

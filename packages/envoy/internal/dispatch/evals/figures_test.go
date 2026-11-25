@@ -1313,12 +1313,7 @@ func TestTheReadOfOneCutsDeployRepositoriesReadsItsRowsAlone(t *testing.T) {
 		t.Errorf("the read of one cut reads no range of %s under the generic plan:\n%s", legionfacts.DefaultRepo, explaintest.Outline(t, plan))
 	}
 	analyzed, raw := explaintest.AnalyzedPlan(t, ctx, pool, cutDeployReposQuery, r.project, read.From, read.To, "acme/main")
-	readRows := 0.0
-	for _, node := range explaintest.Nodes(t, analyzed) {
-		if node.Relation == "eval_days" {
-			readRows += node.Rows*node.Loops + node.RowsRemovedByFilter*node.Loops
-		}
-	}
+	readRows := evalDaysRowsRead(t, analyzed)
 	if math.Abs(readRows-rows) > 0.5 {
 		t.Errorf("the read of the cut of acme/main read %.0f rows of eval_days, want its %.0f:\n%s", readRows, rows, raw)
 	}
@@ -1328,6 +1323,19 @@ func TestTheReadOfOneCutsDeployRepositoriesReadsItsRowsAlone(t *testing.T) {
 // evalDaysIndexes is every index of eval_days (migration 20261117100006), by which a plan test tells
 // a scan of eval_days from one of another table: a bitmap index scan names no relation.
 var evalDaysIndexes = []string{"eval_days_pkey", "eval_days_window", "eval_days_stamps"}
+
+// evalDaysRowsRead is how many rows of eval_days an analyzed plan read: each node's rows of the
+// relation and the rows its filter removed, over every loop of it.
+func evalDaysRowsRead(t *testing.T, plan json.RawMessage) float64 {
+	t.Helper()
+	read := 0.0
+	for _, node := range explaintest.Nodes(t, plan) {
+		if node.Relation == "eval_days" {
+			read += node.Rows*node.Loops + node.RowsRemovedByFilter*node.Loops
+		}
+	}
+	return read
+}
 
 // firstDiffering is the first index at which a and b differ.
 func firstDiffering(a, b string) int {

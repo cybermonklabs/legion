@@ -373,19 +373,9 @@ func (r *refresherRig) owedPass(t *testing.T, batch *gapBatch) {
 	r.refreshIn(duty.WithWake(t.Context(), owed), t, batch)
 }
 
-// staleMark is a stale cut's mark as eval_figure_cuts_stale holds it: its generation, the end day
-// its first paint was folded through (nil before its first-paint batch), the newest end day its
-// refold has not folded (nil while the refold is to begin), and the evals it names (nil for every
-// eval).
-type staleMark struct {
-	generation  int64
-	ready, next *time.Time
-	evals       []string
-}
-
-// String is the mark as a failure names it: its generation, its first paint's end day and its
-// refold's, "-" for none, and its evals, "every" for every eval.
-func (m staleMark) String() string {
+// String is a stale cut's mark as a failure names it: its generation, its first paint's end day
+// and its refold's, "-" for none, and its evals, "every" for every eval.
+func (m cutMark) String() string {
 	day := func(at *time.Time) string {
 		if at == nil {
 			return "-"
@@ -400,15 +390,15 @@ func (m staleMark) String() string {
 }
 
 // staleMarks is every stale cut's mark, by cut.
-func (r *refresherRig) staleMarks(t *testing.T) map[staleCut]staleMark {
+func (r *refresherRig) staleMarks(t *testing.T) map[staleCut]cutMark {
 	t.Helper()
 	rows, err := r.database.Pool.Query(t.Context(), `select project_key, repo, generation, ready_through, next_day, evals from eval_figure_cuts_stale`)
 	if err != nil {
 		t.Fatalf("read the stale cuts: %v", err)
 	}
-	marks := map[staleCut]staleMark{}
+	marks := map[staleCut]cutMark{}
 	var cut staleCut
-	var mark staleMark
+	var mark cutMark
 	if _, err := pgx.ForEachRow(rows, []any{&cut.project, &cut.repo, &mark.generation, &mark.ready, &mark.next, &mark.evals}, func() error {
 		kept := mark
 		if mark.ready != nil {
@@ -427,7 +417,7 @@ func (r *refresherRig) staleMarks(t *testing.T) map[staleCut]staleMark {
 }
 
 // markedEvals is the evals marks names, each by its cut.
-func markedEvals(marks map[staleCut]staleMark) map[staleCut][]string {
+func markedEvals(marks map[staleCut]cutMark) map[staleCut][]string {
 	named := make(map[staleCut][]string, len(marks))
 	for cut, mark := range marks {
 		named[cut] = mark.evals
@@ -768,31 +758,20 @@ func TestAMoveDuringARefoldLeavesTheCutStaleUntilItsGenerationIsFolded(t *testin
 	both := slices.Concat(begun.evals, r.marksOfMove(t, map[string][2]string{"PIER": {quayRepo, pierRepo}}, before, after)[cut])
 	slices.Sort(both)
 	both = slices.Compact(both)
+	if len(both) == 0 {
+		t.Fatalf("the moves of PIER's default name no eval of its cut of %s, and the check needs the evals they name", quayRepo)
+	}
 	again, held := r.staleMarks(t)[cut]
 	if !held || again.generation != begun.generation+1 || again.ready == nil || !again.ready.Equal(through) || again.next != nil || !slices.Equal(again.evals, both) {
 		t.Fatalf("the page that published PIER's move back to %s left its cut of %s marked %t at %s, want generation %d with its first paint folded through %s and its refold to begin again, naming %v",
 			pierRepo, quayRepo, held, again, begun.generation+1, through.Format(time.DateOnly), both)
 	}
-	// read makes each read of a first paint of the cut and checks that every eval the mark names is
-	// stated from the stored figures, each the fold of its day rows.
-	read := func(what string) {
-		t.Helper()
-		for _, one := range moveShapes() {
-			stated, folded, fromFigures := r.listValues(t, "PIER", []string{quayRepo}, one.window, &one.compare)
-			for _, id := range slices.Sorted(maps.Keys(folded)) {
-				if slices.Contains(both, id) && !fromFigures[id] {
-					t.Errorf("%s: the read of PIER's %s over %s states %s, which the mark names, from its day rows", what, quayRepo, one.name, id)
-				}
-				if stated[id] != folded[id] {
-					t.Errorf("%s: the read of PIER's %s over %s states %s's values in %d bytes that differ from the fold of its day rows' %d at byte %d",
-						what, quayRepo, one.name, id, len(stated[id]), len(folded[id]), firstDiffering(stated[id], folded[id]))
-				}
-			}
-		}
-	}
 	passes := 0
 	for {
-		read(fmt.Sprintf("%d passes after the commit of the move back", passes))
+		// Each read of a first paint of the cut states every eval the mark names from the stored
+		// figures, each the fold of its day rows.
+		r.expectReads(t, fmt.Sprintf("%d passes after the commit of the move back", passes), map[staleCut][]string{cut: both}, readsOf(moveShapes()),
+			func(staleCut) bool { return true })
 		if _, held := r.staleMarks(t)[cut]; !held {
 			break
 		}
@@ -842,28 +821,28 @@ func TestThePassThatPublishesAMoveFoldsItsStaleCutsToTheEnd(t *testing.T) {
 	expectTruth(t, "after the pass that published the move", r.storedFigures(t), r.truthFigures(t))
 }
 
-// TestAMoveOfADefaultRefoldsTheEvalsOfItsDefaultRowsAlone (the architect's conditions 1 and 2): the
-// Legion project publishes acme/legion as its default repository, its Legion rows stand under
-// acme/legion and under ':default' (seedLegionDefault), and a logged eval of it holds readings of
-// acme/legion and of acme/other, rows of each cut that no move of the default moves. Its default
-// moves to acme/other and a pass's pages publish it (pageAlone): the commit marks the two defaults'
-// cuts alone, each naming the evals that hold a listed ':default' row, as the stored rows hold
-// them (marksOfMove), the logged eval not among them, and every stored figure the move leaves
-// other than the fold of the rows that stand is of an eval a mark names in its cut. Right after
-// the move's commit, which folded the first paint of both cuts, and once the passes, one batch
-// each, have folded one end day of the first cut's refold, the newest, a read of a first paint
-// (moveShapes) of either cut states every eval from the stored figures and a read of the past
-// (pastShapes) states the evals the marks name from their day rows and every other eval from the
-// stored figures, each the fold of the rows that stand. The refresher
-// then folds the marked evals again and settles: no cut is marked, every eval of both cuts is read
-// from the stored figures, every eval's stored figures of every cut are the fold of the rows that
-// stand, as a refold of every eval leaves them (expectTruth), and no stored row of an eval no mark
-// names was written or deleted in the two cuts since the move (each row's last transaction, xmin,
-// stands). Red where the move names one eval fewer than the rows call for: its stored figures in
-// the two cuts stay those of the old default, which a read states meanwhile and the refold leaves.
-// Red too where a read of a stale cut states none of its evals from the stored figures, or states a
-// marked one from them before the stored rows it reads are folded again, and where the refold or
-// the first paint deletes the stored rows of the evals it does not fold.
+// TestAMoveOfADefaultRefoldsTheEvalsOfItsDefaultRowsAlone: the Legion project publishes
+// acme/legion as its default repository, its Legion rows stand under acme/legion and under
+// ':default' (seedLegionDefault), and a logged eval of it holds readings of acme/legion and of
+// acme/other, rows of each cut that no move of the default moves. Its default moves to acme/other
+// and a pass's pages publish it (pageAlone): the commit marks the two defaults' cuts alone, each
+// naming the evals that hold a listed ':default' row, as the stored rows hold them (marksOfMove),
+// the logged eval not among them, and every stored figure the move leaves other than the fold of
+// the rows that stand is of an eval a mark names in its cut. Right after the move's commit, which
+// folded the first paint of both cuts, and once the passes, one batch each, have folded one end
+// day of the first cut's refold, the newest, a read of a first paint (moveShapes) of either cut
+// states every eval from the stored figures and a read of the past (pastShapes) states the evals
+// the marks name from their day rows and every other eval from the stored figures, each the fold
+// of the rows that stand. The refresher then folds the marked evals again and settles: no cut is
+// marked, every eval of both cuts is read from the stored figures, every eval's stored figures of
+// every cut are the fold of the rows that stand, as a refold of every eval leaves them
+// (expectTruth), and no stored row of an eval no mark names was written or deleted in the two cuts
+// since the move (each row's last transaction, xmin, stands). Red where the move names one eval
+// fewer than the rows call for: its stored figures in the two cuts stay those of the old default,
+// which a read states meanwhile and the refold leaves. Red too where a read of a stale cut states
+// none of its evals from the stored figures, or states a marked one from them before the stored
+// rows it reads are folded again, and where the refold or the first paint deletes the stored rows
+// of the evals it does not fold.
 func TestAMoveOfADefaultRefoldsTheEvalsOfItsDefaultRowsAlone(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
@@ -970,16 +949,24 @@ func TestAMoveOfADefaultRefoldsTheEvalsOfItsDefaultRowsAlone(t *testing.T) {
 // naming the evals it is given, its first paint and its refold to begin, and leaves out the cut of
 // a project no row holds; it marks a cut a mark holds already, whose first paint is folded and
 // whose refold has begun, at the next generation with its first paint and its refold to begin
-// again, naming the evals of both marks once each, in byte order; and a cut whose mark names every
-// eval (null), as the bench's worst case marks it, stays named for every eval. Red where a mark that
-// stands takes the second move's evals alone, which leaves the stored figures of the evals only the
-// first move moved folded under the defaults before it, where a null mark takes the second move's,
-// or where a mark keeps the first paint of the generation before it, whose stored figures a read
-// would then state though they fold the rows under the defaults before the move.
+// again, naming the evals of both marks once each, in byte order; a cut whose mark names every eval
+// (null), as the bench's worst case marks it, stays named for every eval; and it answers each mark
+// it wrote as the mark reads back, the marks whose first paints the commit of a move folds
+// (foldMarkedFirstPaints). Red where a mark that stands takes the second move's evals alone, which
+// leaves the stored figures of the evals only the first move moved folded under the defaults
+// before it, where a null mark takes the second move's, or where a mark keeps the first paint of
+// the generation before it, whose stored figures a read would then state though they fold the rows
+// under the defaults before the move.
 func TestAMarkOfAMarkedCutNamesTheEvalsOfBoth(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
 	ctx, pool := t.Context(), r.database.Pool
+	// same is whether two marks hold one generation, each a first paint and a refold or neither, and
+	// the same evals, nil (every eval) or not.
+	same := func(a, b cutMark) bool {
+		return a.generation == b.generation && (a.ready == nil) == (b.ready == nil) && (a.next == nil) == (b.next == nil) && slices.Equal(a.evals, b.evals) &&
+			(a.evals == nil) == (b.evals == nil)
+	}
 	mark := func(what string, marks map[staleCut][]string) {
 		t.Helper()
 		tx, err := pool.Begin(ctx)
@@ -987,21 +974,20 @@ func TestAMarkOfAMarkedCutNamesTheEvalsOfBoth(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer tx.Rollback(ctx)
-		if err := markStaleCuts(ctx, tx, marks); err != nil {
+		written, err := markStaleCuts(ctx, tx, marks)
+		if err != nil {
 			t.Fatalf("%s: %v", what, err)
 		}
 		if err := tx.Commit(ctx); err != nil {
 			t.Fatalf("%s: %v", what, err)
 		}
+		if read := r.staleMarks(t); !maps.EqualFunc(written, read, same) {
+			t.Errorf("%s: markStaleCuts answered the marks %+v, and they read back %+v", what, written, read)
+		}
 	}
-	expect := func(what string, want map[staleCut]staleMark) {
+	expect := func(what string, want map[staleCut]cutMark) {
 		t.Helper()
-		got := r.staleMarks(t)
-		same := maps.EqualFunc(got, want, func(a, b staleMark) bool {
-			return a.generation == b.generation && (a.ready == nil) == (b.ready == nil) && (a.next == nil) == (b.next == nil) && slices.Equal(a.evals, b.evals) &&
-				(a.evals == nil) == (b.evals == nil)
-		})
-		if !same {
+		if got := r.staleMarks(t); !maps.EqualFunc(got, want, same) {
 			t.Errorf("%s: the marks are %+v, want %+v", what, got, want)
 		}
 	}
@@ -1014,13 +1000,13 @@ func TestAMarkOfAMarkedCutNamesTheEvalsOfBoth(t *testing.T) {
 		return ids
 	}
 	mark("the first move", map[staleCut][]string{first: evals("b", "c"), second: evals("a"), {project: "GONE", repo: "acme/one"}: {"GONE/a"}})
-	expect("after the first move", map[staleCut]staleMark{first: {generation: 1, evals: evals("b", "c")}, second: {generation: 1, evals: evals("a")}})
+	expect("after the first move", map[staleCut]cutMark{first: {generation: 1, evals: evals("b", "c")}, second: {generation: 1, evals: evals("a")}})
 	r.exec(t, "fold the first cut's first paint and begin its refold", `update eval_figure_cuts_stale set ready_through = $3, next_day = $3 where project_key = $1 and repo = $2`,
 		r.project, first.repo, refresherToday)
 	r.exec(t, "fold the second cut's first paint", `update eval_figure_cuts_stale set ready_through = $3 where project_key = $1 and repo = $2`, r.project, second.repo, refresherToday)
 	r.exec(t, "name every eval of the second cut", `update eval_figure_cuts_stale set evals = null where project_key = $1 and repo = $2`, r.project, second.repo)
 	mark("the second move", map[staleCut][]string{first: evals("a", "c"), second: evals("b")})
-	expect("after the second move", map[staleCut]staleMark{first: {generation: 2, evals: evals("a", "b", "c")}, second: {generation: 2}})
+	expect("after the second move", map[staleCut]cutMark{first: {generation: 2, evals: evals("a", "b", "c")}, second: {generation: 2}})
 }
 
 // TestTheReadsOfTheEvalsAMoveMovesAreBoundedByIndexes: the reads of the evals a move of a default
@@ -1099,12 +1085,7 @@ func TestTheReadsOfTheEvalsAMoveMovesAreBoundedByIndexes(t *testing.T) {
 			if !bounded {
 				t.Errorf("%s reads %s bounded by no %s under %s:\n%s", read.name, read.index, read.bound, explained.mode, explaintest.Outline(t, plan))
 			}
-			readRows := 0.0
-			for _, node := range explaintest.Nodes(t, plan) {
-				if node.Relation == "eval_days" {
-					readRows += node.Rows*node.Loops + node.RowsRemovedByFilter*node.Loops
-				}
-			}
+			readRows := evalDaysRowsRead(t, plan)
 			if math.Abs(readRows-read.rows) > 0.5 {
 				t.Errorf("%s read %.0f rows of eval_days under %s, want %.0f:\n%s", read.name, readRows, explained.mode, read.rows, explaintest.Outline(t, plan))
 			}
