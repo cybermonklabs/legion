@@ -313,21 +313,30 @@ case "${args[*]}" in
     jq '{apiVersion: "v1", kind: "List", items: [.[] | {apiVersion: "v1", kind: "ServiceAccount", metadata: ({namespace: .namespace, name: .name, uid: "uid-\(.namespace)-\(.name)"} + (if .gsa then {annotations: {"iam.gke.io/gcp-service-account": .gsa}} else {} end))} + (if .secrets then {secrets: .secrets} else {} end)]}' "$dir/serviceaccounts.json"
     ;;
   "get clusterrolebindings,rolebindings --all-namespaces -o json")
-    # The built-in cluster-admin binding (unless the world drops it), and one binding of each grant,
-    # naming its subject.
+    # The built-in cluster-admin binding (unless the world drops it), the bootstrap RoleBinding
+    # kube-system/system::extension-apiserver-authentication-reader, and one binding of each grant,
+    # naming its subject: a RoleBinding when the grant names a namespace, to the grant's Role when
+    # it has role_kind Role. A world marked no-rolebindings answers the ClusterRoleBindings alone,
+    # as an answer whose RoleBinding half came back empty would (row cu).
     shaped_answer bindings
     [ ! -e "$dir/refuse-bindings" ] || forbidden clusterrolebindings.rbac.authorization.k8s.io 'list resource "clusterrolebindings" in API group "rbac.authorization.k8s.io"' container.clusterRoleBindings.list
-    jq --arg boot "$([ -e "$dir/no-bootstrap-binding" ] && echo off || echo on)" '{apiVersion: "v1", kind: "List", items: (
+    jq --arg boot "$([ -e "$dir/no-bootstrap-binding" ] && echo off || echo on)" --arg rolebindings "$([ -e "$dir/no-rolebindings" ] && echo off || echo on)" '{apiVersion: "v1", kind: "List", items: (
       [{apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRoleBinding",
         metadata: {name: "cluster-admin", labels: {"kubernetes.io/bootstrapping": "rbac-defaults"}},
         roleRef: {apiGroup: "rbac.authorization.k8s.io", kind: "ClusterRole", name: "cluster-admin"},
         subjects: [{apiGroup: "rbac.authorization.k8s.io", kind: "Group", name: "system:masters"}]} | select($boot == "on")]
+      + [{apiVersion: "rbac.authorization.k8s.io/v1", kind: "RoleBinding",
+          metadata: {namespace: "kube-system", name: "system::extension-apiserver-authentication-reader",
+                     labels: {"kubernetes.io/bootstrapping": "rbac-defaults"}},
+          roleRef: {apiGroup: "rbac.authorization.k8s.io", kind: "Role", name: "extension-apiserver-authentication-reader"},
+          subjects: [{apiGroup: "rbac.authorization.k8s.io", kind: "User", name: "system:kube-scheduler"}]}]
       + [to_entries[] | .key as $i | .value as $g | {
           apiVersion: "rbac.authorization.k8s.io/v1",
           kind: (if $g.namespace == null then "ClusterRoleBinding" else "RoleBinding" end),
           metadata: ({name: "planted-\($i)"} + (if $g.namespace == null then {} else {namespace: $g.namespace} end)),
-          roleRef: {apiGroup: "rbac.authorization.k8s.io", kind: "ClusterRole", name: "planted-\($i)"},
-          subjects: [$g.subject | if .kind == "ServiceAccount" then . else . + {apiGroup: "rbac.authorization.k8s.io"} end]}])}' \
+          roleRef: {apiGroup: "rbac.authorization.k8s.io", kind: ($g.role_kind // "ClusterRole"), name: "planted-\($i)"},
+          subjects: [$g.subject | if .kind == "ServiceAccount" then . else . + {apiGroup: "rbac.authorization.k8s.io"} end]}]
+      | map(select($rolebindings == "on" or .kind != "RoleBinding")))}' \
       "$dir/grants.json"
     ;;
   "get secrets -n "*" --field-selector type=kubernetes.io/service-account-token "*)
@@ -437,19 +446,28 @@ case "${args[*]}" in
       { echo "Error from server (NotFound): the server could not find the requested resource" >&2; exit 1; }
     ;;
   "get roles,clusterroles --all-namespaces -o json")
-    # The built-in cluster-admin role, and one ClusterRole of each grant (planted-<its index>, as the
-    # bindings' list names it), holding the grant as a rule, limited by name when the grant names one.
+    # The built-in cluster-admin role, the bootstrap Role kube-system/extension-apiserver-
+    # authentication-reader, and one role of each grant (planted-<its index>, as the bindings' list
+    # names it), holding the grant as a rule, limited by name when the grant names one: a Role in the
+    # grant's namespace when it has role_kind Role, else a ClusterRole. A world marked no-roles
+    # answers the ClusterRoles alone, as an answer whose Role half came back empty would (row cu).
     shaped_answer roles
     [ ! -e "$dir/refuse-roles" ] || forbidden roles.rbac.authorization.k8s.io 'list resource "roles" in API group "rbac.authorization.k8s.io"' container.roles.list
-    jq '{apiVersion: "v1", kind: "List", items: (
+    jq --arg roles "$([ -e "$dir/no-roles" ] && echo off || echo on)" '{apiVersion: "v1", kind: "List", items: (
       [{apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRole",
         metadata: {name: "cluster-admin", labels: {"kubernetes.io/bootstrapping": "rbac-defaults"}},
-        rules: [{apiGroups: ["*"], resources: ["*"], verbs: ["*"]}]}]
+        rules: [{apiGroups: ["*"], resources: ["*"], verbs: ["*"]}]},
+       {apiVersion: "rbac.authorization.k8s.io/v1", kind: "Role",
+        metadata: {namespace: "kube-system", name: "extension-apiserver-authentication-reader",
+                   labels: {"kubernetes.io/bootstrapping": "rbac-defaults"}},
+        rules: [{apiGroups: [""], resources: ["configmaps"], resourceNames: ["extension-apiserver-authentication"], verbs: ["get", "list", "watch"]}]}]
       + [to_entries[] | .key as $i | .value as $g | {
-          apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRole", metadata: {name: "planted-\($i)"},
+          apiVersion: "rbac.authorization.k8s.io/v1", kind: ($g.role_kind // "ClusterRole"),
+          metadata: ({name: "planted-\($i)"} + (if ($g.role_kind // "") == "Role" then {namespace: $g.namespace} else {} end)),
           rules: [{apiGroups: [$g.group], verbs: [$g.verb],
                    resources: [if $g.resource == "*" or ($g.subresource // "") == "" then $g.resource else "\($g.resource)/\($g.subresource)" end]}
-                  + (if $g.name then {resourceNames: [$g.name]} else {} end)]}])}' "$dir/grants.json"
+                  + (if $g.name then {resourceNames: [$g.name]} else {} end)]}]
+      | map(select($roles == "on" or .kind != "Role")))}' "$dir/grants.json"
     ;;
   "get namespace "*" -o name")
     namespace="${args[2]}"

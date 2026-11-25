@@ -16,10 +16,19 @@ else
   if [ "$readable" = true ]; then
     mark
     # Every right the live steps ask, outright or limited by name: the list, the guard rights with
-    # the certificate chain's, and the admission rights. A part of the chain goes to csr_part, so
-    # a principal is a finding for the whole chain alone, as on a live cluster. Custom resources are
-    # each cluster's own, read live from its discovery.
-    code_rights="$(with_rights "$(with_rights "$(rights_json db)" "$GUARD_RIGHTS")" "$ADMISSION_CODE_RIGHTS")"
+    # the certificate chain's, the admission rights, and the writes of a binding or a role in each
+    # namespace a render's RoleBinding is in (binding-rights.jq over the renders, as binding_rights
+    # reads a cluster's bindings). A part of the chain goes to csr_part, so a principal is a finding
+    # for the whole chain alone, as on a live cluster. Custom resources are each cluster's own, read
+    # live from its discovery. When the build fails, the binding rights are none and the step reads
+    # UNKNOWN naming them, unless a render is not JSON, which the read below names.
+    code_binding='[]' binding_built=true
+    if built="$(cat -- "${RBAC_RENDERS[@]}" | jq -n -c -L "$LIB" -f "$LIB/binding-rights.jq" 2>"$WORK/code-binding.err")" && is_rights "$built"; then
+      code_binding="$built"
+    else
+      binding_built=false
+    fi
+    code_rights="$(with_rights "$(with_rights "$(with_rights "$(rights_json db)" "$GUARD_RIGHTS")" "$ADMISSION_CODE_RIGHTS")" "$code_binding")"
     csr_reset
     # jq reads the renders from its stdin, so an error it prints names no file, and the rights from a
     # file, never its command line.
@@ -28,6 +37,8 @@ else
       --argjson live false -L "$LIB" -f "$LIB/code-rbac.jq" >"$WORK/render.rec" 2>"$WORK/render.err"; then
       unknown "$step" "a render is not JSON: $(first_line "$WORK/render.err")"
     else
+      [ "$binding_built" = true ] ||
+        unknown "$step" "the rights of the namespaces the renders' RoleBindings are in could not be built, so a render's write of a binding or a role there is not read: $(first_line "$WORK/code-binding.err")"
       declared=0
       while IFS="$US" read -r -u 3 what id detail kind ns name; do
         case "$what" in

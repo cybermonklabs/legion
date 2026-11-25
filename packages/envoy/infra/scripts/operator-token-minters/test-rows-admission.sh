@@ -36,8 +36,9 @@
 #   (cu) each answer the check reads with kubectl -o json (the webhook configurations, the CRDs, the
 #        workload allowlists, the admission policies and their bindings, the roles, the bindings,
 #        the ServiceAccounts, a webhook's Service and the answer to the reviews), sent with exit 0
-#        but not as the API server wrote it (an error page, an empty body, `{}`, and for the roles a
-#        List with no item), reads UNKNOWN naming it, exits 2, and its step does not pass, though a
+#        but not as the API server wrote it (an error page, an empty body, `{}`, for the roles a
+#        List with no item, and for the roles and the bindings a List that holds one of its two
+#        kinds alone), reads UNKNOWN naming it, exits 2, and its step does not pass, though a
 #        principal holds a right only that answer reveals, which the item names;
 #   (cy) the answer to the reviews, as kubectl create writes it, one document per review: two or
 #        more so answered are judged; an answer that repeats one review and leaves out another, or
@@ -371,7 +372,9 @@ fi
 # body or `{}`, the CRDs and webhooks with `{}`, the Service with an empty body, and the reviews with
 # an empty body each pass their step and exit 0 (the operator's reviews with "16 principals …: none
 # allowed"), and the webhooks with an empty body stop the run mid-way; and as at 846057fdc7 for the
-# empty roles List, which passes its step and exits 0. ---
+# empty roles List, which passes its step and exits 0; and as at 26ab8c9a80 for the half lists (the
+# roles with no Role, the bindings with no RoleBinding), each of which passes its step and exits 0
+# on a world whose whole list exits 1. ---
 unread_list_row() {
   local dir="$world/clusters/operator-cluster" list="${1%-*}" shape="${1##*-}" want why missed
   local step="RBAC on operator-cluster" marker="${1%-*}"
@@ -380,7 +383,7 @@ unread_list_row() {
     garbage) why="" ;;
     empty) why="the answer was empty" ;;
     object) why="the answer is JSON, but not one object with a list of items" ;;
-    emptylist) why="" ;;
+    emptylist | halflist) why="" ;;
   esac
   case "$list" in
     webhooks)
@@ -424,6 +427,14 @@ unread_list_row() {
         subject_grant operator-cluster "$(sa_subject legion worker)" impersonate "" groups "" "" system:masters
         want="the API server's list of roles holds no bootstrap ClusterRole cluster-admin (labelled kubernetes.io/bootstrapping=rbac-defaults), which every cluster has, so it is not whole and a right a role limits by name is not read"
         missed="legion/worker's impersonation of the group system:masters, by name"
+      elif [ "$shape" = halflist ]; then
+        # The reviewer's Role-limited path: a Role in secrets-broker that lets legion/worker patch
+        # the Deployment secrets-broker, by name; the list answers its ClusterRoles alone.
+        subject_grant operator-cluster "$(sa_subject legion worker)" patch apps deployments "" secrets-broker secrets-broker
+        edit "$dir/grants.json" '.[-1].role_kind = "Role"'
+        : >"$dir/no-roles"
+        want="the API server's list of roles holds no bootstrap Role kube-system/extension-apiserver-authentication-reader (labelled kubernetes.io/bootstrapping=rbac-defaults), which every cluster has, so its Roles are not whole and a right a Role limits by name is not read"
+        missed="legion/worker's patch of the Deployment secrets-broker, by a Role's name"
       else
         subject_grant operator-cluster "$(sa_subject legion worker)" update admissionregistration.k8s.io mutatingwebhookconfigurations "" "" existing-webhook
         want="the API server's list of roles could not be read, so a right a role limits by name is not read: $why"
@@ -431,8 +442,19 @@ unread_list_row() {
       fi
       ;;
     bindings)
-      want="the API server's list of bindings could not be read: $why"
-      missed="the bindings' subjects"
+      if [ "$shape" = halflist ]; then
+        # The reviewer's example-db world, the list answering its ClusterRoleBindings alone:
+        # binding_rights would ask nothing in example-db.
+        subject_grant operator-cluster "$(user_subject dba@example.com)" get "" secrets "" example-db broker-db-login
+        subject_grant operator-cluster "$(sa_subject legion worker)" create rbac.authorization.k8s.io rolebindings "" example-db ""
+        subject_grant operator-cluster "$(sa_subject legion worker)" bind rbac.authorization.k8s.io clusterroles "" example-db ""
+        : >"$dir/no-rolebindings"
+        want="the bindings' list holds no bootstrap RoleBinding kube-system/system::extension-apiserver-authentication-reader (labelled kubernetes.io/bootstrapping=rbac-defaults), which every cluster has, so its RoleBindings are not whole and a right given in a namespace outside the guarded ones is not read"
+        missed="legion/worker's bind of clusterroles in example-db"
+      else
+        want="the API server's list of bindings could not be read: $why"
+        missed="the bindings' subjects"
+      fi
       ;;
     serviceaccounts)
       want="the API server's list of ServiceAccounts could not be read: $why"
@@ -466,10 +488,10 @@ unread_list_row() {
 if row cu; then
   each unread_list_row webhooks-garbage webhooks-empty webhooks-object service-garbage service-empty \
     crds-garbage crds-empty crds-object allowlists-garbage allowlists-empty allowlists-object \
-    policies-garbage policies-empty policies-object roles-garbage roles-empty roles-object roles-emptylist \
-    bindings-garbage bindings-empty bindings-object serviceaccounts-garbage serviceaccounts-empty serviceaccounts-object \
+    policies-garbage policies-empty policies-object roles-garbage roles-empty roles-object roles-emptylist roles-halflist \
+    bindings-garbage bindings-empty bindings-object bindings-halflist serviceaccounts-garbage serviceaccounts-empty serviceaccounts-object \
     reviews-garbage reviews-empty reviews-object reviews-other-empty reviews-other-object
-  passed "(cu) each answer read with kubectl -o json (every list, a webhook's Service, the answer to the reviews on the operator's cluster or another), sent with exit 0 as an error page, an empty body or {}, and the roles' list as a List with no item, reads UNKNOWN naming it, exits 2, and its step does not pass"
+  passed "(cu) each answer read with kubectl -o json (every list, a webhook's Service, the answer to the reviews on the operator's cluster or another), sent with exit 0 as an error page, an empty body or {}, the roles' list as a List with no item, and the roles' and the bindings' lists with one of their two kinds alone, reads UNKNOWN naming it, exits 2, and its step does not pass"
 fi
 
 # --- (cy) The answer to the reviews, as kubectl create writes it: given a List, kubectl creates each

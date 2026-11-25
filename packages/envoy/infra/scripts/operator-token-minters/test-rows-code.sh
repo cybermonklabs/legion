@@ -15,7 +15,9 @@
 #   (ap) a render's rule limited by resourceNames on impersonate or escalate is a finding naming the
 #        names, with every live step refused;
 #   (be) a render's rule limited by resourceNames on bind of clusterroles, or on update or patch of
-#        rolebindings, is a finding naming the names, with every live step refused;
+#        rolebindings, is a finding naming the names, with every live step refused; and a render's
+#        bind of clusterroles in example-db, a namespace outside the guarded ones, outright or by
+#        name, is a finding naming that namespace (the live steps' binding rights, read in code);
 #   (bw) a render's rule limited by resourceNames on update of a mutating webhook configuration, or
 #        on patch of a Deployment in secrets-broker, is a finding naming the names;
 #   (ca) a render's create namespaces, create of a mutating webhook configuration, and the
@@ -142,6 +144,28 @@ if row be; then
       "a render's name-limited $right"
   done
   passed "(be) a render's rule limited by resourceNames on bind, or on update or patch of a binding, is a finding naming the names"
+
+  # A render's bind of clusterroles in example-db, where a person reads the broker's database
+  # login: binding-rights.jq over the renders asks it, as the live steps ask it of a cluster's
+  # bindings. Run by hand, the control is step-code-rbac.sh as at 26ab8c9a80, whose rights left
+  # those out: "PASS code: RBAC" and "no finding, 10 unknown: exit 2", the UNKNOWNs being the
+  # refused live steps. The named item limits the bind to one name.
+  for named in "" secret-reader; do
+    base_world
+    refuse_live
+    edit "$world/render.json" '.items += [
+      {apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRole", metadata: {name: "db-binder"},
+       rules: [{apiGroups: ["rbac.authorization.k8s.io"], resources: ["clusterroles"], verbs: ["bind"]}
+               + (if $n == "" then {} else {resourceNames: [$n]} end)]},
+      {apiVersion: "rbac.authorization.k8s.io/v1", kind: "RoleBinding", metadata: {name: "worker-db-binder", namespace: "example-db"},
+       roleRef: {apiGroup: "rbac.authorization.k8s.io", kind: "ClusterRole", name: "db-binder"},
+       subjects: [{kind: "ServiceAccount", name: "worker", namespace: "legion"}]}]' --arg n "$named"
+    run
+    want_status 1 "a render's bind of clusterroles in example-db (${named:-unnamed})"
+    want_line "FINDING system:serviceaccount:legion:worker: bind clusterroles.rbac.authorization.k8s.io ${named:+$named }in example-db, declared by RoleBinding example-db/worker-db-binder" \
+      "a render's bind of clusterroles in example-db (${named:-unnamed})"
+  done
+  passed "(be) a render's bind of clusterroles in a namespace outside the guarded ones, outright or by name, is a finding naming that namespace"
 fi
 
 # --- (bw) The code read of any asked right limited by name, the admission and workload rights

@@ -123,9 +123,11 @@
 #                     as the code step reads a render: a rule whose resourceNames limit a right asked
 #                     is a finding naming the names for a subject that is not a person (an approval
 #                     of certificate signing requests by name, whose name the requester picks, joins
-#                     the certificate chain). A refused list is UNKNOWN, and so is one that holds no
-#                     bootstrap cluster-admin ClusterRole (labelled
-#                     kubernetes.io/bootstrapping=rbac-defaults), which every cluster has. A
+#                     the certificate chain). A refused list is UNKNOWN, and so is one that lacks
+#                     either of its two kinds' bootstrap objects, labelled
+#                     kubernetes.io/bootstrapping=rbac-defaults, which every cluster has: the
+#                     ClusterRole cluster-admin and the Role
+#                     kube-system/extension-apiserver-authentication-reader. A
 #                     review without the groups would miss every grant made to a group. Its witness
 #                     is a review for the group the built-in cluster-admin binding names,
 #                     system:masters, which must be in the answer and allowed: an API server whose
@@ -243,8 +245,11 @@
 # A ServiceAccount a binding names is reviewed whether it exists or not: whoever can make it and a
 # pod in its namespace takes the binding's rights. On every cluster a ServiceAccount list that holds
 # none outside the system namespaces is UNKNOWN, since every cluster has default/default. A refused
-# list of bindings is UNKNOWN, naming the permission, and so is a list without the bootstrap
-# cluster-admin ClusterRoleBinding, its witness: every cluster has it.
+# list of bindings is UNKNOWN, naming the permission, and so is a list without either of its two
+# kinds' witnesses, each labelled kubernetes.io/bootstrapping=rbac-defaults, which every cluster has:
+# the ClusterRoleBinding cluster-admin and the RoleBinding
+# kube-system/system::extension-apiserver-authentication-reader. Without its RoleBindings the list
+# would hide every right given in a namespace outside the guarded ones.
 #
 # Group and User subjects. Kubernetes' own groups take their members from Kubernetes, whatever
 # Google Groups for RBAC says: system:authenticated, system:serviceaccounts and

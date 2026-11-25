@@ -420,10 +420,12 @@ named_grants() {
 # are (FOUND_SAS). A part of the certificate chain so limited (an approval by name, whose name the
 # requester picks) goes to csr_part, so it joins the signers judge_reviews' reviews allowed; the
 # caller runs csr_chains after this. Runs after judge_reviews; a refused list is UNKNOWN naming the
-# permission, and an answer that is not a list (is_list), that holds no bootstrap ClusterRole
-# cluster-admin (labelled kubernetes.io/bootstrapping=rbac-defaults, which every cluster has, so a
-# list without it is not whole: code-rbac.jq passes over a binding whose role the list lacks), or
-# that code-rbac.jq cannot read is UNKNOWN naming the roles' list.
+# permission, and an answer that is not a list (is_list), that lacks either witness, or that
+# code-rbac.jq cannot read is UNKNOWN naming the roles' list. The witnesses are the bootstrap
+# ClusterRole cluster-admin and the bootstrap Role kube-system/extension-apiserver-authentication-
+# reader, each labelled kubernetes.io/bootstrapping=rbac-defaults: every API server makes both, and
+# `kubectl get roles,clusterroles` makes one list request for each kind, so a list without either is
+# not whole, and code-rbac.jq passes over a binding whose role the list lacks.
 live_named() {
   local what id detail kind ns name
   # ROLES_OK: whether $WORK/roles.json holds this cluster's roles, for follow_becomes's named read.
@@ -440,6 +442,11 @@ live_named() {
   if ! jq -e 'any(.items[]; .kind == "ClusterRole" and .metadata.name == "cluster-admin"
       and .metadata.labels["kubernetes.io/bootstrapping"] == "rbac-defaults")' "$WORK/roles.json" >/dev/null 2>&1; then
     unknown "$2" "the API server's list of roles holds no bootstrap ClusterRole cluster-admin (labelled kubernetes.io/bootstrapping=rbac-defaults), which every cluster has, so it is not whole and a right a role limits by name is not read"
+    return 0
+  fi
+  if ! jq -e 'any(.items[]; .kind == "Role" and .metadata.namespace == "kube-system" and .metadata.name == "extension-apiserver-authentication-reader"
+      and .metadata.labels["kubernetes.io/bootstrapping"] == "rbac-defaults")' "$WORK/roles.json" >/dev/null 2>&1; then
+    unknown "$2" "the API server's list of roles holds no bootstrap Role kube-system/extension-apiserver-authentication-reader (labelled kubernetes.io/bootstrapping=rbac-defaults), which every cluster has, so its Roles are not whole and a right a Role limits by name is not read"
     return 0
   fi
   if ! named_grants "$5" "$WORK/named.rec"; then
@@ -465,9 +472,13 @@ live_named() {
 # subject, a Group subject that is not Kubernetes' own (groups_verdict judges those) and
 # system:masters (masters_bindings) are left out. Sets BOUND to how many it added, and BINDINGS_OK to
 # whether $WORK/bindings.json holds this cluster's bindings; returns 1 with BOUND_ERROR when the API
-# server refused the list or answered no list (is_list), or when the list lacks the bootstrap
-# cluster-admin ClusterRoleBinding, its witness: every cluster has it, so a list without it is not
-# whole (its subjects are still added).
+# server refused the list or answered no list (is_list), or when the list lacks either witness: the
+# bootstrap ClusterRoleBinding cluster-admin, and the bootstrap RoleBinding
+# kube-system/system::extension-apiserver-authentication-reader, each labelled
+# kubernetes.io/bootstrapping=rbac-defaults. Every API server makes both, and `kubectl get
+# clusterrolebindings,rolebindings` makes one list request for each kind, so a list without either
+# is not whole: without its RoleBindings, binding_rights would ask nothing outside the guarded
+# namespaces and live_named would read no RoleBinding. Its subjects are still added.
 bound_subjects() {
   local kind ns name label
   local -A held=()
@@ -519,6 +530,12 @@ bound_subjects() {
       and .roleRef.name == "cluster-admin" and (.metadata.labels // {})["kubernetes.io/bootstrapping"] == "rbac-defaults")' \
     "$WORK/bindings.json" >/dev/null; then
     BOUND_ERROR="the bindings' list holds no bootstrap cluster-admin ClusterRoleBinding, which every cluster has, so it is not the cluster's whole list"
+    return 1
+  fi
+  if ! jq -e 'any(.items[]?; .kind == "RoleBinding" and .metadata.namespace == "kube-system"
+      and .metadata.name == "system::extension-apiserver-authentication-reader"
+      and (.metadata.labels // {})["kubernetes.io/bootstrapping"] == "rbac-defaults")' "$WORK/bindings.json" >/dev/null; then
+    BOUND_ERROR="the bindings' list holds no bootstrap RoleBinding kube-system/system::extension-apiserver-authentication-reader (labelled kubernetes.io/bootstrapping=rbac-defaults), which every cluster has, so its RoleBindings are not whole and a right given in a namespace outside the guarded ones is not read"
     return 1
   fi
 }
@@ -623,7 +640,7 @@ binding_rights() {
   local built
   BINDING_RIGHTS='[]' BINDING_ERROR=""
   [ "$BINDINGS_OK" = true ] || return 0
-  if built="$(jq -c -L "$LIB" -f "$LIB/binding-rights.jq" "$WORK/bindings.json" 2>"$WORK/binding-rights.err")" && is_rights "$built"; then
+  if built="$(jq -n -c -L "$LIB" -f "$LIB/binding-rights.jq" "$WORK/bindings.json" 2>"$WORK/binding-rights.err")" && is_rights "$built"; then
     BINDING_RIGHTS="$built"
   else
     BINDING_ERROR="the rights of the namespaces that hold a RoleBinding could not be built, so none is reviewed or read from the cluster's roles: $(first_line "$WORK/binding-rights.err")"
