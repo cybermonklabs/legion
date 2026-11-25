@@ -212,6 +212,20 @@ done
 check "reads flock's -c string" "$(contains "$out" 'step "Fetch" runs .flock -w 5 x -c curl -sS https://example.com/e.')"
 check "and counts five problems" "$(contains "$out" '^::error::check-log-guard: 5 problem(s)$')"
 
+# .github/scripts/harness-pool.sh queues a step's harness, whose command runs in the step's
+# directory with its output in the log: the command, and the script it names, are read.
+echo "case: a client in a script the harness pool queues fails by name"
+root=$(fixture pooled "$(printf '%s\n' '.github/scripts/harness-pool.sh start pooled bash scripts/pooled.sh' \
+  '.github/scripts/harness-pool.sh start --minutes 5 inline gh api repos/o/p')")
+mkdir -p "$root/scripts"
+printf 'case "$1" in start) ;; esac\n' >"$root/.github/scripts/harness-pool.sh"
+printf 'curl -sS https://example.com/p\n' >"$root/scripts/pooled.sh"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the queued script's curl" "$(contains "$out" "::the script scripts/pooled.sh $by_fetch runs .curl -sS https://example.com/p.")"
+check "names the queued command" "$(contains "$out" 'step "Fetch" runs .\.github/scripts/harness-pool.sh start --minutes 5 inline gh api repos/o/p.')"
+check "and counts two problems" "$(contains "$out" '^::error::check-log-guard: 2 problem(s)$')"
+
 echo "case: a stderr guard after an ANSI-C string holding an escaped quote fails by name"
 root=$(fixture ansi-c "$(printf '%s\n' "v=\$'it\\'s'; ci_log_guard_stderr gh api repos/o/x")")
 run_check "$root"

@@ -396,6 +396,13 @@ def run_commands(words: list) -> list:
             return [run for inner in command_of(["sh", "-c", words[1]]) for run in run_commands(inner)]
     if not words:
         return []
+    if words[0].rsplit("/", 1)[-1] == "harness-pool.sh" and words[1:2] == ["start"]:
+        # .github/scripts/harness-pool.sh start [--minutes <n>] <name> <command>...: the script, and
+        # the command it queues, which runs in the step's directory with its output in the log.
+        rest = words[2:]
+        if rest[:1] == ["--minutes"]:
+            rest = rest[2:]
+        return [words[:1]] + run_commands(rest[1:])
     if words[0].rsplit("/", 1)[-1] in INTERPRETERS or words[0] == "eval":
         return [run for inner in command_of(list(words)) if inner != words for run in run_commands(inner)]
     if words[0].rsplit("/", 1)[-1] == "find":
