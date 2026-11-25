@@ -194,12 +194,12 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// every pod below it is not.
 		assigned bool
 		// questions is whether the caller is served `questionsForController`, the questions the
-		// answer loop passed to the controller (questionsForControllerContract, 259), `[]` where no
+		// answer loop passed to the controller (questionsForControllerContract, 263), `[]` where no
 		// question was passed, so a pod below it is served no key at all: the reader before that
 		// contract refuses the key empty as surely as filled (withoutQuestionsForController). A
 		// pod's claims at shapedAnswersContract or later place it in no band, since a plugin from
 		// that contract on states its own (podContracts), so every pod row here below that
-		// contract is served no key, and the callers that stand from it to below 259 are the
+		// contract is served no key, and the callers that stand from it to below 263 are the
 		// stated callers of state_caller_test.go.
 		questions bool
 		// answers is whether the caller is served each issue's one rendered answer and the
@@ -487,7 +487,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 
 			// Nothing else of the body differs: it is the full state with the stripped keys gone,
 			// `wakesWaiting` among them where the caller is below contract 53 and
-			// `questionsForController` where it is below 259, since the reader before each refuses
+			// `questionsForController` where it is below 263, since the reader before each refuses
 			// its key empty as surely as filled (withoutWakesWaiting,
 			// withoutQuestionsForController). The `contract` mark is read apart and taken out of
 			// both: it is the one key the caller's own recorded contract decides rather than the

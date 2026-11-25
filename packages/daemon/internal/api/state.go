@@ -124,7 +124,7 @@ type State struct {
 	// QuestionsForController is every question to a stopped agent that the daemon's answer loop
 	// passed to the controller in the last QuestionsForControllerWindow, newest first and at most
 	// QuestionsForControllerLimit of them: the agent-question notice is a live wake only, so a
-	// controller that starts later reads here what it missed. Never null (contract 259), and left
+	// controller that starts later reads here what it missed. Never null (contract 263), and left
 	// off only the body served a caller below that contract (questionsForControllerHidden).
 	QuestionsForController []QuestionForController `json:"questionsForController"`
 	// LowestPluginContract is the lowest plugin contract among the claims of the project whose
@@ -593,7 +593,7 @@ type AgentSecretsLoginView struct {
 // non-nil value, including empty lists for `wakesWaiting` and `questionsForController`, a zero
 // `claimsToRefresh` count, or an `intakeGiveUps` with no open records. A slice field by itself
 // could not write an empty array with `omitempty`. The bands compose: a caller below 53 is
-// below 73, 228 and 259 too and is served none of the four keys.
+// below 73, 228 and 263 too and is served none of the four keys.
 //
 // A body that hides none of them is marshaled through the embedded value alone. The shadow's own
 // fields are declared after the embedded one, so encoding/json writes a key that comes from them

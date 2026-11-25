@@ -3650,13 +3650,13 @@ package api
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
 //
-// 259: INFRA-204 (cybermonklabs/legion) -- api.State gains `questionsForController`, every
+// 263: INFRA-204 (cybermonklabs/legion) -- api.State gains `questionsForController`, every
 // question to a stopped agent that the daemon's answer loop passed to the controller in the last
 // seven days (id, issue, role, session, asker, ref, reason, passedAt, and writes, each gh call
 // that writes which the loop ran for it), newest first and at most 100. The controller's
 // `agent-question` notice is a live wake only, so a controller that starts later reads what it
 // missed here. A body this contract writes carries the key on every state, never null. A caller
-// below 259 — the contract its `Legion-Plugin-Contract` header states, else the highest its pod's
+// below 263 — the contract its `Legion-Plugin-Contract` header states, else the highest its pod's
 // claims record below 193, since a plugin from 193 states its contract — is served the state
 // without the key (shaping.go's stateNarrowings, questionsForControllerContract,
 // withoutQuestionsForController).
@@ -3668,15 +3668,15 @@ package api
 // below their respective levels, assignment `plan`, `intakeGiveUps`, issue `podHold` and the
 // issue and waiting-line `priority` keys. Contract 232 shapes requests only. Contract 256
 // still omits claim-view `lastDeathAt` and `lastStartFailureAt` for callers below it. Callers
-// from 256 through 258 receive the cause times without the questions.
-// The 259 reader takes the key as optional for the narrowed body alone, as it takes
-// `wakesWaiting`; the boot gate and `legion probe-image` refuse it with a daemon below 259.
+// from 256 through 262 receive the cause times without the questions.
+// The 263 reader takes the key as optional for the narrowed body alone, as it takes
+// `wakesWaiting`; the boot gate and `legion probe-image` refuse it with a daemon below 263.
 // The key's one enumerated field is each question's `role` (answers.go's questionRoles).
-// Its values arrived with the key and ride its band. The 259 answer records are 256's under a
+// Its values arrived with the key and ride its band. The 263 answer records are 256's under a
 // new number, with the questions' key paths and role domain on the state's record. Each state
 // record from 46 to 256 adds `"questionsForController.*.role": []`, since every record holds
 // the domains of all enumerated fields of its answer (TestTheRecordSetIsOneRecordPerAnswerPerContract)
-// and this field has no values below 259. No other record below 259 moves and no request changes.
+// and this field has no values below 263. No other record below 263 moves and no request changes.
 // (This branch
 // took 38, then 52 while main stood at 51, then 57 while main stood at 56, then 58 while main
 // stood at 57, then 59 while main stood at 58, then 60 while main stood at 59, then 61 while main
@@ -3692,8 +3692,8 @@ package api
 // declared by #4175 too, then 211 while main stood at 205, 217 being declared by #4273, #4590 and
 // #4771 too, then 228 while main stood at 213 (#4553), then 229 while main stood at 213, 228
 // being declared by #4590 too, and kept 229 when main came to stand at 217 (#4273), at 219 (#4611)
-// and at 220 (#4930), then 259 while main stood at 256. It took
-// 198 because a census of every open pull request at 2026-11-20T19:29Z, read with the
+// and at 220 (#4930), then 259 while main stood at 256, then 263 while main still stood at 256.
+// It took 198 because a census of every open pull request at 2026-11-20T19:29Z, read with the
 // `declared_by_open_pull_requests` of main's .github/scripts/check-daemon-api-contract.sh, found
 // 189 declared by #2402, #3512, #3995, #4184, #4206, #4209, #4274, #4533, #4631, #4634 and #4639,
 // 190 by this change's own earlier head and #4611, 191 by #4049 and #4573, 192 by #4175, #4180,
@@ -3740,8 +3740,13 @@ package api
 // 2026-11-24T22:46:34Z and 22:51:07Z, read the same way, found 257 declared by #4580 and 258 by
 // #4432 and #5164, with 261 by #5332, 262 by #5204, 265 by #5285, 268 by #5384, 271 by #4173 and
 // 276 by #4592 above them, and nothing at 259, so 259 was then the lowest number above main's 256
-// that no open pull request declared. Read main's own number and every open pull request's again
-// at the next merge.
+// that no open pull request declared. It took 263 at the forward merge of 2026-11-25 that brought
+// main in at 99327832, where main still carried 256, because a census of every open pull request
+// made between 2026-11-25T03:01:00Z and 03:04:31Z, read the same way, found 257 declared by
+// #4580, 258 by #5164, 259 by this change's own earlier head (#2230), #3712 and #5156, 260 by
+// #3831, 261 by #5332 and 262 by #5204, and nothing at 263, so 263 was then the lowest number
+// above main's 256 that no open pull request declared. Read main's own number and every open pull
+// request's again at the next merge.
 // A renumber moves `questionsForControllerContract` in shaping.go with it, the last number of
 // answers.go's SupportedContracts.)
-const DaemonAPIVersion = 259
+const DaemonAPIVersion = 263

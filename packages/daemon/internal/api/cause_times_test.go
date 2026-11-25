@@ -290,7 +290,7 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 		})
 	}
 
-	// The questions band (259) also drops its key for a caller below the cause times.
+	// The questions band (263) also drops its key for a caller below the cause times.
 	_, narrowings := stateNarrowedStating(t, populatedState(t), statePodAddr+":41000", podClaims(0), causeTimesContract-1)
 	const dropped = "the claim views' lastDeathAt and lastStartFailureAt"
 	const droppedQuestions = "questionsForController"

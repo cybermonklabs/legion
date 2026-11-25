@@ -1913,7 +1913,7 @@ when the agent it answers is stopped too, the listener hands that answer to its 
 
 - **Passing on.**
   The daemon sends the controller one `agent-question` notice per question on its controller topic (`{kind, role, reason, question: {id, issue, session, asker, ref, text, writes}}`, the text cut at 2,000 characters).
-  Because that topic is a live wake only, `legion state` lists every question passed on in the last seven days, newest first and at most 100, as `questionsForController` (daemon API contract 259).
+  Because that topic is a live wake only, `legion state` lists every question passed on in the last seven days, newest first and at most 100, as `questionsForController` (daemon API contract 263).
   Both name each `gh` write the question's calls ran, as the reply does, so the controller never decides on a question without knowing what the agent already did:
   `writes` is a list of `{seq, command, repository, exit}`, `command` being the command's words (for `gh api` its method and endpoint, `api PUT repos/acme/widgets/pulls/7/merge`), `repository` `""` where the call named none, and `exit` `null` where gh answered no status.
   The notice leaves `writes` out when there is none, and `questionsForController` carries `[]`.
@@ -3578,7 +3578,7 @@ The statement takes these rows of every project the database holds.
 Where another project's daemon shares the database and stays on this release, add `and split_part(issue, '-', 1) = '<PROJECT>'`, the Dispatch project key the rolled-back daemon's issues carry, which is how `WaitingNotices` itself selects a project.
 What the delete costs is the notices themselves.
 The loop marked each question and each decision passed in the transaction that queued its notice (`processed_events`), so a roll forward queues neither again:
-a deleted question is still listed in `questionsForController`, among the newest 100, for seven days from its pass, in the state this release serves a caller at contract 259 or later, and a deleted decision is not told again.
+a deleted question is still listed in `questionsForController`, among the newest 100, for seven days from its pass, in the state this release serves a caller at contract 263 or later, and a deleted decision is not told again.
 
 **The four tables need no statement.**
 This release creates `answer_tool_calls` (`20261106214000_answer_tool_calls`), `agent_conversations` (`20261106214001_agent_conversations`), and `answer_questions` and `answer_spend` (`20261106214002_answer_questions`), adds `thread_reply` to the kinds `answer_questions` takes (`20261124021727_answer_questions_thread_reply`), adds the tool of each call to `answer_tool_calls` (`20261124072849_answer_tool_calls_tool`), and adds `answer_questions.wake` and the state `woken` beside the outbox kind `agent_message` (`20261124114223_released_agent_messages`).

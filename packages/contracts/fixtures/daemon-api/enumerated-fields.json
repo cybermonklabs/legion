@@ -561,27 +561,27 @@
     "values": [
       {
         "value": "architect",
-        "since": 259
+        "since": 263
       },
       {
         "value": "implementer",
-        "since": 259
+        "since": 263
       },
       {
         "value": "merger",
-        "since": 259
+        "since": 263
       },
       {
         "value": "planner",
-        "since": 259
+        "since": 263
       },
       {
         "value": "reviewer",
-        "since": 259
+        "since": 263
       },
       {
         "value": "tester",
-        "since": 259
+        "since": 263
       }
     ]
   },

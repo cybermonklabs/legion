@@ -714,7 +714,7 @@ const legionHeldOutboxRow = z.object({
 });
 
 /** `record.AgentQuestionWrite` (`api.QuestionForController.Writes`) — one `gh` call that writes which the daemon's answer loop ran for a
- * question before it passed the question on (contract 259), a read never one: its seq among the
+ * question before it passed the question on (contract 263), a read never one: its seq among the
  * question's calls, its command words (`pr merge`; for `gh api` its method and endpoint, `api PUT
  * repos/acme/widgets/pulls/7/merge`), the repository its arguments name (`""` for none), and gh's
  * exit status, `null` where gh answered none, since it could not start or the daemon stopped
@@ -728,7 +728,7 @@ const legionQuestionWrite = z.object({
 });
 
 /** `api.QuestionForController` — one question to a stopped agent that the daemon's answer loop
- * passed to the controller (its `agent-question` notice, contract 259): the question's id, the
+ * passed to the controller (its `agent-question` notice, contract 263): the question's id, the
  * agent's issue, role and session, who asked (`user:<login>`, or `session:<id>` with the asking
  * session's title when known), where (a `dispatch://` reference, or `envoy:<event id>`), why it was
  * passed on (`not_answered`, `needs_work`, a bound or fault, `over_limit`, `unknown_format`,
@@ -1479,9 +1479,9 @@ const legionPaused = z.object({
  * 228 refuses the key whether its lists are empty or not.
  * `questionsForController` is every question the answer loop passed to the controller in the last
  * seven days, newest first, at most 100, never null: the `agent-question` notice is a live wake
- * only, so a controller that starts later reads here what it missed (contract 259). It is optional
+ * only, so a controller that starts later reads here what it missed (contract 263). It is optional
  * for the same reason `wakesWaiting` is: only a reader built before #2788 refuses the key, and a
- * later one below 259 drops it, so the route strips it for a caller below 259, read the same way,
+ * later one below 263 drops it, so the route strips it for a caller below 263, read the same way,
  * and for that caller alone (`api.stateFor`, `withoutQuestionsForController`). */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo.optional(),

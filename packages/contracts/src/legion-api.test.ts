@@ -2802,7 +2802,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // plugin contract reports the claims in the snapshot (a pod at 201), not the caller's contract.
   // Seven bands stand above 199: the repositories block at 202; assignments' `plan` at 220;
   // `intakeGiveUps` at 228; issue `podHold` at 246; issue and waiting-line `priority` at 250;
-  // claim-view `lastDeathAt` and `lastStartFailureAt` at 256; and `questionsForController` at 259.
+  // claim-view `lastDeathAt` and `lastStartFailureAt` at 256; and `questionsForController` at 263.
   // The capability source `caches` arrived at 213 as a value, so that row is served without
   // `source`. The other fields and rows are as the state golden holds them.
   const { daemonApiVersion } = z
@@ -3040,14 +3040,14 @@ test("the state golden names the held lifecycle rows, and the list may be left o
   expect(LegionStateResponse.safeParse(dropped).success).toBeTrue();
 });
 
-// The questions passed to the controller (contract 259): the golden carries the question LEGION-208's
+// The questions passed to the controller (contract 263): the golden carries the question LEGION-208's
 // stopped implementer passed model_calls on after it merged with gh, naming that merge and a
 // comment whose exit gh never answered, and the one LEGION-207's stopped tester could not answer;
 // a state with none carries an empty list rather than none. What is refused is a question of a
 // role this build does not know and a write with no command. No plugin code reads a question's
 // fields, so a question without its `passedAt` or its `writes` is read rather than refused
 // (LEGION_ANSWER_READS). The key is not required, for the reason `wakesWaiting` is not: a daemon
-// at this contract leaves it off the state it serves a caller below 259, since a reader before it
+// at this contract leaves it off the state it serves a caller below 263, since a reader before it
 // refuses the key however empty (`api.stateFor`, `withoutQuestionsForController`). So a body
 // without the key parses, and a reader of it learns nothing about which questions were passed
 // rather than losing the whole state.
