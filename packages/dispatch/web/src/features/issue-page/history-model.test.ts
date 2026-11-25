@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import type { Actor, Artifact, Comment, DispatchEvent, MessageRead } from "../../api/types";
 import { dayLabel } from "../activity/activity-model";
 import { buildIssuePath, buildReferencePath, parseNodeReference } from "../refs/routes";
@@ -345,6 +346,7 @@ test("a thread agents wrote among themselves is one entry with its replies, unti
       broadcast_id: null,
       created_at: "2026-11-15T09:02:00Z",
       deliveries: [],
+      ...messageCorrectionFields(),
       id: "daemon",
       in_reply_to: null,
       issue_key: KEY,

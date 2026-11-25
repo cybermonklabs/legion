@@ -295,7 +295,6 @@ function stubDetailsReads(details: IssueDetails): () => void {
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
     spyOn(api, "listProjects").mockResolvedValue([]),
     spyOn(api, "listAgents").mockResolvedValue([]),
-    spyOn(api, "listRepoProjects").mockResolvedValue([]),
     spyOn(api, "listProjectArchitectureSources").mockResolvedValue([]),
     spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] }),
     spyOn(api, "getIssueSubscribers").mockResolvedValue([]),
