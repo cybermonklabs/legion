@@ -374,7 +374,6 @@ daemon_go_tests:
   - 'scripts/e2e/lib/held-port.py'
   - 'scripts/e2e/lib/process-tree.sh'
   - 'scripts/e2e/lib/built-from.sh'
-  - 'scripts/e2e/tester-ci-words.txt'
   - 'packages/pi-legion/package.json'
   - 'packages/pi-envoy/package.json'
   - 'deploy/kubernetes/daemon/controller.yaml.example'

@@ -15,7 +15,6 @@ body: |-
     reads no CI, runs no lane again as a whole, and waits for none. The reviewer's and the
     architect's prompts say that each check, those a CI job runs among them, must read yes: at the
     reviewed head for the approval, and at each open head of the issue for the acceptance.
-    `scripts/e2e/tester-ci-words.txt` holds the patterns of a sentence that sends the tester to CI.
 time: 2026-11-23T10:40:13Z
 custom:
     Issue: ci-failure-to-implementer

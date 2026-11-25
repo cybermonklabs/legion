@@ -616,8 +616,6 @@ RULES = {
     f"{DAEMON}/internal/prompts/roles_test.go": reads(
         ("packages/pi-legion/agents/*.md", "internal/prompts/roles_test.go:261 stats agents/<name>.md for each task agent"),
         ("skills/legion-worker/references/tools.md", "internal/prompts/roles_test.go:762-763")),
-    f"{DAEMON}/internal/prompts/tester_ci_test.go": reads(
-        ("scripts/e2e/tester-ci-words.txt", "internal/prompts/tester_ci_test.go:16 testerCIWords, read by TestTheTesterTextsSendItToNoCI at :25")),
     f"{DAEMON}/internal/runtime/sandbox/operatorpod_test.go": reads(
         ("deploy/kubernetes/operator-route/pod.yml", "internal/runtime/sandbox/operatorpod_test.go:28"),
         (f"{FIX}/dispatch-public-url.json", "internal/runtime/sandbox/operatorpod_test.go:236"),
