@@ -20,6 +20,7 @@ import (
 // verifying keeps none (record.KeepsSlot), and stands in no part of the waiting line. No role works
 // verifying, so nothing but the judge of its close moves it on.
 func TestAMergedChildClosesWhenTheIssueBeneathItLeaves(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	now := time.Date(2026, 10, 19, 4, 0, 0, 0, time.UTC)
 	engine := New(record.NewStore(), Config{Project: "LEGION", Linger: time.Hour, ProductionCheckBound: 48 * time.Hour,

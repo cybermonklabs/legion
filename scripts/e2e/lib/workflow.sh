@@ -1255,18 +1255,19 @@ assert_round_handoff() {
 # of the issue's checks after the merge opens it on the merge commit and hands that role its first
 # look, and the state shows it as `.issues[KEY].check` (repo, pullRequest, mergeCommit, openedAt,
 # role, looks, lookOpen, lastWake{kind, detail, at}, nextWakeAt, last) while it is open, and omits
-# it once it has closed. A look's report is that role's `handoff_complete` with a verdict and no
-# commit: `pending` before the last look ends the look and suspends the role's claim, so the check
-# stays open with `lookOpen` false; in `verifying` the report deletes nothing of the issue's pod,
-# which the idle release frees. That report carries `wake_at`, when the agent wants its next look,
-# and the daemon starts the next look then (`nextWakeAt`): it is the only thing that starts a look
-# before the bound, since no deploy, no Dispatch notice and no boot of the daemon's own wakes an
-# open check. A wake at or past the check's bound starts no look of its own, and the bound
-# (`production_check_hours`) starts the last look, whose `pending` closes the check as not_run and
-# retires that role's claim (`issue_close`). A check closed as not run is no pass, so the issue
-# stays in `verifying`: the close follows the checks. Every reader over daemon_state is a jq
-# predicate, so a wait polls it as it polls issue_phase; the readers over daemon.log parse each
-# line on its own, since the log carries the daemon's stderr too.
+# it once it has closed. A look's report is that role's `handoff_complete` with `check_opened_at`
+# from its look task, a verdict and no commit. A `pending` before the last look ends the look and
+# suspends the role's claim, so the check stays open with `lookOpen` false; in `verifying` the
+# report deletes nothing of the issue's pod, which the idle release frees. That report carries
+# `wake_at`, when the agent wants its next look, and the daemon starts the next look then
+# (`nextWakeAt`): it is the only thing that starts a look before the bound, since no deploy, no
+# Dispatch notice and no boot of the daemon's own wakes an open check. A wake at or past the
+# check's bound starts no look of its own, and the bound (`production_check_hours`) starts the last
+# look, whose `pending` closes the check as not_run and retires that role's claim (`issue_close`). A
+# check closed as not run is no pass, so the issue stays in `verifying`: the close follows the
+# checks. Every reader over daemon_state is a jq predicate, so a wait polls it as it polls
+# issue_phase; the readers over daemon.log parse each line on its own, since the log carries the
+# daemon's stderr too.
 # close_waits ISSUE: the issue stands in `verifying` and the state names what its close waits for
 # (`closeWait`).
 close_waits() {

@@ -61,6 +61,7 @@ func todaysTable() []Row {
 // effects, and a guard that answers every snapshot as today's does (the one guard that reads
 // anything reads the pull request).
 func TestAWalkWithNoPlanRowsMovesByTodaysTable(t *testing.T) {
+	t.Parallel()
 	want, got := todaysTable(), todaysWalk().table()
 	if len(got) != len(want) {
 		t.Fatalf("the table of a walk with no plan rows has %d rows, want today's %d", len(got), len(want))
@@ -86,6 +87,7 @@ func TestAWalkWithNoPlanRowsMovesByTodaysTable(t *testing.T) {
 // waits for nothing, and into verifying where it waits. Verifying's own row closes the issue once
 // the checks of its goal pass, and nothing else moves an issue out of verifying.
 func TestTheTableHasOneRowForEachGuardOfTheMerge(t *testing.T) {
+	t.Parallel()
 	for _, line := range testLines {
 		table := TableOf(line)
 		chosen := func(from phase.Phase, trigger TriggerKind, snapshot Snapshot) (phase.Phase, int) {
@@ -120,6 +122,7 @@ func TestTheTableHasOneRowForEachGuardOfTheMerge(t *testing.T) {
 }
 
 func TestEveryLineHasARowForEachPhaseAndTrigger(t *testing.T) {
+	t.Parallel()
 	for _, line := range testLines {
 		if err := validateTable(line, TableOf(line)); err != nil {
 			t.Errorf("line %v: %v", line, err)
@@ -128,6 +131,7 @@ func TestEveryLineHasARowForEachPhaseAndTrigger(t *testing.T) {
 }
 
 func TestDeletingAnyTransitionRowBreaksCoverage(t *testing.T) {
+	t.Parallel()
 	for _, line := range testLines {
 		table := TableOf(line)
 		if len(table) == 0 {
@@ -152,6 +156,7 @@ func TestDeletingAnyTransitionRowBreaksCoverage(t *testing.T) {
 // fail, a review's request for changes) is one of those pairs, and the backward trigger carries
 // them all: a worker may ask for any move back the line allows.
 func TestBackwardRowsOfEachLineAreItsOwnPairs(t *testing.T) {
+	t.Parallel()
 	for _, line := range testLines {
 		var want []string
 		for at, from := range line {
@@ -223,6 +228,7 @@ func setOf(pairs []string) map[string]bool {
 // The control is the table of today's backward rows (phase.BackwardPairs), which holds
 // reviewing-testing and lacks testing-reviewing.
 func TestTheTableOfALineInAnyOrderGoesBackByTheLine(t *testing.T) {
+	t.Parallel()
 	rowsOf := func(line []phase.Phase, trigger TriggerKind) []string {
 		var pairs []string
 		for _, row := range TableOf(line) {

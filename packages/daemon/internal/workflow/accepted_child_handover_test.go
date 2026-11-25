@@ -27,6 +27,7 @@ import (
 // Two levels deep, through the linger's expiry: the held child hangs under a child of the root,
 // not under the root itself.
 func TestTheChildHeldUnderAnAcceptedRootIsHandedOverWhenTheRootCloses(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	now := time.Date(2026, 11, 4, 4, 0, 0, 0, time.UTC)
 	engine := New(record.NewStore(), Config{Project: "LEGION", Linger: time.Hour, ProductionCheckBound: 48 * time.Hour,
@@ -88,6 +89,7 @@ func TestTheChildHeldUnderAnAcceptedRootIsHandedOverWhenTheRootCloses(t *testing
 // stayed todo at admitted in the closed tree; read by the child's own state, both roots hand it
 // over.
 func TestTheChildHeldUnderAnAcceptedRootIsHandedOverWhenAPersonClosesItByHand(t *testing.T) {
+	t.Parallel()
 	for _, standing := range []record.Issue{
 		{Phase: phase.Retro},
 		{Phase: phase.Held, Hold: &record.Hold{From: phase.Retro}},

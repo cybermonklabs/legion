@@ -17,6 +17,7 @@ import (
 // admission's release of an unslotted root, is admission's (internal/admit), and doors 11 and 12
 // write nothing new.
 func TestEachDoorToDone(t *testing.T) {
+	t.Parallel()
 	for _, door := range []struct {
 		name string
 		run  func(*testing.T)
@@ -42,6 +43,7 @@ func TestEachDoorToDone(t *testing.T) {
 // queued and queues no second one, the issue stays in verifying, and the read closes it when it
 // comes.
 func TestARestartBetweenTheMergeAndTheFirstReadLosesNothing(t *testing.T) {
+	t.Parallel()
 	rig := newWaitRig(t, "")
 	rig.seedRoot(phase.Merging, "retro")
 	rig.mergeRoot()
@@ -60,6 +62,7 @@ func TestARestartBetweenTheMergeAndTheFirstReadLosesNothing(t *testing.T) {
 // A merge in a tree a person parked stands its member in verifying: the member has not closed, so
 // nobody is told child-closed, and its checks are read as in a running tree.
 func TestAMergeInAParkedTreeWaitsForItsChecks(t *testing.T) {
+	t.Parallel()
 	rig := newWaitRig(t, "")
 	rig.seedRoot(phase.Implementing, "in_progress")
 	rig.seedChild(waitChild, phase.Merging, "retro")
@@ -81,6 +84,7 @@ func TestAMergeInAParkedTreeWaitsForItsChecks(t *testing.T) {
 // one message names what waited, each open defect is marked closed by the person, and an open
 // production check goes on as for any closed issue.
 func TestAPersonsDoneClosesAndSaysWhatWaited(t *testing.T) {
+	t.Parallel()
 	rig := newWaitRig(t, claim.RoleTester)
 	rig.seedRoot(phase.Merging, "retro")
 	rig.mergeRoot()
@@ -112,6 +116,7 @@ func TestAPersonsDoneClosesAndSaysWhatWaited(t *testing.T) {
 // The owning architect's done on a child whose pull request merged is set back, as a session's
 // write is, and the architect is told what the close waits for: such a child closes by its checks.
 func TestAnArchitectsDoneOnAMergedChildIsSetBack(t *testing.T) {
+	t.Parallel()
 	rig := newWaitRig(t, "")
 	rig.seedRoot(phase.Implementing, "in_progress")
 	rig.seedChild(waitChild, phase.Merging, "retro")
@@ -132,6 +137,7 @@ func TestAnArchitectsDoneOnAMergedChildIsSetBack(t *testing.T) {
 // The owning architect's done on a child with no merged pull request takes the child out of the
 // workflow, as before.
 func TestAnArchitectsDoneOnAnUnmergedChildDropsIt(t *testing.T) {
+	t.Parallel()
 	rig := newWaitRig(t, "")
 	rig.seedRoot(phase.Implementing, "in_progress")
 	rig.seedChild(waitChild, phase.Implementing, "in_progress")
@@ -146,6 +152,7 @@ func TestAnArchitectsDoneOnAnUnmergedChildDropsIt(t *testing.T) {
 // close_root refuses a root whose pull request merged, CLOSE_AFTER_MERGE: such a root closes by
 // its checks or a person. Here its next change waits at admitted.
 func TestCloseRootRefusesARootWhosePullRequestMerged(t *testing.T) {
+	t.Parallel()
 	rig := newWaitRig(t, "")
 	rig.seedRoot(phase.Admitted, "todo")
 	seedRecord(t, rig.pool, func(tx pgx.Tx) error {
@@ -163,6 +170,7 @@ func TestCloseRootRefusesARootWhosePullRequestMerged(t *testing.T) {
 // The status repair writes testing for an issue in verifying whose status write was lost, and
 // never done.
 func TestTheStatusRepairWritesTestingForVerifying(t *testing.T) {
+	t.Parallel()
 	rig := newWaitRig(t, "")
 	rig.seedRoot(phase.Merging, "retro")
 	rig.mergeRoot()

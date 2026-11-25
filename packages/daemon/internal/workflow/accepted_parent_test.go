@@ -39,6 +39,7 @@ func signOffNow(t *testing.T, pool *pgxpool.Pool, id, key string) intake.Result 
 // of them leaves, since a parent is accepted only once no issue beneath it is still in the
 // workflow.
 func TestSignOffIsRefusedWhileAnIssueBeneathIsInTheWorkflow(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedAccepting(t, pool)
 	seedBeneath(t, pool, "LEGION-209", "LEGION-208", "LEGION-208", phase.Implementing, "in_progress")
@@ -86,6 +87,7 @@ func leave(t *testing.T, pool *pgxpool.Pool, key string, at phase.Phase, status 
 // be accepted or closed while the child is in the workflow. Decided by this tree's architect on
 // dispatch://INFRA-980/comment/d642164a-31d2-4d6c-ae5e-4da5dd0b9104.
 func TestAChildHeldUnderAnAcceptedAncestorDoesNotRefuseThatAncestorsSignOff(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	// The root's own pull request has merged, and the root stands in merging, waiting for the
 	// rest of its tree. LEGION-209 is in accepting beneath it, and LEGION-300, a person's todo
@@ -135,6 +137,7 @@ func treeByKey(t *testing.T, pool *pgxpool.Pool, tree string) map[string]record.
 // A6. close_root is refused the same way and with the same code: the close lingers the whole
 // tree, which would stop every issue beneath mid-turn.
 func TestCloseRootIsRefusedWhileAnIssueBeneathIsInTheWorkflow(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U"})
@@ -167,6 +170,7 @@ func TestCloseRootIsRefusedWhileAnIssueBeneathIsInTheWorkflow(t *testing.T) {
 // parent already done, so a grandchild under a done parent is held by whichever issue above it
 // is still merging.
 func TestAPersonsTodoUnderAnAcceptedAncestorIsHeldAtAdmitted(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Merging, Generation: 1, Status: "needs_review", Rank: "U"})
@@ -202,6 +206,7 @@ func TestAPersonsTodoUnderAnAcceptedAncestorIsHeldAtAdmitted(t *testing.T) {
 // passed whatever that step is (record.Accepted). The ancestor walks today's line in one case and
 // the plan `implementer tester`, which has no reviewer step, in the other; the text is one.
 func TestTheNoticeOfATodoUnderAnAcceptedAncestorNamesTheHeadItsLastStepPassed(t *testing.T) {
+	t.Parallel()
 	const want = "LEGION-300 is beneath LEGION-208, whose head the last step of its task passed and the daemon has already accepted, " +
 		"so LEGION-300 is recorded at admitted and nothing starts it while LEGION-208 stands in retro or merging."
 	for _, tc := range []struct {
@@ -250,6 +255,7 @@ func TestTheNoticeOfATodoUnderAnAcceptedAncestorNamesTheHeadItsLastStepPassed(t 
 // person, and carries none of this (heldParentWait's reason, held in restart_task_test.go). Each
 // row holds only that much of the wording.
 func TestTheRefusalsOverChildrenInTheWorkflowNameTheStatusWrite(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		lag  bool

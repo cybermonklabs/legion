@@ -39,6 +39,7 @@ func readPassing(t *testing.T, apply func(id string, fact intake.Fact) intake.Re
 // close-waits and not child-closed, and the entry retires and suspends nothing. Every claim and the
 // pod stand, so a look of its production check and its next change find them.
 func TestAMergedChildWaitsInVerifyingAndRetiresNobody(t *testing.T) {
+	t.Parallel()
 	for _, role := range []claim.Role{claim.RoleTester, ""} {
 		t.Run(fmt.Sprintf("production_check %q", role), func(t *testing.T) {
 			pool := migratedPool(t)
@@ -69,6 +70,7 @@ func TestAMergedChildWaitsInVerifyingAndRetiresNobody(t *testing.T) {
 // claim of the issue retired (issue_close, the tester's among them) and the issue's Sandbox deleted
 // with the pod and the disk it ran on (an IssueSuspend).
 func TestAnOffProjectsMergedChildCloseRetiresEveryClaimAndReleasesItsPod(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedMergingChild(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
 	engine := New(record.NewStore(), Config{Project: "LEGION", Linger: time.Hour, ProductionCheckBound: 48 * time.Hour, Clock: func() time.Time { return mergeCloseNow }}, nil)
@@ -104,6 +106,7 @@ func TestAnOffProjectsMergedChildCloseRetiresEveryClaimAndReleasesItsPod(t *test
 // close does, with every claim of every member suspended and none spared, and no check record, no
 // look and no bound row.
 func TestAnOffProjectsMergedRootCloseLingersWithEveryClaimSuspended(t *testing.T) {
+	t.Parallel()
 	rig := seedMergedRootUnder(t, "", record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "in_progress"})
 	pool := rig.pool
 	assertPhase(t, pool, phase.Verifying)
@@ -140,6 +143,7 @@ func TestAnOffProjectsMergedRootCloseLingersWithEveryClaimSuspended(t *testing.T
 // suspends nothing: no issue_close and no IssueSuspend, which the linger's own rows already wrote and
 // the tree's close completes.
 func TestALingeringMembersMergeWaitsInVerifying(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	until := mergeCloseNow.Add(time.Hour)
 	seedMergingChild(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Done, Generation: 7, Status: "done", Rank: "U", LingerUntil: &until, LastDispatchSeq: 1})
@@ -177,6 +181,7 @@ func TestALingeringMembersMergeWaitsInVerifying(t *testing.T) {
 // has nothing to check in production: today's close, every claim closed and the Sandbox deleted
 // with the pod and the disk that pod owns, and no check, no look and no bound.
 func TestAChildClosedAsDoneWithNoPullRequestOpensNoCheck(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
 	parent := "LEGION-208"
@@ -212,6 +217,7 @@ func TestAChildClosedAsDoneWithNoPullRequestOpensNoCheck(t *testing.T) {
 // waits, since verifying keeps none (record.KeepsSlot), and the merge takes none from the running
 // child.
 func TestAMergedRootWaitsWhileItsChildRuns(t *testing.T) {
+	t.Parallel()
 	rig := seedMergedRoot(t, record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "in_progress"})
 	assertPhase(t, rig.pool, phase.Verifying)
 	var lingering bool
@@ -250,6 +256,7 @@ func TestAMergedRootWaitsWhileItsChildRuns(t *testing.T) {
 // completes its phase and the child moves on. Before the wait the root's close lingered the tree
 // mid-turn and that completion was refused 409 TREE_LINGERING.
 func TestAWaitingRootsChildCompletesItsPhase(t *testing.T) {
+	t.Parallel()
 	rig := seedMergedRoot(t, record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "in_progress"})
 	seedPhase(t, rig.pool, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleImplementer, Claim: "child-implementer"})
 	seedPR(t, rig.pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43, Branch: "legion/LEGION-209", HeadSHA: "head-43", Failing: []string{}})
@@ -269,6 +276,7 @@ func TestAWaitingRootsChildCompletesItsPhase(t *testing.T) {
 // the root still waiting: notices never de-duplicate, and a root can wait for days across many
 // boots.
 func TestAWaitingRootTellsItsArchitectOnlyWhenTheWaitBegins(t *testing.T) {
+	t.Parallel()
 	rig := seedMergedRoot(t,
 		record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "in_progress"},
 		record.Issue{Key: "LEGION-210", Phase: phase.Testing, Status: "in_progress"},
@@ -290,6 +298,7 @@ func TestAWaitingRootTellsItsArchitectOnlyWhenTheWaitBegins(t *testing.T) {
 // The close is the one a merge made before the wait: done written to Dispatch over testing, the
 // linger armed, and every claim of the tree suspended.
 func TestAMergedRootClosesWhenItsLastOpenChildLeaves(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		child record.Issue
@@ -342,6 +351,7 @@ func TestAMergedRootClosesWhenItsLastOpenChildLeaves(t *testing.T) {
 // merged could not say which issues the close waits for, since the issue had not reached merging
 // then.
 func TestAnIssueReachingMergingOnAMergedPullRequestWaitsForItsTree(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Retro, Generation: 1, Status: "retro", Rank: "U"})
 	parent := "LEGION-208"
@@ -370,6 +380,7 @@ func TestAnIssueReachingMergingOnAMergedPullRequestWaitsForItsTree(t *testing.T)
 // root stood in merging (record.AcceptedAncestor), and a root in verifying is no longer accepted,
 // so the child is free to start and its root's close waits for it (D10).
 func TestWhichChildrenHoldAMergedRootsCloseUp(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		child record.Issue
@@ -406,6 +417,7 @@ func TestWhichChildrenHoldAMergedRootsCloseUp(t *testing.T) {
 // pull request, and moves nothing there (pullRequestSynchronized), and a red check moves nothing
 // anywhere. There is nothing left to merge or to re-implement.
 func TestNothingMovesAWaitingMergedRoot(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		fact intake.Fact
@@ -438,6 +450,7 @@ func TestNothingMovesAWaitingMergedRoot(t *testing.T) {
 // and never sends the merge again. The root still closes on that merge when its last child leaves
 // and the read after it passes, with pull request #42 still its record at merge.
 func TestANewPullRequestFromAWaitingRootsBranchLeavesItsMergeStanding(t *testing.T) {
+	t.Parallel()
 	rig := seedMergedRootUnder(t, "", record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "in_progress"})
 	rig.apply("follow-up-opened", intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 99, Branch: "legion/LEGION-208", HeadSHA: "follow-up",
 		UpdatedAt: time.Date(2026, 10, 20, 4, 0, 0, 0, time.UTC)})

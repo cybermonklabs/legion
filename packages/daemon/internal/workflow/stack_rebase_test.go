@@ -24,6 +24,7 @@ import (
 // for any moved head, and a clean answer moves nothing either; in merging, the merge GitHub then
 // reports at the rebased head closes the issue.
 func TestAStackRebasePastTheReviewSendsNothingBack(t *testing.T) {
+	t.Parallel()
 	rebase := intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208",
 		Before: "head", Sender: "web-flow", HeadSHA: "rebased", Base: "main"}
 	for _, tc := range []struct {

@@ -295,6 +295,7 @@ func recordMergeOf(issue record.Issue) recordMerge {
 // wait and the one row that writes it to close-wait.md, and a read of its checks, and no message
 // on Dispatch. The read's answer of an after_merge check with no result keeps it there.
 func TestAMergeInMergingDoesNotCloseWhileACheckHasNoPass(t *testing.T) {
+	t.Parallel()
 	rig := newWaitRig(t, claim.RoleTester)
 	rig.seedRoot(phase.Merging, "retro")
 	rig.mergeRoot()
@@ -321,6 +322,7 @@ func TestAMergeInMergingDoesNotCloseWhileACheckHasNoPass(t *testing.T) {
 // retro's completion then moves the issue into merging on a merged pull request, where it enters
 // verifying as a merge in merging does, and starts no merger.
 func TestAMergeInRetroWaitsWhenTheIssueReachesMerging(t *testing.T) {
+	t.Parallel()
 	rig := newWaitRig(t, claim.RoleTester)
 	rig.seedRoot(phase.Retro, "retro")
 	seedGate(t, rig.pool, record.DesignGate{Issue: waitRoot, ArtifactID: "artifact-208", LatestVersion: 4, ApprovedVersion: new(4)})
@@ -347,6 +349,7 @@ func TestAMergeInRetroWaitsWhenTheIssueReachesMerging(t *testing.T) {
 // recorded at the newest merge, closes the issue: done in Dispatch, its tree lingers, and the close
 // is marked as one on its checks.
 func TestAReadOfAllPassesClosesTheIssue(t *testing.T) {
+	t.Parallel()
 	rig := newWaitRig(t, claim.RoleTester)
 	rig.seedRoot(phase.Merging, "retro")
 	rig.mergeRoot()
@@ -393,6 +396,7 @@ func lastID(t *testing.T, rig *waitRig, issue, kind string) int64 {
 // Under a project that runs no production check, a merge whose every check passes still waits in
 // verifying for the read after it, and that read closes it.
 func TestAMergeWithNothingToWaitForClosesAtTheRead(t *testing.T) {
+	t.Parallel()
 	rig := newWaitRig(t, "")
 	rig.seedRoot(phase.Merging, "retro")
 	rig.mergeRoot()
@@ -405,6 +409,7 @@ func TestAMergeWithNothingToWaitForClosesAtTheRead(t *testing.T) {
 // is a term of what the close waits for (F01), named in the stored wait and in the close-waits
 // notice. The child's leave judges the root again, and the read it queues closes it.
 func TestAMergeWithAnIssueBeneathWaitsInVerifying(t *testing.T) {
+	t.Parallel()
 	rig := newWaitRig(t, "")
 	rig.seedRoot(phase.Merging, "retro")
 	rig.seedChild(waitChild, phase.Implementing, "in_progress")
@@ -433,6 +438,7 @@ func TestAMergeWithAnIssueBeneathWaitsInVerifying(t *testing.T) {
 // record does not hold keeps the close waiting, and closeWait's open children name it. Its move to
 // icebox frees the close at the next read.
 func TestTheCloseReadsTheChildrenFromDispatch(t *testing.T) {
+	t.Parallel()
 	rig := newWaitRig(t, "")
 	rig.seedRoot(phase.Merging, "retro")
 	rig.mergeRoot()
@@ -461,6 +467,7 @@ func TestTheCloseReadsTheChildrenFromDispatch(t *testing.T) {
 // Dispatch message is queued from the entry to the close, and the row of the last version comes
 // before the status write of done.
 func TestTheWaitIsOneDocumentReplacedAtEachChange(t *testing.T) {
+	t.Parallel()
 	rig := newWaitRig(t, "")
 	rig.seedRoot(phase.Merging, "retro")
 	rig.mergeRoot()
@@ -512,6 +519,7 @@ func TestTheWaitIsOneDocumentReplacedAtEachChange(t *testing.T) {
 // that child alone, and the root closes at that read, with no controller tick (M4). A child the
 // architect released that moves to icebox in Dispatch queues one read as well.
 func TestTheLastChildsLeaveQueuesARead(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		status string
@@ -545,6 +553,7 @@ func TestTheLastChildsLeaveQueuesARead(t *testing.T) {
 // close writes the member's done directly, as the lingering branch does, with child-closed to the
 // architect above it.
 func TestAMemberOfALingeringTreeClosesOnItsChecks(t *testing.T) {
+	t.Parallel()
 	rig := newWaitRig(t, "")
 	until := rig.now.Add(time.Hour)
 	seedIssue(t, rig.pool, record.Issue{Key: waitRoot, Repo: waitRepo, DefaultBranch: "main", GitHubRepo: waitRepo, Tree: waitRoot, Project: "LEGION",
@@ -566,6 +575,7 @@ func TestAMemberOfALingeringTreeClosesOnItsChecks(t *testing.T) {
 // once at its close on its checks. Where its project runs no production check, its leave queues the
 // one suspension, and the judge queues none.
 func TestAChildThatClosesOnItsChecksIsSuspendedOnce(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		role claim.Role
@@ -601,6 +611,7 @@ func TestAChildThatClosesOnItsChecksIsSuspendedOnce(t *testing.T) {
 // running beneath it: the boot moves it into verifying, writes its merge snapshot from the merged
 // row, and reads its checks.
 func TestTheFirstBootMovesAMergedIssueInMergingIntoVerifying(t *testing.T) {
+	t.Parallel()
 	rig := newWaitRig(t, "")
 	seedIssue(t, rig.pool, record.Issue{Key: waitRoot, Repo: waitRepo, DefaultBranch: "main", GitHubRepo: waitRepo, Tree: waitRoot, Project: "LEGION",
 		Title: "root", Phase: phase.Merging, Generation: waitGeneration, Status: "retro", DispatchStatus: "retro", Rank: "U", LastDispatchSeq: 1})
@@ -626,6 +637,7 @@ func TestTheFirstBootMovesAMergedIssueInMergingIntoVerifying(t *testing.T) {
 // No role's statement closes the issue: in verifying with a check without a result, a sign-off, a
 // merger's completion and a production pass reported on no open check leave it there.
 func TestNoRoleStatementClosesTheIssue(t *testing.T) {
+	t.Parallel()
 	rig := newWaitRig(t, claim.RoleTester)
 	rig.seedRoot(phase.Merging, "retro")
 	rig.mergeRoot()
@@ -657,6 +669,7 @@ func (r *waitRig) laterMerge() {
 // After a second merge, a read whose checks name the earlier merge commit decides nothing: the
 // close stays unread and is read again. A read that names the newest merge decides it.
 func TestAReadThatNamesAnEarlierMergeDecidesNothing(t *testing.T) {
+	t.Parallel()
 	rig := newWaitRig(t, "")
 	rig.seedRoot(phase.Merging, "retro")
 	rig.mergeRoot()
@@ -678,6 +691,7 @@ func TestAReadThatNamesAnEarlierMergeDecidesNothing(t *testing.T) {
 // After a second merge, the production check recorded for the earlier merge decides nothing: the
 // production term reads earlier_merge, and the close waits.
 func TestAProductionCheckOfAnEarlierMergeDecidesNothing(t *testing.T) {
+	t.Parallel()
 	rig := newWaitRig(t, claim.RoleTester)
 	rig.seedRoot(phase.Merging, "retro")
 	rig.mergeRoot()
@@ -692,6 +706,7 @@ func TestAProductionCheckOfAnEarlierMergeDecidesNothing(t *testing.T) {
 
 // A claim that fails while its issue waits in verifying holds nothing: no role works the phase.
 func TestAClaimFailureInVerifyingHoldsNothing(t *testing.T) {
+	t.Parallel()
 	rig := newWaitRig(t, claim.RoleTester)
 	rig.seedRoot(phase.Merging, "retro")
 	rig.mergeRoot()

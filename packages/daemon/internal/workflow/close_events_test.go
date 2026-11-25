@@ -15,6 +15,7 @@ import (
 // production check's close and a defect's withdrawal are the production check's and the next
 // change's cases.
 func TestEachEventJudgesTheCloseAgain(t *testing.T) {
+	t.Parallel()
 	t.Run("an issue beneath leaves", func(t *testing.T) {
 		rig := newWaitRig(t, "")
 		rig.seedRoot(phase.Merging, "retro")
