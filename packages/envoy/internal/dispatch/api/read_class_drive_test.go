@@ -83,6 +83,7 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1":               {target: "/api/v1", fromMemory: "the route index is built in memory when the table is registered"},
 	"GET /api/v1/schema/blocks": {target: "/api/v1/schema/blocks", fromMemory: "the block schema is a constant of the document package"},
 	"GET /api/v1/limits":        {target: "/api/v1/limits", fromMemory: "the limits are constants"},
+	"GET /api/v1/deploys": {target: "/api/v1/deploys?repo=acme/widgets", statement: statementOf(`\bfrom\s+deploys\b`)},
 	"GET /api/v1/projects":      {target: "/api/v1/projects", statement: statementOf(`\bcoalesce\(open_asks\.total\b`)},
 	"GET /api/v1/projects/{key}/artifacts": {target: "/api/v1/projects/$project/artifacts",
 		statement: statementOf(`\bfrom\s+artifacts\s+where\s+project_key\s*=\s*\$1\s+and\s+not\s+is_primary\b`)},

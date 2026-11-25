@@ -98,6 +98,7 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1":                                                        {Writes: readWritesNothing},
 	"GET /api/v1/schema/blocks":                                          {Writes: readWritesNothing},
 	"GET /api/v1/limits":                                                 {Writes: readWritesNothing},
+	"GET /api/v1/deploys": {Writes: readWritesNothing},
 	"GET /api/v1/projects":                                               {Writes: readWritesNothing},
 	"GET /api/v1/projects/{key}/artifacts":                               {Writes: readWritesNothing},
 	"GET /api/v1/settings/repo-projects":                                 {Writes: readWritesNothing},
