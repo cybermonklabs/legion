@@ -37,7 +37,7 @@ func TestTheKnownSessionHookLogsNothingForARunThatIsOver(t *testing.T) {
 			arrange: func(t *testing.T, srv *testnats.Server, client *bus.Client) context.Context {
 				srv.Stop(t)
 				if !testwait.Holds(listenerWaitBound(t), 10*time.Millisecond, func() bool { return client.Conn.Status() == nats.RECONNECTING }) {
-					t.Fatalf("the connection reads %v 10s after its server stopped, want RECONNECTING", client.Conn.Status())
+					t.Fatalf("the connection still reads %v the time this package gives a wait after its server stopped, want RECONNECTING", client.Conn.Status())
 				}
 				return context.Background()
 			},

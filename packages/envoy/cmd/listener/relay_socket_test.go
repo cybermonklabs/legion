@@ -787,7 +787,7 @@ func TestARelaySocketPastTheListenersCapIsRefused503(t *testing.T) {
 		t.Fatalf("close the first socket: %v", err)
 	}
 	if !testwait.Holds(listenerWaitBound(t), 10*time.Millisecond, func() bool { return rig.holds("ses_edge_cap_a") == 0 }) {
-		t.Fatal("the replica still holds the first socket 5s after its client closed it")
+		t.Fatal("the replica still holds the first socket the time this package gives a wait after its client closed it")
 	}
 	rig.openWith(t, third, token)
 }

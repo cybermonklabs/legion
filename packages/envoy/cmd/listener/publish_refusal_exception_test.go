@@ -128,7 +128,7 @@ func TestARefusalExceptionDoesNotWaitForTheBus(t *testing.T) {
 	deadline := time.Now().Add(listenerWaitBound(t))
 	for client.Connected() || !client.Conn.IsReconnecting() {
 		if time.Now().After(deadline) {
-			t.Fatal("the client is not reconnecting 10 s after its server stopped")
+			t.Fatal("the client is not reconnecting the time this package gives a wait after its server stopped")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

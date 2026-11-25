@@ -122,7 +122,7 @@ func TestAPersonsClosedSocketsGiveTheirPlacesBack(t *testing.T) {
 		}
 		return true
 	}) {
-		t.Fatal("the replica still holds the person's sockets 10 s after their clients closed")
+		t.Fatal("the replica still holds the person's sockets the time this package gives a wait after their clients closed")
 	}
 	if records := rig.callerRecords(); records != 0 {
 		t.Errorf("the replica keeps %d caller records after the person's %d sockets closed, want 0", records, relaySocketMaxPerCaller)
@@ -156,7 +156,7 @@ func TestAFrameTheReplicaRefusesLeavesNothingOnItsPerson(t *testing.T) {
 	}
 	unlock()
 	if !testwait.Holds(listenerWaitBound(t), 10*time.Millisecond, func() bool { return rig.sockets.buffered.Load() == 0 }) {
-		t.Fatalf("the replica still counts %d bytes 10 s after the held socket closed", rig.sockets.buffered.Load())
+		t.Fatalf("the replica still counts %d bytes the time this package gives a wait after the held socket closed", rig.sockets.buffered.Load())
 	}
 	if got := person.buffered.Load(); got != 0 {
 		t.Fatalf("the person's count is %d bytes with only an idle socket open, want 0: a frame the replica refused stayed on it", got)
@@ -192,7 +192,7 @@ func TestARelaySocketGivesItsPlaceBackOnlyAfterItsPumpsLastFrame(t *testing.T) {
 	}
 	unlock()
 	if !testwait.Holds(listenerWaitBound(t), 10*time.Millisecond, func() bool { return rig.holds(session) == 0 }) {
-		t.Fatal("the replica still holds the socket 5 s after its pump let its frame go")
+		t.Fatal("the replica still holds the socket the time this package gives a wait after its pump let its frame go")
 	}
 	if got, records := socket.caller.buffered.Load(), rig.callerRecords(); got != 0 || records != 0 {
 		t.Fatalf("after the socket was given back its person's record counts %d bytes and the replica keeps %d caller records, want 0 and 0", got, records)

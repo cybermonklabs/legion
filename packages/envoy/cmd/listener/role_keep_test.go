@@ -1088,7 +1088,7 @@ func TestAKeptCopyReachesTheHolderThatClaimedTheRoleUnderTheKeep(t *testing.T) {
 			t.Fatalf("the forwarded copy carries kept_at %v, want the time the stream stored it", forwarded.KeptAt)
 		}
 	case <-time.After(listenerWaitBound(t)):
-		t.Fatalf("the copy kept for %s, which held the role already, reached it in no 20 seconds and no second claim comes:\n%s",
+		t.Fatalf("the copy kept for %s, which held the role already, reached it in none of the time this package gives a wait and no second claim comes:\n%s",
 			holder, harness.logs.String())
 	}
 }

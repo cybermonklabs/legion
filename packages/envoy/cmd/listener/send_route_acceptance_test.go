@@ -208,7 +208,7 @@ func TestSendAnswersServiceUnavailableWhileTheBusIsUnreachable(t *testing.T) {
 	// time is the handler's, not the client's time to notice.
 	for deadline := time.Now().Add(listenerWaitBound(t)); client.Conn.IsConnected(); {
 		if time.Now().After(deadline) {
-			t.Fatal("the NATS client still reports itself connected 5s after the relay cut every link")
+			t.Fatal("the NATS client still reports itself connected the time this package gives a wait after the relay cut every link")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
