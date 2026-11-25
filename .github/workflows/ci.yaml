@@ -215,8 +215,10 @@ jobs:
       - name: Compute every filter from what each job reads
         id: generate
         timeout-minutes: 9
+        # why: .github/ci-notes/ci.md#the-base-a-change-is-measured-against
         env:
-          CI_FILTERS_BASE: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+          CI_FILTERS_BASE: ${{ github.event.merge_group.base_sha }}
+          CI_FILTERS_MERGE: ${{ github.event_name == 'pull_request' && github.sha || '' }}
         run: .github/scripts/ci-filters-generate.sh "$RUNNER_TEMP/ci-filters.yaml"
       - name: Keep the filters this run computed
         timeout-minutes: 3

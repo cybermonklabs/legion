@@ -36,9 +36,8 @@ A change to the computation itself - the engine or the shared read table under .
 the two scripts that run them, or a file they read such as package.json (the generate mode lists
 them) - can make many filters select less while no filter selects the change: a read dropped from
 a helper every Bun gate shares narrows two dozen filters, and the committed file used to show that
-drop because every filter named the file. So when the run's base commit is known (the pull
-request's base, the merge group's base, which the generation step hands the script as
-`CI_FILTERS_BASE`) and the change touches one of those files, the script
+drop because every filter named the file. So when the run's base commit is known
+(#the-base-a-change-is-measured-against) and the change touches one of those files, the script
 computes the base tree's filters too, with the base tree's own engine, and each filter whose
 patterns differ is `'**'` in what the paths-filter step reads: every job whose selection the change
 could have moved runs. Each such filter is printed in the step's log and summary with the patterns
@@ -74,6 +73,37 @@ The hand-kept facts the sets are computed from are each in a file of their owner
 `.github/ci-gates` per gate, and a `//ci:` line beside each read a test makes outside its
 package (.github/scripts/ci_filter_sources.py). Two pull requests that each add a read of a
 different test, or a gate of a different job, edit different files.
+
+## The base a change is measured against
+
+A merge group's base is the commit the queue built the group on, `merge_group.base_sha`, which the
+generation step hands the script as `CI_FILTERS_BASE`. A pull request's run checks out GitHub's test
+merge of the pull request into the tip of its base branch (`refs/pull/<n>/merge`, at `github.sha`),
+which the step hands the script as `CI_FILTERS_MERGE`; the base is that merge's first parent, the
+one commit the tree differs from by the pull request's change alone. The checkout is one commit
+deep, where `HEAD^1` does not resolve, so the script reads the parent from the merge's own commit
+object, and fetches it as it fetches any base. A `CI_FILTERS_MERGE` that is not the checked-out
+commit, or not a merge of two parents, or one set beside `CI_FILTERS_BASE`, leaves the base
+unknown, and every filter is `'**'`.
+
+The base is not the event's `pull_request.base.sha`. GitHub leaves that where it was as the base
+branch moves: #3771's still named 9bab47ae, the main commit of 2026-11-24T07:20Z, when runs
+45534027260 and 45539394881 tested merges built on e546d760 and ae272edd, 144 and more commits
+later. Measured against it, main's own commits since were the change: 33 files the filters are
+computed with, and 9bab47ae's check-ci-filters.sh, older than the generate mode, refused
+`generate`, so every filter was `'**'` and every job ran on a docs-only change. Measured against
+e546d760 the same change touches none of those files, and it matches 5 of 99 filters. Of the 30
+most recently updated open pull requests into main, read at 2026-11-25T06:22Z, 29 had a test
+merge, and 25 of those had a `base.sha` behind the merge's first parent: 1 to 92 commits, one 883. Of
+the 311 open pull requests that were not drafts at 03:28Z, 152 had a `base.sha` older than the
+generate mode.
+
+That loud half is the cheap one. A stale base that can compute its filters lets a filter main
+widened after it, and the pull request narrows again, compare as unchanged: it is not `'**'`, and
+the pull request that drops the read skips the job that read it, even where it also changes a file
+that job reads on main. Nothing says so: the run is green with that job skipped.
+check-ci-filters.test.sh builds that tree ("a pull request's test merge is measured against its
+first parent") and measures it against both bases.
 
 ## How a filter is computed
 

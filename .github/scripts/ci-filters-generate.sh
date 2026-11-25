@@ -14,13 +14,27 @@
 # shared read table under .github/scripts, the scripts that run them, a file they read such as
 # package.json (the generate mode lists them in <out>.computed.yaml.inputs) - can make many filters
 # select less, while starting only the few jobs whose filters name that file: one dropped read in a
-# helper every Bun gate shares would skip those jobs in the very run that drops it. So when
-# CI_FILTERS_BASE names the commit the change is measured against (the pull request's base, the
-# merge group's base) and the change touches one of those files, this computes the base tree's
-# filters too, with the base tree's own engine, and every filter whose patterns differ between the
-# two is `'**'` in <out>: the run selects every job whose selection the change could have moved,
-# as the committed filters file used to, which every filter named. Each such filter is printed with
-# the patterns only the base has and only this tree has, and so is the step summary.
+# helper every Bun gate shares would skip those jobs in the very run that drops it. So when the
+# commit the change is measured against is known (THE BASE, below) and the change touches one of
+# those files, this computes the base tree's filters too, with the base tree's own engine, and every
+# filter whose patterns differ between the two is `'**'` in <out>: the run selects every job whose
+# selection the change could have moved, as the committed filters file used to, which every filter
+# named. Each such filter is printed with the patterns only the base has and only this tree has, and
+# so is the step summary.
+#
+# THE BASE. A merge group's is the commit the queue built the group on, which ci.yaml hands this as
+# CI_FILTERS_BASE (merge_group.base_sha). A pull request's run tests GitHub's test merge of the pull
+# request into the tip of its base branch, which ci.yaml hands this as CI_FILTERS_MERGE (github.sha),
+# and its base is that merge's first parent: the one commit this tree differs from by the pull
+# request's change alone. It is not the event's pull_request.base.sha, which GitHub leaves where it
+# was as the base branch moves: in runs 45534027260 and 45539394881 of #3771 it named 9bab47ae, 144
+# and more commits of main behind the merges' first parents, so the 33 files main's own commits had
+# changed read as the pull request's, and that base, older than the generate mode, could not compute
+# its filters. A stale base that can compute them is worse: a filter main widened and the pull
+# request narrows again reads as unchanged, so it is not `'**'`, and the change that narrows it skips
+# its job. The checkout is one commit deep, where HEAD^1 does not resolve, so the parent is read from
+# the merge's own commit object, and a CI_FILTERS_MERGE that is not this tree's commit, or not a
+# merge of two parents, leaves the base unknown.
 #
 # FAILING OPEN. When the computation fails for any reason - go or Bun missing, a go command that
 # cannot run, a //ci: line or a gate file that cannot be read, a run longer than LIMIT, a crash -
@@ -29,8 +43,8 @@
 # `'**'`, which matches every changed path: every job runs, as on a dispatched run. Its first line
 # starts with `# FAIL-OPEN:` and says why, and the lint job's readers refuse such a file, so the
 # run is red where the cause shows. A base tree whose filters cannot be computed, or a base commit
-# that cannot be read, makes every filter `'**'` in <out> alone: the computed filters stand, and the
-# lint job holds them. The names are every `steps.filter.outputs.<name>` .github/workflows/ci.yaml
+# that cannot be found or read, makes every filter `'**'` in <out> alone: the computed filters
+# stand, and the lint job holds them. The names are every `steps.filter.outputs.<name>` ci.yaml
 # reads, which needs no engine to find and is the one form in which the changes job hands a job its
 # filter (check-ci-filters.sh's rule 2), but `changes`: that is the action's own list of the filters
 # that matched, which it writes only while no filter has the name (rule 19).
@@ -41,7 +55,8 @@
 # It exits 0 either way, so the changes job's outputs always come from its paths-filter step; it
 # exits 1 only when it can write no file.
 #
-# Run from anywhere: .github/scripts/ci-filters-generate.sh <out>
+# Run from anywhere: [CI_FILTERS_BASE=<commit> | CI_FILTERS_MERGE=<HEAD's commit>] \
+#   .github/scripts/ci-filters-generate.sh <out>
 # CI runs it in ci.yaml's changes job, writing "$RUNNER_TEMP/ci-filters.yaml".
 set -uo pipefail
 
@@ -62,11 +77,16 @@ head_root=$PWD
 # changes job's timeout-minutes in ci.yaml adds up the job's steps.
 LIMIT=${CI_FILTERS_LIMIT:-300}
 
+# filter_names: every filter name the changes job hands on, one per line.
+filter_names() {
+  grep -o 'steps\.filter\.outputs\.[A-Za-z0-9_-]*' .github/workflows/ci.yaml | sed 's/.*\.//' | grep -vx changes | sort -u
+}
+
 # every_filter <first line>: a filters file whose every filter is `'**'`, under that first line,
 # with the step's output every_filter=true, which hands every step gated on the list `all`.
 every_filter() {
   local names
-  names=$(grep -o 'steps\.filter\.outputs\.[A-Za-z0-9_-]*' .github/workflows/ci.yaml | sed 's/.*\.//' | grep -vx changes | sort -u)
+  names=$(filter_names)
   [ -n "$names" ] || return 1
   echo "$1"
   while IFS= read -r name; do
@@ -84,8 +104,12 @@ echo "the filter generation took $(($(date +%s) - started)) s and exited $status
 if [ "$status" -ne 0 ] || [ ! -s "$computed" ]; then
   why="check-ci-filters.sh generate exited $status"
   [ "$status" -eq 124 ] && why="check-ci-filters.sh generate ran past ${LIMIT} s"
-  if ! every_filter "# FAIL-OPEN: the filters could not be computed ($why), so every filter matches every path and every job runs." >"$out"; then
+  if [ -z "$(filter_names)" ]; then
     echo "::error file=.github/workflows/ci.yaml::the filters could not be computed ($why), and no output of ci.yaml reads steps.filter.outputs.<name>, so no file that selects every job can be written either" >&2
+    exit 1
+  fi
+  if ! every_filter "# FAIL-OPEN: the filters could not be computed ($why), so every filter matches every path and every job runs." >"$out"; then
+    echo "::error file=.github/scripts/ci-filters-generate.sh::the filters could not be computed ($why), and $out cannot be written, so no file that selects every job can be written either" >&2
     exit 1
   fi
   cp "$out" "$computed" || exit 1
@@ -107,6 +131,22 @@ force_every_filter() {
 left() { echo $((LIMIT - ($(date +%s) - started))); }
 
 base=${CI_FILTERS_BASE:-}
+merge=${CI_FILTERS_MERGE:-}
+if [ -n "$merge" ]; then
+  if [ -n "$base" ]; then
+    force_every_filter "CI_FILTERS_BASE ($base) and CI_FILTERS_MERGE ($merge) both name a base, so which commit this change is measured against is unknown"
+    exit 0
+  fi
+  merge_commit=$(git rev-parse --verify -q "$merge^{commit}" 2>/dev/null)
+  # The header of the commit object, up to its first blank line: a message line is no parent.
+  parents=$(git cat-file commit "$merge_commit" 2>/dev/null | sed -n '/^$/q; s/^parent //p')
+  if [ -z "$merge_commit" ] || [ "$merge_commit" != "$(git rev-parse HEAD 2>/dev/null)" ] || [ "$(grep -c . <<<"$parents")" -ne 2 ]; then
+    force_every_filter "CI_FILTERS_MERGE names $merge, which is not this tree's commit or not a merge of two parents, so the commit this change is measured against is unknown"
+    exit 0
+  fi
+  base=$(head -1 <<<"$parents")
+  echo "this tree is the test merge $merge_commit, measured against its first parent $base"
+fi
 [ -n "$base" ] || exit 0
 if ! git cat-file -e "$base^{commit}" 2>/dev/null; then
   timeout -k 5 60 git fetch -q --no-tags --depth=1 origin "$base" 2>&1 | tail -3

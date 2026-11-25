@@ -117,6 +117,19 @@ The merge base, for the negative control the seven `base-*` steps run: a second 
 whose seven installs that control drives with nowhere left to go.
 .github/ci-notes/ci-job-tool-fallback.md#the-negative-control-and-why-it-does-not-expire
 says what keeps this checkout here.
+On a pull request it is the repository's default branch as it is when the job runs
+(`repository.default_branch`). It is neither the event's `pull_request.base.sha`, which GitHub
+leaves where it was as the base branch moves, nor `pull_request.base.ref`, which for a stacked
+pull request is its parent's branch. On 2026-11-25, 12 of 180 distinct open-pull-request
+`base.sha` values had no install-elan (46c4162b, 2026-11-08), #2219's from 2026-10-26, and two
+of them also had no install-crane or install-changie. Among the branches stacked pull requests
+target, graph/infra-1150-decision-schema (8aa92075, 2026-11-05) has no install-elan, and #2804
+and #2756 target it. At such a base, `uses: ./base/.github/actions/install-elan` names an action
+the tree does not have, and the step fails before it installs anything. The control counts any
+failure in its own time as the pass it asserts, so it would have passed that install without
+driving it. .github/scripts/tool-fallback-nowhere-controls.sh therefore refuses, by name, a base
+tree that lacks any of the seven before it reads an outcome. A merge group's base is the commit
+the queue built it on.
 
 ## Why the package's blob is read for every mirrored row
 

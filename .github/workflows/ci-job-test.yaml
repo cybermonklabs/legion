@@ -238,6 +238,10 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"ci_tools_proof_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/ci-tools-proof.test.sh .github/scripts/ci-tools-proof.test.sh
 
+      - name: Test the negative control's hold on the base tree
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"tool_fallback_nowhere_controls_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/tool-fallback-nowhere-controls.test.sh .github/scripts/tool-fallback-nowhere-controls.test.sh
+
       - name: Test the action pin check
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"check_action_pins_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/check-action-pins.test.sh .github/scripts/check-action-pins.test.sh

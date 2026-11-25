@@ -542,6 +542,15 @@ print(sum(PathsFilter(p, "some-with-excludes").covers("docs/readme.md") for p in
 check "so a change to any file selects every job" "$(is "$covers" "3 3")"
 run_generate "$root"
 check "with go back, the same tree computes its filters" "$(is "$(filter_of app | head -1)" 'go.work')"
+# A fall-open that cannot write its file says that, and not that no output of ci.yaml reads the
+# filters, which every output here does.
+set +e
+out=$(env PATH="$root/bin:$PATH" "$root/.github/scripts/ci-filters-generate.sh" "$root.no-such-dir/ci-filters.yaml" 2>&1)
+status=$?
+set -e
+check "a fall-open whose file cannot be written exits 1" "$(is "$status" 1)"
+check "  naming the file it cannot write" "$(contains "$out" "and $root.no-such-dir/ci-filters.yaml cannot be written")"
+check "  and not saying no output of ci.yaml reads the filters" "$(is "$(contains "$out" 'no output of ci.yaml reads')" false)"
 
 # A change to a file the filters are computed with - here the read table, whose helper the app gate
 # takes a read from - can narrow a filter while no filter selects it. Measured against a base
@@ -611,6 +620,185 @@ check "says the base tree's filters could not be computed" \
 check "every filter is every path" \
   "$(is "$(for name in app image site; do filter_of "$name"; done | tr '\n' ' ')" '** ** ** ')"
 check "and the computed filters stand" "$(contains "$(cat "$root.generated.computed.yaml")" "^  - 'mod/cmd/\*\*'$")"
+
+# A pull request's run checks out GitHub's test merge of the pull request into the tip of its base
+# branch, and ci.yaml hands the wrapper that merge as CI_FILTERS_MERGE: the merge's first parent is
+# the base, the one commit the tree differs from by the pull request's change alone. The event's
+# pull_request.base.sha is not that commit, since GitHub leaves it where it was as the base branch
+# moves: in runs 45534027260 and 45539394881 of #3771 it named 9bab47ae, 144 and more commits of main
+# behind the merges' first parents. Measured against so old a base, a filter main widened since and
+# the pull request narrows again reads as unchanged, is not every path, and the pull request that
+# drops the read skips the job that read it. In the tree below the read table's DOCS helper reads
+# docs/** on the pull request's base, where no gate takes a read from it; main then makes the app
+# gate's SHARED reads DOCS, and the pull request empties DOCS and edits a doc the app job reads on
+# main. The read table is in no job's filter, the doc is not in app's once DOCS is empty, so no
+# file the pull request changes selects the app job, and only the base comparison can.
+# test_merge <root> <pull request head>: the merge GitHub makes of the pull request into the commit
+# <root> has checked out, its first parent that commit; echoes it.
+test_merge() {
+  git -C "$1" -c user.name=fixture -c user.email=fixture@example.invalid merge -q --no-ff --no-edit "$2" >/dev/null &&
+    git -C "$1" rev-parse HEAD
+}
+# narrowed_merge <name>: that tree, at the test merge; sets root, stale (the older base the event
+# names), main_tip (the merge's first parent), pr_head and merge.
+narrowed_merge() {
+  root=$(fixture "$1")
+  replace "$root/.github/scripts/ci_job_reads.py" 'from ci_filter_sources import excluded, load_directives, load_gate_files' \
+    $'from ci_filter_sources import excluded, load_directives, load_gate_files\nDOCS = [Read("docs/**", "the shared helper reads the docs")]'
+  replace "$root/.github/scripts/ci_job_reads.py" 'READ_SETS = {}' $'READ_SETS = {}\nSHARED = []'
+  replace "$root/.github/ci-gates/app.py" 'reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition")]' \
+    'reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition"), *SHARED]'
+  stale=$(commit_all "$root" stale-base)
+  replace "$root/.github/scripts/ci_job_reads.py" 'DOCS = [Read("docs/**", "the shared helper reads the docs")]' 'DOCS = []'
+  echo 'changed' > "$root/docs/readme.md"
+  pr_head=$(commit_all "$root" pull-request)
+  git -C "$root" checkout -q --detach "$stale"
+  replace "$root/.github/scripts/ci_job_reads.py" 'SHARED = []' 'SHARED = DOCS'
+  main_tip=$(commit_all "$root" main)
+  merge=$(test_merge "$root" "$pr_head")
+}
+# app_selects <file>: whether the app filter of `generated` selects <file>, as the paths filter does.
+app_selects() {
+  (cd "$root" && PYTHONPATH="$script_dir" python3 -c '
+import sys, yaml
+from workflow_paths import PathsFilter
+print(str(PathsFilter(yaml.safe_load(open(sys.argv[1]))["app"], "some-with-excludes").covers(sys.argv[2])).lower())
+' "$root.generated.yaml" "$1")
+}
+
+echo "case: a pull request's test merge is measured against its first parent, so the filter it narrows selects every path"
+narrowed_merge base-merge-parent
+run_generate "$root" CI_FILTERS_MERGE="$merge"
+check "the wrapper exits 0" "$(is "$status" 0)"
+check "says the tree is the test merge, measured against its first parent" \
+  "$(contains "$out" "^this tree is the test merge $merge, measured against its first parent $main_tip$")"
+check "names the read table the pull request touches" "$(contains "$out" '^  .github/scripts/ci_job_reads.py$')"
+check "prints app and the pattern only the base tree has" \
+  "$(contains "$out" '^app: 1 pattern(s) only in the base tree, 0 only in this one$')"
+check "the paths-filter step reads app as every path" "$(is "$(filter_of app | tr '\n' ' ')" '** ')"
+check "so the doc the pull request edits, which the app job reads on main, selects the app job" \
+  "$(app_selects docs/readme.md)"
+
+# The control: the same tree, measured against the event's older base as ci.yaml measured it until
+# this case, skips the app job, and measured against main's tip named by hand it does not. Only the
+# base differs between the two runs, so the case above shows the base it chose, not a tree in which
+# every base forces app.
+echo "case: the same test merge measured against the older base the event names skips the app job (control)"
+run_generate "$root" CI_FILTERS_BASE="$stale"
+check "the wrapper exits 0" "$(is "$status" 0)"
+check "finds no filter that differs from the older base's" \
+  "$(contains "$out" "^0 of [0-9]* filters differ from the base tree's; each selects every path in this run$")"
+check "the paths-filter step reads app as computed, with no docs/**" \
+  "$(is "$(filter_of app | grep -c '^docs/\*\*$' || true)" 0)"
+check "so neither the doc nor the read table the pull request changes selects the app job" \
+  "$(is "$(app_selects docs/readme.md) $(app_selects .github/scripts/ci_job_reads.py)" 'false false')"
+run_generate "$root" CI_FILTERS_BASE="$main_tip"
+check "while main's tip as the base makes app every path" "$(is "$(filter_of app | tr '\n' ' ')" '** ')"
+
+# CI's checkout of the test merge is one commit deep: the merge's parents are named in its commit
+# object, but HEAD^1 does not resolve and the parent is not there until the wrapper fetches it. A
+# read of the parents that goes through git's history (`git show -s --format=%P`, `HEAD^1`) finds
+# none there and makes every filter every path, which the full-history tree above cannot show; so
+# the same tree is read here through a clone of depth 1, as actions/checkout makes it.
+echo "case: a one-commit checkout of the test merge fetches its first parent and measures against it"
+narrowed_merge base-merge-shallow
+git -C "$root" branch -q test-merge "$merge"
+shallow="$work/base-merge-shallow-clone"
+git clone -q --depth=1 --branch test-merge "file://$root" "$shallow"
+check "the checkout is one commit deep: HEAD^1 does not resolve" \
+  "$(is "$(git -C "$shallow" rev-parse -q --verify 'HEAD^1' || echo none)" none)"
+check "and the first parent is not in it" \
+  "$(is "$(git -C "$shallow" cat-file -e "$main_tip^{commit}" 2>/dev/null && echo held || echo absent)" absent)"
+root=$shallow
+: > "$root.github-output"
+run_generate "$root" CI_FILTERS_MERGE="$merge" GITHUB_OUTPUT="$root.github-output"
+check "the wrapper exits 0" "$(is "$status" 0)"
+check "says the tree is the test merge, measured against its first parent" \
+  "$(contains "$out" "^this tree is the test merge $merge, measured against its first parent $main_tip$")"
+check "fetched the first parent" \
+  "$(is "$(git -C "$shallow" cat-file -e "$main_tip^{commit}" 2>/dev/null && echo held || echo absent)" held)"
+check "the paths-filter step reads app as every path" "$(is "$(filter_of app | tr '\n' ' ')" '** ')"
+check "and site, which no difference touches, as computed" "$(is "$(filter_of site | tr '\n' ' ')" 'go.work mod/go.mod docs/** ')"
+check "and writes no every_filter output: nothing fell open" "$(is "$(cat "$root.github-output")" "")"
+
+# The fault both runs of #3771 showed is the loud half of the same cause: the event's base was older
+# than the generate mode, so the base tree could not compute its filters, and every filter was every
+# path on a docs-only change. The stand-in check-ci-filters.sh of the older base refuses `generate`
+# as 9bab47ae's does, at its mode check; main's tip has the real one.
+echo "case: a docs-only test merge whose event base predates the generate mode is measured against its first parent"
+root=$(fixture base-merge-parent-old)
+rm "$root/.github/scripts/check-ci-filters.sh"
+printf '#!/bin/sh\necho "::error file=.github/scripts/check-ci-filters.sh::this check takes one optional mode: \\`check\\` (the default) and \\`write\\`" >&2\nexit 1\n' \
+  > "$root/.github/scripts/check-ci-filters.sh"
+chmod +x "$root/.github/scripts/check-ci-filters.sh"
+stale=$(commit_all "$root" stale-base)
+echo 'changed' > "$root/docs/readme.md"
+pr_head=$(commit_all "$root" pull-request)
+git -C "$root" checkout -q --detach "$stale"
+rm "$root/.github/scripts/check-ci-filters.sh"
+ln -s "$script_dir/check-ci-filters.sh" "$root/.github/scripts/check-ci-filters.sh"
+main_tip=$(commit_all "$root" main)
+merge=$(test_merge "$root" "$pr_head")
+: > "$root.github-output"
+run_generate "$root" CI_FILTERS_BASE="$stale" GITHUB_OUTPUT="$root.github-output"
+check "measured against the older base, the wrapper exits 0" "$(is "$status" 0)"
+check "counts the check main changed as this change's" "$(contains "$out" '^  .github/scripts/check-ci-filters.sh$')"
+check "and finds the base tree's filters cannot be computed" \
+  "$(contains "$out" "the base tree's filters could not be computed (its check-ci-filters.sh generate exited 1)")"
+check "so every filter is every path" \
+  "$(is "$(for name in app image site; do filter_of "$name"; done | tr '\n' ' ')" '** ** ** ')"
+: > "$root.github-output"
+run_generate "$root" CI_FILTERS_MERGE="$merge" GITHUB_OUTPUT="$root.github-output"
+check "measured against the merge's first parent, the wrapper exits 0" "$(is "$status" 0)"
+check "says the change touches no file the filters are computed with" \
+  "$(contains "$out" 'this change touches no file the filters are computed with; the filters stand as computed')"
+check "writes no every_filter output" "$(is "$(cat "$root.github-output")" "")"
+check "and the paths-filter step reads the computed filters" \
+  "$(is "$(cat "$root.generated.yaml")" "$(cat "$root.generated.computed.yaml")")"
+
+# A CI_FILTERS_MERGE the tree is not, or that is no merge of two parents, names no base the wrapper
+# can trust; so does one beside a CI_FILTERS_BASE. Each makes every filter every path, as a base
+# that cannot be read does, and says why.
+echo "case: a CI_FILTERS_MERGE that is not this tree's two-parent merge selects every path through every filter"
+narrowed_merge base-merge-refused
+run_generate "$root" CI_FILTERS_MERGE="$pr_head"
+check "naming another commit than this tree's, the wrapper exits 0" "$(is "$status" 0)"
+check "  says it is not this tree's commit or not a merge" \
+  "$(contains "$out" "CI_FILTERS_MERGE names $pr_head, which is not this tree's commit or not a merge of two parents")"
+check "  and every filter is every path" \
+  "$(is "$(for name in app image site; do filter_of "$name"; done | tr '\n' ' ')" '** ** ** ')"
+run_generate "$root" CI_FILTERS_MERGE="$merge" CI_FILTERS_BASE="$stale"
+check "beside a CI_FILTERS_BASE, it says both name a base" "$(contains "$out" 'CI_FILTERS_BASE (.*) and CI_FILTERS_MERGE (.*) both name a base')"
+check "  and every filter is every path" \
+  "$(is "$(for name in app image site; do filter_of "$name"; done | tr '\n' ' ')" '** ** ** ')"
+git -C "$root" checkout -q --detach "$main_tip"
+run_generate "$root" CI_FILTERS_MERGE="$main_tip"
+check "naming this tree's commit of one parent, it says so" \
+  "$(contains "$out" "CI_FILTERS_MERGE names $main_tip, which is not this tree's commit or not a merge of two parents")"
+check "  and every filter is every path" \
+  "$(is "$(for name in app image site; do filter_of "$name"; done | tr '\n' ' ')" '** ** ** ')"
+
+# ci.yaml's generation step is what hands the wrapper its base, so its two variables are held here:
+# a pull request's test merge (github.sha) and a merge group's base_sha, and never the event's
+# pull_request.base.sha.
+echo "case: ci.yaml hands the wrapper a pull request's test merge and a merge group's base"
+env_of_generate=$(python3 - "$script_dir/../workflows/ci.yaml" <<'PY'
+import sys
+
+import yaml
+
+steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["changes"]["steps"]
+env = next(step for step in steps if step.get("id") == "generate").get("env", {})
+for name in ("CI_FILTERS_BASE", "CI_FILTERS_MERGE"):
+    print(f"{name}={env.get(name, '')}")
+PY
+)
+check "CI_FILTERS_BASE is the merge group's base_sha alone" \
+  "$(contains "$env_of_generate" '^CI_FILTERS_BASE=\${{ github.event.merge_group.base_sha }}$')"
+check "CI_FILTERS_MERGE is github.sha on a pull request" \
+  "$(contains "$env_of_generate" "^CI_FILTERS_MERGE=\\\${{ github.event_name == 'pull_request' && github.sha || '' }}$")"
+check "and neither reads the event's pull_request.base.sha" \
+  "$(is "$(contains "$env_of_generate" 'pull_request\.base\.sha')" false)"
 
 # What tsc and bun resolve with is a file the filters are computed with too: a tsconfig edit (a
 # `paths` map, an `extends`) can move a listed block while no file of the block changes. The stand-in

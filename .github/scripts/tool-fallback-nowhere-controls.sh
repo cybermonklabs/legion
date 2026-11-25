@@ -14,11 +14,29 @@
 # first step, above every step below it, so this script and the rig it reads the bound from are
 # both in the checkout when the step runs.
 #
+# First it holds the base tree to the seven actions those installs run (BASE_TREE, the job's
+# second checkout, `base` unless set). An install step whose `uses:` names an action the tree does
+# not have fails before it installs anything, and the outcome test below would count that failure
+# as the pass it asserts: an install never driven would read as one with nowhere to go. A branch a
+# stacked pull request targets can be that old: graph/infra-1150-decision-schema, at 8aa92075 of
+# 2026-11-05, has no install-elan, and #2804 and #2756 target it.
+#
 # Run from the repository root: .github/scripts/tool-fallback-nowhere-controls.sh
 # CI runs it in ci-job-tool-fallback.yaml's tool-fallback job, at the step "Check all eight
-# installs with nowhere to go failed, and failed in their own time".
+# installs with nowhere to go failed, and failed in their own time". Its tests are in
+# tool-fallback-nowhere-controls.test.sh, which ci.yaml's test job runs.
 set -euo pipefail
 
+base_tree=${BASE_TREE:-base}
+absent=""
+for action in install-crane install-changie install-jj setup-bun install-elan install-uv install-pulumi; do
+  [ -f "$base_tree/.github/actions/$action/action.yml" ] || absent="$absent $action"
+done
+if [ -n "$absent" ]; then
+  echo "::error::the base tree at $base_tree has no action for$absent, so the install step that runs it failed before installing anything, and that failure is no install with nowhere to go: this control cannot read it as one. The base checkout of .github/workflows/ci-job-tool-fallback.yaml must be a tree that holds all seven" >&2
+  exit 1
+fi
+echo "the base tree at $base_tree holds the seven actions these installs run"
 echo "a merge base from before this change reads none of the CI_TOOLS_* seams, so each of these installs has the one source it always had: the release asset this fault holds for crane, changie, jj, bun, elan and uv, and get.pulumi.com, which this job does not fault, behind the dead proxy the pulumi step carries for that reason"
 echo "a base that reads the seams — this tree on a workflow_dispatch, and every base once this change is on main — is sent by the dead ports above to something nothing listens on, and that is what fails them instead; the docker provider plugin, which the merge base has no action for, is the head's own action with its second source on a dead port, and that control states the same property without reading the base tree at all"
 wrong=""
