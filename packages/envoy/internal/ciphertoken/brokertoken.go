@@ -312,8 +312,9 @@ func New(options Options) (*Verifier, error) {
 		originTLS = &tls.ConnectionState{}
 	}
 	return &Verifier{
-		// The trailing slash goes so BrokerURL + IntrospectPath is one path, as cipher.New
-		// trims it for the same reason.
+		// Every trailing slash goes, so a failed introspection's URL, the route joined onto this one
+		// (introspect), is this URL followed by a plain path, which redact.Cause needs before it prints
+		// the failure's own words: the join drops a doubled slash from the path it asks.
 		brokerURL: strings.TrimRight(options.BrokerURL, "/"),
 		account:   options.Account,
 		origin:    origin,
