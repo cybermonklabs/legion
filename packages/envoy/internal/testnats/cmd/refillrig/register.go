@@ -10,15 +10,18 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/urljoin"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // runRegister registers every session of the sets through the listener's own route, as an agent's
-// plugin does: one POST /v1/interests/subscribe each, which writes the interest and, for a
-// self-subscribed session, the session record. Each registration asks for the session consumer
-// the listener requires of every registration it takes (consumerFor in cmd/listener), with the
-// delivery the listener's own tests register with (cmd/listener/api_test.go): a registration with
-// none is refused 409 and writes neither record.
+// plugin does: one POST /v1/interests/subscribe each, the route joined onto --url's path with its
+// query kept (urljoin.Join), which writes the interest and, for a self-subscribed session, the
+// session record. Each registration asks for the session consumer the listener requires of every
+// registration it takes (consumerFor in cmd/listener), with the delivery the listener's own tests
+// register with (cmd/listener/api_test.go): a registration with none is refused 409 and writes
+// neither record. A --url that is no absolute URL with a host is refused in urljoin's words, which
+// quote none of it.
 func runRegister(args []string) error {
 	flags := flag.NewFlagSet("register", flag.ContinueOnError)
 	url := flags.String("url", "", "listener URL")
@@ -28,6 +31,11 @@ func runRegister(args []string) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
+	joined, err := urljoin.Join(*url, "/v1/interests/subscribe")
+	if err != nil {
+		return fmt.Errorf("--url: %w", err)
+	}
+	subscribe := joined.String()
 	sets, err := parseSets(*spec)
 	if err != nil {
 		return err
@@ -51,7 +59,7 @@ func runRegister(args []string) error {
 					SelfSubscribed: true,
 					Delivery:       &listenerwire.SubscribeDelivery{Consumer: true, Epoch: "e"},
 				})
-				resp, err := client.Post(*url+"/v1/interests/subscribe", "application/json", bytes.NewReader(body))
+				resp, err := client.Post(subscribe, "application/json", bytes.NewReader(body))
 				if err == nil {
 					answer, _ := redact.ReadAnswer(resp, 64<<10)
 					_ = resp.Body.Close()
@@ -83,6 +91,6 @@ func runRegister(args []string) error {
 		return err
 	default:
 	}
-	fmt.Printf("registered %d sessions through %s/v1/interests/subscribe in %s\n", n, *url, time.Since(started).Round(time.Millisecond))
+	fmt.Printf("registered %d sessions through %s in %s\n", n, subscribe, time.Since(started).Round(time.Millisecond))
 	return nil
 }
