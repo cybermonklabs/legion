@@ -339,15 +339,16 @@ func DecodeDispatchEvent(project, key string, event []byte) (Fact, []string, err
 	return decodeDispatchIssueEvent(key, project, string(event))
 }
 
-// isIssueEvent says whether a Dispatch event of type typ is an issue event: one that carries the
+// issueEventTypes is every type of Dispatch event that is an issue event: one that carries the
 // issue as the event leaves it. decodeDispatchEvent reads a DispatchIssue from each such event,
-// and walkIssueEvents gives each such event of an issue's event log, so the two read one list.
+// and walkIssueEvents gives each such event of an issue's event log, so the two read one list,
+// and TestEveryIssueEventKindTheDaemonAdmitsFromCarriesTheResolvedShape ranges over it too, so a
+// type added here fails that test until a fixture of the resolved shape holds an event of it.
+var issueEventTypes = []string{"issue.created", "issue.updated", "issue.closed"}
+
+// isIssueEvent says whether a Dispatch event of type typ is an issue event (issueEventTypes).
 func isIssueEvent(typ string) bool {
-	switch typ {
-	case "issue.created", "issue.updated", "issue.closed":
-		return true
-	}
-	return false
+	return slices.Contains(issueEventTypes, typ)
 }
 
 // decodeDispatchEvent decodes a checked Dispatch event of the daemon's project by its type, adding
