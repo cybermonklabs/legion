@@ -1,4 +1,5 @@
 -- 20261105112616_pull_request_heads_repo_head.up.sql
+-- replaces: 20261105112616_pull_request_heads_repo_head.up.sql sha256:d44bbc895de22e5fff4656dd44749a50a3d5bd549fb1589aec8252ece31b1ada
 --
 -- The index behind the question the results read asks before it reads GitHub about a commit: is
 -- any open or merged stored pull request's head this commit of this repository
@@ -8,7 +9,8 @@
 -- through GitHub once every delivery.CommitPullReadStaleAfter, which is how a result recorded
 -- before its pull request opened stops reading `older` (INFRA-1240). That read can repair nothing
 -- for a commit Dispatch already holds an open or merged pull request for, whatever issue that row
--- is attributed to: the reconcile re-reads an open row every five minutes and offers a merged one
+-- is attributed to: the reconcile takes an open row again once it is due and reads it once that
+-- pass's stamp of its try succeeds (delivery.PullRequestHeadStaleAfter), and offers a merged one
 -- once per attribution rule (ListStalePullRequestHeads), so asking GitHub again from a read
 -- teaches nothing. So the read asks this first, and a child's result on its parent's tab — whose
 -- commit heads the child's own pull request, attributed to the child — costs no GitHub call at all
