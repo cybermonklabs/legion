@@ -7,15 +7,15 @@ package store
 // the callers behind them waited — and a pool of one connection is that deployment in miniature.
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"log/slog"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 )
 
 // refusalBound is how long a connection is allowed to be asked for before the test calls the
@@ -144,7 +144,7 @@ func served(t *testing.T, pool *Pool, caller context.Context, who string) {
 
 // refusalsLogged fails the test unless the log holds exactly want refusals, each with a stack that
 // names this test, which is what names the path to repair.
-func refusalsLogged(t *testing.T, logged *bytes.Buffer, want int) {
+func refusalsLogged(t *testing.T, logged *testlog.Buffer, want int) {
 	t.Helper()
 	lines := refusals(logged.String())
 	if len(lines) != want {
@@ -155,18 +155,6 @@ func refusalsLogged(t *testing.T, logged *bytes.Buffer, want int) {
 			t.Fatalf("a refusal's line names no site this test can be found by:\n%s", line)
 		}
 	}
-}
-
-// captureLog sends pool's log (Pool.log) into a buffer for the length of the test, which is where
-// the pool's refusals are written (logRefusal), and gives the test the buffer to read. The log and
-// the stacks already logged (Pool.refused) are the pool's own, so a test running beside this one
-// writes nothing here, and a test the binary runs again (-count) opens a pool of its own and logs
-// its own stacks again.
-func captureLog(t *testing.T, pool *Pool) *bytes.Buffer {
-	t.Helper()
-	var logged bytes.Buffer
-	pool.log = slog.New(slog.NewTextHandler(&logged, nil))
-	return &logged
 }
 
 // refusals is every line of log that reports a refused second connection. The stack the line

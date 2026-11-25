@@ -139,12 +139,14 @@ func returned(t *testing.T, done <-chan transacted) transacted {
 	}
 }
 
-// captureCommitLog sends pool's log (Pool.log) into a locked buffer for the length of the test,
-// which is where Transact and its watcher write their lines about a commit over it: the watcher
-// writes from a goroutine of its own while the test reads. The log is the pool's own, so a test
-// running beside this one writes none of its lines here. A test that fails prints what the buffer
+// captureLog sends pool's log (Pool.log) into a locked buffer for the length of the test, which is
+// where the pool writes its refusals (logRefusal) and where Transact and its watcher write their
+// lines about a commit over it (logOf): the watcher writes from a goroutine of its own while the
+// test reads. The log and the stacks already logged (Pool.refused) are the pool's own, so a test
+// running beside this one writes none of its lines here, and a test the binary runs again (-count)
+// opens a pool of its own and logs its own stacks again. A test that fails prints what the buffer
 // holds.
-func captureCommitLog(t *testing.T, pool *Pool) *testlog.Buffer {
+func captureLog(t *testing.T, pool *Pool) *testlog.Buffer {
 	t.Helper()
 	var log testlog.Buffer
 	pool.log = slog.New(slog.NewTextHandler(&log, nil))
@@ -238,7 +240,7 @@ func TestACommitWhoseReplyNeverComesIsReadFromTheStore(t *testing.T) {
 func TestACommitWithNoCancelWaitsForItsReply(t *testing.T) {
 	t.Parallel()
 	rig := newCommitRig(t)
-	log := captureCommitLog(t, rig.pool)
+	log := captureLog(t, rig.pool)
 	ctx := WithTransactionTracking(context.Background())
 	hold := CommitSettleBound + time.Second
 
@@ -263,7 +265,7 @@ func TestACommitWithNoCancelWaitsForItsReply(t *testing.T) {
 func TestACommitCutAfterItLandedIsReadFromTheStore(t *testing.T) {
 	t.Parallel()
 	rig := newCommitRig(t)
-	log := captureCommitLog(t, rig.pool)
+	log := captureLog(t, rig.pool)
 	ctx := WithTransactionTracking(context.Background())
 
 	fired := rig.fault.Cut(commitMatch, testdb.CutAfterCommit)
@@ -358,7 +360,7 @@ func TestACommitErrorIsSortedByWhetherTheServerAnswered(t *testing.T) {
 func TestAnUnreachableStoreLeavesTheOutcomeUnknownUntilItAnswers(t *testing.T) {
 	t.Parallel()
 	rig := newCommitRig(t)
-	log := captureCommitLog(t, rig.pool)
+	log := captureLog(t, rig.pool)
 	// parent stays live for the whole test; child, which shares its hold mark, is the only
 	// context Transact sees.
 	parent := WithTransactionTracking(context.Background())
@@ -447,7 +449,7 @@ func TestAnUnreachableStoreLeavesTheOutcomeUnknownUntilItAnswers(t *testing.T) {
 func TestAHookThatPanicsOnTheWatchersGoroutineIsLoggedAndTheRestRun(t *testing.T) {
 	t.Parallel()
 	rig := newCommitRig(t)
-	log := captureCommitLog(t, rig.pool)
+	log := captureLog(t, rig.pool)
 	parent := WithTransactionTracking(context.Background())
 	child, cancel := context.WithCancel(parent)
 	defer cancel()
@@ -603,7 +605,7 @@ func TestACancelAfterTheIDReadCommitsNothing(t *testing.T) {
 func TestATransactionThatWroteNothingNeedsNoRead(t *testing.T) {
 	t.Parallel()
 	rig := newCommitRig(t)
-	log := captureCommitLog(t, rig.pool)
+	log := captureLog(t, rig.pool)
 	ctx := WithTransactionTracking(context.Background())
 
 	// The store refuses every connection once the reply is lost, so a read of the outcome fails.
@@ -665,7 +667,7 @@ func TestAnOutcomeStillInProgressIsUnknownUntilItEnds(t *testing.T) {
 func TestTheWatcherDropsTheHooksOfATransactionThatAborts(t *testing.T) {
 	t.Parallel()
 	rig := newCommitRig(t)
-	log := captureCommitLog(t, rig.pool)
+	log := captureLog(t, rig.pool)
 	ctx := context.Background()
 	open, err := rig.observer.Begin(ctx)
 	if err != nil {
@@ -702,7 +704,7 @@ func TestTheWatcherDropsTheHooksOfATransactionThatAborts(t *testing.T) {
 func TestTheOutcomeWatchEndsWhenThePoolCloses(t *testing.T) {
 	t.Parallel()
 	rig := newCommitRig(t)
-	log := captureCommitLog(t, rig.pool)
+	log := captureLog(t, rig.pool)
 	ctx, cancel := context.WithCancel(WithTransactionTracking(context.Background()))
 	defer cancel()
 

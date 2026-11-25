@@ -24,8 +24,9 @@ type TxPool interface {
 	BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
 }
 
-// logOf is where TransactWith and its watcher write their lines about a commit over pool: the
-// guarded pool's own log (Pool.log), and the process's default logger for a pgx pool of a test's.
+// logOf is where TransactWith and its watcher write their lines about a commit over pool: a
+// guarded pool's own log (Pool.log) when pool is a *Pool, and the process's default logger for any
+// other TxPool, a test's wrapper of a *Pool included.
 func logOf(pool TxPool) *slog.Logger {
 	if guarded, ok := pool.(*Pool); ok {
 		return guarded.logger()
