@@ -429,7 +429,7 @@ func TestADetachedLaneRunsWithNoTicketAndHoldsNoWriteUnit(t *testing.T) {
 // GitHub answers. The flights' statements run on the background pool: none takes a request-pool
 // connection, and the background pool's count moves. The write class's queue wait, which six
 // syncs arriving at once and their take-backs after the release queue in, is not what the row
-// proves, and is past any run.
+// proves, and is past any run, as is the GitHub client's own twenty seconds on the held lookup.
 func TestASyncWaitingOnTheImportHoldsNoWriteUnitAndTheImportRunsOnTheBackgroundPool(t *testing.T) {
 	t.Parallel()
 	fake := &fakeGitHubApp{installations: map[string]string{}, repos: map[string]*fakeArchitectureRepo{}}
@@ -448,7 +448,7 @@ func TestASyncWaitingOnTheImportHoldsNoWriteUnitAndTheImportRunsOnTheBackgroundP
 	})
 	limiter := networkWaitLimiterPastTheRun()
 	options := appInstallationOptions(t, address)
-	options.admission = limiter
+	options.admission, options.githubRequestTimeout = limiter, pastTheRun
 	handler, database, _ := newTestServer(t, options)
 	createTestProject(t, handler, "ARCHW")
 	for _, repo := range repos {
@@ -499,7 +499,8 @@ func TestASyncWaitingOnTheImportHoldsNoWriteUnitAndTheImportRunsOnTheBackgroundP
 // both heads are written. The write class's queue wait is not what the row proves, and is past any
 // run: six records arriving at once queued behind the class's two units, and a loaded machine
 // refused one 429 after its two seconds, which then never reached GitHub; their take-backs after
-// the release queue behind one another as well.
+// the release queue behind one another as well. Nor is the GitHub client's own twenty seconds on
+// the held call, which is past any run too.
 func TestAResultsReadThroughWaitingOnGitHubHoldsNoWriteUnitAndWritesAfterItsReads(t *testing.T) {
 	t.Parallel()
 	var issueKey atomic.Pointer[string]
@@ -537,7 +538,7 @@ func TestAResultsReadThroughWaitingOnGitHubHoldsNoWriteUnitAndWritesAfterItsRead
 	})
 	limiter := networkWaitLimiterPastTheRun()
 	options := appInstallationOptions(t, address)
-	options.admission = limiter
+	options.admission, options.githubRequestTimeout = limiter, pastTheRun
 	handler, database, _ := newTestServer(t, options)
 	issue := issueInRepository(t, handler, "RTHR", "acme/widgets", "Read through")
 	issueKey.Store(&issue.Key)

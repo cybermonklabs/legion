@@ -7,6 +7,7 @@ package githubapp
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rsa"
 	"encoding/base64"
@@ -307,6 +308,15 @@ func WithLimits(limits Limits) Option {
 	return func(c *Client) { c.limits = limits }
 }
 
+// WithRequestTimeoutForTest replaces RequestTimeout for every call this client makes. It is for
+// tests, which hold a call past the production bound, or make one run it out in milliseconds,
+// without the package variable a test that writes it changes for every client of the process
+// (RequestTimeout). Nothing in production passes it, and a client built without it calls under
+// RequestTimeout.
+func WithRequestTimeoutForTest(bound time.Duration) Option {
+	return func(c *Client) { c.requestTimeout = bound }
+}
+
 // Client calls the GitHub App API as the configured App. A nil *Client is the
 // valid "no app credentials yet" state: every method returns ErrNoAppKey.
 type Client struct {
@@ -317,6 +327,9 @@ type Client struct {
 	now  func() time.Time
 	// limits is the shared rate limits request obeys and records; nil is no shared limit.
 	limits Limits
+	// requestTimeout replaces RequestTimeout for this client's calls; zero, which every client the
+	// deployment builds leaves it, keeps it (WithRequestTimeoutForTest).
+	requestTimeout time.Duration
 
 	mu sync.Mutex
 	// tokens holds each installation's token in this process alone. GitHub budgets an
@@ -970,7 +983,7 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 			return nil, 0, nil, held
 		}
 	}
-	bounded, cancel := context.WithTimeout(ctx, RequestTimeout)
+	bounded, cancel := context.WithTimeout(ctx, cmp.Or(c.requestTimeout, RequestTimeout))
 	defer cancel()
 	request, err := http.NewRequestWithContext(bounded, method, target, body)
 	if err != nil {

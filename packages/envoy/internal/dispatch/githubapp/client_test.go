@@ -793,6 +793,51 @@ func hangingGitHub(t *testing.T, arrived chan<- struct{}) *Client {
 	return client
 }
 
+// seenDeadline is a transport that answers every request 200 with an empty object and keeps the
+// deadline its context carried.
+type seenDeadline struct{ deadline time.Time }
+
+func (s *seenDeadline) RoundTrip(r *http.Request) (*http.Response, error) {
+	s.deadline, _ = r.Context().Deadline()
+	answer := httptest.NewRecorder()
+	_, _ = answer.WriteString("{}")
+	return answer.Result(), nil
+}
+
+// A call runs under the window its client was built with: RequestTimeout, or a test's
+// (WithRequestTimeoutForTest), which the package variable would not give one client without giving
+// it every client of the process. The deadline the request's context carries falls between the
+// moment before the call and the moment after it, each moved on by the window, whatever the
+// machine's speed, so no clock is raced.
+func TestACallRunsUnderItsClientsRequestWindow(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		options []Option
+		window  time.Duration
+	}{
+		{"the package's", nil, RequestTimeout},
+		{"a test's", []Option{WithRequestTimeoutForTest(time.Hour)}, time.Hour},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, pemText := testKeyPEM(t)
+			client, err := New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, "https://github.example", test.options...)
+			if err != nil {
+				t.Fatalf("new client: %v", err)
+			}
+			transport := &seenDeadline{}
+			client.http.Transport = transport
+			before := time.Now()
+			if _, _, _, err := client.Read(context.Background(), "installation-token", "/repos/acme/web"); err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			after := time.Now()
+			if transport.deadline.Before(before.Add(test.window)) || transport.deadline.After(after.Add(test.window)) {
+				t.Fatalf("the request's deadline is %v, want it %v after a moment between %v and %v", transport.deadline, test.window, before, after)
+			}
+		})
+	}
+}
+
 func TestGraphQLPostsQueryAndVariablesWithAnInstallationToken(t *testing.T) {
 	fake := &fakeGitHub{t: t}
 	fake.graphQLResponse = map[string]any{"data": map[string]any{"ok": true}}

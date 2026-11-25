@@ -252,6 +252,17 @@ type testServerOptions struct {
 	// production's searchEmbedTimeout. A case that holds the embedding at its embedder until it
 	// lets it go passes pastTheRun, so the release and nothing else ends that embedding.
 	searchEmbedBound time.Duration
+	// githubRequestTimeout is the window of each call of the server's GitHub clients
+	// (DepsInput.GitHubRequestTimeout); zero keeps production's twenty seconds. A case that holds
+	// GitHub until it lets it go passes pastTheRun, so the release and nothing else ends the call.
+	githubRequestTimeout time.Duration
+	// agentSecretsTimeout is the window of each call of the server's secrets broker client
+	// (cipher.WithTimeout), set on the client the server's Deps hold; zero keeps production's five
+	// seconds. A case that holds the broker until it lets it go passes pastTheRun.
+	agentSecretsTimeout time.Duration
+	// priorityPatchChecked is the server's hook in a priority patch whose expected has passed
+	// (server.priorityPatchChecked); nil is production, which runs nothing.
+	priorityPatchChecked func(id string)
 	// mentionLookupBound is the server's bound on each listener lookup a comment's creation
 	// makes, by the target looked up (server.mentionLookupBound); nil keeps production's
 	// mentionLookupTimeout. A case whose verdict needs a lookup the listener answers to count as
@@ -434,24 +445,25 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		agentSecretsTokenFile = accountTokenFile(t, credentialTestAccountToken)
 	}
 	deps, err := NewDeps(DepsInput{
-		Store:            database,
-		Identity:         people,
-		AgentTokens:      sharedAgentTokens(t, "agent-token"),
-		NewIssueLabel:    options.newIssueLabel,
-		NewIssueSession:  options.newIssueSession,
-		ServerURL:        testServerURL,
-		Docs:             documentService,
-		Events:           broker,
-		Renames:          options.renames,
-		App:              options.app,
-		GitHubAPIBase:    options.githubAPIBase,
-		TestHooksEnabled: options.testHooks,
-		StreamHeartbeat:  options.streamHeartbeat,
-		Admission:        options.admission,
-		ReadDeadline:     options.readDeadline,
-		DownloadDeadline: options.downloadDeadline,
-		EnvoyURL:         options.envoyURL,
-		EnvoyTimeout:     options.envoyTimeout,
+		Store:                database,
+		Identity:             people,
+		AgentTokens:          sharedAgentTokens(t, "agent-token"),
+		NewIssueLabel:        options.newIssueLabel,
+		NewIssueSession:      options.newIssueSession,
+		ServerURL:            testServerURL,
+		Docs:                 documentService,
+		Events:               broker,
+		Renames:              options.renames,
+		App:                  options.app,
+		GitHubAPIBase:        options.githubAPIBase,
+		GitHubRequestTimeout: options.githubRequestTimeout,
+		TestHooksEnabled:     options.testHooks,
+		StreamHeartbeat:      options.streamHeartbeat,
+		Admission:            options.admission,
+		ReadDeadline:         options.readDeadline,
+		DownloadDeadline:     options.downloadDeadline,
+		EnvoyURL:             options.envoyURL,
+		EnvoyTimeout:         options.envoyTimeout,
 		// Dispatch presents an identity of its own to the listener, as a deployment does: without
 		// one it refuses every send for a role (envoy.ErrNoListenerIdentity). The tests' stand-in listeners
 		// check no bearer.
@@ -483,6 +495,9 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
 	}
+	if options.agentSecretsTimeout != 0 && deps.AgentSecrets != nil {
+		deps.AgentSecrets.HTTP.Timeout = options.agentSecretsTimeout
+	}
 	deps.LiveSocketAge = options.liveSocketAge
 	mux := http.NewServeMux()
 	served := register(mux, lifetime, deps)
@@ -493,6 +508,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	served.adviceQueryHook = options.adviceQueryHook
 	served.duplicateBound = options.duplicateBound
 	served.searchEmbedBound = options.searchEmbedBound
+	served.priorityPatchChecked = options.priorityPatchChecked
 	served.mentionLookupBound = options.mentionLookupBound
 	served.withRelatedBound(options.relatedBound)
 	// waitBackground, as production's shutdown calls it: every keyed handler and every delivery a

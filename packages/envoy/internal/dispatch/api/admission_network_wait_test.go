@@ -606,19 +606,26 @@ func heldDiscoveryIssuer(t *testing.T) (address, token string, calls *atomic.Int
 // Row 3: the same for a service-account token while its issuer's discovery is held. The issuer is
 // undiscovered, so the first token's verification reads its discovery document, and the others
 // wait for that read, which the row holds - until it lets the document and the key set answer,
-// after the agent's bearers below are answered, or past the read's ten-second bound, after which
-// it fails. While it is held the tokens hold no read unit and an agent's bearer is answered 200,
-// and each token ends with the answer the read gives it: 200 once the issuer answers, and the 503
-// OIDC_ISSUER_UNAVAILABLE an issuer that cannot be reached gives once the read's bound ran out.
-// The read class's queue wait and the read's deadline are not what the row proves, and are past
-// any run.
+// after the agent's bearers below are answered, or, in the subtest whose issuer never answers,
+// past the read's ten-second bound, after which it fails. While it is held the tokens hold no read
+// unit and an agent's bearer is answered 200, and each token ends with the answer the read gives
+// it: 200 once the issuer answers, and the 503 OIDC_ISSUER_UNAVAILABLE an issuer that cannot be
+// reached gives once the read's bound ran out. The read class's queue wait and the read's
+// deadline are not what the row proves, and are past any run; so is the discovery's own bound in
+// the subtest whose issuer answers, where the release, and nothing a loaded machine's clock
+// reaches first, ends the read (oidc.WithDiscoveryAttemptForTest). The subtest whose issuer never
+// answers keeps the ten seconds: that bound is the contract it proves.
 func TestAServiceTokenIssuersDiscoveryHoldsNoAdmissionUnitWhileItsWaitersWait(t *testing.T) {
 	t.Parallel()
 	for _, answers := range []bool{true, false} {
 		t.Run(fmt.Sprintf("the issuer answers: %t", answers), func(t *testing.T) {
 			address, token, discoveries, release := heldDiscoveryIssuer(t)
 			limiter := networkWaitLimiterPastTheRun()
-			verifier := &countedVerifier{ServiceTokenVerifier: oidc.NewLazyVerifier(address, serviceTokenAudience)}
+			var discoveryOptions []oidc.LazyOption
+			if answers {
+				discoveryOptions = append(discoveryOptions, oidc.WithDiscoveryAttemptForTest(pastTheRun))
+			}
+			verifier := &countedVerifier{ServiceTokenVerifier: oidc.NewLazyVerifier(address, serviceTokenAudience, discoveryOptions...)}
 			handler, _, _ := newTestServer(t, testServerOptions{admission: limiter, oidc: verifier, readDeadline: pastTheRun})
 			requests := make([]*http.Request, networkWaiters)
 			for i := range requests {
@@ -777,7 +784,8 @@ func TestAReadWaitingOnTheListenerHoldsNoReadUnit(t *testing.T) {
 }
 
 // GitHub: each read asks whether the App is installed on a repository of its own
-// (getAppInstallation), so each makes an installation lookup, which GitHub holds.
+// (getAppInstallation), so each makes an installation lookup, which GitHub holds. The client's
+// own twenty-second window on a call is past any run, so the release ends the lookup and not it.
 func TestAReadWaitingOnGitHubHoldsNoReadUnit(t *testing.T) {
 	t.Parallel()
 	installation := func(r *http.Request) bool { return strings.HasSuffix(r.URL.Path, "/installation") }
@@ -791,7 +799,7 @@ func TestAReadWaitingOnGitHubHoldsNoReadUnit(t *testing.T) {
 	address, calls, release := heldService(t, proxyTo(t, github), installation)
 	limiter := networkWaitLimiterPastTheRun()
 	options := appInstallationOptions(t, address)
-	options.admission, options.readDeadline = limiter, pastTheRun
+	options.admission, options.readDeadline, options.githubRequestTimeout = limiter, pastTheRun, pastTheRun
 	handler, _, _ := newTestServer(t, options)
 
 	requests := make([]*http.Request, 0, networkWaiters)
@@ -1029,14 +1037,15 @@ func TestARelatedItemReadWhoseEmbeddingAnswersFirstGivesNothingBack(t *testing.T
 }
 
 // The secrets broker: each read is a person's list of the credential requests waiting on them
-// (listCredentialPending), which the broker holds.
+// (listCredentialPending), which the broker holds. The client's own five-second window on a call
+// is past any run, so the release ends the read and not it.
 func TestAReadWaitingOnTheSecretsBrokerHoldsNoReadUnit(t *testing.T) {
 	t.Parallel()
 	broker := newFakeBrokerRig(t)
 	broker.bodyByRoute["GET /v1/pending"] = `{"pending":[]}`
 	address, calls, release := heldService(t, proxyTo(t, broker.server.URL), func(r *http.Request) bool { return r.URL.Path == "/v1/pending" })
 	limiter := networkWaitLimiterPastTheRun()
-	handler, _, _ := newTestServer(t, testServerOptions{agentSecretsURL: address, admission: limiter, readDeadline: pastTheRun})
+	handler, _, _ := newTestServer(t, testServerOptions{agentSecretsURL: address, agentSecretsTimeout: pastTheRun, admission: limiter, readDeadline: pastTheRun})
 
 	requests := make([]*http.Request, 0, networkWaiters)
 	for range networkWaiters {

@@ -306,6 +306,12 @@ type DepsInput struct {
 	App           *auth.AppConfig
 	GitHubAPIBase string
 	OIDC          ServiceTokenVerifier
+
+	// GitHubRequestTimeout replaces the window of each GitHub call the two GitHub clients make
+	// (githubapp.RequestTimeout). Zero keeps the client's own twenty seconds; a deployment leaves
+	// it zero (cmd/dispatch sets none), and only a test sets another, so a row that holds GitHub
+	// past that window does not see its calls cut off by it.
+	GitHubRequestTimeout time.Duration
 	// BrokerTokens decides a broker-issued DPoP token; nil where no broker is configured. See
 	// Deps.BrokerTokens; cmd/dispatch builds it (brokerTokenVerifier).
 	BrokerTokens *ciphertoken.Verifier
@@ -401,7 +407,14 @@ func NewDeps(input DepsInput) (Deps, error) {
 	if input.Store != nil {
 		githubOptions = append(githubOptions, githubapp.WithLimits(ratelimit.New(input.Store.Pool)))
 	}
-	github, err := githubapp.New(input.App, input.GitHubAPIBase, githubOptions...)
+	// Both clients take the window a test put on them (DepsInput.GitHubRequestTimeout).
+	newGitHub := func(options ...githubapp.Option) (*githubapp.Client, error) {
+		if input.GitHubRequestTimeout > 0 {
+			options = append(options, githubapp.WithRequestTimeoutForTest(input.GitHubRequestTimeout))
+		}
+		return githubapp.New(input.App, input.GitHubAPIBase, options...)
+	}
+	github, err := newGitHub(githubOptions...)
 	if err != nil {
 		return Deps{}, err
 	}
@@ -418,7 +431,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 	var architectureImporter *architecture.Importer
 	backgroundGitHub := github
 	if input.Store != nil && input.Store.Pool != nil {
-		if backgroundGitHub, err = githubapp.New(input.App, input.GitHubAPIBase, githubapp.WithLimits(ratelimit.OnBackground(input.Store.Pool))); err != nil {
+		if backgroundGitHub, err = newGitHub(githubapp.WithLimits(ratelimit.OnBackground(input.Store.Pool))); err != nil {
 			return Deps{}, err
 		}
 		architectureImporter = architecture.NewImporterOnBackground(input.Store, backgroundGitHub, input.Events)
@@ -596,6 +609,13 @@ type server struct {
 	// just before the try's bound begins, so a test may block in it to hold the start of a lookup
 	// (TestAListenerThatAnswersNoLookupDelaysARoutedCommentByOneTimeoutAtMost does).
 	mentionLookupBound func(target string) time.Duration
+	// priorityPatchChecked runs in patchPriority once a body naming expected has passed its check,
+	// holding the locks that check took (the row's, and the order's allocation lock before it where
+	// the body also moves the priority) and before the write, with the priority's id; nil, which
+	// every server the deployment builds leaves it, calls nothing. Only a test sets it, to hold a
+	// patch where it holds those locks while the writes that meet it queue behind them, which
+	// production has only for as long as a patch's own statements take.
+	priorityPatchChecked func(id string)
 	// rosters is how this process reads and refreshes the stored listener answer every process's
 	// issue reads judge routes against and agents lists list (issue_route_status.go). Only
 	// register gives it non-zero TTLs.

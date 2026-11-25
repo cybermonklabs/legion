@@ -413,6 +413,9 @@ func (s *server) patchPriority(w http.ResponseWriter, r *http.Request) {
 			writeError(w, codePriorityChanged, http.StatusConflict, refusal)
 			return
 		}
+		if s.priorityPatchChecked != nil {
+			s.priorityPatchChecked(id)
+		}
 	}
 	if input.Rank != nil {
 		_, err = prioritystore.Move(r.Context(), tx, id, before, after, values, actor, at)

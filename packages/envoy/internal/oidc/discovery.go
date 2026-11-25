@@ -1,6 +1,7 @@
 package oidc
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -46,8 +47,11 @@ type discovery[T any] struct {
 	issuer string
 	read   func(ctx context.Context) (T, error)
 	// now is the clock the spacing between failed attempts and the log's rate are measured by.
-	now    func() time.Time
-	flight singleflight.Group
+	now func() time.Time
+	// attemptTimeout replaces discoveryAttemptTimeout for each read; zero, which every verifier
+	// the deployment builds leaves it, keeps it. Only a test sets it (WithDiscoveryAttemptForTest).
+	attemptTimeout time.Duration
+	flight         singleflight.Group
 
 	mu         sync.Mutex
 	value      T
@@ -87,7 +91,7 @@ func (d *discovery[T]) discover(ctx context.Context) (T, error) {
 		if value, err, settled := d.settled(); settled {
 			return value, err
 		}
-		attemptCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), discoveryAttemptTimeout)
+		attemptCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cmp.Or(d.attemptTimeout, discoveryAttemptTimeout))
 		defer cancel()
 		value, err := d.read(attemptCtx)
 		d.mu.Lock()
@@ -168,12 +172,27 @@ type LazyVerifier struct {
 	discovery *discovery[*Verifier]
 }
 
+// LazyOption configures a LazyVerifier NewLazyVerifier builds.
+type LazyOption func(*LazyVerifier)
+
+// WithDiscoveryAttemptForTest replaces the bound on one read of the issuer's discovery document
+// (discoveryAttemptTimeout, ten seconds). It is for tests, which hold a read of it past the
+// production bound, or make one run it out in milliseconds; nothing in production passes it, and
+// a verifier built without it reads under discoveryAttemptTimeout.
+func WithDiscoveryAttemptForTest(bound time.Duration) LazyOption {
+	return func(v *LazyVerifier) { v.discovery.attemptTimeout = bound }
+}
+
 // NewLazyVerifier returns a verifier for tokens issuer issues to audience, and reads nothing: the
 // discovery document is read by Discover, by Run, or by the first Verify.
-func NewLazyVerifier(issuer, audience string) *LazyVerifier {
-	return &LazyVerifier{discovery: newDiscovery(issuer, func(ctx context.Context) (*Verifier, error) {
+func NewLazyVerifier(issuer, audience string, options ...LazyOption) *LazyVerifier {
+	v := &LazyVerifier{discovery: newDiscovery(issuer, func(ctx context.Context) (*Verifier, error) {
 		return New(ctx, issuer, audience)
 	})}
+	for _, option := range options {
+		option(v)
+	}
+	return v
 }
 
 // Verify is Verifier.Verify once the issuer is discovered, discovering it first when it is not
