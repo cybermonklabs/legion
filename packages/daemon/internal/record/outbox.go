@@ -80,6 +80,12 @@ const (
 	// OutboxKindFixJobRead reads from Dispatch the CI job whose failure a fix of a task starts for
 	// (FixJobRead), before the fix's task is sent.
 	OutboxKindFixJobRead OutboxKind = "fix_job_read"
+	// OutboxKindCINews tells one role of the issue a task's CI news: a report of the listener's
+	// runs, a prompt to read Dispatch, a repair assignment or a fix's notice (CINews).
+	OutboxKindCINews OutboxKind = "ci_news"
+	// OutboxKindBesideBranchesDelete deletes on GitHub the branches beside a fix of a task
+	// (BesideBranchesDelete).
+	OutboxKindBesideBranchesDelete OutboxKind = "beside_branches_delete"
 )
 
 // OutboxLane is which executor of an issue runs a kind. An issue's rows run on six lanes side by
@@ -140,7 +146,7 @@ const (
 var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
-	LaneRoleMessage: {OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindFixJobRead, OutboxKindMergeQueueRemoval, OutboxKindConflictConfirm, OutboxKindMergeForward},
+	LaneRoleMessage: {OutboxKindHookPrompt, OutboxKindCINews, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindFixJobRead, OutboxKindMergeQueueRemoval, OutboxKindBesideBranchesDelete, OutboxKindConflictConfirm, OutboxKindMergeForward},
 	LaneClaim:       {OutboxKindClaimRelease},
 	LaneDocuments:   {OutboxKindDesignChanges},
 	LaneRecord:      {OutboxKindStepRecord, OutboxKindPlanRecord},
@@ -191,9 +197,10 @@ type pauseHold struct {
 // pauseHolds is the one list of the rows a project's pause holds (decision 9 of
 // dispatch://INFRA-3759): every row that launches a role, hands it a task or a message, or starts
 // or ends a production check's look. Those are a supervise row whose op is `start`, an architect's
-// notice (which resumes a released architect, the daemon's wakeForDelivery), the four messages to
-// one role (hook_prompt, role_message, update_ask, merge_forward) and the merger's merge-queue
-// message, and the three rows of a production check (check_wake, check_look, check_bound). Every
+// notice (which resumes a released architect, the daemon's wakeForDelivery), the five messages to
+// one role (hook_prompt, ci_news, role_message, update_ask, merge_forward) and the merger's
+// merge-queue message, the deletion of the branches beside a fix, which is held as that message is,
+// and the three rows of a production check (check_wake, check_look, check_bound). Every
 // other row runs while the project is paused: the stops (a supervise row of any other op,
 // issue_suspend, issue_release), the writes to Dispatch, the reconcile of a tree's news of its
 // approved design (design_changes), which reads Dispatch and writes the news record and tells a
@@ -209,10 +216,12 @@ var pauseHolds = []pauseHold{
 	{kind: OutboxKindSupervise, op: "start"},
 	{kind: OutboxKindNotice},
 	{kind: OutboxKindHookPrompt},
+	{kind: OutboxKindCINews},
 	{kind: OutboxKindRoleMessage},
 	{kind: OutboxKindUpdateAsk},
 	{kind: OutboxKindMergeForward},
 	{kind: OutboxKindMergeQueueRemoval},
+	{kind: OutboxKindBesideBranchesDelete},
 	{kind: OutboxKindCheckWake},
 	{kind: OutboxKindCheckLook},
 	{kind: OutboxKindCheckBound},
@@ -2303,6 +2312,18 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindCINews:
+		value := CINews{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindBesideBranchesDelete:
+		value := BesideBranchesDelete{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindMergeForward:
 		value := MergeForwardMessage{}
 		if err := decoder.Decode(&value); err != nil {
@@ -2669,6 +2690,15 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.Generation == 0 || value.Task == "" || value.Fix < 1 || value.Check == "" || value.Head == "" {
 			return fmt.Errorf("a fix's job read names the run, the task, the fix, the check and the head; it names generation %d, task %q, fix %d and check %q at %q",
 				value.Generation, value.Task, value.Fix, value.Check, value.Head)
+		}
+	case CINews:
+		if err := value.Validate(); err != nil {
+			return err
+		}
+	case BesideBranchesDelete:
+		if value.Generation == 0 || value.Task == "" || value.Fix < 0 {
+			return fmt.Errorf("a deletion of the branches beside a fix names the run, the task and the fix, 0 for every fix; it names generation %d, task %q and fix %d",
+				value.Generation, value.Task, value.Fix)
 		}
 	case MergeForwardMessage:
 		if _, known := mergeForwardRoles[value.Step]; !known {
