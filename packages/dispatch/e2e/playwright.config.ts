@@ -560,9 +560,8 @@ const parallelProjects = [
   // rows that the shared list keeps the option it marks active inside its box when a typed word
   // narrows it and when Enter ticks a value, that the Delivery page's session-groups editor, the
   // project List's Claimed by and header filters and an Inbox card's Reaches draw no count before
-  // the read they count answers, that a double click on a marked row's held control and the List
-  // bar's partly cut landing leave the focus where it belongs, and that a Board move whose dry run
-  // is out leaves the focus where the reader's click put it.
+  // the read they count answers, and that a double click on a marked row's held control and the
+  // List bar's partly cut landing leave the focus where it belongs.
   // The `testIgnore` is `chromium`'s, for the reason given above `webkit`.
   {
     name: "firefox",
