@@ -356,6 +356,17 @@ func (r *inFlightRig) seedInFlight(issue *inFlightIssue, seeded phase.Phase, sta
 		}
 	}
 	key := issue.key
+	// The release before writes phases.verdict on every phase row it inserts: the column is not null
+	// with no default in each schema before the check states, and that release names it in each
+	// statement. The store before the plans holds it so (storeBeforeThePlans). The store of the
+	// release of the owner's plan, every embedded migration applied (newReleaseBeforeRig), holds
+	// this branch's check states too, whose 20261121074614 drops the column (PROVISIONAL, #4940):
+	// there the row is written without it. So the seed writes the column where the schema holds it.
+	verdict := r.phasesHoldVerdict(ctx)
+	verdictColumn, verdictValue := "", ""
+	if verdict {
+		verdictColumn, verdictValue = " verdict,", " '',"
+	}
 	exec("the root "+key, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq,
 		handed_over, dispatch_status, repo, default_branch, github_repo)
 		values ($1, $1, $2, $3, $4, 1, $5, $6, $7, true, $5, $8, 'main', $8)`,
@@ -378,10 +389,8 @@ func (r *inFlightRig) seedInFlight(issue *inFlightIssue, seeded phase.Phase, sta
 			counts = 1
 		}
 		if seeded != phase.Retro {
-			// B's check states drop phases.verdict (migration 20261121074614), so the release
-			// before's columns here are its own, with no verdict column.
-			exec("the implementer's row of "+key, `insert into phases (issue, role, claim, handoff_commit, rounds, pass, summary,
-				last_handoff, completed_at) values ($1, 'implementer', $2, $3, $4, $4, 'implemented', $5, now() - interval '2 hours')`,
+			exec("the implementer's row of "+key, `insert into phases (issue, role, claim, handoff_commit, rounds, pass,`+verdictColumn+` summary,
+				last_handoff, completed_at) values ($1, 'implementer', $2, $3, $4, $4,`+verdictValue+` 'implemented', $5, now() - interval '2 hours')`,
 				key, string(r.tokenOf(key, claim.RoleImplementer)), stepRecordsHead, counts, "implement-record-"+key)
 		}
 	}
@@ -398,8 +407,8 @@ func (r *inFlightRig) seedInFlight(issue *inFlightIssue, seeded phase.Phase, sta
 		// a literal of that release's text: this release's engine (workflow's Engine.ResumeTask)
 		// reads the plan tables, which the store of the release before does not hold.
 		resume := fmt.Sprintf("Continue %s. Issue: %s. Phase: %s. Resume the existing phase work.", issue.title, key, seeded)
-		exec("the "+string(working)+"'s row of "+key, `insert into phases (issue, role, claim, handoff_commit, rounds, summary,
-			last_handoff, entry, entry_task, entry_raised_at) values ($1, $2, $3, $4, 0, '', $5, 1, $6, now() - interval '1 hour')`,
+		exec("the "+string(working)+"'s row of "+key, `insert into phases (issue, role, claim, handoff_commit, rounds,`+verdictColumn+` summary,
+			last_handoff, entry, entry_task, entry_raised_at) values ($1, $2, $3, $4, 0,`+verdictValue+` '', $5, 1, $6, now() - interval '1 hour')`,
 			key, string(working), string(r.tokenOf(key, working)), handoff, last, resume)
 	}
 	claims := []claim.Role{claim.RoleArchitect}
@@ -458,4 +467,17 @@ func (r *inFlightRig) resume(issue *inFlightIssue, role claim.Role) *stepClaiman
 	}
 	r.claims[token] = c
 	return c
+}
+
+// phasesHoldVerdict says whether the rig's store holds phases.verdict: the store before the plans
+// does, and the store with every embedded migration applied does not, since this branch's check
+// states drop it (20261121074614, PROVISIONAL, #4940).
+func (r *inFlightRig) phasesHoldVerdict(ctx context.Context) bool {
+	r.t.Helper()
+	var holds bool
+	if err := r.st.Pool().QueryRow(ctx, `select exists (select 1 from information_schema.columns
+		where table_schema = current_schema() and table_name = 'phases' and column_name = 'verdict')`).Scan(&holds); err != nil {
+		r.t.Fatalf("read whether phases holds verdict: %v", err)
+	}
+	return holds
 }
