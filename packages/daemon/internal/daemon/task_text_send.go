@@ -19,8 +19,9 @@ import (
 // the claim of the step that runs then holds the start task it was given: waiting for its send, or
 // taken back from a turn its process could not finish and sent again to the relaunched agent, a
 // fresh session among them. That send carries the text the plan holds now, by the one rewrite of a
-// start's task for a later text (workflow.WithTaskText), which the workflow's write of the stored
-// start task in the version's own transaction makes too (record.PhaseRow.EntryTask).
+// start's task for a later text (workflow.WithTaskText). It is the only place a start task takes a
+// later text: the version writes no stored start task, and the send of a stored one (an owed
+// entry's, record.PhaseRow.EntryTask) is a start the claim's machine sends through here as well.
 //
 // A task that carries news of the approved design is sent as its start's own text
 // (record.DeliveryNews.Task) followed by the news, rendered again at each send (designNews), so the

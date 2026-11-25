@@ -178,7 +178,7 @@ func TestValidateRefusesWhatAnElementCannotBe(t *testing.T) {
 		for i := 0; i+1 < len(attributes); i += 2 {
 			named[attributes[i]] = attributes[i+1]
 		}
-		return Block{ID: id, Type: TaskBlockType, Parent: parent, Attributes: named, Text: "What block " + id + " says."}
+		return withParent(Block{ID: id, Type: TaskBlockType, Attributes: named, Text: "What block " + id + " says."}, parent)
 	}
 	a := block("a", "", "steps", "implementer")
 	element := func(id, names string) string {

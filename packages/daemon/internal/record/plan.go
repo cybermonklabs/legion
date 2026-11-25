@@ -31,7 +31,10 @@ const (
 	PlanSourceOwner = "owner"
 	// PlanSourceDefault is the project's default steps as one task, written at the start of the
 	// work of a generation no owner's plan reached, or whose experiment's group takes no plan from
-	// its owner: version 0, no document and no giver.
+	// its owner: version 0, no document and no giver. A later version an owner gives an issue of
+	// that group, which changes nothing but the text of its running task default (the workflow's
+	// versionRefusal), keeps this source, since the issue still runs the default steps, and names
+	// its document, its version and its giver.
 	PlanSourceDefault = "default"
 )
 
@@ -62,7 +65,8 @@ const (
 // PlanVersion is one version of the plan of an issue at one generation. The highest version of a
 // generation is the plan in force. An owner's version is the version of its document (ArtifactID)
 // it gave, and GivenBy the claim token of the owner that gave it; a default plan has version 0, no
-// document and no giver.
+// document and no giver, and a later version of it an owner gave (PlanSourceDefault) names all
+// three.
 type PlanVersion struct {
 	Issue      string
 	Generation uint64
