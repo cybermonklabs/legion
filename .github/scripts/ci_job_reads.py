@@ -693,17 +693,22 @@ AIRLOCK_FUZZ_SCRIPT = "go test -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock
 AIRLOCK_BUILD_STEP = "Build the Lean model"
 AIRLOCK_AXIOMS_STEP = "Print the theorems' axioms"
 AIRLOCK_AXIOMS_SCRIPT = f"{ENVOY}/scripts/airlock-lean-axioms.sh"
+# Go's cleanup detector: at each collection the runtime reports a cleanup or a finalizer whose
+# closure or argument reaches the object it is attached to. internal/dispatch/docs is the only
+# package of the repository that registers a cleanup (runtime.AddCleanup in roomcursor.go and
+# tree.go), so every run of its tests runs under it: envoy-go-race-docs' race run below, and the
+# plain run of what the race build cannot run (race_impossible_script), and no job runs the
+# package a third time for the detector alone.
+CLEANUP_DETECTOR = "GODEBUG=checkfinalizers=1"
+CLEANUP_DETECTOR_PACKAGES = ("internal/dispatch/docs",)
 # The document service's race step runs under .github/scripts/race_memory.py, which fails it with
 # a log when the race binary's memory passes RACE_MEM_LIMIT_KB (the step's comment in
-# ci-job-envoy-go-race-docs.yaml says why), so its line is a shell assignment and a script, not a
-# go command the simple form reduces.
+# ci-job-envoy-go-race-docs.yaml says why), and under the cleanup detector, so its line is shell
+# assignments and a script, not a go command the simple form reduces. GODEBUG is a GO* name,
+# which is outside ENV_ALLOWED wherever it is set, so the step is pinned whole.
 RACE_DOCS_STEP = "Race-test the document service"
-RACE_DOCS_SCRIPT = ("RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py "
+RACE_DOCS_SCRIPT = (f"{CLEANUP_DETECTOR} RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py "
                     "go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/")
-# The same package under Go's cleanup detector. GODEBUG is a GO* name, which is outside
-# ENV_ALLOWED wherever it is set, so this step too is pinned whole rather than reduced.
-FINALIZERS_STEP = "Test the document service under the cleanup detector"
-FINALIZERS_SCRIPT = "GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 34m ./internal/dispatch/docs/"
 # Every lane whose tests start a Dispatch process sizes its Postgres service in its CEILING_STEP,
 # which runs .github/scripts/pg-connection-ceiling.sh. The check reads the step's run: line, not
 # what the script runs, so each such gate declares the script, and the go run on the script's line
@@ -1731,8 +1736,15 @@ def race_impossible_tests(root, packages=None) -> dict:
 def race_impossible_script(packages) -> str:
     """A plain run of the tests the detector makes impossible: one `go test` per package
     of `packages` (race_impossible_tests), each naming that package's own tests, anchored and
-    sorted, in its -run, under a 10-minute timeout."""
-    return "\n".join(f"go test -count=1 -timeout 10m -run '^({'|'.join(sorted(names))})$' ./{under}"
+    sorted, in its -run, under a 10-minute timeout. A package of CLEANUP_DETECTOR_PACKAGES runs
+    under the cleanup detector and with -v: go test prints a passing package's own output only
+    with -v, and the document service's is evidence - its TestMain's count of services left
+    alive, and the xid window rig's logs of which branch a load test reached
+    (xid_window_load_linux_test.go, xid_window_ownps_linux_test.go) - which the job that ran the
+    package plain under the detector alone printed for the same reason."""
+    return "\n".join(f"{CLEANUP_DETECTOR + ' ' if under in CLEANUP_DETECTOR_PACKAGES else ''}"
+                     f"go test{' -v' if under in CLEANUP_DETECTOR_PACKAGES else ''} -count=1 -timeout 10m "
+                     f"-run '^({'|'.join(sorted(names))})$' ./{under}"
                      for under, names in packages.items())
 
 

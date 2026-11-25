@@ -18,7 +18,7 @@ name: CI caches
 # architecture and on the Go version the family's own module installs (go-envoy-infra on the hash
 # of its module files too, for the reason its job gives): go-notices (lint's notices step),
 # go-daemon (typecheck, daemon-go, plugin-pack and pi-legion), go-envoy (envoy-go-build, envoy-go-checks,
-# envoy-go-race-docs, envoy-go-docs-finalizers, listener-server-change, envoy-e2e-local and
+# envoy-go-race-docs, listener-server-change, envoy-e2e-local and
 # envoy-session-stall, and the embedder job of .github/workflows/dispatch-browser.yaml),
 # go-envoy-test (envoy-go, envoy-go-claim-model, which builds the API's test binary of that set,
 # the binaries, multiprocess and visual jobs of
