@@ -202,6 +202,9 @@ func planToldOf(issue record.Issue, stored *record.StoredPlan, task string) (pla
 	}
 	of, _ := stored.TaskOf(task)
 	for _, need := range of.JoinConflicts {
+		if !slices.Contains(of.Needs, need) {
+			continue
+		}
 		if at := slices.IndexFunc(starts, func(start record.StartBranch) bool { return slices.Contains(start.Holds, need) }); at >= 0 {
 			told.conflicts = append(told.conflicts, joinConflict{task: need, branch: starts[at].Branch})
 		}
