@@ -2049,7 +2049,7 @@ func (s *Service) Renew(ctx context.Context, id, podToken string) (Renewal, erro
 		return Renewal{}, ErrMachineLoginEnded
 	}
 	if kind == "session" && signInCredential(cred.Subject) &&
-		!(credLive && cred.Service != nil && s.tokenLoginListed(*cred.Subject, *cred.Service)) {
+		!credLive {
 		return Renewal{}, ErrSignInCredentialEnded
 	}
 	switch {
