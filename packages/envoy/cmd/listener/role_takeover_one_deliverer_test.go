@@ -810,6 +810,7 @@ func newRelayBench(b *testing.B) *relayBench {
 		deferredUnplaceable: newUnplaceableDeferrals(),
 		roleKeepDrains:      newRoleKeepGuards(),
 		now:                 time.Now,
+		consumerGrant:       &consumerGrantAnswer{},
 	})
 	delivery, err := connectSessionDelivery([]string{url},
 		inactiveThresholdFor(sessions, defaultSessionReapInterval, defaultSessionConsumerSweepInterval),
@@ -818,6 +819,7 @@ func newRelayBench(b *testing.B) *relayBench {
 		b.Fatalf("open the session-consumer connection: %v", err)
 	}
 	b.Cleanup(delivery.close)
+	cfg.consumerGrant.set(delivery.holdsConsumerGrant)
 	relays, err := startSessionRelays(delivery, cfg)
 	if err != nil {
 		b.Fatalf("start the session relays: %v", err)

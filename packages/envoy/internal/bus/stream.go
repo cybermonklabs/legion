@@ -763,6 +763,16 @@ var roleLaneSubjects = []string{
 	ExceptionTopicPrefix + contracts.RoleTopicPrefix + ">",
 }
 
+// RoleLane reports whether topic is a role lane or the exception lane of one (roleLaneSubjects),
+// read literally as a published topic is, as subjectsCapture reads it: notifications.role.> is a
+// role lane and so is every topic under it. The publish path sends such a topic over core NATS
+// (publishPathOf), and a session's consumer filter leaves it out (cmd/listener's
+// sessionConsumerFilter), since the stream never stores it and a role message reaches its holder
+// as a forward on the holder's agent subject.
+func RoleLane(topic string) bool {
+	return subjectsCapture(roleLaneSubjects, topic)
+}
+
 // subjectCapturesRoleLanes reports whether some role-lane subject would land in a stream carrying
 // subject.
 func subjectCapturesRoleLanes(subject string) bool {
@@ -826,6 +836,16 @@ func migrateRoleLanesOffStream(js nats.JetStreamContext, oldConfig, newConfig *n
 // subjects in one stream.
 func subjectsOverlap(a, b string) bool {
 	return tokensOverlap(strings.Split(a, "."), strings.Split(b, "."))
+}
+
+// SubjectsOverlap reports whether some subject matches both patterns a and b (subjectsOverlap), for
+// a caller outside this package. No production code calls it: the listener weighs a session's
+// filters through SessionConsumerReduction, which records which topics fed each merge. The
+// listener's reduction test reads it to check that each of its rows overlaps as the case says
+// (cmd/listener's TestAFilterWhoseTopicsReduceToAnotherSessionsSubjectsLeavesThemOut), and it stays
+// exported because a test in another package cannot reach the unexported one.
+func SubjectsOverlap(a, b string) bool {
+	return subjectsOverlap(a, b)
 }
 
 // tokensOverlap is subjectsOverlap on two subjects already split into their tokens, for a caller

@@ -75,6 +75,9 @@ type openOpts struct {
 	log            *slog.Logger
 	roleWatch      []kvwatch.Option
 	legacySubjects LegacySubjectCounter
+	// roleScan is the role claim scan's test seams (roleScanSeams), all off unless this package's
+	// tests set them.
+	roleScan roleScanSeams
 }
 
 // WithLogger sets the logger the registry and its cache watcher write through. The listener passes
@@ -131,7 +134,13 @@ func WithLegacySubjectCounter(counter LegacySubjectCounter) OpenOption {
 }
 
 // Open opens the interest and role claim buckets on conn, creating or raising each to the
-// registry's copies (bus.EnsureKeyValue) for as long as ctx lasts, and restores the role claims.
+// registry's copies (bus.EnsureKeyValue) for as long as ctx lasts, and restores the role claims:
+// the role claim scan (scanRoleClaims) reads the revision of each claim, which a restored holder's
+// grace is read from. A run of the scan during which conn reconnects is made again, from an empty
+// result, up to four runs in all, and that path ends 70 s after the first run started
+// (roleClaimScanDeadline); a run that meets no reconnect on a connection that stays connected keeps
+// only the scan's idle bound (kvwatch.ScanIdleTimeout), however long it lasts. A scan that keeps no
+// run fails Open with an error that names the role claim scan, which fails the listener's start.
 func Open(ctx context.Context, conn *nats.Conn, options ...OpenOption) (*Registry, error) {
 	opts := openOpts{replicas: 1, now: time.Now, log: slog.Default()}
 	for _, o := range options {
@@ -152,7 +161,7 @@ func Open(ctx context.Context, conn *nats.Conn, options ...OpenOption) (*Registr
 	if err != nil {
 		return nil, err
 	}
-	restoredRoleRevisions, err := roleRevisions(roleKV, kvwatch.ScanIdleTimeout, opts.log)
+	restoredRoleRevisions, err := scanRoleClaims(conn, roleKV, kvwatch.ScanIdleTimeout, opts.log, opts.roleScan)
 	if err != nil {
 		return nil, err
 	}

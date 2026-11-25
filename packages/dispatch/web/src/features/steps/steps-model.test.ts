@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 
 import type { StepRecord } from "../../api/types";
 import { defaultRuns, stepRecord as record } from "./step-record-fixture";
-import { stepTasks } from "./steps-model";
+import { stepTasks, stepVariant } from "./steps-model";
 
 // What the tab draws, without a DOM: the server's tasks in the server's order, each task's runs
 // in the order the read listed them, a retro and a merge named by their kind, and a run that has
@@ -148,4 +148,34 @@ test("stepTasks keeps a run whose result or kind it does not know, in the server
     ["skipped", "2", "other", "skipped"],
     ["pause", "pause", "passed", false],
   ]);
+});
+
+// The variant of the issue is the one the records of its newest run, its highest generation,
+// name: an older run that names another and a newest record that names none yet change nothing,
+// and records that name none, null or left out as a Dispatch older than the two fields answers
+// them, name none.
+test("stepVariant names the experiment and the variant the newest run's records name", () => {
+  const named = { experiment: "planning", variant: "b" };
+  expect(
+    stepVariant({
+      issue: "CORE-1",
+      tasks: [
+        {
+          steps: [
+            record({ experiment: "planning", id: "older", variant: "a" }),
+            record({ generation: 2, id: "newest-unnamed" }),
+            record({ generation: 2, id: "newest", ...named }),
+          ],
+          task: "default",
+        },
+      ],
+    })
+  ).toBe("Experiment planning: variant b");
+  const older = record({ id: "no-fields" }) as Partial<StepRecord>;
+  delete older.experiment;
+  delete older.variant;
+  for (const steps of [[record({ id: "none" })], [older as StepRecord]]) {
+    expect(stepVariant({ issue: "CORE-1", tasks: [{ steps, task: "default" }] })).toBeNull();
+  }
+  expect(stepVariant({ issue: "CORE-1", tasks: [] })).toBeNull();
 });

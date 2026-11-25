@@ -1,6 +1,6 @@
 package daemon
 
-//ci:builds packages/envoy ./cmd/listener ./internal/testnats/cmd/fixturebuckets startIdleRigListenerOn testbuild.EnvoyBinary and testbuild.ProvisionFixtureBuckets (internal/testbuild/testbuild.go:169), which run go build ./cmd/listener and ./internal/testnats/cmd/fixturebuckets in packages/envoy (internal/testbuild/testbuild.go:112)
+//ci:builds packages/envoy ./cmd/listener ./internal/testnats/cmd/fixturebuckets startIdleRigListenerOn testbuild.EnvoyBinary and testbuild.ProvisionFixtureBuckets (`packages/daemon/internal/testbuild/testbuild.go#ProvisionFixtureBuckets`), which run go build ./cmd/listener and ./internal/testnats/cmd/fixturebuckets in packages/envoy (`packages/daemon/internal/testbuild/testbuild.go#buildEnvoy`)
 
 import (
 	"bytes"

@@ -4023,6 +4023,10 @@ func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptio
 		// The takeover copy's seams, which a row forces a fault through (setTakeoverFaults):
 		// this listener's own, shared by every copy of this configuration.
 		takeoverFaults: &takeoverFaultHooks{},
+		// Whether the test's NATS user holds the session consumers' calls, asked of the server
+		// at each call: the harness opens no session delivery, whose answer main.go wires. A rig
+		// that opens one sets its answer instead (crashRig).
+		consumerGrant: answeredBy(func(ctx context.Context) bool { return client.ProbeConsumerCalls(ctx) == nil }),
 	}
 	// The role lane's forwards run on the role forwarder, as main.go wires them: it is the one
 	// path those messages take. It is wired last, from the configuration above, so a test that

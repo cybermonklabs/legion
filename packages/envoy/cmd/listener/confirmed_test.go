@@ -110,6 +110,9 @@ func withRoleClaimDrain(t *testing.T, d *listenerDeps) *listenerDeps {
 		keepPublish:         d.client.PublishStoredAck,
 		roleKeepDrains:      newRoleKeepGuards(),
 		now:                 time.Now,
+		// Whether the rig's NATS user holds the session consumers' calls, asked of the server at
+		// each call: the rig opens no session delivery, whose answer main.go wires.
+		consumerGrant: answeredBy(func(ctx context.Context) bool { return d.client.ProbeConsumerCalls(ctx) == nil }),
 	}
 	return d
 }

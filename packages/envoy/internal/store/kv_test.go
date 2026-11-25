@@ -3552,7 +3552,7 @@ func TestARoleRevisionScanThatEndsEarlyIsAnErrorNotAShortSnapshot(t *testing.T) 
 	} {
 		t.Run(ending.name, func(t *testing.T) {
 			handle := bus.NewKeyValue(rawRoles, earlyEndKV{KeyValue: roles.WatchHandle(), after: 1, ended: ending.ended}, roles.Streams())
-			revisions, err := roleRevisions(handle, idle, slog.Default())
+			revisions, _, err := roleRevisions(t.Context(), handle, idle, slog.Default(), nil)
 			if err == nil {
 				t.Fatalf("a scan that ended after 1 of 4 claims returned %d revisions and no error", len(revisions))
 			}
