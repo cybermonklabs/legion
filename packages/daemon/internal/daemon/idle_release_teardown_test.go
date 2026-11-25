@@ -89,8 +89,8 @@ func (t clearRefusedOnce) ClearIssueRelease(ctx context.Context, project, issue 
 }
 
 // A release's teardown is one-way once the runtime has taken the pod (the reviewer's second
-// read-ahead of dispatch://INFRA-3589, D1). The teardown's record writes the release on the mark
-// before any step that can fail. Here the teardown's last step fails, so its row runs again. That
+// read-ahead of dispatch://INFRA-3589, D1). The teardown's record names the release's mark before
+// any step that can fail. Here the teardown's last step fails, so its row runs again. That
 // attempt finishes the release whatever happened meanwhile: it asks the runtime nothing, cancels
 // nothing, and records no second release. An attempt that read the mark again would cancel a
 // release whose pod was gone where an operator took a claim over in between, and that cancel would

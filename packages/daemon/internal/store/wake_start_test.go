@@ -176,7 +176,7 @@ func TestARetellRewritesNoEntryStartAndNoCheckLook(t *testing.T) {
 		retell := func(kind, detail, task string) string {
 			return "the release's " + kind + " wake of " + detail + ": " + task
 		}
-		if _, err := st.RecordPodRelease(context.Background(), PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
+		if _, _, err := st.RecordPodRelease(context.Background(), PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
 			Roles: []string{"architect", "implementer"}, At: time.Now().UTC(), WakeTask: retell}); err != nil {
 			t.Fatalf("record the release: %v", err)
 		}
@@ -365,13 +365,13 @@ func TestACancelRetellsTheKeptStartOfAWakeWhoseClaimAnOperatorTookOver(t *testin
 	}
 }
 
-// The reviewer's second read-ahead of dispatch://INFRA-3589, D1: a release's record writes the
-// release on its mark, and that makes the teardown one-way. The teardown records the release once
-// the runtime has taken the pod, so a mark that names its release is a release whose pod is gone.
-// A second record answers the row the first wrote and writes no second row. The teardown's next
-// attempt is answered ReleaseActs, whatever happened since: here an operator took a claim of the
-// release over, which cancels a release whose pod still stands. A cancel of such a mark is refused
-// and leaves the mark as it is.
+// The reviewer's second read-ahead of dispatch://INFRA-3589, D1: a release's record names the
+// release's mark, and that makes the teardown one-way. The teardown records the release once the
+// runtime has taken the pod, so a mark that a record names is a release whose pod is gone. A
+// second record answers the row the first wrote, writes nothing and says so (wrote false). The
+// teardown's next attempt is answered ReleaseActs, whatever happened since: here an operator took
+// a claim of the release over, which cancels a release whose pod still stands. A cancel of such a
+// mark is refused and leaves the mark as it is.
 func TestARecordedReleaseIsNeverCancelled(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -382,13 +382,13 @@ func TestARecordedReleaseIsNeverCancelled(t *testing.T) {
 	stoppedByTheRelease(t, st, claim.RoleImplementer, boundary)
 	stoppedByTheRelease(t, st, claim.RoleArchitect, stop)
 	rel := PodRelease{Project: "legion", Issue: rootIssue, Generation: 1, Roles: []string{"architect", "implementer"}, At: time.Now().UTC()}
-	first, err := st.RecordPodRelease(ctx, rel)
-	if err != nil {
-		t.Fatalf("record the release: %v", err)
+	first, wrote, err := st.RecordPodRelease(ctx, rel)
+	if err != nil || !wrote {
+		t.Fatalf("record the release = wrote %t, %v; want the record written", wrote, err)
 	}
-	again, err := st.RecordPodRelease(ctx, rel)
-	if err != nil || again != first {
-		t.Fatalf("the teardown's second record = %d, %v; want the release %d the first wrote", again, err, first)
+	again, wrote, err := st.RecordPodRelease(ctx, rel)
+	if err != nil || again != first || wrote {
+		t.Fatalf("the teardown's second record = %d (wrote %t), %v; want the release %d the first wrote, and nothing written", again, wrote, err, first)
 	}
 	if n := pauseCount(t, st, `select count(*)::int from pod_releases where issue = $1`, rootIssue); n != 1 {
 		t.Fatalf("pod_releases holds %d rows of the release, want one", n)
@@ -632,7 +632,7 @@ func TestAStartAnEarlierDaemonQueuedWithNoDetailKeepsItsTask(t *testing.T) {
 		logs string
 	}{
 		{name: "the release's record", act: func(t *testing.T, st *Store) {
-			if _, err := st.RecordPodRelease(context.Background(), PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
+			if _, _, err := st.RecordPodRelease(context.Background(), PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
 				Roles: []string{"architect", "implementer"}, At: time.Now().UTC(), WakeTask: retell}); err != nil {
 				t.Fatalf("record the release: %v", err)
 			}
@@ -778,7 +778,7 @@ func TestARetellRendersAWakesStartFromTheKindItsTaskWasRenderedWith(t *testing.T
 		want []string
 	}{
 		{name: "the release's record", act: func(t *testing.T, st *Store) {
-			if _, err := st.RecordPodRelease(context.Background(), PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
+			if _, _, err := st.RecordPodRelease(context.Background(), PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
 				Roles: []string{"architect", "implementer"}, At: time.Now().UTC(), WakeTask: retell}); err != nil {
 				t.Fatalf("record the release: %v", err)
 			}

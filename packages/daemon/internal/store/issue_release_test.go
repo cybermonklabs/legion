@@ -1141,7 +1141,7 @@ func TestAReleasesMarkRecordsTheClaimsItsStopsSuspended(t *testing.T) {
 // by a wake that was over before it began.
 //
 // A release whose own row is recorded has taken its pod: the teardown records it once the runtime
-// has taken the pod, and the record writes the release on the mark (RecordPodRelease). A
+// has taken the pod, and the record names the release's mark (RecordPodRelease). A
 // teardown that reads such a mark is one run again after a later step failed, and it acts
 // whatever woke the pod since, since nothing undoes a pod that is gone (the reviewer's second
 // read-ahead of dispatch://INFRA-3589, D1). The role stop reads no record, and the wake cancels it.
@@ -1234,7 +1234,7 @@ func TestAWakeTakenAfterTheMarkCancelsTheRelease(t *testing.T) {
 // runs: the row a wake's resume is recorded against.
 func recordRelease(t *testing.T, st *Store, at time.Time) {
 	t.Helper()
-	if _, err := st.RecordPodRelease(context.Background(), PodRelease{Project: "legion", Issue: rootIssue,
+	if _, _, err := st.RecordPodRelease(context.Background(), PodRelease{Project: "legion", Issue: rootIssue,
 		Generation: 1, Roles: []string{string(claim.RoleArchitect)}, At: at}); err != nil {
 		t.Fatalf("record the pod's release: %v", err)
 	}

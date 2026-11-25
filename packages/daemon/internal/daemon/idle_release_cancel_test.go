@@ -148,7 +148,7 @@ func TestACancelTellsTheWakeOfEachRoleItsReleaseStoppedInTheCancelsWords(t *test
 		ctx := context.Background()
 		// An earlier release of the issue's pod, recorded before this release: a wake taken while
 		// this release stands pairs with it (store.LatestPodRelease).
-		earlier, err := rig.st.RecordPodRelease(ctx, store.PodRelease{Project: "legion", Issue: rig.issue.Key, Generation: 1,
+		earlier, _, err := rig.st.RecordPodRelease(ctx, store.PodRelease{Project: "legion", Issue: rig.issue.Key, Generation: 1,
 			Roles: []string{string(claim.RoleImplementer)}, At: time.Now().UTC().Add(-2 * time.Hour)})
 		if err != nil {
 			t.Fatalf("record an earlier release of the issue's pod: %v", err)

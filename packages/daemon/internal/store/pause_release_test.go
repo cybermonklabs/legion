@@ -329,7 +329,7 @@ func TestACancelWhileThePausedProjectHoldsAWakeTakenWhileTheProjectRan(t *testin
 	ctx := context.Background()
 	st := migratedStore(t)
 	openRunningTree(t, st)
-	earlier, err := st.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
+	earlier, _, err := st.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
 		Roles: []string{"implementer"}, At: pausedAt.Add(-2 * time.Hour)})
 	if err != nil {
 		t.Fatalf("record the earlier release: %v", err)

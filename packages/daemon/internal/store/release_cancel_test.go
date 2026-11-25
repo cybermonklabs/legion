@@ -333,7 +333,7 @@ func TestACancelPairsTheKeptWakeOfARoleItsMarkDoesNotRecordWithNoRelease(t *test
 			rootClaim(t, st, claim.RoleImplementer, supervise.StateIdle, "")
 			rootClaim(t, st, claim.RoleArchitect, supervise.StateIdle, "")
 			at := time.Now().UTC()
-			earlier, err := st.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
+			earlier, _, err := st.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
 				Roles: []string{string(claim.RoleImplementer)}, At: at.Add(-2 * time.Hour)})
 			if err != nil {
 				t.Fatalf("record the earlier release: %v", err)

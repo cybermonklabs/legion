@@ -60,7 +60,7 @@ func TestAWakeTakenWhileItsReleaseIsRecordedNamesThatRelease(t *testing.T) {
 	}
 	done := make(chan recorded, 1)
 	go func() {
-		id, err := store.RecordPodRelease(recordCtx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
+		id, _, err := store.RecordPodRelease(recordCtx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
 			Roles: []string{"implementer"}, At: at})
 		done <- recorded{id, err}
 	}()
@@ -200,7 +200,7 @@ func TestAWakeWhileANewerReleaseIsRecordedClosesTheOldResumeAndTakesItsOwn(t *te
 	at := time.Now().UTC().Truncate(time.Millisecond)
 	// An idle release took the pod and recorded the implementer. A wake of the implementer came
 	// after it, and its resume stands open: the pod it waits for never came back.
-	idle, err := store.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
+	idle, _, err := store.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
 		Roles: []string{"implementer"}, At: at.Add(-2 * time.Hour)})
 	if err != nil {
 		t.Fatalf("record the idle release: %v", err)
@@ -356,7 +356,7 @@ func TestADeliveryWakeTakesNothingWhileAReleaseMarkStands(t *testing.T) {
 
 	// The teardown records the release and clears the mark. The next attempt takes the wake
 	// against that release.
-	release, err := store.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
+	release, _, err := store.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
 		Roles: []string{"implementer", "architect"}, At: at.Add(time.Minute)})
 	if err != nil {
 		t.Fatalf("record the release: %v", err)
@@ -412,7 +412,7 @@ func TestARecordedReleaseKeepsAHeldWakeTakenUnderItsMarkPairedWithNoRelease(t *t
 		return nil
 	})
 
-	release, err := store.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
+	release, _, err := store.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
 		Roles: []string{"implementer"}, At: at})
 	if err != nil {
 		t.Fatalf("record the release under the held wake: %v", err)
@@ -494,7 +494,7 @@ func TestARecordedReleaseRetellsTheStartOfAHeldWakeTakenUnderItsMark(t *testing.
 		return "the release's " + kind + " wake of " + detail + ": " + task
 	}
 
-	release, err := store.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
+	release, _, err := store.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
 		Roles: []string{"implementer", "reviewer"}, At: at, WakeTask: retell})
 	if err != nil {
 		t.Fatalf("record the release under the held wake: %v", err)
@@ -601,7 +601,7 @@ func TestARecordedReleaseAndAResumeOfThePauseAtOnceBothCommit(t *testing.T) {
 	defer cancel()
 	recorded, resumed := make(chan error, 1), make(chan error, 1)
 	go func() {
-		_, err := store.RecordPodRelease(runCtx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
+		_, _, err := store.RecordPodRelease(runCtx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
 			Roles: []string{"implementer"}, At: at, WakeTask: func(kind, _, task string) string {
 				recordOnce.Do(func() { close(recordIn) })
 				meet(resumeIn, "the resume to hold the pause's row")

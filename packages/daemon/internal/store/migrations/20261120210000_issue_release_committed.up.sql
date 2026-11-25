@@ -11,7 +11,8 @@
 -- that was gone. A committed mark makes that read act
 -- (store.Store.IssueRelease), and a cancel of it is refused (store.Store.CancelIssueRelease). The
 -- runtime is asked again, since each of its steps is done at most once, and the release is then
--- recorded (20261120193000's released_id).
+-- recorded in a record that names the mark (store.Store.RecordPodRelease,
+-- pod_releases.issue_release_id).
 --
 -- Every mark standing at this migration is uncommitted, and its teardown decides as the release
 -- before decided it. A rollback leaves the column in place, and the release before writes none

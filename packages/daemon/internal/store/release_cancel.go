@@ -213,8 +213,9 @@ func (s *Store) cancelIssueRelease(ctx context.Context, project, issue string, w
 		var suspended []string
 		var kind string
 		var committed bool
-		err := tx.QueryRow(ctx, `select suspended, kind, first_row, wake_row, last_row, released_id, committed from issue_releases
-			where project = $1 and issue = $2 for update`, project, issue).Scan(&suspended, &kind, &first, &wake, &last, &recorded, &committed)
+		err := tx.QueryRow(ctx, `select suspended, kind, first_row, wake_row, last_row, committed,
+			coalesce((select p.id from pod_releases p where p.issue_release_id = issue_releases.id), 0) from issue_releases
+			where project = $1 and issue = $2 for update`, project, issue).Scan(&suspended, &kind, &first, &wake, &last, &committed, &recorded)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}

@@ -432,7 +432,7 @@ func TestAWakeDuringAReleaseIsAppliedAgain(t *testing.T) {
 				}
 				slices.Sort(roles)
 				releasedAt := wakeAt.Add(5 * time.Minute)
-				released, err := st.RecordPodRelease(ctx, store.PodRelease{Project: project, Issue: "LEGION-208",
+				released, _, err := st.RecordPodRelease(ctx, store.PodRelease{Project: project, Issue: "LEGION-208",
 					Generation: wakeIssueGeneration, Roles: roles, At: releasedAt})
 				if err != nil {
 					t.Fatalf("record the release: %v", err)

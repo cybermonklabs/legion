@@ -562,29 +562,32 @@ func endIdleHolds(ctx context.Context, st *store.Store, project, issue string, l
 // release's words (workflow.ReleasedWakeTask, store.PodRelease.WakeTask), since the release takes
 // the pod.
 //
-// The record is the release's one-way step too: it writes the release on its mark
-// (store.Store.RecordPodRelease), and the teardown records the release once the runtime has
-// answered, before its own steps that can fail. So a teardown that runs again after such a step
-// failed finishes the release, asks the runtime nothing and cannot cancel it
+// The record is the release's one-way step too: it names the release's mark (release,
+// issue_releases.id; store.Store.RecordPodRelease), and the teardown records the release once the
+// runtime has answered, before its own steps that can fail. So a teardown that runs again after
+// such a step failed finishes the release, asks the runtime nothing and cannot cancel it
 // (store.ReleaseDecision.PodTaken), and its record writes no second row. A step of the runtime
 // that fails comes before the record, and the commit of the runtime's read keeps that release
 // from being cancelled (store.Store.CommitIssueRelease). A record that cannot be written is
 // answered as the teardown's error, and the row's failure logs it once (settle): the row runs
-// again, and until a record lands, the mark names no release.
-func (r *outbox) recordPodRelease(ctx context.Context, issue string, generation uint64, suspended []claim.Role) error {
+// again, and until a record lands, no record names the mark.
+//
+// It answers whether this call wrote the record. The release line follows the record's first
+// write, so a retry whose record was already written logs no second line.
+func (r *outbox) recordPodRelease(ctx context.Context, issue string, release int64, generation uint64, suspended []claim.Role) (bool, error) {
 	if r.supervisor == nil || r.supervisor.store == nil {
-		return nil
+		return true, nil
 	}
 	roles := make([]string, 0, len(suspended))
 	for _, role := range suspended {
 		roles = append(roles, string(role))
 	}
 	slices.Sort(roles)
-	_, err := r.supervisor.store.RecordPodRelease(ctx, store.PodRelease{
+	_, wrote, err := r.supervisor.store.RecordPodRelease(ctx, store.PodRelease{
 		Project: r.project, Issue: issue, Generation: generation, Roles: roles,
-		At: time.Now().UTC(), WakeTask: workflow.ReleasedWakeTask,
+		At: time.Now().UTC(), Release: release, WakeTask: workflow.ReleasedWakeTask,
 	})
-	return err
+	return wrote, err
 }
 
 // releaseHold is the hold a cancel the store decided is recorded under, and the sentence the
