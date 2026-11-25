@@ -115,8 +115,8 @@ func TestTheHeldContractIsTheContractThatAddedTheKey(t *testing.T) {
 		t.Fatalf("heldContract = %d, want %d, the contract whose entry in version.go added `admission.held`",
 			heldContract, addedHeld)
 	}
-	if heldContract > DaemonAPIVersion {
+	if heldContract > DaemonAPIVersion() {
 		t.Fatalf("heldContract = %d, above DaemonAPIVersion %d: no caller could be served the key",
-			heldContract, DaemonAPIVersion)
+			heldContract, DaemonAPIVersion())
 	}
 }

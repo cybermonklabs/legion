@@ -1,5 +1,0 @@
-kind: Removed
-body: The phase `integrating` is removed from `LEGION_WORKFLOW_PHASES`, and with it from `LEGION_PHASES`. No daemon has written it. The `enumerated-fields.json` and `contract-shapes.json` fixtures drop it from the domain of every field that takes a phase.
-time: 2026-11-24T09:45:53.17118394Z
-custom:
-    Issue: pr5332

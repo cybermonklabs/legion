@@ -149,20 +149,20 @@ func TestTheStateFixturesSettingsAreReadFromInternalAPIsGoldens(t *testing.T) {
 // the seed, a field the source adds, drops or moves moves the fixture, and a value no rule of the
 // daemon serves over the seed cannot reach one.
 //
-// state.json is the body as the route serves it to a caller at this daemon's own contract, marked
-// with the two numbers of `contract` (api's stateFor), which the plugin's schema is held to and
-// internal/api's populatedState reads back for that package's goldens. The paused, Stage 3,
-// operator-claim and last-pause fixtures are the same state before the route marks it
-// (withoutMark).
+// Each fixture is the body as the route serves it to a caller at this daemon's own contract, less
+// the route's `contract` mark (api's stateFor; withoutMark): both of its numbers name this
+// daemon's own contract, which is LastNumberedContract plus the build's count of entries, so a
+// fixture that held it would be an edit of every contract change. The mark is held to that number
+// instead, and the plugin's schema reads it as optional. internal/api's populatedState reads
+// state.json back for that package's goldens, and every route that package serves the state
+// through writes the mark again.
 func TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name, file string
-		// marked is whether the fixture keeps the mark the route writes on the body.
-		marked bool
-		seed   func(s *seeding) composition
+		seed       func(s *seeding) composition
 	}{
-		{name: "populated", file: "state.json", marked: true, seed: seedPopulated},
+		{name: "populated", file: "state.json", seed: seedPopulated},
 		{name: "paused", file: "state-paused.json", seed: seedPaused},
 		{name: "stage3", file: "state-stage3.json", seed: seedStage3},
 		{name: "operator-claim", file: "state-operator-claim.json", seed: seedOperatorClaim},
@@ -171,10 +171,7 @@ func TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			s := newSeeding(t)
-			body := s.served(tc.seed(s))
-			if !tc.marked {
-				body = withoutMark(t, body)
-			}
+			body := withoutMark(t, s.served(tc.seed(s)))
 			testgolden.Check(t, apifixture.Path(tc.file), json.RawMessage(body), *updateStateFixtures, apifixture.StateFixturesRewrite)
 		})
 	}
@@ -315,10 +312,10 @@ func withNoSchemaVersion(t testing.TB, body []byte) []byte {
 // the mark the route writes on every state it shapes (api.State.Contract, api's stateFor): the
 // state as the source and the route's reads beside it answer it, before the route marks the shape
 // it served, since the shaping takes nothing else off a body for a caller at this contract. That
-// state is what the paused, Stage 3, operator-claim and last-pause fixtures pin, and
-// packages/contracts/src/legion-api.test.ts reads the Stage 3 one as a body that carries no mark.
-// The mark taken off is held to the one a caller at this contract is written, and every other
-// member of the body is kept as the route wrote it, in its order.
+// state is what every state fixture pins, and packages/contracts/src/legion-api.test.ts reads the
+// Stage 3 one as a body that carries no mark. The mark taken off is held to the one a caller at
+// this contract is written, both numbers at api.DaemonAPIVersion(), and every other member of the
+// body is kept as the route wrote it, in its order.
 func withoutMark(t *testing.T, body []byte) []byte {
 	t.Helper()
 	decoder := json.NewDecoder(bytes.NewReader(body))
@@ -349,7 +346,7 @@ func withoutMark(t *testing.T, body []byte) []byte {
 		}
 		unmarked = append(append(append(unmarked, name...), ':'), value...)
 	}
-	want, err := json.Marshal(api.ContractView{Daemon: api.DaemonAPIVersion, Caller: api.DaemonAPIVersion})
+	want, err := json.Marshal(api.ContractView{Daemon: api.DaemonAPIVersion(), Caller: api.DaemonAPIVersion()})
 	if err != nil {
 		t.Fatalf("write the mark: %v", err)
 	}

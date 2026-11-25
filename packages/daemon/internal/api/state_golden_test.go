@@ -10,10 +10,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -202,15 +204,13 @@ func minimalSettingsConfig(t *testing.T) config.Config {
 
 // populatedState is the populated state as internal/daemon's state source composes it over its
 // seed (TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds), read back from state.json byte
-// for byte, so no field of it is lost or changed on the way into this package's tests, with the
-// mark that file carries taken off: state.json is the body the state route serves a caller at this
-// daemon's own contract, and the mark is the route's own (shaping's stateFor), which no source
-// answers and every route this package's tests serve the state through writes again.
+// for byte, so no field of it is lost or changed on the way into this package's tests. The file
+// carries no `contract` mark: the mark is the route's own (shaping's stateFor), and both of its
+// numbers name this daemon's own contract, which an entry moves, so the composition takes it out
+// before it writes, and every route this package's tests serve the state through writes it again.
 func populatedState(t *testing.T) State {
 	t.Helper()
-	state := composedFixture(t, apifixture.Path("state.json"))
-	state.Contract = nil
-	return state
+	return composedFixture(t, apifixture.Path("state.json"))
 }
 
 // pausedState is the state of the populated record ten seconds into a pause, as internal/daemon's
@@ -286,8 +286,8 @@ func keepNullPriorities(t *testing.T, path string, written []byte, state State) 
 // repositoriesLiveContract, asking from a pod whose claims record it and stating it in
 // `Legion-Plugin-Contract`, as every plugin from shapedAnswersContract on does: the state golden's
 // own state, asked through the route itself. The caller is served at the recorded contract at or
-// below the one it states (recordedContractAtOrBelow), which the mark names: its `repositories`
-// block in the shape contract 152 gave it, written from the same entries
+// below the one it states (recordedContractAtOrBelow), which the mark's `caller` names: its
+// `repositories` block in the shape contract 152 gave it, written from the same entries
 // (withoutRepositoriesLive), each assignment without its `plan`, since assignmentPlanContract's
 // row stands above that contract too, no `intakeGiveUps` (withoutIntakeGiveUps), since
 // intakeGiveUpsContract's row does as well, no issue's `podHold` (withoutPodHold), since
@@ -298,13 +298,116 @@ func keepNullPriorities(t *testing.T, path string, written []byte, state State) 
 // shapedAnswersContract and repositoriesLiveContract. shapedAnswersContract's row stands at or
 // below the contract it is served at, which is why the golden carries `lowestPluginContract` and
 // each claim view's `updateState`; the populated state holds no pause, so it carries no `paused`.
+// The mark's `daemon` names this daemon's own contract, which an entry moves, so it is taken out
+// before the golden is compared or written and held to that number here, as internal/daemon's
+// TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds takes out state.json's marks; the
+// `caller` is 199, which no entry moves, and stays.
 // `packages/contracts/src/legion-api.test.ts` parses it with a copy of contract 152's schema of
 // the block, so the narrowing is held to the reader it is written for, and its drift gate holds
 // every key of the file to that copy.
 func TestStateNarrowedRepositoriesGolden(t *testing.T) {
 	server := stateServer(t, populatedState(t), podClaims(repositoriesLiveContract-1))
-	body := stateStating(t, server, statePodAddr+":41000", repositoriesLiveContract-1)
-	stateGolden(t, "state-narrowed-repositories.json", json.RawMessage(body))
+	body, taken := withoutOwnContractMarks(t, stateStating(t, server, statePodAddr+":41000", repositoriesLiveContract-1))
+	if want := map[string]int{"daemon": DaemonAPIVersion()}; !maps.Equal(taken, want) {
+		t.Errorf("the state served below repositoriesLiveContract has the marks %v naming this daemon's own contract, want its daemon mark alone at %d", taken, DaemonAPIVersion())
+	}
+	stateGolden(t, "state-narrowed-repositories.json", body)
+}
+
+// withoutOwnContractMarks is body, the JSON of a state, with each mark of its `contract` that names
+// this daemon's own contract taken out, and `contract` itself where that leaves it empty, every
+// other key in its place and every other byte as it stands; and the marks it took out, by name.
+func withoutOwnContractMarks(t *testing.T, body []byte) (json.RawMessage, map[string]int) {
+	t.Helper()
+	var state jsonObject
+	if err := json.Unmarshal(body, &state); err != nil {
+		t.Fatalf("decode the state: %v", err)
+	}
+	taken := map[string]int{}
+	at := slices.IndexFunc(state, func(member jsonMember) bool { return member.key == "contract" })
+	if at < 0 {
+		return body, taken
+	}
+	var marks jsonObject
+	if err := json.Unmarshal(state[at].value, &marks); err != nil {
+		t.Fatalf("decode the state's contract mark: %v", err)
+	}
+	marks = slices.DeleteFunc(marks, func(member jsonMember) bool {
+		var contract int
+		if json.Unmarshal(member.value, &contract) != nil || contract != DaemonAPIVersion() {
+			return false
+		}
+		taken[member.key] = contract
+		return true
+	})
+	if len(marks) == 0 {
+		state = slices.Delete(state, at, at+1)
+	} else {
+		encoded, err := json.Marshal(marks)
+		if err != nil {
+			t.Fatalf("encode the state's contract mark: %v", err)
+		}
+		state[at].value = encoded
+	}
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("encode the state: %v", err)
+	}
+	return encoded, taken
+}
+
+// jsonMember is one member of a JSON object: its key and its value as written.
+type jsonMember struct {
+	key   string
+	value json.RawMessage
+}
+
+// jsonObject is a JSON object as its members, in the order they are written, so a member can be
+// taken out of a golden and every other key stays where the writer put it.
+type jsonObject []jsonMember
+
+func (o *jsonObject) UnmarshalJSON(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if open, err := decoder.Token(); err != nil || open != json.Delim('{') {
+		return fmt.Errorf("a JSON object begins with {, not %v (%v)", open, err)
+	}
+	members := jsonObject{}
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		key, isKey := token.(string)
+		if !isKey {
+			return fmt.Errorf("a JSON object's key is a string, not %v", token)
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return err
+		}
+		members = append(members, jsonMember{key: key, value: value})
+	}
+	*o = members
+	return nil
+}
+
+func (o jsonObject) MarshalJSON() ([]byte, error) {
+	var encoded bytes.Buffer
+	encoded.WriteByte('{')
+	for i, member := range o {
+		if i > 0 {
+			encoded.WriteByte(',')
+		}
+		key, err := json.Marshal(member.key)
+		if err != nil {
+			return nil, err
+		}
+		encoded.Write(key)
+		encoded.WriteByte(':')
+		encoded.Write(member.value)
+	}
+	encoded.WriteByte('}')
+	return encoded.Bytes(), nil
 }
 
 // One issue's record, what `GET /legion/v1/issues/{key}/record` answers: the very `api.Issue`
@@ -459,6 +562,26 @@ func golden(t *testing.T, name string, value any) {
 func stateGolden(t *testing.T, name string, value any) {
 	t.Helper()
 	testgolden.Check(t, apifixture.Path(name), value, *updateGolden, apifixture.StateFixturesRewrite)
+}
+
+// frozenGolden holds the frozen fixture name, the records of the numbered entries, to value in
+// golden's form, and writes it under no flag: `-update` writes an entry's fixture, never a frozen
+// record (TestEntryFixtures). A frozen record changes only as a correction of a record that was
+// wrong, which is a hand edit the contract check refuses without a `Correction:` paragraph in the
+// entry's text.
+func frozenGolden(t *testing.T, name string, value any) {
+	t.Helper()
+	encoded, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal %s: %v", name, err)
+	}
+	want, err := os.ReadFile(apifixture.Path(name))
+	if err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+	if !bytes.Equal(append(encoded, '\n'), want) {
+		t.Fatalf("%s is not in the order and form its records are written in (by contract, then by its answer or route, indented by two spaces); no flag writes it, so put it back in that form by hand", name)
+	}
 }
 
 // The register response is what the plugin reads its claim, its secret and the task agents its
@@ -819,20 +942,25 @@ func TestOwnerPlanRouteGoldens(t *testing.T) {
 
 // The table of answers a plugin parses (answers.go): one row per response schema, the routes
 // that answer it, and the contract that answer arrived at. No route answers this fixture. It is
-// written out so that the plugin's own side reads the same rows the daemon shapes by.
+// written out so that the plugin's own side reads the same rows the daemon shapes by. It holds the
+// numbered entries' rows alone (frozenAnswers): the rows an entry adds are in that entry's fixture
+// (entryFixture's answerRows), so two entries edit no line of it, and TestEntryFixtures holds
+// this file and those rows to the build's Answers().
 func TestAnswersGolden(t *testing.T) {
-	golden(t, "answers.json", Answers)
+	golden(t, "answers.json", frozenAnswers)
 }
 
 // The table of enumerated fields a plugin parses strictly (answers.go): one row per field, with
 // each value and the contract it arrived at. No route answers this fixture either. It is
 // written out beside answers.json so that the plugin's own side holds its enumerations to the
-// daemon's: `packages/contracts/src/legion-api.test.ts` reads this file, holds each row's values
-// equal to the members of the `z.enum` it reads at that row's key path, and fails a `z.enum` it
-// reads at a path no row declares. A value added on one side and not the other is red rather
-// than silent.
+// daemon's: `packages/contracts/src/legion-api.test.ts` reads this file with the rows of the entry
+// fixtures added (`daemon-api-records.ts`), holds each row's values equal to the members of the
+// `z.enum` it reads at that row's key path, and fails a `z.enum` it reads at a path no row
+// declares. A value added on one side and not the other is red rather than silent. It holds the
+// numbered entries' rows alone (enumeratedFields()), as answers.json does, and TestEntryFixtures
+// holds it and the entries' rows to the build's EnumeratedFields().
 func TestEnumeratedFieldsGolden(t *testing.T) {
-	golden(t, "enumerated-fields.json", EnumeratedFields)
+	golden(t, "enumerated-fields.json", enumeratedFields())
 }
 
 // The turn outcome's answer is what a producer's report of one turn comes back as: the run of

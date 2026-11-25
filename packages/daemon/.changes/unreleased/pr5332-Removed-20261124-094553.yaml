@@ -1,5 +1,0 @@
-kind: Removed
-body: The table of enumerated fields no longer names the phase `integrating` for an issue's `phase`, its `heldFrom` or a pending task's `phase`. The daemon has never written that phase, so no answer changes.
-time: 2026-11-24T09:45:53.17118394Z
-custom:
-    Issue: pr5332

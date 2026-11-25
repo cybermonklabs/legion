@@ -320,7 +320,7 @@ test("each op refuses its arguments whole before any daemon request, naming ever
       "request_backward_move requires to; request_backward_move requires reason",
     ],
     [
-      { op: "request_backward_move", to: "awaiting_person", reason: "r" },
+      { op: "request_backward_move", to: "integrating", reason: "r" },
       `request_backward_move's to is one of ${LEGION_PHASE_BACKWARD_TARGETS.join(", ")}`,
     ],
     [

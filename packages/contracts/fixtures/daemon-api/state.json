@@ -6,10 +6,6 @@
     "firstBootAt": "2126-09-18T14:03:27Z",
     "startedAt": "2126-09-22T09:15:02Z"
   },
-  "contract": {
-    "daemon": 275,
-    "caller": 275
-  },
   "admission": {
     "cap": 6,
     "active": [

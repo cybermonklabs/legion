@@ -71,6 +71,7 @@ export const LEGION_WORKFLOW_PHASES = [
   "accepting",
   "retro",
   "merging",
+  "integrating",
   "done",
   "held",
 ] as const;

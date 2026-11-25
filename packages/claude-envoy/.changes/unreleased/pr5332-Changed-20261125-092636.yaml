@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-  The plugin speaks daemon API contract 305, the number the daemon of the same release declares.
+  The plugin speaks the daemon API contract of entry 20261125170906, whose state schema no longer declares `slot.lentTo` or `admission.free`. The entry has no number until main merges it: the pack writes the number that the daemon built from the same commit declares.
 time: 2026-11-25T09:26:36Z
 custom:
     Issue: pr5332
