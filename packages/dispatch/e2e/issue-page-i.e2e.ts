@@ -1295,11 +1295,11 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
   });
 });
 
-// c-spine's decision under the question it settles, owed on the model storing the decision
-// under that question (`decisionUnderAskGate`): the page invents no parent, so until the tree
-// read answers the decision with the ask as its parent, it stands where the read puts it.
+// c-spine's decision under the question it settles: the model stores the decision under that
+// question, and the page invents no parent, so the row is guarded by `decisionUnderAskGate`
+// and stands where the read puts it on a base whose tree read answers no such parent.
 // SLOW(>=2s): two seeds, each loaded cold with its branches unfolded press by press.
-test("each node sits under the parent the model stores, and a decision stands under the question it settles @owed", async ({
+test("each node sits under the parent the model stores, and a decision stands under the question it settles", async ({
   browser,
 }) => {
   test.setTimeout(120_000);

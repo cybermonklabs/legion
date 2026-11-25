@@ -284,11 +284,11 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
   });
 });
 
-// c-decisions' decision under the question it settles, with no filter on, owed on the model
-// storing the decision under that question (`decisionUnderAskGate`): the page invents no
-// parent, so until then the decision stands where the tree read's parent puts it.
+// c-decisions' decision under the question it settles, with no filter on: the model stores
+// the decision under that question, and the page invents no parent, so the row is guarded by
+// `decisionUnderAskGate` on a base whose tree read answers no such parent.
 // SLOW(>=2s): a seeded issue loaded once with its branches unfolded.
-test("the Decisions filter draws its four parts and quotes the person's answer, and with no filter on a decision stands under the question it settles @owed", async ({
+test("the Decisions filter draws its four parts and quotes the person's answer, and with no filter on a decision stands under the question it settles", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
