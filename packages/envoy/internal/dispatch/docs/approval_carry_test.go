@@ -830,6 +830,7 @@ func TestATransactionCannotCarryOneDocumentsApprovalTwice(t *testing.T) {
 // at the version she gave it, and no review is written in her name. The control: the same steps on
 // a service with a gate that finds no break carry her approval, so the steps can carry.
 func TestAServiceBuiltWithNoFormGateCarriesNoApproval(t *testing.T) {
+	t.Parallel()
 	run := func(t *testing.T, gate FormGate) (reviews, approvals int) {
 		database, service, artifactID := seededRegionDocumentGated(t, 20*time.Millisecond, gate)
 		approveStoredVersion(t, database, artifactID, 1, "alice")
