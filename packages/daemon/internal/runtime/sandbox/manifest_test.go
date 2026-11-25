@@ -3159,8 +3159,8 @@ func keptReadings(t *testing.T, s sandbox) (decoded, stored bool) {
 
 // A microVM pod carries the two stop-eviction annotations a gVisor pod does, its kind's pod
 // shape in a microVM, and the checker it was built under
-// (TestEveryIssueAndControllerPodIsProtectedFromAutoscalerEviction): the sandbox it runs in changes
-// nothing of what asks the autoscaler to leave its node alone.
+// (TestEveryGuaranteedIssueAndControllerPodCarriesBothStopEvictionAnnotations): the sandbox it
+// runs in changes nothing of what asks the autoscaler to leave its node alone.
 func TestAMicroVMPodKeepsTheStopEvictionAnnotations(t *testing.T) {
 	t.Parallel()
 	r := sandboxRuntime(t, SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()})
