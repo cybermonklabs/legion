@@ -4,10 +4,11 @@
 //
 // Each type is a copy of internal/record's type of the same name at commit
 // f98546a6a247e0fab8cdcc291947d7d07d432541, the last commit of that release: SuperviseRequest,
-// StepRecord with the PlanRating it embeds, Notice with each type it nests, the notice kinds of
-// validNoticeKinds and of controllerOnlyNoticeKind, and the supervise ops of validSuperviseOp. The
-// copy keeps each member's JSON name and Go type and drops the comments. It never follows record:
-// a member record gains is a member this copy refuses, which is the release before's refusal.
+// StepRecord with the PlanRating it embeds, Notice with each type it nests, UpdateAsk, the notice
+// kinds of validNoticeKinds and of controllerOnlyNoticeKind, and the supervise ops of
+// validSuperviseOp. The copy keeps each member's JSON name and Go type and drops the comments. It
+// never follows record: a member record gains is a member this copy refuses, which is the release
+// before's refusal.
 package testdata
 
 import (
@@ -24,8 +25,8 @@ import (
 // reads it (record's DecodeOutboxPayload at the commit above): strictly, refusing a member the
 // payload's type does not have (DisallowUnknownFields) and trailing JSON, and refusing a notice
 // kind, a controller notice kind and a supervise op that release does not know. It answers nil
-// where that release takes the row. It decodes the supervise, step_record, notice and
-// controller_notice rows; a kind the release before does not know is refused as that release
+// where that release takes the row. It decodes the supervise, step_record, notice,
+// controller_notice and update_ask rows; a kind the release before does not know is refused as that release
 // refuses it, and a kind it knows but this copy does not freeze is an error that says so, so a
 // test that queues one learns it reads nothing.
 func DecodeBeforeFix(kind string, payload []byte) error {
@@ -57,6 +58,9 @@ func DecodeBeforeFix(kind string, payload []byte) error {
 		if !slices.Contains(noticeKinds, value.Kind) && !slices.Contains(controllerOnlyNoticeKinds, value.Kind) {
 			return fmt.Errorf("unknown controller notice kind %q", value.Kind)
 		}
+	case "update_ask":
+		var value updateAsk
+		return strict(payload, &value)
 	default:
 		if slices.Contains(outboxKinds, kind) {
 			return fmt.Errorf("this copy freezes no payload of kind %q, which the release before reads", kind)
@@ -111,6 +115,13 @@ var controllerOnlyNoticeKinds = []string{
 	"triage", "slot-free", "todo", "tick", "unslotted", "awaiting-person", "parked-decision",
 	"update-stalled", "provider-errors", "tree-stalled", "architect-stalled", "memory-guard-kill",
 	"project-paused", "project-resumed",
+}
+
+type updateAsk struct {
+	Role  string `json:"role"`
+	Round string `json:"round"`
+	Pod   string `json:"pod,omitempty"`
+	Text  string `json:"text"`
 }
 
 type superviseRequest struct {
