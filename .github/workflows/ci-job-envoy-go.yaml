@@ -47,7 +47,8 @@ jobs:
     # matrix's own 5, the auth service's own 5, the edge grant's own 5 and the edge listener's own
     # 10 (its relay socket's rows wait out a 30 s token twice and a consumer's 60 s ack wait) are
     # 101, the integration step's 5 is less, and the callout check's own 6, after the seconds
-    # those two steps measure, is less too.
+    # those two steps measure, is less too, as is the route adopter's own 5 after install-jj's
+    # seconds and the callout check's.
     timeout-minutes: 105
     services:
       postgres:
@@ -194,10 +195,11 @@ jobs:
       # with no database and no Bun, and a change to only what they read must not start this
       # one. So are internal/dispatch/architecture/notes, internal/runnerlog,
       # internal/dispatch/specgraph, cmd/architecture-check and cmd/spec-check, which
-      # envoy-go-build tests on every push (NOTE_AND_SPEC_PACKAGES), and listenerwire and
+      # envoy-go-build tests on every push (NOTE_AND_SPEC_PACKAGES), listenerwire and
       # internal/wirecheck, which envoy-go-build tests in their place (LISTENERWIRE_PACKAGES):
       # listenerwire's clients test type-checks daemon packages, so a change to only those daemon
-      # packages starts no job with a database. The --module-except pattern is built in
+      # packages starts no job with a database; and cmd/dispatch-route-adopt, which the adopter
+      # step below runs with jj installed (ADOPTER_PACKAGES). The --module-except pattern is built in
       # .github/scripts/ci_job_reads.py from the same list those jobs' own steps are built from, so
       # what this step leaves out and what the other jobs run cannot drift apart.
       # The rest of the module runs in one `go test -json` through database-skips.sh, which also
@@ -226,7 +228,7 @@ jobs:
       # this same job and env (BACKEND_COUNT_TESTS).
       - name: Unit test envoy Go package
         timeout-minutes: 45
-        run: packages/envoy/scripts/database-skips.sh --timeout 20m --skip '^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestSettingsNameTheGoogleExchangeAudienceOnEitherStore|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$' --module-except '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/cipher/natscallout$|/internal/oidc$|/internal/dispatch/api$|/internal/dispatch/docs$'
+        run: packages/envoy/scripts/database-skips.sh --timeout 20m --skip '^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestSettingsNameTheGoogleExchangeAudienceOnEitherStore|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$' --module-except '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/cmd/dispatch-route-adopt$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/cipher/natscallout$|/internal/oidc$|/internal/dispatch/api$|/internal/dispatch/docs$'
         # The refs package's xid window test runs here, so this step judges gaps too.
         env:
           DISPATCH_XID_REQUIRE_GAP_JUDGMENT: "1"
@@ -298,6 +300,16 @@ jobs:
         run: bash scripts/callout-check.sh
         env:
           LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+        working-directory: packages/envoy
+      # The route adopter's rows run under git and under jj, and those that need jj fail rather
+      # than skip on GitHub Actions without it, so jj is installed first. -v names each row in the
+      # log, which the unit step's go test -json report does not; that step's --module-except leaves
+      # the package out (ADOPTER_PACKAGES in .github/scripts/ci_job_reads.py), so this is its one
+      # run. The package took 4.5 s in job 139022226359; the -timeout fires before the step's limit.
+      - uses: ./.github/actions/install-jj
+      - name: Test the route adopter under git and jj
+        timeout-minutes: 5
+        run: go test -count=1 -v -timeout 4m ./cmd/dispatch-route-adopt/
         working-directory: packages/envoy
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

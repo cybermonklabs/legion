@@ -66,6 +66,17 @@ func (g gitRepo) defaultRevision() string {
 // run for that reason alone.
 func (g gitRepo) startMerge(into, here, there string) error {
 	if g.jj {
+		// git answers a revision the branch holds already with "Already up to date" and no
+		// merge (below); jj would make a merge commit with a redundant parent and the step would
+		// write into it. So jj's half asks first, of the git store jj keeps.
+		ancestor := g.command("merge-base", "--is-ancestor", there, here).Run()
+		var exit *exec.ExitError
+		switch {
+		case ancestor == nil:
+			return fmt.Errorf("%s is an ancestor of the branch (the branch holds %s already), so there is no merge to make: nothing is merged and nothing is written", into, into)
+		case !errors.As(ancestor, &exit) || exit.ExitCode() != 1:
+			return fmt.Errorf("git merge-base --is-ancestor %s %s: %w, so nothing is merged", there, here, ancestor)
+		}
 		// here, not @ read again: the merge must join the commit whose layout the step read.
 		if _, err := jjOutput(g.root, "new", here, there, "-m", "merge "+into); err != nil {
 			return fmt.Errorf("jj new %s %s failed, so nothing is merged: %w", here, there, err)
@@ -81,7 +92,7 @@ func (g gitRepo) startMerge(into, here, there string) error {
 	// that tree would leave changes nobody asked for, so the failure is answered here.
 	mergeHead, err := g.mergeHead()
 	if err != nil {
-		return fmt.Errorf("%w\ngit merge %s ran, and whether it left a merge is unread: if `git status` says a merge is in progress, end it with %s", err, into, g.leaveTheMerge(here, true, false))
+		return fmt.Errorf("%w\ngit merge %s ran, and whether it left a merge is unread: if `git status` says a merge is in progress, end it with %s", err, into, g.gitAbort())
 	}
 	if mergeHead == "" {
 		if mergeErr != nil {
@@ -90,7 +101,7 @@ func (g gitRepo) startMerge(into, here, there string) error {
 		return fmt.Errorf("git merge %s left no MERGE_HEAD (the branch holds %s already, or git made no merge of it), so nothing is merged and nothing is written", into, into)
 	}
 	if mergeHead != there {
-		return fmt.Errorf("git merge %s left MERGE_HEAD at %s, and this step read %s: nothing is adopted into a merge it did not make; end it with %s", into, mergeHead, there, g.leaveTheMerge(here, true, false))
+		return fmt.Errorf("git merge %s left MERGE_HEAD at %s, and this step read %s: nothing is adopted into a merge it did not make; end it with %s", into, mergeHead, there, g.gitAbort())
 	}
 	return nil
 }
@@ -108,30 +119,54 @@ func (g gitRepo) mergeHead() (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
-// leaveTheMerge is the commands that end the merge in progress and return the tree to the side
-// the merge was made on, for a refusal and for a failure after the step's own merge began.
+// shellQuoted is s as one word of a POSIX shell, so a printed command can be pasted whatever
+// the path holds.
+func shellQuoted(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// gitAbort is the command that ends a git merge in progress, as text to print: `git merge
+// --abort` returns the index and every tracked file to HEAD, and refuses, rather than throws away,
+// a file with a change not yet added, which a merge a person made may hold.
+func (g gitRepo) gitAbort() string {
+	return fmt.Sprintf("`git -C %s merge --abort`", shellQuoted(g.root))
+}
+
+// jjLeave is the commands that end jj's merge, the working-copy commit, and return to its
+// first parent, branchSide, as text to print. `jj abandon @` alone puts a new working copy on the
+// merge's two parents, which is a merge again, so the second command goes back to the branch
+// side: `jj edit` where it is empty, as the step's own merge leaves it, since the step began on
+// it, and `jj new` on it where it holds work. jj drops the empty working copy the abandon left.
+func (g gitRepo) jjLeave(branchSide string, branchSideEmpty bool) string {
+	back := "new"
+	if branchSideEmpty {
+		back = "edit"
+	}
+	return fmt.Sprintf("`jj -R %s abandon @`, then `jj -R %s %s %s`", shellQuoted(g.root), shellQuoted(g.root), back, branchSide)
+}
+
+// leaveTheMerge is how to return the tree after a failure once this step's own merge is made,
+// as text to print. Under jj the merge's first parent is here, the empty commit the step began on.
 //
-// git's `git merge --abort` returns the index and every tracked file. With clean, which only the
-// step's own merge may ask for, it adds a `git clean` of package api: that merge began from a tree
-// git listed nothing in, so an untracked file there is one this step wrote and had not staged.
-//
-// jj's merge is the working-copy commit, and `jj abandon @` alone puts a new working copy on the
-// merge's two parents, which is a merge again. So the second command goes back to the branch
-// side, branchSide, the merge's first parent: `jj edit` where it is empty, as the step's own merge
-// leaves it, since the step began on it, and `jj new` on it where it holds work. jj drops the
-// empty working copy the abandon left as it goes.
-func (g gitRepo) leaveTheMerge(branchSide string, branchSideEmpty, clean bool) string {
+// Under git it is not `git merge --abort`: a failure among the writes can leave a file the merge
+// added with the step's bytes not yet added, which `git merge --abort` refuses ("not uptodate.
+// Cannot merge"). The step began from a tree git listed no change in, so `git reset --hard HEAD`
+// throws away only the merge and the step's own writes, and ends the merge. It leaves a file
+// git never tracked, so a `git clean -x` of exactly the files the step wrote that HEAD does not
+// hold, written, follows: -x, because a local exclude can hide one of them from git.
+func (g gitRepo) leaveTheMerge(here string, written []string) string {
 	if g.jj {
-		back := "jj -R " + g.root + " new " + branchSide
-		if branchSideEmpty {
-			back = "jj -R " + g.root + " edit " + branchSide
-		}
-		return fmt.Sprintf("`jj -R %s abandon @`, then `%s`", g.root, back)
+		return g.jjLeave(here, true)
 	}
-	if clean {
-		return fmt.Sprintf("`git -C %s merge --abort`, then `git -C %s clean -f -- %s`", g.root, g.root, apiDir)
+	text := fmt.Sprintf("`git -C %s reset -q --hard HEAD`", shellQuoted(g.root))
+	if len(written) == 0 {
+		return text
 	}
-	return fmt.Sprintf("`git -C %s merge --abort`", g.root)
+	paths := make([]string, len(written))
+	for index, name := range written {
+		paths[index] = shellQuoted(path.Join(apiDir, name))
+	}
+	return text + fmt.Sprintf(", then `git -C %s clean -q -f -x -- %s`", shellQuoted(g.root), strings.Join(paths, " "))
 }
 
 // refuseATreeThisDidNotStart refuses a tree that is mid-merge or holds a change, naming what the
@@ -147,7 +182,7 @@ func (g gitRepo) refuseATreeThisDidNotStart() error {
 		}
 		if lines := strings.Split(strings.TrimSpace(parents), "\n"); len(lines) > 1 {
 			first, emptiness, _ := strings.Cut(lines[0], " ")
-			return fmt.Errorf("@ is a merge already, and this step makes the merge itself: return to its first parent, the branch side, with %s, and run this again (%s; every other commit is untouched)", g.leaveTheMerge(first, emptiness == "empty", false), lost)
+			return fmt.Errorf("@ is a merge already, and this step makes the merge itself: return to its first parent, the branch side, with %s, and run this again (%s; every other commit is untouched)", g.jjLeave(first, emptiness == "empty"), lost)
 		}
 		// jj has no uncommitted state: every change is in @ itself, so "nobody has touched it" is
 		// @ being empty. `jj diff -r @` would answer the commit's own diff against its parent,
@@ -168,7 +203,7 @@ func (g gitRepo) refuseATreeThisDidNotStart() error {
 	if mergeHead, err := g.mergeHead(); err != nil {
 		return err
 	} else if mergeHead != "" {
-		return fmt.Errorf("a merge is in progress, and this step makes the merge itself: end it with %s and run this again (%s; everything committed is untouched)", g.leaveTheMerge("", false, false), lost)
+		return fmt.Errorf("a merge is in progress, and this step makes the merge itself: end it with %s and run this again (%s; everything committed is untouched)", g.gitAbort(), lost)
 	}
 	changed, err := g.run("status", "--porcelain")
 	if err != nil {
@@ -229,20 +264,26 @@ func readIfPresent(src tree, name string) ([]byte, bool, error) {
 	return content, true, nil
 }
 
+// conflictSides are one path's three sides of a merge, each that side's own bytes: the merge
+// base's, HEAD's (ours) and MERGE_HEAD's (theirs). nil is a side that has no such file.
+type conflictSides struct {
+	base, ours, theirs []byte
+}
+
 // recordConflict writes one path into git's index as a conflict, in git's own stage order: the
 // merge base at stage 1, HEAD's side at 2 and MERGE_HEAD's at 3, which is what `git merge` leaves
 // for a path it could not merge, and what `git checkout --ours` and `--theirs` read. git then
 // refuses to commit until the person resolves the file and runs `git add`. jj takes the working
 // copy as it is, markers and all, and keeps the file as a conflict of its own, so nothing is
 // written there.
-func (g gitRepo) recordConflict(name string, ours, base, theirs []byte) error {
+func (g gitRepo) recordConflict(name string, sides conflictSides) error {
 	if g.jj {
 		return nil
 	}
 	stages := []struct {
 		stage   int
 		content []byte
-	}{{1, base}, {2, ours}, {3, theirs}}
+	}{{1, sides.base}, {2, sides.ours}, {3, sides.theirs}}
 	var index strings.Builder
 	for _, entry := range stages {
 		if entry.content == nil {

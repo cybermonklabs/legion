@@ -6,6 +6,9 @@ GATE = gate("envoy_go", "envoy-go", runs=[
              ["./agentloop/"], tags="modellive", mode="vet"),
     step_run("envoy-go", "Vet agent-secrets' moto run (no moto)", "go vet -tags moto ./cmd/cipher/", ENVOY,
              ["./cmd/cipher/"], tags="moto", mode="vet"),
+    # ADOPTER_PACKAGES' tests, -v, after install-jj, built from the list the unit step's
+    # `grep -Ev` leaves them out by.
+    step_run("envoy-go", ADOPTER_STEP, ADOPTER_TEXT, ENVOY, ADOPTER_PKGS),
     ceiling_run("envoy-go"),
 ], exact=[
     # One go test per package of the plain run the race lane cannot make (RACE_IMPOSSIBLE_*),
@@ -71,7 +74,7 @@ GATE = gate("envoy_go", "envoy-go", runs=[
     (DATABASE_SKIPS_SCRIPT, f"{at('envoy-go', UNIT_TEST_STEP)} runs it, and "
                             f"{at('envoy-go', DATABASE_SKIPS_TEST_STEP)} runs it and copies it"),
     (DATABASE_SKIPS_TEST, f"{at('envoy-go', DATABASE_SKIPS_TEST_STEP)} runs it"),
-) + ceiling_reads("envoy-go") + setup_go("envoy-go", f"{ENVOY}/go.mod") + bun_job("envoy-go"))
+) + ceiling_reads("envoy-go") + install_jj("envoy-go") + setup_go("envoy-go", f"{ENVOY}/go.mod") + bun_job("envoy-go"))
 GATE = with_reads(GATE, [
     Read('packages/envoy/**', "filter envoy_go held packages/envoy/** by hand before the filters were computed: it selected 728 file(s) no other read of this gate declares", but=('**/*_test.go',)),
 ])

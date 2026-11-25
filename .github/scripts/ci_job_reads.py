@@ -1274,6 +1274,18 @@ LISTENERWIRE_STEP = "Test the listener's wire package, its clients and wirecheck
 LISTENERWIRE_PKGS = [f"./{p}/" for p in LISTENERWIRE_PACKAGES]
 LISTENERWIRE_TEXT = "go test -count=1 " + " ".join(LISTENERWIRE_PKGS)
 
+# The route adopter, cmd/dispatch-route-adopt, runs its rows under git and under jj, so envoy-go
+# installs jj (./.github/actions/install-jj) and tests the package in a step of its own with -v,
+# which names each row in the log: the unit step's go test -json report names no test that
+# passed, so a jj row that skipped would read as green there. The rows that need jj fail rather
+# than skip on GitHub Actions without it. As with the packages above, that step's package list and
+# the unit step's exclusion are built from this one list. The tool is deleted once the branches
+# open when routes moved into files have adopted, and this list and its step with it.
+ADOPTER_PACKAGES = ["cmd/dispatch-route-adopt"]
+ADOPTER_STEP = "Test the route adopter under git and jj"
+ADOPTER_PKGS = [f"./{p}/" for p in ADOPTER_PACKAGES]
+ADOPTER_TEXT = "go test -count=1 -v -timeout 4m " + " ".join(ADOPTER_PKGS)
+
 # The packages whose skips envoy-go's unit step counts: it runs the module through
 # packages/envoy/scripts/database-skips.sh with --module-except, one `go test -json`, and the
 # script counts the skips of its default table (DEFAULT_PACKAGES there), the broker's tree,
@@ -1351,18 +1363,19 @@ def hold_database_skips_packages():
 
 hold_database_skips_packages()
 
-# The unit step runs the module less five things: the lane's packages, which the three race jobs
+# The unit step runs the module less six things: the lane's packages, which the three race jobs
 # run under the detector, internal/integration, which envoy-go's integration step runs, the text
-# checks, which the text-check job runs, and the architecture-note and spec-file packages and
-# LISTENERWIRE_PACKAGES (listenerwire and internal/wirecheck), which envoy-go-build runs. Its
-# `grep -Ev` is `/integration`, then the text checks, then those packages, each the package
-# alone, then, in the lane's own order, each package in the form go list's import paths need - a
-# tree matching the package and everything under it, any other the package alone. It runs the
-# broker's tree and command too, whose skips it counts (DATABASE_SKIPS_PKGS above).
+# checks, which the text-check job runs, the architecture-note and spec-file packages and
+# LISTENERWIRE_PACKAGES (listenerwire and internal/wirecheck), which envoy-go-build runs, and
+# ADOPTER_PACKAGES, which envoy-go's adopter step runs. Its `grep -Ev` is `/integration`, then the
+# text checks, then those packages, each the package alone, then, in the lane's own order, each
+# package in the form go list's import paths need - a tree matching the package and everything
+# under it, any other the package alone. It runs the broker's tree and command too, whose skips it
+# counts (DATABASE_SKIPS_PKGS above).
 UNIT_TEST_STEP = "Unit test envoy Go package"
 UNIT_TEST_PATTERN = "|".join(
     ["/integration", f"/{TEXT_CHECK_PACKAGE}$"]
-    + [f"/{p}$" for p in NOTE_AND_SPEC_PACKAGES + LISTENERWIRE_PACKAGES]
+    + [f"/{p}$" for p in NOTE_AND_SPEC_PACKAGES + LISTENERWIRE_PACKAGES + ADOPTER_PACKAGES]
     + [f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages])
 
 

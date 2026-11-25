@@ -45,7 +45,12 @@ func newScratchRepo(t *testing.T) *scratchRepo {
 	} {
 		t.Setenv(name, value)
 	}
-	repo := &scratchRepo{t: t, root: t.TempDir()}
+	// The root holds a space, so every command a message prints for the person to paste is
+	// pasted here as written, through a shell, and must quote the path to work.
+	repo := &scratchRepo{t: t, root: filepath.Join(t.TempDir(), "a worktree")}
+	if err := os.Mkdir(repo.root, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	repo.git("init", "-q", "-b", "main", ".")
 	repo.write(tableFile, fixture(t, oldTableFixture))
 	repo.write(shapesFile, fixture(t, oldShapesFixture))
@@ -348,7 +353,7 @@ func TestASecondRunIsRefusedBecauseTheStepOwnsTheMerge(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = adopt(found, "main")
-	if err == nil || !strings.Contains(err.Error(), "a merge is in progress") || !strings.Contains(err.Error(), "git -C "+repo.root+" merge --abort") {
+	if err == nil || !strings.Contains(err.Error(), "a merge is in progress") || !strings.Contains(err.Error(), "git -C "+shellQuoted(repo.root)+" merge --abort") {
 		t.Fatalf("a second run was not refused by the merge in progress: %v", err)
 	}
 	if !strings.Contains(err.Error(), "is lost") {
@@ -534,7 +539,7 @@ func TestTheStepRefusesATreeItDidNotStart(t *testing.T) {
 			t.Fatalf("merging main stopped on no conflict: %s", output)
 		}
 		_, err := repo.adoptMain()
-		if err == nil || !strings.Contains(err.Error(), "a merge is in progress") || !strings.Contains(err.Error(), "git -C "+repo.root+" merge --abort") || !strings.Contains(err.Error(), "is lost") {
+		if err == nil || !strings.Contains(err.Error(), "a merge is in progress") || !strings.Contains(err.Error(), "git -C "+shellQuoted(repo.root)+" merge --abort") || !strings.Contains(err.Error(), "is lost") {
 			t.Fatalf("the step ran in a merge it did not start, or said nothing useful: %v", err)
 		}
 		// And it runs once the merge is ended by the commands the refusal names.
@@ -642,30 +647,15 @@ func TestAStatementInTheHooksBlockIsSharedCode(t *testing.T) {
 
 // The same step under jj, where a merge is the working-copy commit `jj new <branch> main` makes
 // and jj reads no git index: the route the branch added is written, routes_table.go and
-// routes_shapes.go are main's, and jj holds no conflict afterwards.
+// routes_shapes.go are main's, and jj holds no conflict afterwards. No merge is made before the
+// step: it makes it, as it does with git, from the fresh empty commit over the branch that
+// `jj new` sits a person on.
 func TestTheAdoptStepResolvesAJJMerge(t *testing.T) {
-	if _, err := exec.LookPath("jj"); err != nil {
-		t.Skip("jj is not installed; the git path is tested above")
-	}
 	repo := newScratchRepo(t)
 	base := strings.TrimSpace(repo.git("rev-parse", "HEAD"))
 	repo.addRouteOn("branch-a", base, "a")
 	repo.moveMain()
-	if output, err := repo.run("jj", "git", "init", "--colocate"); err != nil {
-		t.Fatalf("jj git init: %v: %s", err, output)
-	}
-	// No merge is made here: the step makes it, as it does with git. `jj new` is how a person
-	// sits on a branch, on a fresh empty commit whose parent is the branch's work.
-	if output, err := repo.run("jj", "new", "branch-a"); err != nil {
-		t.Fatalf("jj new: %v: %s", err, output)
-	}
-	found, err := findRepo(repo.root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !found.jj {
-		t.Fatal("findRepo took a jj workspace for a git checkout")
-	}
+	found := repo.jjOn("branch-a")
 	report, err := adopt(found, "main")
 	if err != nil {
 		t.Fatalf("adopt: %v", err)
@@ -874,10 +864,15 @@ func TestTheStepRefusesBeforeItMerges(t *testing.T) {
 }
 
 // jjOn makes the scratch repository a colocated jj workspace sitting on a fresh empty commit over
-// branch, with main as a remote would have it, which jj names main@origin.
+// branch, with main as a remote would have it, which jj names main@origin. Without jj the row
+// skips on a developer's machine and fails on GitHub Actions, where the job that runs this
+// package installs jj, so a lane that stopped installing it cannot pass these rows unrun.
 func (r *scratchRepo) jjOn(branch string) gitRepo {
 	r.t.Helper()
 	if _, err := exec.LookPath("jj"); err != nil {
+		if os.Getenv("GITHUB_ACTIONS") == "true" {
+			r.t.Fatal("jj is not installed, and on GitHub Actions the jj rows must run: the job that runs this package installs it with ./.github/actions/install-jj")
+		}
 		r.t.Skip("jj is not installed; the git path is tested above")
 	}
 	r.git("update-ref", "refs/remotes/origin/main", "main")
@@ -906,17 +901,16 @@ func (r *scratchRepo) jjParents() []string {
 	return strings.Fields(output)
 }
 
-// runNamed runs each command a message names in backquotes, in order: the recovery a refusal or
-// a failure gives the person, run as written.
+// runNamed runs each command a message names in backquotes that begins with tool, in order,
+// through a shell as a person pasting it would: the recovery a refusal or a failure gives.
 func (r *scratchRepo) runNamed(message, tool string) {
 	r.t.Helper()
 	var ran int
 	for _, match := range regexp.MustCompile("`([^`]+)`").FindAllStringSubmatch(message, -1) {
-		fields := strings.Fields(match[1])
-		if fields[0] != tool {
+		if !strings.HasPrefix(match[1], tool+" ") {
 			continue
 		}
-		if output, err := r.run(fields[0], fields[1:]...); err != nil {
+		if output, err := r.run("sh", "-c", match[1]); err != nil {
 			r.t.Fatalf("%s, which the message names: %v: %s", match[1], err, output)
 		}
 		ran++
@@ -1001,8 +995,9 @@ func TestUnderJJTheMergeJoinsTheCommitTheStepRead(t *testing.T) {
 }
 
 // A failure after the merge is made names the commands that return the tree to the branch, and
-// running them does. The failure is a local exclude naming the route file the step writes, so its
-// `git add` fails: nothing the step reads from the commits before the merge can foresee it.
+// running them does, leaving no file of the step's behind, ignored or not. The failure is a local
+// exclude naming the route file the step writes, so its `git add` fails: nothing the step reads
+// from the commits before the merge can foresee it, and the file it leaves is one git ignores.
 func TestAFailureAfterTheMergeNamesHowToReturnTheTree(t *testing.T) {
 	repo := newScratchRepo(t)
 	base := strings.TrimSpace(repo.git("rev-parse", "HEAD"))
@@ -1024,8 +1019,8 @@ func TestAFailureAfterTheMergeNamesHowToReturnTheTree(t *testing.T) {
 	if _, statErr := os.Stat(filepath.Join(repo.root, ".git", "MERGE_HEAD")); statErr != nil {
 		t.Fatalf("the failure came before the merge, so this row does not test a failure after it: %v", err)
 	}
-	if !strings.Contains(err.Error(), "git -C "+repo.root+" merge --abort") {
-		t.Fatalf("a failure after the merge does not name `git merge --abort`: %v", err)
+	if !strings.Contains(err.Error(), "partly written") {
+		t.Fatalf("a failure among the writes does not say the route layer is partly written: %v", err)
 	}
 	repo.runNamed(err.Error(), "git")
 	if _, statErr := os.Stat(filepath.Join(repo.root, ".git", "MERGE_HEAD")); !os.IsNotExist(statErr) {
@@ -1034,7 +1029,96 @@ func TestAFailureAfterTheMergeNamesHowToReturnTheTree(t *testing.T) {
 	if now := strings.TrimSpace(repo.git("rev-parse", "HEAD")); now != head {
 		t.Fatalf("HEAD moved from %s to %s", head, now)
 	}
-	if dirty := repo.git("status", "--porcelain"); strings.TrimSpace(dirty) != "" {
-		t.Fatalf("the failure's commands left the tree holding changes:\n%s", dirty)
+	if left := repo.git("status", "--porcelain", "--ignored"); strings.TrimSpace(left) != "" {
+		t.Fatalf("the failure's commands left the tree holding files, ignored ones included:\n%s", left)
+	}
+}
+
+// A route file the merge added that the step wrote over and had not added yet makes `git merge
+// --abort` refuse ("not uptodate. Cannot merge"), so the way back after a failure among the
+// writes cannot be that command: this is the state, made by hand, and the commands the step's
+// failure names for it, run as written.
+func TestTheWayBackHoldsForAWriteNotYetAdded(t *testing.T) {
+	repo := newScratchRepo(t)
+	base := strings.TrimSpace(repo.git("rev-parse", "HEAD"))
+	const limits = "The bounds a write is held to"
+	repo.editOn("branch-edits", base, func(table, shapes string) (string, string) {
+		return strings.Replace(table, limits, "The branch's bounds a write is held to", 1), shapes
+	})
+	head := strings.TrimSpace(repo.git("rev-parse", "HEAD"))
+	repo.moveMain()
+	repo.git("checkout", "-q", "branch-edits")
+	found, err := findRepo(repo.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, there, err := found.sidesOf("main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := found.startMerge("main", head, there); err != nil {
+		t.Fatalf("startMerge: %v", err)
+	}
+	file, _ := routeFileName("GET", "/api/v1/limits")
+	repo.write(file, repo.read(file)+"\n// the step's bytes, not yet added\n")
+	if output, err := repo.run("git", "merge", "--abort"); err == nil {
+		t.Fatalf("the control failed: `git merge --abort` ended this merge, so the row proves nothing: %s", output)
+	}
+	repo.runNamed(found.leaveTheMerge(head, []string{file}), "git")
+	if _, statErr := os.Stat(filepath.Join(repo.root, ".git", "MERGE_HEAD")); !os.IsNotExist(statErr) {
+		t.Fatal("the way back left the merge in progress")
+	}
+	if left := repo.git("status", "--porcelain", "--ignored"); strings.TrimSpace(left) != "" {
+		t.Fatalf("the way back left the tree holding files:\n%s", left)
+	}
+}
+
+// The report's reads come after the route layer is written and staged whole, so a failure of one
+// of them leaves a complete merge, and its error names no way back: the advice to reset the tree
+// and run the step again would throw a finished merge away. The failure is a link in package api
+// that points at itself, which the report's read of package api's files cannot open and which no
+// read before the merge touches.
+func TestAFailedReportReadAfterACompleteWriteNamesNoWayBack(t *testing.T) {
+	repo := newScratchRepo(t)
+	base := strings.TrimSpace(repo.git("rev-parse", "HEAD"))
+	repo.addRouteOn("branch-a", base, "a")
+	if err := os.Symlink("loop.go", repo.path("loop.go")); err != nil {
+		t.Fatal(err)
+	}
+	repo.commit("a link in package api that points at itself")
+	repo.moveMain()
+	repo.git("checkout", "-q", "branch-a")
+	_, err := repo.adoptMain()
+	if err == nil || !strings.Contains(err.Error(), "loop.go") {
+		t.Fatalf("the report's read of loop.go did not fail: %v", err)
+	}
+	if strings.Contains(err.Error(), "partly written") || strings.Contains(err.Error(), "reset") || strings.Contains(err.Error(), "merge --abort") {
+		t.Fatalf("a failure after the whole write names a way back that would throw the merge away: %v", err)
+	}
+	file, _ := routeFileName("GET", "/api/v1/adopt-test-a")
+	if staged := repo.git("diff", "--cached", "--name-only", "--", filepath.Join(apiDir, file)); strings.TrimSpace(staged) == "" {
+		t.Fatalf("%s is not staged, so the write was not whole", file)
+	}
+}
+
+// Under jj, as under git, a revision the branch holds already makes no merge: jj would make a
+// merge commit with a redundant parent, and the step would write into it. The branch holds the
+// route files and main@origin is its ancestor in the old layout, so every layout check passes.
+func TestUnderJJAnAncestorRevisionMakesNoMerge(t *testing.T) {
+	repo := newScratchRepo(t)
+	base := strings.TrimSpace(repo.git("rev-parse", "HEAD"))
+	repo.moveMain()
+	repo.git("checkout", "-q", "-b", "branch-moved", "main")
+	repo.git("branch", "-f", "main", base)
+	found := repo.jjOn("branch-moved")
+	_, err := adopt(found, "main@origin")
+	if err == nil || !strings.Contains(err.Error(), "nothing is merged") {
+		t.Fatalf("the step under jj answered %v, want a refusal saying nothing is merged", err)
+	}
+	if parents := repo.jjParents(); len(parents) != 1 {
+		t.Fatalf("@ has parents %v after the refusal, want the one it began on", parents)
+	}
+	if empty, err := repo.run("jj", "log", "--no-graph", "-r", "@", "-T", "empty"); err != nil || strings.TrimSpace(empty) != "true" {
+		t.Fatalf("@ holds changes after the refusal (%v): empty=%q", err, empty)
 	}
 }

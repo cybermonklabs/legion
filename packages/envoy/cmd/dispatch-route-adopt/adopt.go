@@ -97,10 +97,10 @@ func (r *adoptReport) print(w io.Writer) {
 type routeWrite struct {
 	name    string
 	content []byte
-	// stages are the merge base's, HEAD's and MERGE_HEAD's own bytes, nil for a file the merge
+	// sides are the merge base's, HEAD's and MERGE_HEAD's own bytes, nil for a file the merge
 	// settled. They are never the conflict-marked text the working tree holds, so `git checkout
 	// --ours` and `--theirs` answer a side a person can use.
-	stages *[3][]byte
+	sides *conflictSides
 }
 
 // adopt makes the merge of into and resolves its route layer (see the package comment).
@@ -180,7 +180,7 @@ func adopt(repo gitRepo, into string) (*adoptReport, error) {
 		write := routeWrite{name: name, content: merged}
 		if conflict {
 			report.conflicted = append(report.conflicted, name)
-			write.stages = &[3][]byte{baseContent, ours, theirs}
+			write.sides = &conflictSides{base: baseContent, ours: ours, theirs: theirs}
 		} else {
 			report.merged = append(report.merged, name)
 		}
@@ -263,26 +263,43 @@ func adopt(repo gitRepo, into string) (*adoptReport, error) {
 			report.fixtureRemoved = true
 		}
 	}
+	// The files this writes that the branch's commit does not hold: a failure after the merge is
+	// made leaves them where git does not track them, so the way back names each.
+	var newToHere []string
+	for _, write := range writes {
+		if _, held, err := readIfPresent(gitTree{repo, here}, write.name); err != nil {
+			return nil, err
+		} else if !held {
+			newToHere = append(newToHere, write.name)
+		}
+	}
 
 	if err := repo.startMerge(into, here, there); err != nil {
 		return nil, err
 	}
-	if err := writeTheMerge(repo, report, writes, remove); err != nil {
-		return nil, fmt.Errorf("%w\nthe merge is made and its route layer only partly written: return the tree to the branch with %s, and run this again", err, repo.leaveTheMerge(here, true, true))
+	if err := writeTheMerge(repo, writes, remove); err != nil {
+		return nil, fmt.Errorf("%w\nthe merge is made and its route layer only partly written: return the tree to the branch with %s, and run this again", err, repo.leaveTheMerge(here, newToHere))
+	}
+	// The route layer is written and staged whole. What is left only reads the merged tree for
+	// the report, so a failure here leaves a complete merge, and its error names no way back.
+	if report.unmerged, err = repo.unmerged(); err != nil {
+		return nil, err
+	}
+	if report.stale, err = staleLines(filepath.Join(repo.root, apiDir)); err != nil {
+		return nil, err
 	}
 	return report, nil
 }
 
-// writeTheMerge writes and stages what adopt settled into the merge it made, and reads the merged
-// tree for what is left.
-func writeTheMerge(repo gitRepo, report *adoptReport, writes []routeWrite, remove []string) error {
+// writeTheMerge writes and stages what adopt settled into the merge it made.
+func writeTheMerge(repo gitRepo, writes []routeWrite, remove []string) error {
 	dir := filepath.Join(repo.root, apiDir)
 	var stage []string
 	for _, write := range writes {
 		if err := os.WriteFile(filepath.Join(dir, write.name), write.content, 0o644); err != nil {
 			return err
 		}
-		if write.stages == nil {
+		if write.sides == nil {
 			stage = append(stage, write.name)
 			continue
 		}
@@ -293,19 +310,11 @@ func writeTheMerge(repo gitRepo, report *adoptReport, writes []routeWrite, remov
 		// The stages are git's own: 1 the merge base, 2 HEAD's side and 3 MERGE_HEAD's. For a
 		// branch made before the move HEAD is the branch, so `git checkout --ours` answers the
 		// branch's route and `--theirs` main's, as they do for every other path of the merge.
-		if err := repo.recordConflict(write.name, write.stages[1], write.stages[0], write.stages[2]); err != nil {
+		if err := repo.recordConflict(write.name, *write.sides); err != nil {
 			return err
 		}
 	}
-	if err := repo.stage(stage, remove); err != nil {
-		return err
-	}
-	var err error
-	if report.unmerged, err = repo.unmerged(); err != nil {
-		return err
-	}
-	report.stale, err = staleLines(dir)
-	return err
+	return repo.stage(stage, remove)
 }
 
 // sharedCodeChange is the branch's change to one old-layout file outside the entries the route
