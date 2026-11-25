@@ -784,9 +784,10 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 				"workerStream", s.stream.Addr(),
 				"runtime", cfg.Runtime.Name,
 			}
-			// The cap's read takes a budget of its own (bootAdmissionCap), since the replay above,
-			// on start's goroutine, can use up the one starting carries.
-			words = append(words, bootAdmissionCap(ctx, st, cfg)...)
+			// The cap's read runs on run's own ctx under a bound of its own (bootAdmissionCap):
+			// the replay above, on start's goroutine, can use up the budget starting carries, and
+			// ctx, like starting, ends on the stop signal.
+			words = append(words, bootAdmissionCap(ctx, st, cfg, bootTimeout)...)
 			words = append(words, "migrationsApplied", applied, "claims", s.supervisor.count(), "boot", bootID)
 			log.Info("legion daemon started", words...)
 			if workflow != nil {
@@ -2946,13 +2947,15 @@ func (l *servingLatch) serving() bool { return l.served.Load() }
 // bootAdmissionCap is the boot line's words for the admission cap (dispatch://INFRA-5616): the
 // deployment's starting cap and ceiling, the cap in force, and the cap that stands, with who set
 // it, when and why. A change of admission_cap leaves a standing cap in force, and this line shows
-// why. It reads read-only through api.AdmissionCapStateTx, the reading every pass makes, under a
-// bootBudget of its own on ctx's values: the boot's starting context, which the replay of
-// terminal claims runs before this line on (supervision.start), may have no time left, and a
-// read under it would write a read error for a cap that reads fine. A failed read logs its error
-// and never stops the boot.
-func bootAdmissionCap(ctx context.Context, st *store.Store, cfg config.Config) []any {
-	read, cancelRead := bootBudget(ctx)
+// why. It reads read-only through api.AdmissionCapStateTx, the reading every pass makes, on ctx
+// under bound, which the boot hands it as run's own context and bootTimeout. ctx ends on the
+// stop signal, as every step after the boot record does, so a stop never waits on this read;
+// bound is the read's own, since the boot's starting context, which the replay of terminal
+// claims runs before this line on (supervision.start), may have no time left, and a read under
+// it would write a read error for a cap that reads fine. A failed read logs its error and never
+// stops the boot.
+func bootAdmissionCap(ctx context.Context, st *store.Store, cfg config.Config, bound time.Duration) []any {
+	read, cancelRead := context.WithTimeout(store.WithTransactionTracking(ctx), bound)
 	defer cancelRead()
 	words := []any{"admissionStart", cfg.AdmissionCap, "admissionCeiling", cfg.AdmissionCeiling}
 	var inForce int

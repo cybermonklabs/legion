@@ -27,8 +27,8 @@ import (
 // project's Evals tab reads (dispatch://INFRA-979/spec#b-r39). The control is the state before any
 // change: the cap is the starting cap, the ceiling is apart from it, no override stands, and the
 // list is empty rather than absent. The boot line reads the same cap the same way
-// (bootAdmissionCap), the controller's session included, and on a budget of its own, so a boot
-// whose replay used up its own budget still writes the cap.
+// (bootAdmissionCap), the controller's session included. Its read ends on the stop signal and has
+// a bound of its own, which the two cases of a stalled database at the end hold apart.
 func TestTheStateNamesTheCapInForceTheCeilingAndEveryChange(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig(t)
@@ -136,18 +136,49 @@ func TestTheStateNamesTheCapInForceTheCeilingAndEveryChange(t *testing.T) {
 	want := []any{"admissionStart", 2, "admissionCeiling", 4, "admissionCap", 1, "admissionCapSet", 1,
 		"admissionCapSetBy", "controller", "admissionCapSetBySession", "ses_controller",
 		"admissionCapSetAt", "2026-11-24T07:00:00Z", "admissionCapReason", "the merge queue waits 52 minutes"}
-	if boot := bootAdmissionCap(ctx, st, cfg); !reflect.DeepEqual(boot, want) {
+	if boot := bootAdmissionCap(ctx, st, cfg, time.Minute); !reflect.DeepEqual(boot, want) {
 		t.Errorf("the boot line's cap words = %#v, want %#v", boot, want)
 	}
-	// The boot writes its line after the replay of terminal claims, which runs on start's
-	// goroutine (supervision.start) and can use up the budget the boot's starting context carries.
-	// The line's read takes a budget of its own, so the context it is handed may have no time
-	// left: here one whose deadline has passed, as starting's has after a replay that took its
-	// budget. A read under that context would write admissionCapReadError for a cap that reads.
-	spent, cancelSpent := context.WithDeadline(ctx, time.Now().Add(-time.Second))
-	defer cancelSpent()
-	if boot := bootAdmissionCap(spent, st, cfg); !reflect.DeepEqual(boot, want) {
-		t.Errorf("the boot line's cap words after a replay used up the boot's budget = %#v, want %#v", boot, want)
+
+	// A stalled database: a transaction of its own holds the cap's table under an ACCESS
+	// EXCLUSIVE lock, which every read of the table waits for until the lock is let go. The boot's
+	// read must end on its context's cancellation, the stop signal, with no bound to help it, and
+	// on its own bound with no signal: two cases, so a read that keeps the one and drops the other
+	// fails one of them. Each read runs beside the test, which waits for it for a guard well above
+	// what either case allows and lets the lock go before it fails, so a read that waits for the
+	// lock ends.
+	stalledRead := func(t *testing.T, readCtx context.Context, bound time.Duration) []any {
+		t.Helper()
+		locker, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
+		if err != nil {
+			t.Fatalf("begin the stall: %v", err)
+		}
+		defer locker.Rollback(ctx)
+		if _, err := locker.Exec(ctx, "lock table project_admission_cap_changes in access exclusive mode"); err != nil {
+			t.Fatalf("lock the cap's table: %v", err)
+		}
+		read := make(chan []any, 1)
+		go func() { read <- bootAdmissionCap(readCtx, st, cfg, bound) }()
+		select {
+		case words := <-read:
+			return words
+		case <-time.After(10 * time.Second):
+			_ = locker.Rollback(ctx)
+			<-read
+			t.Fatalf("the boot's read waited on the stalled database past 10 s: it ended on neither its context nor its bound %s", bound)
+			return nil
+		}
+	}
+	readError := func(words []any) bool {
+		return len(words) == 6 && words[4] == "admissionCapReadError"
+	}
+	stopped, stop := context.WithCancel(ctx)
+	time.AfterFunc(200*time.Millisecond, stop)
+	if words := stalledRead(t, stopped, time.Minute); !readError(words) {
+		t.Errorf("the boot's read on a stalled database, stopped after 200 ms under a bound of a minute, wrote %#v, want its read error", words)
+	}
+	if words := stalledRead(t, ctx, 500*time.Millisecond); !readError(words) {
+		t.Errorf("the boot's read on a stalled database, with no stop and a bound of 500 ms, wrote %#v, want its read error", words)
 	}
 }
 

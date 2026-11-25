@@ -503,7 +503,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			// entry added (admissionCapKeys, withoutAdmissionCap), which is every pod this table
 			// places below this daemon's own contract.
 			if tc.contract < entryNumber(admissionCapContract) {
-				withoutAdmissionCapKeysOf(want["admission"].(map[string]any))
+				stripAdmissionCapKeys(want["admission"].(map[string]any))
 			}
 			// A pod below cachesSourceContract is served the repository caches' capability row
 			// without its `source` (api's withoutUnadmittedCapabilitySources), which is every pod

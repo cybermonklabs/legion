@@ -12,9 +12,10 @@ import (
 // strips or looks for them reads this list.
 var admissionCapKeys = []string{"ceiling", "override", "capChanges"}
 
-// withoutAdmissionCapKeysOf takes the entry's keys off admission, a state's `admission` block as
-// a test decodes it, as the band takes them off a caller below the entry.
-func withoutAdmissionCapKeysOf(admission map[string]any) {
+// stripAdmissionCapKeys takes the entry's keys off admission, a state's `admission` block as a
+// test decodes it, in place, as the band takes them off a caller below the entry;
+// withoutAdmissionCapKeys (state_caller_test.go) is its pair over a whole body.
+func stripAdmissionCapKeys(admission map[string]any) {
 	for _, key := range admissionCapKeys {
 		delete(admission, key)
 	}
