@@ -452,10 +452,11 @@ BROKER_CLIENT_SRC = "packages/cipher-client/**"
 # The shared test fixtures every other Bun package's tests import.
 TEST_FIXTURES_SRC = "packages/test-fixtures/src/**"
 
-# The test job's run of the live proofs' libraries, cited by its whole run: text. It leaves out
-# scripts/e2e/lib/nats-image.test.ts, whose one run is lint's (no filter gates lint), so the
-# natsfloor build that file starts is no read of this job.
-E2E_LIB_TESTS = "bun test scripts/e2e/lib --path-ignore-patterns=scripts/e2e/lib/nats-image.test.ts"
+# The test job's run of the live proofs' libraries, cited by its whole run: text: the root
+# package.json's test:e2e-lib (bun test --timeout 200000 scripts/e2e/lib), which every runner uses.
+# It leaves out scripts/e2e/lib/nats-image.test.ts, whose one run is lint's (no filter gates lint),
+# so the natsfloor build that file starts is no read of this job.
+E2E_LIB_TESTS = "bun run test:e2e-lib --path-ignore-patterns=scripts/e2e/lib/nats-image.test.ts"
 
 
 def envoy_client_dep(why):
@@ -1869,6 +1870,8 @@ BROWSER_VERDICT_STEP = "Fail when a leg failed or the merged report holds a fail
 BROWSER_BLOBS_REFUSED_STEP = "Report a refused blob download as a refused read"
 BROWSER_PG_STEP = "Read the lanes' PostgreSQL and time its provider"
 BROWSER_WAIT_STORE_STEP = "Wait for the S3-compatible server"
+# One name, two steps: the shard job's and the alone job's second read of the binaries artifact.
+BROWSER_FETCH_STEP = "Download the binaries again, after a first attempt that did not complete"
 # One name, two steps: the shard job's and the alone job's, each running a script of its own,
 # since the shard job's machine also runs the file store whose log that job collects.
 BROWSER_RECORD_STEP = "What the run left behind"
@@ -1941,12 +1944,14 @@ SESSIONS_STEP = "Test the session message-wait script"
 
 # ------------------------------------------------- the test job's script harnesses, one gate each
 # Each `*.test.sh` step of the test job tests one script of this repository, and runs behind a
-# changes output of its own naming that harness and that script. Before this table one pattern,
-# `.github/scripts/*`, stood for all of them on the job's own filter, so a change to any one
-# script ran every harness - and, while the daemon's Go suite was in the same job, 1,083 s
-# (median) of Go tests with them (dispatch://INFRA-1413). The job's filter now takes what these
-# gates read, as it takes every step gate's reads (ci_filter_coverage.gate_read_sets), so a
-# change to a harness or its subject selects the job and exactly that step's gate is true in it.
+# filter of its own naming that harness and that script, which the step reads out of the changes
+# job's one list of the filters that matched (.github/ci-notes/ci.md#one-list-for-the-test-jobs-step-gates).
+# Before this table one pattern, `.github/scripts/*`, stood for all of them on the job's own
+# filter, so a change to any one script ran every harness - and, while the daemon's Go suite was
+# in the same job, 1,083 s (median) of Go tests with them (dispatch://INFRA-1413). The job's
+# filter now takes what these gates read, as it takes every step gate's reads
+# (ci_filter_coverage.gate_read_sets), so a change to a harness or its subject selects the job
+# and exactly that step's filter is in the list it reads.
 #
 # Every harness under .github/scripts sources test-lib.sh for its `check`, `is` and `summary`,
 # so each of those gates reads it and a change to it runs them all;
@@ -1958,8 +1963,8 @@ TEST_LIB = f"{SCRIPTS}/test-lib.sh"
 def harness(filter, step, harness_script, subjects, lib=True):
     """A gate for one harness step of the test job: the harness itself, test-lib.sh where the
     harness sources it, and `subjects`, the (path, why) pairs of what else that step reads - the
-    script it tests first among them. The gate is the step's, so its `if:` must test this
-    filter and no other (rule 2)."""
+    script it tests first among them. The gate is the step's, so its `if:` must read this filter
+    out of the list and no other (rule 2)."""
     entries = [(harness_script, at("test", step))]
     if lib:
         entries.append((TEST_LIB, f"{harness_script} sources it for check/is/summary"))
@@ -2107,6 +2112,9 @@ def browser_gate(filter, job):
          f"{at_browser(BROWSER_PG_STEP)} and {at_browser(BROWSER_PG_STEP, BROWSER_ALONE)} "
          "run it for the reading of the image's PostgreSQL their stacks start"),
         (".github/scripts/dispatch-browser-latest-blobs.sh", at_browser(BROWSER_SELECT_STEP, BROWSER_MERGE)),
+        (".github/scripts/dispatch-browser-fetch-binaries.sh",
+         f"{at_browser(BROWSER_FETCH_STEP)} and {at_browser(BROWSER_FETCH_STEP, BROWSER_ALONE)} run it "
+         "when actions/download-artifact's first read of the binaries did not complete"),
         (".github/scripts/dispatch-browser-run-reads.sh",
          f"{at_browser(BROWSER_READ_ONE_STEP, BROWSER_MERGE)} runs its jobs mode over this run's "
          f"own attempt's jobs, and {at_browser(BROWSER_BLOBS_REFUSED_STEP, BROWSER_MERGE)} its "
