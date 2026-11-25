@@ -5771,6 +5771,25 @@ const POD_BUILD = "d5".repeat(20);
 const POD_LAYERS = [1, 2, 3].map((n) => `sha256:${String(n).repeat(64)}`);
 const POD_PIN_LAYERS = [...POD_LAYERS, `sha256:${"4".repeat(64)}`];
 
+/** A `read` call of `url` (`skill://<name>`) and its successful result, which starts
+ *  `[Skill file: <header>]`, as a case's two messages: as `readFirst` puts them in a transcript. */
+function skillFileRead(url: string, header: string): SessionMessage[] {
+  const callId = `toolu_${url.slice("skill://".length)}`;
+  return [
+    {
+      role: "assistant",
+      content: [{ type: "toolCall", id: callId, name: "read", arguments: { path: url } }],
+    },
+    {
+      role: "toolResult",
+      toolCallId: callId,
+      toolName: "read",
+      isError: false,
+      content: [{ type: "text", text: `[Skill file: ${header}]\n# ${url}\n` }],
+    },
+  ];
+}
+
 async function podProfile(
   name: string,
   profileName: string,
@@ -5780,6 +5799,12 @@ async function podProfile(
     legion = false,
     readAt,
     pinLayers = POD_PIN_LAYERS,
+    home = "/home/fixture",
+    devboxHome,
+    reads = [],
+    byPath,
+    podLinks = ["/opt/legion/pi-acme"],
+    manifests = HOME_MANIFESTS,
   }: {
     task?: boolean;
     label?: boolean;
@@ -5787,9 +5812,22 @@ async function podProfile(
     readAt?: string;
     /** The rootfs.diff_ids the registry gives of POD_PIN; no config of it when `unread`. */
     pinLayers?: readonly string[] | "unread";
+    /** The home directory whose `.omp/` holds the session's transcript. */
+    home?: string;
+    /** The configuration's devboxHome; the configuration names none when absent. */
+    devboxHome?: string;
+    /** `[Skill file: …]` reads put after the prompt, in this order, before alpha's. */
+    reads?: readonly { readonly url: string; readonly header: string }[];
+    /** The directory the session reads alpha's two files from whole by their paths, in place of
+     *  its skill:// reads: the case's pathCopy. */
+    byPath?: string;
+    /** The directories the session pod's Dockerfile links into the profile. */
+    podLinks?: readonly string[];
+    /** The manifests.tsv rows added to the suite's copies output. */
+    manifests?: readonly (readonly (string | number)[])[];
   } = {}
 ) {
-  const file = `/home/fixture/.omp/${profileName === "" ? "" : `profiles/${profileName}/`}agent/sessions/--work--/${name}.jsonl`;
+  const file = `${home}/.omp/${profileName === "" ? "" : `profiles/${profileName}/`}agent/sessions/--work--/${name}.jsonl`;
   const db = legion ? "store_b" : "store_a";
   const template = await profileCase(legion ? "legion" : "good");
   const cfg = changedStore(name, (files) => {
@@ -5799,8 +5837,18 @@ async function podProfile(
     const readRoot = legion
       ? `${target}/.omp/skills/alpha`
       : (readAt ?? "/opt/legion/pi-acme/dist/skills/alpha");
+    const entries = inDirectory(text, target)
+      .replaceAll(oldRoot, readRoot)
+      .split("\n")
+      .filter((line) => line !== "")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    if (byPath !== undefined) readsUnder(byPath)(entries);
+    // Each read goes right after the prompt, so the last is put first.
+    for (const [n, read] of [...reads.entries()].reverse()) {
+      readFirst(`b0${n}0000`, read.url, read.header, `# ${read.url}\n`)(entries);
+    }
     const store = files[db] ?? {};
-    store[file] = inDirectory(text, target).replaceAll(oldRoot, readRoot);
+    store[file] = entries.map((entry) => `${JSON.stringify(entry)}\n`).join("");
   });
   writeFileSync(
     cfg,
@@ -5814,9 +5862,10 @@ async function podProfile(
         workerRepository: "acme/skills",
         workerDockerfile: "worker.Dockerfile",
       },
+      ...(devboxHome === undefined ? {} : { devboxHome }),
     })
   );
-  const copies = copiesWith(`copies-${name}`, { "manifests.tsv": HOME_MANIFESTS });
+  const copies = copiesWith(`copies-${name}`, { "manifests.tsv": manifests });
   const dir = path.join(scratch, name);
   mkdirSync(dir, { recursive: true });
   const from = path.join(dir, "before.jsonl");
@@ -5843,7 +5892,7 @@ async function podProfile(
       if (route === "repos/acme/infra/contents/pods/Dockerfile") {
         expect(args).toContain(`ref=${POD_BUILD}`);
         return answer(
-          `ARG WORKER=${POD_BASE}\nFROM \${WORKER}\nRUN omp plugin link /opt/legion/pi-acme\n`
+          `ARG WORKER=${POD_BASE}\nFROM \${WORKER}\n${podLinks.map((dir) => `RUN omp plugin link ${dir}\n`).join("")}`
         );
       }
       if (route.includes(`sha=${POD_BUILD}`)) return answer(POD_BUILD);
@@ -5888,7 +5937,24 @@ async function podProfile(
       )
     )
   );
-  writeFileSync(from, `${JSON.stringify({ ...template, source, messages })}\n`);
+  if (byPath !== undefined) {
+    readsUnder(byPath)(messages.map((message) => ({ type: "message", message })));
+  }
+  const added = reads.flatMap((read) => skillFileRead(read.url, read.header));
+  messages.splice(1, 0, ...added);
+  const skillReads = template.skillReads.map((index) =>
+    index >= 1 ? index + added.length : index
+  );
+  writeFileSync(
+    from,
+    `${JSON.stringify({
+      ...template,
+      source,
+      messages,
+      skillReads,
+      ...(byPath === undefined ? {} : { pathCopy: { dir: byPath } }),
+    })}\n`
+  );
   const code = await main(
     [
       "build-cases",
@@ -5990,6 +6056,184 @@ test("session context row 6: a read inside the session checkout's own .claude/sk
   // The same read at the plugin's own install location installs it, as row 1's does.
   const plugin = await podProfile("plugin-skill-read", "");
   expect((plugin.profile?.skills ?? []).map((skill) => skill.name)).toContain("beta");
+}, 60_000);
+
+// INFRA-4676's architect, 2026-11-25: a session's context follows where its skills came from. A
+// named-profile session of a devbox store whose [Skill file: …] headers are under the dev box's
+// home ran in a pod that mounts that home, whose Oh My Pi loaded the dev box's skills, so it gets
+// the dev box's context; one with no such header gets the session pod's. In every context a
+// [Skill file: …] header places its unit, as direct proof; a read by path does so only where pod
+// links do not decide.
+
+/** The dev box's home a pod can mount (the configuration's devboxHome), and the home of the pod's
+ *  own user, whose named profile holds the pod's transcripts. */
+const DEV_HOME = "/home/dev";
+const POD_HOME = "/home/agent";
+/** acme/skills's alpha where the dev box's Oh My Pi has it, among its user skills. */
+const HOME_ALPHA = `${DEV_HOME}/.omp/agent/skills/alpha`;
+/** acme/skills's beta where the worker image's package stages it: a pod's own path. */
+const POD_BETA = "/opt/legion/pi-acme/dist/skills/beta/SKILL.md";
+/** acme/skills's beta among the user skills of a home whose path starts with DEV_HOME's text and
+ *  is not in it. */
+const OTHER_HOME_BETA = "/home/dev2/.omp/agent/skills/beta/SKILL.md";
+/** The evidence items that name the context of a pod that mounts the dev box's home, and that of
+ *  such a pod's session that read skill files on the pod's own paths too, each followed by the
+ *  profile's name. */
+const MOUNTED_HOME = "a pod that mounts the dev box's home, profile ";
+const MIXED_HEADERS = "skill files from the dev box's home and the pod's own paths, profile ";
+/** The unit by which the dev box's plugin list (acme/dots's) installs acme/powers. */
+const DOTS_POWERS = "unit package:acme-powers (acme/dots:omp/plugins/package.json)";
+
+/** The case of a legion-profile session under POD_HOME in the devbox store store_a that reads
+ *  pack-one of the dev box's pool (PACK_ONE) and then alpha, as the dev box's Oh My Pi links it
+ *  (HOME_ALPHA): its [Skill file: …] headers are under DEV_HOME. acme/dots is the dev box's
+ *  repository, and the session pod's image links nothing into the profile. */
+const homeMounted = (name: string, options: Parameters<typeof podProfile>[2] = {}) =>
+  podProfile(name, "legion", {
+    home: POD_HOME,
+    readAt: HOME_ALPHA,
+    reads: [{ url: "skill://pack-one", header: PACK_ONE }],
+    podLinks: [],
+    manifests: DOTS_MANIFESTS,
+    ...options,
+  });
+
+/** The profile's skills of `result`, each as `<name> <repo> <commit>`. */
+const skillsOf = (result: { readonly profile?: Case["profile"] | undefined }) =>
+  (result.profile?.skills ?? []).map((skill) => `${skill.name} ${skill.repo} ${skill.commit}`);
+
+/** `result`'s exit status, with what it printed where it is no success. */
+const outcomeOf = (result: { readonly code: number; readonly lines: readonly string[] }) => ({
+  code: result.code,
+  said: result.code === EXIT.ok ? "" : result.lines.join("\n"),
+});
+
+// Catches: a session of a pod that mounts the dev box's home given the session pod's profile,
+// which installs the image's links alone, so it lacks the copy the session read and the case is
+// left out.
+test("skill source row 1: a named-profile session of a devbox store whose [Skill file] headers are under devboxHome gets the dev box's context: its installers' units, the pool a header names at its installer's pin, the copy the case read, and the evidence item that names the context", async () => {
+  const result = await homeMounted("home-mounted", { devboxHome: DEV_HOME });
+  expect(outcomeOf(result)).toEqual({ code: EXIT.ok, said: "" });
+  const skills = skillsOf(result);
+  // The copy the case read, as the dev box's Oh My Pi linked it at the session's start.
+  expect(skills).toContain(`alpha acme/skills ${SHA}`);
+  // The pool the header names, at the commit the dev box's installer pins.
+  expect(skills).toContain(`pack-one acme/pack ${PACK_PIN}`);
+  // A unit the dev box's installers install, which no header names.
+  expect(skills).toContain(`power-two acme/powers ${SHA}`);
+  expect(result.evidence?.[DOTS_POWERS]).toStartWith(
+    "a dev box installs every unit the installers of its own repository install into Oh My Pi at the session's start"
+  );
+  expect(result.evidence?.[`${MOUNTED_HOME}legion`]).toStartWith(
+    `3 [Skill file: …] headers of the session are under the dev box's home ${DEV_HOME} (the configuration's devboxHome), the first at message 2: ${PACK_ONE}; `
+  );
+  expect(result.evidence?.["session pod profile legion"]).toBeUndefined();
+  expect(result.evidence?.[`${MIXED_HEADERS}legion`]).toBeUndefined();
+}, 60_000);
+
+// Guards the session pod's branch: devboxHome changes nothing for a session whose headers are all
+// on the pod's own paths.
+test("skill source row 2: a named-profile session of a devbox store whose [Skill file] headers are all on the pod's own paths gets the session pod's profile", async () => {
+  const result = await podProfile("pod-only", "legion", { home: POD_HOME, devboxHome: DEV_HOME });
+  expect(outcomeOf(result)).toEqual({ code: EXIT.ok, said: "" });
+  expect(result.profile?.skills.map(({ name, commit }) => [name, commit])).toEqual(
+    ["alpha", "beta", "omicron"].map((name) => [name, IMAGE_SHA])
+  );
+  expect(result.evidence?.["session pod profile legion"]).toStartWith("Inference: ");
+  expect(result.evidence?.[`${MOUNTED_HOME}legion`]).toBeUndefined();
+}, 60_000);
+
+// Catches: a session that read skill files under the dev box's home and on the pod's own paths
+// given one context with no word of the other, or the pod path's unit left out of it.
+test("skill source row 3: a session with [Skill file] headers under devboxHome and on the pod's own paths gets the dev box's context, the unit its pod-path header names, and an evidence item naming a header of each kind", async () => {
+  const result = await homeMounted("home-mixed", {
+    devboxHome: DEV_HOME,
+    reads: [
+      { url: "skill://pack-one", header: PACK_ONE },
+      { url: "skill://beta", header: POD_BETA },
+    ],
+  });
+  expect(outcomeOf(result)).toEqual({ code: EXIT.ok, said: "" });
+  expect(result.evidence?.[`${MOUNTED_HOME}legion`]).toStartWith(
+    `3 [Skill file: …] headers of the session are under the dev box's home ${DEV_HOME} (the configuration's devboxHome), the first at message 2: ${PACK_ONE}; `
+  );
+  expect(result.evidence?.[`${MIXED_HEADERS}legion`]).toStartWith(
+    `message 2 reads [Skill file: ${PACK_ONE}], under the dev box's home ${DEV_HOME}, and message 4 reads [Skill file: ${POD_BETA}], outside it; `
+  );
+  // The worker image's package, which the pod-path header places.
+  expect(
+    result.evidence?.["unit package:@acme/pi-acme (acme/skills:packages/pi-acme/package.json)"]
+  ).toStartWith(
+    `message 4 reads [Skill file: ${POD_BETA}], under the prefix-table.tsv row /opt/legion/pi-acme/dist/skills/beta/`
+  );
+  expect(result.profile?.plugins.map((plugin) => plugin.name)).toContain("pi-acme");
+  expect(skillsOf(result)).toContain(`power-two acme/powers ${SHA}`);
+  expect(result.evidence?.["session pod profile legion"]).toBeUndefined();
+}, 60_000);
+
+// Catches: a [Skill file] header in a session pod's context placing no unit, since the pod's
+// links alone decided its units; and a home whose path only starts with devboxHome's text taken
+// for the dev box's.
+test("skill source row 4: a session pod's [Skill file] header outside devboxHome installs the unit it places beside the image's links, and the context stays the session pod's", async () => {
+  const result = await podProfile("pod-proof", "legion", {
+    home: POD_HOME,
+    devboxHome: DEV_HOME,
+    reads: [{ url: "skill://beta", header: OTHER_HOME_BETA }],
+  });
+  expect(outcomeOf(result)).toEqual({ code: EXIT.ok, said: "" });
+  const skills = skillsOf(result);
+  for (const name of ["alpha", "beta", "omicron"]) {
+    expect(skills).toContain(`${name} acme/skills ${IMAGE_SHA}`);
+  }
+  // acme/skills's user skills, which the header places: older is theirs alone, and the image's
+  // package ships none of it.
+  expect(skills).toContain(`older acme/skills ${IMAGE_SHA}`);
+  expect(result.evidence?.["unit user-skills:omp (acme/skills:installers/skills.sh)"]).toStartWith(
+    `message 2 reads [Skill file: ${OTHER_HOME_BETA}], under the prefix-table.tsv row **/agent/skills/beta/`
+  );
+  expect(result.evidence?.["session pod profile legion"]).toStartWith("Inference: ");
+  expect(result.evidence?.[`${MOUNTED_HOME}legion`]).toBeUndefined();
+}, 60_000);
+
+// Guards the rule pod links keep: a whole read by path in a session pod's context places no unit,
+// even of a copy under devboxHome, and decides no context.
+test("skill source row 5: a session pod's whole reads by path of a copy the image's links do not give install nothing of it, and reads by path under devboxHome do not make the context the dev box's", async () => {
+  const result = await podProfile("pod-by-path", "legion", {
+    home: POD_HOME,
+    devboxHome: DEV_HOME,
+    byPath: HOME_ALPHA,
+  });
+  expect(outcomeOf(result)).toEqual({ code: EXIT.ok, said: "" });
+  expect(result.profile?.skills.map(({ name, commit }) => [name, commit])).toEqual(
+    ["alpha", "beta", "omicron"].map((name) => [name, IMAGE_SHA])
+  );
+  expect(result.evidence?.["unit user-skills:omp (acme/skills:installers/skills.sh)"]).toBe(
+    undefined
+  );
+  expect(result.evidence?.["session pod profile legion"]).toStartWith("Inference: ");
+  expect(result.evidence?.[`${MOUNTED_HOME}legion`]).toBeUndefined();
+}, 60_000);
+
+// Catches: rule 1 applied with no devboxHome in the configuration, or the session pod's context
+// placing no unit of the session's [Skill file] headers.
+test("skill source row 6: with no devboxHome, a session like row 1's keeps the session pod's context, and its [Skill file] headers install their units, and the dev box's installers nothing", async () => {
+  const result = await homeMounted("home-unconfigured");
+  expect(outcomeOf(result)).toEqual({ code: EXIT.ok, said: "" });
+  const skills = skillsOf(result);
+  expect(skills.some((skill) => skill.startsWith("alpha acme/skills "))).toBe(true);
+  expect(skills.some((skill) => skill.startsWith("pack-one acme/pack "))).toBe(true);
+  expect(skills.some((skill) => skill.startsWith("power-two "))).toBe(false);
+  expect(result.evidence?.["unit user-skills:omp (acme/skills:installers/skills.sh)"]).toStartWith(
+    `message 4 reads [Skill file: ${HOME_ALPHA}/SKILL.md], under the prefix-table.tsv row **/agent/skills/alpha/`
+  );
+  expect(
+    result.evidence?.["unit pool:vendor/acme-pack (acme/dots:skills-sources.json)"]
+  ).toStartWith(
+    `message 2 reads [Skill file: ${PACK_ONE}], under the prefix-table.tsv row **/vendor/acme-pack/skills/pack-one/`
+  );
+  expect(result.evidence?.[DOTS_POWERS]).toBeUndefined();
+  expect(result.evidence?.["session pod profile legion"]).toStartWith("Inference: ");
+  expect(result.evidence?.[`${MOUNTED_HOME}legion`]).toBeUndefined();
 }, 60_000);
 
 /** `text`, a session's transcript, with its header's working directory `cwd`. */

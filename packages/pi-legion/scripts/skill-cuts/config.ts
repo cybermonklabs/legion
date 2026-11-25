@@ -6,7 +6,7 @@
  * it leaves out and the repositories its copies map to) comes from this file at run time and never
  * from a committed file. The real file is kept outside the repository.
  *
- * Keys (only the last six are optional):
+ * Keys (only the last seven are optional):
  *   owners          GitHub owners whose repositories the copy lister reads
  *   stores          the session stores the count reads: `{name, context}`, `name` the database
  *                   name, `context` `devbox` or `legion:<PROJECT>` (whose sessions the store holds)
@@ -26,6 +26,12 @@
  *                   shows that file at `<dir>/CLAUDE.md` (capture.ts, "The harness strings"),
  *                   and a neutral path without it. It names a person's home on the dev box, a
  *                   private value that only this file holds.
+ *   devboxHome     (optional) the dev box's home directory, an absolute path. build.ts gives a
+ *                  named-profile session of a devbox store with a `[Skill file: …]` header under
+ *                  it (by whole path segments) the dev box's context: such a session ran in a pod
+ *                  that mounts that home (SESSION_CONTEXT_RULE). Without this key every
+ *                  named-profile session of a devbox store gets the session pod's context. It
+ *                  names a person's home on the dev box, a private value that only this file holds.
  *   clones          (optional) `{repo, dir, clone}`: a clone made by hand on a dev box, a fact
  *                   about the host that no installer the copies output reads records, so the
  *                   operator states it here: the directory `dir` (a path in the repository, such
@@ -151,6 +157,10 @@ export const SkillCutsConfig = z
     windowStart: Instant,
     windowEnd: Instant,
     devboxClaudeConfigDir: z
+      .string()
+      .refine((value) => path.isAbsolute(value), { error: "an absolute path" })
+      .optional(),
+    devboxHome: z
       .string()
       .refine((value) => path.isAbsolute(value), { error: "an absolute path" })
       .optional(),

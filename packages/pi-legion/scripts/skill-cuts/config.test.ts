@@ -9,7 +9,8 @@ import { loadConfig, parseConfig, SkillCutsConfig, storeNamed } from "./config";
 // configuration F7's capture used.
 
 /** A configuration with every required key, each a made-up value; it leaves out the optional
- *  keys, devboxClaudeConfigDir, clones, sessionPod, ompPin, registries and deploymentImages. */
+ *  keys, devboxClaudeConfigDir, devboxHome, clones, sessionPod, ompPin, registries and
+ *  deploymentImages. */
 function valid(): Record<string, unknown> {
   return {
     owners: ["acme", "acme-labs"],
@@ -48,6 +49,7 @@ test.each(
   Object.keys(SkillCutsConfig.shape).filter(
     (key) =>
       key !== "devboxClaudeConfigDir" &&
+      key !== "devboxHome" &&
       key !== "clones" &&
       key !== "sessionPod" &&
       key !== "ompPin" &&
@@ -143,6 +145,14 @@ test("devboxClaudeConfigDir is optional, and an absolute path when given", () =>
   expect(refusal({ ...valid(), devboxClaudeConfigDir: "acme-dotfiles/.claude" })).toContain(
     "devboxClaudeConfigDir: an absolute path"
   );
+});
+
+// Catches: a dev box's home the context rule cannot match a [Skill file: …] header against (a
+// relative path) loaded as if it could, or an older configuration without it refused.
+test("devboxHome is optional, and an absolute path when given", () => {
+  expect(parseConfig(valid()).devboxHome).toBeUndefined();
+  expect(parseConfig({ ...valid(), devboxHome: "/home/dev" }).devboxHome).toBe("/home/dev");
+  expect(refusal({ ...valid(), devboxHome: "home/dev" })).toContain("devboxHome: an absolute path");
 });
 
 // Catches: a pool clone made by hand (no installer records it) that the operator states for a

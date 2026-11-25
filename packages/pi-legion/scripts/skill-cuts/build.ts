@@ -263,13 +263,17 @@
  * or digest-times.sql for `--reprofile`) and the step's message time, or the session's start for
  * its first build. Below, "the session's start" means that time (a subagent's pools are read at
  * its own start):
- * - Only the default profile in a devbox store uses the dev box's installers. A named profile in
+ * - The context follows the store, the Oh My Pi profile and where the session's skills came from
+ *   (SESSION_CONTEXT_RULE). A default-profile session in a devbox store uses the dev box's
+ *   installers, and so does a named-profile one with a `[Skill file: …]` header under the
+ *   configuration's `devboxHome`: a pod that mounts the dev box's home. Any other named profile in
  *   that store reads the session-pod image at the root's prompt build. A separate profile in a
  *   Legion store does not inherit Legion role plugins. The `context` label does not change.
  * - The units installed: each unit (`via`) of each prefix row that a `[Skill file: <path>]` of a
- *   read result before the step is under, or the path of a successful whole read by path of the
- *   case's copy (`pathCopy`, `profileReads`); for a path no row maps, each unit of the prefix rows
- *   of the copy attribute.ts's rules place the read at (a checkout, the session's profile); and,
+ *   read result before the step is under, in every context; outside a pod whose links decide its
+ *   units, also the path of a successful whole read by path of the case's copy (`pathCopy`,
+ *   `profileReads`); for a path no row maps, each unit of the prefix rows of the copy
+ *   attribute.ts's rules place the read at (a checkout, the session's profile); and,
  *   for a Legion context, each Oh My Pi unit with a prefix row under `/opt/legion/` (a package
  *   the worker image carries) and each unit an `omp-plugins` manifest installs. A read no rule
  *   places is listed as left out; a copy a read is placed at that no prefix row names a unit for
@@ -3192,6 +3196,9 @@ const DEVBOX_CHECKOUT_RULE =
 /** Which units a dev-box profile installs beside those its session's reads come from. */
 const DEVBOX_INSTALLERS_RULE =
   "a dev box installs every unit the installers of its own repository install into Oh My Pi at the session's start, whether or not the session read from it: the one repository of the copies output (manifests.tsv) that holds both an installer script (installers/*.sh) and Claude Code's settings (.claude/settings.json), whose .claude/ is the dev box's Claude Code config directory, read at its commit of the session's start with each repository its installers pin, and resolved by copies.ts's rules (resolveInstallers)";
+/** Which context a session's profile is built in, and which of its reads place units there. */
+const SESSION_CONTEXT_RULE =
+  "a session's context follows its store, its Oh My Pi profile (its transcript's path: <home>/.omp/agent/ for the default profile, <home>/.omp/profiles/<name>/agent/ for a named one) and where its skills came from, which a [Skill file: <path>] header shows, since Oh My Pi prints one only for a skill it loaded. There are five kinds. A default-profile session of a devbox store ran on the dev box, which installs its own repository's units with their pins at the session's start (DEVBOX_INSTALLERS_RULE). A named-profile session of a devbox store with at least one such header under the dev box's home (the configuration's devboxHome, matched by whole path segments; no session has this kind where the configuration names none) ran in a pod that mounts that home, whose Oh My Pi loaded the dev box's skills, so it gets the dev box's context too. Any other named-profile session of a devbox store ran in a session pod, which links the packages of its pinned image into the profile. A legion-profile session of a Legion store ran in a Legion pod, which installs its worker image's packages and its deployment's role setup. Any other named-profile session of a Legion store gets its session repository's project skills. In every context each such header places its unit at the copy its path resolves to (the prefix table, else attribute.ts's rules), which is direct proof, and a unit the context installs already is not added again; a whole read of a file by its path places a unit only in a dev box's context, a Legion pod's legion profile or a session whose profile is not known, since in a pod its links, not the files a session read, decide which units it ships";
 /** How Oh My Pi 18.18.6 reads skills.ignoredSkills. */
 const IGNORED_RULE =
   "Oh My Pi 18.18.6 loads no skill whose name a pattern of skills.ignoredSkills matches as a Bun.Glob, matched against the skill's own name and again against the name it is listed under, <namespace>/<name> for a later copy of a name whose text differs (extensibility/skills.ts, lines 386-389, 401-406, 437 and 544), so a session can neither list nor read it";
@@ -3217,6 +3224,47 @@ function devboxHome(copies: Copies, evidence: Evidence[]): string | undefined {
     source: `${DEVBOX_INSTALLERS_RULE}; ${homes.length === 0 ? "no repository holds both" : `${homes.length} repositories hold both (${homes.join(", ")})`}, so the profile installs only the units the session's reads come from`,
   });
   return undefined;
+}
+
+/** The items of a profile's evidence that name the context of a pod that mounts the dev box's
+ *  home (SESSION_CONTEXT_RULE), and that of such a pod's session that read skill files outside
+ *  that home too, each followed by the profile's name. */
+const MOUNTED_HOME_ITEM = "a pod that mounts the dev box's home, profile ";
+const MIXED_HEADERS_ITEM = "skill files from the dev box's home and the pod's own paths, profile ";
+
+/** Whether the absolute path `file` is in the directory `dir` by whole path segments:
+ *  `/home/dev2/x` is not in `/home/dev`. */
+function inDirectory(file: string, dir: string): boolean {
+  const below = path.posix.relative(dir, file);
+  return path.posix.isAbsolute(file) && below !== ".." && !below.startsWith("../");
+}
+
+/** The evidence that a session of the named profile `profile` in a devbox store ran in a pod that
+ *  mounts the dev box's home `home` (SESSION_CONTEXT_RULE): `headers`, its `[Skill file: …]`
+ *  reads, hold one or more under that home. With a second item, naming a header of each kind,
+ *  where some are outside it. Undefined where none is under it. */
+function mountedHome(
+  profile: string,
+  home: string,
+  headers: readonly ShownRead[]
+): Evidence[] | undefined {
+  const inside = headers.filter((read) => inDirectory(read.header, home));
+  const [first] = inside;
+  if (first === undefined) return undefined;
+  const outside = headers.find((read) => !inDirectory(read.header, home));
+  const one = inside.length === 1;
+  const mounted = {
+    item: `${MOUNTED_HOME_ITEM}${profile}`,
+    source: `${inside.length} [Skill file: …] header${one ? "" : "s"} of the session ${one ? "is" : "are"} under the dev box's home ${home} (the configuration's devboxHome), the first at message ${first.index}: ${first.header}; Oh My Pi prints such a header only for a skill it loaded, so the pod's Oh My Pi loaded the dev box's skills, and the profile is the dev box's at the session's start: ${SESSION_CONTEXT_RULE}`,
+  };
+  if (outside === undefined) return [mounted];
+  return [
+    mounted,
+    {
+      item: `${MIXED_HEADERS_ITEM}${profile}`,
+      source: `message ${first.index} reads [Skill file: ${first.header}], under the dev box's home ${home}, and message ${outside.index} reads [Skill file: ${outside.header}], outside it; the profile is the dev box's, and each header outside that home places its unit too, which is direct proof: ${SESSION_CONTEXT_RULE}`,
+    },
+  ];
 }
 
 /** The item of a profile's evidence that names the Oh My Pi build the dev box's repository pins
@@ -4667,13 +4715,28 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   const legionStore = input.context.startsWith("legion:");
   // The Legion worker sets OMP_PROFILE=legion (packages/daemon/docker/worker.Dockerfile).
   const legion = legionStore && ompProfile === "legion";
-  const devbox = input.context === "devbox" && ompProfile === "default";
   const named = ompProfile !== "default" && ompProfile !== "unknown";
+  // Where the session's skills came from decides a named profile's context in a devbox store
+  // (SESSION_CONTEXT_RULE): a `[Skill file: …]` header under the dev box's home shows a pod that
+  // mounts that home, whose Oh My Pi loaded the dev box's skills, so the session is a dev-box
+  // session for every step below. A read by path shows no skill Oh My Pi loaded.
+  const headers = input.reads.filter((read) => read.byPath !== true);
+  const homeDir = run.config.devboxHome;
+  const mounted =
+    input.context === "devbox" && named && homeDir !== undefined
+      ? mountedHome(ompProfile, homeDir, headers)
+      : undefined;
+  const devbox = input.context === "devbox" && (ompProfile === "default" || mounted !== undefined);
   const isolated = !devbox && !legion;
   const inferReadUnits = !isolated || ompProfile === "unknown";
+  // A header places its unit in every context, as direct proof; a read by path only where no
+  // pod's links decide which units the pod ships.
+  const placing = inferReadUnits ? input.reads : headers;
   let pod: PodImage | undefined;
   if (ompProfile !== "unknown") evidence.push({ item: OMP_PROFILE_ITEM, source: ompProfile });
-  if (input.context === "devbox" && named) {
+  if (mounted !== undefined) {
+    evidence.push(...mounted);
+  } else if (input.context === "devbox" && named) {
     if (run.config.sessionPod === undefined)
       throw new PodNotMeasurable(`profile ${ompProfile} needs sessionPod in the configuration`);
     const at =
@@ -4816,8 +4879,9 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // The first `[Skill file: …]` read that places each unit, by its key: it shows Oh My Pi loaded
   // that unit's skills, which a pool's version rule takes over the pinned build (POOL_VERSION_RULE).
   const shownBy = new Map<string, ShownRead>();
-  // Pod links, not reads of arbitrary files, decide which complete units the pod ships.
-  for (const read of inferReadUnits ? input.reads : []) {
+  // Each header places its unit in every context; a read by path only where no pod's links decide
+  // the units (`placing`).
+  for (const read of placing) {
     if (read.skill !== undefined && !readCopies.has(read.skill)) {
       const copy = run.placer.place(input.store, read.header, read.skill, ompProfile).copy;
       if (copy !== undefined) {
@@ -5481,7 +5545,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // The prefix rows the same manifests give at the session's start (copies.ts's rules,
   // `resolved.prefixes`) place the read at the unit that installed it then, and at its copy.
   const placedAtStart = new Set<string>();
-  for (const read of inferReadUnits ? input.reads : []) {
+  for (const read of placing) {
     const name = read.skill;
     if (name === undefined || placedAtStart.has(read.header)) continue;
     placedAtStart.add(read.header);

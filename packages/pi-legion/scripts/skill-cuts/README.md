@@ -850,9 +850,30 @@ bun scripts/skill-cuts/cli.ts build-tasks --first-read --config <skill-cuts.json
 `build-cases` and `build-cases --reprofile` read the Oh My Pi profile from the transcript path.
 `<home>/.omp/agent/sessions/` is the default profile. `<home>/.omp/profiles/<name>/agent/sessions/`
 is a named profile. A subagent's transcript is below its root's directory, so it uses the same
-profile. Only a default-profile session in a `devbox` store gets the dev-box installers.
+profile.
+A session's context follows its store, its profile and where its skills came from.
+It is one of five kinds:
 
-For a named profile in a `devbox` store, the builder reads the session-pod image pin at the
+- A default-profile session in a `devbox` store ran on the dev box, and gets the dev-box installers and their pins at the session's start.
+- A named-profile session in a `devbox` store with a `[Skill file: …]` header under the dev box's home ran in a pod that mounts that home.
+  That pod's Oh My Pi loaded the dev box's skills, so the session gets the dev-box context too: the installers, the pins, the checkout rule and the pool rules.
+- Any other named-profile session in a `devbox` store ran in a session pod, and gets what the pod's image links into its profile (below).
+- A `legion`-profile session in a Legion store ran in a Legion pod, and gets its worker image's packages and its deployment's role setup.
+- Any other named-profile session in a Legion store gets its session repository's project skills, not Legion role plugins.
+
+Oh My Pi prints a `[Skill file: <path>]` header only for a skill it loaded.
+So in every context each such header places its unit at the copy its path resolves to (the prefix table, else `attribute.ts`'s rules), as direct proof.
+A unit the context installs already is not added again.
+A whole read of a file by its path places a unit only in a dev-box context, in a Legion pod's `legion` profile, or for a session whose profile is not known, since in a pod its links decide which units it ships.
+
+Set `devboxHome` in the private configuration to the dev box's home directory, an absolute path such as `/home/dev`.
+A header is under that home by whole path segments: `/home/dev2/…` is not under `/home/dev`.
+A read by path decides no context.
+Without `devboxHome`, every named-profile session in a `devbox` store gets the session-pod context.
+The evidence item `a pod that mounts the dev box's home, profile <name>` says how many headers are under that home and names the first with its message index.
+A session with headers both under that home and elsewhere gets the dev-box context, and the units its other headers place, and the item `skill files from the dev box's home and the pod's own paths, profile <name>` names one header of each kind with its message index.
+
+For a session-pod session, the builder reads the session-pod image pin at the
 root's prompt build. It reads the Dockerfile of the pinned image's build, even if the pin
 moved back to an older image.
 It confirms the base that Dockerfile's final stage names from the images: the base's `rootfs.diff_ids` must be the first entries of the pinned image's, since a build can pass another base than the Dockerfile's `ARG` default, and diff ids, unlike the manifests' layer digests, do not change where the build compressed a base layer again.
@@ -860,8 +881,7 @@ A pinned image the runner cannot read, or one whose diff ids do not start with t
 It uses the base worker's OCI revision or the commit recorded
 with the pin. It reads the staged skills at that commit for packages the image links into
 the profile. It leaves out a case if the evidence cannot identify the image or its commit.
-A separate profile with no known plugin links or explicit extensions gets project skills, not
-Legion role plugins. The evidence states where the builder inferred what the profile loaded.
+The evidence states where the builder inferred what the profile loaded.
 
 Set `sessionPod` in the private configuration to enable the image lookup. `repository` names
 the deployment repository. `pinFile` and `pinKey` locate its image pin, and `dockerfile` names
