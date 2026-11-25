@@ -197,6 +197,10 @@ function relayCarries(subject: string): boolean {
 let installedFetch: typeof globalThis.fetch = globalThis.fetch;
 /** The real fetch, as this file found it: what a row restores and what the live stack uses. */
 const nativeFetch: typeof globalThis.fetch = installedFetch;
+const nativeFetchDescriptor = Object.getOwnPropertyDescriptor(globalThis, "fetch");
+if (nativeFetchDescriptor === undefined) {
+  throw new Error("the fetch recording fixture needs an own global fetch property to restore");
+}
 /** How deep the calls of `recordingFetch` are nested in the current call's async context. */
 const fetchDepth = new AsyncLocalStorage<number>();
 /** A row's fetch may hand a request on through `globalThis.fetch` this many times at most. */
@@ -230,6 +234,9 @@ Object.defineProperty(globalThis, "fetch", {
     if (next !== recordingFetch) installedFetch = next;
   },
 });
+// A later file must not capture this wrapper as its native fetch: assigning the wrapper back
+// through its own setter deliberately leaves the last row's stand-in installed.
+afterAll(() => Object.defineProperty(globalThis, "fetch", nativeFetchDescriptor));
 
 /**
  * The row a session's own work runs for. `bootDirectSession` starts its session inside this
