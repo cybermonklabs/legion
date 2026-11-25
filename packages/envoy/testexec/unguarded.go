@@ -44,10 +44,10 @@ import (
 // os.OpenFile, os.Create, os.CreateTemp or os.Chmod as a function value, whose file and mode it
 // cannot follow, and a dot import of os, whose calls it cannot tell from the file's own functions.
 // The one place left out is programfile.Write itself: the function Write of the package
-// WriterPackage, in a file that is no test file; every other function of that package is read,
-// and so is a package of that name at any other import path. A directory below root that holds a
-// go.mod of its own is another module, which that module's check reads, and node_modules, vendor,
-// testdata and dot directories are not Go source of the module.
+// github.com/sjawhar/envoy/programfile, in a file that is no test file; every other function of
+// that package is read, and so is a package of that name at any other import path. A directory
+// below root that holds a go.mod of its own is another module, which that module's check reads,
+// and node_modules, vendor, testdata and dot directories are not Go source of the module.
 //
 // Unguarded fails, naming root, where a check of root would name no write and pass while it read
 // nothing, or read only part of its module: root holds no go.mod, as the parent of a module's
@@ -123,7 +123,7 @@ func Unguarded(root string) ([]string, error) {
 		if relative != "." {
 			importPath += "/" + filepath.ToSlash(relative)
 		}
-		found, err := unguardedInPackage(root, importPath == WriterPackage, paths)
+		found, err := unguardedInPackage(root, importPath == writerPackage, paths)
 		if err != nil {
 			return nil, err
 		}
@@ -133,9 +133,9 @@ func Unguarded(root string) ([]string, error) {
 	return offences, nil
 }
 
-// WriterPackage is the import path of the one package whose Write Unguarded leaves out: the writer
+// writerPackage is the import path of the one package whose Write Unguarded leaves out: the writer
 // every other place calls.
-const WriterPackage = "github.com/sjawhar/envoy/programfile"
+const writerPackage = "github.com/sjawhar/envoy/programfile"
 
 // modulePath is the module path the go.mod at path declares. Its error says what is wrong: no
 // go.mod is at path, the go.mod there cannot be read, or it declares no module.
@@ -160,7 +160,7 @@ func modulePath(path string) (string, error) {
 }
 
 // unguardedInPackage is Unguarded for the Go files of one directory. writer says the directory is
-// WriterPackage's, whose function Write it leaves out.
+// writerPackage's, whose function Write it leaves out.
 func unguardedInPackage(root string, writer bool, paths []string) ([]string, error) {
 	files := token.NewFileSet()
 	parsed := map[string]*ast.File{}
