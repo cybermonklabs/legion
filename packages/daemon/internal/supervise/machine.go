@@ -1069,8 +1069,9 @@ type Deps struct {
 	// Registered is told of every registration the claim persisted, a first one (register) and the
 	// recorded session registering again (reregister), with the claim as written: the daemon's record
 	// of the conversations its agents have had (agent_conversations), which no close, suspension or
-	// retirement takes back. It is called while the machine decides, so it must not wait on anything
-	// slower than a store write. nil tells no one.
+	// retirement takes back. It is called while the machine decides, so its context ends at the
+	// claim-write bound (Machine.bounded), as every store write of a decision does: it is called once,
+	// and what it could not write by then is the next boot's backfill to record. nil tells no one.
 	Registered func(ctx context.Context, c Claim)
 	// IssueInTurn names a claim of issue other than except whose agent is in a turn now, or is
 	// about to be, and reports whether there is one. The roles of an issue work one jj workspace,
@@ -5035,11 +5036,17 @@ func (m *Machine) persist(ctx context.Context) error {
 	return m.owes(method, m.putClaim(ctx))
 }
 
-// registered tells Deps.Registered of the registration persist just wrote.
+// registered tells Deps.Registered of the registration persist just wrote, under the claim-write
+// bound (bounded), so a database that has stopped answering does not hold the machine's lock for
+// the length of the outage. It is one call and no retry: Deps.Registered answers nothing, logs a
+// write it could not make, and the next boot's backfill records the conversation.
 func (m *Machine) registered(ctx context.Context) {
-	if m.deps.Registered != nil {
-		m.deps.Registered(ctx, StoredClaim(m.claim))
+	if m.deps.Registered == nil {
+		return
 	}
+	writing, cancel := m.bounded(ctx)
+	defer cancel()
+	m.deps.Registered(writing, StoredClaim(m.claim))
 }
 
 // putStep writes the claim's step columns and nothing else (Store.PutClaimStep): what the
