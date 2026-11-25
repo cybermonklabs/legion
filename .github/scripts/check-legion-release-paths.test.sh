@@ -489,7 +489,7 @@ root=$(fixture no-legion-key)
 printf '{\n  "envoy": ["amd64"]\n}\n' > "$root/.github/go-release-targets.json"
 run_check "$root"
 check "exits 1 with no legion list" "$(is "$status" 1)"
-check "says it could not read the targets" "$(contains "$out" 'could not read the legion targets of .github/go-release-targets.json (release-build-legion.sh targets)')"
+check "says it could not read the targets" "$(contains "$out" 'could not read the legion targets of .github/go-release-targets.json (release-push.sh legion-targets)')"
 
 root=$(fixture no-target-list)
 rm "$root/.github/go-release-targets.json"

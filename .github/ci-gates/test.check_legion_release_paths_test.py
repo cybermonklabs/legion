@@ -4,8 +4,8 @@ GATE = harness("check_legion_release_paths_test", "Test the legion release path 
     (f"{SCRIPTS}/check-legion-release-paths.sh",
      "the script under test, symlinked into every fixture (check-legion-release-paths.test.sh's fixture function)"),
     (f"{SCRIPTS}/release-push.sh",
-     "symlinked into every fixture of both harnesses: the check runs its version-paths, and the build script's "
-     "targets its legion-targets"),
+     "symlinked into every fixture of both harnesses: the check runs its version-paths and legion-targets, and the "
+     "build script its legion-targets"),
     (f"{SCRIPTS}/gh-read.sh", "release-push.sh sources it, so both harnesses reach it through the copy they "
                               "symlink into each fixture"),
     (f"{SCRIPTS}/release-bump.sh", "release-push.sh runs it for `version`, which the check's version-paths mode "

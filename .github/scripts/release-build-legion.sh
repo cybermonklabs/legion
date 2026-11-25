@@ -3,12 +3,12 @@
 # each holding that target's static binary and its THIRD_PARTY_NOTICES, packed into
 # assets/legion-<os>-<arch>.tar.gz for the publish job to upload.
 #
-# This script is where the release says which targets legion is built for and with which
-# environment and command. Its modes answer those questions from the same functions its build
-# runs, so a reader asks it rather than keeping a copy:
+# This script is where the release says with which environment and command legion is built for a
+# target. Its modes answer those questions from the same functions its build runs, so a reader
+# asks it rather than keeping a copy. Which targets it builds is release-push.sh legion-targets,
+# beside this script, which the build runs and a reader runs itself:
 #
 #   .github/scripts/release-build-legion.sh
-#   .github/scripts/release-build-legion.sh targets
 #   .github/scripts/release-build-legion.sh list <os>/<arch> <go list flag>...
 #   .github/scripts/release-build-legion.sh env <os>/<arch> <go env argument>...
 #   .github/scripts/release-build-legion.sh modules <os>/<arch>
@@ -20,8 +20,6 @@
 # and assets/ of the checkout, and stops, building nothing, when release-push.sh legion-targets
 # refuses the list.
 #
-# targets: the legion targets, one <os>/<arch> a line, the list the build loops over, a line at a
-# time: release-push.sh legion-targets, beside this script.
 # list: `go list <go list flag>... ./cmd/legion` in packages/daemon, with the environment the build
 # gives <os>/<arch>: what that target's binary is built from.
 # env: `go env <go env argument>...` in packages/daemon with that environment, such as GOWORK, the
@@ -30,21 +28,15 @@
 # in workspace mode each module the go.work uses, whose require lines all feed the one version
 # selection the binary is built with, whether or not a package of it is linked.
 # The modes read none of the build's five variables and write nothing. A mode the script does not
-# know, `targets` with an argument, `list`, `env` or `modules` without a target, and `modules` with
-# more than its target exit 2 with the usage.
+# know, `list`, `env` or `modules` without a target, and `modules` with more than its target exit
+# 2 with the usage.
 #
 # Run from the repository root.
 # CI runs the build in release.yaml's legion_build job, at the step "Build legion", and
 # .github/scripts/check-legion-release-paths.sh runs its modes in ci.yaml's lint job.
 set -euo pipefail
 
-usage='usage: release-build-legion.sh [targets | list <os>/<arch> <go list flag>... | env <os>/<arch> <go env argument>... | modules <os>/<arch>]'
-
-# targets: print the legion targets, one a line; release-push.sh's failure is the function's, so
-# the build's `list=$(targets)` stops on a list it refuses.
-targets() {
-  "$(dirname -- "${BASH_SOURCE[0]}")/release-push.sh" legion-targets
-}
+usage='usage: release-build-legion.sh [list <os>/<arch> <go list flag>... | env <os>/<arch> <go env argument>... | modules <os>/<arch>]'
 
 # for_target <os>/<arch> <command>...: run <command> with the environment the build gives that
 # target: no cgo, so the binary is static, and the target's GOOS and GOARCH.
@@ -57,7 +49,8 @@ for_target() {
 build() {
   local list target dir
   local -a each
-  list=$(targets)
+  # release-push.sh's failure is the assignment's, so the build stops on a list it refuses.
+  list=$("$(dirname -- "${BASH_SOURCE[0]}")/release-push.sh" legion-targets)
   mkdir -p out assets
   mapfile -t each <<<"$list"
   for target in "${each[@]}"; do
@@ -82,10 +75,6 @@ if [ $# -eq 0 ]; then
   exit 0
 fi
 case $1 in
-  targets)
-    [ $# -eq 1 ] || refuse "targets takes no argument"
-    targets
-    ;;
   list | env | modules)
     [ $# -ge 2 ] || refuse "$1 needs a target"
     mode=$1 target=$2

@@ -7,8 +7,7 @@
 GATE = gate("go_notices", "lint", step=RELEASE_PATHS_STEP, runs=legion_release_paths_runs(), reads=reads(
     (RELEASE_PATHS_CHECK, at("lint", RELEASE_PATHS_STEP)),
     (RELEASE_BUILD_LEGION, f"{RELEASE_PATHS_CHECK} runs its modes"),
-    (f"{SCRIPTS}/release-push.sh", f"{RELEASE_PATHS_CHECK} runs its version-paths, and {RELEASE_BUILD_LEGION}'s targets "
-                                   "its legion-targets"),
+    (f"{SCRIPTS}/release-push.sh", f"{RELEASE_PATHS_CHECK} runs its version-paths and legion-targets"),
     (".github/workflows/release.yaml", f"{RELEASE_PATHS_CHECK} reads its LEGION_VERSION_ARGS"),
     (GO_TARGETS, f"{SCRIPTS}/release-push.sh's legion-targets: jq reads it"),
 ))

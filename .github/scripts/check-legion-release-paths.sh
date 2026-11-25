@@ -32,9 +32,9 @@
 #   * Which files those paths cover: git, which reads them as pathspecs when release-bump.sh runs
 #     `git log ... -- <paths>`. `git ls-files -- <paths>` at the root lists the files they cover,
 #     and `git ls-files` the files git tracks.
-#   * Which targets legion is built for, with which environment and command:
-#     release-build-legion.sh, whose modes run what its build runs; its `targets` is
-#     `release-push.sh legion-targets`.
+#   * Which targets legion is built for: `release-push.sh legion-targets`, which the build runs.
+#   * With which environment and command: release-build-legion.sh, whose modes run what its build
+#     runs.
 #   * Which files a target's binary is built from: go. `go list -deps -f` over ./cmd/legion, run
 #     through release-build-legion.sh list, names for each package the files it compiles or
 #     embeds (GoFiles, CgoFiles, CFiles, CXXFiles, MFiles, HFiles, FFiles, SFiles, SwigFiles,
@@ -50,7 +50,7 @@
 #
 # It fails naming each package directory of this repository with a required file the paths do
 # not cover, and each module or workspace file the paths do not cover. It fails, too, when
-# release-build-legion.sh targets refuses the legion targets, when go list or go env fails for a
+# release-push.sh legion-targets refuses the legion targets, when go list or go env fails for a
 # target, when the go.work the build reads or a module it uses is outside
 # the repository, when release.yaml has no LEGION_VERSION_ARGS or its step does not read the list
 # as this script does (above), when release-push.sh refuses its words, when git cannot list the
@@ -73,8 +73,8 @@ trap 'rm -rf "$work"' EXIT
 release=.github/workflows/release.yaml
 
 # The targets the release builds legion for, one <os>/<arch> a line.
-if ! .github/scripts/release-build-legion.sh targets >"$work/targets" 2>"$work/errors"; then
-  echo "::error file=.github/go-release-targets.json::could not read the legion targets of .github/go-release-targets.json (release-build-legion.sh targets), so the packages the legion binary links are unknown:" >&2
+if ! .github/scripts/release-push.sh legion-targets >"$work/targets" 2>"$work/errors"; then
+  echo "::error file=.github/go-release-targets.json::could not read the legion targets of .github/go-release-targets.json (release-push.sh legion-targets), so the packages the legion binary links are unknown:" >&2
   cat "$work/errors" >&2
   exit 1
 fi

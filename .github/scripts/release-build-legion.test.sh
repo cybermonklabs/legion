@@ -4,9 +4,9 @@
 # target's static binary, built with the target's CGO_ENABLED=0, GOOS and GOARCH, and the
 # THIRD_PARTY_NOTICES the notices script writes under the same environment, and it stops, packing
 # nothing, when release-push.sh legion-targets refuses the list. Its modes, which
-# check-legion-release-paths.sh asks: `targets`, release-push.sh legion-targets; `list`, go list
-# over ./cmd/legion in packages/daemon with a target's environment; `env`, go env with that
-# environment; and `modules`, the go.mod of each main module.
+# check-legion-release-paths.sh asks: `list`, go list over ./cmd/legion in packages/daemon with a
+# target's environment; `env`, go env with that environment; and `modules`, the go.mod of each
+# main module.
 # The modes read none of the build's variables, and a mode it does not know, one without its
 # target, or one given more than it takes, is refused.
 #
@@ -125,33 +125,6 @@ check "exits non-zero" "$([ "$status" -ne 0 ] && echo true || echo false)"
 check "names the target" "$(contains "$out" 'release-push.sh legion-targets: the legion target "" is not <os>/<arch>')"
 check "packs no archive" "$(is "$(find "$root/assets" -type f 2>/dev/null | wc -l)" 0)"
 
-echo "case: targets prints the legion targets, one a line"
-root=$(fixture targets)
-run_mode "$root" targets
-check "exits 0, saying nothing on stderr" "$(is "$status|$err" '0|')"
-check "prints both targets in the list's order" "$(is "$out" $'linux/amd64\ndarwin/arm64')"
-
-echo "case: targets with no legion list"
-root=$(fixture targets-none)
-printf '{\n  "envoy": ["amd64"]\n}\n' > "$root/.github/go-release-targets.json"
-run_mode "$root" targets
-check "exits non-zero printing nothing" "$(is "$([ "$status" -ne 0 ] && echo failed)|$out" 'failed|')"
-
-echo "case: targets with an empty legion list"
-root=$(fixture targets-empty)
-printf '{\n  "legion": [],\n  "envoy": ["amd64"]\n}\n' > "$root/.github/go-release-targets.json"
-run_mode "$root" targets
-check "exits non-zero printing nothing" "$(is "$([ "$status" -ne 0 ] && echo failed)|$out" 'failed|')"
-check "says so, as release-push.sh legion-targets does" \
-  "$(contains "$err" 'release-push.sh legion-targets: .github/go-release-targets.json lists no legion target')"
-
-echo "case: targets refuses a target that is not <os>/<arch>"
-root=$(fixture targets-padded)
-printf '{\n  "legion": ["linux/amd64", " darwin/arm64"],\n  "envoy": ["amd64"]\n}\n' > "$root/.github/go-release-targets.json"
-run_mode "$root" targets
-check "exits non-zero printing nothing" "$(is "$([ "$status" -ne 0 ] && echo failed)|$out" 'failed|')"
-check "names the target" "$(contains "$err" 'release-push.sh legion-targets: the legion target " darwin/arm64" is not <os>/<arch>')"
-
 echo "case: list runs go list over ./cmd/legion in packages/daemon with the target's environment"
 root=$(fixture list)
 printf '//go:build darwin\n\npackage main\n' > "$root/packages/daemon/cmd/legion/darwin.go"
@@ -202,8 +175,6 @@ run_mode "$root" list
 check "list without a target: exits 2 with the usage" "$(is "$status|$(contains "$err" 'usage: release-build-legion.sh ')" '2|true')"
 run_mode "$root" env
 check "env without a target: exits 2 with the usage" "$(is "$status|$(contains "$err" 'usage: release-build-legion.sh ')" '2|true')"
-run_mode "$root" targets extra
-check "targets with an argument: exits 2 with the usage" "$(is "$status|$(contains "$err" 'usage: release-build-legion.sh ')" '2|true')"
 check "builds nothing" "$(is "$([ -e "$root/out" ] || [ -e "$root/assets" ] && echo built || echo none)" none)"
 
 summary "release-build-legion.sh"
