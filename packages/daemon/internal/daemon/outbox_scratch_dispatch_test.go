@@ -411,6 +411,9 @@ type scratchDispatchOptions struct {
 	root string
 	// log, when set, receives the server's output as well.
 	log io.Writer
+	// env is settings of the server's own beyond the ones every scratch server gets, each
+	// NAME=value: a GitHub App and the stand-in of GitHub it calls, for a case that reads CI.
+	env []string
 }
 
 // scratchDispatch is a real Dispatch server a test builds and runs: its binary, its own database,
@@ -427,6 +430,7 @@ type scratchDispatch struct {
 	token    string
 	home     string
 	log      io.Writer
+	env      []string
 	port     int
 	base     string
 	command  *exec.Cmd
@@ -452,7 +456,7 @@ func startScratchDispatchOn(t *testing.T, options scratchDispatchOptions) *scrat
 		t: t, binary: testbuild.EnvoyBinary(t, "./cmd/dispatch"), dir: filepath.Join(root, "packages", "envoy"),
 		webDist: filepath.Join(root, "packages", "dispatch", "web", "dist"), database: database,
 		natsURL: options.natsURL, token: scratchAgentToken, home: filepath.Join(t.TempDir(), "home"),
-		log: options.log,
+		log: options.log, env: options.env,
 	}
 	if err := os.MkdirAll(d.home, 0o700); err != nil {
 		t.Fatalf("create scratch Dispatch home: %v", err)
@@ -513,6 +517,7 @@ func (d *scratchDispatch) start() {
 		"DISPATCH_WEB_DIST="+d.webDist,
 		"HOME="+d.home,
 	)
+	command.Env = append(command.Env, d.env...)
 	command.ExtraFiles = []*os.File{held}
 	output := &syncBuffer{}
 	command.Stdout = output
