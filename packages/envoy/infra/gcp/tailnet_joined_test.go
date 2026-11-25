@@ -42,8 +42,8 @@ type joinedHarness struct {
 // newJoinedHarness fails the test at once without jq, or the wc or sed its docker stub runs, on
 // this machine (tool): the script reads each state with jq, and without one of them reads none, so
 // it would ask again every 5 seconds forever, its sleep stubbed to return at once, until the
-// shell's deadline (gcp.ShellCommand). It fails it at once, too, with a jq the script cannot run
-// on (requireJQFailsOnEmptyInput).
+// shell's deadline (run). It fails it at once, too, with a jq the script cannot run on
+// (requireJQFailsOnEmptyInput).
 func newJoinedHarness(t *testing.T) *joinedHarness {
 	t.Helper()
 	for _, name := range []string{"jq", "wc", "sed"} {
@@ -75,17 +75,20 @@ func newJoinedHarness(t *testing.T) *joinedHarness {
 //
 // The probe passes only on a status the jq itself returned. A probe killed by a signal (its
 // context's deadline, an out-of-memory kill) also gives an *exec.ExitError, and taking that for
-// "it exits non-zero" would pass every jq on a machine too slow to run the probe.
+// "it exits non-zero" would pass every jq on a machine too slow to run the probe. The probe's one
+// bound is the test binary's deadline (gcp.UntilTheTestDeadline): a single `jq -e .` has no span
+// of its own to claim, and under a fixed one a machine that cannot run it in time would fail all
+// three rows and never pass them.
 func requireJQFailsOnEmptyInput(t *testing.T) {
 	t.Helper()
 	jq := tool(t, "jq")
-	probe := exec.CommandContext(gcp.ScriptContext(t), jq, "-e", ".")
+	probe := exec.CommandContext(gcp.UntilTheTestDeadline(t), jq, "-e", ".")
 	probe.Stdin = strings.NewReader("")
 	err := probe.Run()
 	var exit *exec.ExitError
 	switch {
 	case err == nil:
-		version, _ := exec.CommandContext(gcp.ScriptContext(t), jq, "--version").Output()
+		version, _ := exec.CommandContext(gcp.UntilTheTestDeadline(t), jq, "--version").Output()
 		t.Fatalf("this jq (%s) exits 0 on empty input; the tailnet-joined script needs the exit 4 that jq 1.7+ gives, as COS ships 1.8",
 			strings.TrimSpace(string(version)))
 	case !errors.As(err, &exit):
@@ -96,12 +99,14 @@ func requireJQFailsOnEmptyInput(t *testing.T) {
 }
 
 // run runs the script once, as one boot's tailnet-joined.service does, with docker answering the
-// states given, and returns what it printed and its error.
+// states given, and returns what it printed and its error. The script ends on its states, so its
+// shell's one bound is the test binary's deadline (gcp.ShellCommandUntilTheTestDeadline): one that
+// never reaches its end is killed there, and fails the test naming the shell's deadline.
 func (h *joinedHarness) run(t *testing.T, states ...string) (string, error) {
 	t.Helper()
 	require.NoError(t, os.WriteFile(filepath.Join(h.logs, "docker"), nil, 0o600))
 	require.NoError(t, os.RemoveAll(filepath.Join(h.logs, "sleeps")))
-	cmd := gcp.ShellCommand(t, h.script, h.marker, h.key)
+	cmd := gcp.ShellCommandUntilTheTestDeadline(t, h.script, h.marker, h.key)
 	cmd.Env = []string{
 		"PATH=" + h.bin + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"DOCKER_LOG=" + filepath.Join(h.logs, "docker"),

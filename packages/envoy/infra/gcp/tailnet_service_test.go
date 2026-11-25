@@ -284,10 +284,13 @@ const (
 // PID 1 it gets no default action. It exits 0 at once, mid-wait, rather than when its sleep ends.
 // The negative controls are the two ways it could fail: killed by the signal (no trap, which as PID
 // 1 would ignore it until the grace period's SIGKILL), or exiting only once its sleep returns (a
-// trap held behind a foreground sleep). Here the sleep lasts until the test ends it, so such an
-// advertiser never exits: its shell is killed at the test binary's deadline and the wait for its
-// exit fails by name. Nothing reads that sleep after the exit, since a correct trap may end and
-// reap it before exiting, and a check that it still runs would then fail a right advertiser.
+// trap held behind a foreground sleep). Here every sleep lasts until the test ends it, so such an
+// advertiser never exits, and the wait for its exit gives up naming it, 30 s before go test's
+// -timeout; so does an advertiser whose trap sleeps before it exits. The shell ends only with the
+// test (shellCommandUntilTheTestEnds), so that wait, and not a kill of the shell at the same
+// moment, is what ends a failing run. Nothing reads the sleep after the exit, since a correct trap
+// may end and reap it before exiting, and a check that it still runs would then fail a right
+// advertiser.
 func TestTailnetServiceAdvertiserExitsOnSIGTERM(t *testing.T) {
 	realSleep, err := exec.LookPath("sleep")
 	require.NoError(t, err, "sleep is not on PATH")
@@ -298,7 +301,7 @@ func TestTailnetServiceAdvertiserExitsOnSIGTERM(t *testing.T) {
 	sleep := "#!/bin/sh\nexec >/dev/null 2>&1\necho \"$(cat FAKE/clock) sleep $1\" >>FAKE/calls\necho $$ >FAKE/sleep-pid\nexec REALSLEEP 86400\n"
 	sleep = strings.NewReplacer("FAKE", r.fake, "REALSLEEP", realSleep).Replace(sleep)
 	require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(r.fake), "bin", "sleep"), []byte(sleep), 0o755))
-	cmd := shellCommandUntilTheTestDeadline(t, "-c", tailnetAdvertiserScript(r.host))
+	cmd := shellCommandUntilTheTestEnds(t, "-c", tailnetAdvertiserScript(r.host))
 	cmd.Env = r.env()
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
@@ -307,7 +310,16 @@ func TestTailnetServiceAdvertiserExitsOnSIGTERM(t *testing.T) {
 	// fails.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	require.NoError(t, cmd.Start())
-	t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) })
+	exited := make(chan struct{})
+	var waitErr error
+	go func() {
+		waitErr = cmd.Wait()
+		close(exited)
+	}()
+	t.Cleanup(func() {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		<-exited
+	})
 	// The shimmed sleep logs its line before it records its PID, so the wait is for the PID: the
 	// whole line, since a read while the shim writes it can see a prefix of the number. It is the
 	// advertiser's first wait, the fact the SIGTERM must land in.
@@ -321,8 +333,8 @@ func TestTailnetServiceAdvertiserExitsOnSIGTERM(t *testing.T) {
 		return string(recorded), err == nil && strings.HasSuffix(string(recorded), "\n")
 	})
 	require.NoError(t, cmd.Process.Signal(syscall.SIGTERM))
-	err = cmd.Wait()
-	require.NoError(t, err, "the advertiser was killed by SIGTERM rather than exiting on it:\n%s", out.String())
+	testwait.Receive(t, "the advertiser to exit on the SIGTERM sent while it waited", exited)
+	require.NoError(t, waitErr, "the advertiser was killed by SIGTERM rather than exiting on it:\n%s", out.String())
 }
 
 // The ready file appears only once the node's service-host capability lists the Service: every
