@@ -255,6 +255,20 @@ type Issue struct {
 	// Claim is the issue's claim Dispatch shows, nil for none; ClaimUnread is IssueSummary's.
 	Claim       *Claim
 	ClaimUnread bool
+	// Children is the issue's direct children as the issue read lists them (GET
+	// /api/v1/issues/{key}, its children), every status, icebox included, in Dispatch's order.
+	// It is empty for an issue with no child, and for an Issue made from a listing
+	// (IssueSummary.Issue), which carries none.
+	Children []IssueChild
+}
+
+// IssueChild is one direct child of an issue as Dispatch's issue read lists it (its
+// model.IssueChild): its key and its status, which is all the read of the children for the close
+// keeps, since record.ChildOpen reads the status alone. The JSON names are Dispatch's, so the
+// close's stored read (record.CheckRead.Answer) keeps a child as Dispatch answered it.
+type IssueChild struct {
+	Key    string `json:"key"`
+	Status string `json:"status"`
 }
 
 // Claim is the actor Dispatch records as an issue's holder: a session or a person.
@@ -270,6 +284,117 @@ func (c *Claim) Holder() string {
 	}
 	return c.Kind + ":" + c.ID
 }
+
+// IssueResults is Dispatch's computed state of each check of an issue's Verification document,
+// as GET /api/v1/issues/{key}/results answers it (its issueCheckResults): the issue, the
+// document's id, empty where the issue has none, and each check in document order. An issue with
+// no Verification document answers no check. The JSON names are Dispatch's own (its
+// model.CheckBlock, model.CheckBasis, model.CheckPassStands and model.PassStandsSubject), and the
+// close's stored read (record.CheckRead.Answer) keeps the answer in them, so a stored read decodes
+// as the read did. No mechanism shares a value between this module and Dispatch's, so the
+// spellings change together. A field the close does not read is not decoded.
+type IssueResults struct {
+	Issue                  string       `json:"issue"`
+	VerificationArtifactID string       `json:"verification_artifact_id"`
+	Checks                 []CheckBlock `json:"checks"`
+}
+
+// CheckBlock is one check of the Verification document as the results read answers it: its block
+// id, the document it is in, when it is proved (CheckBeforeMerge, CheckAfterMerge,
+// CheckDefaultBranch), the CI check that proves it where one does, what it reads and the deployed
+// program it reads, every commit and branch its results are compared with, why there are none
+// where none is, and whether a pass of it stands there. Subject is "" where the block names none,
+// which reads as CheckSubjectCode, and Program is "" where it names none. Its results are read by
+// the ids that decide its answer (PassStands.Results), so the list of every result is not kept.
+type CheckBlock struct {
+	BlockID         string       `json:"block_id"`
+	ArtifactID      string       `json:"artifact_id"`
+	When            string       `json:"when"`
+	CICheck         string       `json:"ci_check,omitempty"`
+	Subject         string       `json:"subject,omitempty"`
+	Program         string       `json:"program,omitempty"`
+	ComparedWith    []CheckBasis `json:"compared_with"`
+	ComparedNothing string       `json:"compared_nothing,omitempty"`
+	PassStands      PassStands   `json:"pass_stands"`
+}
+
+// CheckBasis is one commit or branch a check's results are compared with. Kind is BasisNamed (the
+// commit a read's ?at= names), BasisPullRequest (a pull request's head, Merged where that pull
+// request merged and the commit is its final head) or BasisBranch. Repo is the `owner/repo` of a
+// basis in a repository the issue links a pull request in, and "" for the issue's own repository.
+// MergeCommit is set on a branch basis where Dispatch holds the merge of the issue's work on that
+// branch: a result stands at the branch only at a commit whose history holds it. A branch basis
+// names none where no merge is asked of its commits, where no commit of it can count, and where
+// Dispatch cannot learn or order the merge now.
+type CheckBasis struct {
+	Kind        string `json:"kind"`
+	Repo        string `json:"repo,omitempty"`
+	Commit      string `json:"commit,omitempty"`
+	Branch      string `json:"branch,omitempty"`
+	MergeCommit string `json:"merge_commit,omitempty"`
+	PullRequest *int   `json:"pull_request,omitempty"`
+	Merged      bool   `json:"merged,omitempty"`
+}
+
+// PassStands is Dispatch's answer for one check: whether a pass of it stands (PassStandsYes,
+// PassStandsNo, PassStandsUnknown) and, for an answer that is not yes, why (the PassStandsReason
+// values). Results is the ids of the results that decide the answer, where the rule that answers
+// names them, newest first, and Commit is their commit, "" where Results is empty. A before_merge
+// check carries a subject for each head a pass must stand at: each open pull request's head, or,
+// where none is open, the newest merged one's final head.
+type PassStands struct {
+	Answer   string              `json:"answer"`
+	Reason   string              `json:"reason,omitempty"`
+	Subjects []PassStandsSubject `json:"subjects,omitempty"`
+	Results  []string            `json:"results,omitempty"`
+	Commit   string              `json:"commit,omitempty"`
+}
+
+// PassStandsSubject is one head a before_merge check's pass must stand at, its Basis, and the
+// check's state there: its answer, its reason where the answer is not yes, and the ids of the
+// results that decide it.
+type PassStandsSubject struct {
+	Basis   CheckBasis `json:"basis"`
+	Answer  string     `json:"answer"`
+	Reason  string     `json:"reason,omitempty"`
+	Results []string   `json:"results,omitempty"`
+}
+
+// The answers of PassStands and PassStandsSubject, as Dispatch spells them.
+const (
+	PassStandsYes     = "yes"
+	PassStandsNo      = "no"
+	PassStandsUnknown = "unknown"
+)
+
+// The reasons of PassStands and PassStandsSubject, as Dispatch spells them: the newest result that
+// counts is a fail; no result counts; a pass and a fail count at one commit; the newest result is
+// one Dispatch could not place; and a read Dispatch makes did not answer.
+const (
+	PassStandsReasonFail        = "fail"
+	PassStandsReasonNoResult    = "no_result"
+	PassStandsReasonPassAndFail = "pass_and_fail"
+	PassStandsReasonNotPlaced   = "not_placed"
+	PassStandsReasonReadFailed  = "read_failed"
+)
+
+// The kinds of CheckBasis, as Dispatch spells them.
+const (
+	BasisNamed       = "named"
+	BasisPullRequest = "pull_request"
+	BasisBranch      = "branch"
+)
+
+// The values of a check's `when`, and of its `subject`, as Dispatch's block schema spells them
+// (pmdoc/schema/blocks.json, block `check`).
+const (
+	CheckBeforeMerge       = "before_merge"
+	CheckAfterMerge        = "after_merge"
+	CheckDefaultBranch     = "default_branch"
+	CheckSubjectCode       = "code"
+	CheckSubjectProduction = "production"
+	CheckSubjectGraph      = "graph"
+)
 
 // Actor is who Dispatch names as having made a change: Kind `user` is a person, `session` an agent
 // session, and `system` Dispatch itself (its document settlement among them). Every Dispatch event
