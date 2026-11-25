@@ -959,20 +959,21 @@ func seededDrives(database *store.Store) []StoreDrive {
 // writeTheStore runs every drive of the store's writers: the ones over the history
 // seedSizedHistory wrote on database (seededDrives), graphstore's own writers run on their own
 // (graphstoreDrives), the lens catalogue's writer and the backfill's passes over a run and a
-// prevented_by (runAndCatalogueDrives), the boot step's ask passes (askBackfillDrives), the seed
-// (seedRunDrives), the backfill's other passes, the pointer's and the rebuild's writers and the
-// architecture import (internalDrives), and the drives of the sites whose packages import this
-// one, which this package's external test registers (ImportedDrives). It holds them to driving
-// every site the register of the store's writers lists (requireEveryListedSiteDriven). Each drive
-// is the writer itself and not a copy of what it writes. It answers how many tuples of each kind
-// each drive appended, read off graph_tuples by the sequences the drive's tuples took, and the
-// terms each drive says count each kind it appends; and it logs, for every listed site, what each
-// drive that runs it appended.
+// prevented_by (runAndCatalogueDrives), the boot step's ask passes (askBackfillDrives), the
+// priority store's and the workflow store's writers and the boot's move of both into the store
+// (storesDrives), the seed (seedRunDrives), the backfill's other passes, the pointer's and the
+// rebuild's writers and the architecture import (internalDrives), and the drives of the sites
+// whose packages import this one, which this package's external test registers (ImportedDrives).
+// It holds them to driving every site the register of the store's writers lists
+// (requireEveryListedSiteDriven). Each drive is the writer itself and not a copy of what it
+// writes. It answers how many tuples of each kind each drive appended, read off graph_tuples by
+// the sequences the drive's tuples took, and the terms each drive says count each kind it
+// appends; and it logs, for every listed site, what each drive that runs it appended.
 func writeTheStore(t *testing.T, database *store.Store) (map[writtenKind]int64, map[writtenKind][]string) {
 	t.Helper()
 	ctx := context.Background()
 	drives := slices.Concat(seededDrives(database), graphstoreDrives(t), runAndCatalogueDrives(t), askBackfillDrives(t),
-		seedRunDrives(t), internalDrives(t))
+		storesDrives(t), seedRunDrives(t), internalDrives(t))
 	if ImportedDrives == nil {
 		t.Errorf("no drive of the sites whose packages import graphcensus is registered: ImportedDrives, which this package's external test sets, is nil")
 	} else {

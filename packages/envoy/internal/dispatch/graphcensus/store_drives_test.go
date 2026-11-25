@@ -21,6 +21,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
+	"github.com/sjawhar/envoy/internal/dispatch/storesmove"
+	"github.com/sjawhar/envoy/internal/dispatch/storesmove/storesmovetest"
+	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
 
 // StoredKind is one kind of tuple a writer of the store appends: the kind of the node the tuple is
@@ -408,6 +411,183 @@ func askBackfillDrives(t *testing.T) []StoreDrive {
 			{graphstore.KindSession, graphstore.AttributeState}:      {graphstore.KindSession},
 		},
 	}}
+}
+
+// The drives of the priority store's and the workflow store's writers and of the boot's move of
+// both into the store (dispatch://INFRA-1098's R32).
+const (
+	priorityWriteDrive = "prioritystore/write.go#Write"
+	workflowWriteDrive = "workflowstore/write.go#putNode"
+	storesMoveDrive    = "storesmove/copy.go#writeBatch"
+)
+
+// storesDrives are those drives. Every tuple they append is a fact of a priority, a run or a plan,
+// or an issue's advances, which the term moved_stores counts (movedStoresCounted). The two writers
+// run over a database of their own in which STORES-1 and its node stand, each write in a
+// transaction of its own, as the routes run them: a priority's create, its rank move, STORES-1's
+// advances of it and the retraction of that, and the priority's delete (prioritystore's Create,
+// SetAttributes, Advance, Retract and SetState, each through Write); then the plan of a run of
+// STORES-1, a run of its second step that starts with every field a start states and ends failed,
+// returned to the first step, with its report, and the run's retro, ended and rated
+// (workflowstore's PutPlan and PutStep, each through putNode). The move runs over a database of
+// its own whose four old tables hold the release before's corpus (storesmovetest.Write): its copy
+// moves every tuple of both stores, and states the visibility and the state of each run and plan
+// it moves and the project of each whose row holds none (storesmove.Move, each batch through
+// writeBatch).
+func storesDrives(t *testing.T) []StoreDrive {
+	t.Helper()
+	database, moved := storetest.Open(t), storetest.Open(t)
+	ctx := context.Background()
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	daemon := model.Actor{Kind: "session", ID: "ses_daemon"}
+	inTransaction := func(t *testing.T, what string, write func(tx pgx.Tx) error) {
+		t.Helper()
+		if err := pgx.BeginFunc(ctx, database.Pool, write); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+	}
+	const (
+		project  = "STORES"
+		issue    = "STORES-1"
+		priority = "sizing-goal"
+		plan     = "5a1e0000-0000-4000-8000-0000000000a1"
+		run      = "5a1e0000-0000-4000-8000-0000000000b2"
+		retro    = "5a1e0000-0000-4000-8000-0000000000b3"
+		handoff  = "5a1e0000-0000-4000-8000-0000000000c1"
+	)
+	return []StoreDrive{{
+		Name: priorityWriteDrive, Sites: []string{priorityWriteDrive, "graphstore/write.go#Write"},
+		Database: database,
+		Ready: func(t *testing.T) {
+			t.Helper()
+			storesmovetest.Issue(t, database.Pool, project, issue, 1)
+			inTransaction(t, "write the node of "+issue, func(tx pgx.Tx) error {
+				return graphstore.Write(ctx, tx, []graphstore.Node{graphstore.IssueNode(issue, project, alice, time.Now().UTC())}, nil)
+			})
+		},
+		Drive: func(t *testing.T) {
+			at := time.Now().UTC()
+			inTransaction(t, "create the priority", func(tx pgx.Tx) error {
+				return prioritystore.Create(ctx, tx, priority, map[string]string{
+					prioritystore.AttributeTitle: "Size the store", prioritystore.AttributeDescription: "Its tuples a day.",
+					prioritystore.AttributeOwner: "alice", prioritystore.AttributeRank: "a0",
+				}, alice, at)
+			})
+			inTransaction(t, "move the priority's rank", func(tx pgx.Tx) error {
+				return prioritystore.SetAttributes(ctx, tx, priority, map[string]string{prioritystore.AttributeRank: "a1"}, alice, at)
+			})
+			inTransaction(t, "state that "+issue+" advances the priority", func(tx pgx.Tx) error {
+				return prioritystore.Advance(ctx, tx, issue, priority, alice, at)
+			})
+			inTransaction(t, "retract that "+issue+" advances the priority", func(tx pgx.Tx) error {
+				return prioritystore.Retract(ctx, tx, issue, priority, alice, at)
+			})
+			inTransaction(t, "delete the priority", func(tx pgx.Tx) error {
+				return prioritystore.SetState(ctx, tx, priority, prioritystore.StateGone, alice, at)
+			})
+		},
+		// The priority's visibility, its state, each value its create and its rank move state, and
+		// STORES-1's advances and its retraction.
+		Counts: movedStoresCounted(map[string][]string{
+			prioritystore.KindPriority: {prioritystore.AttributeVisibility, prioritystore.AttributeState, prioritystore.AttributeTitle,
+				prioritystore.AttributeDescription, prioritystore.AttributeOwner, prioritystore.AttributeRank},
+			graphstore.KindIssue: {prioritystore.RelationAdvances},
+		}),
+	}, {
+		Name: workflowWriteDrive, Sites: []string{workflowWriteDrive, "graphstore/write.go#Write"},
+		Database: database,
+		Drive: func(t *testing.T) {
+			at := time.Now().UTC()
+			inTransaction(t, "write the plan of the run of "+issue, func(tx pgx.Tx) error {
+				_, err := workflowstore.PutPlan(ctx, tx, workflowstore.PlanWrite{
+					ID: plan, Issue: issue, Project: new(project), Source: new(workflowstore.PlanSourceDefault), Generation: new(int64(1)),
+					Tasks: []workflowstore.PlanTask{{ID: "default", Steps: []string{"planner", "implementer"}}},
+				}, daemon, at)
+				return err
+			})
+			inTransaction(t, "start the run of the second step", func(tx pgx.Tx) error {
+				_, err := workflowstore.PutStep(ctx, tx, workflowstore.StepWrite{
+					ID: run, Issue: issue, Project: new(project), Generation: new(int64(1)), Task: new("default"),
+					Place: new(2), Kind: new(workflowstore.StepKindStep), Role: new("implementer"), Type: new("feature"),
+					Agent: new("claude"), Session: new("ses_implementer"), Model: new("a-model"), StartedAt: new(at),
+				}, daemon, at)
+				return err
+			})
+			inTransaction(t, "end the run failed, returned to the first step, with its report", func(tx pgx.Tx) error {
+				_, err := workflowstore.PutStep(ctx, tx, workflowstore.StepWrite{
+					ID: run, Issue: issue, Project: new(project), Result: new(workflowstore.ResultFailed), EndedAt: new(at),
+					ReturnedTo: new(1), Report: new(handoff),
+				}, daemon, at)
+				return err
+			})
+			inTransaction(t, "end the run's retro, rated", func(tx pgx.Tx) error {
+				_, err := workflowstore.PutStep(ctx, tx, workflowstore.StepWrite{
+					ID: retro, Issue: issue, Project: new(project), Generation: new(int64(1)), Task: new("default"),
+					Place: new(0), Kind: new(workflowstore.StepKindRetro), Role: new("implementer"),
+					Result: new(workflowstore.ResultPassed), EndedAt: new(at), Rating: &workflowstore.StepRating{Rating: 4, Reason: "It held."},
+				}, daemon, at)
+				return err
+			})
+		},
+		// Each run's and the plan's visibility, state and project, which the store states of the
+		// node putNode makes, the value of each field the writes set, the part_of of each to
+		// STORES-1, and the run's reports of its handoff.
+		Counts: movedStoresCounted(map[string][]string{
+			workflowstore.KindStep: {graphstore.AttributeVisibility, graphstore.AttributeState, workflowstore.AttributeProject,
+				workflowstore.AttributeIssue, workflowstore.AttributeGeneration, workflowstore.AttributeTask, workflowstore.AttributeStep,
+				workflowstore.AttributeKind, workflowstore.AttributeRole, workflowstore.AttributeType, workflowstore.AttributeAgent,
+				workflowstore.AttributeSession, workflowstore.AttributeModel, workflowstore.AttributeStartedAt,
+				workflowstore.AttributeEndedAt, workflowstore.AttributeResult, workflowstore.AttributeReturnedTo,
+				workflowstore.AttributeReport, workflowstore.AttributeRating, workflowstore.AttributeRatingReason,
+				workflowstore.RelationPartOf, workflowstore.RelationReports},
+			workflowstore.KindPlan: {graphstore.AttributeVisibility, graphstore.AttributeState, workflowstore.AttributeProject,
+				workflowstore.AttributeIssue, workflowstore.AttributeGeneration, workflowstore.AttributeSource,
+				workflowstore.AttributeArtifactID, workflowstore.AttributeVersion, workflowstore.AttributeTasks,
+				workflowstore.RelationPartOf},
+		}),
+	}, {
+		Name: storesMoveDrive, Sites: []string{storesMoveDrive},
+		Database: moved,
+		Ready:    func(t *testing.T) { storesmovetest.Write(t, moved.Pool) },
+		Drive: func(t *testing.T) {
+			result, err := storesmove.Move(ctx, moved.Pool.Config().ConnString(), storesmove.Options{})
+			if err != nil || !result.Moved || result.Copied == 0 {
+				t.Fatalf("move the release before's corpus into the store: %+v, %v; want it moved, its tuples copied", result, err)
+			}
+		},
+		// Every tuple of the corpus as the release before wrote it: each priority's values and
+		// state, the issues' advances, each run's and plan's values, part_of and the run's reports;
+		// and the visibility, the state and, for a row that holds none, the project the copy states
+		// of each run and plan.
+		Counts: movedStoresCounted(map[string][]string{
+			prioritystore.KindPriority: {prioritystore.AttributeVisibility, prioritystore.AttributeState, prioritystore.AttributeTitle,
+				prioritystore.AttributeDescription, prioritystore.AttributeOwner, prioritystore.AttributeRank},
+			graphstore.KindIssue: {prioritystore.RelationAdvances},
+			workflowstore.KindStep: {graphstore.AttributeVisibility, graphstore.AttributeState, workflowstore.AttributeProject,
+				workflowstore.AttributeIssue, workflowstore.AttributeGeneration, workflowstore.AttributeTask, workflowstore.AttributeStep,
+				workflowstore.AttributeKind, workflowstore.AttributeRole, workflowstore.AttributeModel, workflowstore.AttributeStartedAt,
+				workflowstore.AttributeEndedAt, workflowstore.AttributeResult, workflowstore.AttributeReport,
+				workflowstore.AttributeRating, workflowstore.AttributeRatingReason, workflowstore.RelationPartOf,
+				workflowstore.RelationReports},
+			workflowstore.KindPlan: {graphstore.AttributeVisibility, graphstore.AttributeState, workflowstore.AttributeProject,
+				workflowstore.AttributeIssue, workflowstore.AttributeGeneration, workflowstore.AttributeSource,
+				workflowstore.AttributeArtifactID, workflowstore.AttributeVersion, workflowstore.AttributeTasks,
+				workflowstore.RelationPartOf},
+		}),
+	}}
+}
+
+// movedStoresCounted is what a drive of the moved stores appends: each kind of tuple kinds names
+// out of each kind of node, every one a fact of a priority, a run or a plan, or an issue's
+// advances, which the term moved_stores counts.
+func movedStoresCounted(kinds map[string][]string) map[StoredKind][]string {
+	counted := map[StoredKind][]string{}
+	for from, tuples := range kinds {
+		for _, kind := range tuples {
+			counted[StoredKind{from, kind}] = []string{"moved_stores"}
+		}
+	}
+	return counted
 }
 
 // The seed's three sites, each a drive of its own over one run of the seed.
