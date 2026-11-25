@@ -1,0 +1,18 @@
+kind: Fixed
+body: |-
+    A claim failed on OpenAI's cyber-policy refusal is relaunched only by a person's or its
+    architect's decision. The plugin's report of a turn that ran no prompt of the daemon's (a phase
+    reminder, an Envoy message, a background job's result) now carries `code: "cyber_policy"` where
+    Oh My Pi's own classifier marks the refusal, and the daemon fails the claim on it whatever the
+    status, as it does a prompt's `cyber_policy` result; before, such a turn failed nothing, and the
+    claim's next prompt ended Oh My Pi's hold and sent the refused content to OpenAI again. The
+    controller keeper no longer retries a controller failed so, and no start of the daemon's own (a
+    role's next phase start, a child architect's next phase start, a re-admission, a production
+    check's look) relaunches such a claim: each finishes without acting and logs an error naming
+    `legion claims retry --claim <token> --fresh-session`, which, like the architect's retry of the
+    held phase, relaunches it, the controller included. One send can still go before the plugin's
+    report lands, since the report and the turn's end reach the daemon in no fixed order; that
+    prompt's own result then fails the claim. Daemon API contract 264.
+time: 2026-11-25T06:05:07Z
+custom:
+    Issue: cyber-policy-no-automatic-retry

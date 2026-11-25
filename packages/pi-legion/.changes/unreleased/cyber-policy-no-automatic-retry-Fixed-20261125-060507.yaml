@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  The plugin speaks daemon API contract 264. A refused turn that Oh My Pi's own classifier
+  (`isCyberPolicyRefusal`) marks as OpenAI's cyber-policy refusal is reported with
+  `code: "cyber_policy"`, so the daemon fails the claim on a turn that ran no prompt of its own
+  rather than sending the session another prompt that ends Oh My Pi's hold. A host that cannot
+  answer the classifier still has the turn reported, with no code, and the pane warns.
+time: 2026-11-25T06:05:07Z
+custom:
+    Issue: cyber-policy-no-automatic-retry

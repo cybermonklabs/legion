@@ -598,25 +598,43 @@ round ends at its bound whether or not a turn of that role succeeds.
 a client error, 400 to 499, that is none of 401, 403, 408 and 429. A malformed request is the case
 it exists for. The other is OpenAI's cyber-policy refusal of the session's content, which Oh My Pi
 gives the code `cyber_policy`, whatever status it came with (a gateway relays it as a 503, and a
-request Oh My Pi held after such a refusal carries none). Each copy of that content sent to OpenAI
-again adds a refusal to the organization's record, and a prompt from the daemon is input from
-outside the session, which ends Oh My Pi's own hold, so the daemon sends nothing again. The claim
-fails with `why` reading `a provider error that cannot clear ended this claim's turn: <cause>`,
-where the cause names that status, or `OpenAI's cyber_policy refusal of this session's content`,
-and the hold is the architect's to retry or escalate as any held phase is. The claim's own record
-carries that failure under the cause word `provider_error`, with the same sentence as its
-`detail`.
+request Oh My Pi held after such a refusal carries none). The claim fails with `why` reading
+`a provider error that cannot clear ended this claim's turn: <cause>`, where the cause names that
+status, or `OpenAI's cyber_policy refusal of this session's content`, and the hold is the
+architect's to retry or escalate as any held phase is. The claim's own record carries that
+failure under the cause word `provider_error` for the first, and `cyber_policy` for the second,
+with the same sentence as its `detail`; a plugin older than contract 264 is served
+`provider_error` for both.
+
+**A claim failed under `cyber_policy` is relaunched only by a person's or its architect's
+decision.** Each copy of the refused content sent to OpenAI again adds a refusal to the
+organization's record, and a prompt from the daemon is input from outside the session, which ends
+Oh My Pi's own hold. So no start the daemon makes by itself relaunches such a claim: the next phase
+start of a role that failed outside its phase, a child architect's next phase start, a
+re-admission and a production check's look each finish without acting and log
+`outbox start finishes without acting: its claim is held for OpenAI's cyber_policy refusal of its
+session's content`, and the worker-died notice says so in place of the start it would otherwise
+promise. The daemon's own controller is not retried by its keeper, which logs `controller: the
+daemon's controller is held for OpenAI's cyber_policy refusal of its session's content` once. The
+held phase's retry (the architect's `retry_or_escalate`, a person's todo on a held root) and the
+operator's `legion claims retry --claim <token>` relaunch it, the controller included;
+`--fresh-session` leaves the refused session behind. One send can still slip through: a turn that
+ran no prompt of the daemon's is reported over HTTP while its end reaches the daemon over the worker
+stream, in no fixed order, so a task the claim holds can go before the report lands. That prompt's
+own result then names `cyber_policy` and fails the claim, so the race costs one send at most.
 
 **A turn that no prompt of the daemon's ran** — a phase reminder the plugin starts itself, an Envoy
 message, a background job's result — has no prompt result, so the daemon judges it from the
-plugin's turn-outcome report, which carries the HTTP status the provider answered and marks the
-turn `unprompted`. The same rule holds: a status that cannot clear fails the claim at once, with
-`why` reading `a provider error that cannot clear ended a turn this claim's agent ran with no
-prompt of the daemon's: <cause>`, holds the issue under the cause word `provider_error`, and so
-ends the plugin's reminders. Any other refusal, or one whose report carries no status, fails
-nothing and logs `supervise: a turn that ran no prompt of the daemon's ended in a provider error`;
-the reminders keep their pace of one every 5 minutes, and the turn counts in the claim's run of
-provider-error turns below. Nothing is sent again for such a turn: it carried no task.
+plugin's turn-outcome report, which carries the HTTP status the provider answered, the code
+`cyber_policy` where Oh My Pi's own classifier marks the refusal as one, and marks the turn
+`unprompted`. The same rule holds: a status that cannot clear, or the code, fails the claim at
+once, with `why` reading `a provider error that cannot clear ended a turn this claim's agent ran
+with no prompt of the daemon's: <cause>`, holds the issue under the cause word `provider_error` or
+`cyber_policy`, and so ends the plugin's reminders. Any other refusal, or one whose report carries
+no status and no code, fails nothing and logs `supervise: a turn that ran no prompt of the daemon's
+ended in a provider error`; the reminders keep their pace of one every 5 minutes, and the turn
+counts in the claim's run of provider-error turns below. Nothing is sent again for such a turn: it
+carried no task.
 
 **After six turns of one claim in a row have ended in a provider error**, whether a prompt of the
 daemon's ran them or not, the project's controller is told once, as `provider-errors on <KEY>`,

@@ -2,7 +2,7 @@ kind: Fixed
 body: |-
     A turn that ends in OpenAI's cyber-policy refusal of the session's content (Oh My Pi's
     `prompt_result` code `cyber_policy`) holds the issue for its architect, whatever HTTP status
-    came with it, and the daemon sends the task to the session no more. Before, the worker stream
+    came with it, and the claim fails under the cause word `cyber_policy`. Before, the worker stream
     dropped the code, a refusal a gateway relayed as a 503 climbed the provider-error ladder with no
     attempt limit, and each send was input from outside the session, which ended Oh My Pi's own
     hold and sent the refused content to OpenAI again. A turn that ends at the session's cost cap
