@@ -84,8 +84,10 @@ export interface DispatchToolResult {
   readonly text: string;
   readonly details: Record<string, unknown>;
   /** A body the dispatch CLI writes to standard output as it came, byte for byte, in place of
-   *  `text`, with no line of its own beside it there: `dispatch api`'s answer to a 2xx whose body
-   *  is not JSON. `text` then says what it is, and `details` records it without its bytes. */
+   *  `text`, with no line of its own beside it there: `dispatch api`'s answer to a 2xx that is not
+   *  Dispatch's JSON: stored content (an attachment) whatever its type, a body that is not JSON,
+   *  or a bodiless 204's none. `text` then says what it is, and `details` records it without its
+   *  bytes. */
   readonly body?: Uint8Array;
   /** Pictures the model is shown after the text, in the order the text names them. */
   readonly images?: readonly ToolImage[];

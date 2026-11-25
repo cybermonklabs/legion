@@ -2489,9 +2489,10 @@ export class DispatchClient {
   }
 
   /** Send the caller's route once through `#send`, without `#noRoute`. Read non-2xx answers as
-   *  other commands do. For a 2xx, check for echoed credentials before returning anything. An
-   *  attachment is stored content, never JSON to parse. Without that disposition, parse typed
-   *  JSON where possible. Everything else returns the original bytes. */
+   *  other commands do. For a 2xx, check its bytes for echoed credentials before returning
+   *  anything. An attachment is stored content, never JSON to parse. Without that disposition,
+   *  decode and parse typed JSON where possible. Everything else returns the original bytes,
+   *  never decoded. */
   async #route(
     method: "GET" | DispatchApiMethod,
     path: string,
@@ -2507,7 +2508,6 @@ export class DispatchClient {
     if (!response.ok) return { payload: await this.#response(method, url, response) };
 
     const bytes = new Uint8Array(await response.arrayBuffer());
-    const text = new TextDecoder().decode(bytes);
     const credentials = new Set(this.#sent.with(this.token));
     // SentTokens keeps token values, not complete headers or request-specific proofs.
     for (const headers of [presented, stalePresentation]) {
@@ -2519,20 +2519,22 @@ export class DispatchClient {
         if (credential !== "") credentials.add(credential);
       }
     }
+    // Every credential is ASCII, so it is in the decoded text only where it is in the bytes.
     const raw = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     for (const credential of credentials) {
-      if (text.includes(credential) || raw.includes(credential)) {
-        throw new DispatchCredentialEchoError(response.status);
+      if (raw.includes(credential)) throw new DispatchCredentialEchoError(response.status);
+    }
+    if (!isAttachment(response) && isJson(response)) {
+      const text = new TextDecoder().decode(bytes);
+      const json = parsedJson(response, text);
+      if (json !== undefined) {
+        if (text.includes("\\") && jsonHoldsCredential(json.value, credentials)) {
+          throw new DispatchCredentialEchoError(response.status);
+        }
+        return { payload: this.#payloadOf(method, url, { response, text, json }) };
       }
     }
-    const json = isAttachment(response) ? undefined : parsedJson(response, text);
-    if (json === undefined) {
-      return { body: bytes, type: response.headers.get("Content-Type") ?? undefined };
-    }
-    if (text.includes("\\") && jsonHoldsCredential(json.value, credentials)) {
-      throw new DispatchCredentialEchoError(response.status);
-    }
-    return { payload: this.#payloadOf(method, url, { response, text, json }) };
+    return { body: bytes, type: response.headers.get("Content-Type") ?? undefined };
   }
 
   /**
