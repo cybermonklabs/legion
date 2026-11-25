@@ -18,9 +18,10 @@ package api
 // preloads pg_stat_statements (shared_preload_libraries) and whose role may create that extension.
 // MOVED_COST_LOOKUP_MERGED and MOVED_COST_ISSUE_LIST_PLAN_MERGED are the check's two inputs, each
 // yes or no as the role's line before the Jobs reads them on the base (movedCostSwitches).
-// MOVED_READ_COST_SCALE scales the corpus (movedCostScale), and MOVED_READ_COST_SEED_ONLY=1, for
+// MOVED_READ_COST_SCALE scales the corpus (movedCostScale), MOVED_READ_COST_SEED_ONLY=1, for
 // diagnosis, keeps the database the release before seeded and ends the run before any reading
-// (movedCostSeedOnly); the check's run leaves both unset.
+// (movedCostSeedOnly), and MOVED_READ_COST_READS, for diagnosis, names the reads to measure
+// (movedCostReadFilter); the check's run leaves all three unset.
 
 import (
 	"bufio"
@@ -72,6 +73,10 @@ const (
 	movedCostSeedOnlyVariable = "MOVED_READ_COST_SEED_ONLY"
 	movedCostKeptDatabaseFile = "moved-read-cost-kept-database"
 )
+
+// movedCostReadsVariable names, for diagnosis, the reads a run measures, comma-separated by their
+// names in movedCostReads, in place of all eight (movedCostReadFilter).
+const movedCostReadsVariable = "MOVED_READ_COST_READS"
 
 // movedCostMigrations are the three migrations a release before R32's move holds: the graph store,
 // and the two stores R32 moves into it. A base that lacks one is no such release.
@@ -862,6 +867,40 @@ func movedCostReads(corpus *movedCostCorpus) []movedCostRead {
 	}
 }
 
+// movedCostReadFilter reads MOVED_READ_COST_READS, a comma-separated list of the names of reads,
+// before anything is built or read. Unset, it answers reads whole, and every read is measured, as
+// a run of the check measures them. Set, it answers the reads it names, in the order of reads, and
+// says in one line that the run is not a reading of the check; where it names anything else it
+// fails, naming the reads it accepts.
+func movedCostReadFilter(t *testing.T, reads []movedCostRead) []movedCostRead {
+	t.Helper()
+	named := strings.TrimSpace(os.Getenv(movedCostReadsVariable))
+	if named == "" {
+		return reads
+	}
+	accepted := make([]string, len(reads))
+	for index, read := range reads {
+		accepted[index] = read.name
+	}
+	wanted := map[string]bool{}
+	for _, name := range strings.Split(named, ",") {
+		name = strings.TrimSpace(name)
+		if !slices.Contains(accepted, name) {
+			t.Fatalf("%s names %q, which is no read of the check: it takes %s, comma-separated, or is left unset",
+				movedCostReadsVariable, name, strings.Join(accepted, ", "))
+		}
+		wanted[name] = true
+	}
+	kept := make([]movedCostRead, 0, len(wanted))
+	for _, read := range reads {
+		if wanted[read.name] {
+			kept = append(kept, read)
+		}
+	}
+	t.Logf("c-moved-read-cost: %s=%s: the run measures only those reads, so it is no reading of the check", movedCostReadsVariable, named)
+	return kept
+}
+
 // holdMovedCostReads reads each read once on s and holds its answer to the corpus, and, where old
 // is given, to the count the old side answered, before the side is measured.
 func holdMovedCostReads(t *testing.T, s *readCostServer, side string, reads []movedCostRead, old map[string]int) map[string]int {
@@ -1422,8 +1461,13 @@ func movedCostParameters(statement movedCostStatement) string {
 // name to $TMPDIR/moved-read-cost-kept-database (keepMovedCostSeed); the run ends there, passing,
 // with no reading, and is no reading of the check.
 //
+// MOVED_READ_COST_READS, for diagnosis, names the reads to measure, by their names in
+// movedCostReads, and every plan and reading of the run is of those alone; the run is no reading
+// of the check (movedCostReadFilter).
+//
 // It fails, never skips, before it builds anything: where MOVED_READ_COST_SEED_ONLY is set to
-// anything but 1; unless MOVED_READ_COST_SEED_ONLY is 1, where MOVED_COST_LOOKUP_MERGED or
+// anything but 1; where MOVED_READ_COST_READS names anything but the name of a read; unless
+// MOVED_READ_COST_SEED_ONLY is 1, where MOVED_COST_LOOKUP_MERGED or
 // MOVED_COST_ISSUE_LIST_PLAN_MERGED is unset or holds anything but yes or no, naming it; where
 // STORES_BASE_SHA is unset, names no 40-character commit, or names a commit that lacks one of the
 // three migrations; and, unless MOVED_READ_COST_SEED_ONLY is 1, where pg_stat_statements cannot be
@@ -1449,7 +1493,7 @@ func TestNoMovedReadGetsSlower(t *testing.T) {
 				headCommit, movedCostBaseVariable, baseCommit)
 		}
 	}
-	reads := movedCostReads(corpus)
+	reads := movedCostReadFilter(t, movedCostReads(corpus))
 	databaseURL := readCostDatabase(t, false)
 	var statements *readCostStatements
 	if !seedOnly {
