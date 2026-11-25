@@ -35,6 +35,7 @@ import { buildReferencePath, parseNodeReference } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
 import { type Clamp, clampRedrawn, sameClamp, watchClamp } from "./clamp-measurer";
 import { DecisionActions } from "./DecisionActions";
+import { standingParts } from "./decisions-filter/entry-standing";
 import { useDocumentStage } from "./document-stage";
 import { ChildIssueFacts, ChildIssueTag } from "./IssueChildren";
 import { bringOnScreen } from "./identity-block";
@@ -53,13 +54,11 @@ import {
   type AuthorKind,
   BLOCK_TYPE_NAMES,
   CONTROL_LABELS,
-  DECISIONS_WORDS,
   GAP_LINES,
   GAP_WORDS,
   GLYPH_TOKENS,
   NODE_TYPE_NAMES,
   type NodeType,
-  nodeStateWord,
 } from "./page-words";
 import { isThreadContext, tagFilter } from "./presets";
 import { documentWord, RowText } from "./RowText";
@@ -720,9 +719,10 @@ export function RowMargin({
   const time = node.at === undefined ? "" : shortDay(node.at);
   const authored = author.kind !== "unknown";
   const agentText = useAgentText();
-  // A decision a person asked to change reads "Changed by" and their name where the model names
-  // them, in place of its state's own word (R2, R3).
-  const changer = node.state === "change_requested" ? node.changedBy : undefined;
+  // How the decision stands, with the person its state names: its keeper after "Kept by", and
+  // whoever asked to change it after "Changed by", in place of its state's own word
+  // (`standingParts`, R2, R3).
+  const standing = node.state === undefined ? undefined : standingParts(node.state, node);
   if (node.child !== undefined) {
     // A child issue's tag is its key, a link to its own page; its row names no author, no time
     // and no state, which its facts after its title say (ruling 5, the prototype's `.kr`).
@@ -807,7 +807,7 @@ export function RowMargin({
       </div>
       {node.state === undefined && node.unsure !== true ? null : (
         <div className={NODE_ROW_LAYOUT.marginState}>
-          {node.state === undefined ? null : (
+          {standing === undefined ? null : (
             <span
               className={`inline-flex items-center gap-1 ${context ? "" : pageStateText[stateTone(node)]}`}
             >
@@ -815,22 +815,18 @@ export function RowMargin({
                 <NodeGlyph className="size-3 shrink-0" token={stateGlyph} />
               )}
               <span data-node-state={node.state} {...pageChrome}>
-                {changer === undefined ? nodeStateWord(node.state) : DECISIONS_WORDS.changed_by}
+                {standing.word}
                 {/* "Kept by" names the person who kept it, and "Changed by" the person whose
                     Change it waits on, by the page's one name for them (R2, R3). */}
-                {node.state === "kept" && node.keptBy !== undefined ? (
+                {standing.person === undefined ? null : (
                   <>
                     {" "}
-                    <span data-kept-by="" {...authorText}>
-                      {agentText.author(node.keptBy)}
-                    </span>
-                  </>
-                ) : null}
-                {changer === undefined ? null : (
-                  <>
-                    {" "}
-                    <span data-changed-by="" {...authorText}>
-                      {agentText.author(changer)}
+                    <span
+                      data-changed-by={node.state === "kept" ? undefined : ""}
+                      data-kept-by={node.state === "kept" ? "" : undefined}
+                      {...authorText}
+                    >
+                      {agentText.author(standing.person)}
                     </span>
                   </>
                 )}

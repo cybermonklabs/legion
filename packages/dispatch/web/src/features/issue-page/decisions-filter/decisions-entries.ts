@@ -314,8 +314,6 @@ export function changesOf(
       author,
       body: comment.text,
       created_at: comment.made_at,
-      // A deleted Change asks nothing (`decisionNodeChanges`), so none held here is deleted.
-      deleted_at: null,
       edited_at: edited.get(comment.id) ?? null,
       id: comment.id,
     });

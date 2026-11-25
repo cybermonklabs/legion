@@ -1,12 +1,7 @@
-import type { IssueDetails } from "../../api/types";
+import type { Comment, IssueDetails } from "../../api/types";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { askOfNode, decisionsOfAnswer } from "./decision-nodes/decision-nodes";
-import {
-  type ChangeComment,
-  decisionNodeChanges,
-  deletedPostIds,
-  inReviewList,
-} from "./decision-review";
+import { decisionNodeChanges, deletedPostIds, inReviewList } from "./decision-review";
 import type { TreeAnswer } from "./tree-read/tree-read";
 
 /**
@@ -62,7 +57,7 @@ export function waitingOnReader(
   viewer: string | undefined,
   isCoverageStatement: (reference: string) => boolean,
   tree: TreeAnswer | undefined,
-  comments?: readonly Pick<ChangeComment, "deleted_at" | "id">[]
+  comments?: readonly Pick<Comment, "deleted_at" | "id">[]
 ): WaitingOnReader {
   const overtaken = overtakenAsks(issue, viewer === undefined ? undefined : tree);
   const open =

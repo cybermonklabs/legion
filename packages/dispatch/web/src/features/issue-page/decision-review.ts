@@ -41,12 +41,9 @@ import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
  */
 
 /** The fields of a Change the Decisions filter reads (`decisionsParts`), and when its author
- *  deleted it and last edited it, which the Decisions view draws a Change with
- *  (`decisions-parts.ts`'s `DecisionChange`). */
-export type ChangeComment = Pick<
-  Comment,
-  "author" | "body" | "created_at" | "deleted_at" | "edited_at" | "id"
->;
+ *  last edited it, which the Decisions view draws a Change with (`decisions-parts.ts`'s
+ *  `DecisionChange`). */
+export type ChangeComment = Pick<Comment, "author" | "body" | "created_at" | "edited_at" | "id">;
 
 /**
  * Whether `decision` is an entry of the review list (R35): an agent's decision that waits for a
@@ -266,7 +263,7 @@ const NO_DELETED: ReadonlySet<string> = new Set();
 /** The ids of the comments among `comments` that their author deleted (`postDeletion`): the
  *  Changes that ask nothing any more (`decisionNodeChanges`). */
 export function deletedPostIds(
-  comments: readonly Pick<ChangeComment, "deleted_at" | "id">[] | undefined
+  comments: readonly Pick<Comment, "deleted_at" | "id">[] | undefined
 ): ReadonlySet<string> {
   const ids = new Set<string>();
   for (const comment of comments ?? []) {
