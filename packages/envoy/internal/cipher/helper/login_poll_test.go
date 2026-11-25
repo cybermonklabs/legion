@@ -460,15 +460,16 @@ func TestALoginWhoseCodeLapsesBeforeItsFirstPollIsRefused(t *testing.T) {
 				// The rows' lines name the round trip the row says, not the time the runner took.
 				// Login's first reading (so nothing Login does before it counts) is dated slack
 				// early. That trades one window for another; it does not remove the real clock,
-				// since x/oauth2 still dates the code's end from its own two readings of it
-				// (deviceauth.go:73 and :162). A stall between those two readings shortens the
-				// code's end: with no slack, 2 ms of it made "less than 1 s" read "less than 0.998
-				// s"; with the slack, the rows fail only past about 250 ms (dating Login's reading
-				// 200 ms later passes, 300 ms fails). A pause between Login's first reading and
-				// x/oauth2's start lengthens it, and the lifetime rounds to whole seconds: with no
-				// slack, 400 ms passed; with the slack, the rows fail past about 250 ms (a sleep
-				// after that reading: 200 ms passes, 300 ms fails). Each window is microseconds of
-				// work, so neither stall is likely, but either still flips a row.
+				// since x/oauth2 still dates the code's end from its own two readings of it: one as
+				// the answer is parsed (DeviceAuthResponse.UnmarshalJSON), less the time since its
+				// request's start, read after (retrieveDeviceAuth). A stall between those two
+				// readings shortens the code's end, and the rows that name "less than 1 s" name less
+				// once it passes slack and the millisecond unpollableCode tolerates. A pause between
+				// Login's first reading and x/oauth2's start lengthens it, and the lifetime, rounded
+				// to whole seconds, gains one, failing the rows, once the pause passes half a second
+				// less slack. So a longer slack widens the first window by what it narrows the
+				// second. Each window is microseconds of work, so neither stall is likely, but
+				// either still flips a row.
 				const slack = 250 * time.Millisecond
 				var t0 time.Time
 				reads := 0
@@ -552,15 +553,16 @@ func TestALoginWhoseCodeLapsesBeforeItsFirstPollIsRefused(t *testing.T) {
 }
 
 // TestTheRefusalReadsTheBrokersWholeSecondsThoughAClockReadingIsLate: x/oauth2 dates a code's end
-// from its own reading of the clock as the answer is parsed (deviceauth.go:73), less the time since
-// its request's start, read later (:162); Login reads its own start before x/oauth2's. A pause
-// between x/oauth2's two readings, as a preemption or a collection gives, leaves the time Login
-// measures short of the broker's whole seconds, and a pause before x/oauth2's start leaves it
-// over them. Neither, a few hundred milliseconds long, changes the lifetime the line names, nor
-// which cause it names: the round trip, where the broker's numbers alone leave a poll. The time
-// an answer must beat, where it is under the whole seconds, follows what the code's end leaves
-// (the pause between the readings is part of the shortfall), and a shortfall of a millisecond or
-// less keeps the whole seconds: the last two rows hold that edge.
+// from its own reading of the clock as the answer is parsed (DeviceAuthResponse.UnmarshalJSON),
+// less the time since its request's start, read later (retrieveDeviceAuth); Login reads its own
+// start before x/oauth2's. A pause between x/oauth2's two readings, as a preemption or a
+// collection gives, leaves the time Login measures short of the broker's whole seconds, and a
+// pause before x/oauth2's start leaves it over them. Neither, a few hundred milliseconds long,
+// changes the lifetime the line names, nor which cause it names: the round trip, where the
+// broker's numbers alone leave a poll. The time an answer must beat, where it is under the whole
+// seconds, follows what the code's end leaves (the pause between the readings is part of the
+// shortfall), and a shortfall of a millisecond or less keeps the whole seconds: the last two rows
+// hold that edge.
 func TestTheRefusalReadsTheBrokersWholeSecondsThoughAClockReadingIsLate(t *testing.T) {
 	const s, pause = time.Second, 300 * time.Millisecond
 	for _, c := range []struct {
