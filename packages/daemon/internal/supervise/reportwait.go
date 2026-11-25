@@ -12,7 +12,8 @@ import (
 // turn ran whole, to run again in the next process. So what the machine holds for the take's turn
 // waits for that report: a held suspension (Machine.held), a stale-plugin relaunch
 // (Machine.staleRelaunch), a replacement of the live process — a stale-address relaunch, or a
-// replacement the wake pacing parked whose turn came (Machine.heldReplacement) — and a wake whose
+// replacement the wake pacing parked whose turn came (Machine.heldReplacement) — the operator's
+// stop of the claim (Machine.heldStop), and a wake whose
 // turn comes meanwhile, which is spent into the held suspension (wakeNow, Machine.heldLaunch). And
 // a take whose turn ended waits for that report with nothing held, too: no other bound reaches a
 // take whose turn started. This file is that one wait:
@@ -73,7 +74,8 @@ import (
 // Work that reaches the claim while no turn runs joins the wait in the second phase, and in the
 // third where work already waits there (reportHolds): a suspension is held (suspend,
 // holdForReport), a relaunch is left waiting (refreshPlugin, runWake), a replacement of the live
-// process is held (repoint, runWake, holdReplacement), and a wake whose turn comes
+// process is held (repoint, runWake, holdReplacement), the operator's stop is held (stop,
+// holdStop), and a wake whose turn comes
 // is spent into the held suspension (wakeNow). A take that awaits its turn with nothing waiting
 // behind it is no wait: a let-go takes it back, as rule one of T3 says, with no note where the
 // claim's connection showed every frame of its turns, since no turn of it ran, and as a cut turn
@@ -94,7 +96,7 @@ import (
 // daemon before it arms nothing either. A replacement held for the report over a view not whole is
 // bounded by the reconnect deadline instead, at which the task is taken back with the note of a cut
 // turn and the replacement runs, uncharged (replacementAtDeadline), and a replacement that no bound
-// would reach is not held (replacementHolds).
+// would reach is not held (boundedReportHolds).
 //
 // With nothing held the bound exists for a take whose counted turn ended and whose report naming
 // its number will never come, though its process lives: its text was dropped — Claude Code never
@@ -148,8 +150,9 @@ import (
 // (waitReport, waitsLine), at Info, with the task's number and what waits: "suspension", with the
 // hold's source and its deadline (the zero time for none); "relaunch", with the pass that asked for
 // it; "replacement", with what raised it ("repoint", with the process and the observation's
-// detail, or "wake", with the parked wake's kind: holdReplacement); or "wake", with the wake's kind
-// and the hold's source.
+// detail, or "wake", with the parked wake's kind: holdReplacement); "stop", the operator's, with
+// its bound and when that bound comes (holdStop); or "wake", with the wake's kind and the hold's
+// source.
 const reportWaitsLine = "supervise: the report of the take's turn is still to come; what is held for that turn waits for it"
 
 // putBackWaitsLine is the line of a put-back that leaves work waiting for the take (putBack), at
@@ -170,7 +173,8 @@ const finishWaitsLine = "supervise: the report of the take's turn came and the s
 // reportWaitsLine), the take's own turn again (waitTake, putBackWaitsLine), or the finish of the
 // report that came (waitFinish, finishWaitsLine). Its callers write it with what waits: a held
 // suspension (logSuspensionWaits), a held stale-plugin relaunch (relaunchWaitsForReport,
-// endNothingHeld) and a wake spent into the held suspension (wakeNow).
+// endNothingHeld), a held replacement (holdReplacement), the operator's held stop (holdStop) and a
+// wake spent into the held suspension (wakeNow).
 func (w waitPhase) waitsLine() string {
 	switch w {
 	case waitTake:
@@ -280,10 +284,11 @@ func (m *Machine) takeAwaitsTurn() bool {
 func (w waitPhase) reportToCome() bool { return w == waitReport || w == waitTake }
 
 // workHeld is whether anything waits on the machine for the claim's turn or its take's report: a
-// held suspension, a held stale-plugin relaunch, or a replacement held for the report
-// (heldReplacement: the held repoint, or a parked replacement whose wake's turn came).
+// held suspension, a held stale-plugin relaunch, a replacement held for the report
+// (heldReplacement: the held repoint, or a parked replacement whose wake's turn came), or the
+// operator's stop held for it (heldStop).
 func (m *Machine) workHeld() bool {
-	return m.held != nil || m.staleRelaunch != nil || m.heldReplacement != nil
+	return m.held != nil || m.staleRelaunch != nil || m.heldReplacement != nil || m.heldStop
 }
 
 // reportHolds is whether work that reaches the claim now joins the wait for the take's report
@@ -325,6 +330,11 @@ func (m *Machine) heldWaits() bool { return m.held != nil && m.reportHolds() }
 // interval (suspendHeld), the claim idle meanwhile, as a refused stop at a turn's end leaves it.
 // Where none waited — none is held, or one whose stop was refused before waits for no take and is
 // left to that retry — what the turn held runs as at any turn's end (afterTurn).
+//
+// The operator's stop held for the report (heldStop) runs before a held suspension that waited with
+// it, through afterTurn: it ends the claim for good, and its let-go drops the suspension with the
+// process (letGo). Run the other way, the suspension's let-go would drop the stop the route
+// answered 202 for, and the claim would stand suspended rather than stopped.
 func (m *Machine) settleThenAfterTurn(ctx context.Context, settle func() error) error {
 	heldWaited := m.heldWaits()
 	if err := settle(); err != nil {
@@ -333,7 +343,7 @@ func (m *Machine) settleThenAfterTurn(ctx context.Context, settle func() error) 
 	if (m.claim.State != StateReady && m.claim.State != StateIdle) || m.compacting != nil {
 		return nil
 	}
-	if heldWaited && m.held != nil {
+	if heldWaited && m.held != nil && !m.heldStop {
 		return m.suspendHeld(ctx)
 	}
 	return m.afterTurn(ctx)
@@ -440,8 +450,9 @@ func reportBoundOver(m *Machine, ctx context.Context, _ Event) error {
 }
 
 // reportMissed is the wait's one take-back: the report of the take's turn did not come by the
-// bound by names — the wait's own (reportBoundOver) or the held suspension's deadline
-// (suspendAtTimeout). So the task goes back under its number with the note of a cut turn, as for a
+// bound by names — the wait's own (reportBoundOver), the held suspension's deadline
+// (suspendAtTimeout), or the reconnect deadline over a view not whole (reportMissedAtDeadline). So
+// the task goes back under its number with the note of a cut turn, as for a
 // process that dies before its report (interrupted), before what waited runs: a take-back the
 // store refused stops nothing, and the caller tries it again at the probe interval. Where the
 // process stays, the next write of the value is the retake it is (Machine.rewrite); a let-go
@@ -456,5 +467,23 @@ func (m *Machine) reportMissed(ctx context.Context, by string) error {
 		return fmt.Errorf("take back the task of %s, whose report did not come: %w", m.claim.Token, err)
 	}
 	m.rewrite = valueRewrite{number: p.Number, cause: TaskValueRetake}
+	return nil
+}
+
+// reportMissedAtDeadline is the wait's take-back at the reconnect deadline, which is the bound of
+// work held for the report over a view not whole, where the wait's own bound does not run
+// (reportBounded): the held replacement's (replacementAtDeadline) and the held stop's
+// (stopAtDeadline). With the report still to come the task goes back with the note of a cut turn
+// (reportMissed) before what waited runs, as at the wait's own bound. A take-back the store refuses
+// keeps what waited held, and the deadline is tried again at the probe interval, as the deadline's
+// other refusals are.
+func (m *Machine) reportMissedAtDeadline(ctx context.Context) error {
+	if !m.reportWaitNow().reportToCome() {
+		return nil
+	}
+	if err := m.reportMissed(ctx, "the reconnect deadline"); err != nil {
+		m.arm(TimerRegistration, m.deps.Timeouts.Probe, "")
+		return err
+	}
 	return nil
 }

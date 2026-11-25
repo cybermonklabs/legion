@@ -577,7 +577,7 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		AnswerIssueRecord: {roots: typesOf(Issue{}), bodies: issues},
 		AnswerHealth:      {roots: typesOf(Health{}), bodies: []any{Health{Status: "ok", Project: "legion"}}},
 		// The register golden's own value (TestRegisterResponseGolden): a claim whose bucket holds
-		// a value, which writes every key of `task` (contract 240).
+		// a value, which writes every key of `task` (contract 274).
 		AnswerRegister: {roots: typesOf(claim.RegisterResponse{}), bodies: []any{claim.RegisterResponse{
 			ClaimToken:   "legion-legion-legion-208-architect",
 			Tree:         "LEGION-208",
@@ -653,9 +653,9 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 			Compacted: false, Reason: "Nothing to compact (session too small)",
 		}}},
 		// The turn outcome's golden own value (TestTurnOutcomeResponseGolden): the two keys this
-		// answer always writes, neither of them omitempty.
+		// answer always writes, neither of them omitempty, so `failed` is written false.
 		AnswerTurnOutcome: {roots: typesOf(claim.TurnOutcomeResponse{}), bodies: []any{claim.TurnOutcomeResponse{
-			RefusedRun: 3, Failed: true,
+			RefusedRun: 3,
 		}}},
 		// Richer than the golden, which releases one child that started nothing: the record
 		// describes the two lists a release fills and the keys of a held child.
@@ -727,15 +727,15 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		// The discard golden's own value (goldenIntakeDiscard, TestIntakeDiscardAnswerGolden).
 		AnswerIntakeDiscard: {roots: typesOf(IntakeDiscardResponse{}), bodies: []any{goldenIntakeDiscard}},
 		// Richer than the golden, which reads a bucket that holds no value: the record describes
-		// every key of the value a read answers (contract 240) and of the takes held behind the
-		// caller's turn (contract 252).
+		// every key of the value a read answers (contract 274) and of the takes held behind the
+		// caller's turn (contract 281).
 		AnswerTask: {roots: typesOf(claim.TaskResponse{}), bodies: []any{claim.TaskResponse{
 			Task:     &claim.TaskValue{Number: 4, Epoch: "2026-11-13T16:21:44.123456789Z", Revision: 12},
 			Finished: 3,
 			Holds:    []claim.HeldTake{{Role: claim.RoleTester, Task: 7}},
 		}}},
 		// The three goldens' own values (TestTakeResponseGolden), one for each outcome of a take,
-		// which between them carry every key of the answer (contract 240).
+		// which between them carry every key of the answer (contract 274).
 		AnswerTake: {roots: typesOf(claim.TakeResponse{}), bodies: []any{
 			claim.TakeResponse{Outcome: string(supervise.TakeOutcomeAccepted),
 				Text: "Implement LEGION-209 on its branch, then complete the phase with legion handoff_complete."},

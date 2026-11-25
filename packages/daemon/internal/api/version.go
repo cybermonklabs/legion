@@ -3516,7 +3516,143 @@ package api
 // lowest number above main's 220 that no other open pull request declares. Read main's own number
 // and every open pull request again at the next merge rather than from this line.)
 //
-// 240: INFRA-2811 -- a claim's task is a value its worker takes, not a prompt the daemon pushes.
+// 232: dispatch://INFRA-4508 -- `POST /legion/v1/claims/turn-outcome` takes two optional fields.
+// `httpStatus` is the HTTP status the provider refused the turn with, from 100 to 599, where the
+// producer's provider library gives one (Oh My Pi's `errorStatus` on the refused assistant
+// message, Claude Code's `api_error_status`); a number outside that range is taken as no status,
+// and the daemon logs a warning naming it rather than refusing the report. `unprompted: true`
+// says the turn ran no prompt the daemon sent: a phase reminder, an Envoy message, a background
+// job's result. The daemon judges such a turn from its report, as it judges a prompt's turn from
+// that prompt's result: a refusal whose status cannot clear (a 4xx other than 401, 403, 408 and
+// 429) fails the claim at once with cause `provider_error` and holds the issue, and the answer's
+// `failed` is then true; a refusal that can clear, or with no status, fails nothing and counts in
+// the claim's run of provider-error turns, whose sixth in a row tells the controller once. A
+// refused report without `unprompted` is judged by nothing, so the report of a turn a prompt ran is
+// never counted beside that prompt's result. A clean report, with `unprompted` or without, ends
+// that run when no later turn's report has reached the daemon before it. The daemon reads every
+// body strictly, so a report from this contract that carries either field is refused by a daemon
+// before 232; the boot gate refuses the mixed pair. (This entry took 239 at first, the lowest
+// number above main's 219 that no open pull request declared at a reading of the 132 open heads
+// that change this file, made between 2026-11-23T22:41:49Z and 22:44:42Z. The forward merge of
+// 2026-11-23 that brought in 7df64124 brought main's 220 (the entry above 228), and a reading of
+// the 133 open heads that change this file, at refs/pull/<n>/head between 2026-11-23T23:47:10Z and
+// 23:50:14Z, found each of 220 to 239 declared by another pull request (239 by #4592) and 240 by
+// none, so this entry moved to 240. The forward merge of 2026-11-24 that brought in e14345bf
+// brought main's 228 (INFRA-1575's entry above), and a reading of the 137 open heads that change
+// this file, between 2026-11-24T09:36:47Z and 09:39:37Z, found 240 declared by #3831 and 229 to
+// 231 declared by others, and 232 by none, so this entry moved to 232, the lowest number above
+// main's 228 that no other open pull request declares. Read main's own number and every open head
+// again at the next merge rather than from this line.)
+//
+// 246: each issue of `GET /legion/v1/state` (and the issue record, which is one issue of that
+// body) carries `podHold`, the standing hold of the issue's pod: why the
+// idle rule keeps that pod past the idle period. It is `{reason, firstAt, at, detail}`: `reason`
+// is the rule's own word for the hold (workflow.IdleHold's String, as the daemon's hold records
+// spell it), `firstAt` the first pass of the hold's streak, `at` its newest pass, and `detail`
+// what that word leaves out, cut to its first 200 characters and absent where the record holds
+// none. The daemon reads it from `pod_holds` in the state's own snapshot, one statement for the
+// whole project (store.StandingPodHoldsTx), and writes the key only for an issue whose pod a hold
+// stands on: a pod the rule has not held, one it released and one whose streak a later pass ended
+// carry none. A plugin below 246 reads each issue with a strict schema that names no `podHold`,
+// so a caller below 246 is served every issue without it (shaping.go's podHoldContract and
+// withoutPodHold, its row of stateNarrowings). The caller is placed as 193 places every caller of
+// the state: a plugin from 228 to 245 states its contract and is served 228's keys. No enumerated
+// field arrives: `reason` is a string a reader takes whole, so a hold a later rule adds is read
+// rather than refused. `packages/contracts/src/legion-api.ts` mirrors the key on its issue and
+// takes each of its four members as optional, since no plugin code reads them
+// (LEGION_ANSWER_READS).
+// (This entry took 221 at first, the lowest number above main's 205 that no open pull request
+// declared at a reading of every open pull request of cybermonklabs/legion that ended at
+// 2026-11-22T04:57Z. 220 to 222 had been named for three changes, #4930 among them, and 223 for
+// #4805, before each of them declared its number, so 221 was taken twice. This entry moved to 224,
+// the lowest number above 223 that no open pull request declares and that no change had been named
+// for. A reading of every open pull request that ended at 2026-11-22T06:08:16Z found 206 (#3712
+// and #4940), 207 (#3993 and #4432), 208 (#4175), 209 (#4049), 210 (#4661), 211 (#2230), 212
+// (#4030, #4392, #4540 and #4580), 213 (#4553), 214 (#4592), 215 (#4065 and #4596), 216 (#4173,
+// #4180, #4182, #4193, #4259 and #4932), 217 (#4273, #4590 and #4771), 218 (#3831), 219 (#4611),
+// 220 (#4930), 221 (this change at its first number) and 223 (#4805) declared, and none above 223.
+// The forward merge of 2026-11-24 that brought in e14345bf brought main's 228 (INFRA-1575's entry,
+// over 213, 217, 219 and 220). A reading of `const DaemonAPIVersion` at refs/pull/<n>/head for
+// each open pull request whose files touch this file, made between 2026-11-24T09:38:10Z and
+// 09:42:57Z, found 229 (#2230), 230 (#4580), 231 (#4540), 233 (#4173, #4180, #4182, #4193 and
+// #4932), 234 (#4065), 235 (#5204), 236 (#4984), 237 (#5168 and #5169), 238 (#5285), 239 (#4592),
+// 240 (#3831 and #5271), 241 (#4771 and #5307), 242 (#4596) and 243 (#5349) declared, and 244 had
+// been named for another change before it declared it, so this entry moved to 245, above every
+// number an open pull request declares or a change had been named for. A second reading, between
+// 2026-11-24T11:29:31Z and 11:32:10Z, found 245 declared by #5158 as well, with 244 (#3831 and
+// #5365), 243 (#5349) and 242 (#4596) below it, so this entry moved to 246, above every number an
+// open pull request declares.
+// The forward merge of 2026-11-24 that brought in 3dbaa2b2 brought main's 232 (INFRA-4508's
+// entry, right above this one), and a reading of the open heads that change this file, between
+// 2026-11-24T12:30:11Z and 12:32:24Z, found 246 declared by this change alone (245 by #5158,
+// 251 by #5307), so this entry kept 246. Read the base's own number and every open pull request
+// again at every forward merge rather than from this line.)
+//
+// 250: the admission waiting line is ordered by Dispatch priority first. `GET /legion/v1/state`
+// and `GET /legion/v1/issues/{key}/record` gain two keys: each issue the workflow records carries
+// `priority`, its own Dispatch priority as Dispatch sends it, a number from 0 for P0 to 3 for P3
+// or null for none; and each member's `waitingLine` carries `priority`, the priority that placed
+// it in the line (its own, else its tree root's), null for a member neither it nor its root has a
+// priority for, whose band stands after P3. The records of 250 hold `issues.*.priority` and
+// `issues.*.waitingLine.priority`, and no record below 250 does: a caller whose contract (the one
+// it states, else its pod's) is below 250 is served every issue without either key (the band of
+// shaping.go's stateNarrowings, `withoutPriority`). Two values change meaning at every contract
+// and move no shape: `waitingLine.partPlace` and `partLength` count within the member's priority
+// band and part rather than within the part across the whole line, and `admission.waiting` and
+// each member's `place` follow the new order, which no reader enumerates. (This entry took 221
+// when main declared 220, with no reading of the other open pull requests. A reading of `const
+// DaemonAPIVersion` at the head commit of each open pull request that changes this file or whose
+// file list GitHub cut short (138 of 500), made between 2026-11-24T09:14:34Z and 09:17:00Z, found
+// every number from 221 to 243 declared and nothing above, so this entry moved to 244. The
+// forward merge of 2026-11-24 that brought in e14345bfc8 brought main's 228 (#4590's entry
+// above). A second reading (137 of 498), made between 09:35:23Z and 09:40:15Z, found 221 to 227,
+// 229 to 231 and 233 to 243 declared and nothing above 243, so this entry kept 244. Then #3831
+// took 244, the numbers from 245 to 249 were given to other changes, and this entry moved to 250.
+// The forward merge of 2026-11-24 that brought in 3dbaa2b23a brought main's 232 (#5271's entry
+// above), below 250, so this entry kept 250. The forward merge of 2026-11-24 that brought in
+// 7e75126fae brought main's 246 (#4960's entry above), below 250, so this entry kept 250. Read
+// main's own number and every open pull request again at the next merge rather than from this
+// line.)
+//
+// 256: #5349 -- each claim view of `GET /legion/v1/state` and of `GET
+// /legion/v1/issues/{key}/record` gains two keys: `lastDeathAt` beside `lastDeathCause` and
+// `lastStartFailureAt` beside `lastStartFailure`, the time the daemon recorded that cause, in RFC
+// 3339. Each is absent when its cause is absent, and beside a cause an earlier release recorded,
+// which wrote no time, except after a rollback (the migration's header; `api.ClaimView`). The
+// claim keeps both in the store's `claims` table (`20261124073512_claim_cause_times`), so a
+// daemon restart keeps them, and each is set and cleared only together with its cause, so a
+// cause recorded again with the same text carries its new time (the rule
+// `supervise.Claim.LastDeathAt` states). The store writes each time with a digest of the cause it
+// dates, which no key serves, and reads the time back only beside that cause (the claim store's
+// causeTime). The records of 256
+// hold the two keys on every claim view, and no record below 256 does: a caller whose contract
+// (the one it states, else its pod's lowest) is below 256 is served every claim view without
+// them (the band of shaping.go's stateNarrowings, `withoutCauseTimes`), so a plugin from 250 to
+// 255 is served 250's keys. The operator's claim view
+// (`api.OperatorClaim`, which `legion claims list --json` prints) carries the same two keys; the
+// operator routes are not served down, since their reader is the `legion` built with this daemon.
+// No value of an enumerated field moves, and no request a plugin sends changes.
+// (This entry took 243 at first, above each number another open pull request declared. A reading
+// of `const DaemonAPIVersion` at the head of each of the 138 of the 513 open pull requests of this
+// repository that change version.go, made at 2026-11-24T07:23:50Z, found every number from 221
+// to 242 declared and nothing above 242, so 243 was the lowest number above main's 220 that no
+// open pull request declared at that reading. The forward merge of 2026-11-24 that brought in
+// e14345bfc8 brought main's 228 (#4590), below 243, so this entry kept 243, and the forward
+// merge of 2026-11-24 that brought in d27405712c brought main's 232 (#5271), below it too, so it
+// kept 243 again. The forward merge of 2026-11-24 that brought in 7e75126fae brought main's 246
+// (#4960), above 243. A reading of version.go at the head of each of the 473
+// open pull requests of this repository, between 2026-11-24T15:34:44Z and 15:48:04Z, found 55
+// that add an entry, and above main's 246 they declare 247 (#4580 and #5384), 250 (#5365), 251
+// (#5307), 252 (#4540), 254 (#4432) and 255 (#5164), and 247 to 249 had been named for other
+// changes, so this entry moved to 256, above every number an open pull request
+// declares or a change had been named for. From this entry the last number of answers.go's
+// SupportedContracts is `api.causeTimesContract`, after podHoldContract's 246. The forward merge
+// of 2026-11-24 that brought in 5df00e2f13 brought main's 250 (#5365, the entry above), below
+// 256, so this entry kept 256, and the list ends priorityContract, causeTimesContract. Read the
+// base's own number and every open pull request again at the next merge rather than from this
+// line.)
+//
+// 274: INFRA-2811 -- a claim's task is a value its worker takes, not a prompt the daemon pushes.
 // The daemon writes a claim's value, `{"task": <number>}` under the claim's token in the
 // `legion_tasks` bucket, which the listener relays to the session holding that role, and the
 // worker asks to take the number once its host is idle: `POST /legion/v1/claims/take`
@@ -3535,7 +3671,13 @@ package api
 // began the turn with it and the agent never took it — which puts that take back to await its own
 // turn also where the daemon has lost its count of the process's turns (a daemon restarted under
 // it, or a hello that does not say its backlog is whole); each is optional, and a report without
-// `held` is read as before. The worker shim's `hello2` carries `backlogWhole`, true where the
+// `held` is read as before. A plugin before this contract reports as 232 says, with `httpStatus`
+// and `unprompted`, and this daemon reads both: a status in `providerError` is read before
+// `httpStatus`, which is read where `providerError` names none, and a report marked `unprompted`
+// is read as one naming no task, whatever its `task` says, so its refusal is judged as the turn
+// that was not the take's that it is and it finishes nothing. A plugin at this contract sends
+// neither: the report of a turn that was not the take's names no task, and a refusal's status
+// rides in `providerError`. The worker shim's `hello2` carries `backlogWhole`, true where the
 // backlog the shim holds for a daemon that is not connected dropped no frame since its last
 // connection took it (shimwire.Hello2.BacklogWhole), and left out when false; a hello without it,
 // from a shim that dropped frames or one built before the member, is read as a backlog that may
@@ -3564,22 +3706,22 @@ package api
 // carry `worker_take_timeout_seconds` and `worker_turn_start_timeout_seconds`, keys of legion.yaml
 // that no reader types, which move no contract of their own (answers.go's typedSettings).
 // This daemon serves each of these down through the shaping 193 brought, to a caller whose header
-// states a contract below 240 or, stating none, whose pod's claims record one. The state is served
+// states a contract below 274 or, stating none, whose pod's claims record one. The state is served
 // without `unseenTaskValues` (the last row of shaping.go's stateNarrowings, withoutUnseenTaskValues,
 // which follows the pod's highest contract as every band does). `never_reconnected` is declared at
-// 240 in answers.go's failureCauses, beside the seven words recorded at 75, and the value strip
+// 274 in answers.go's failureCauses, beside the seven words recorded at 75, and the value strip
 // withoutNeverReconnected (a row of shaping.go's valueStrips, which follows the pod's lowest
 // contract) serves it as `never_registered` in `failure.cause` and `pendingCause`, since a plugin
-// from 75 up to 240 reads both through a strict enum and refuses the whole body for a word it does
+// from 75 up to 274 reads both through a strict enum and refuses the whole body for a word it does
 // not name; the word is rewritten rather than its key dropped, because a key gone would say the
 // claim's failure has no cause or that nothing failed its relaunching process, and
 // `never_registered` is the nearest cause such a reader knows. The registration's answer is served
 // without `task` and `finished` (shaping.go's withoutTaskReading, the registration's row of
 // shapeAnswer, which placedByPod places by the caller's pod). The task read's and the take's
-// answers are rows of answers.go's Answers from 240 (`task` and `take`), and `claims/task-seen`
+// answers are rows of answers.go's Answers from 274 (`task` and `take`), and `claims/task-seen`
 // answers the 204 every claim report answers (`no-content`); the take answer's `outcome` is the
 // discriminator of a union of literals and so no enumerated field. The three task routes' bodies
-// and the turn outcome's `task`, `providerError` and `held` are in the request records from 240
+// and the turn outcome's `task`, `providerError` and `held` are in the request records from 274
 // (`packages/contracts/fixtures/daemon-api/request-shapes.json`). This change carried its own two
 // rows of the state's narrowing table before 193 moved that table into shaping.go, and keeps none
 // of its own now: the band and the value strip above are those two rows in 193's tables, so the
@@ -3706,13 +3848,27 @@ package api
 // (#4540), 232 (#5271), 233 (#4173, #4180, #4182, #4193 and #4932), 234 (#4065), 235 (#5204), 236
 // (#4984), 237 (#5168 and #5169), 238 (#5285), 239 (#4592), 241 (#4771 and #5307), 242 (#4596),
 // 243 (#5349) and 244 (#3831) declared, so this entry moved to 240, the lowest number above
-// main's 228 that no other open pull request declares.
+// main's 228 that no other open pull request declares. The forward merge of 2026-11-24 that
+// brought in 9a4e7a14e1 brought main's 232 (#5271, INFRA-4508's entry above). A reading of every
+// open pull request at that merge, which ended at 2026-11-24T13:54:12Z, found 233 (#4173, #4180,
+// #4182, #4193 and #4932), 234 (#4065), 235 (#5204), 236 (#4984), 237 (#5168 and #5169), 238
+// (#5285), 239 (#4592), 240 (#3712 and #4771), 241 (#4049 and #4392), 242 (#4596), 243 (#5349),
+// 244 (#3831), 245 (#5158), 246 (#4960) and 247 (#4580) declared, so this entry moved to 248, the
+// lowest number above main's 232 that no other open pull request declares. The forward merge of
+// 2026-11-24 that brought in 69fcd649a6 brought main's 246 (#4960, the entry above). Until
+// cybermonklabs/legion#5399 (INFRA-1569) merges, INFRA's controller has INFRA-3118's architect give
+// each clashing or too-low number of an open pull request its own, and keep the list on
+// dispatch://INFRA-3118 (the controller's ruling of 2026-11-24 at 18:27Z, confirmed at 18:29:56Z);
+// this entry, which declared 248 beside #4049, #4065 and #4392 and below main's 250 after #5365,
+// was given 274.
+// The forward merge of 2026-11-24 that brought in c227d04661 brought main's 250 (#5365) and 256
+// (#5349, the entries above); this entry keeps the 274 it was given.
 // Read the base's own number and every open pull request again at the next merge rather than from
 // this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 252: INFRA-4130 -- holds on POST /legion/v1/claims/task, the takes of other claims of the issue
+// 281: INFRA-4130 -- holds on POST /legion/v1/claims/task, the takes of other claims of the issue
 // held behind the caller's turn. The answer of `claims/task` takes an optional `holds`
 // (`claim.TaskResponse.Holds`, contracts' `LegionTaskResponse`), `[{role, task}]`: each a take
 // of another claim of the caller's issue that was refused `issue-in-turn` while the caller is
@@ -3721,10 +3877,10 @@ package api
 // the turn ends and the held take is accepted. The key is absent where none is held, and the
 // registration's answer never carries it, since a registering process is in no turn. This daemon
 // serves it down through the shaping 193 brought: a caller whose header states a contract below
-// 252 is answered without it (shapeAnswer's AnswerTask row, taskHoldsContract). The record of a
+// 281 is answered without it (shapeAnswer's AnswerTask row, taskHoldsContract). The record of a
 // held take is the daemon's memory alone (supervise's ClaimView.HeldTask), so it adds no store
 // migration, and no shape of `GET /legion/v1/state` moves, so no caller is served a narrower one.
-// `supervise.TaskTakeContract` stays 240.
+// `supervise.TaskTakeContract` stays 274.
 // (This entry took 179 against the branch's base, which declared 174. It took 206 at the forward
 // merge of 2026-11-21 that brought cybermonklabs/legion#3993's branch in at
 // d61d7da5e458078e99d93b6890ebd87bb7e1d62f, which declared 203: a reading of
@@ -3748,7 +3904,7 @@ package api
 // 2026-11-21T22:15:53Z to 22:21:36Z found 208 (#4175), 209 (#4049 and #4580), 210 (#4661), 211
 // (#4611 and #4902), 213 (#4030 and #4553), 214 (#4592 and #4596), 215 (#4065), 216 (#3831,
 // #4173 and #4259) and 217 (#2230, #4273 and #4771) declared by open pull requests, so 212 was the
-// lowest number above 207 that none declared. It takes 231 at the forward merge of 2026-11-22
+// lowest number above 207 that none declared. It took 231 at the forward merge of 2026-11-22
 // that brought #3993's branch in at b48764f67a8d53a2a72f4927552d56da264e02c9, which declares 221:
 // a reading of `const DaemonAPIVersion` at the head of every one of the 514 open pull requests
 // from 2026-11-22T22:07:02Z to 22:14:20Z found 222 (#4661), 223 (#4805), 224 (#4960), 225
@@ -3763,13 +3919,18 @@ package api
 // at f4c87322fcdfa436cf84ab328cf47ce85382403f, which declares 223: a reading of
 // `const DaemonAPIVersion` at the head of every one of the 510 open pull requests from
 // 2026-11-24T00:10:26Z to 00:13:28Z found 224 to 230 and 232 to 240 declared by open pull
-// requests, with none at 233, and 231 by this change's alone. It takes 252 at the forward merge of
+// requests, with none at 233, and 231 by this change's alone. It took 252 at the forward merge of
 // 2026-11-24 that brought #3993's branch in at e63fe1f57842a88c48f18bee9054ef6b6a97d8a0, which
 // declares 240: INFRA-3118's architect gave it 252, since 246 to 250 are that tree's and 251 is
 // #5307's, and a reading of `const DaemonAPIVersion` at the head of every one of the 479 open pull
 // requests from 2026-11-24T15:04:07Z to 15:05:40Z found 241 to 247, 250, 251 and 254 declared by
-// open pull requests and none at 252. Read the base's own number and every open pull request again
-// at the next merge rather than from this line, as
+// open pull requests and none at 252. It takes 281 at the forward merge of 2026-11-25 that brought
+// #3993's branch in at 88ed2ae74cdf62621190715343d1c6b755d946fa, which declares 274, while main
+// declares 256: INFRA-3118's architect allocates the numbers until INFRA-1569's #5399 merges and
+// gave it 281, and a reading of `const DaemonAPIVersion` at the head of every one of the 487 open
+// pull requests from 2026-11-25T03:03:14Z to 03:04:38Z found 275 to 277, 280 and 283 declared above
+// 274 and none at 281. Read the base's own number and every open pull request again at the next
+// merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 252
+const DaemonAPIVersion = 281

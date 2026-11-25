@@ -57,9 +57,12 @@ func (m *Machine) repoint(ctx context.Context, observation runtime.Observation) 
 		incarnation = loc.Incarnation
 	}
 	held := !observation.DaemonAPIMoved
-	if held && m.replacementHolds() {
-		m.holdReplacement("repoint", m.replacing(repointInterruption, ordinaryEnd, endRepointed),
-			"incarnation", incarnation, "detail", observation.Detail)
+	if held && m.boundedReportHolds() {
+		// A replacement held already keeps what it holds (holdReplacement), so none is built.
+		if m.heldReplacement == nil {
+			m.holdReplacement("repoint", m.replacing(repointInterruption, ordinaryEnd, endRepointed),
+				"incarnation", incarnation, "detail", observation.Detail)
+		}
 		return nil
 	}
 	m.log.Warn("supervise: the process is alive at a stale address; replacing it with one at the current address",
@@ -83,7 +86,7 @@ const repointInterruption = "the process at a stale address is replaced mid-turn
 // A replacement held already keeps what it holds and what it waits for, as a held stale-plugin
 // relaunch does: the sweep observes a stale address at every pass. The line is written where the
 // replacement begins to wait, by the take's phase (waitsLine), naming by, what raised it, and attrs.
-func (m *Machine) holdReplacement(by string, run func(context.Context) error, attrs ...any) {
+func (m *Machine) holdReplacement(by string, run func(context.Context) (ProcessEnd, error), attrs ...any) {
 	if m.heldReplacement != nil {
 		return
 	}
@@ -91,16 +94,17 @@ func (m *Machine) holdReplacement(by string, run func(context.Context) error, at
 	m.heldReplacement = run
 }
 
-// replacementHolds is whether a replacement of the claim's live process that reaches it now waits
-// for the report of the take's turn rather than let the process go: work that reaches the claim
-// joins that wait (reportHolds) — the take's turn is over and its report has not come, or work
-// already waits on the take — and a bound of the wait stands. Over a whole view that is the
-// report wait's own (TimerReport, armed at the end of the decision: reportBounded), and over a view
-// not whole the reconnect deadline (TimerRegistration), which a daemon start, a close and a
-// reconnect hello arm over a pending take (connview.go), and which a launch the pacing parked
-// takes from the process it waits over (waitOnMachine): a replacement no bound would reach lets
-// the process go as before. While a turn runs it does not hold, so a turn is cut off as before.
-func (m *Machine) replacementHolds() bool {
+// boundedReportHolds is whether work that reaches the claim now — a replacement of its live
+// process (repoint, runWake), or the operator's stop of it (stop, holdStop) — waits for the report
+// of the take's turn rather than let the process go: work that reaches the claim joins that wait
+// (reportHolds) — the take's turn is over and its report has not come, or work already waits on
+// the take — and a bound of the wait stands. Over a whole view that is the report wait's own
+// (TimerReport, armed at the end of the decision: reportBounded), and over a view not whole the
+// reconnect deadline (TimerRegistration), which a daemon start, a close and a reconnect hello arm
+// over a pending take (connview.go), and which a launch the pacing parked takes from the process
+// it waits over (waitOnMachine): work no bound would reach lets the process go as before. While a
+// turn runs it does not hold, so a turn is cut off as before.
+func (m *Machine) boundedReportHolds() bool {
 	if !m.reportHolds() {
 		return false
 	}
@@ -115,11 +119,12 @@ func (m *Machine) replacementHolds() bool {
 // replacement runs where the wait for the report ends (holdReplacement), and what a parked one
 // carries to its wake's turn for that wait (wake.replaceAgain). It goes through the lifecycle
 // recheck and the wake gate again, so a held replacement released by a report is paced as every
-// launch is, and through replaceNow, so a suspension held meanwhile ends the process instead.
-func (m *Machine) replacing(interruption string, outOfMemory bool, ending string) func(context.Context) error {
-	return func(ctx context.Context) error {
-		_, err := m.replaceProcess(ctx, interruption, outOfMemory, ending, heldAtItsTurn)
-		return err
+// launch is, and through replaceNow, so a suspension held meanwhile ends the process instead. It
+// answers replaceProcess's end beside its error, which the reconnect deadline reads
+// (replacementAtDeadline).
+func (m *Machine) replacing(interruption string, outOfMemory bool, ending string) func(context.Context) (ProcessEnd, error) {
+	return func(ctx context.Context) (ProcessEnd, error) {
+		return m.replaceProcess(ctx, interruption, outOfMemory, ending, heldAtItsTurn)
 	}
 }
 
@@ -139,29 +144,22 @@ const (
 // of its take's turn (reconnectDeadline): over a view not whole, as when the stale address is the
 // worker stream's, that deadline is the wait's bound, since the report wait's own bound judges only
 // a whole view (reportBounded). With no report by it, the task is taken back with the note of a
-// cut turn (reportMissed), and the replacement then runs: the repoint's own relaunch, uncharged,
-// rather than the no-hello path's retirement, which charges CauseNeverReconnected, since a stale
-// observation is never charged. The take-back comes first, as at the report wait's own bound, so a
-// relaunch the pacing parks finds no report to wait for at its turn. A take-back the store refuses,
-// and a replacement that let nothing go — its lifecycle recheck refused (EndNotMade) — keep the
-// replacement held and the process, and the deadline is tried again at the probe interval, as the
-// deadline's other refusals are.
+// cut turn (reportMissedAtDeadline), and the replacement then runs: the repoint's own relaunch,
+// uncharged, rather than the no-hello path's retirement, which charges CauseNeverReconnected, since
+// a stale observation is never charged. The take-back comes first, as at the report wait's own
+// bound, so a relaunch the pacing parks finds no report to wait for at its turn. A take-back the
+// store refuses, and a replacement that let nothing go — its lifecycle recheck refused
+// (EndNotMade) — keep the replacement held and the process, and the deadline is tried again at the
+// probe interval, as the deadline's other refusals are. The operator's stop held for the report
+// takes the same deadline the same way (stopAtDeadline).
 func (m *Machine) replacementAtDeadline(ctx context.Context) error {
 	held := m.heldReplacement
-	if m.reportWaitNow().reportToCome() {
-		if err := m.reportMissed(ctx, "the reconnect deadline"); err != nil {
-			m.arm(TimerRegistration, m.deps.Timeouts.Probe, "")
-			return err
-		}
+	if err := m.reportMissedAtDeadline(ctx); err != nil {
+		return err
 	}
-	found := ""
-	if loc := m.claim.Locator; loc != nil {
-		found = loc.Incarnation
-	}
-	parked := m.wake
 	m.heldReplacement = nil
-	err := held(ctx)
-	if m.endReached(found, parked) == EndNotMade {
+	end, err := held(ctx)
+	if end == EndNotMade {
 		m.heldReplacement = held
 		m.arm(TimerRegistration, m.deps.Timeouts.Probe, "")
 	}
@@ -362,7 +360,7 @@ func (m *Machine) replaceNow(ctx context.Context, interruption string, outOfMemo
 		}
 		return m.endHeld(ctx, false, stopOwed)
 	}
-	var again func(context.Context) error
+	var again func(context.Context) (ProcessEnd, error)
 	if held {
 		again = m.replacing(interruption, outOfMemory, ending)
 	}

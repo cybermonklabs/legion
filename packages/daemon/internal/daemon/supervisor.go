@@ -190,8 +190,30 @@ func (s *supervisor) wakeIssue(token claim.Token) {
 	if !ok || ended.issue == "" {
 		return
 	}
+	s.postIssueTurnEnded(ended.issue, token)
+}
+
+// wakeIssueClaims tells every claim of issue that a hold over the working copy its roles share may
+// have ended (supervise's IssueTurnEnded, which carries no fact): the workflow's record of the
+// issue's merge forward landed, withdrawn or cleared, which ends the take hold the owed merge put
+// on every take of the issue that would adopt that working copy (workflow.Config.MergeForwardEnded,
+// supervise's Deps.MergeForwardOwed). No claim is left out, the asked role's own included, since
+// the hold held its takes too. Each take that hold refused asks the record again and is offered
+// once nothing holds it (supervise's offerPending); a claim refused for anything else stays held.
+func (s *supervisor) wakeIssueClaims(issue string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.stopped || issue == "" {
+		return
+	}
+	s.postIssueTurnEnded(issue, "")
+}
+
+// postIssueTurnEnded posts IssueTurnEnded to every machine of issue but except's, under s.mu,
+// which the caller holds.
+func (s *supervisor) postIssueTurnEnded(issue string, except claim.Token) {
 	for other, m := range s.machines {
-		if other != token && m.issue == ended.issue {
+		if other != except && m.issue == issue {
 			m.inbox.put(supervise.IssueTurnEnded{Claim: other})
 		}
 	}

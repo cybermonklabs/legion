@@ -160,11 +160,11 @@ const relaunchWaitsForViewLine = "supervise: the process speaks another plugin c
 // last of them is no post at all. The controller's claim is posted uncredited because its wake
 // is outside the pacing (reserveWake), and the guard spares it rather than asking for it. A
 // claim the pass read in a turn is posted uncredited because its relaunch takes no wake now
-// (holdStaleRelaunch, R2); the credit such a post does carry is the window where the pass's
-// snapshot and this machine disagree — a claim read idle that has started a turn since — and the
-// end of this decision gives it back (endRefreshLane). And the relaunch that hold left waiting
-// comes back through here at the turn's end, with no credit of its own and the claim in whatever
-// state that end left it (afterTurn).
+// (holdStaleRelaunch, R2); the credit such a post does carry is the window where the claim the
+// pass read (Machine.Published) and this machine disagree — a claim read idle that has started a
+// turn since — and the end of this decision gives it back (endRefreshLane). And the relaunch that
+// hold left waiting comes back through here at the turn's end, with no credit of its own and the
+// claim in whatever state that end left it (afterTurn).
 func (m *Machine) refreshPlugin(ctx context.Context, trigger string, credit *RefreshCredit, atDeadline bool) error {
 	if credit != nil {
 		if m.refreshCredit != nil {
@@ -265,13 +265,13 @@ const (
 // fleet whose stale claims are mostly working, the lane would admit its whole minute of the
 // pacing and relaunch nobody.
 //
-// The daemon's own pass posts such a claim with no credit at all, reading the state its
-// snapshot of the claims holds (refreshStalePlugins in internal/daemon). That snapshot and this
-// machine can disagree — the claim it read idle can have started a turn by the time the post is
-// decided here, and one it read working can have ended its turn — so a post that reaches this
-// call carrying a credit is exactly that window, and the end of this decision gives the credit
-// straight back, since it leaves no refresh wake waiting (endRefreshLane). The window costs the
-// claim one sweep, which is what an imperfect skip costs the pass everywhere else it makes one.
+// The daemon's own pass posts such a claim with no credit at all, reading the state the claim's
+// machine last published (Machine.Published, refreshStalePlugins in internal/daemon). That read and
+// this decision can disagree — a decision that lands between them can start the turn of a claim
+// read idle, or end the turn of one read working — so a post that reaches this call carrying a
+// credit is exactly that window, and the end of this decision gives the credit straight back,
+// since it leaves no refresh wake waiting (endRefreshLane). The window costs the claim one sweep,
+// which is what an imperfect skip costs the pass everywhere else it makes one.
 //
 // A relaunch newly held here waits for the end of that turn or compaction, and the end that leaves
 // it waiting for the report of the take's turn writes the line of that wait (Machine.staleForEnd,

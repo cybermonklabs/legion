@@ -53,7 +53,13 @@ import type { TakePending } from "./legion-inbox"
  * task's refused turn is woken by the daemon too, whose provider-error wait writes the task's value
  * again once it is over, from the outcome the bridge reports with the provider's failure beside it
  * (INFRA-714, dispatch://INFRA-956). What stops the reminding for good is the runner's record
- * check, which drops every reminder once the daemon has failed this role's claim.
+ * check, which drops every reminder once the daemon has failed this role's claim. The bridge
+ * reports each turn's outcome to the daemon with the provider's failure and the status Claude Code
+ * named, and names no task for a turn that was not its take's — a reminder written over the inbox
+ * — so the daemon judges that turn from the report (dispatch://INFRA-4508): a refusal whose status
+ * cannot clear fails the claim at once and holds the issue, and a refusal that can clear fails
+ * nothing, so the reminders keep their pace and the project's controller is told once at six such
+ * turns in a row.
  *
  * A task the claim's take holds is the worker's next turn (dispatch://INFRA-4130 R6), and the
  * bridge, which holds the take, is asked for it on the inbox (`LegionInbox.takePending`): while it
@@ -438,7 +444,7 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
     // The server's own listener client, so the notice reaches the one this session already talks
     // to; Envoy off for the session leaves it undefined, the runner says so once at debug, and
     // the reminder keeps coming without a notice.
-    publisher: () => deps.publish,
+    publisher: async () => deps.publish,
     project: configuredValue(deps.env["LEGION_PROJECT"]),
     limits,
     log: deps.log,
@@ -570,8 +576,11 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
           // provider refusing the turn, and the machine takes it as one: it earns no
           // continuation, because the next turn would be refused the same way, and one timer,
           // because a refused turn of no task leaves nothing else to wake this worker; a task's
-          // refused turn the daemon's provider-error wait gives again. Once the daemon fails the
-          // claim, the timer's own record check drops the reminding.
+          // refused turn the daemon's provider-error wait gives again. What ends the reminding is
+          // the daemon failing the claim, which the timer's own record check reads: it does at
+          // once for a refusal whose status cannot clear, the status the bridge reports beside the
+          // turn's outcome, a reminder's own turn included, and never for a refusal that can
+          // clear, of which the controller is told at six in a row (dispatch://INFRA-4508).
           // Claude Code ignores whatever this hook returns, which costs nothing now that there
           // is nothing to return.
           await reminder.settle({ kind: "refused", message: event.lastAssistantMessage ?? "" })

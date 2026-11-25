@@ -1,8 +1,8 @@
 // packages/cipher-client/src/dpop.ts
 //
-// The one RFC 9449 proof signer of this package, mirroring the Go signer in
-// `packages/envoy/internal/cipherclient/dpop.go`. A key is one of three kinds: one a session makes
-// in its own process (`newDpopKey`), the box key a person's sign-in on this machine keeps
+// The one RFC 9449 proof signer of this package, mirroring Go's one signer, `dpopproof.Sign`
+// in `packages/envoy/internal/dpopproof/dpopproof.go`. A key is one of three kinds: one a session
+// makes in its own process (`newDpopKey`), the box key a person's sign-in on this machine keeps
 // (`importDpopKey`), which the broker bound the sign-in to, or the key a machine's device login
 // keeps (`dpopKeyOf`, from `device-login.ts`), which the broker bound the login to. Each way only
 // its public half leaves this package: a proof carries the public JWK in its header, and the
@@ -13,8 +13,9 @@
 // NATS connection's proof is signed synchronously (`connectionProof`): nats.js asks its
 // authenticator for the CONNECT inside its own synchronous handshake, WebCrypto signs only
 // asynchronously, and the runtime warns of a non-extractable `CryptoKey` turned into a
-// `KeyObject` (`KeyObject.from`, DEP0204). One signer serves both proofs, as Go's `signProof`
-// does, so the two cannot drift.
+// `KeyObject` (`KeyObject.from`, DEP0204). One signer serves both proofs, as `dpopproof.Sign` signs
+// both of the Go client's (`internal/cipherclient`: an HTTP request's and a NATS connection's), so
+// the two cannot drift.
 
 import {
   createHash,

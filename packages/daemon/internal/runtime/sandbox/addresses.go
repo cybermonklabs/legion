@@ -153,13 +153,6 @@ func describeMoved(moved []movedAddress) string {
 	return strings.Join(named, "; ")
 }
 
-// movesDaemonAPI is whether moved holds the daemon's own API, LEGION_DAEMON_URL, which a
-// StaleAddress verdict says as runtime.Observation.DaemonAPIMoved: the process can no longer reach
-// the daemon over HTTP, so no report of its turn lands.
-func movesDaemonAPI(moved []movedAddress) bool {
-	return slices.ContainsFunc(moved, func(m movedAddress) bool { return m.where == "LEGION_DAEMON_URL" })
-}
-
 // movedEnvironment compares role's recorded generation with the addresses a generation launched
 // now in pod, the live pod that generation runs in, is handed, one movedAddress for each that
 // moved, its held name the record's. The pod is what decides the broker: a generation in a pod

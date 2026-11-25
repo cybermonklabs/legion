@@ -20,14 +20,14 @@ import (
 // putPullRequest records pr and marks its issue moved where the write is news of the pull
 // request rather than the daemon reconciling what it already knew (pullRequestNews, and the rule
 // in engine.go's dispatchIssue). Every write of a pull request row in this package goes through
-// it but two: the row is written from thirteen places — a pull request opened, reopened,
+// it but three: the row is written from thirteen places — a pull request opened, reopened,
 // synchronized, pushed to, closed or merged, a CI settlement, a mergeability read and the end of
 // its second read (conflictConfirmDone), a review, a merge forward's ask (mergeForward), its
 // landing (mergeForwardLanded) and its clearing (clearMergeForward) — and a write site added
 // later would otherwise have to remember the mark. Routing them through
 // one function is what makes forgetting it hard rather than easy.
 //
-// The two exceptions write the row through the store themselves, and each says why where it
+// The three exceptions write the row through the store themselves, and each says why where it
 // stands. The first is the listener's duplicate of a settlement the pass already built
 // (review.go's checks), which writes the fence the daemon read with record.Store.PutPullRequest and
 // decides nothing: the fence is part of the judgement, so the test below would read that write as
@@ -36,9 +36,13 @@ import (
 // the base at and nothing else (record.Store.SetPullRequestBaseMoved): a base that moved is no fact
 // of the pull request, so the test below names that field nowhere and this helper would mark
 // nothing for it either, and the walk the write sits in touches every pull request recorded on the
-// base with each row in hand already, so a second read apiece would buy nothing. A new write site
-// that only records a read belongs with those two; every write that changes what the record knows
-// of the pull request belongs here.
+// base with each row in hand already, so a second read apiece would buy nothing. The third is the
+// launch a merge forward's ask was last told (record.MergeForward.SentLaunch: askAgain and
+// MergeForwardAskEnded), which the daemon's outbox executor writes with
+// record.Store.PutPullRequest and no engine at the end of an ask's row, and which changes the
+// merge forward alone, a field the test below leaves out. A new write site that only records a
+// read belongs with those three; every write that changes what the record knows of the pull
+// request belongs here.
 //
 // The row the record holds is read first, by its own key in the caller's transaction, so the
 // test has both sides. That read is the cost of never mistaking a repeat for news: GitHub
@@ -51,6 +55,11 @@ import (
 // and cannot be handed the wrong key. The moment is the engine's clock, as every other site's
 // is: the fact is being applied now, whatever clock GitHub stamped it with, and the mark says
 // when the daemon saw the issue move.
+//
+// A write that takes the merge forward from an open ask (not landed, not withdrawn) to none, or to
+// one that has landed or was withdrawn, is the end of the take hold that ask put on the issue's
+// adopting takes (mergeForwardEnds): the landing, the withdrawal and the clearing are each such a
+// write, and a site that ends the ask later is found here and need not remember it.
 func (e *Engine) putPullRequest(ctx context.Context, tx pgx.Tx, pr record.PullRequest) error {
 	recorded, err := e.store.PullRequestRow(ctx, tx, pr.Issue)
 	if err != nil {
@@ -58,6 +67,9 @@ func (e *Engine) putPullRequest(ctx context.Context, tx pgx.Tx, pr record.PullRe
 	}
 	if err := e.store.PutPullRequest(ctx, tx, pr); err != nil {
 		return err
+	}
+	if recorded != nil && openMergeForward(recorded.MergeForward) && !openMergeForward(pr.MergeForward) {
+		e.mergeForwardEnds(ctx, pr.Issue)
 	}
 	if recorded != nil && !pullRequestNews(*recorded, pr) {
 		return nil
@@ -423,7 +435,7 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // issue to its task's next step (accepting, in the default steps), since a merged pull request
 // leaves the round nothing to wait on (reviewRound). Without this, an approval that came before
 // the merge would hold the issue in
-// reviewing: no read of the merged pull request ever comes (askMergeStateFor), and once the
+// reviewing: no read of the merged pull request ever comes (mergeStateOwed), and once the
 // reviewer has completed no other fact settles the round. An approval of a head other than the
 // one the merge names ends no round: once its reviewer has completed, the round is stuck on other
 // code (stuckApprovedOtherCode), and the architect is told once.

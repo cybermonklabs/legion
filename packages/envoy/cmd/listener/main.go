@@ -2134,10 +2134,14 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	// 1. Relay sockets — an edge listener closes each with 1012, on which its client opens it
 	//    again at once on another replica, and refuses every upgrade after it. The HTTP server's
 	//    shutdown below does not wait for a hijacked connection, so nothing else would close them.
-	// 2. Session relays and the task relay — publish no frame and ack nothing more; each session
-	//    relay pulling returns the messages it holds to the server with a nak
+	// 2. Session relays and the task relay — stop relaying: each session relay run is cancelled
+	//    and, if it was pulling, returns the messages it holds to the server with a nak
 	//    (sessionRelays.release), so they are delivered again at once rather than after their ack
-	//    wait, and the task relay retires its watcher, which the drain below ends (taskRelay.end).
+	//    wait, and the stop waits for the relay loop and every run within shutdownCtx. When
+	//    shutdownCtx ends first, the stop warns and the shutdown goes on, and a run still going may
+	//    publish a frame, have one acked on the session's done reply (onReply) or nak what it holds
+	//    (sessionRelays.stop). The task relay retires its watcher, which the drain below ends
+	//    (taskRelay.end).
 	// 3. HTTP server — stop accepting new requests, drain in-flight.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), stopHTTPGrace)
 	defer cancel()

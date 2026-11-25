@@ -150,9 +150,10 @@ func TestTakeBackOverAnOwedFinishFinishesOnEveryPath(t *testing.T) {
 		run      func(t *testing.T, h *harness, number uint64)
 	}{
 		{name: "settle, at the claim's failure", run: func(t *testing.T, h *harness, number uint64) {
-			for sequence := uint64(2); sequence <= 4; sequence++ {
-				h.report(sequence, true, "the provider refused the turn")
-			}
+			// A run of refused turns fails no claim (dispatch://INFRA-4508): a refusal whose
+			// status cannot clear does, at once, from a report of a turn that was not the take's.
+			h.must(RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: h.worker.sequence + 1, Refused: true,
+				ProviderError: &ProviderError{Status: 400, Message: "invalid_request_error"}})
 			h.wantState(StateFailed)
 		}},
 		{name: "a death", run: func(t *testing.T, h *harness, number uint64) {

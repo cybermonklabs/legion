@@ -189,6 +189,25 @@ func callerOf(agent AgentCaller, boot BootCaller) (Caller, bool) {
 // reached it names nothing held. The field is optional: a report without it is read as one
 // before it was, and the daemon refuses none for lacking it (supervise's notTheTakesTurn).
 //
+// HTTPStatus is the HTTP status the provider answered a refused turn with, where the producer's
+// provider library gives one: Oh My Pi's `errorStatus` on the assistant message that ended the
+// turn, and Claude Code's `api_error_status`. It is 0 (absent) for a clean turn and for a refusal
+// whose status cannot be read, such as a content filter's. The daemon reads no status out of
+// Message, and it takes a number outside 100 to 599 as no status, with a warning that names it
+// (api's turnOutcome). It is how a plugin from before the task's number (below supervise's
+// TaskTakeContract) names the status; a current plugin names it in ProviderError's Status, and
+// where a report carries both, ProviderError's Status is read and HTTPStatus only where that is 0
+// (supervise's RequestTurnOutcome.status).
+//
+// Unprompted says the turn ran no task the daemon handed: the plugin started it itself (a phase
+// reminder), another extension did (an Envoy message), or the host did (a background job's
+// result). The daemon reads such a report as one that names no task, whatever its Task says, and
+// judges a refusal of it as it judges every turn that was not the take's, from the report alone
+// (supervise's unpromptedTurnEnded). A current plugin says the same by naming no Task and never
+// sends the mark; a plugin from before the task's number sends it. A clean report, marked or not,
+// ends the claim's run of provider-error turns when no later turn's report has reached the daemon
+// before it.
+//
 // The caller is exactly one of AgentCaller and BootCaller, embedded so that each is a shape of
 // its own on the wire as well as in Go (@legion/contracts' LegionTurnOutcomeRequest is the same
 // union).
@@ -202,6 +221,8 @@ type TurnOutcomeRequest struct {
 	Task          uint64         `json:"task,omitempty"`
 	ProviderError *ProviderError `json:"providerError,omitempty"`
 	Held          uint64         `json:"held,omitempty"`
+	HTTPStatus    int            `json:"httpStatus,omitempty"`
+	Unprompted    bool           `json:"unprompted,omitempty"`
 }
 
 // Caller is the identity the body named, and false when it named both or neither.
@@ -222,10 +243,20 @@ type ProviderError struct {
 }
 
 // TurnOutcomeResponse is what the daemon made of the report: the run of refused turns the claim's
-// reports now end with (RefusedRun), and whether this report took that run to the launch failure
-// limit and failed the claim. A producer acts on neither — its turn is over — but a pane's log
-// saying the daemon has counted three refusals in a row is the one place an operator sees the
-// count that failed the claim being made.
+// reports now end with (RefusedRun), counted up to the launch failure limit, which the daemon
+// answers each report with and which decides nothing. A producer acts on neither field — its turn
+// is over — but a pane's log saying the daemon has counted three refusals in a row is the one
+// place an operator sees the count being made.
+//
+// Failed is whether this report failed the claim. A run of refused turns fails no claim
+// (dispatch://INFRA-4508), so only a report whose provider refused its turn with a status that
+// cannot clear, a 4xx other than 401, 403, 408 and 429, does, which fails the claim at once and
+// holds the issue for its architect: the report naming the task a take holds (Task) with that
+// status in its ProviderError, and the report of any other turn — one naming no task, another
+// number, or marked Unprompted — refused with that status. A daemon from before
+// dispatch://INFRA-4508 set it when the report took the run to the launch failure limit. This is
+// where the rule is stated, with its TypeScript mirror (LegionTurnOutcomeResponse in
+// packages/contracts/src/legion-api.ts); every other reader of Failed points here.
 type TurnOutcomeResponse struct {
 	RefusedRun int  `json:"refusedRun"`
 	Failed     bool `json:"failed"`

@@ -22,15 +22,15 @@ import (
 // a re-entered child resumes its session. A tree's root architect is launched with the task its
 // record derives (ArchitectStartTask, Engine.StartArchitect), which names the decisions kept while
 // nobody in its tree could hear them (ParkedDecisionTask), or with none where the derivation gives
-// none, and a re-admitted tree resumes its session. A claim the provider refused out of its launch
-// budget has failed, and the start that retries it starts a new session (supervise's
-// freshSession), as does any launch whose session no store holds any more (startFresh). So at each
-// launch's ready the daemon sends it a catch-up notice of the issues it owns (QueueCatchUp) — a
-// root architect its whole tree, a child's architect the child and every issue under it — and so
-// does a start that finds the claim still running (the outbox's start), as the TypeScript daemon
-// sends the overseer catch-up at every ready of an active root (onTreeReady). A relaunch in the
-// same generation is told again: it may be an architect that died during the turn a catch-up
-// started, resumed idle, or a fresh agent whose workspace was lost, and nothing else wakes either.
+// none, and a re-admitted tree resumes its session. A retry that asks for a new session starts
+// one (supervise's freshSession), as does any launch whose session no store holds any more
+// (startFresh). So at each launch's ready the daemon sends it a catch-up notice of the issues it
+// owns (QueueCatchUp) — a root architect its whole tree, a child's architect the child and every
+// issue under it — and so does a start that finds the claim still running (the outbox's start), as
+// the TypeScript daemon sends the overseer catch-up at every ready of an active root
+// (onTreeReady). A relaunch in the same generation is told again: it may be an architect that died
+// during the turn a catch-up started, resumed idle, or a fresh agent whose workspace was lost, and
+// nothing else wakes either.
 // The ready is one fact per launch (workflowRuntime.applyTerminal keys it by the claim's launch
 // generation), so the boot's replay of a ready already applied tells nothing more, and one never
 // applied tells it once. The catch-up a root architect's ready writes names every decision nobody
@@ -42,8 +42,9 @@ import (
 // holds, the project's own or another project's, whose record the daemon's records do not read
 // (internal/daemon's projectRecords), so its ready drops and queues no catch-up keyed by that
 // issue — or of a child that has left the workflow or is done. A phase worker's ready is answered
-// differently: it is given its phase's task again when it holds that phase with nothing pending
-// (readyWorkerTask).
+// differently: a merge forward still owed to its role is asked again at a launch later than the one
+// the ask was last sent at (askAgainAtLaunch), and it is given its phase's task again when it holds
+// that phase with nothing pending (readyWorkerTask).
 //
 // The catch-up a start writes in place of a launch (intake.ClaimReady.Paced) is a wake of the
 // architect — it reads its whole context when the catch-up arrives, which is what the per-minute
@@ -61,7 +62,14 @@ import (
 // superseded or never queued here costs nothing (dispatch://INFRA-3276 R3).
 func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimReady) (intake.Result, error) {
 	if fact.Role != claim.RoleArchitect {
-		return intake.Result{}, e.readyWorkerTask(ctx, tx, fact)
+		issue, err := e.store.Issue(ctx, tx, fact.Issue)
+		if err != nil || issue == nil {
+			return intake.Result{}, err
+		}
+		if err := e.askAgainAtLaunch(ctx, tx, *issue, fact); err != nil {
+			return intake.Result{}, err
+		}
+		return intake.Result{}, e.readyWorkerTask(ctx, tx, *issue, fact)
 	}
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -253,10 +261,9 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // finished (a fresh session, or an abandoned one replaced), since a new session has no reminder
 // state to wake it. The rule covers the resume task alone: the owed entry's work above, a
 // transition's start, a wake's task and every other task are written as before.
-func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.ClaimReady) error {
-	issue, err := e.store.Issue(ctx, tx, fact.Issue)
-	if err != nil || issue == nil || record.OutOfWorkflow(issue.Status) {
-		return err
+func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.ClaimReady) error {
+	if record.OutOfWorkflow(issue.Status) {
+		return nil
 	}
 	role := RoleFor(issue.Phase)
 	if role == "" || role == claim.RoleArchitect || role != fact.Role {
@@ -266,7 +273,7 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	if err != nil || root == nil || root.Lingers() {
 		return err
 	}
-	finished, err := e.phaseFinished(ctx, tx, *issue)
+	finished, err := e.phaseFinished(ctx, tx, issue)
 	if err != nil || finished {
 		return err
 	}
@@ -296,7 +303,7 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 		return err
 	}
 	if OwedEntry(run, *root, row.Entry) {
-		if err := e.SendOwedEntry(ctx, tx, *issue, role, row); err != nil {
+		if err := e.SendOwedEntry(ctx, tx, issue, role, row); err != nil {
 			return err
 		}
 		e.logOnCommit(ctx, "workflow: a ready worker behind the entry its phases row names is sent that entry's work",
@@ -309,7 +316,7 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 			"session", held.Session)
 		return nil
 	}
-	resume, err := e.ResumeTask(ctx, tx, *issue)
+	resume, err := e.ResumeTask(ctx, tx, issue)
 	if err != nil {
 		return err
 	}

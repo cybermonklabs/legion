@@ -467,6 +467,12 @@ func (c *ladderClock) AfterFunc(after time.Duration, run func()) supervise.Cance
 	return timer
 }
 
+// At keeps a timer due at a moment as the wait from the clock's one moment (Now), which never
+// moves, so fire reaches it by that wait as it reaches an AfterFunc's.
+func (c *ladderClock) At(at time.Time, run func()) supervise.Cancel {
+	return c.AfterFunc(at.Sub(c.Now()), run)
+}
+
 func (c *ladderClock) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
 func (t *ladderTimer) Stop() bool {

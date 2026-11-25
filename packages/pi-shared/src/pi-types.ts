@@ -333,10 +333,12 @@ export interface AgentEndMessage {
    * `packages/ai/src/types.ts:1492-1500` at the pinned tag). `classifyProviderTurn`
    * (`./provider-refusal`) reads it to tell a content filter from any other provider failure. */
   readonly errorMessage?: string;
-  /** The HTTP status of the provider request an `error` stop failed on, when it had one, and the
-   * provider and model the request went to (`AssistantMessage`, `packages/ai/src/types.ts` at the
-   * pinned tag): the fields Oh My Pi's own `prompt_result` error carries as `httpStatus`,
-   * `provider` and `model`. */
+  /** The HTTP status of the provider request an `error` stop failed on, where the provider gave
+   * one, and the provider and model the request went to (`AssistantMessage`,
+   * `packages/ai/src/types.ts:1517-1518` of cybermonklabs/oh-my-pi at the pinned tag
+   * `v18.18.6-sami.20261122-091943`): the fields Oh My Pi's own `prompt_result` error carries as
+   * `httpStatus`, `provider` and `model`. The turn-outcome report carries them in its
+   * `providerError` (`packages/pi-legion/src/turn-outcome.ts`). */
   readonly errorStatus?: number;
   readonly provider?: string;
   readonly model?: string;

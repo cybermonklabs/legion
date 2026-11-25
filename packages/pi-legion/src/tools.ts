@@ -682,8 +682,9 @@ export function createLegionTool(deps: {
         "one queued, one whose launch is in flight, and one left working under a relaunch the " +
         "wake pacing parked (CLAIM_UNSETTLED) — and for role controller. " +
         "compact (issue, role) shortens one claim's session instead: the daemon has Oh My Pi write a text summary of the " +
-        "session so far, and the claim keeps its session, its workspace and everything it knows of its issue and is sent " +
-        "whatever task it owes again. Try compact first for a claim whose session a provider keeps refusing, and " +
+        "session so far, and the claim keeps its session, its workspace and everything it knows of its issue and takes " +
+        "again whatever task it owes, which the daemon writes again. Try compact first for a claim whose session a " +
+        "provider keeps refusing, and " +
         "fresh_session for a claim no process stands behind, which compact refuses and fresh_session reaches. The answer " +
         "says whether the session was compacted and, when it was not, why; the claim is back either way. The daemon " +
         "refuses it for a claim that is suspended, failed or retired, and for one stored working " +

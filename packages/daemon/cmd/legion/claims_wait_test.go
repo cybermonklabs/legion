@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/spf13/cobra"
 )
@@ -89,28 +90,35 @@ func TestEveryClaimsSubcommandAnswersWithinItsWait(t *testing.T) {
 	}
 }
 
-// --wait defaults to one minute, which is the bound a command with no flag of its own runs under.
+// --wait defaults to one minute, and a command with no flag of its own runs under that default as
+// the call reads it (programbound: in this binary, what is left of its deadline). The bound the
+// call took (operatorCall.waited, the fact the call records) is read against programbound's value
+// read just before the call and just after it: what is left of the deadline only shrinks, so the
+// call's own read lies between the two, and a call that took any other value, a fixed minute
+// among them, falls outside. No wall-clock span is read.
 func TestClaimsWaitDefaultsToOneMinute(t *testing.T) {
 	cmd := &cobra.Command{Use: "suspend"}
 	c := newClaimsCall(cmd, &bytes.Buffer{}, &bytes.Buffer{})
 	if err := cmd.ParseFlags([]string{"--operator-token-file", operatorTokenFile(t)}); err != nil {
 		t.Fatalf("the flags were refused: %v", err)
 	}
+	if *c.wait != time.Minute || defaultWait != time.Minute {
+		t.Fatalf("--wait defaults to %s (defaultWait %s), want one minute", *c.wait, defaultWait)
+	}
+	most := programbound.Of(&defaultWait)
 	if code, ok := c.check(); !ok {
 		t.Fatalf("check exited %d, want it to accept a command with no --wait", code)
 	}
-	if *c.wait != time.Minute {
-		t.Fatalf("--wait defaults to %s, want one minute", *c.wait)
-	}
-	if until := time.Until(c.until); until <= 0 || until > time.Minute {
-		t.Fatalf("the call's bound is %s away, want it within the minute it was given", until)
+	least := programbound.Of(&defaultWait)
+	if until := time.Until(c.until); c.waited > most || c.waited < least || until <= 0 || until > most {
+		t.Fatalf("the call took a bound of %s, %s away, want the default as programbound gives it, from %s to %s", c.waited, until, least, most)
 	}
 }
 
 // The bound covers the whole call, not each request of it: a suspend the daemon answers 202 and
 // then holds is refused once the command's own minute-or-less is gone, counted from its first
 // request rather than restarted by each list it makes. The lists it made say so without a clock:
-// one every suspendPoll, so a call held to its 400 ms makes at most 400 ms / suspendPoll of them
+// one every heldPoll, so a call held to its 400 ms makes at most 400 ms / heldPoll of them
 // and the two at its ends, and a slow machine makes fewer, never more; a call held to a later
 // bound, such as the one-minute default, makes more.
 func TestTheWaitBoundsTheWholeSuspendCall(t *testing.T) {
@@ -125,7 +133,7 @@ func TestTheWaitBoundsTheWholeSuspendCall(t *testing.T) {
 	if !strings.Contains(answer.errb, "--wait bound of 400ms") {
 		t.Fatalf("stderr is %q, want a refusal naming the --wait bound", answer.errb)
 	}
-	if got, most := lists(), int(400*time.Millisecond/suspendPoll)+2; got < 1 || got > most {
+	if got, most := lists(), int(400*time.Millisecond/heldPoll)+2; got < 1 || got > most {
 		t.Fatalf("the command listed the claims %d times, want at least once and at most %d, the lists a call held to its 400 ms makes", got, most)
 	}
 }

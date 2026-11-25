@@ -1,8 +1,9 @@
-import { beforeEach, expect, setDefaultTimeout, test } from "bun:test"
+import { beforeEach, expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { BROKER_VARIABLES } from "@legion/cipher-client/environment"
 import { METADATA_HOST_VAR } from "@legion/cipher-client/metadata-identity"
+import { IDEMPOTENCY_KEY_COMMITTED } from "@legion/contracts"
 import { ENVOY_INBOUND_VAR } from "@legion/envoy-client/envoy-settings"
 import { NATS_AUTH_VAR } from "@legion/envoy-client/nats-credential"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
@@ -46,6 +47,10 @@ import { FakeNatsServer } from "./fake-nats-server"
 import { isolatePaneEnvironment } from "./pane-environment"
 import { beforeTheGuard, collected, ROW_GUARD_MS, rowStarted } from "./row-deadline"
 import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
+
+// Every row's hang guard (`ROW_GUARD_MS`, 120 s, `./row-deadline.ts`), set above the first row:
+// Bun holds `setDefaultTimeout` only for the rows registered after it.
+setDefaultTimeout(ROW_GUARD_MS)
 
 isolatePaneEnvironment()
 
@@ -96,6 +101,77 @@ test("writes each Envoy envelope into the session as the rendered card that name
       eventId: "evt-42",
     },
   ])
+})
+
+/** A comment event on CORE-1's owner topic, as Dispatch's outbox publishes it: `payload` is the
+ *  event's own. */
+function commentEventRaw(type: string, eventId: string, payload: Record<string, unknown>): string {
+  return JSON.stringify({
+    event_id: eventId,
+    source: "dispatch",
+    source_event_id: "7",
+    topic: `notifications.dispatch.issue.CORE-1.${type}`,
+    dedupe_key: eventId,
+    issued_at: 1_760_000_000_000,
+    payload_summary: "CORE-1 comment",
+    payload: JSON.stringify({
+      id: 7,
+      seq: 7,
+      issue_key: "CORE-1",
+      type,
+      actor: { kind: "user", id: "alice" },
+      notify: true,
+      quiet: false,
+      created_at: "2026-11-02T00:00:00Z",
+      payload: {
+        id: "22222222-2222-4222-8222-222222222222",
+        issue_key: "CORE-1",
+        author: { kind: "user", id: "alice" },
+        created_at: "2026-11-02T00:00:00Z",
+        ...payload,
+      },
+    }),
+    trace_id: eventId,
+  })
+}
+
+// This server never reads a cut body whole: its card is the delivery Dispatch sent, which keeps
+// what its frame carried. A comment event that carried its body's first part alone keeps that
+// part and the note naming the route that answers it whole, and a delete's event is a card of its
+// own kind, which carries no body.
+test("a cut comment's card keeps the part its frame carried and the note, and a delete is a card of its own kind", async () => {
+  const notifier = new FakeNotifier()
+  const delivery = createChannelDelivery({
+    identity: new SessionIdentity("ses_claude", "/tmp"),
+    notifier,
+    configFile: sessionConfigFile("claude", process.env),
+  })
+  const subject = "notifications.dispatch.issue.CORE-1.comment"
+
+  await delivery.enqueue({
+    subject,
+    raw: commentEventRaw("comment.created", "dispatch-cut", {
+      body: "The first paragraph.",
+      body_truncated: true,
+    }),
+  })
+  await delivery.enqueue({
+    subject,
+    raw: commentEventRaw("comment.deleted", "dispatch-deleted", {
+      deleted_at: "2026-11-03T00:00:00Z",
+      deleted_by: { kind: "user", id: "alice" },
+    }),
+  })
+
+  const [cut, deleted] = notifier.notifications.map((notification) => notification.content)
+  expect(cut).toContain("type: comment.created")
+  expect(cut).toContain("body: The first paragraph.")
+  expect(cut).toContain(
+    "the body is its first part only; read it whole with GET /api/v1/comments/22222222-2222-4222-8222-222222222222",
+  )
+  expect(deleted).toContain("type: comment.deleted")
+  expect(deleted).toContain('deleted_at: "2026-11-03T00:00:00Z"')
+  expect(deleted).not.toContain("body:")
 })
 
 test("delivers each dedupe key once and answers each relayed frame, never a receipt", async () => {
@@ -504,17 +580,23 @@ test("the Codex manifest starts the server in the plugin's own directory, as the
   expect(envoy.args).toEqual(["./dist/envoy-channel.js", "--host", "codex"])
   // Every variable that names where Envoy, NATS, Dispatch or the secrets broker is, or the
   // credential for it: a Legion session pod sets several of these (its NATS nkey seed and its
-  // Dispatch token as files), and one Codex does not pass leaves the server without it.
+  // Dispatch token as files), and one Codex does not pass leaves the server without it. The read
+  // settings narrow the server's Dispatch trade, and the token files turn its Dispatch off, so
+  // the server must see those too.
   for (const name of [
     "AGENTBOX_HOST",
     "AGENT_SECRETS_MACHINE_AUDIENCE",
     "AGENT_SECRETS_MACHINE_IDENTITY",
     "AGENT_SECRETS_MACHINE_TOKEN_FILE",
     "AGENT_SECRETS_URL",
+    "DISPATCH_BROKER_DPOP_KEY_FILE",
+    "DISPATCH_BROKER_TOKEN_FILE",
     "DISPATCH_PUBLIC_URL",
     "DISPATCH_STATE_DIR",
     "DISPATCH_TOKEN",
     "DISPATCH_TOKEN_BROKER",
+    "DISPATCH_TOKEN_BROKER_AS_OF",
+    "DISPATCH_TOKEN_BROKER_READ",
     "DISPATCH_TOKEN_FILE",
     "DISPATCH_URL",
     "ENVOY_CONFIG_FILE",
@@ -694,6 +776,49 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
   }
 })
 
+// A report Dispatch made and gave no copy of its answer for (`409 KEY_COMMITTED`) answered the
+// attempt: its line says it landed, never that it could not be reported.
+test("a rejected frame's report that landed with no answer back is not said to be unreported", async () => {
+  let server: Server<undefined> | undefined
+  const written = spyOn(process.stderr, "write").mockImplementation(() => true)
+  try {
+    const replies: string[] = []
+    server = Bun.serve({
+      port: 0,
+      fetch: (request) => {
+        replies.push(new URL(request.url).pathname)
+        return Response.json(
+          { code: IDEMPOTENCY_KEY_COMMITTED, error: "this request already ran" },
+          { status: 409 },
+        )
+      },
+    })
+    process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
+    process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
+    const delivery = createChannelDelivery({
+      identity: new SessionIdentity("ses_claude", process.cwd()),
+      notifier: new FakeNotifier(),
+      configFile: sessionConfigFile("claude", process.env),
+    })
+
+    expect(await delivery.enqueue({ subject: directSubject, raw: rejectedFrameRaw })).toBe(false)
+
+    const lines = written.mock.calls.map((call) => String(call[0]))
+    expect(replies).toEqual(["/api/v1/messages/44444444-4444-4444-8444-444444444444/reply"])
+    expect(lines.filter((line) => line.includes("could not report"))).toEqual([])
+    expect(
+      lines.filter((line) =>
+        line.startsWith(
+          "envoy-channel: the report of the rejected delivery landed on Dispatch, which gave no copy of its answer — POST ",
+        ),
+      ),
+    ).toHaveLength(1)
+  } finally {
+    written.mockRestore()
+    server?.stop(true)
+  }
+})
+
 // The forwarder releases the claim of a frame Claude Code was not handed, so the re-send of a
 // Dispatch frame the channel answered with an error is answered again rather than dropped as a
 // repeat of its dedupe key.
@@ -708,16 +833,14 @@ test("a Dispatch frame the channel answered with an error is answered again when
       ),
     )
     const replied: string[] = []
-    const controlAnswered = Promise.withResolvers<void>()
     server = Bun.serve({
       port: 0,
       fetch: (request) => {
-        const path = new URL(request.url).pathname
-        replied.push(path)
-        if (path.includes("55555555")) controlAnswered.resolve()
+        replied.push(new URL(request.url).pathname)
         return Response.json({})
       },
     })
+    const answersTo = (id: string) => replied.filter((path) => path.includes(id)).length
     process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
     process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
     const nats = new FakeNats()
@@ -732,23 +855,30 @@ test("a Dispatch frame the channel answered with an error is answered again when
 
     relayed(nats, 1, rejectedFrameRaw)
     // Answered on Dispatch, and the frame is done: the key it was claimed under is released
-    // again, since Claude Code was never handed the message.
-    await waitFor(async () => nats.repliesOn("_INBOX.1").includes("done"), "the first answer")
-    expect(replied.filter((path) => path.includes("44444444"))).toHaveLength(1)
+    // again, since Claude Code was never handed the message. The channel answers a frame `done`
+    // only once it is through with it, its reply on Dispatch posted, so each verdict below is
+    // read at that frame's own `done`.
+    expect(await nats.settled("_INBOX.1")).toBe("done")
+    expect(answersTo("44444444")).toBe(1)
 
     // The listener mints a fresh event id for the re-send; its dedupe key is the first send's.
     relayed(nats, 2, JSON.stringify({ ...JSON.parse(rejectedFrameRaw), event_id: "resend" }))
-    // The relay hands frames over in stream order, so the control's answer comes after whatever
-    // the channel did with the re-send.
+    // A frame of another key after it. The two answers can reach Dispatch in either order, since
+    // each reads the session's settings first, asynchronously, so neither frame's answer stands
+    // for the other's: each is read at its own `done`.
     relayed(
       nats,
       3,
       JSON.stringify({ ...control, event_id: "control", dedupe_key: "dispatch-control" }),
     )
-    await controlAnswered.promise
+    expect(await Promise.all([nats.settled("_INBOX.2"), nats.settled("_INBOX.3")])).toEqual([
+      "done",
+      "done",
+    ])
 
     expect(notifier.notifications).toEqual([])
-    expect(replied.filter((path) => path.includes("44444444"))).toHaveLength(2)
+    expect(answersTo("44444444")).toBe(2)
+    expect(answersTo("55555555")).toBe(1)
   } finally {
     await session?.shutdown()
     server?.stop(true)
@@ -833,7 +963,6 @@ const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 // fixed 20 s decided these rows before: at a load near 1,000 a server that wrote that cache into
 // its empty HOME first had not answered its `initialize` in 20 s.
 beforeEach(rowStarted)
-setDefaultTimeout(ROW_GUARD_MS)
 
 /**
  * Runs the channel server as Claude Code does, in `env.HOME` with `env` as its whole environment:

@@ -273,12 +273,16 @@ func (s *server) exit(w http.ResponseWriter, r *http.Request) {
 
 // turnOutcome is a producer reporting how one turn of its agent ended, clean or refused by the
 // provider, with its own sequence within the launch generation. The daemon keeps the report and
-// derives the claim's run of refused turns from the reports it holds (supervise's turnOutcome),
-// failing the claim once that run reaches the launch failure limit; the answer says what the run
-// now is and whether this report failed the claim. A report that names the number of the task the
-// claim's worker took (`task`) finishes that task, unless it carries the provider error the turn
-// ended in (`providerError`), which keeps the task under its number and starts the wait before
-// its value is written again (supervise's reportedTask, providerErrored).
+// derives the claim's run of refused turns from the reports it holds, which fails no claim
+// (supervise's turnOutcome). A report that names the number of the task the claim's worker took
+// (`task`) finishes that task, unless it carries the provider error the turn ended in
+// (`providerError`), which keeps the task under its number and starts the wait before its value
+// is written again (supervise's reportedTask, providerErrored). A report of any other turn — one
+// that names no task, or another number, or is marked `unprompted` — is judged from its own
+// provider error and keeps no task (supervise's unpromptedTurnEnded). Either way a refusal whose
+// status cannot clear fails the claim at once, and every refusal counts in the claim's one run of
+// provider-error turns. The answer says what the run now is and whether this report failed the
+// claim.
 //
 // The caller is the claim's, proved one of two ways (claimCaller). An Oh My Pi session's pi-legion
 // holds the registration's secret and names the claim with it, as the ready and the exit do. The
@@ -321,24 +325,32 @@ func (s *server) turnOutcome(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, refusal.status, refusal.message)
 		return
 	}
+	status := req.HTTPStatus
+	if status != 0 && (status < 100 || status > 599) {
+		// A number outside the HTTP range is no status a provider answered, and the status decides
+		// whether the claim fails (supervise's holdsTheIssue), so the report is taken as one whose
+		// status cannot be read, which fails nothing. The rollout is warn-first: the report is not
+		// refused (the refusal would be `400 httpStatus <n> is no HTTP status`), so a producer that
+		// sends such a number still has its turn counted, and the warning names it.
+		s.log.Warn("api: a turn outcome named an HTTP status outside 100 to 599; it is taken as no status",
+			"claim", token, "generation", req.Generation, "sequence", req.Sequence, "httpStatus", status)
+		status = 0
+	}
 	ctx, decided := s.decision(r, token)
 	defer decided()
-	err := m.Handle(ctx, supervise.RequestTurnOutcome{
+	// The answer is read under the report's own decision (supervise's HandleTurnOutcome), so
+	// `failed` is true only for the report that failed the claim (claim.TurnOutcomeResponse).
+	answer, err := m.HandleTurnOutcome(ctx, supervise.RequestTurnOutcome{
 		Claim: token, Generation: req.Generation, Sequence: req.Sequence,
 		Refused: req.Outcome == claim.TurnRefused, Message: req.Message,
 		Task: req.Task, ProviderError: (*supervise.ProviderError)(req.ProviderError), Held: req.Held,
+		HTTPStatus: status, Unprompted: req.Unprompted,
 	})
 	if err != nil {
 		s.claimFailure(w, r, "turn outcome", token, err)
 		return
 	}
-	c := m.Claim()
-	run := c.RefusedRun()
-	if c.State == supervise.StateFailed {
-		s.log.Error("api: a claim's provider refused its turns out of their budget", "claim", token,
-			"generation", req.Generation, "sequence", req.Sequence, "refusedRun", run, "failure", c.Failure)
-	}
-	s.writeAnswer(w, r, AnswerTurnOutcome, http.StatusOK, claim.TurnOutcomeResponse{RefusedRun: run, Failed: c.State == supervise.StateFailed})
+	s.writeAnswer(w, r, AnswerTurnOutcome, http.StatusOK, claim.TurnOutcomeResponse{RefusedRun: answer.RefusedRun, Failed: answer.Failed})
 }
 
 // callerRefusal is why a worker's request was not resolved to a claim (claimCaller): the status
@@ -399,8 +411,9 @@ func (s *server) claimCaller(r *http.Request, request string, caller claim.Calle
 // the claim has moved past is refused, and so is a request for any generation but that launch's.
 // A pane left running from a replaced launch — one the daemon could not stop, one whose container
 // outlived its stop — would otherwise add its provider's refusals to the run the daemon counts for
-// the pane that replaced it, and fail a claim whose own agent is working, or take a task for a
-// claim whose own worker holds it.
+// the pane that replaced it, and to that claim's run of provider-error turns, which a refusal that
+// cannot clear fails the claim on (supervise's turnOutcome), or take a task for a claim whose own
+// worker holds it.
 func (s *server) callerByBootToken(r *http.Request, request string, caller claim.BootCaller, generation uint64) (claim.Token, *supervise.Machine, *callerRefusal) {
 	launch, known, err := s.bootTokens.Resolve(r.Context(), caller.BootToken)
 	if err != nil {

@@ -931,6 +931,11 @@ func (b *bridge) result(res resultLine) {
 	b.inRun, b.refusal, b.run = false, nil, taskRun{}
 	b.runEnded(task, refusal != nil)
 	b.emit(shimwire.AgentEnd{})
+	// The report names the task whose turn this was, and no task for a turn that was not the
+	// take's — one an inbox delivery started, the phase hook's reminder among them, or one Claude
+	// Code started itself when a background task finished — which is how this producer says what
+	// dispatch://INFRA-4508's unprompted mark says, so it sends no such mark (turnReports). The
+	// daemon judges the refusal of either from the report, the status in its provider error.
 	b.reports.turnEnded(task, held, refusal)
 	b.idle()
 }

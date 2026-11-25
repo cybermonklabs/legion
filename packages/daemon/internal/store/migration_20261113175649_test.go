@@ -253,7 +253,7 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 	t.Logf("before the migration the task number write is refused: %v", err)
 
 	// The fixture stands just below this migration, so the run applies it and every embedded
-	// migration above it — at this release the twenty-six recorded after it,
+	// migration above it — at this release the thirty-one recorded after it,
 	// 20261113181500_architect_stalled_notices, 20261113182000_architect_entry_upgrade,
 	// 20261114020537_claim_entry_handshake, 20261114031356_merge_queue_removal,
 	// 20261114061900_phase_entry_verbatim, 20261115194357_project_pause,
@@ -274,10 +274,16 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 	// default),
 	// 20261122160000_design_news_credit_at_turn_start (which writes design_news_told_in again to
 	// read turn_started, a column this migration adds),
+	// 20261123050533_idle_release_keeps_no_workspace (which drops workspace_bundles and adds
+	// idle_release_declines and issue_releases.turn_start),
 	// 20261123165139_experiment_assignment_plan (which adds experiment_assignments.plan at its
-	// default) and 20261123212127_claim_start_failure_after_ready (which empties
-	// claims.last_start_failure on every claim stored ready, working or idle), which run after its
-	// fill and touch no column
+	// default), 20261123212127_claim_start_failure_after_ready (which empties
+	// claims.last_start_failure on every claim stored ready, working or idle),
+	// 20261123224717_members_owed (which adds issues.members_owed and marks the roots whose
+	// re-admitted generation no promotion has opened), 20261124060500_issue_priority (which adds
+	// issues.priority), 20261124073512_claim_cause_times (which adds the claims' two cause times and
+	// their digests) and 20261124143026_issue_release_teardown (which adds issue_releases.teardown
+	// and pod_releases.issue_release_id), which run after its fill and touch no column
 	// the fill writes or this test reads — and nothing else. So the fill runs here before the
 	// handshake's columns stand, as it does on a store migrated in version order, and confirms no
 	// handshake (TestMigrationTaskNumbersConfirmsTheHandshakeOfATakeItFills reads the upgrade from

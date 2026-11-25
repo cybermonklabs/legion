@@ -6,10 +6,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// report is one turn's outcome as its producer reports it, at the claim's current generation.
+// report is one turn's outcome as its producer reports it, at the claim's current generation,
+// naming no task and marked as nothing: a report of a turn that was not the take's, which a
+// refusal of is judged by its status alone and no status here gives (turnOutcome,
+// unpromptedTurnEnded), so it fails nothing.
 func (h *harness) report(sequence uint64, refused bool, message string) {
 	h.t.Helper()
 	h.must(RequestTurnOutcome{
@@ -51,60 +55,170 @@ func TestTheRefusedRunIsTheSameWhateverOrderTheReportsArriveIn(t *testing.T) {
 	}
 }
 
+// refusedTurn ends the turn of the take the claim is working as a current Oh My Pi worker's
+// refused turn ends: the end frame, and then its producer's end report, which names the take's
+// task and carries the provider's failure with the status the provider answered, which alone
+// decides what the error does (reportedTask, providerErrored). The report goes under sequence, so
+// a case that interleaves it with reports of other turns keeps one order of the producer's turns.
+func (h *harness) refusedTurn(sequence uint64, status int, message string) {
+	h.t.Helper()
+	number := h.pending().Number
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	if err := h.m.Handle(h.ctx, RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: sequence,
+		Task: number, Refused: true, Message: message, ProviderError: &ProviderError{Status: status, Message: message}}); err != nil {
+		h.t.Fatalf("report the refused turn of task %d: %v", number, err)
+	}
+	h.m.Wait()
+	h.workerAsks()
+}
+
+// refusedUntilA400 is a working claim whose provider refused launch_failure_limit turns in a row:
+// each but the last with a 529, which can clear, so the ladder writes the task's value again after
+// it for the worker to take, and the last with a 400, which cannot clear and fails the claim. It
+// answers the claim's harness and that limit.
+func refusedUntilA400(t *testing.T) (*harness, int) {
+	t.Helper()
+	h := workingClaim(t)
+	limit := testLimits().LaunchFailures
+	for turn := 1; turn < limit; turn++ {
+		h.refusedTurn(uint64(turn), 529, "overloaded_error: Overloaded")
+		h.climbs(turn, promptRetryDelay(turn))
+	}
+	h.refusedTurn(uint64(limit), 400, "invalid_request_error: messages: unexpected role")
+	return h, limit
+}
+
+// A run of refused turns fails no claim, however long it is (dispatch://INFRA-4508). Each turn
+// here ends as a current Oh My Pi worker's take's turn ends when its provider is overloaded: the
+// producer's end report names the task and carries a 529, an error that can clear. Twenty-five
+// such turns in a row, far past the launch failure limit at which the run used to fail the claim,
+// leave the claim working in the session it had: the task goes to that session again after every
+// turn, on the ladder's waits and with no attempt limit, and the project's controller is told
+// once, at the sixth turn (providerErrorRunTold).
+func TestARunOfRefusedTurnsThatCanClearHasNoAttemptLimit(t *testing.T) {
+	notices := 0
+	h := workingClaim(t, func(d *Deps) {
+		d.ProviderErrorRunReached = func(Claim, string) { notices++ }
+	})
+	spawns, resumes := len(h.calls("Spawn")), len(h.calls("Resume"))
+	const turns = 25
+
+	for turn := 1; turn <= turns; turn++ {
+		h.refusedTurn(uint64(turn), 529, "overloaded_error: Overloaded")
+		if c := h.claim(); c.State == StateFailed {
+			t.Fatalf("refused turn %d failed the claim: %q", turn, c.Failure)
+		}
+		told := 0
+		if turn >= providerErrorRunTold {
+			told = 1
+		}
+		if notices != told {
+			t.Fatalf("after refused turn %d the controller was told %d times, want %d: once, at the sixth", turn, notices, told)
+		}
+		if sent := h.climbs(turn, promptRetryDelay(turn)); !strings.HasSuffix(sent, providerErrorTaskText) {
+			t.Fatalf("after refused turn %d the ladder sent %q, want the task again", turn, sent)
+		}
+	}
+
+	h.wantState(StateWorking)
+	if c := h.claim(); c.Session != session || c.Failure != "" {
+		t.Fatalf("after %d refused turns the claim records session %q and failure %q, want the session it had and no failure",
+			turns, c.Session, c.Failure)
+	}
+	h.wantCalls("Spawn", spawns)
+	h.wantCalls("Resume", resumes)
+	// The run is counted up to the launch failure limit, which is what each report is answered with.
+	h.wantRefusedRun(testLimits().LaunchFailures)
+	if got := h.claim().ProviderErrorRun; got != turns {
+		t.Errorf("the run of provider errors is %d, want %d: the notice bounds nothing", got, turns)
+	}
+	if stored := h.store.load(testToken); stored.State == StateFailed || stored.Failure != "" {
+		t.Errorf("the stored claim is %s with failure %q, want it live", stored.State, stored.Failure)
+	}
+	h.wantBudgets(Budgets{})
+}
+
+// One refused turn whose provider error cannot clear fails the claim at once. The turns before it
+// here are refused with a 529, which can clear, so the 400's turn is the launch_failure_limit-th
+// refusal in a row: the claim's failure names the status the take's end report gave, not a run
+// of refused turns, the claim keeps the task it owes for its architect, and nothing is given again.
+func TestARefusedTurnWhoseErrorCannotClearFailsTheClaimAtOnce(t *testing.T) {
+	h, limit := refusedUntilA400(t)
+
+	h.wantState(StateFailed)
+	c := h.claim()
+	if !strings.Contains(c.Failure, "cannot clear") || !strings.Contains(c.Failure, "HTTP 400") || strings.Contains(c.Failure, "in a row") {
+		t.Fatalf("the failure is %q, want the provider error that cannot clear named by its status, not a run of refused turns", c.Failure)
+	}
+	if c.FailureCause != CauseProviderError {
+		t.Errorf("the failure's cause is %q, want %q", c.FailureCause, CauseProviderError)
+	}
+	if c.Pending == nil {
+		t.Error("the failed claim holds no task; the work is still owed and the architect decides it")
+	}
+	if stored := h.store.load(testToken); stored.State != StateFailed || stored.Failure != c.Failure {
+		t.Errorf("the stored claim is %s with failure %q, want the failure persisted", stored.State, stored.Failure)
+	}
+	h.wantRefusedRun(limit)
+	// The task and the 529s' sends of it, one each; the 400 sends nothing again, however long the
+	// claim waits.
+	h.advance(promptRetryMax)
+	h.wantPrompts(limit)
+}
+
 // A report that arrives after the next turn has already reported lands in its own place: the run
-// counts the turns, not the calls, so a late refusal of turn 2 beside refusals of 1 and 3 is the
-// third refusal in a row and fails the claim, exactly as the three in order would.
-func TestALateReportLandsInItsOwnPlaceAndFailsTheClaimAsAnInOrderOneWould(t *testing.T) {
+// counts the turns, not the calls, so a late refusal of turn 2 beside refusals of 1 and 3 makes a
+// run of three, exactly as the three in order would, and the newest refusal is turn 3's whichever
+// arrived last.
+func TestALateReportLandsInItsOwnPlaceInTheRun(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateIdle)
 	h.report(1, true, "first")
 	h.report(3, true, "third")
 	h.wantRefusedRun(2)
-	h.wantState(StateIdle)
 
 	h.report(2, true, "second, reported late")
 
-	h.wantState(StateFailed)
-	if want := "the provider refused 3 turns in a row: third"; h.claim().Failure != want {
-		t.Fatalf("failure %q, want %q: the newest refused report names the message, whichever arrived last", h.claim().Failure, want)
+	h.wantRefusedRun(3)
+	h.wantState(StateIdle)
+	if got := h.claim().LastRefusal(); got != "third" {
+		t.Fatalf("the newest refusal is %q, want turn 3's: the order is the turns', not the arrivals'", got)
 	}
 }
 
-// Three refused turns in a row fail the claim, with the cause naming the provider's refusal and
-// what it said about the newest of them. The process is let go, as every failure lets it go.
-func TestARunOfRefusedTurnsAtTheLimitFailsTheClaimNamingTheProvidersRefusal(t *testing.T) {
+// The reports alone fail nothing either: a run of refused reports past the launch failure limit
+// is recorded and persisted, counted up to that limit, and leaves the claim where it was, with
+// its process and its session. These reports name no task and their refusals no status, so each
+// is judged as a turn that was not the take's, by a status that can clear (unpromptedTurnEnded).
+func TestARunOfRefusedReportsPastTheLimitLeavesTheClaimWhereItWas(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateIdle)
 	limit := testLimits().LaunchFailures
 
-	for turn := 1; turn < limit; turn++ {
-		h.report(uint64(turn), true, "stopReason: error")
+	for turn := 1; turn <= 3*limit; turn++ {
+		h.report(uint64(turn), true, "the provider ended the turn with an error at 226k tokens of context")
 		h.wantState(StateIdle)
 	}
-	h.report(uint64(limit), true, "the provider ended the turn with an error at 226k tokens of context")
 
-	h.wantState(StateFailed)
-	want := "the provider refused 3 turns in a row: the provider ended the turn with an error at 226k tokens of context"
-	if h.claim().Failure != want {
-		t.Fatalf("failure %q, want %q", h.claim().Failure, want)
+	h.wantRefusedRun(limit)
+	if c := h.claim(); c.Failure != "" || c.Session != session || c.Locator == nil {
+		t.Fatalf("the claim records failure %q, session %q and process %+v, want no failure, its session and its process",
+			c.Failure, c.Session, c.Locator)
 	}
-	if stored := h.store.load(testToken); stored.State != StateFailed || stored.Failure != want {
-		t.Errorf("stored claim = %s with failure %q, want the failure persisted", stored.State, stored.Failure)
-	}
-	if h.claim().Locator != nil {
-		t.Errorf("the failed claim still records %+v, want its process let go", h.claim().Locator)
+	if stored := h.store.load(testToken); stored.State != StateIdle || stored.RefusedRun() != limit {
+		t.Errorf("the stored claim is %s with a run of %d, want idle with the run of %d persisted", stored.State, stored.RefusedRun(), limit)
 	}
 }
 
 // A report whose write failed (TurnOutcome.Unapplied) stays in the window until it is sent again,
 // held beside the window's bound rather than in it, so the run of refused turns that follows it is
-// read whole: at the limit the claim fails, as a run with no such report before it fails it. In the
-// bound, that report would take the place of the run's oldest turn, and the run would stop one short
-// of the limit for as long as the report stayed unsent.
+// read whole: at the limit it reads the limit, as a run with no such report before it does. In the
+// bound, that report would take the place of the run's oldest turn, and the run would stop one
+// short of the limit for as long as the report stayed unsent.
 //
 // The negative control is the commit under this change, whose bound counted the report never
-// applied: the third refused turn after it left a run of two, and the claim kept running.
-func TestARefusedRunAfterAReportWhoseWriteFailedIsTakenWholeAndFailsTheClaimAtTheLimit(t *testing.T) {
+// applied: the third refused turn after it left a run of two.
+func TestARefusedRunAfterAReportWhoseWriteFailedIsTakenWhole(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateIdle)
 	limit := testLimits().LaunchFailures
@@ -122,10 +236,8 @@ func TestARefusedRunAfterAReportWhoseWriteFailedIsTakenWholeAndFailsTheClaimAtTh
 
 	h.report(unapplied+uint64(limit), true, "the provider refused the turn")
 
-	h.wantState(StateFailed)
-	if want := "the provider refused 3 turns in a row: the provider refused the turn"; h.claim().Failure != want {
-		t.Fatalf("failure %q, want %q", h.claim().Failure, want)
-	}
+	h.wantState(StateIdle)
+	h.wantRefusedRun(limit)
 	if kept := h.claim().TurnOutcomes; len(kept) != limit+1 || !kept[0].Unapplied {
 		t.Fatalf("the window keeps %+v, want the report whose write failed beside the %d newest", kept, limit)
 	}
@@ -164,24 +276,8 @@ func TestAReportNeverAppliedOfAnEarlierGenerationIsTakenOutOfTheWindow(t *testin
 	}
 }
 
-// A refusal with no message still fails the claim at the limit, and says so rather than naming an
-// empty sentence.
-func TestARunOfSilentRefusalsFailsTheClaimSayingTheProviderSaidNothing(t *testing.T) {
-	h := newHarness(t)
-	h.reach(StateIdle)
-
-	for turn := 1; turn <= testLimits().LaunchFailures; turn++ {
-		h.report(uint64(turn), true, "")
-	}
-
-	h.wantState(StateFailed)
-	if want := "the provider refused 3 turns in a row, and said nothing about why"; h.claim().Failure != want {
-		t.Fatalf("failure %q, want %q", h.claim().Failure, want)
-	}
-}
-
 // A turn the provider took ends the run: the count is of refusals in a row, so an agent that is
-// refused, works, and is refused again is making progress and is never failed for it.
+// refused, works, and is refused again starts its run again from that turn.
 func TestACleanTurnBetweenRefusalsStartsTheRunAgain(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateIdle)
@@ -200,13 +296,14 @@ func TestACleanTurnBetweenRefusalsStartsTheRunAgain(t *testing.T) {
 }
 
 // Both producers report a turn a provider failed as refused, with the failure beside it
-// (pi-legion's turn-outcome, the Claude bridge's turnEnded). Such a turn is the provider-error
-// ladder's, which has no attempt limit (dispatch://INFRA-956 R2): a run of them longer than the
-// launch failure limit never fails the claim, the run of refused turns that limit reads stays at
-// zero, and every one of them takes the task back and writes it again after the ladder's wait,
-// until the run reaches the turn the project's controller is told at (providerErrorRunTold). A
-// refused turn that carries no provider error is still the launch budget's: the same claim,
-// refused that way up to the limit, fails.
+// (pi-legion's turn-outcome, the Claude bridge's turnEnded). Such a turn of the take's task is the
+// provider-error ladder's, which has no attempt limit (dispatch://INFRA-956 R2): a run of them
+// longer than the launch failure limit never fails the claim, the window's run of refused turns
+// counts each up to that limit and decides nothing, and every one of them takes the task back and
+// writes it again after the ladder's wait, until the run reaches the turn the project's controller
+// is told at (providerErrorRunTold). A refused turn that names no task and carries no status fails
+// nothing either (dispatch://INFRA-4508): it is judged as a turn that was not the take's, by a
+// status that can clear, and counts in the same run of provider-error turns.
 func TestTurnOutcomeAProviderErrorTurnIsNoLaunchFailure(t *testing.T) {
 	h := workingClaim(t)
 	limit := testLimits().LaunchFailures
@@ -229,7 +326,7 @@ func TestTurnOutcomeAProviderErrorTurnIsNoLaunchFailure(t *testing.T) {
 		if state := h.state(); state == StateFailed {
 			t.Fatalf("turn %d: the claim failed with %q, want it on the ladder: a provider error is no launch failure", turn, h.claim().Failure)
 		}
-		h.wantRefusedRun(0)
+		h.wantRefusedRun(min(turn, limit))
 		if got := h.claim().ProviderErrorRun; got != turn {
 			t.Fatalf("turn %d: the run of provider errors is %d, want %d", turn, got, turn)
 		}
@@ -242,26 +339,24 @@ func TestTurnOutcomeAProviderErrorTurnIsNoLaunchFailure(t *testing.T) {
 	h.mustQuiet(StreamTurnEnd{Claim: h.token})
 	for turn := 1; turn <= limit; turn++ {
 		h.report(h.worker.sequence+uint64(turn), true, "the provider ended the turn with an error")
-		if turn < limit {
-			h.wantRefusedRun(turn)
-		}
+		h.wantState(StateIdle)
 	}
-	h.wantState(StateFailed)
-	if want := "the provider refused 3 turns in a row: the provider ended the turn with an error"; h.claim().Failure != want {
-		t.Fatalf("failure %q, want %q: a refused turn with no provider error is still the launch budget's", h.claim().Failure, want)
+	h.wantRefusedRun(limit)
+	if c := h.claim(); c.Failure != "" || c.ProviderErrorRun != providerErrorRunTold+limit {
+		t.Fatalf("the claim records failure %q and a run of %d provider errors, want no failure and a run of %d: a refused turn of no task fails nothing and counts in the one run",
+			c.Failure, c.ProviderErrorRun, providerErrorRunTold+limit)
 	}
 }
 
 // A refused turn that carries a provider error and reaches no provider-error ladder — its report
 // names no task, or a number no take of the claim holds, as a reminder's, a card's or a background
-// result's turn does — is counted by nothing else, so it counts toward the refused run, and the
-// launch failure limit fails the claim out of it (dispatch://INFRA-714). Both producers name a
-// provider error beside every refused turn, so this is the only way such a run is counted at all;
-// a provider error on the turn of the task the claim's take holds stays the ladder's
-// (TestTurnOutcomeAProviderErrorTurnIsNoLaunchFailure).
+// result's turn does — is judged from its report alone (unpromptedTurnEnded): it counts toward the
+// refused run and in the claim's run of provider-error turns, and a status that can clear fails
+// nothing, however long the run (dispatch://INFRA-4508). A provider error on the turn of the task
+// the claim's take holds stays the ladder's (TestTurnOutcomeAProviderErrorTurnIsNoLaunchFailure).
 //
 // The negative control is every provider error left uncounted (turnOutcome's refused before this
-// change): the run stays at zero and the claim never fails.
+// change): the run stays at zero.
 func TestTurnOutcomeAProviderErrorRefusalThatReachesNoLadderCountsTowardTheRefusedRun(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -291,13 +386,13 @@ func TestTurnOutcomeAProviderErrorRefusalThatReachesNoLadderCountsTowardTheRefus
 				h.m.Wait()
 				if turn < limit {
 					h.wantRefusedRun(turn)
-					h.wantState(StateIdle)
 				}
+				h.wantState(StateIdle)
 			}
 
-			h.wantState(StateFailed)
-			if want := "the provider refused 3 turns in a row: a card's turn the provider refused"; h.claim().Failure != want {
-				t.Fatalf("failure %q, want %q", h.claim().Failure, want)
+			h.wantRefusedRun(limit)
+			if c := h.claim(); c.Failure != "" || c.ProviderErrorRun != limit {
+				t.Fatalf("the claim records failure %q and a run of %d provider errors, want no failure and a run of %d", c.Failure, c.ProviderErrorRun, limit)
 			}
 		})
 	}
@@ -337,83 +432,119 @@ func TestTheRefusedRunCarriesAcrossAGenerationThatResumesTheSameSession(t *testi
 
 	h.report(1, true, "refused in the resumed session too")
 
-	h.wantState(StateFailed)
-	if !strings.Contains(h.claim().Failure, "refused in the resumed session too") {
-		t.Fatalf("failure %q, want the resumed generation's own refusal named", h.claim().Failure)
+	h.wantRefusedRun(3)
+	if c := h.claim(); c.State == StateFailed || c.LastRefusal() != "refused in the resumed session too" {
+		t.Fatalf("the claim is %s with newest refusal %q, want it live and the resumed generation's own refusal newest", c.State, c.LastRefusal())
 	}
 }
 
-// The retry of a claim the provider refused out of its budget starts a new session rather than
-// resuming the recorded one: the session every turn of which was refused would be refused again.
-// The claim spawns instead of resuming, and the new session starts with a fresh run.
-func TestTheRetryOfAClaimItsProviderRefusedStartsANewSession(t *testing.T) {
-	h := newHarness(t)
-	h.reach(StateIdle)
-	for turn := 1; turn <= testLimits().LaunchFailures; turn++ {
-		h.report(uint64(turn), true, "the provider refused the turn")
+// A retry resumes the recorded session with fresh budgets, whoever makes it, unless it asks for a
+// new session (dispatch://INFRA-4508's R5, check c-retry-keeps-session): a run of refused turns,
+// however long, is the claim's own count of refusals, mostly ones that can clear — a team limit's
+// 429 refuses every session of the team alike — and no sign that its session is bad. Two runs here
+// are of twenty refused turns, each a plugin turn's report, one with a 429 and one with no status;
+// neither fails the claim, so it fails the way such a claim does, its process dying until its
+// launch budget runs out. A claim the 400 of its take's end report failed resumes too, and so do
+// claims that failed on deaths, retried by the workflow or by an operator. Only the retry that asks
+// for a new session (`--fresh-session`, the controller's fresh_session) leaves the recorded session
+// behind, whatever failed the claim. Each row states which it wants. With freshSession as at
+// 9e30e970, which started a new session for a run that reached launch_failure_limit, the 429 and
+// no-status rows that ask for nothing start a new session and fail.
+func TestARetryResumesTheRecordedSessionUnlessItAsksForANewOne(t *testing.T) {
+	const run = 20
+	const newSessionLine = "supervise: retrying in a new session"
+	refusedRun := func(status int) func(*testing.T) *harness {
+		return func(t *testing.T) *harness {
+			t.Helper()
+			h := newHarness(t)
+			h.reach(StateReady)
+			for turn := 1; turn <= run; turn++ {
+				h.pluginTurn(uint64(turn), true, status)
+			}
+			for range testLimits().LaunchFailures {
+				h.observe(runtime.Gone)
+			}
+			h.wantState(StateFailed)
+			h.wantRefusedRun(testLimits().LaunchFailures)
+			return h
+		}
 	}
-	h.wantState(StateFailed)
-	spawns := len(h.calls("Spawn"))
-
-	h.must(RequestRetry{Claim: h.token})
-
-	h.wantState(StateLaunching)
-	h.wantCalls("Spawn", spawns+1)
-	h.wantCalls("Resume", 0)
-	if c := h.claim(); c.Session != "" || c.SessionFile != "" {
-		t.Errorf("the retried claim still records session %q (%s), want it started afresh", c.Session, c.SessionFile)
+	failedByA400 := func(t *testing.T) *harness {
+		t.Helper()
+		h := workingClaim(t)
+		h.refusedTurn(1, 400, "400 invalid_request_error: prompt is too long")
+		h.wantState(StateFailed)
+		return h
 	}
-	h.wantRefusedRun(0)
-	if kept := h.claim().TurnOutcomes; len(kept) != 0 {
-		t.Errorf("the retried claim keeps %+v, want the refused session's turns gone with it", kept)
-	}
-}
-
-// A retry that asks for a new session starts one whatever failed the claim, and a retry that asks
-// for nothing resumes the recorded session as every retry did before: the operator's
-// `legion claims retry --fresh-session` is the ask, and the architect's and the workflow's retries
-// make none. The claim here failed on deaths rather than refusals, so the ask is the only thing
-// deciding it.
-func TestARetryStartsANewSessionWhenItAsksAndResumesTheRecordedOneWhenItDoesNot(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		claim Claim
-		retry Event
-	}{
-		{"the workflow's retry asking for a new session", queuedClaim(), RequestRetry{Claim: testToken, FreshSession: true}},
-		{"the operator's retry asking for a new session", rootClaim(), RequestOperatorRetry{Claim: rootToken, FreshSession: true}},
-		{"the workflow's retry asking for nothing", queuedClaim(), RequestRetry{Claim: testToken}},
-		{"the operator's retry asking for nothing", rootClaim(), RequestOperatorRetry{Claim: rootToken}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			h := newHarnessOf(t, tc.claim)
+	diedOut := func(c Claim) func(*testing.T) *harness {
+		return func(t *testing.T) *harness {
+			t.Helper()
+			h := newHarnessOf(t, c)
 			h.reach(StateReady)
 			h.report(1, true, "refused once, which is not the budget")
 			for range testLimits().LaunchFailures {
 				h.observe(runtime.Gone)
 			}
 			h.wantState(StateFailed)
+			return h
+		}
+	}
+	byWorkflow := func(fresh bool) func(claim.Token) Event {
+		return func(token claim.Token) Event { return RequestRetry{Claim: token, FreshSession: fresh} }
+	}
+	byOperator := func(fresh bool) func(claim.Token) Event {
+		return func(token claim.Token) Event { return RequestOperatorRetry{Claim: token, FreshSession: fresh} }
+	}
+
+	for _, tc := range []struct {
+		name  string
+		claim func(*testing.T) *harness
+		retry func(claim.Token) Event
+		fresh bool
+	}{
+		{"a run of 20 refused turns that ends in a 429 resumes its session", refusedRun(429), byWorkflow(false), false},
+		{"a run of 20 refused turns that ends in a report with no status resumes its session", refusedRun(0), byWorkflow(false), false},
+		{"a claim the 400 of its take's end report failed resumes its session", failedByA400, byWorkflow(false), false},
+		{"a claim that died out, retried by the workflow, resumes its session", diedOut(queuedClaim()), byWorkflow(false), false},
+		{"a claim that died out, retried by an operator, resumes its session", diedOut(rootClaim()), byOperator(false), false},
+		{"a run of 20 refused turns that ends in a 429, retried with --fresh-session, starts a new session", refusedRun(429), byWorkflow(true), true},
+		{"a claim that died out, retried by the workflow asking for a new session, starts one", diedOut(queuedClaim()), byWorkflow(true), true},
+		{"a claim that died out, retried by an operator asking for a new session, starts one", diedOut(rootClaim()), byOperator(true), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := tc.claim(t)
 			resumes, spawns := len(h.calls("Resume")), len(h.calls("Spawn"))
 
-			h.must(tc.retry)
+			h.must(tc.retry(h.token))
 
 			h.wantState(StateLaunching)
-			asked, _ := freshSession(tc.retry, Claim{}, 1)
-			if asked {
-				h.wantCalls("Spawn", spawns+1)
-				h.wantCalls("Resume", resumes)
-				if c := h.claim(); c.Session != "" || c.SessionFile != "" {
-					t.Errorf("the claim still records session %q (%s), want a new one started", c.Session, c.SessionFile)
+			lines := h.records.of(newSessionLine)
+			if !tc.fresh {
+				h.wantCalls("Resume", resumes+1)
+				h.wantCalls("Spawn", spawns)
+				if c := h.claim(); c.Session != session || c.SessionFile != sessionFile || c.Abandoned.Session != "" {
+					t.Fatalf("the retried claim records session %q (%s) and abandoned %+v, want %q resumed and nothing abandoned",
+						c.Session, c.SessionFile, c.Abandoned, session)
 				}
-				h.wantRefusedRun(0)
+				h.wantBudgets(Budgets{})
+				if len(lines) != 0 {
+					t.Fatalf("the retry logged %q %d times, want never", newSessionLine, len(lines))
+				}
 				return
 			}
-			h.wantCalls("Resume", resumes+1)
-			h.wantCalls("Spawn", spawns)
-			if c := h.claim(); c.Session != session {
-				t.Errorf("the claim records session %q, want the recorded %q resumed", c.Session, session)
+			h.wantCalls("Spawn", spawns+1)
+			h.wantCalls("Resume", resumes)
+			if c := h.claim(); c.Session != "" || c.SessionFile != "" || c.Abandoned.Session != session {
+				t.Fatalf("the retried claim records session %q (%s) and abandoned %+v, want the recorded %q forgotten",
+					c.Session, c.SessionFile, c.Abandoned, session)
 			}
-			h.wantRefusedRun(1)
+			h.wantRefusedRun(0)
+			if len(lines) != 1 {
+				t.Fatalf("the retry logged %q %d times, want once", newSessionLine, len(lines))
+			}
+			if why, ok := lines[0].attr("why"); !ok || why.String() != "the retry asked for a new session" {
+				t.Fatalf("the line's why is %v, want the retry's own ask", why)
+			}
 		})
 	}
 }
@@ -466,8 +597,8 @@ func TestAReportOlderThanAFullWindowIsDropped(t *testing.T) {
 }
 
 // The reports survive a daemon restart: the run is derived from what the store holds, so a daemon
-// that restarts between the second refusal and the third fails the claim on the third, as the
-// daemon that saw all three would.
+// that restarts between the second refusal and the third counts a run of three at the third, as
+// the daemon that saw all three would, which is what it answers the third report with.
 func TestTheReportsSurviveARestartAndTheRunGoesOnFromThem(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateIdle)
@@ -478,7 +609,8 @@ func TestTheReportsSurviveARestartAndTheRunGoesOnFromThem(t *testing.T) {
 
 	h.wantRefusedRun(2)
 	h.report(3, true, "refused after the restart")
-	h.wantState(StateFailed)
+	h.wantRefusedRun(3)
+	h.wantState(StateIdle)
 }
 
 // repeatReport sends the turn-outcome report r again, as the worker's plugin sends a report whose
@@ -532,10 +664,12 @@ func TestTurnOutcomeRepeatedAfterARestartIsAppliedOnce(t *testing.T) {
 
 // A report the worker's plugin sends again after newer reports pushed it out of the window is a
 // repeat all the same (the window's watermark, recordTurnOutcome). Report k took its task back
-// for a provider error; reports k+1 to k+3, of turns no take started, leave the window holding
-// them alone; the ladder's wait gives the task again and the worker takes it. Report k sent again
-// then changes nothing: its provider error is not counted again, the take stands, and the window
-// is as it was. So in the daemon that applied k, and in one restarted over what the store holds.
+// for a provider error; reports k+1 to k+3, clean reports of turns no take started, leave the
+// window holding them alone and end the run of provider errors, since a clean report ends it
+// whoever ran the turn (providerErrorRunOver, dispatch://INFRA-4508); the ladder's wait gives the
+// task again and the worker takes it. Report k sent again then changes nothing: its provider
+// error is not counted again, the run stays ended, the take stands, and the window is as it was.
+// So in the daemon that applied k, and in one restarted over what the store holds.
 //
 // The negative control is a repeat found by the window's entries alone (recordTurnOutcome with no
 // watermark): k is no repeat once it has left the window, and its provider error takes the new
@@ -571,8 +705,8 @@ func TestTurnOutcomeSentAgainAfterItLeftTheWindowIsARepeat(t *testing.T) {
 
 			h.repeatReport(first)
 
-			if p := h.pending(); !p.awaitsStart() || p.ProviderErrorRetries != 1 || h.claim().ProviderErrorRun != 1 {
-				t.Fatalf("after report %d was sent again the task is %+v with a run of %d provider errors, want the take standing, one retry and a run of one",
+			if p := h.pending(); !p.awaitsStart() || p.ProviderErrorRetries != 1 || h.claim().ProviderErrorRun != 0 {
+				t.Fatalf("after report %d was sent again the task is %+v with a run of %d provider errors, want the take standing, one retry and the run the clean turns ended still at zero",
 					first.Sequence, p, h.claim().ProviderErrorRun)
 			}
 			if kept := h.claim().TurnOutcomes; !slices.Equal(kept, window) {

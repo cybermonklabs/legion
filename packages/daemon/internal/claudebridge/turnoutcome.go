@@ -16,11 +16,17 @@ const turnOutcomePath = "/legion/v1/claims/turn-outcome"
 // turnReports is the bridge as the Claude Code backend's producer of turn outcomes: every turn the
 // bridge ends is reported to the daemon, clean or refused, with the bridge's own sequence within
 // its launch generation (POST /legion/v1/claims/turn-outcome). The daemon derives the claim's run
-// of refused turns from those reports and fails the claim once the run reaches its launch failure
-// limit, which is the fault that left an implementer's every turn refused by its provider with its
-// claim never failing (dispatch://INFRA-714). A report also names the task whose turn it was, which
-// is what finishes that task, and how the provider failed the turn, which keeps the task under its
-// number for the provider-error ladder instead (supervise's reportedTask).
+// of refused turns from those reports and answers each report with it; the run fails no claim
+// (dispatch://INFRA-4508) and decides nothing. A report also names the task whose turn it was,
+// which is what finishes that task, and how the provider failed the turn, which keeps the task
+// under its number for the provider-error ladder instead (supervise's reportedTask). A turn that
+// was not the take's — one an inbox delivery started, the phase hook's reminder among them, or
+// one Claude Code started itself when a background task finished — names no task, which the
+// daemon reads as dispatch://INFRA-4508's unprompted mark says, so the bridge never sends that
+// mark: the daemon judges such a turn's refusal from its report alone (supervise's
+// unpromptedTurnEnded), by the status its provider error names. A provider error carries the
+// status Claude Code named in api_error_status (bridge.providerError), so the report sends no
+// httpStatus of its own either.
 //
 // The bridge is the producer because it is what sees the refusal: a step Claude Code ends with an
 // error is the assistant message it writes with stopReason "error" (result), and the pane's own
@@ -124,7 +130,8 @@ func (r *turnReports) post(request claim.TurnOutcomeRequest) {
 	case json.Unmarshal(body, &decoded) != nil:
 		logger.Printf("reported turn %d as %s; the daemon's answer could not be read: %s", request.Sequence, request.Outcome, refusalText(status, body))
 	case decoded.Failed:
-		logger.Printf("the daemon failed this claim: its provider refused %d turns in a row", decoded.RefusedRun)
+		// claim.TurnOutcomeResponse says which report sets Failed.
+		logger.Printf("the daemon failed this claim: the provider refused turn %d with an error that cannot clear (%s)", request.Sequence, request.Message)
 	case decoded.RefusedRun > 0:
 		logger.Printf("reported turn %d as %s; the daemon counts %d refused turns in a row", request.Sequence, request.Outcome, decoded.RefusedRun)
 	}

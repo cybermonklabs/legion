@@ -19,9 +19,9 @@ import (
 // transport that failed, cut to reasonBound.
 //
 // A compaction that did not run is this answer and not a failure status, because the operation
-// still did the whole of what it promises: it asked Oh My Pi, and it gave the claim back and
-// sent it the task it owes again, or nothing when it owes none (supervise's compactEnded). So
-// this answer always carries the claim back, whatever it says of the compaction, and the CLI
+// still did the whole of what it promises: it asked Oh My Pi, and it gave the claim back and wrote
+// again the task it owes, for it to take, or nothing when it owes none (supervise's compactEnded).
+// So this answer always carries the claim back, whatever it says of the compaction, and the CLI
 // prints both halves of it in one line (cmd/legion's printCompaction). What it promises of the
 // owed task is that nothing of the daemon's is left holding it: either its value was written
 // again, or the claim came back into something whose own end writes it, and none of those ends
@@ -228,7 +228,7 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 // counted against the transcript the compaction shortened (supervise's compactEnded).
 //
 // A compaction Oh My Pi refused or skipped is no refusal of this route: the answer says so, the
-// claim is back, and whatever task it owes has gone again (CompactResponse). A compaction that
+// claim is back, and whatever task it owes is written again (CompactResponse). A compaction that
 // ran and did not end is a failure of its own: the store would not write the end
 // (supervise.ErrCompactNotEnded), or the claim lost its process under the compaction
 // (supervise.ErrCompactProcessGone). Neither gave the claim back, so neither is answered as a
@@ -319,13 +319,13 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 			return CompactResponse{}, s.refuseState(w, r, m, token, refused.State, m.View())
 		}
 		// Oh My Pi refused or skipped the compaction, the wait for it ran out, or the transport
-		// failed. The claim is back and whatever task it owes has gone again, so the caller is
+		// failed. The claim is back and whatever task it owes is written again, so the caller is
 		// told why rather than told the request failed.
 		reason := boundReason(runtime.RefusalReason(err))
 		if reason == "" {
 			reason = boundReason(err.Error())
 		}
-		s.log.Warn("api: the claim's session was not compacted; the claim is back and whatever task it owes was sent again",
+		s.log.Warn("api: the claim's session was not compacted; the claim is back and whatever task it owes was written again",
 			"claim", token, "reason", reason)
 		return CompactResponse{Reason: reason}, true
 	}

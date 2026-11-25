@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // mergeForward is the daemon's act on a confirmed conflict that R0 found a reason to act on, why
@@ -162,24 +164,38 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 //
 // mergeForward asks once for each head, so a move into merging at a head the merger was already
 // asked of asks nothing more.
+//
+// A move that leaves the record's open ask owed to nobody where the issue now stands (owedTo: the
+// ask of implementing outside implementing that the move did not ask again, the merger's ask
+// outside merging) ends the take hold that ask put on the issue's adopting takes
+// (mergeForwardEnds), as the landing and the clear do (putPullRequest).
 func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) error {
 	if issue.Phase == phase.Implementing {
 		return e.clearMergeForward(ctx, tx, issue.Key)
 	}
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
-	if err != nil || pr == nil || !classify.ConflictRound(*pr) {
+	if err != nil || pr == nil {
 		return err
 	}
-	asked := pr.MergeForward
-	switch {
-	case record.StandsIn(issue, phase.Merging):
-		if asked != nil && asked.Head == pr.HeadSHA && asked.Phase != phase.Implementing && asked.Asked() != claim.RoleMerger {
-			return e.holdMerger(ctx, tx, issue, pr)
+	if classify.ConflictRound(*pr) {
+		asked := pr.MergeForward
+		switch {
+		case record.StandsIn(issue, phase.Merging):
+			if asked != nil && asked.Head == pr.HeadSHA && asked.Phase != phase.Implementing && asked.Asked() != claim.RoleMerger {
+				err = e.holdMerger(ctx, tx, issue, pr)
+			} else {
+				err = e.mergeForward(ctx, tx, issue, w.Line, pr, record.ConflictMergeNext)
+			}
+		case asked != nil && asked.Head == pr.HeadSHA && asked.Phase == phase.Implementing &&
+			w.MovesBack(record.StandsAt(issue), phase.Implementing) && !classify.MergeComesNext(issue, w.Line):
+			err = e.mergeForward(ctx, tx, issue, w.Line, pr, asked.Why)
 		}
-		return e.mergeForward(ctx, tx, issue, w.Line, pr, record.ConflictMergeNext)
-	case asked != nil && asked.Head == pr.HeadSHA && asked.Phase == phase.Implementing &&
-		w.MovesBack(record.StandsAt(issue), phase.Implementing) && !classify.MergeComesNext(issue, w.Line):
-		return e.mergeForward(ctx, tx, issue, w.Line, pr, asked.Why)
+		if err != nil {
+			return err
+		}
+	}
+	if asked, open := openAsk(*pr); open && !owedTo(issue, asked) {
+		e.mergeForwardEnds(ctx, issue.Key)
 	}
 	return nil
 }
@@ -219,7 +235,9 @@ func (e *Engine) holdMerger(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // (record.PullRequest.MergeForward), on a move into implementing (mergeForwardOnEntry) and when
 // the issue leaves the workflow (leave): the ask, its landing and the review it asked for are of
 // a stretch of work that is over, and a later conflict is asked about afresh. A record that holds
-// none is not written.
+// none is not written. A clear of an ask that was open ends the take hold it put on the issue's
+// adopting takes (putPullRequest, mergeForwardEnds): a move back into implementing is no take of
+// the asked role's held by its own merge, since the move clears the ask in its own transaction.
 func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue string) error {
 	pr, err := e.store.PullRequest(ctx, tx, issue)
 	if err != nil || pr == nil || pr.MergeForward == nil {
@@ -227,6 +245,222 @@ func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue string)
 	}
 	pr.MergeForward = nil
 	return e.putPullRequest(ctx, tx, *pr)
+}
+
+// openAsk is the merge forward pr's record holds while it is the open ask of the head pr stands
+// at - an ask of that head that has not landed - and whether it is.
+func openAsk(pr record.PullRequest) (record.MergeForward, bool) {
+	asked := pr.MergeForward
+	if asked == nil || asked.Head != pr.HeadSHA || asked.Landed != "" {
+		return record.MergeForward{}, false
+	}
+	return *asked, true
+}
+
+// openMergeForward says whether the merge forward the record holds, nil for none, is one the take
+// hold may stand over: it has neither landed nor been withdrawn. putPullRequest reads the end of
+// the hold off the two sides of a write by it.
+func openMergeForward(asked *record.MergeForward) bool {
+	return asked != nil && asked.Landed == "" && !asked.Withdrawn
+}
+
+// owedTo says whether the role asked names still owes the merge while issue stands where it does:
+// the merger's ask while the issue stands in merging, where the merge is its own, since a message
+// to the merger outside merging is delivered no more (leftMergeForwardAt); the implementer's ask
+// made in implementing while it stands in implementing, which that ask covers alone, where a later
+// phase that still owes the merge asks again (mergeForwardOnEntry); the implementer's ask made in
+// any later phase wherever the issue stands, merging included, where the merger is held for it
+// (holdMerger); and never once the ask was withdrawn (record.MergeForward.Withdrawn). An asked role
+// whose claim ended still owes it: the head still conflicts, and the ready of that role's next
+// launch asks it again (askAgainAtLaunch).
+func owedTo(issue record.Issue, asked record.MergeForward) bool {
+	switch {
+	case asked.Withdrawn:
+		return false
+	case asked.Asked() == claim.RoleMerger:
+		return record.StandsIn(issue, phase.Merging)
+	case asked.Phase == phase.Implementing:
+		return record.StandsIn(issue, phase.Implementing)
+	}
+	return true
+}
+
+// owedAsk is the record's open ask of the head pr stands at (openAsk) while its asked role owes the
+// merge where issue stands (owedTo), and whether it is. It is the one rule of whether the merge of
+// that head is owed to a role, which the take hold reads (MergeForwardOwed) and the ask sent again
+// to the asked role's next launch (askAgain), so the issue's adopting takes are held exactly while
+// a launch of the asked role is owed the ask.
+func owedAsk(issue record.Issue, pr record.PullRequest) (record.MergeForward, bool) {
+	asked, open := openAsk(pr)
+	return asked, open && owedTo(issue, asked)
+}
+
+// MergeForwardOwed reads in tx whether the merge of the head issue key's pull request stands at is
+// owed to a role now (owedAsk), and which role: supervise's take hold (Deps.MergeForwardOwed),
+// which the daemon answers through it (workflowRuntime.mergeForwardOwed). While it is, every take
+// of the issue's roles that would adopt the working copy they share is refused, the asked role's
+// own included: a merge forward is a role message and no take (mergeForward), so between two runs
+// of the merge, or before its first run starts, no role of the issue is in a turn, and an adoption
+// made then would leave an empty commit on the merge in progress. An issue or a pull request the
+// record does not hold owes no merge. The hold ends where the merge stops being owed: the landing,
+// the clear, and a move that leaves the ask owed to nobody (mergeForwardEnds).
+func MergeForwardOwed(ctx context.Context, store record.Store, tx pgx.Tx, key string) (claim.Role, bool, error) {
+	issue, err := store.Issue(ctx, tx, key)
+	if err != nil || issue == nil {
+		return "", false, err
+	}
+	pr, err := store.PullRequestRow(ctx, tx, key)
+	if err != nil || pr == nil {
+		return "", false, err
+	}
+	asked, owed := owedAsk(*issue, *pr)
+	if !owed {
+		return "", false, nil
+	}
+	return asked.Asked(), true, nil
+}
+
+// mergeForwardEnds tells the daemon, once tx commits, that the merge of issue's head may be owed
+// to no role any more (Config.MergeForwardEnded): the merge forward landed (mergeForwardLanded),
+// was withdrawn or cleared (clearMergeForward), which putPullRequest finds by the open ask its
+// write takes from the record, or a move left the open ask owed to nobody where the issue now
+// stands (mergeForwardOnEntry). Each is an end of the take hold the owed merge put on every take of
+// the issue that would adopt the working copy (MergeForwardOwed), so a take that hold refused is
+// offered again at once; the supervision sweep's offer of a take refused at its latest revision
+// stays the backstop. The end carries no fact: each take asks the record again.
+func (e *Engine) mergeForwardEnds(ctx context.Context, issue string) {
+	if e.cfg.MergeForwardEnded == nil {
+		return
+	}
+	store.OnCommit(ctx, func() { e.cfg.MergeForwardEnded(issue) })
+}
+
+// askAgainAtLaunch sends the record's ask again at the ready of a launch of the asked role's claim
+// (askAgain). The ready is a fact (intake.ClaimReady) the daemon applies once for each launch of a
+// claim (claimReady); the ready of a role no merge forward asks reads nothing more.
+//
+// The asked role's process can be relaunched while the ask is owed - a death, a provider error's
+// retry - and its claim can end: it fails (claimFailed), an operator stops it, or its agent reports
+// its own exit. The new process holds no ask, and a row of the ask queued for an ended claim ends
+// undelivered (the daemon's deliverHeld), so the ready of every later launch asks again, one rule
+// for every cause. The issue's adopting takes stay held meanwhile, the asked role's own phase task
+// included (MergeForwardOwed), since the merge stays owed, so without this the hold would wait for
+// a merge no process was told of. Each launch is told the ask once. While a row of the ask is still
+// queued the ready sends nothing and leaves the ask to that row - the row that woke a released
+// role among them, whose wake is that launch - and the row's end, delivered or not, settles under
+// the fact lock with the claim's launch read again (MergeForwardAskEnded): it records the launch
+// the row reached, so the ready of that launch, where it comes after the delivery, sends nothing
+// either, and it sends the ask to a later launch the row did not reach, whose ready left the ask to
+// the row. A launch that resumes the session an earlier launch was told the ask in is asked once
+// more at its ready: the workflow cannot tell that session from a new one, and an owed ask is
+// still true when it is told again. An ask that landed or was withdrawn, and the ask of
+// implementing outside implementing, are owed to nobody, and a pull request that is not open or a
+// tree that lingers tells nobody.
+func (e *Engine) askAgainAtLaunch(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.ClaimReady) error {
+	pr, err := askAgain(ctx, e.store, tx, issue, fact.Role, fact.Launch, e.now())
+	if err != nil || pr == nil {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: a merge forward still owed is asked again at its role's new launch", "issue", issue.Key,
+		"tree", issue.Tree, "role", fact.Role, "launch", fact.Launch, "phase", record.StandsAt(issue), "pullRequest", pr.Number,
+		"head", pr.MergeForward.Head, "askedIn", pr.MergeForward.Phase)
+	return nil
+}
+
+// askAgain sends the record's ask of issue's pull request again to role at launch, a launch of
+// role's claim later than the one the ask was last told (record.MergeForward.SentLaunch), while
+// the merge of the head is still owed to role where issue stands (owedAsk) and no row of that ask
+// is queued for role and head (record.Store.QueuedMergeForwardAsk), and records launch on the ask.
+// It answers the pull request it wrote, nil where it sent nothing. Launch 0 is no launch: a claim
+// that failed or retired, or one the daemon holds none of, is asked at the ready of its next
+// launch. A pull request that is not open and a tree that lingers tell nobody. Its callers are a
+// launch's ready (askAgainAtLaunch) and the end of a row of the ask (MergeForwardAskEnded), which
+// the daemon's executor makes without an engine, so it writes through store: the row through
+// queuedRow, and the pull request through record.Store.PutPullRequest rather than putPullRequest,
+// since it changes the merge forward alone, which is no news of the pull request (pullRequestNews).
+func askAgain(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue, role claim.Role, launch uint64, now time.Time) (*record.PullRequest, error) {
+	if launch == 0 || !record.MergeForwardReaches(record.MergeForwardAsk, role) || !record.InWorkflow(issue) {
+		return nil, nil
+	}
+	pr, err := store.PullRequest(ctx, tx, issue.Key)
+	if err != nil || pr == nil || pr.State != record.PullRequestOpen {
+		return nil, err
+	}
+	asked, owed := owedAsk(issue, *pr)
+	if !owed || asked.Asked() != role || launch <= asked.SentLaunch {
+		return nil, nil
+	}
+	if queued, err := store.QueuedMergeForwardAsk(ctx, tx, issue.Key, role, asked.Head); err != nil || queued {
+		return nil, err
+	}
+	if lingers, err := record.TreeLingers(ctx, store, tx, issue.Tree); err != nil || lingers {
+		return nil, err
+	}
+	row, err := queuedRow(ctx, tx, store, issue.Key, mergeForwardMessageOf(issue, *pr, role, record.MergeForwardAsk, asked.Why), now)
+	if err != nil {
+		return nil, err
+	}
+	if err := store.Enqueue(ctx, tx, row); err != nil {
+		return nil, err
+	}
+	sent := asked
+	sent.SentLaunch = launch
+	pr.MergeForward = &sent
+	if err := store.PutPullRequest(ctx, tx, *pr); err != nil {
+		return nil, err
+	}
+	return pr, nil
+}
+
+// MergeForwardAskEnded settles the end of a row of the merge-forward ask of head to role on issue
+// key, which the daemon's executor deletes in tx under the fact lock tx holds
+// (intake.SerializeFacts), so the end is ordered with every fact, the ready of each launch of
+// role's claim among them (askAgainAtLaunch). told is the launch of role's claim the row was
+// delivered to, which the executor reads before the publish, and 0 for a row that ends
+// undelivered; launch is the claim's launch as the executor reads it in tx, 0 where the claim has
+// failed or retired or the daemon holds none. It answers whether it sent the ask again.
+//
+// A row delivered to told keeps told on the record's ask (record.MergeForward.SentLaunch) where the
+// ask is of head, names role, has not landed and was last told an earlier launch, so the ready of
+// told, which can come after the delivery, sends nothing again. Then, delivered or not, the ask is
+// sent again at launch (askAgain): a launch whose ready came while the row was still queued sent
+// nothing and left the ask to the row, which reached an earlier launch or none. So each launch is
+// told the ask once, whichever of the row's end and the launch's ready comes first. Read before
+// the publish, told is never a launch later than the one whose session took the message: a launch
+// that came up and took the publish between that read and the publish is told the ask again here,
+// and no launch is left untold.
+func MergeForwardAskEnded(ctx context.Context, store record.Store, tx pgx.Tx, key string, role claim.Role, head string, told, launch uint64, now time.Time) (bool, error) {
+	issue, err := store.Issue(ctx, tx, key)
+	if err != nil || issue == nil {
+		return false, err
+	}
+	if told > 0 {
+		pr, err := store.PullRequest(ctx, tx, key)
+		if err != nil {
+			return false, err
+		}
+		if pr != nil && pr.MergeForward != nil {
+			delivered := *pr.MergeForward
+			if delivered.Head == head && delivered.Landed == "" && delivered.Asked() == role && told > delivered.SentLaunch {
+				delivered.SentLaunch = told
+				pr.MergeForward = &delivered
+				if err := store.PutPullRequest(ctx, tx, *pr); err != nil {
+					return false, err
+				}
+			}
+		}
+	}
+	pr, err := askAgain(ctx, store, tx, *issue, role, launch, now)
+	return pr != nil, err
+}
+
+// mergeForwardMessageOf is the merge-forward message of step to role about the record's ask of pr's
+// head, naming the phase issue stands at, why, and the newest read of GitHub the record holds of
+// the head, as holdMerger's hold names it (record.PullRequest.MergeState and StateReadAt,
+// dispatch://INFRA-2833 R3): what askAgain queues.
+func mergeForwardMessageOf(issue record.Issue, pr record.PullRequest, role claim.Role, step record.MergeForwardStep, why record.ConflictWhy) record.MergeForwardMessage {
+	return record.MergeForwardMessage{Role: role, Step: step, Head: pr.MergeForward.Head, Base: pr.MergeForward.Base,
+		Phase: record.StandsAt(issue), PullRequest: pr.Number, Why: why, MergeState: pr.MergeState, StateReadAt: pr.StateReadAt.UTC()}
 }
 
 // mergeForwardLanded records that a merge forward landed (dispatch://INFRA-4374 R1): pr's head,
@@ -255,7 +489,9 @@ func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue string)
 // that role is the merger, which the landed reaches as the worker of merging, since it tells it to
 // merge the new head only once the reviewer's approval of it is on the pull request, where the
 // task has a reviewer step, and to go on at the new head where it has none. A tree that
-// lingers (record.TreeLingers, where every role is suspended) records and tells nothing.
+// lingers (record.TreeLingers, where every role is suspended) records and tells nothing. The
+// landing ends the take hold the owed merge put on the issue's adopting takes (putPullRequest,
+// mergeForwardEnds), so each take it refused, the asked role's own among them, is offered again.
 func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest) error {
 	asked := pr.MergeForward
 	if asked == nil || asked.Landed != "" || asked.Head == pr.HeadSHA {

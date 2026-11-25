@@ -1181,6 +1181,23 @@ func (m *Machine) adoptionWaits() (claim.Token, bool) {
 	return m.issueInTurn()
 }
 
+// mergeForwardOwed names the role a merge forward of this claim's issue is owed to, when one is
+// owed and has not landed (Deps.MergeForwardOwed), read from the record at each ask: a take of the
+// pending task that would adopt the working copy waits for that merge to land (takeable), since
+// the merge writes the working copy between runs no turn of the issue covers. A daemon with no
+// workflow supplies no answer, and no merge is owed. A read that fails is the caller's to answer:
+// it decides nothing.
+func (m *Machine) mergeForwardOwed(ctx context.Context) (claim.Role, bool, error) {
+	if m.deps.MergeForwardOwed == nil || m.claim.Issue == "" {
+		return "", false, nil
+	}
+	role, owed, err := m.deps.MergeForwardOwed(ctx, m.claim.Issue)
+	if err != nil {
+		return "", false, fmt.Errorf("read whether a merge forward of %s is owed: %w", m.claim.Issue, err)
+	}
+	return role, owed, nil
+}
+
 // adopt hands the working copy the role's App identity before the phase task's take is
 // answered, so the task's commits are authored by the bot. It runs with the machine's lock let
 // go (Machine.Take), so it reads only what the take captured under the lock (adoption). A failure
@@ -1321,21 +1338,21 @@ func interruptedTask(cause string) string {
 }
 
 // abandonedTask begins the first task given to the agent that replaced a session the claim
-// abandoned (forgetSession): one the provider refused out of its budget, one an operator retried
+// abandoned (forgetSession): one whose last turns the provider refused, one an operator retried
 // with --fresh-session, or one no session store holds any more. Nothing in a new session says
 // that an older one existed, so a worker reading an empty transcript takes its task for a fresh
 // start and does again what is already pushed (dispatch://INFRA-714, item 4 of the refusal
-// section). It names the session that was left behind and why in the words the claim recorded —
-// for a refused session the provider's own, the size it refused at among them — and then the two
-// things that outlive a session: the issue's branch, and the handoff records its phases wrote on
-// the Dispatch issue. The controller is told neither, since it works no checkout. last is whether
-// this sentence is the last one before the task, and so ends in the task's own instruction: in
-// front of a task with no record's sentence after it. Where the record's sentence follows it
-// (EndedWork.Tells), that sentence is the last and carries the instruction instead
+// section). It names the session that was left behind and why in the words the claim recorded,
+// and then the two things that outlive a session: the issue's branch, and the handoff records its
+// phases wrote on the Dispatch issue. The controller is told neither, since it works no checkout.
+// last is whether this sentence is the last one before the task, and so ends in the task's own
+// instruction: in front of a task with no record's sentence after it. Where the record's sentence
+// follows it (EndedWork.Tells), that sentence is the last and carries the instruction instead
 // (relaunchSentence); in front of the daemon's own delivery of a relaunch's record, which has no
 // task (Delivery.Relaunch), neither carries one (Delivery.message).
 //
-// The reason is the provider's own text read into an agent's prompt, so it is quoted as a Go
+// The reason can be far-side text read into an agent's prompt — a runtime's account of a death,
+// or the provider's own words in a failure an earlier daemon wrote — so it is quoted as a Go
 // string with %q, the way a check run's name is where the daemon reads one into a prompt
 // (workflow's namedConclusions): the quotes bound it, and a newline or a quote inside it is
 // escaped rather than ending the sentence that carries it, so no refusal text can read as an

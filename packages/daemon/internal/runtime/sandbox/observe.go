@@ -766,3 +766,10 @@ func phaseOf(pod *corev1.Pod) corev1.PodPhase {
 	}
 	return pod.Status.Phase
 }
+
+// movesDaemonAPI is whether moved holds the daemon's own API, LEGION_DAEMON_URL, which a
+// StaleAddress verdict says as runtime.Observation.DaemonAPIMoved: the process can no longer reach
+// the daemon over HTTP, so no report of its turn lands.
+func movesDaemonAPI(moved []movedAddress) bool {
+	return slices.ContainsFunc(moved, func(m movedAddress) bool { return m.where == "LEGION_DAEMON_URL" })
+}

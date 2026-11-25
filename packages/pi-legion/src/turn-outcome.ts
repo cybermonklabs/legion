@@ -14,13 +14,17 @@ import type { AgentEndEvent, AgentEndMessage } from "@legion/pi-shared/pi-types"
  * model answered, and one the provider refused — is reported to the daemon over HTTP, under a
  * sequence this plugin counts itself, so the daemon, not a reminder, answers a session whose
  * provider refuses turn after turn (dispatch://INFRA-264). A refusal this plugin reports carries
- * the provider's failure (`providerError`, below). Where the report is of the turn of the task a
- * take of the claim holds, the daemon's provider-error ladder takes it, and the turn counts toward
- * no launch failure: the task is kept and given to the same session again after a wait, or, for a
- * client error the ladder cannot wait out (a 4xx but 401, 403, 408 and 429), the claim fails and
- * the workflow holds the issue. Every other refused turn — one with no such failure, and one whose
- * report reaches no ladder, a reminder's, a card's or a background result's — counts toward the
- * run that fails the claim at `launch_failure_limit`.
+ * the provider's failure (`providerError`, below), with the HTTP status the provider answered
+ * where the host recorded one. Where the report is of the turn of the task a take of the claim
+ * holds, the daemon's provider-error ladder takes it: the task is kept and given to the same
+ * session again after a wait, or, for a client error the ladder cannot wait out (a 4xx but 401,
+ * 403, 408 and 429), the claim fails and the workflow holds the issue. Every other refused turn —
+ * a reminder's, a card's or a background result's, whose report names no task — is judged from
+ * its report alone (dispatch://INFRA-4508): a status that cannot clear fails the claim and holds
+ * the issue, and any other counts in the claim's run of provider-error turns. No run of refused
+ * turns fails a claim. Naming no task is how this plugin says a turn was not the take's, so it
+ * sends neither the `unprompted` mark nor an `httpStatus` of its own beside `providerError`, which
+ * a plugin from before the task's number sends (below daemon API contract 274).
  *
  * The count is this producer's alone. It is not the daemon's turn ordinal and not
  * `supervise.StreamTurnEnd`'s: two counters would drift the moment one of them missed an end, and
@@ -125,16 +129,21 @@ export interface TurnOutcomeReporter {
 
 /**
  * The provider failure an `error` stop carries, as the turn-outcome report names it: the HTTP
- * status of the failed request (0 where it had none, as a content filter's refusal has none), the
- * provider and the model, the provider's message, and whether this plugin reads the status as a
- * failure that may clear: a 408 or a 429, a provider's "not now" its own retries may still get
- * through, or a 5xx. The daemon decides by the status alone.
+ * status of the failed request (0 where it had none, as a content filter's refusal has none, and
+ * for a number that is no HTTP status, 100 to 599, which the host's field can hold), the provider
+ * and the model, the provider's message, and whether this plugin reads the status as a failure
+ * that may clear: a 408 or a 429, a provider's "not now" its own retries may still get through,
+ * or a 5xx. The daemon decides by the status alone. No status is ever read out of the words.
  */
 function providerError(
   message: AgentEndMessage,
   refusal: string
 ): NonNullable<LegionTurnOutcomeRequestBody["providerError"]> {
-  const status = message.errorStatus ?? 0;
+  const recorded = message.errorStatus;
+  const status =
+    typeof recorded === "number" && Number.isInteger(recorded) && recorded >= 100 && recorded <= 599
+      ? recorded
+      : 0;
   return {
     status,
     provider: message.provider ?? "",

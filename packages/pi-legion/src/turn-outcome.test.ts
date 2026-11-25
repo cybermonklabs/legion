@@ -229,6 +229,81 @@ test("a provider error's report names its status, provider and model beside the 
   expect(posted[1]).not.toHaveProperty("task");
 });
 
+/** A refusal as Oh My Pi records it, with the status the provider answered where it gave one. */
+function refusedWith(errorStatus?: number): AgentEndEvent {
+  return {
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "error",
+        errorMessage: "the provider refused the request",
+        ...(errorStatus === undefined ? {} : { errorStatus }),
+      },
+    ],
+  };
+}
+
+// The status is the host's own field (`errorStatus` on the refused assistant message), carried in
+// the report's provider error, and never read out of the words: a refusal whose message names a
+// status but whose message carries no `errorStatus` goes with none, as does a number that is no
+// HTTP status. The status rides in `providerError` alone: this plugin sends no `httpStatus`, the
+// field of a plugin from before the task's number, below daemon API contract 274
+// (dispatch://INFRA-4508).
+test("a refused turn's provider error carries the status the host recorded, and only that", async () => {
+  const { report, posted } = rig();
+
+  await report(SESSION, refusedWith(529));
+  await report(SESSION, refusedWith(400));
+  await report(SESSION, {
+    messages: [{ role: "assistant", stopReason: "error", errorMessage: "429 rate limit" }],
+  });
+  await report(SESSION, refusedWith(0));
+  await report(SESSION, refusedWith(1000));
+  await report(SESSION, {
+    messages: [{ role: "assistant", stopReason: "stop", errorStatus: 500 }],
+  });
+
+  const statuses = posted.map((body) => [
+    body.outcome,
+    (body.providerError as { status?: number } | undefined)?.status,
+  ]);
+  expect(statuses).toEqual([
+    ["refused", 529],
+    ["refused", 400],
+    ["refused", 0],
+    ["refused", 0],
+    ["refused", 0],
+    ["clean", undefined],
+  ]);
+  for (const body of posted) expect(body).not.toHaveProperty("httpStatus");
+});
+
+// A turn that was not the take's — a phase reminder the plugin starts itself, an Envoy message, a
+// background job's result — names no task, which is how this plugin says what the `unprompted`
+// mark of a plugin from before the task's number says: the daemon judges that turn from the
+// report alone (dispatch://INFRA-4508's R4). The take's own turn names its task. Neither report is
+// ever marked unprompted.
+test("a turn that was not the take's names no task, a take's turn names its task, and neither is marked unprompted", async () => {
+  const { report, posted } = rig();
+
+  await report(SESSION, refusedWith(529), 4);
+  await report(SESSION, refusedWith(529));
+
+  expect(posted[0]).toMatchObject({
+    sequence: 1,
+    outcome: "refused",
+    task: 4,
+    providerError: { status: 529 },
+  });
+  expect(posted[1]).toMatchObject({
+    sequence: 2,
+    outcome: "refused",
+    providerError: { status: 529 },
+  });
+  expect(posted[1]).not.toHaveProperty("task");
+  for (const body of posted) expect(body).not.toHaveProperty("unprompted");
+});
+
 // The sequence is this producer's own: it is what keys the outcome the daemon stores, so two
 // turns must never share one, and the order it gives them out is the order the turns ended in.
 test("the sequence counts this plugin's own turns, from one and in order, within the generation", async () => {
@@ -271,7 +346,7 @@ test("a session holding no claim reports nothing and spends no sequence", async 
 });
 
 // A refusal the daemon itself gives will not pass on a retry, so the turn goes uncounted and the
-// pane says so once: a report dropped in silence is a claim that never fails.
+// pane says so once: a report dropped in silence is a run of refusals that comes up short.
 test("a report the daemon refuses is warned about, and the next turn still reports", async () => {
   const { report, posted, warned } = rig({
     answer: (attempt) =>

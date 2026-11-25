@@ -217,7 +217,7 @@ func (m *Machine) reconnectFromClose() {
 	if a, armed := m.timers[TimerRegistration]; armed && !a.due.Before(due) {
 		return
 	}
-	m.arm(TimerRegistration, max(due.Sub(m.deps.Clock.Now()), 0), "")
+	m.armAt(TimerRegistration, due, "")
 }
 
 // armReconnectForTask arms the reconnect deadline whole from now over a pending task the claim's
@@ -502,20 +502,20 @@ func (m *Machine) answerView(ctx context.Context, streaming bool) error {
 // its close, a held suspension stopping the process in either place, and the task taken back as a
 // cut turn (interrupted).
 //
-// A claim holding a replacement of its live process for the report of its take's turn
-// (heldReplacement: a repoint after that turn ended, or a parked replacement whose wake's turn came
-// after it) reaches this deadline as that wait's bound, over a view not whole, where the report
-// wait's own bound does not run, as when the stale address is the worker stream's, which the shim
-// cannot dial. A suspension the deadline runs above ends the process instead. Otherwise the task is
-// taken back with the note of a cut turn and the held replacement runs: the repoint's own
-// relaunch, charged nothing, before the hello paths below, since a stale observation is never
-// charged (replacementAtDeadline). The relaunch of a hello no answer followed that the pacing
-// parks is held at its turn the same way, and so is bounded by a deadline only where one stands
-// then (replacementHolds): the park took this one (waitOnMachine).
+// Over a view not whole this deadline is also the bound of work held for the report of the take's
+// turn, since the report wait's own bound judges only a whole view: the operator's stop
+// (stopAtDeadline), read before every path below, a held suspension's among them, whose let-go
+// would drop the stop the route answered 202 for; and a held replacement (replacementAtDeadline),
+// read after a suspension the deadline runs above, which ends the process instead, and before the
+// hello paths, which would charge a stale observation.
 func reconnectDeadline(m *Machine, ctx context.Context, _ Event) error {
 	askedTurn := m.askTurn && !m.askedAt.IsZero()
 	if askedTurn && m.inTurn() && m.connSeen != viewWhole {
 		m.askTurn, m.unansweredAsks, askedTurn = false, 0, false
+	}
+	if m.heldStop {
+		m.markTurnUnseen()
+		return m.stopAtDeadline(ctx)
 	}
 	helloed := askedTurn || m.connSeen == viewAsked
 	if (m.held != nil && !helloed) || m.heldRunsNow() {
@@ -531,10 +531,6 @@ func reconnectDeadline(m *Machine, ctx context.Context, _ Event) error {
 		return m.refreshPlugin(ctx, m.askTrigger, nil, atReconnectDeadline)
 	}
 	m.markTurnUnseen()
-	// A replacement held for the report of the take's turn over this view not whole (repoint,
-	// runWake) is bounded by this deadline, the report wait's own bound judging only a whole view:
-	// it takes the task back with the note of a cut turn and runs, uncharged, rather than charge
-	// the no-hello path's CauseNeverReconnected (replacementAtDeadline).
 	if m.heldReplacement != nil {
 		return m.replacementAtDeadline(ctx)
 	}

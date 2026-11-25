@@ -20,10 +20,11 @@ import (
 // legion_tasks bucket on NATS (internal/daemon's task bucket); a fake stands in for it in tests.
 //
 // A write answers the bucket's epoch and the revision the write made, which the claim records as
-// the daemon's own last write (Claim.TaskWrittenRevision). A write and a delete are store writes of
-// the machine's own, made under the machine's lock and the claim-write deadline, as its claim
-// writes are (write); a read takes neither, since it is made for a worker that registers or asks
-// and copies no claim (CurrentTask).
+// the daemon's own last write (Claim.TaskWrittenRevision). A write and a delete are writes of the
+// machine's own, made under the machine's lock and the claim-write bound alone (writeBucket): the
+// bucket is no store of the pool, so the wait for a connection a claim write is also given has
+// nothing to count here. A read takes neither, since it is made for a worker that registers or
+// asks and copies no claim (CurrentTask).
 type TaskValues interface {
 	// Write puts the claim's value under number, and answers the epoch of the bucket it wrote
 	// to and the revision the write made.
@@ -240,7 +241,7 @@ func (m *Machine) putValue(ctx context.Context, d Delivery, cause string) (TaskR
 	}
 	finished := m.claim.finishedLastTask()
 	var revision TaskRevision
-	err := m.write(ctx, func(ctx context.Context) error {
+	err := m.writeBucket(ctx, func(ctx context.Context) error {
 		var err error
 		revision.Epoch, revision.Revision, err = m.deps.TaskValues.Write(ctx, m.claim.Token, d.Number)
 		return err
@@ -277,7 +278,7 @@ func (m *Machine) deleteValue(ctx context.Context, number uint64, cause string) 
 	if m.deps.TaskValues == nil {
 		return
 	}
-	if err := m.write(ctx, func(ctx context.Context) error { return m.deps.TaskValues.Delete(ctx, m.claim.Token) }); err != nil {
+	if err := m.writeBucket(ctx, func(ctx context.Context) error { return m.deps.TaskValues.Delete(ctx, m.claim.Token) }); err != nil {
 		m.valueUndeleted = valueDelete{number: number, cause: cause}
 		m.log.Warn("supervise: the task value could not be deleted; it is deleted again at the claim's next chance",
 			"task", number, "cause", cause, "error", err)

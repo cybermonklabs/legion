@@ -526,7 +526,7 @@ func TestTheTaskRouteNamesTheTakesHeldBehindTheCallersTurn(t *testing.T) {
 // contract is never below it: a merge that renumbers this change moves its entry and this
 // constant together, and a later contract bump changes neither.
 func TestTheTaskHoldsContractIsTheContractThatAddedHolds(t *testing.T) {
-	const addedHolds = 252
+	const addedHolds = 281
 	if taskHoldsContract != addedHolds {
 		t.Fatalf("taskHoldsContract = %d, want %d, the contract whose entry in version.go added holds to the task route",
 			taskHoldsContract, addedHolds)

@@ -11,11 +11,11 @@
 {"time":"2026-11-14T09:06:00.000Z","level":"INFO","msg":"supervise: a take was answered","claim":"legion-infra-infra-2812-planner","task":1,"revision":99,"outcome":"accepted","hold":"","repeat":false}
 {"time":"2026-11-14T09:06:30.000Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-infra-infra-2812-planner","generation":1,"task":1}
 {"time":"2026-11-14T09:12:00.000Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-infra-infra-2812-planner","generation":1,"task":1}
-{"time":"2026-11-14T09:12:00.100Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-infra-infra-2812-planner","generation":1,"sequence":1,"refused":false,"providerError":false,"refusedRun":0,"limit":3}
+{"time":"2026-11-14T09:12:00.100Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-infra-infra-2812-planner","generation":1,"sequence":1,"refused":false,"providerError":false,"refusedRun":0}
 {"time":"2026-11-14T09:12:00.200Z","level":"INFO","msg":"supervise: a task was finished","claim":"legion-infra-infra-2812-planner","task":1,"by":"report"}
 {"time":"2026-11-14T09:12:00.200Z","level":"INFO","msg":"supervise: a task value was deleted","claim":"legion-infra-infra-2812-planner","task":1,"cause":"finished"}
 {"time":"2026-11-14T09:14:00.000Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-infra-infra-2811-implementer","generation":1,"task":1}
-{"time":"2026-11-14T09:14:00.100Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-infra-infra-2811-implementer","generation":1,"sequence":1,"refused":false,"providerError":false,"refusedRun":0,"limit":3}
+{"time":"2026-11-14T09:14:00.100Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-infra-infra-2811-implementer","generation":1,"sequence":1,"refused":false,"providerError":false,"refusedRun":0}
 {"time":"2026-11-14T09:14:00.200Z","level":"INFO","msg":"supervise: a task was finished","claim":"legion-infra-infra-2811-implementer","task":1,"by":"report"}
 {"time":"2026-11-14T09:14:00.200Z","level":"INFO","msg":"supervise: a task value was deleted","claim":"legion-infra-infra-2811-implementer","task":1,"cause":"finished"}
 {"time":"2026-11-14T09:14:00.300Z","level":"INFO","msg":"supervise: a task value was written","claim":"legion-infra-infra-2811-tester","task":4,"origin":"phase-start","finished":false,"session":"ses_tester_b","epoch":"2026-11-14T08:00:00.123456789Z","revision":120,"cause":"hold-ended"}
@@ -23,7 +23,7 @@
 {"time":"2026-11-14T09:14:01.000Z","level":"INFO","msg":"supervise: a take was answered","claim":"legion-infra-infra-2811-tester","task":4,"revision":120,"outcome":"accepted","hold":"","repeat":false}
 {"time":"2026-11-14T09:15:00.000Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-infra-infra-2811-implementer","generation":1}
 {"time":"2026-11-14T09:15:40.000Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-infra-infra-2811-implementer","generation":1}
-{"time":"2026-11-14T09:15:40.100Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-infra-infra-2811-implementer","generation":1,"sequence":2,"refused":false,"providerError":false,"refusedRun":0,"limit":3}
+{"time":"2026-11-14T09:15:40.100Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-infra-infra-2811-implementer","generation":1,"sequence":2,"refused":false,"providerError":false,"refusedRun":0}
 {"time":"2026-11-14T09:16:00.000Z","level":"INFO","msg":"supervise: a take was answered","claim":"legion-infra-infra-2811-tester","task":4,"revision":120,"outcome":"accepted","hold":"","repeat":true}
 {"time":"2026-11-14T09:16:00.000Z","level":"INFO","msg":"supervise: a task value was written","claim":"legion-infra-infra-2811-reviewer","task":1,"origin":"operator","finished":false,"session":"ses_reviewer_c","epoch":"2026-11-14T08:00:00.123456789Z","revision":125,"cause":"queued"}
 {"time":"2026-11-14T09:16:00.500Z","level":"INFO","msg":"supervise: a task value was reported seen","claim":"legion-infra-infra-2811-reviewer","task":1,"epoch":"2026-11-14T08:00:00.123456789Z","revision":125}
@@ -32,7 +32,7 @@
 {"time":"2026-11-14T09:24:30.000Z","level":"INFO","msg":"supervise: a take was answered","claim":"legion-infra-infra-2811-reviewer","task":1,"revision":125,"outcome":"accepted","hold":"","repeat":false}
 {"time":"2026-11-14T09:25:00.000Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-infra-infra-2811-reviewer","generation":1,"task":1}
 {"time":"2026-11-14T09:29:00.000Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-infra-infra-2811-reviewer","generation":1,"task":1}
-{"time":"2026-11-14T09:29:00.100Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-infra-infra-2811-reviewer","generation":1,"sequence":1,"refused":false,"providerError":false,"refusedRun":0,"limit":3}
+{"time":"2026-11-14T09:29:00.100Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-infra-infra-2811-reviewer","generation":1,"sequence":1,"refused":false,"providerError":false,"refusedRun":0}
 {"time":"2026-11-14T09:29:00.200Z","level":"INFO","msg":"supervise: a task was finished","claim":"legion-infra-infra-2811-reviewer","task":1,"by":"report"}
 {"time":"2026-11-14T09:29:00.200Z","level":"INFO","msg":"supervise: a task value was deleted","claim":"legion-infra-infra-2811-reviewer","task":1,"cause":"finished"}
 {"time":"2026-11-14T09:29:59.500Z","level":"WARN","msg":"workflow: a phase worker nothing will prompt was found silent; its architect is told","issue":"INFRA-2811","role":"implementer","phase":"implementing","entry":1,"given":1,"behind":false,"record":"the implementer took no step for 15m0s; the daemon sent it its phase's task again"}
@@ -49,14 +49,14 @@
 {"time":"2026-11-14T09:39:30.000Z","level":"INFO","msg":"supervise: a take was answered","claim":"legion-infra-infra-2811-tester","task":4,"revision":150,"outcome":"accepted","hold":"","repeat":false}
 {"time":"2026-11-14T09:40:00.000Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-infra-infra-2811-tester","generation":2,"task":4}
 {"time":"2026-11-14T09:41:00.000Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-infra-infra-2811-implementer","generation":1,"task":2}
-{"time":"2026-11-14T09:41:00.100Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-infra-infra-2811-implementer","generation":1,"sequence":3,"refused":false,"providerError":false,"refusedRun":0,"limit":3}
+{"time":"2026-11-14T09:41:00.100Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-infra-infra-2811-implementer","generation":1,"sequence":3,"refused":false,"providerError":false,"refusedRun":0}
 {"time":"2026-11-14T09:41:00.200Z","level":"INFO","msg":"supervise: a task was finished","claim":"legion-infra-infra-2811-implementer","task":2,"by":"report"}
 {"time":"2026-11-14T09:41:00.200Z","level":"INFO","msg":"supervise: a task value was deleted","claim":"legion-infra-infra-2811-implementer","task":2,"cause":"finished"}
 {"time":"2026-11-14T09:45:00.000Z","level":"INFO","msg":"supervise: a task value was written","claim":"legion-infra-infra-2811-implementer","task":3,"origin":"notice","finished":true,"session":"ses_implementer_a","epoch":"2026-11-14T08:00:00.123456789Z","revision":154,"cause":"queued"}
 {"time":"2026-11-14T09:50:00.000Z","level":"INFO","msg":"supervise: nobody reported seeing the claim's latest value within the first bound; it is written again under its number, and nobody is charged","claim":"legion-infra-infra-2811-implementer","task":3,"epoch":"2026-11-14T08:00:00.123456789Z","revision":154,"bound":300000000000}
 {"time":"2026-11-14T09:50:00.000Z","level":"INFO","msg":"supervise: a task value was written","claim":"legion-infra-infra-2811-implementer","task":3,"origin":"notice","finished":false,"session":"ses_implementer_a","epoch":"2026-11-14T08:00:00.123456789Z","revision":156,"cause":"unseen"}
 {"time":"2026-11-14T09:52:00.000Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-infra-infra-2811-tester","generation":2,"task":4}
-{"time":"2026-11-14T09:52:00.100Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-infra-infra-2811-tester","generation":2,"sequence":1,"refused":false,"providerError":false,"refusedRun":0,"limit":3}
+{"time":"2026-11-14T09:52:00.100Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-infra-infra-2811-tester","generation":2,"sequence":1,"refused":false,"providerError":false,"refusedRun":0}
 {"time":"2026-11-14T09:52:00.200Z","level":"INFO","msg":"supervise: a task was finished","claim":"legion-infra-infra-2811-tester","task":4,"by":"report"}
 {"time":"2026-11-14T09:52:00.200Z","level":"INFO","msg":"supervise: a task value was deleted","claim":"legion-infra-infra-2811-tester","task":4,"cause":"finished"}
 {"time":"2026-11-14T09:55:00.000Z","level":"INFO","msg":"supervise: a task value was written","claim":"legion-infra-infra-2811-tester","task":5,"origin":"wake","finished":true,"session":"ses_tester_b","epoch":"2026-11-14T08:00:00.123456789Z","revision":160,"cause":"queued"}

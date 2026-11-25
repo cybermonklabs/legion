@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
@@ -337,8 +338,9 @@ func TestPodUpdateAskNoHolderOfAnOlderRowLeavesOneDeliveredAskOfTheRound(t *test
 // in all.
 //
 // The negative control is a row that takes the lock with waiting: the run below does not return
-// while the relaunch is held inside its Resume. On 74ab1cd3, which published with no lock held,
-// the row publishes while the relaunch holds the claim.
+// while the relaunch is held inside its Resume, and the wait for its answer gives up by name at the
+// test binary's deadline (testwait.Receive). On 74ab1cd3, which published with no lock held, the
+// row publishes while the relaunch holds the claim.
 func TestPodUpdateAskWaitsWhileItsClaimsLockIsHeldAndIsDeliveredOnce(t *testing.T) {
 	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
@@ -361,26 +363,16 @@ func TestPodUpdateAskWaitsWhileItsClaimsLockIsHeldAndIsDeliveredOnce(t *testing.
 	gone := supervise.RuntimeObservation{Observation: runtime.Observation{
 		Locator: *rig.claimOf(claim.RoleImplementer).Locator, Kind: runtime.Gone, Detail: "the process ended",
 	}}
-	go func() { _ = m.Handle(rig.ctx, gone) }()
-	select {
-	case <-inside:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the relaunch never reached its Resume")
-	}
+	go func() { _ = m.Handle(rig.worker(), gone) }()
+	testwait.Receive(t, "the relaunch to reach its Resume", inside)
 
 	ran := make(chan error, 1)
-	go func() { ran <- rig.lane.execute(rig.ctx, row) }()
-	select {
-	case err := <-ran:
-		if !errors.Is(err, wait.ErrWaiting) {
-			t.Fatalf("the ask over a held claim = %v, want a wait that keeps the row", err)
-		}
-		t.Logf("the row waits: %v", err)
-	case <-time.After(10 * time.Second):
-		release()
-		<-ran
-		t.Fatal("the ask did not return while its claim's machine was inside a Resume; it waited on the lock")
+	go func() { ran <- rig.lane.execute(rig.worker(), row) }()
+	err := testwait.Receive(t, "the ask's answer while its claim's machine is inside a Resume; a row that waits on the lock gives none", ran)
+	if !errors.Is(err, wait.ErrWaiting) {
+		t.Fatalf("the ask over a held claim = %v, want a wait that keeps the row", err)
 	}
+	t.Logf("the row waits: %v", err)
 	if n := rig.deliveredTo(claim.RoleImplementer); n != 0 {
 		t.Fatalf("the ask was delivered %d times while the claim's lock was held, want none: the publish and its mark are one step under that lock", n)
 	}
@@ -457,5 +449,46 @@ func TestPodUpdateAskDeliveredAsTheDaemonStopsIsStillMarked(t *testing.T) {
 	}
 	if marked == nil {
 		t.Fatal("the ask reached the implementer as the daemon stopped, and the stored claim records no mark; want it marked, so the next boot does not ask again")
+	}
+}
+
+// An ask of a round reaches a role's agent only while its claim holds no answer of that round,
+// read under the claim's own lock where the ask is published (supervise's
+// Machine.PublishUpdateAsk). The sweep reads the claims before the ask is published, so a role
+// that answers in between is told nothing, and the row ends on its own line (askAnsweredLine). A
+// role asked first and answering after is told once, and that line is not written.
+func TestPodUpdateAskReachesNoRoleThatAnsweredBeforeItsPublish(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		answerFirst bool
+		want        int
+	}{
+		{name: "the answer, then the ask", answerFirst: true, want: 0},
+		{name: "the ask, then the answer", answerFirst: false, want: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
+			rig.drifts(podUpdateDrift)
+			rig.tick()
+			row := rig.awaitAskQueued(claim.RoleImplementer, podUpdateRound)
+			if tc.answerFirst {
+				rig.signal(claim.RoleImplementer, "a1b2c3d")
+			}
+			rig.runAsk(row)
+			if !tc.answerFirst {
+				rig.signal(claim.RoleImplementer, "a1b2c3d")
+			}
+			if n := rig.deliveredTo(claim.RoleImplementer); n != tc.want {
+				t.Fatalf("the implementer's topic was delivered %d asks of the round, want %d", n, tc.want)
+			}
+			lines := loggedLines(t, rig.logs.String(), `"msg":"`+askAnsweredLine+`"`)
+			if tc.want == 1 && len(lines) != 0 {
+				t.Fatalf("lines %q = %v, want none: the ask reached the role before it answered", askAnsweredLine, lines)
+			}
+			if tc.want == 0 && (len(lines) != 1 || lines[0]["level"] != "INFO" || lines[0]["row"] != float64(row.ID) || lines[0]["round"] != podUpdateRound) {
+				t.Fatalf("lines %q = %v, want one Info line naming row %d and round %s", askAnsweredLine, lines, row.ID, podUpdateRound)
+			}
+		})
 	}
 }

@@ -361,10 +361,10 @@ func TestALineThatIsNotAJSONObjectIsRefused(t *testing.T) {
 	}
 }
 
-// Five frames the shipped code refuses when their fields are malformed, because in each case the
+// Four frames the shipped code refuses when their fields are malformed, because in each case the
 // sender is the only writer and a malformed one is a bug to name: the hello
 // (worker-stream-listener.ts:140-148), the daemon's adoption request (worker-shim.ts:171-180), the
-// compaction request, the launcher's volume report and the daemon's launcher bundle slice.
+// compaction request and the launcher's volume report.
 func TestTheFramesTheShippedCodeValidatesRefuseTheirMalformedForms(t *testing.T) {
 	if err := (Hello{BootToken: "boot-1"}).Validate(); err != nil {
 		t.Fatalf("Hello.Validate: %v", err)
@@ -421,31 +421,6 @@ func TestTheFramesTheShippedCodeValidatesRefuseTheirMalformedForms(t *testing.T)
 	} {
 		if err := tc.frame.Validate(); !errors.Is(err, ErrMalformedFrame) {
 			t.Fatalf("%s: Validate = %v, want ErrMalformedFrame", tc.name, err)
-		}
-	}
-	// A launcher_bundle slice's count is what the launcher sizes its sequence by
-	// (internal/launcher's restore), so a count whose slices could pass the body bound is refused
-	// as the leak check's is, and the largest count under it is not.
-	slice := LauncherBundle{ID: "bundle-LEGION-209", Index: 0, Count: 2, Release: 1, Payload: []byte("foo"),
-		SHA256: "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"}
-	largest := slice
-	largest.Count = MaxWorkspaceBundleBodyBytes / LauncherBundlePayloadBytes
-	for _, frame := range []LauncherBundle{slice, largest} {
-		if err := frame.Validate(); err != nil {
-			t.Fatalf("LauncherBundle.Validate of %d of %d: %v", frame.Index, frame.Count, err)
-		}
-	}
-	for _, tc := range []struct {
-		name  string
-		count int
-	}{
-		{"a count whose slices pass the body bound", MaxWorkspaceBundleBodyBytes/LauncherBundlePayloadBytes + 1},
-		{"a count no body could need", 1 << 40},
-	} {
-		frame := slice
-		frame.Count = tc.count
-		if err := frame.Validate(); !errors.Is(err, ErrMalformedFrame) || !strings.Contains(err.Error(), "could pass") {
-			t.Fatalf("%s: Validate = %v, want ErrMalformedFrame for a count past the bound", tc.name, err)
 		}
 	}
 }

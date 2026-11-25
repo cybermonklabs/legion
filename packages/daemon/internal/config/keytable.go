@@ -358,6 +358,11 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(roundCap, func(f *fileConfig, v *int) { f.ReviewRoundCap = v }),
 		},
 		{
+			Name: "github_graphql_share", Default: "`0.5`: each query is followed by a pause as long as it took", RequiredBy: "no",
+			Description: "The share of the time this daemon's merge-state queries of one GitHub App installation may keep GitHub's GraphQL API at work: after each query the next waits (1 - share) / share of the time it took, at most 15 minutes. GitHub allows an installation 60 seconds of query processing time in 60 seconds, and every daemon that reads with the same installation spends that one allowance, so a deployment sets it near 1 divided by the number of daemons sharing the installation; a value below `0.01` (one daemon in a hundred) or above 1 is refused, and so is a value that is not a finite number.",
+			Read:        reads(readShare, func(f *fileConfig, v *float64) { f.GitHubGraphQLShare = v }),
+		},
+		{
 			Name: "controller_wake_interval_seconds", RequiredBy: "no",
 			Description: "How often the daemon wakes the project's controller, which is also the period of its status repair, so raising it to quiet the controller slows that repair with it.",
 			Positive:    &positiveKey{Value: 3600, Duration: func(c *Config) *time.Duration { return &c.ControllerWakeInterval }},
@@ -394,7 +399,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "worker_rpc_timeout_seconds", RequiredBy: "no",
-			Description: "How long each request on the worker stream waits for its answer, the one reconnect that judges a dead worker among them; it also bounds how long the end of a task's turn waits for the worker's report of it before the end frame finishes the task, for a worker whose plugin is below daemon API contract 240 and names no task in its reports (a current worker's task is finished by its report alone), how long a finish the store refused waits before it is made again, and how long an issue pod's start reads which role works the issue's phase (a read that fails puts the start in the roles' order); and it sizes how long the intake gives one fact's handling.",
+			Description: "How long each request on the worker stream waits for its answer, the one reconnect that judges a dead worker among them; it also bounds how long the end of a task's turn waits for the worker's report of it before the end frame finishes the task, for a worker whose plugin is below daemon API contract 274 and names no task in its reports (a current worker's task is finished by its report alone), how long a finish the store refused waits before it is made again, and how long an issue pod's start reads which role works the issue's phase (a read that fails puts the start in the roles' order); and it sizes how long the intake gives one fact's handling.",
 			Positive:    &positiveKey{Value: 5, Duration: func(c *Config) *time.Duration { return &c.WorkerRPCTimeout }},
 		},
 		{
@@ -424,7 +429,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "probe_interval_seconds", RequiredBy: "no",
-			Description: "How often the runtime sweeps every recorded process, which is also how often a launch or relaunch the store refused is tried again, and how often the daemon tries again a take-back the store refused at the bound of the wait for a take's report, and the relaunch of a worker whose agent did not say whether it is in a turn by the reconnect deadline.",
+			Description: "How often the runtime sweeps every recorded process, which is also how often a launch or relaunch the store refused is tried again, and how often the daemon tries again a take-back the store refused at the bound of the wait for a take's report, the relaunch of a worker whose agent did not say whether it is in a turn by the reconnect deadline, and, at that deadline, a relaunch or an operator's stop held for a take's report that the store or the runtime refused.",
 			Positive:    &positiveKey{Value: 30, Duration: func(c *Config) *time.Duration { return &c.ProbeInterval }},
 		},
 	}

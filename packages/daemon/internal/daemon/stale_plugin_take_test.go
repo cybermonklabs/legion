@@ -8,10 +8,10 @@ package daemon
 // its round ends. A claim whose launch installs a plugin is relaunched onto the current one inside
 // the round as outside it (staleForTheLane, supervise.StaleRefusesCalls). A Claude Code role in a
 // pod, whose plugin is the image's own and which no relaunch moves, has its pod released onto the
-// configured image at once when it is idle and at its turn's end when it is working, its unpushed
-// work saved first, past the image, contract and round holds that keep every other such pod
-// (workflow.IdleRelease's old plugin) — unless the pod already runs the configured image, which
-// logs one error naming the claim.
+// configured image at once when it is idle and at its turn's end when it is working, once the
+// release's check finds no work origin does not hold, past the image, contract and round holds
+// that keep every other such pod (workflow.IdleRelease's old plugin) — unless the pod already
+// runs the configured image, which logs one error naming the claim.
 
 import (
 	"context"
@@ -175,18 +175,18 @@ func oldPluginRig(t *testing.T) (*idleRig, *syncBuffer) {
 	return rig, logs
 }
 
-// wantReleasedOntoTheImage is the old-plugin release run to its end: the save of the
-// workspace's unpushed work, the role's stop and the teardown queued in that order by the pass
-// that released the pod (queued, what queuedBy read of that pass), the bundle asked of the role
-// before its process stopped and stored, the claim suspended as released with its task kept and
-// out of the round its pod was in, and the pod torn down. The round goes with the stop because
-// the save holds what the round would have asked the worker to push: left on the claim, the
-// round would read the claim's return in the new pod as a worker that lost its work with the pod
-// it never answered for.
+// wantReleasedOntoTheImage is the old-plugin release run to its end: the check of the workspace
+// for work origin does not hold, the role's stop and the teardown queued in that order by the pass
+// that released the pod (queued, what queuedBy read of that pass; the check's row keeps the kind
+// name of the release's save), the workspace read through the role before its process stopped and
+// found clean, the claim suspended as released with its task kept and out of the round its pod was
+// in, and the pod torn down. The round goes with the stop because the check found nothing the
+// round would have asked the worker to push: left on the claim, the round would read the claim's
+// return in the new pod as a worker that lost its work with the pod it never answered for.
 func wantReleasedOntoTheImage(t *testing.T, rig *idleRig, queued []string) {
 	t.Helper()
 	if want := []string{"issue_bundle", "supervise:release", "issue_release"}; !slices.Equal(queued, want) {
-		t.Fatalf("queued rows = %v, want the save, then the role stop, then the teardown", queued)
+		t.Fatalf("queued rows = %v, want the workspace check, then the role stop, then the teardown", queued)
 	}
 	rig.drain(t)
 	got := rig.machine.Claim()
@@ -199,12 +199,12 @@ func wantReleasedOntoTheImage(t *testing.T, rig *idleRig, queued []string) {
 	if got.UpdateRound != "" {
 		t.Fatalf("the released claim records round %q, want it out of the round its released pod was in", got.UpdateRound)
 	}
-	bundled, suspended := rig.rt.reads()
-	if len(bundled) != 1 || bundled[0] != claim.RoleImplementer {
-		t.Fatalf("bundle asked of %v, want the pod's one live role", bundled)
+	read, suspended := rig.rt.reads()
+	if len(read) != 1 || read[0] != claim.RoleImplementer {
+		t.Fatalf("the workspace was read through %v, want the pod's one live role", read)
 	}
-	if !rig.bundled(t) {
-		t.Fatal("the release deleted the pod with no bundle of its unpushed work saved")
+	if rig.declined(t) {
+		t.Fatal("the release of a clean workspace recorded a decline")
 	}
 	if suspended != 1 {
 		t.Fatalf("Sandbox teardowns = %d, want one", suspended)
@@ -214,10 +214,10 @@ func wantReleasedOntoTheImage(t *testing.T, rig *idleRig, queued []string) {
 // An idle Claude Code role whose plugin takes no task has no turn end to wait for, and takes none
 // of its tasks until a new image reaches its pod, so its pod is released at once: inside the idle
 // period, out of the round, off the image before the rollout, past the contract it records. The
-// release saves the workspace's unpushed work before it stops the role, and the role comes back
-// on the configured image, whose claude-envoy takes tasks. A pod whose roles' launches install a
-// plugin is the control: it is kept for the relaunch that moves its plugin, behind its image as
-// every such pod is.
+// release reads the workspace before it stops the role and takes the pod only with nothing
+// unpushed, and the role comes back on the configured image, whose claude-envoy takes tasks. A
+// pod whose roles' launches install a plugin is the control: it is kept for the relaunch that
+// moves its plugin, behind its image as every such pod is.
 func TestStalePluginClaudeRoleInAPodIsReleasedWhenIdle(t *testing.T) {
 	t.Parallel()
 	t.Run("a Claude Code role", func(t *testing.T) {

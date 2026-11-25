@@ -142,7 +142,10 @@ func (r *rig) untilTurnEnds() {
 // The bridge reports every turn it ends, clean and refused alike, with its own sequence counted
 // from 1 within the launch generation and the launch's boot token as its name: the daemon's count
 // of refused turns is made of these reports and of nothing else. A step Claude Code ended with an
-// error is the turn's refusal, carrying what it said.
+// error is the turn's refusal, carrying what it said and, in its provider error, the status Claude
+// Code named in api_error_status. Both turns are an inbox delivery's, no take's, so neither report
+// names a task, which is how this bridge says what the unprompted mark says: it sends neither that
+// mark nor a status of its own beside the provider error's (turnReports).
 func TestTheBridgeReportsEveryTurnItEndsCleanAndRefusedAlike(t *testing.T) {
 	r := newReportingRig(t, "-p", "--resume", sessionID)
 
@@ -168,6 +171,9 @@ func TestTheBridgeReportsEveryTurnItEndsCleanAndRefusedAlike(t *testing.T) {
 	}
 	if refused.Message == "" || refused.BootToken != testBootToken {
 		t.Fatalf("the refused turn was reported %+v, want the provider's message and the launch's boot token", refused)
+	}
+	if refused.ProviderError == nil || refused.ProviderError.Status != 529 || refused.HTTPStatus != 0 || refused.Unprompted || refused.Task != 0 {
+		t.Fatalf("the refused turn was reported %+v, want the 529 Claude Code named in its provider error, no task, and neither httpStatus nor the unprompted mark", refused)
 	}
 }
 
@@ -245,7 +251,9 @@ func TestOnlyAProviderFailureIsReportedRefused(t *testing.T) {
 // refused with nothing queued behind it ends its turn, and that turn is reported refused. A
 // delivery that arrives after it starts a turn of its own rather than continuing the one that
 // ended, and the step that runs there is a turn of its own, reported clean — which is what clears
-// the refused run the daemon counts (bridge.go's result).
+// the refused run the daemon counts (bridge.go's result). Neither turn was a take's, so neither
+// report names a task, which is what has the daemon judge each from its report, and neither is
+// marked unprompted: naming no task is this bridge's one way of saying it (turnReports).
 func TestARefusalWithNothingQueuedEndsItsTurnAndTheNextDeliveryIsANewOne(t *testing.T) {
 	r := newReportingRig(t, "-p", "--resume", sessionID)
 	inbox := r.dialInbox()
@@ -268,6 +276,9 @@ func TestARefusalWithNothingQueuedEndsItsTurnAndTheNextDeliveryIsANewOne(t *test
 	clean := r.reported()
 	if clean.Outcome != claim.TurnClean || clean.Sequence != 2 || clean.Message != "" {
 		t.Fatalf("the delivery's turn was reported %+v, want the run's second turn clean: it is a turn of its own, and it clears the refusal", clean)
+	}
+	if clean.Unprompted || refused.Unprompted || clean.Task != 0 || refused.Task != 0 {
+		t.Fatalf("the first turn was reported %+v and the delivery's %+v, want neither naming a task nor marked unprompted", refused, clean)
 	}
 	if answer := inbox.answer(); !answer.OK || answer.ID != "ev1" {
 		t.Fatalf("the inbox answered %+v, want ev1 taken", answer)

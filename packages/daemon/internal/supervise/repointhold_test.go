@@ -27,10 +27,7 @@ import (
 // process the repoint found.
 func overAStaleAddressAfterItsTurn(t *testing.T) (h *harness, number uint64, stale runtime.Locator) {
 	t.Helper()
-	h = boundsHarness(t)
-	number = h.takeOf("implement the plan")
-	h.must(StreamTurnStart{Claim: h.token})
-	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	h, number = overATakesEndedTurn(t, queuedClaim())
 	stale = h.locator()
 	h.observe(runtime.StaleAddress)
 	return h, number, stale
@@ -106,10 +103,7 @@ func TestTakeUnderAHeldStaleAddressRelaunchOverAViewNotWholeIsRelaunchedUncharge
 		{"a close, the shim's hello never coming", func(h *harness) { h.must(StreamClosed{Claim: h.token}) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h := boundsHarness(t)
-			number := h.takeOf("implement the plan")
-			h.must(StreamTurnStart{Claim: h.token})
-			h.mustQuiet(StreamTurnEnd{Claim: h.token})
+			h, number := overATakesEndedTurn(t, queuedClaim())
 			tc.cut(h)
 			due, armed := h.dueOf(TimerRegistration)
 			if !armed {
@@ -273,10 +267,7 @@ func TestTakeUnderAHeldSuspensionWaitingForItsReportHoldsAStaleAddressRelaunchWi
 func TestTakeRestoredFromTheStoreIsBoundedByTheReportWaitUnderAHeldStaleAddressRelaunch(t *testing.T) {
 	restoredUnderAStaleAddress := func(t *testing.T) (*harness, uint64, runtime.Locator) {
 		t.Helper()
-		h := boundsHarness(t)
-		number := h.takeOf("implement the plan")
-		h.must(StreamTurnStart{Claim: h.token})
-		h.mustQuiet(StreamTurnEnd{Claim: h.token})
+		h, number := overATakesEndedTurn(t, queuedClaim())
 		h.restart()
 		h.connect()
 		h.answerAsk(false)
@@ -333,10 +324,7 @@ func (h *harness) observeMovedDaemonAPI() {
 // for a report that cannot come, which this test reads at the observation and at the wake's turn.
 func TestTakeWhoseTurnEndedIsRelaunchedAtOnceWhereTheDaemonAPIsAddressMoved(t *testing.T) {
 	t.Run("a repoint after the take's turn ended", func(t *testing.T) {
-		h := boundsHarness(t)
-		number := h.takeOf("implement the plan")
-		h.must(StreamTurnStart{Claim: h.token})
-		h.mustQuiet(StreamTurnEnd{Claim: h.token})
+		h, number := overATakesEndedTurn(t, queuedClaim())
 		stale := h.locator()
 
 		h.observeMovedDaemonAPI()

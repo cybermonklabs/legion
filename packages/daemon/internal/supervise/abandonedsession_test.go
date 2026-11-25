@@ -45,35 +45,34 @@ func (h *harness) wantAbandonedToldBy(by, when string) {
 	}
 }
 
-// abandonSession walks the claim to where the provider refused every turn of it out of its launch
-// budget and an operator retried it, which leaves that session behind: from here the claim records
-// an abandoned session nothing has told its replacement of yet.
-func (h *harness) abandonSession(refusal string) {
+// abandonSession walks the claim to where an operator stopped it and a retry asking for a new
+// session started it again, which leaves the recorded session behind (freshSession): from here the
+// claim records an abandoned session nothing has told its replacement of yet. It answers why the
+// claim records the session was left: the retry's own reason, since a stopped claim carries no
+// failure to name.
+func (h *harness) abandonSession() string {
 	h.t.Helper()
 	h.reach(StateIdle)
-	for turn := 1; turn <= testLimits().LaunchFailures; turn++ {
-		h.report(uint64(turn), true, refusal)
-	}
-	h.wantState(StateFailed)
-	h.must(RequestRetry{Claim: h.token})
+	h.must(RequestStop{Claim: h.token})
+	h.wantState(StateRetired)
+	h.must(RequestRetry{Claim: h.token, FreshSession: true})
+	return "the retry asked for a new session"
 }
 
-// A claim the provider refused out of its budget fails, and the retry of it leaves that session
-// behind. The claim records which session it abandoned and why, since nothing else does — the
-// session itself stays in its store — and the first task the agent that replaces it is given names
-// that session, quoted, the cause in the provider's own words (the context size it refused at
-// among them), the issue's branch and the handoffs committed on it. Nothing in a new session says
-// that an older one existed, so a worker given the bare task would read an empty transcript as a
-// fresh start and do again what the abandoned session already pushed (dispatch://INFRA-714, item
-// 4 of the refusal section).
+// A retry that asks for a new session leaves the recorded one behind. The claim records which
+// session it abandoned and why, since nothing else does — the session itself stays in its store —
+// and the first task the agent that replaces it is given names that session, quoted, why it was
+// left, the issue's branch and the handoffs committed on it. Nothing in a new session says that an
+// older one existed, so a worker given the bare task would read an empty transcript as a fresh
+// start and do again what the abandoned session already pushed (dispatch://INFRA-714, item 4 of
+// the refusal section).
 func TestTheFreshSessionsFirstTaskNamesTheSessionItReplacedAndWhatOutlivedIt(t *testing.T) {
 	h := newHarness(t)
-	refusal := "the provider ended the turn with an error at 226k tokens of context"
 
-	h.abandonSession(refusal)
+	refusal := h.abandonSession()
 
 	if got := h.claim().Abandoned; got.Session != session || got.SessionFile != sessionFile || !strings.Contains(got.Why, refusal) {
-		t.Fatalf("the claim records %+v, want the session %q it left behind and the provider's own words for why", got, session)
+		t.Fatalf("the claim records %+v, want the session %q it left behind and why", got, session)
 	}
 	h.registerFresh()
 	base := len(h.prompts())
@@ -148,8 +147,7 @@ func TestEveryAbandonmentIsRecordedWithItsOwnReason(t *testing.T) {
 // handoffs and the sentence that says an older session existed at all (dispatch://INFRA-714).
 func TestTakeRefusedLeavesTheAbandonedSessionStillToBeTold(t *testing.T) {
 	h := newHarness(t)
-	refusal := "the provider ended the turn with an error at 226k tokens of context"
-	h.abandonSession(refusal)
+	refusal := h.abandonSession()
 	h.registerFresh()
 	h.manualTakes()
 	base := len(h.prompts())
@@ -203,8 +201,7 @@ func TestTakeRefusedLeavesTheAbandonedSessionStillToBeTold(t *testing.T) {
 // alone, and this test reads the missing session there.
 func TestAnAbandonedSessionsSentenceIsToldAtTheAcceptedTake(t *testing.T) {
 	h := newHarness(t)
-	refusal := "the provider ended the turn with an error at 226k tokens of context"
-	h.abandonSession(refusal)
+	refusal := h.abandonSession()
 	h.registerFresh()
 	h.manualTakes()
 	says := []string{session, "abandoned", refusal, "legion/LEGION-209"}
@@ -255,8 +252,7 @@ func TestAnAbandonedSessionsSentenceIsToldAtTheAcceptedTake(t *testing.T) {
 // second time.
 func TestAbandonedSessionToldByACutOffTurnIsNotToldAgainWhenALaterTakeIsGivenBack(t *testing.T) {
 	h := newHarness(t)
-	refusal := "the provider ended the turn with an error at 226k tokens of context"
-	h.abandonSession(refusal)
+	refusal := h.abandonSession()
 	h.registerFresh()
 	h.manualTakes()
 	h.must(RequestDeliver{Claim: h.token, Task: "Continue Workflow. Issue: LEGION-209. Phase: implementing."})
@@ -296,11 +292,12 @@ func TestAbandonedSessionToldByACutOffTurnIsNotToldAgainWhenALaterTakeIsGivenBac
 // and take 3 carries the sentence a second time.
 func TestTakeBackAfterADaemonRestartGivesBackOnlyWhatThatTakeTold(t *testing.T) {
 	const task = "Continue Workflow. Issue: LEGION-209. Phase: implementing."
-	refusal := "the provider ended the turn with an error at 226k tokens of context"
+	// Why the claim records the session was left (abandonSession): the retry's own reason.
+	refusal := "the retry asked for a new session"
 
 	t.Run("a take that told nothing", func(t *testing.T) {
 		h := newHarness(t)
-		h.abandonSession(refusal)
+		h.abandonSession()
 		h.registerFresh()
 		h.manualTakes()
 		h.must(RequestDeliver{Claim: h.token, Task: task})
@@ -329,7 +326,7 @@ func TestTakeBackAfterADaemonRestartGivesBackOnlyWhatThatTakeTold(t *testing.T) 
 
 	t.Run("a take that told the session", func(t *testing.T) {
 		h := newHarness(t)
-		h.abandonSession(refusal)
+		h.abandonSession()
 		h.registerFresh()
 		h.manualTakes()
 		h.must(RequestDeliver{Claim: h.token, Task: task})

@@ -201,7 +201,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 	// suppressed by its tree's linger, not by its own.
 	issue := record.Issue{
 		Key: held, Tree: root, Project: "OTHER", Title: "the held child", Parent: &parent,
-		Phase: phase.AwaitingPerson, Generation: 3, Status: "in_progress", Rank: "00042",
+		Phase: phase.AwaitingPerson, Generation: 3, Status: "in_progress", Rank: "00042", Priority: record.P1,
 		LingerUntil: &lingerUntil, Hold: &record.Hold{From: phase.Implementing, Reason: record.HoldEscalated},
 		LastDispatchSeq: 91,
 		HandedOver:      true, TakenBack: true, DispatchStatus: "needs_review",
@@ -259,7 +259,9 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			ID: "dlv-9", Task: "implement the change, which no agent surface carries",
 			Generation: 3, Entry: 8, Phase: phase.Implementing, QueuedAt: queuedAt,
 			SendFailures: 2, LastSendFailureAt: projectedAt.Add(-5 * time.Minute),
-			LastSendError: "post to the worker stream: connection refused",
+			LastSendError: "worker-stream: legion-legion-legion-500-implementer refused adopt-working-copy: " +
+				"Command failed (exit 1): jj metaedit: the git lock /legion/workspaces/acme/widgets/legion-500/.git/index.lock " +
+				"was last written 31m ago",
 		},
 		BootTokenHash: []byte{0xb0, 0x07}, CapabilityHash: []byte{0xca, 0xfe},
 		UncertainStreak: 1,
@@ -268,15 +270,17 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		PluginContract: api.DaemonAPIVersion, PluginRelaunchFor: api.DaemonAPIVersion - 1, AgentResumeGeneration: 3,
 		UpdateRound: "pod:" + podUID, UpdateReasons: "the pod template changed: the image moved",
 		UpdateOpenedAt: &openedAt, UpdateTaskedAt: &openedAt, UpdateSignalledAt: &answeredAt,
-		UpdateHead:       "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
-		UpdateToldAt:     &answeredAt,
-		UpdateLeftRound:  "pod:older",
-		ProviderErrorRun: 6,
-		LastTurnStart:    projectedAt.Add(-2 * time.Minute),
-		LastTurnEnd:      projectedAt.Add(-30 * time.Second),
-		LastReady:        projectedAt.Add(-3 * time.Minute),
-		LastDeathCause:   "the pod was evicted",
-		LastStartFailure: "the launcher refused the start",
+		UpdateHead:         "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
+		UpdateToldAt:       &answeredAt,
+		UpdateLeftRound:    "pod:older",
+		ProviderErrorRun:   6,
+		LastTurnStart:      projectedAt.Add(-2 * time.Minute),
+		LastTurnEnd:        projectedAt.Add(-30 * time.Second),
+		LastReady:          projectedAt.Add(-3 * time.Minute),
+		LastDeathCause:     "the pod was evicted",
+		LastDeathAt:        projectedAt.Add(-4 * time.Minute),
+		LastStartFailure:   "the launcher refused the start",
+		LastStartFailureAt: projectedAt.Add(-5 * time.Minute),
 		TurnOutcomes: []supervise.TurnOutcome{{
 			Generation: 3, Sequence: 2, Refused: true, Message: "the provider refused this turn",
 		}},
@@ -327,13 +331,15 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"updateReasons":     current.UpdateReasons,
 			"updateState":       api.UpdateStateAnswered,
 			"providerErrorRun":  current.ProviderErrorRun,
-			// The turn times and the two causes, with the ready that dates the death: the view
-			// carries each as the record holds it.
-			"lastTurnStart":    current.LastTurnStart,
-			"lastTurnEnd":      current.LastTurnEnd,
-			"lastReady":        current.LastReady,
-			"lastDeathCause":   current.LastDeathCause,
-			"lastStartFailure": current.LastStartFailure,
+			// The turn times, the ready and the two causes, each with the time the daemon recorded
+			// it, LastDeathAt dating the death: the view carries each as the record holds it.
+			"lastTurnStart":      current.LastTurnStart,
+			"lastTurnEnd":        current.LastTurnEnd,
+			"lastReady":          current.LastReady,
+			"lastDeathCause":     current.LastDeathCause,
+			"lastDeathAt":        current.LastDeathAt,
+			"lastStartFailure":   current.LastStartFailure,
+			"lastStartFailureAt": current.LastStartFailureAt,
 			// The pending task reduced to the five facts a reader decides on, and never its
 			// text: that one is held, which the key's presence says, its phase, when it was
 			// queued, how many of its takes failed to adopt the working copy and the last such error.
@@ -390,6 +396,8 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"holdReason":  issue.Hold.Reason, "heldFrom": issue.Hold.From,
 			"repo": issue.Repo, "defaultBranch": issue.DefaultBranch,
 			"ancestry": issue.Ancestry,
+			// The record's P1 as the wire spells a Dispatch priority: its number, 0 for P0.
+			"priority": 1,
 			"waitingOn": map[string]any{
 				"kind": "ask", "ask": issue.Awaiting.Ask, "since": issue.Awaiting.Since.At,
 				"answeredAt": issue.Awaiting.AnsweredAt, "answeredBy": issue.Awaiting.AnsweredBy,

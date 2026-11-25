@@ -40,16 +40,36 @@
 -- 20261121170714_dispatch_issue_applied_seq runs between the two as well, before that one): it
 -- writes design_news_told_in back as 20261119203047 wrote it, drops the comment this file set
 -- (that migration set none), and deletes this migration's version row, so the roll forward runs
--- this file again. The release before this one, contract 228 (the one whose
--- internal/api/version.go carries the entry for INFRA-1575, cybermonklabs/legion#4590's intake
--- give-ups) as main releases it after #4930's contract 220 and #5278, whose newest migration is
--- still #5278's 20261123212127_claim_start_failure_after_ready, carries 20261119203047 and not
--- the task numbers, and then reads the function it wrote; a rollback to contract 220 or before
--- crosses 228 and takes that release's steps, which delete the project's unsent intake-gave-up
--- controller notices and its open failures and touch nothing this block reads
--- (docs/kubernetes.md, "Rolling back the release that gives up on intake messages"); a rollback
--- to a release before #5278 also crosses 20261123212127, which needs nothing: it carries no way
--- back, since an earlier release reads the start failures it emptied as none recorded; a
+-- this file again. The release before this one, contract 256 (the one whose
+-- internal/api/version.go carries the entry for the claims' cause times, cybermonklabs/legion#5349's
+-- lastDeathAt and lastStartFailureAt on each claim view of GET /legion/v1/state) as main releases
+-- it after #5372, whose newest migration is #5372's 20261124143026_issue_release_teardown, carries
+-- 20261119203047 and not the task numbers, and then reads the function it wrote; a rollback to
+-- contract 246 or before crosses 256 and #5365's 250, which take no step of their own beyond
+-- pinning the worker image with the daemon, since they add no legion.yaml key and their
+-- migrations, 20261124073512_claim_cause_times and 20261124060500_issue_priority, carry no way
+-- back, as #5372's 20261124143026_issue_release_teardown carries none: an earlier release names
+-- none of the columns they add, and this block reads none of them (crossing 20261124073512 costs
+-- the claims' two cause times, as its header says); a rollback to contract 232 or before crosses
+-- 246, which takes no
+-- step of its own beyond pinning the worker image with the daemon, since it adds no migration and
+-- no legion.yaml key, and it, like any rollback to a release before #4869, crosses 20261123050533,
+-- which needs a step of its own: the way back in its own header, its last paragraph
+-- (docs/kubernetes.md, "Rolling back the release that keeps no saved workspace"), run before this
+-- block, with every daemon of the database stopped, which makes workspace_bundles again, empty,
+-- drops idle_release_declines and issue_releases.turn_start, which this block does not read, and
+-- deletes its version row; a rollback to a release before #5303 also crosses 20261123224717,
+-- which needs a step of its own: the way back in its own header, its last paragraph, run first,
+-- before this block, with every daemon of the database stopped, which drops issues.members_owed,
+-- a column this block does not read, and deletes its version row; a rollback to contract 228 or
+-- before crosses 232, which takes no step of its own beyond pinning the worker image with the
+-- daemon: it adds no migration and no legion.yaml key; a
+-- rollback to contract 220 or before crosses 228 and takes that release's steps, which delete
+-- the project's unsent intake-gave-up controller notices and its open failures and touch nothing
+-- this block reads (docs/kubernetes.md, "Rolling back the release that gives up on intake
+-- messages"); a rollback to a release before #5278 also crosses 20261123212127, which needs
+-- nothing: it carries no way back, since an earlier release reads the start failures it emptied
+-- as none recorded; a
 -- rollback to contract 219 or before crosses 220 and first
 -- takes that release's one step, before this block, which takes `plan` out of legion.yaml and runs
 -- no statement (docs/kubernetes.md, "Rolling back the release whose experiment sets how each issue

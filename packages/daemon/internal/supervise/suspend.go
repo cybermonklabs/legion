@@ -10,7 +10,9 @@ import (
 
 // ErrSuspendHeld answers a suspension that arrived while the claim's agent is in a turn: the
 // machine holds it and suspends the claim itself (holdSuspension). It is not a refusal. A caller
-// that keeps the request durably asks again, and the claim answers nil once it is suspended.
+// that keeps the request durably asks again, and the claim answers nil once it is suspended. It
+// answers the operator's stop held for the report of the claim's take's turn too (holdStop), which
+// the stop route answers 202 as it answers a held suspension.
 var ErrSuspendHeld = wait.New("the suspension is held for the agent's turn to end")
 
 // ErrPauseEnded answers a project pause's stop (RequestSuspend.Pause) that reaches its claim once
@@ -199,7 +201,7 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 	if !deadline.IsZero() && (m.held.Deadline.IsZero() || deadline.Before(m.held.Deadline)) {
 		m.held.Deadline = deadline
 		if a, ok := m.timers[TimerSuspend]; !ok || deadline.Before(a.due) {
-			m.arm(TimerSuspend, max(0, deadline.Sub(m.deps.Clock.Now())), "")
+			m.armAt(TimerSuspend, deadline, "")
 			m.log.Info("supervise: the held suspension stops the agent at its deadline if its turn has not ended", "deadline", deadline, "by", m.held.By)
 		}
 	}
@@ -715,10 +717,10 @@ const (
 // toward the deaths limit for a death the daemon is being asked to recover from. A suspension is
 // no launch failure of its own either.
 func (m *Machine) suspendOverADeadProcess(ctx context.Context, request RequestSuspend) error {
-	cause := m.claim.LastDeathCause
-	m.claim.LastDeathCause = m.goneCause
+	cause, at := m.claim.LastDeathCause, m.claim.LastDeathAt
+	m.claim.LastDeathCause, m.claim.LastDeathAt = m.goneCause, m.deps.Clock.Now()
 	if err := m.interrupted(ctx, "the process the task's turn ran on is gone", m.goneOutOfMemory); err != nil {
-		m.claim.LastDeathCause = cause
+		m.claim.LastDeathCause, m.claim.LastDeathAt = cause, at
 		return err
 	}
 	m.recordEnd(ctx, endDied(m.goneCause))

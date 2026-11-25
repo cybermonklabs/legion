@@ -8,7 +8,7 @@
  * do over NATS. The socket is a stand-in that serves the socket's wire and the broker's token
  * exchange on one origin (`@legion/envoy-client/test/relay-socket-stand-in`).
  */
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, setDefaultTimeout, test } from "bun:test"
 import { writeFileSync } from "node:fs"
 import * as path from "node:path"
 import { readEnvoyConfig } from "@legion/envoy-client/envoy-config"
@@ -20,6 +20,7 @@ import {
   startRelaySocketStandIn,
 } from "@legion/envoy-client/test/relay-socket-stand-in"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import type { ModEvent } from "../hooks/mod-protocol"
 import { startAgentStream } from "../src/agent-stream-runner"
@@ -37,6 +38,10 @@ import {
   waitFor,
 } from "./channel-session-harness"
 import { isolatePaneEnvironment } from "./pane-environment"
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS)
 
 isolatePaneEnvironment()
 
@@ -70,7 +75,7 @@ function quietLink(): ModLink {
 }
 
 /** A session's settings whose listener and broker are both `server`, told `ENVOY_INBOUND`. */
-function relaySettings(server: RelaySocketStandIn) {
+async function relaySettings(server: RelaySocketStandIn) {
   const dir = tempDir()
   const tokenFile = path.join(dir, "token")
   writeFileSync(tokenFile, `${fixtureSecret("proj")}\n`)
@@ -82,9 +87,9 @@ function relaySettings(server: RelaySocketStandIn) {
     AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
     AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
   }
-  const settings = envoySettings(
+  const settings = await envoySettings(
     env,
-    readEnvoyConfig(path.join(dir, "envoy.json"), env, { cwd: dir }),
+    await readEnvoyConfig(path.join(dir, "envoy.json"), env, { cwd: dir }),
     { session: () => SESSION },
   )
   if (!settings.enabled) throw new Error(`Envoy is off: ${settings.error ?? settings.notice}`)
@@ -94,7 +99,7 @@ function relaySettings(server: RelaySocketStandIn) {
 test("a relay socket session dials the socket, and neither live view takes a subject on it", async () => {
   const server = startRelaySocketStandIn()
   started.push(() => server.stop())
-  const settings = relaySettings(server)
+  const settings = await relaySettings(server)
   const { inbound } = settings
   if ("off" in inbound) throw new Error(`inbound is off: ${inbound.off}`)
   const warnings: string[] = []
@@ -149,7 +154,7 @@ test("a relay socket session dials the socket, and neither live view takes a sub
 test("trades refused before the session starts are said on stderr once, and the socket opens once one succeeds", async () => {
   const server = startRelaySocketStandIn()
   started.push(() => server.stop())
-  const settings = relaySettings(server)
+  const settings = await relaySettings(server)
   const { inbound } = settings
   if ("off" in inbound) throw new Error(`inbound is off: ${inbound.off}`)
   if (!("relaySetting" in inbound)) throw new Error("inbound is not the relay socket")
@@ -200,7 +205,7 @@ function notices(notifier: FakeNotifier, heading: string): string[] {
 test("a relay subject the listener refuses is told as an outage naming why, and the heartbeat takes it again", async () => {
   const server = startRelaySocketStandIn()
   started.push(() => server.stop())
-  const settings = relaySettings(server)
+  const settings = await relaySettings(server)
   const { inbound } = settings
   if ("off" in inbound) throw new Error(`inbound is off: ${inbound.off}`)
   const dialled = await dialChannelInbound(
