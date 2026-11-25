@@ -163,15 +163,15 @@ func TestAnUncappedStreamIsCappedOnTheHubsServerAndLeftAloneOnTheOlderOneWhereAL
 
 	t.Run("2.10", func(t *testing.T) {
 		t.Run("a stream with no cap is left exactly as it is", func(t *testing.T) {
-			// Captured before the start, so every keeper pass of this subtest logs into it.
-			logs := captureLogs(t)
+			// The client's logger, so every keeper pass of this subtest logs into it.
+			logs := captureLogs()
 			uri, js := liveServerJetStream(t, testnats.Image)
 			deployed := deployStreamWithCap(t, js, 0)
 			if deployed != -1 && deployed != 0 {
 				t.Fatalf("the deployed stream's consumer cap = %d, want the -1 or 0 a server answers for a stream deployed without one", deployed)
 			}
 
-			client, err := ConnectOwningStream([]string{uri}, WithEnvironment(liveServerEnvironment), WithKeepInterval(testKeepInterval))
+			client, err := ConnectOwningStream([]string{uri}, WithEnvironment(liveServerEnvironment), WithKeepInterval(testKeepInterval), WithLogger(logs.logger))
 			if err != nil {
 				t.Fatalf("the start against a stream with no cap on a server that caps none: %v, want no update and no refusal", err)
 			}

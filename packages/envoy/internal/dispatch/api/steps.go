@@ -34,7 +34,8 @@ import (
 // actor, or is refused 403 STEP_WRITER. That holds the session the body names, which a bearer
 // bound to a session cannot make another's (403 ACTOR_SESSION_MISMATCH); a credential that proves
 // no session, such as the shared agent token, a personal agent token or a service account's, can
-// name the daemon's session and write, as the role-holders publish can. Like the design gates'
+// name the daemon's session and write, as the role-holders publish can while
+// DISPATCH_LEGION_STATUS_SCOPE is off (issue_role_holders.go). Like the design gates'
 // publish the writes append no issue event and notify nobody, since an event would feed the
 // daemon's intake with facts it caused; and they read the issue with no open check, because the
 // merge that closes an issue ends a step of it.
