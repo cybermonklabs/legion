@@ -10,4 +10,7 @@ GATE = harness("release_push_test", "Test release scripts", f"{SCRIPTS}/release-
     (".github/workflows/release-envoy-listener.yaml",
      "release-push.test.sh's Determine latest case reads release_publish's step out of it and runs its image read"),
     ("packages/pi-legion/.changie.yaml", "release-push.test.sh's fold-notes case for the shipped configuration copies it into its fixture"),
+    (".github/private-names.toml", "`.github/scripts/release-push.sh#leak_guard` finds it beside itself and runs gitleaks "
+                                   "with it, and `.github/scripts/release-push.test.sh#leak_rules_into` copies it into each "
+                                   "fixture checkout"),
 ])

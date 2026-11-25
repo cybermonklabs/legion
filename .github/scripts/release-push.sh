@@ -352,7 +352,7 @@ leak_engine=''
 # leak_guard <write> [<asset>...] -- <text>...: refuse <write>, and with it the
 # command, unless every <text> and every <asset> passes this repository's own
 # private-name rules, the rule file
-# packages/daemon/internal/leakguard/private-names.toml as this checkout holds
+# .github/private-names.toml as this checkout holds
 # it. That rule file alone is run, and no shared check: this job holds no
 # credential for the private repository that publishes the shared one and needs
 # none, since every refusal of the measured window was of this repository's own
@@ -389,9 +389,9 @@ leak_guard() {
     esac
   done
   if [ -z "$leak_engine" ]; then
-    leak_rules="$(dirname -- "${BASH_SOURCE[0]}")/../../packages/daemon/internal/leakguard/private-names.toml"
+    leak_rules="$(dirname -- "${BASH_SOURCE[0]}")/../private-names.toml"
     [ -f "$leak_rules" ] ||
-      fail_error "$setup the rule file packages/daemon/internal/leakguard/private-names.toml is not in this checkout"
+      fail_error "$setup the rule file .github/private-names.toml is not in this checkout"
     if [ -n "${RELEASE_PUSH_LEAK_ENGINE:-}" ]; then
       leak_engine=$RELEASE_PUSH_LEAK_ENGINE
     else
@@ -428,7 +428,7 @@ leak_guard() {
         --ignore-gitleaks-allow --exit-code "$leak_found" > /dev/null 2>&1 ||
       status=$?
     [ "$status" = 0 ] ||
-      fail_error "$setup gitleaks exited $status over a text no rule matches, so the rule file packages/daemon/internal/leakguard/private-names.toml does not parse, or this gitleaks refused it"
+      fail_error "$setup gitleaks exited $status over a text no rule matches, so the rule file .github/private-names.toml does not parse, or this gitleaks refused it"
   fi
   for asset in "${texts[@]}"; do material+=$asset$'\n'; done
   for asset in "${assets[@]}"; do

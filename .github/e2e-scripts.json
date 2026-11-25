@@ -48,6 +48,16 @@
   ],
   "hosted": [
     {
+      "script": "look-names-its-check.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": true,
+      "evidence_variable": "LOOK_NAMES_ITS_CHECK_EVIDENCE_DIR",
+      "timeout_minutes": 30,
+      "why_hosted": "A Linux runner with go, git, jj, bun after bun install, awk, python3 and a loopback PostgreSQL server runs this proof. The script builds and starts Dispatch and the daemon itself on databases of its own and starts its own nats-server. It calls the plugin's real daemon client under bun and reaches no outside service.",
+      "jj": true
+    },
+    {
       "script": "behind-entry-fence.sh",
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
