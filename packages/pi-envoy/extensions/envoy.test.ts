@@ -128,6 +128,7 @@ import {
   type BranchEntry,
   type CommandContext,
   createStandInHost,
+  type EventHandler,
   type SessionContext,
   type TestPi,
 } from "../test/stand-in-host";
@@ -966,6 +967,22 @@ function rowShutdown(shutdown: () => unknown): () => Promise<unknown> {
   };
   rowStops.add(stop);
   return stop;
+}
+
+/**
+ * Registers the shutdown of the session `fixture`'s extension runs, as `rowShutdown` does, and
+ * answers what runs it: the extension's `session_shutdown` handler, handed `context`, or what
+ * `context()` answers when it runs, for a row that moves its session on after this call. An
+ * extension that registered no such handler fails here, naming it, rather than leave a session
+ * running past its row with nothing to say so.
+ */
+function rowSessionShutdown(
+  fixture: { readonly handlers: ReadonlyMap<string, EventHandler> },
+  context: SessionContext | (() => SessionContext)
+): () => Promise<unknown> {
+  const shutdown = fixture.handlers.get("session_shutdown");
+  if (shutdown === undefined) throw new Error("session_shutdown handler was not registered");
+  return rowShutdown(async () => shutdown({}, typeof context === "function" ? context() : context));
 }
 
 /**
@@ -1856,13 +1873,14 @@ function onTestClock<T>(
  *  so once its promise settles (`onPassClock`). */
 interface PassClock {
   /** Lets the code's own work run on real turns (`settle`), which move no clock, until `done()`
-   *  holds or `turns` of them (10_000 by default) run out. It throws nothing when they run out:
-   *  a row that relies on `done()` holds with `held`, which fails naming what did not happen,
-   *  and a row that holds to see a thing not happen reads `done()` as false. */
-  readonly hold: (done: () => boolean, turns?: number) => Promise<void>;
-  /** Holds as `hold` does, then fails naming `unmet` if `done()` still does not hold: for a row
-   *  that relies on `done()`. */
-  readonly held: (unmet: string, done: () => boolean, turns?: number) => Promise<void>;
+   *  holds: for a row that relies on it. One that still does not hold once 10_000 turns have run
+   *  fails here, naming `what`, the fact the row waited for. */
+  readonly hold: (what: string, done: () => boolean) => Promise<void>;
+  /** Lets `count` real turns run with the clock held, as `hold` does, for the reason `why`, and
+   *  fails on nothing: a span, for a row that holds to see a thing not happen, or one that ends
+   *  the span early once `done()` holds and reads afterwards, by a check of its own, whether it
+   *  did. */
+  readonly turns: (count: number, why: string, done?: () => boolean) => Promise<void>;
   /** Holds as `hold` does until `pending` settles, and answers what it settled to; one that has
    *  not settled when the turns run out fails here, naming `what`. */
   readonly run: <T>(what: string, pending: Promise<T> | T, turns?: number) => Promise<T>;
@@ -1912,9 +1930,10 @@ interface PassClock {
  * arms, because a pass that reaches its `ready` makes no request a row could wait for. `Bun.sleep`
  * is held too, so a row on this clock waits with `hold`, `run`, `wait` or `waitOn`, never with
  * `until`. Real timers and `AbortSignal.timeout` come back however `body` ends inside its row, so
- * a hold that runs out fails there. Each hold is bounded by 10_000 turns of `settle` unless the
- * row names more, a hang guard: what can hang is work that never finishes; the most the
- * switch-follow row's pass took was 105 of them idle and 58 at the 96 rung. A wait for work that
+ * a hold that runs out fails there, naming what it waited for. Each hold, and each run unless it
+ * names more, is bounded by 10_000 turns of `settle`, a hang guard: what can hang is work that
+ * never finishes; the most the switch-follow row's pass took was 105 of them idle and 58 at the
+ * 96 rung. A span (`turns`) runs the turns it names and fails on nothing. A wait for work that
  * reads a file or waits on another process (`wait`, `waitOn`) has no such bound, since no count of
  * turns measures that work. Once its row has ended, at its limit included, every hold, wait and
  * move of the clock throws, naming what it was waiting for and saying the row ended, and so does
@@ -1948,12 +1967,15 @@ async function onPassClock<T>(body: (clock: PassClock) => Promise<T>): Promise<T
     await settleFor(what);
   };
   const clock: PassClock = {
-    hold: (done, turns = 10_000) =>
-      holdFor("holding the test's clock for the code's work", done, turns),
-    held: async (unmet, done, turns = 10_000) => {
-      await holdFor("holding the test's clock for the code's work", done, turns);
-      if (!done()) throw new Error(unmet);
+    hold: async (what, done) => {
+      const turns = 10_000;
+      await holdFor(`waiting for ${what}`, done, turns);
+      if (!done()) {
+        throw new Error(`${what} did not come in ${turns} turns with the test's clock held`);
+      }
     },
+    turns: (count, why, done = () => false) =>
+      holdFor(`holding the test's clock for ${why}`, done, count),
     run: async (what, pending, turns = 10_000) => {
       let settled = false;
       const watched = Promise.resolve(pending).finally(() => {
@@ -2401,13 +2423,13 @@ async function withEnvoyTimings<T>(
 }
 
 /**
- * The `ENVOY_PASS_DEADLINE_MS` of every row on `gatedRoleFixture`, which sets it, and of five rows
+ * The `ENVOY_PASS_DEADLINE_MS` of every row on `gatedRoleFixture`, which sets it, and of the rows
  * of the same kind that boot a session of their own: an hour, past the limit of each of those
  * rows. Each pass and role move is abandoned at its deadline, a real `setTimeout` of the extension
  * (`createRegistrationState`, `src/registration-state.ts`), and at the 90 s it is otherwise (the
  * heartbeat's interval, which a pass's deadline is never shorter than) a host slow enough could
  * abandon a pass the row did not mean to. With an hour no deadline ends a correct row's pass,
- * however slow the host, and a pass that hangs ends at the row's own limit, which names the row.
+ * however slow the host, and a pass that hangs ends at the command's guard, which names the row.
  * This is not the test's clock (`onPassClock`) for most of those rows: they run on the real
  * clock and wait the listener's 250 ms retry (`LISTENER_CALL_RETRY_DELAY_MS`) and other short
  * real timers out, which a held clock would stop. The rows that boot the fixture inside
@@ -2417,7 +2439,7 @@ async function withEnvoyTimings<T>(
  * hour stands. The file's reset deletes the variable before and after every row
  * (`resetFileState`), so it reaches no other row.
  */
-const UNRACED_PASS_DEADLINE_MS = "3600000";
+const UNRACED_PASS_DEADLINE_MS = 3_600_000;
 
 const UNASKED_WAIT_NUDGE =
   "You just said you are waiting on a human for something no open ask in Dispatch covers. Open it now: a decision block in the document it concerns (dispatch doc-edit with an ask block), or dispatch ask for a to-do only a human can do, naming exactly what you need and from whom.";
@@ -5654,7 +5676,7 @@ describe("envoy OMP extension", () => {
     const marker = "dispatch-session-report ";
     const script = `
       const { createStandInHost } = await import(${JSON.stringify(join(import.meta.dir, "..", "test", "stand-in-host.ts"))});
-      const { default: envoyExtension }: EnvoyModule = await import(${JSON.stringify(join(import.meta.dir, "envoy.ts"))});
+      const { default: envoyExtension } = await import(${JSON.stringify(join(import.meta.dir, "envoy.ts"))});
       const { handlers, pi } = createStandInHost();
       await envoyExtension(pi);
       await handlers.get("session_start")?.({}, {
@@ -5982,9 +6004,7 @@ describe("envoy OMP extension", () => {
         const file = join(agentDirectory, "envoy.json");
         const notifications: string[] = [];
         const context = notifying("ses_profile", notifications);
-        const stop = rowShutdown(async () =>
-          fixture.handlers.get("session_shutdown")?.({}, context)
-        );
+        const stop = rowSessionShutdown(fixture, context);
         await fixture.handlers.get("session_start")?.({}, context);
 
         expect(process.env.ENVOY_CONFIG_FILE).toBe(file);
@@ -6457,7 +6477,7 @@ console.log(JSON.stringify(args));
           getLeafId: () => null,
         },
       } as SessionContext;
-      const stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, next));
+      const stop = rowSessionShutdown(fixture, next);
       await fixture.handlers.get("session_start")?.({}, gateContext(notifications));
       const first = recordOf("ses_askgate");
       expect(first).toMatchObject([{ v: 2, pid: process.pid, mode: "warn" }]);
@@ -6491,7 +6511,7 @@ console.log(JSON.stringify(args));
       const fixture = allHandlers();
       await envoyExtension(fixture.pi);
       const context = gateContext([]);
-      const stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, context));
+      const stop = rowSessionShutdown(fixture, context);
       await onFakeTimers(async () => {
         // Each move of the clock after an await throws instead once the row has ended, so a body
         // its limit abandoned moves no clock of the row after it.
@@ -6532,7 +6552,7 @@ console.log(JSON.stringify(args));
       await envoyExtension(fixture.pi);
       const notifications: string[] = [];
       const context = gateContext(notifications);
-      const stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, context));
+      const stop = rowSessionShutdown(fixture, context);
       await fixture.handlers.get("session_start")?.({}, context);
       const [own] = recordOf("ses_askgate") ?? [];
       // The gate records block for this session on a main-agent call, as an arm that is on does.
@@ -6565,7 +6585,7 @@ console.log(JSON.stringify(args));
           getLeafId: () => null,
         },
       } as SessionContext;
-      const stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, locked));
+      const stop = rowSessionShutdown(fixture, locked);
       await fixture.handlers.get("session_start")?.({}, gateContext(notifications));
       expect(notifications).toEqual([]);
       const dir = sessionDirectory(process.env, "ses_askgate_locked");
@@ -6646,9 +6666,7 @@ console.log(JSON.stringify(args));
         );
         const fixture = allHandlers();
         await envoyExtension(fixture.pi);
-        const stop = rowShutdown(async () =>
-          fixture.handlers.get("session_shutdown")?.({}, gateContext([]))
-        );
+        const stop = rowSessionShutdown(fixture, gateContext([]));
         await fixture.handlers.get("session_start")?.({}, gateContext([]));
         const root = join(stateHome, "dispatch");
         expect(process.env.DISPATCH_STATE_DIR).toBe(root);
@@ -6665,9 +6683,7 @@ console.log(JSON.stringify(args));
         const again: EnvoyModule = await import("./envoy.ts?askgate-state-dir-set");
         const fixtureAgain = allHandlers();
         await again.default(fixtureAgain.pi);
-        const stopAgain = rowShutdown(async () =>
-          fixtureAgain.handlers.get("session_shutdown")?.({}, gateContext([]))
-        );
+        const stopAgain = rowSessionShutdown(fixtureAgain, gateContext([]));
         await fixtureAgain.handlers.get("session_start")?.({}, gateContext([]));
         expect(process.env.DISPATCH_STATE_DIR).toBe(preset);
         expect(askgateState(sessionDirectory(process.env, "ses_askgate")).kind).toBe("on");
@@ -7018,9 +7034,7 @@ console.log(JSON.stringify(args));
       const fixture = allHandlers();
       await envoyExtension(fixture.pi);
       const context = gateContext([]);
-      const shutdown = rowShutdown(async () =>
-        fixture.handlers.get("session_shutdown")?.({}, context)
-      );
+      const shutdown = rowSessionShutdown(fixture, context);
       await fixture.handlers.get("session_start")?.({}, context);
       const dispatch = hangingRecordProject();
       await runDispatchCli(
@@ -7461,9 +7475,7 @@ console.log(JSON.stringify(args));
         );
         const fixture = createPi();
         await envoyExtension(fixture.pi);
-        const stop = rowShutdown(async () =>
-          fixture.handlers.get("session_shutdown")?.({}, gateContext([]))
-        );
+        const stop = rowSessionShutdown(fixture, gateContext([]));
         await fixture.handlers.get("session_start")?.({}, gateContext([]));
         // The gate did not load, so it records no mode; the record carries the session's choice,
         // and a gated write the gate never saw is refused by the CLI, not posted with a warning.
@@ -8337,7 +8349,7 @@ console.log(JSON.stringify(args));
       );
       const fixture = createPi();
       await envoyExtension(fixture.pi);
-      stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, context));
+      stop = rowSessionShutdown(fixture, context);
 
       const reconnecting = Promise.reject(new Error("the connection is reconnecting"));
       reconnecting.catch(() => undefined);
@@ -8352,7 +8364,9 @@ console.log(JSON.stringify(args));
       await onPassClock(async (clock) => {
         const started = fixture.handlers.get("session_start")?.({}, context);
         started?.catch(() => undefined);
-        await clock.hold(() => paths.includes("/v1/interests/subscribe"));
+        await clock.hold("the registration over HTTP", () =>
+          paths.includes("/v1/interests/subscribe")
+        );
         expect(paths).toContain("/v1/interests/subscribe");
 
         natsState.heldFlush = undefined;
@@ -8365,7 +8379,9 @@ console.log(JSON.stringify(args));
       if (ownRow()) natsState.heldFlush = undefined;
       await stop?.();
     }
-    // Every wait above ends by its own count of turns (`onPassClock`).
+    // Every wait on the test's clock above ends by its own count of turns (`onPassClock`). The
+    // module's import and the extension's load before it, and the shutdown in the `finally` after
+    // it, are awaited on the real clock with no bound of their own: the command's guard ends them.
   });
 
   test("the confirmation a connection could not answer runs on in the background, and stops when it answers", async () => {
@@ -8383,7 +8399,7 @@ console.log(JSON.stringify(args));
       );
       const fixture = createPi();
       await envoyExtension(fixture.pi);
-      stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, context));
+      stop = rowSessionShutdown(fixture, context);
 
       const reconnecting = Promise.reject(new Error("the connection is reconnecting"));
       reconnecting.catch(() => undefined);
@@ -8417,7 +8433,10 @@ console.log(JSON.stringify(args));
       if (ownRow()) natsState.heldFlush = undefined;
       await stop?.();
     }
-    // Every wait above ends by its own count of turns or steps (`onPassClock`).
+    // Every wait on the test's clock above ends by its own count of turns or steps
+    // (`onPassClock`). The module's import and the extension's load before it, and the shutdown in
+    // the `finally` after it, are awaited on the real clock with no bound of their own: the
+    // command's guard ends them.
   });
 
   test("a pass that opens many subjects over a connection that answers none waits one bound", async () => {
@@ -8467,7 +8486,7 @@ console.log(JSON.stringify(args));
         ...base,
         sessionManager: { ...base.sessionManager, getBranch: () => [{}] },
       };
-      stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, resumed));
+      stop = rowSessionShutdown(fixture, resumed);
       // The bound is 50 ms (`ENVOY_SUBSCRIBE_FLUSH_TIMEOUT_MS`), a timer of this process, so the
       // start runs on the test's clock (`onPassClock`): the clock moves 50 ms once, when the first
       // round trip is asked for, and is held while the rest of the pass runs on real turns. A
@@ -8477,9 +8496,11 @@ console.log(JSON.stringify(args));
       await onPassClock(async (clock) => {
         const started = fixture.handlers.get("session_start")?.({}, resumed);
         started?.catch(() => undefined);
-        await clock.hold(() => natsState.flushes.length > 0);
+        await clock.hold("the start's first flush", () => natsState.flushes.length > 0);
         await clock.advance(50);
-        await clock.hold(() => paths.includes("/v1/interests/subscribe"));
+        await clock.hold("the registration over HTTP", () =>
+          paths.includes("/v1/interests/subscribe")
+        );
 
         // Nine subjects are open - the agent subject, the relay, the control subject and the six
         // recovered topics - and one round trip was asked for, for all of them.
@@ -8494,7 +8515,9 @@ console.log(JSON.stringify(args));
       if (ownRow()) natsState.heldFlush = undefined;
       await stop?.();
     }
-    // Every wait above ends by its own count of turns (`onPassClock`).
+    // Every wait on the test's clock above ends by its own count of turns (`onPassClock`). The
+    // module's import and the extension's load before it, and the shutdown in the `finally` after
+    // it, are awaited on the real clock with no bound of their own: the command's guard ends them.
   });
 
   test("an open after a reconnect takes a round trip of its own again", async () => {
@@ -8519,7 +8542,7 @@ console.log(JSON.stringify(args));
       await envoyExtension(fixture.pi);
 
       natsState.heldFlush = new Promise<void>(() => undefined);
-      stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, live));
+      stop = rowSessionShutdown(fixture, () => live);
       await fixture.handlers.get("session_start")?.({}, live);
 
       // The connection is marked: the relay subject this switch opens pays nothing.
@@ -8568,7 +8591,7 @@ console.log(JSON.stringify(args));
       );
       const fixture = createPi();
       await envoyExtension(fixture.pi);
-      stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, live));
+      stop = rowSessionShutdown(fixture, () => live);
 
       // The open's 50 ms bound and the confirmation's 500 ms delay are timers of this process, so
       // the row runs on the test's clock (`onPassClock`), which moves only in the row's own moves:
@@ -8579,7 +8602,7 @@ console.log(JSON.stringify(args));
       await onPassClock(async (clock) => {
         natsState.heldFlush = new Promise<void>(() => undefined);
         const started = fixture.handlers.get("session_start")?.({}, live);
-        await clock.hold(() => natsState.flushes.length > 0);
+        await clock.hold("the start's first flush", () => natsState.flushes.length > 0);
         await clock.advance(50);
         await clock.run("the start", started);
 
@@ -8604,7 +8627,9 @@ console.log(JSON.stringify(args));
       if (ownRow()) natsState.heldFlush = undefined;
       await stop?.();
     }
-    // Every wait above ends by its own count of turns (`onPassClock`).
+    // Every wait on the test's clock above ends by its own count of turns (`onPassClock`). The
+    // module's import and the extension's load before it, and the shutdown in the `finally` after
+    // it, are awaited on the real clock with no bound of their own: the command's guard ends them.
   });
 
   test("a session's shutdown stops the background confirmation", async () => {
@@ -8625,7 +8650,7 @@ console.log(JSON.stringify(args));
       );
       const fixture = createPi();
       await envoyExtension(fixture.pi);
-      stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, context));
+      stop = rowSessionShutdown(fixture, context);
 
       natsState.heldFlush = new Promise<void>(() => undefined);
       // The open's bound and the confirmation's delay are 50 ms each, timers of this process, so
@@ -8635,7 +8660,7 @@ console.log(JSON.stringify(args));
       // slow enough to hold the loop's next ask past it passed whatever the shutdown did.
       await onPassClock(async (clock) => {
         const started = fixture.handlers.get("session_start")?.({}, context);
-        await clock.hold(() => natsState.flushes.length > 0);
+        await clock.hold("the start's first flush", () => natsState.flushes.length > 0);
         await clock.advance(50);
         await clock.run("the start", started);
 
@@ -8659,7 +8684,10 @@ console.log(JSON.stringify(args));
       // the path where an assertion above it fails, which must leave no asking behind either.
       await stop?.();
     }
-    // Every wait above ends by its own count of turns or steps (`onPassClock`).
+    // Every wait on the test's clock above ends by its own count of turns or steps
+    // (`onPassClock`). The module's import and the extension's load before it are awaited on the
+    // real clock with no bound of their own, and so is the shutdown in the `finally`, which runs
+    // only once a check before the row's own shutdown failed: the command's guard ends them.
   });
 
   // A fixture holding `legion-controller`. Once `gate(role)` is called, the listener holds the
@@ -8689,7 +8717,7 @@ console.log(JSON.stringify(args));
     // An hour, past the row's limit (`UNRACED_PASS_DEADLINE_MS`), unless the row named its own
     // deadline before it called the fixture (`withEnvoyTimings`): the extension reads it at
     // `session_start`, below.
-    process.env.ENVOY_PASS_DEADLINE_MS ??= UNRACED_PASS_DEADLINE_MS;
+    process.env.ENVOY_PASS_DEADLINE_MS ??= String(UNRACED_PASS_DEADLINE_MS);
     const claims: string[] = [];
     // Each claim as `<role>@<session it was sent for>`.
     const claimSessions: string[] = [];
@@ -13805,7 +13833,7 @@ console.log(JSON.stringify(args));
       setInterval: (callback) => intervals.push(callback),
     };
     await envoyExtension(fixture.pi);
-    const stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, context));
+    const stop = rowSessionShutdown(fixture, context);
     await fixture.handlers.get("session_start")?.({}, context);
     const told = () =>
       fixture.entries
@@ -13885,7 +13913,7 @@ console.log(JSON.stringify(args));
       setInterval: (callback) => intervals.push(callback),
     };
     await envoyExtension(fixture.pi);
-    const stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, context));
+    const stop = rowSessionShutdown(fixture, context);
     await fixture.handlers.get("session_start")?.({}, context);
     const told = () =>
       fixture.entries
@@ -13956,7 +13984,7 @@ console.log(JSON.stringify(args));
     const fixture = createPi();
     const context = sessionContext("ses_unsubscribed_in_flight");
     await envoyExtension(fixture.pi);
-    const stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, context));
+    const stop = rowSessionShutdown(fixture, context);
     await fixture.handlers.get("session_start")?.({}, context);
     const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
     const unsubscribeTool = fixture.tools.find((tool) => tool.name === "envoy_unsubscribe");
@@ -14408,7 +14436,7 @@ console.log(JSON.stringify(args));
     // until this session re-registers the listener answers "no holder" for it, and the daemon's
     // publishes in that window went undelivered. The re-registration itself is the regain.
     // An hour, past the row's limit, so no deadline ends a pass (`UNRACED_PASS_DEADLINE_MS`).
-    process.env.ENVOY_PASS_DEADLINE_MS = UNRACED_PASS_DEADLINE_MS;
+    process.env.ENVOY_PASS_DEADLINE_MS = String(UNRACED_PASS_DEADLINE_MS);
     const role = "legion-controller";
     let registryDown = false;
     const intervals: (() => void)[] = [];
@@ -14567,7 +14595,7 @@ console.log(JSON.stringify(args));
     // pass was abandoned on the real clock, and an ordinary pass behind it moved the count, so
     // the row passed with that refresh removed.
     await withEnvoyTimings(
-      { heartbeatMs: 25, passDeadlineMs: Number(UNRACED_PASS_DEADLINE_MS) },
+      { heartbeatMs: 25, passDeadlineMs: UNRACED_PASS_DEADLINE_MS },
       async () => {
         let wedgePass = false;
         const wedged = Promise.withResolvers<void>();
@@ -14639,7 +14667,7 @@ console.log(JSON.stringify(args));
     // before, a loaded host could reach that deadline. The move was then abandoned, and an
     // ordinary pass behind it could move the count in place of the tick.
     await withEnvoyTimings(
-      { heartbeatMs: 25, passDeadlineMs: Number(UNRACED_PASS_DEADLINE_MS) },
+      { heartbeatMs: 25, passDeadlineMs: UNRACED_PASS_DEADLINE_MS },
       async () => {
         const role = "legion-controller";
         let wedgeRoleRead = false;
@@ -14715,7 +14743,7 @@ console.log(JSON.stringify(args));
     // the row had before, a loaded host could reach that deadline. The episode then ended early,
     // and an ordinary pass could refresh the registration in place of the tick.
     await withEnvoyTimings(
-      { heartbeatMs: 25, passDeadlineMs: Number(UNRACED_PASS_DEADLINE_MS) },
+      { heartbeatMs: 25, passDeadlineMs: UNRACED_PASS_DEADLINE_MS },
       async () => {
         let wedgePass = false;
         const wedged = Promise.withResolvers<void>();
@@ -14862,7 +14890,7 @@ console.log(JSON.stringify(args));
           // backstop is what registers from here.
           wedgePass = true;
           intervals[0]?.();
-          await clock.hold(() => wedged);
+          await clock.hold("the tick's pass parked at its registration", () => wedged);
           expect(wedged).toBe(true);
 
           // The host opens a new session; its own pass is queued behind the wedged one, so
@@ -14884,7 +14912,9 @@ console.log(JSON.stringify(args));
           // runs now.
           answered.resolve();
           await clock.run("the switch", switched.promise);
-          await clock.hold(() => registered.includes("ses_stall_moved_b"));
+          await clock.hold("the registration of ses_stall_moved_b", () =>
+            registered.includes("ses_stall_moved_b")
+          );
           expect(registered).toContain("ses_stall_moved_b");
         } finally {
           // Only while the row runs: released after it, the wedged pass would go on registering
@@ -14895,7 +14925,9 @@ console.log(JSON.stringify(args));
         }
       })
     );
-    // Every wait above ends by its own count of turns (`onPassClock`).
+    // Every wait on the test's clock above ends by its own count of turns (`onPassClock`). The
+    // module's import and the extension's load, awaited in the clock's body but not through the
+    // clock, have no bound of their own: the command's guard ends them.
   });
 
   test("the first healthy tick after a stall re-asserts the role once as a re-registration", async () => {
@@ -14978,7 +15010,9 @@ console.log(JSON.stringify(args));
         for (let step = 0; step < 20; step += 1) await new Promise((r) => setImmediate(r));
       })
     );
-    // Every wait above ends by its own count of turns or steps (`onPassClock`).
+    // Every wait on the test's clock above ends by its own count of turns or steps
+    // (`onPassClock`). The module's import and the extension's load, awaited in the clock's body
+    // but not through the clock, have no bound of their own: the command's guard ends them.
   });
 
   test("a task that answers after its deadline writes nothing over what a newer one settled", async () => {
@@ -15048,7 +15082,7 @@ console.log(JSON.stringify(args));
             {},
             sessionContext("ses_fenced_a")
           );
-          await clock.hold(() => natsState.connectedNames.length > 0);
+          await clock.hold("the first session's dial", () => natsState.connectedNames.length > 0);
           expect(natsState.connectedNames).toEqual(["omp-ses_fenced_a"]);
           await clock.stepping("the start", started, 1_000);
           natsState.heldConnect = undefined;
@@ -15076,7 +15110,7 @@ console.log(JSON.stringify(args));
           if (roleTool === undefined) throw new Error("envoy_role_set was not registered");
           wedgeClaim = true;
           const abandoned = roleTool.execute("", { role: "release-captain" });
-          await clock.hold(() => roleClaims.length > 0);
+          await clock.hold("the abandoned move's claim", () => roleClaims.length > 0);
           expect(roleClaims).toHaveLength(1);
           expect((await clock.stepping("the abandoned move", abandoned, 1_000)).isError).toBe(true);
           expect(
@@ -15152,7 +15186,7 @@ console.log(JSON.stringify(args));
 
     await envoyExtension(fixture.pi);
     const context = sessionContext("ses_control_flush");
-    const stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, context));
+    const stop = rowSessionShutdown(fixture, context);
     natsState.failFlushClosesConnection = true;
     natsState.failFlushOnSubject = control;
     await fixture.handlers.get("session_start")?.({}, context);
@@ -15196,7 +15230,7 @@ console.log(JSON.stringify(args));
           natsState.heldConnect = connected.promise;
           await envoyExtension(fixture.pi);
           const started = fixture.handlers.get("session_start")?.({}, sessionContext("ses_dial_a"));
-          await clock.hold(() => natsState.connectedNames.length > 0);
+          await clock.hold("the first session's dial", () => natsState.connectedNames.length > 0);
           expect(natsState.connectedNames).toEqual(["omp-ses_dial_a"]);
           await clock.stepping("the start", started, 1_000);
           natsState.heldConnect = undefined;
@@ -15308,7 +15342,7 @@ console.log(JSON.stringify(args));
     // Tick N+1: registration lands but the role read errors. Tick N+2: healthy. The regain owed
     // since tick N must still fire exactly once at N+2, or the daemon's held work stays stranded.
     // An hour, past the row's limit, so no deadline ends a pass (`UNRACED_PASS_DEADLINE_MS`).
-    process.env.ENVOY_PASS_DEADLINE_MS = UNRACED_PASS_DEADLINE_MS;
+    process.env.ENVOY_PASS_DEADLINE_MS = String(UNRACED_PASS_DEADLINE_MS);
     const role = "legion-controller";
     let registryDown = false;
     let roleReadBroken = false;
@@ -18180,7 +18214,7 @@ console.log(JSON.stringify(args));
           );
           await moveHost(fixture, other);
           writeFileSync(go, "");
-          await replied(1);
+          await settled("the reply to the command", replied(1));
 
           // The reply names the session the person wrote to and is signed as it.
           expect(replies.map((reply) => reply.body.actor)).toEqual([
@@ -18200,7 +18234,7 @@ console.log(JSON.stringify(args));
           // afresh. The hold ends with the command's work, in the same run of microtasks as that
           // log line and with no I/O between, so one turn of the event loop after it runs that
           // end, and then one pass.
-          await ended.promise;
+          await settled("the delivery's end, its log line", ended.promise);
           await new Promise<void>((resolve) => setImmediate(resolve));
           await fixture.handlers.get("session_switch")?.(
             { reason: "new" },
@@ -19939,7 +19973,7 @@ console.log(JSON.stringify(args));
           fixture.handlers.get("message_end")?.({ message }, context)
         );
         await clock.advance(50);
-        await clock.hold(() => publishedContext().length > 1);
+        await clock.hold("the clearing frame", () => publishedContext().length > 1);
 
         expect(publishedContext().map((frame) => frame.kind)).toEqual([
           "context",
@@ -21104,9 +21138,7 @@ console.log(JSON.stringify(args));
       const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?pictures-shutdown");
       const fixture = createPi();
       await envoyExtension(fixture.pi);
-      const stop = rowShutdown(async () =>
-        fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_pictures_shutdown"))
-      );
+      const stop = rowSessionShutdown(fixture, sessionContext("ses_pictures_shutdown"));
       await fixture.handlers.get("session_start")?.({}, sessionContext("ses_pictures_shutdown"));
       shownPictures("ses_pictures_shutdown").add("dispatch://LEGION-1/artifact/shut-png@v1");
 
@@ -21125,9 +21157,7 @@ console.log(JSON.stringify(args));
       );
       const fixture = createPi();
       await envoyExtension(fixture.pi);
-      const stop = rowShutdown(async () =>
-        fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_pictures_subagent"))
-      );
+      const stop = rowSessionShutdown(fixture, sessionContext("ses_pictures_subagent"));
       shownPictures("ses_pictures_subagent").add("dispatch://LEGION-1/artifact/sub-png@v1");
 
       await stop();
@@ -21298,7 +21328,7 @@ console.log(JSON.stringify(args));
         return { replyText: "too late" };
       },
     };
-    const stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, context));
+    const stop = rowSessionShutdown(fixture, context);
     await fixture.handlers.get("session_start")?.({}, context);
     const agent = natsState.controls.get("notifications.agent.ses_delivery");
     if (agent === undefined) throw new Error("agent subject was not subscribed");
@@ -22394,9 +22424,7 @@ console.log(JSON.stringify(args));
     try {
       const posted = recordingMessages();
       const host = await subagentProcess("shutdown-parent", "ses_parent", fixture.transcript);
-      const stopParent = rowShutdown(async () =>
-        host.parent.handlers.get("session_shutdown")?.({}, host.parent.context)
-      );
+      const stopParent = rowSessionShutdown(host.parent, host.parent.context);
       const child = await host.boot(
         "ses_child",
         fixture.transcript("2026-09-23T00-00-00-000Z_ses_parent/Scout.jsonl")
@@ -22667,9 +22695,7 @@ console.log(JSON.stringify(args));
         },
       };
       await envoyExtension(fixture.pi);
-      const shutDown = rowShutdown(async () =>
-        fixture.handlers.get("session_shutdown")?.({}, context)
-      );
+      const shutDown = rowSessionShutdown(fixture, context);
       await fixture.handlers.get("session_start")?.({}, context);
       return {
         places,
@@ -23462,7 +23488,9 @@ console.log(JSON.stringify(args));
     } finally {
       if (ownRow()) setNatsConnectForTests(natsStandInConnect);
     }
-    // Every wait above ends by its own count of turns or steps (`onPassClock`).
+    // Every wait on the test's clock above ends by its own count of turns or steps
+    // (`onPassClock`). The module's import and the extension's load before it are awaited on the
+    // real clock with no bound of their own: the command's guard ends them.
   });
 
   // A Legion wake after a pod release is a new pod that resumes the session's transcript: its
@@ -23526,7 +23554,9 @@ console.log(JSON.stringify(args));
     } finally {
       if (ownRow()) setNatsConnectForTests(natsStandInConnect);
     }
-    // Every wait above ends by its own count of turns or steps (`onPassClock`).
+    // Every wait on the test's clock above ends by its own count of turns or steps
+    // (`onPassClock`). The module's import and the extension's load before it are awaited on the
+    // real clock with no bound of their own: the command's guard ends them.
   });
 
   // A pod whose first dial the hub closed registers on its next pass seconds later; without a word
@@ -23611,7 +23641,7 @@ console.log(JSON.stringify(args));
       );
       const fixture = createPi();
       await envoyExtension(fixture.pi);
-      const stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, context));
+      const stop = rowSessionShutdown(fixture, context);
       const heartbeat = () => {
         for (const { callback, intervalMs } of intervals) if (intervalMs === 45_000) callback();
       };
@@ -23730,7 +23760,7 @@ console.log(JSON.stringify(args));
       );
       const fixture = createPi();
       await envoyExtension(fixture.pi);
-      const stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, context));
+      const stop = rowSessionShutdown(fixture, context);
       try {
         await fixture.handlers.get("session_start")?.({}, context);
         const first = natsState.controls.get(control);
@@ -23777,9 +23807,7 @@ console.log(JSON.stringify(args));
     const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${query}`);
     const fixture = createPi();
     await envoyExtension(fixture.pi);
-    const shutdown = rowShutdown(async () =>
-      fixture.handlers.get("session_shutdown")?.({}, context)
-    );
+    const shutdown = rowSessionShutdown(fixture, context);
     await fixture.handlers.get("session_start")?.({}, context);
     const written = (word: string) =>
       fixture.entries
@@ -23996,8 +24024,11 @@ console.log(JSON.stringify(args));
           const reopened = () =>
             natsState.controls.get(relay) !== first &&
             natsState.controls.get(relay)?.active() === true;
-          await clock.held("the heartbeat did not open the relay subject again", reopened);
-          await clock.hold(() => session.restored().written.length === 1);
+          await clock.hold("the heartbeat's reopening of the relay subject", reopened);
+          await clock.hold(
+            "the transcript's note that inbound is restored",
+            () => session.restored().written.length === 1
+          );
           for (const part of Object.values(session.restored())) expect(part).toHaveLength(1);
           expect(natsState.connectedNames).toHaveLength(1);
         });
@@ -24038,10 +24069,10 @@ console.log(JSON.stringify(args));
           await redialParked(clock);
           session.heartbeat();
           const raced = () => natsState.connectedNames.length === 3;
-          await clock.held("the heartbeat's dial did not begin beside the parked redial", raced);
+          await clock.hold("the heartbeat's dial beside the parked redial", raced);
           natsState.heldConnect = undefined;
           parked.resolve();
-          await clock.hold(() =>
+          await clock.hold("a live subscription of the control subject after its first", () =>
             (natsState.controlsByTopic.get(control) ?? []).some((c, i) => i > 0 && c.active())
           );
           await settle();
@@ -24103,7 +24134,9 @@ console.log(JSON.stringify(args));
         }
       })
     );
-    // Every wait above ends by its own count of turns (`onPassClock`).
+    // Every wait on the test's clock above ends by its own count of turns (`onPassClock`). The
+    // module's import and the extension's load, awaited in the clock's body but not through the
+    // clock, have no bound of their own: the command's guard ends them.
   });
 
   // legacy-subjects-gate.sh reads each connection's build from the end of the name the hub's census
@@ -24124,10 +24157,17 @@ console.log(JSON.stringify(args));
       const stampDirectory = mkdtempSync(join(tmpdir(), "pi-envoy-build-"));
       try {
         // An instance of its own (the query), as each row of this file loads one: the build source
-        // it is given is that instance's module state.
-        const entry: EnvoyModule = await import("./envoy.ts?connection-build");
-        // The query names no file, so `entry` is untyped; its factory is read through
-        // `EnvoyModule`, so a call of it left without `await` fails Biome's noFloatingPromises.
+        // it is given is that instance's module state. The query names no file, so nothing types
+        // the import but this annotation, which names what the row uses of it: the factory
+        // (`EnvoyModule`) and the setter of the build source. The factory is read through
+        // `EnvoyModule` alone, which Biome follows where it does not follow an intersection, so a
+        // call of it left without `await` fails Biome's noFloatingPromises.
+        const entry: EnvoyModule & {
+          readonly setBuildSourceForTests: (source: {
+            readonly stamp: string;
+            readonly packed: boolean;
+          }) => void;
+        } = await import("./envoy.ts?connection-build");
         const { default: envoyExtension }: EnvoyModule = entry;
         const commit = "0123456789abcdef0123456789abcdef01234567";
         const rows = [
@@ -24161,9 +24201,7 @@ console.log(JSON.stringify(args));
             };
             const fixture = createPi();
             await envoyExtension(fixture.pi);
-            const shutdown = rowShutdown(async () =>
-              fixture.handlers.get("session_shutdown")?.({}, context)
-            );
+            const shutdown = rowSessionShutdown(fixture, context);
             names.length = 0;
             await clock.run(
               "a session's start in the connection-name loop",
@@ -24316,7 +24354,7 @@ console.log(JSON.stringify(args));
       );
       const fixture = createPi();
       await envoyExtension(fixture.pi);
-      const stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, context));
+      const stop = rowSessionShutdown(fixture, context);
       const trade = (from: number) =>
         notifications
           .slice(from)
@@ -24463,7 +24501,11 @@ console.log(JSON.stringify(args));
     for (let step = 0; step < boundMs / 100 - 1; step += 1) await clock.advance(100);
     const early = said();
     await clock.advance(100);
-    await clock.hold(said);
+    await clock.turns(
+      10_000,
+      "the pass's word on what its trade came to, which the row reads itself",
+      said
+    );
     const saidMs = said() ? clock.now() - started : undefined;
     for (let step = 0; step < 150 && !settled; step += 1) await clock.advance(100);
     return { armedMs, early, saidMs, settled };
@@ -24496,7 +24538,7 @@ console.log(JSON.stringify(args));
       const fixture = createPi();
       await envoyExtension(fixture.pi);
       const { context, notifications } = timedContext("ses_broker_503", Date.now());
-      const stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, context));
+      const stop = rowSessionShutdown(fixture, context);
       const notice = () =>
         notifications.find(({ message }) => message.includes("the trade for the session's token"));
       const read = await onPassClock((clock) =>
@@ -24539,7 +24581,7 @@ console.log(JSON.stringify(args));
     const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?broker-away-once");
     const fixture = createPi();
     await envoyExtension(fixture.pi);
-    const stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, context));
+    const stop = rowSessionShutdown(fixture, context);
     // The retry loop's next trade comes 7.5 to 15 s after the first's 503 (its jittered delay,
     // at most `RETRY_FIRST_WAIT_MS`) and the start's ready waits for it within its 20 s bound
     // (`TRADE_DEADLINE_MS`): both are this process's timers, so the start runs on the test's
@@ -24620,7 +24662,7 @@ console.log(JSON.stringify(args));
       );
       const fixture = createPi();
       await envoyExtension(fixture.pi);
-      const stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, context));
+      const stop = rowSessionShutdown(fixture, context);
       // The start's work, two trades that each read the pod's token from disk and three dials,
       // runs inside this process's own timers: the start's trade bound (`TRADE_DEADLINE_MS`) and
       // its pass's deadline. On the real clock the row's outcome depended on the host finishing
@@ -24683,9 +24725,7 @@ console.log(JSON.stringify(args));
     );
     const fixture = createPi();
     await envoyExtension(fixture.pi);
-    const stop = rowShutdown(async () =>
-      fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_switch_to"))
-    );
+    const stop = rowSessionShutdown(fixture, sessionContext("ses_switch_to"));
     // The start waits for its token within its trade bound (`startTradeBoundMs`, 20 s of the 30 s
     // pass), and the switch's follow takes the new session's token within its share of the
     // follow's bound (20 s of `followBoundMs`'s 28 s), then waits for the connection to come back
@@ -24747,7 +24787,7 @@ console.log(JSON.stringify(args));
     const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?keeper-notice");
     const fixture = createPi();
     await envoyExtension(fixture.pi);
-    const stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, context));
+    const stop = rowSessionShutdown(fixture, context);
     const refused = () =>
       notifications.filter(({ message }) =>
         message.includes("refused the connection's live broker token")
@@ -24765,7 +24805,7 @@ console.log(JSON.stringify(args));
       for (const read of natsState.statusReaders) {
         read({ type: "error", data: "AUTHORIZATION_VIOLATION" });
       }
-      await clock.hold(() => refused().length > 0);
+      await clock.hold("the notice of the refused token", () => refused().length > 0);
     });
     expect(refused().map(({ message }) => message)).toEqual([
       "envoy: the NATS server refused the connection's live broker token (AUTHORIZATION_VIOLATION): the auth service is away, or the token was revoked; the connection keeps redialling, and at the second refusal the token is dropped and another traded",
@@ -24800,9 +24840,7 @@ console.log(JSON.stringify(args));
       const fixture = createPi();
       await envoyExtension(fixture.pi);
       const after = timedContext("ses_follow_to", Date.now());
-      const stop = rowShutdown(async () =>
-        fixture.handlers.get("session_shutdown")?.({}, after.context)
-      );
+      const stop = rowSessionShutdown(fixture, after.context);
       const all = () => [...before.notifications, ...after.notifications];
       const named = () =>
         all().find(({ message }) => message.includes("could not take the new session's token"));
@@ -24841,7 +24879,11 @@ console.log(JSON.stringify(args));
         const earlyNotice = named()?.message;
         // At the share, held until the pass says what the trade came to.
         await clock.advance(50);
-        await clock.hold(() => named() !== undefined);
+        await clock.turns(
+          10_000,
+          "the pass's word on what the trade came to, which the row reads itself",
+          () => named() !== undefined
+        );
         const noticeMs = named() === undefined ? undefined : clock.now() - switchedAt;
         // The pass goes on after the follow (its subscribes and its registration), inside its
         // own deadline, which a pass that outlived it would say below.
@@ -24899,7 +24941,7 @@ console.log(JSON.stringify(args));
     await envoyExtension(fixture.pi);
     const oldControl = "agentstream.ses_failed_from.control";
     const next = sessionContext("ses_failed_to");
-    const stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, next));
+    const stop = rowSessionShutdown(fixture, next);
     const marker = "a turn of the session switched to";
     // The start's trade and the switch's follow each wait within a bound of this process's own
     // (`TRADE_DEADLINE_MS`, `followBoundMs`), so the row runs on the test's clock (`onPassClock`),
@@ -24937,7 +24979,7 @@ console.log(JSON.stringify(args));
       const control = natsState.controls.get(oldControl);
       control?.push(JSON.stringify({ type: "watch", v: 1 }));
       control?.push(JSON.stringify({ type: "replay", v: 1 }), "inbox-old-viewer");
-      await clock.hold(() => false, 200);
+      await clock.turns(200, "the turns a replay that did answer would need");
     });
     const replayed = natsState.published
       .filter((each) => each.subject === "inbox-old-viewer")
@@ -24962,7 +25004,7 @@ console.log(JSON.stringify(args));
     const fixture = createPi();
     await envoyExtension(fixture.pi);
     const first = sessionContext("ses_ring_a");
-    const stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, first));
+    const stop = rowSessionShutdown(fixture, first);
     await fixture.handlers.get("session_start")?.({}, first);
     const second = sessionContext("ses_ring_b");
     await fixture.handlers.get("session_switch")?.({}, second);
@@ -25717,7 +25759,7 @@ console.log(JSON.stringify(args));
     // flipped inside the same function object rather than by reassigning
     // globalThis.fetch afterwards.
     // An hour, past the row's limit, so no deadline ends a pass (`UNRACED_PASS_DEADLINE_MS`).
-    process.env.ENVOY_PASS_DEADLINE_MS = UNRACED_PASS_DEADLINE_MS;
+    process.env.ENVOY_PASS_DEADLINE_MS = String(UNRACED_PASS_DEADLINE_MS);
     let registryDown = false;
     globalThis.fetch = async (input, init) => {
       if (registryDown) throw new Error("network unreachable");
@@ -25819,7 +25861,7 @@ console.log(JSON.stringify(args));
         await clock.stepping(`registration attempt ${at}`, reached.promise, 1_000);
         await settle();
       };
-      const { default: envoyExtension } = await clock.waitOn(
+      const { default: envoyExtension }: EnvoyModule = await clock.waitOn(
         "the extension's module",
         import("./envoy.ts?heartbeat-retry")
       );
@@ -25959,9 +26001,7 @@ console.log(JSON.stringify(args));
     const fixture = createPi();
 
     await envoyExtension(fixture.pi);
-    const stop = rowShutdown(async () =>
-      fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_shutdown"))
-    );
+    const stop = rowSessionShutdown(fixture, sessionContext("ses_shutdown"));
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_shutdown"));
     await stop();
 
@@ -25978,9 +26018,13 @@ console.log(JSON.stringify(args));
       requests.push(`${init?.method ?? "GET"} ${new URL(input.toString()).pathname}`);
       return responseWithRegistration(input, init, []);
     };
-    const { default: envoyExtension, SHUTDOWN_DEADLINE_MS } = await import(
+    // The query names no file, so nothing types the import but this annotation, which names what
+    // the row uses of it; the factory is read through `EnvoyModule` alone, as in the
+    // connection-name row, so a call of it left without `await` fails Biome's noFloatingPromises.
+    const entry: EnvoyModule & { readonly SHUTDOWN_DEADLINE_MS: number } = await import(
       "./envoy.ts?shutdown-hang"
     );
+    const { default: envoyExtension }: EnvoyModule = entry;
     const fixture = createPi();
 
     await envoyExtension(fixture.pi);
@@ -26007,7 +26051,7 @@ console.log(JSON.stringify(args));
     // 2_000 is Oh My Pi's own `SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS`, a literal here because Oh My
     // Pi is not a dependency of this package.
     expect(elapsedMs).toBeLessThan(2_000);
-    expect(SHUTDOWN_DEADLINE_MS).toBeLessThan(2_000);
+    expect(entry.SHUTDOWN_DEADLINE_MS).toBeLessThan(2_000);
 
     // The handler deregistered and returned while the drain had started and not returned: one
     // that waits the drain out reaches neither of these, because `onTestClock` fails it above.
@@ -26036,12 +26080,8 @@ console.log(JSON.stringify(args));
     const fixture = createPi();
 
     await envoyExtension(fixture.pi);
-    const stop = rowShutdown(async () =>
-      fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_shutdown"))
-    );
+    const stop = rowSessionShutdown(fixture, sessionContext("ses_shutdown"));
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_shutdown"));
-    if (fixture.handlers.get("session_shutdown") === undefined)
-      throw new Error("session_shutdown handler was not registered");
     const shutdown = stop();
 
     await deleteStarted.promise;
@@ -26099,7 +26139,7 @@ console.log(JSON.stringify(args));
         .find((tool) => tool.name === "envoy_subscribe")
         ?.execute("", { topics: ["notifications.github.sjawhar.legion.pr.1.>"] });
       // The registration reaches the wire on real turns, with the clock held.
-      await clock.hold(() => registrationPending);
+      await clock.hold("the subscribe's registration on the wire", () => registrationPending);
       expect(registrationPending).toBe(true);
 
       const shutdown = fixture.handlers.get("session_shutdown")?.(
@@ -26126,7 +26166,9 @@ console.log(JSON.stringify(args));
 
     expect(requests).toContain("DELETE /v1/sessions/ses_shutdown");
     expect(registrationPendingAtDelete).toBe(false);
-    // Every wait above ends by its own count of turns or steps (`onPassClock`).
+    // Every wait on the test's clock above ends by its own count of turns or steps
+    // (`onPassClock`). The module's import and the extension's load before it are awaited on the
+    // real clock with no bound of their own: the command's guard ends them.
   });
 
   // The wait above is bounded on the shutdown path, because Oh My Pi abandons a shutdown handler
@@ -26174,7 +26216,7 @@ console.log(JSON.stringify(args));
         .find((tool) => tool.name === "envoy_subscribe")
         ?.execute("", { topics: ["notifications.github.sjawhar.legion.pr.1.>"] });
       // The registration reaches the wire on real turns, with the clock held.
-      await clock.hold(() => registrations === 2);
+      await clock.hold("the subscribe's registration", () => registrations === 2);
       expect(registrations).toBe(2);
 
       const shutdown = fixture.handlers.get("session_shutdown")?.(
@@ -26202,7 +26244,9 @@ console.log(JSON.stringify(args));
       );
       await clock.run("the subscribe", subscribing);
     });
-    // Every wait above ends by its own count of turns or steps (`onPassClock`).
+    // Every wait on the test's clock above ends by its own count of turns or steps
+    // (`onPassClock`). The module's import and the extension's load before it are awaited on the
+    // real clock with no bound of their own: the command's guard ends them.
   });
 
   // A `/new`, a fork or a branch mints a new id, and nothing heartbeats the old one from then on:
@@ -26697,11 +26741,7 @@ describe("consumer delivery", () => {
     if (options.withoutRelay !== true) {
       const registered = () => registrations.length > 0;
       if (options.clock === undefined) await until("the first registration", rowProbe(registered));
-      else
-        await options.clock.held(
-          "the first registration did not reach the listener with the test's clock held",
-          registered
-        );
+      else await options.clock.hold("the first registration", registered);
     }
     await settle();
     let inboxes = 0;
@@ -26763,11 +26803,7 @@ describe("consumer delivery", () => {
         for (const interval of intervals) interval();
         const sent = () => registrations.length > before;
         if (clock === undefined) await until("the heartbeat's registration", rowProbe(sent));
-        else
-          await clock.held(
-            "the heartbeat's registration did not reach the listener with the test's clock held",
-            sent
-          );
+        else await clock.hold("the heartbeat's registration", sent);
         await settle();
       },
       /** nats.js reports a reconnect. */
@@ -26878,11 +26914,12 @@ describe("consumer delivery", () => {
     // needs it to: the relay subject stays open, so no redial or resubscribe delay comes into it,
     // the host writes each card after a microtask, and the stand-in listener answers each call at
     // once. Everything between runs in process, on real turns, so each wait holds the clock for
-    // its count of turns (`hold`, `run`). The boot runs before, on the real clock, as every
-    // consumer row's does: it holds no frame, so it arms no interval.
+    // its count of turns (`hold`, `run`). The boot runs before, on the real clock: it holds no
+    // frame, so it arms no interval. Most consumer rows boot so; the refused-registration rows
+    // boot on the test's clock instead.
     await onPassClock(async (clock) => {
       const inboxes = [1, 2, 3].map((seq) => session.relay(seq, peer(`order-${seq}`)));
-      await clock.hold(() => session.cards("evt-order-3").length > 0);
+      await clock.hold("the third frame's card", () => session.cards("evt-order-3").length > 0);
 
       for (const [index, inbox] of inboxes.entries()) {
         expect(session.replies(inbox)).toEqual(["received"]);
@@ -27060,9 +27097,7 @@ describe("consumer delivery", () => {
     const first = "ses_probe_first";
     const next = "ses_probe_next";
     const firstContext = sessionContext(first);
-    const stop = rowShutdown(async () =>
-      fixture.handlers.get("session_shutdown")?.({}, sessionContext(next))
-    );
+    const stop = rowSessionShutdown(fixture, sessionContext(next));
 
     await fixture.handlers.get("session_start")?.({}, firstContext);
     await until(
@@ -27145,8 +27180,8 @@ describe("consumer delivery", () => {
         await session.tick(clock);
         const inbox = session.relay(3, peer(`after-${refusal.reason}`));
         const answered = () => session.replies(inbox).includes("done");
-        await clock.held(
-          "the frame relayed after the accepted registration was not answered done",
+        await clock.hold(
+          "the done answer to the frame relayed after the accepted registration",
           answered
         );
 
@@ -27358,17 +27393,17 @@ describe("consumer delivery", () => {
     await onPassClock(async (clock) => {
       const btw = session.relay(1, targetedDispatchEnvelope("btw", "btw-running"));
       // The side turn starts on real turns, with the clock held.
-      await clock.hold(() => sideTurns === 1);
+      await clock.hold("the BTW's side turn", () => sideTurns === 1);
       expect(sideTurns).toBe(1);
       const next = session.relay(2, peer("after-btw"));
-      await clock.hold(() => session.replies(next).includes("done"));
+      await clock.hold("the next frame's done", () => session.replies(next).includes("done"));
 
       expect(session.replies(next)).toEqual(["received", "done"]);
       expect(session.cards("evt-after-btw")).toHaveLength(1);
       expect(session.replies(btw)).toEqual(["received"]);
 
       answering.resolve({ replyText: "the answer" });
-      await clock.hold(() => session.replies(btw).includes("done"));
+      await clock.hold("the BTW's done", () => session.replies(btw).includes("done"));
       expect(session.replies(btw)).toContain("done");
       expect(session.dispatchReplies).toHaveLength(1);
       expect(session.cards("dispatch-btw-running")).toHaveLength(0);
@@ -27397,7 +27432,7 @@ describe("consumer delivery", () => {
     await onPassClock(async (clock) => {
       const inbox = session.relay(5, peer("cleared"));
       const handed = () => session.cards("evt-cleared").length > 0;
-      await clock.held("the frame's card was not handed to the streaming turn", handed);
+      await clock.hold("the frame's card, handed to the streaming turn", handed);
       expect(session.replies(inbox)).toEqual(["received"]);
 
       await clock.run("the interrupt", session.interrupt());
@@ -27407,7 +27442,7 @@ describe("consumer delivery", () => {
       ).toEqual([]);
 
       await session.tick(clock);
-      await clock.hold(() => session.replies(inbox).includes("done"));
+      await clock.hold("the frame's done", () => session.replies(inbox).includes("done"));
 
       expect(session.events.filter((event) => event === "written evt-cleared")).toHaveLength(1);
       expect(session.events.indexOf("written evt-cleared")).toBeLessThan(
@@ -27560,7 +27595,10 @@ describe("consumer delivery", () => {
 
         // The turn streams, so the host holds the card until the turn takes it.
         session.relay(1, frame);
-        await clock.hold(() => session.cards("evt-card-age-late").length > 0);
+        await clock.hold(
+          "the card, handed to the streaming turn",
+          () => session.cards("evt-card-age-late").length > 0
+        );
         await clock.run("the take", session.take());
         const [card] = session.cards("evt-card-age-late");
         if (card === undefined) throw new Error("the card was not handed");
@@ -27643,7 +27681,7 @@ describe("consumer delivery", () => {
     // reached it, from its own ledger record, and never when the session before it was shown it.
     test("an event in the session the host moved to reads that session's own delivery time", async () => {
       // An hour, past the row's limit, so no deadline ends a pass (`UNRACED_PASS_DEADLINE_MS`).
-      process.env.ENVOY_PASS_DEADLINE_MS = UNRACED_PASS_DEADLINE_MS;
+      process.env.ENVOY_PASS_DEADLINE_MS = String(UNRACED_PASS_DEADLINE_MS);
       const session = await bootConsumer("card-age-moved", { turn: "streaming" });
       session.relay(1, peer("card-age-moved"));
       await until(
@@ -28066,7 +28104,7 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
     const fixture = createPi();
     await envoyExtension(fixture.pi);
     const context = sessionContext(sessionID);
-    const stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, context));
+    const stop = rowSessionShutdown(fixture, context);
     stopSession = stop;
     try {
       await fixture.handlers.get("session_start")?.({}, context);
@@ -28182,7 +28220,7 @@ describe.skipIf(process.env.LEGION_E2E !== "1")(
       try {
         // The session ends with the row (`rowShutdown`): the file's hooks end it for a row its
         // limit abandoned, and a `finally` that runs late starts no shutdown in the row after it.
-        stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, context));
+        stop = rowSessionShutdown(fixture, context);
         await fixture.handlers.get("session_start")?.({}, context);
         await runReplayGrantScenario({ requester, server, sessionID: SESSION });
       } finally {
@@ -28227,7 +28265,7 @@ describe("the send and publish answers", () => {
     const fixture = createPi();
     await envoyExtension(fixture.pi);
     const context = sessionContext(SESSION);
-    const stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, context));
+    const stop = rowSessionShutdown(fixture, context);
     await fixture.handlers.get("session_start")?.({}, context);
     return { fixture, stop };
   }
@@ -28405,7 +28443,7 @@ describe("an envelope that carries the role field", () => {
     const fixture = createPi();
     await envoyExtension(fixture.pi);
     const context = sessionContext(SESSION);
-    const stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, context));
+    const stop = rowSessionShutdown(fixture, context);
     await fixture.handlers.get("session_start")?.({}, context);
     const agent = natsState.controls.get(AGENT);
     if (agent === undefined) throw new Error("the session's own subject reaches no relay");
