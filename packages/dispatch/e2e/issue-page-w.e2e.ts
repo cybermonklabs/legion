@@ -163,9 +163,10 @@ import { assertPageFits } from "./unclipped";
  * A row of its own, "a person invokes a lens from a link a row's words hold, through a read of
  * the tree", proves that the link statement 2's words draw keeps the focus, and the row its Lens
  * act, through the read of the tree a comment's event makes, and that a lens is invoked from
- * there; without `RowText.tsx`'s keeping of the words a read hands again in new objects
- * (decision 385), that read paints them again, the focus drops to `<body>`, and the row fails on
- * `the link in statement 2's words does not keep the focus through a read of the tree again`.
+ * there, and fails on `the link in statement 2's words does not keep the focus through a read of
+ * the tree again` where it does not. Part T carries `RowText.tsx`'s keeping of the words a read
+ * hands again in new objects (decision 385), which T's `RowText.test.tsx` proves; at T's tip the
+ * row passes with `RowText.tsx` taken back to before that change too, so it is no control of it.
  *
  * At a base that serves the tree read and holds none of the lens rows, each of rows 1 to 4 fails
  * on an assertion of its own, at the end of a 30 s poll and not at its deadline. Rows 1, 2 and 4
@@ -1453,8 +1454,8 @@ test("a person invokes a lens from a node's menu @phone", async ({ browser }) =>
 });
 
 // Row 2's Lens act from a link a row's words hold, through a read of the tree again: the read a
-// comment's event makes hands statement 2's words in new objects, which `RowText.tsx` keeps
-// unpainted (decision 385), so the link keeps the focus and the row its Lens act.
+// comment's event makes draws statement 2's words again, and the link keeps the focus and the
+// row its Lens act.
 // SLOW(>=2s): a whole seeded issue with its lenses, a comment written through the API and the
 // tree read its event makes, and one invocation through the menu.
 test("a person invokes a lens from a link a row's words hold, through a read of the tree", async ({
