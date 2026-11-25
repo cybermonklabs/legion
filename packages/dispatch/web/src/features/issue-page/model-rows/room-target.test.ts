@@ -2,11 +2,13 @@ import { expect, test } from "bun:test";
 
 import type { Artifact } from "../../../api/types";
 import { parseNodeReference } from "../../refs/routes";
+import type { DocumentAdmissions } from "../document-admission";
 import { documentOfNode } from "../issue-artifacts";
 import type { TreeNode } from "../issue-tree";
 import type { NodeType } from "../page-words";
 import { blockNodeId } from "../tree-drafts";
-import { type RoomFacts, type RoomTarget, roomTarget } from "./room-target";
+import { nodeEditable } from "../useNodeEditing";
+import { type RoomFacts, type RoomTarget, roomTarget, takesCaret } from "./room-target";
 
 /**
  * Where Enter puts the caret on a node: on a converted issue, in the one room, through the
@@ -191,6 +193,31 @@ test("a result takes no caret", () => {
   for (const one of [RESULT, BORROWED_RESULT]) {
     for (const facts of [room(true), room(false)]) {
       expect(roomTarget(one, ARTIFACTS, facts)).toEqual({ report: "no_text" });
+    }
+  }
+});
+
+test("a node written into the issue takes a caret", () => {
+  const none: DocumentAdmissions = new Map();
+  // Enter puts the caret in a criterion in the tree artifact's own fragment, so its row takes one
+  // by a press too, on an open issue whose room for that artifact admitted the page to write.
+  expect(takesCaret(CRITERION, ARTIFACTS, room(true), false, none)).toBe(true);
+  expect(takesCaret(CRITERION, ARTIFACTS, room(true), true, none)).toBe(false);
+  expect(takesCaret(CRITERION, ARTIFACTS, room(true), false, new Map([[TREE, true]]))).toBe(false);
+  // The conversation's text is no fragment's on a converted issue.
+  expect(takesCaret(COMMENT, ARTIFACTS, room(true), false, none)).toBe(false);
+  // With no room facts the row takes a caret where `nodeEditable` says it does: a statement of a
+  // document, and never a criterion, which no document holds.
+  expect(takesCaret(STATEMENT, ARTIFACTS, undefined, false, none)).toBe(true);
+  expect(takesCaret(CRITERION, ARTIFACTS, undefined, false, none)).toBe(false);
+  const specReadOnly: DocumentAdmissions = new Map([["artifact-spec", true]]);
+  for (const one of [STATEMENT, CHECK, ASK_BLOCK, CRITERION, COMMENT, RESULT]) {
+    for (const closed of [false, true]) {
+      for (const admissions of [none, specReadOnly]) {
+        expect(takesCaret(one, ARTIFACTS, undefined, closed, admissions)).toBe(
+          nodeEditable(documentOfNode(one.id, ARTIFACTS), closed, admissions)
+        );
+      }
     }
   }
 });

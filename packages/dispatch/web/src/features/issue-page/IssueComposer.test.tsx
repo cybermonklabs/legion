@@ -4,10 +4,12 @@ import { QueryClient } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: a paste of a file into the box, which user-event's paste cannot carry
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
+import { http } from "msw";
 
 import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { answerRequests } from "../../__tests__/network";
 import { plannerAgent, searchResponse } from "../../__tests__/search-fixture";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
@@ -63,6 +65,7 @@ import {
 } from "./composer-fixture";
 import { FOOT_HEIGHT_PROPERTY } from "./identity-block";
 import type { TreeNode } from "./issue-tree";
+import * as roomTarget from "./model-rows/room-target";
 import type { OutlineWriter } from "./outline-writer";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 
@@ -1433,6 +1436,52 @@ test("a change refused to another answerer ends the change and says why", async 
   await user.click(answerField());
   await user.keyboard("{Enter}");
   expect(answerAsk).toHaveBeenCalledTimes(1);
+});
+
+// An empty criterion line's Send is refused and says why, on the line its description names
+// (`RefusableButton`), as the answer's Send does; its press writes nothing. The line is drawn only
+// once the issue's tree read names its tree artifact, and the page reads no tree yet, so the
+// room's facts stand in for that read here; the line is aimed at bob's comment directly, since no
+// row offers Write a criterion until the page reads the tree.
+test("an empty criterion line's Send says why it sends nothing", async () => {
+  const user = userEvent.setup();
+  stub(
+    spyOn(roomTarget, "useRoomFacts").mockReturnValue({
+      converted: false,
+      issueKey: KEY,
+      tree: "artifact-tree",
+      viewOf: null,
+    })
+  );
+  // Every write of a criterion, which the line appends to the tree artifact.
+  const written: string[] = [];
+  answerRequests(
+    http.post("/api/v1/artifacts/:id/edits", ({ request }) => {
+      written.push(new URL(request.url).pathname);
+      return Response.json({});
+    })
+  );
+  const page = renderPage();
+
+  await act(async () =>
+    page.writer().criterionUnder(commentNode("comment-1", BOB, "Earlier words"))
+  );
+  const line = composerBox().querySelector<HTMLFormElement>("form[data-criterion-under]");
+  if (line === null) throw new Error("the box drew no criterion line");
+  const field = within(line).getByRole<HTMLTextAreaElement>("textbox", {
+    name: CONTROL_LABELS.write_criterion,
+  });
+  expect(field.value).toBe("");
+  const send = within(line).getByRole("button", { name: CONTROL_LABELS.send });
+  expect(send).toHaveAccessibleDescription(CONTROL_LABELS.criterion_placeholder_phone);
+  expect(send).toHaveAttribute("aria-disabled", "true");
+
+  await user.click(send);
+  expect(written).toEqual([]);
+  // No write went out: Send still reads as itself rather than as a write under way, and the line
+  // keeps its aim.
+  expect(send).toHaveTextContent(CONTROL_LABELS.send);
+  expect(page.writer().criterion?.id).toBe("comment-1");
 });
 
 // IC:232: a question answered elsewhere while the line holds it is not answered here: the line

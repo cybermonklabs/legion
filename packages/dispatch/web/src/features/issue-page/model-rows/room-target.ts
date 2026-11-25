@@ -4,6 +4,7 @@ import { api } from "../../../api/client";
 import type { Artifact } from "../../../api/types";
 import { isBlockItemKind } from "../../refs/block-reference";
 import { parseNodeReference } from "../../refs/routes";
+import type { DocumentAdmissions } from "../document-admission";
 import { documentOfNode } from "../issue-artifacts";
 import type { TreeNode } from "../issue-tree";
 
@@ -79,6 +80,43 @@ export function roomTarget(
   }
   const block = ofIssue !== undefined && "block" in ofIssue ? ofIssue.block : undefined;
   return block === undefined ? NO_TEXT : { artifactId: room.tree, blockId: block.id };
+}
+
+/**
+ * Whether a row takes a caret, and so draws the cue that it takes typing and opens its editor at
+ * a press on its text (`NodeRow`'s `editable`): what Enter does on it, answered before Enter has
+ * opened anything. With no room facts (`room` undefined) it answers what `useNodeEditing.ts`'s
+ * `nodeEditable` answers of the document `documentOfNode` finds. In a room it answers by
+ * `roomTarget`: a node it names no artifact for takes none - a node of another issue, a result,
+ * and on a converted issue a question, a comment or a message, an ask block too - and a node it
+ * names one for takes a caret on an open issue, unless that artifact's room admitted the page
+ * read-only. That is `nodeEditable`'s rule read over the room's artifact id rather than a
+ * document's, written here because `useNodeEditing.ts` imports this file, so the two agree.
+ *
+ * A criterion written into the issue is why it exists: no document holds one, so `nodeEditable`
+ * says it takes no typing, while Enter puts the caret in it in the tree artifact's own fragment.
+ * That artifact is read only at the first Enter or press (`useEditedTree`), so the rule reads the
+ * tree read's `tree` id and never an artifact.
+ */
+export function takesCaret(
+  node: Pick<TreeNode, "id" | "reference" | "type">,
+  artifacts: ReadonlyMap<string, Artifact>,
+  room: RoomFacts | undefined,
+  isClosed: boolean,
+  admissions: DocumentAdmissions
+): boolean {
+  const target = room === undefined ? undefined : roomTarget(node, artifacts, room);
+  // The artifact Enter edits the node in: the room's, or with no room the document
+  // `documentOfNode` finds; none for a node it puts no caret in.
+  const artifactId =
+    target === undefined
+      ? documentOfNode(node.id, artifacts)?.artifact.id
+      : "artifactId" in target
+        ? target.artifactId
+        : undefined;
+  // `nodeEditable`'s rule over that id: a closed issue takes no typing, nor does an artifact
+  // whose room admitted the page read-only.
+  return !isClosed && artifactId !== undefined && admissions.get(artifactId) !== true;
 }
 
 /**

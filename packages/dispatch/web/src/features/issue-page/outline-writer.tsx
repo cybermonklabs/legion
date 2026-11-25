@@ -18,6 +18,7 @@ import { wordsOf } from "../refs/tree-fragment";
 import type { TreeNode } from "./issue-tree";
 import { isStatement } from "./issue-tree";
 import { criterionOffered } from "./model-rows/criterion-write";
+import type { RoomFacts } from "./model-rows/room-target";
 import { useRoomFacts } from "./model-rows/room-target";
 import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
 
@@ -229,10 +230,9 @@ export function OutlineWriterProvider({
   // The node the line writes a criterion under, if it does: set by a row's Write a criterion
   // alone, and ended, as the statement is, by every other target and by `clear`.
   const [criterion, setCriterion] = useState<CriterionItem>();
-  // Whether the issue takes a criterion at all: its tree read answers a tree, and no `view_of`,
-  // which no node of a view of another issue takes.
+  // The issue's tree read, which says whether the issue takes a criterion at all: it answers a
+  // tree, and no `view_of`, which no node of a view of another issue takes (`criterionTakenBy`).
   const facts = useRoomFacts(issueKey);
-  const offersCriterion = criterionOffered(facts);
   const agentText = useAgentText();
   // The reads the outline is drawn from, under the keys it reads them by and kept fresh as it
   // keeps them (`reference-target.ts`'s `EVENT_FRESH`), so a reply's target costs no request of its
@@ -420,14 +420,8 @@ export function OutlineWriterProvider({
     [focus, sendKey, setReply, store]
   );
   const takesCriterion = useCallback(
-    (node: TreeNode) => {
-      // A node of another issue - a borrowed check's parent - is read here and written in its
-      // own issue, so only an address naming this issue takes one.
-      const item = offersCriterion ? criterionItemOf(node) : undefined;
-      const route = item === undefined ? undefined : parseNodeReference(item.address);
-      return route !== undefined && "key" in route && route.key === issueKey;
-    },
-    [issueKey, offersCriterion]
+    (node: TreeNode) => criterionTakenBy(node, issueKey, facts),
+    [facts, issueKey]
   );
   const holdCriterion = useCallback(
     (out: boolean) => {
@@ -680,6 +674,23 @@ export function criterionItemOf(
     text: node.text,
     ...(node.tree === undefined ? {} : { tree: node.tree }),
   };
+}
+
+/** Whether `node` carries the act that writes a criterion under it, on the issue `issueKey`
+ *  whose tree read answers `facts`: a node a criterion can be written under (`criterionItemOf`)
+ *  whose own address names that issue, on an issue that takes a criterion (`criterionOffered`).
+ *  No facts - an issue whose tree read the cache does not hold - offer it on no node. The writer
+ *  answers it for each row (`OutlineWriter.takesCriterion`). */
+export function criterionTakenBy(
+  node: Pick<TreeNode, "id" | "reference" | "source" | "text" | "tree" | "type">,
+  issueKey: string,
+  facts: RoomFacts | undefined
+): boolean {
+  // A node of another issue - a borrowed check's parent - is read here and written in its own
+  // issue, so only an address naming this issue takes one.
+  const item = criterionOffered(facts) ? criterionItemOf(node) : undefined;
+  const route = item === undefined ? undefined : parseNodeReference(item.address);
+  return route !== undefined && "key" in route && route.key === issueKey;
 }
 
 /** The item a row of the outline is, where the row takes a reply (R16): an ask in any state, a

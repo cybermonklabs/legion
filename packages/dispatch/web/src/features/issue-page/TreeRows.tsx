@@ -10,8 +10,10 @@ import type { PointMark } from "./current-point";
 import { useDocumentAdmissions } from "./document-admission";
 import { documentOfNode } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
+import { takesCaret, useRoomFacts } from "./model-rows/room-target";
 import { NodeRow } from "./NodeRow";
 import type { ThreadMark } from "./outline-thread-read";
+import { useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
 import { authorKind, CONTROL_LABELS, isReader } from "./page-words";
 import type { DrawnRow } from "./tree-fold";
@@ -95,6 +97,9 @@ export function TreeRows({
   // What each document's room last admitted the page to, read once for every row: a row of a
   // document its room admitted read-only takes no typing (`nodeEditable`).
   const admissions = useDocumentAdmissions();
+  // The room of the issue's tree read, read once for every row as Enter reads it
+  // (`useNodeEditing.ts`), by the issue the page's writer is of; with no writer there is none.
+  const room = useRoomFacts(useOutlineWriter()?.issueKey);
   return (
     <>
       {rows.map((row) => {
@@ -132,6 +137,12 @@ export function TreeRows({
             {...(current === undefined ? {} : { current })}
             {...(place === undefined ? {} : { document: place.artifact })}
             editable={nodeEditable(place, isClosed, admissions)}
+            // A node written into the issue, such as a criterion, takes its place from the room
+            // rather than from a document, so where the room is read its row takes a caret by a
+            // press as it does by Enter.
+            {...(room === undefined
+              ? {}
+              : { editable: takesCaret(row.node, artifacts, room, isClosed, admissions) })}
             {...(editing?.row === key ? { editing: editing.artifactId } : {})}
             expanded={row.expanded}
             focused={focused === key}

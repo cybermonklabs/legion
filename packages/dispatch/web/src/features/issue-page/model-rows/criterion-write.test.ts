@@ -10,6 +10,7 @@ import { whoAmIQuery } from "../../../api/queries";
 import type { TreeNode } from "../issue-tree";
 import {
   criterionItemOf,
+  criterionTakenBy,
   type OutlineWriter,
   OutlineWriterProvider,
   useOutlineWriter,
@@ -418,6 +419,27 @@ test("a conversation node is a criterion's parent and no other is", () => {
   expect(criterionItemOf(node("comment", `dispatch://${KEY}`))).toBeUndefined();
   expect(criterionItemOf(node("requirement", PARENT))).toBeUndefined();
   expect(criterionItemOf(node("issue", `dispatch://${KEY}`, KEY))).toBeUndefined();
+});
+
+test("a conversation node of another issue offers no Write a criterion", () => {
+  const node = (reference: string): Pick<TreeNode, "id" | "reference" | "text" | "type"> => ({
+    id: "row-comment",
+    reference,
+    text: TEXT,
+    type: "comment",
+  });
+  // The issue's tree read offers the act: a tree, and a view of no other issue.
+  const offering: RoomFacts = { converted: true, issueKey: KEY, tree: TREE, viewOf: null };
+  const own = node(PARENT);
+  // A comment of another issue, such as a borrowed check's parent: it is a criterion's parent all
+  // the same, and is written under in its own issue, never here.
+  const borrowed = node("dispatch://CORE-2/comment/comment-2");
+  expect(criterionItemOf(borrowed)).toBeDefined();
+  expect(criterionTakenBy(own, KEY, offering)).toBe(true);
+  expect(criterionTakenBy(borrowed, KEY, offering)).toBe(false);
+  // With no tree read held, no node offers it.
+  expect(criterionTakenBy(own, KEY, undefined)).toBe(false);
+  expect(criterionTakenBy(borrowed, KEY, undefined)).toBe(false);
 });
 
 test("a send carries the tree's edits route and one insert at the end", async () => {
