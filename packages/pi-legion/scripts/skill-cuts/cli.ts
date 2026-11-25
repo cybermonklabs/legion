@@ -3192,7 +3192,9 @@ async function runStage(
       // checkout that is no jj repository does.
       const copyJj = jj === true || ranJj ? jj : undefined;
       // The session's home, which its `~` and `$HOME` stand for (checkout.ts's `sessionHome`),
-      // and when the copy was made, from which a listing measures each entry's age.
+      // and when the copy was made, from which a listing measures each entry's age; the case's
+      // history, from which a call the pinned Oh My Pi answers numbers its artifact and a read of
+      // one of its internal URLs learns whether the history made the item.
       const home = sessionHome(root, c.pathCopy?.home);
       checkout = {
         dir: shared.dir,
@@ -3203,6 +3205,7 @@ async function runStage(
         ...(home === undefined ? {} : { home }),
         madeAt,
         answers: new Map(),
+        history: JSON.stringify(c.messages),
       };
       save({
         ...state,

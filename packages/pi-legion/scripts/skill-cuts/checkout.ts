@@ -161,6 +161,29 @@
  * shell builtins, uutils-like: `cat 0.8.0`, `grep (pi-uu-grep) 0.2.0`, `sed 0.1.1`), so an answer
  * of `ls` and the like (its layout, an error's wording) may differ from what the session saw.
  *
+ * **The pin in the sandbox** (`pinAnswer`, `runSandboxed` with `pin`): where the runner leaves a
+ * call to the pinned Oh My Pi itself (a `bash` call whose output the pin's minimizer may rewrite,
+ * or a `read` of one of the pin's internal URLs) it runs the pin's own binary headless inside the
+ * same sandbox, with no model call and no network. The binary is the file SKILL_CUTS_OMP names,
+ * opened only where its SHA-256 is the pin release's, on linux-x64 (natives.ts's `pinnedOmp`; CI's
+ * install action exports it); its native addon is `pinnedAddon`'s. Bound read-only under PIN_MOUNT
+ * (`/mnt/pin`): the binary's directory, the addon's real directory at `natives/18.18.6` (so the
+ * pin's loader finds it under `PI_NATIVES_DIR=/mnt/pin/natives`), and a per-call directory holding
+ * the stub hook (pin-hook.ts) and its `call.json`; the checkout copy stays read-only at
+ * CHECKOUT_MOUNT. An empty 64 MiB tmpfs at `/mnt/pin/home` is the pin's `HOME` and holds its fresh
+ * session directory: the sandbox's one writable file system. The pin runs `omp -p --hook
+ * /mnt/pin/call/hook.ts --model stub/call --session-dir /mnt/pin/home/sessions --no-title
+ * --no-extensions --no-skills --no-rules --no-context-files x` in SANDBOX_ENV plus those two
+ * variables: no `PI_CONFIG_FILES`, no settings, plugin, extension or skill of the host's, so its
+ * answer is the pin's at its defaults. The stub hook registers an in-process provider `stub/call`
+ * (pi-ai's `createAssistantMessageEventStream`; a placeholder apiKey, a loopback URL nothing
+ * listens on) whose first turn is one tool call with the call's arguments and whose next turn
+ * prints PIN_RESULT_MARKER and the JSON of the tool's result content, its `isError` and each file
+ * the call wrote to the session's artifacts directory; its `session_start` handler first seeds
+ * that directory with the files the call names. The run is queued as any sandbox, counts inside
+ * BASH_TIME_LIMIT_MS from SANDBOX_READY (past it the call is not answered), prints at most
+ * PIN_OUTPUT_BYTES, and has the copy's paths in the result mapped back to the session's root.
+ *
  * **The queue.** A sandbox keeps a CPU busy for as long as its command runs, and one runner
  * process makes many calls at once (the gateway's `--concurrency` bounds its model calls, not the
  * sandboxes a reply starts). Started together they slow each other: on a two-CPU pod, eight `git
@@ -256,6 +279,27 @@
  *   session's rows came from it or, where the download failed, from the scan of the brackets, or
  *   the file was unsummarized), and a file the arms refuse for another reason (`pathFormFault`:
  *   not UTF-8 text, a git conflict block, an artifact spill, a summary's too).
+ *   A `read` whose `path` is a URL (cases.ts's URL_TARGET; replay.ts answers a `skill://` read
+ *   before `answerCall`) is `internalRead`, answered by the pin's own `read` tool (`pinAnswer`) as a
+ *   fresh session of the pin answers it. A written case's history (`CheckoutCopy.history`) is its
+ *   task and its skill's read and nothing else, so for SESSION_SCHEMES (`artifact://`, `local://`,
+ *   `history://`, `agent://`, `proc://`) a fresh session holds nothing: `Local file not found:
+ *   …`, `Artifact <n> not found. Available: none`, `history://`'s listing of its one main session;
+ *   but for an artifact an answer of this run made (`RunArtifacts.saved`, a minimized `bash`
+ *   answer's raw output), which the runner seeds into the fresh session's artifacts directory as
+ *   `<id>.bash-original.log`, so a read of `artifact://<id>` (or with `:raw`, a range) is the pin's
+ *   read of it. For DOC_SCHEMES (`xd://<device>`, `omp://`) the pin's documents are given as they
+ *   are. Not answered: a SESSION_SCHEMES item the case's history names (its URL up to a `/` or `:`,
+ *   or the scheme bare), an `artifact://` the run did not make where the history names any
+ *   artifact, `history://` or `agent://` where the history runs a `task` subagent, the bare
+ *   `xd://` listing and any `xd://<device>` the fresh session lacks (`No such tool: …`; a plugin of
+ *   the session may have mounted it), any other scheme (`cfg://`, `issue://`, `pr://`, `mcp://`,
+ *   `ssh://`, `memory://`, `https://`, …: each reads the session's configuration, store, network or
+ *   hosts, which the sandbox does not hold as the session did), an answer that names `/mnt/pin`
+ *   (the pin's own session directory: a bare `local://`, `history://<its own id>`), one with
+ *   hashline rows where the session shows another form, a result that is not one text, and a pin
+ *   that is absent, of another digest or fails. A read by path outside the checkout stays
+ *   unanswered, as above.
  * - `grep` (keys `pattern`, `path`, `case`, `gitignore`, `skip`, `i`): GrepTool's output
  *   (packages/coding-agent/src/tools/grep.ts lines 651-1316, its native search
  *   crates/pi-walker/src/grep/). Its `path` (`.` when absent) is a path, or a list joined by `;`
@@ -409,20 +453,43 @@
  *   copy whose root holds a `.jj` no colocation of the runner's made, a command one of
  *   whose programs is on no directory of the sandbox's PATH (this pod's has no `rg`: bash would
  *   answer `command not found`, which the session did not see), a command whose sandbox cannot be
- *   made, and a run past the time limit. Nor is an output Oh My Pi shows
- *   with a notice that names the artifact the session saves the whole output to (bash.ts line 1097,
- *   `allocateOutputArtifact`), whose id is the session's own count of its artifacts, which the
- *   copy cannot know: one past 50 KB (`tools.artifactSpillThreshold`, which Oh My Pi elides), one
- *   with a line past 768 bytes (`tools.outputMaxColumns`: Oh My Pi cuts the line to its first 765
- *   bytes and `…`, streaming-output.ts lines 1153-1215, and notes `[Some lines truncated to 768
- *   bytes. Use artifact://<id>:raw:<n>-<n> …]`, output-meta.ts lines 365-431), and one of 1,000
- *   characters or more that Oh My Pi's minimizer may rewrite (crates/pi-shell/src/minimizer/
- *   plan.rs lines 1-32 and engine.rs lines 16-160: a command whose top level is simple commands
- *   joined by `&&` and `;`, one of them, unpiped, of MINIMIZED_PROGRAMS; a group or a subshell
- *   there, or a `||`, keeps the whole output as it is, though the runner, whose parse does not
- *   tell `||` from `&&`, refuses one with a `||` all the same), whose rewrite ends with
- *   `[raw output: artifact://<id>]` (exec/bash-executor.ts lines 918-947); the runner cannot
- *   tell, without porting each filter, where a filter leaves an output as it is.
+ *   made, and a run past the time limit. Nor is an output Oh My Pi shows with a notice that names
+ *   an artifact the runner does not rebuild: one past 50 KB (`tools.artifactSpillThreshold`, which
+ *   Oh My Pi elides) and one with a line past 768 bytes (`tools.outputMaxColumns`: Oh My Pi cuts
+ *   the line to its first 765 bytes and `…`, streaming-output.ts lines 1153-1215, and notes `[Some
+ *   lines truncated to 768 bytes. Use artifact://<id>:raw:<n>-<n> …]`, output-meta.ts lines
+ *   365-431).
+ *   An output of 1,000 characters (code points) or more that Oh My Pi's minimizer may rewrite
+ *   (`minimizerRewrites`: crates/pi-shell/src/minimizer/plan.rs, engine.rs, detect.rs) is answered
+ *   by the pin's own bash tool (`minimizedAnswer`, through `pinAnswer`: its text and `isError`, the
+ *   wall time and exit notices its tool adds included), not by the runner's own run, whose output
+ *   only decides whether the pin is asked. Which commands the minimizer may rewrite is read from
+ *   the runner's parse, which tells `||` from `&&`, of the command the pin runs: the call's own,
+ *   and, where the call gives no `cwd`, its rest after a leading `cd <path> &&` or `;`, which the
+ *   pin's bash tool takes as the call's directory (`hoistedCd`). The minimizer reads
+ *   (`minimizerReads`) a command that is one simple command of one stage whole (`Single`),
+ *   whatever command substitution it holds, and, of a list of two or more pipelines joined only by
+ *   `;`, line ends and `&&` whose every stage is a simple command that holds no command
+ *   substitution (`Chain`), each pipeline of one stage alone; any other command it keeps as it is
+ *   (a `||` at its top level, a pipeline of several stages alone, a group or a subshell, a list one
+ *   of whose stages holds a command substitution: `Compound`, `Piped`), and the runner answers that
+ *   output as any other. Of what it reads, it may rewrite a program it has a filter for, as it
+ *   reads the text's words (`minimizerFilters`): `ls`, `tree`, `find`, `grep`, `rg`, `wc`, `cat`,
+ *   `stat`, `jj`, and git with a subcommand of MINIMIZED_GIT (`status`, `diff`, `show`, `log`,
+ *   `branch`, `worktree`, …), never git's `grep`, `ls-files`, `blame`, `rev-parse` or `remote`, nor
+ *   a program of UNFILTERED_PROGRAMS (`head`, `sed`, `echo`, …). Every other check of the call
+ *   (the read-only rule, the escapes, the programs on PATH, the line width, the output bytes) comes
+ *   before it. The rewrite's footer is `[raw output: artifact://<N>]` (exec/bash-executor.ts lines
+ *   918-947), N one past the highest `artifact://<n>` in the case's history (`CheckoutCopy.history`)
+ *   and the run's earlier answers (`RunArtifacts`), 1 where there is none, so it is the same in
+ *   every arm and every run of a case: the pin numbers its own output's artifact first, so the stub
+ *   seeds the artifacts directory with `<N-2>.seed.log` for N of 2 or more. The pin saves the raw
+ *   output as `<N>.bash-original.log`, which the run keeps for a later read of `artifact://<N>`
+ *   (above). Not answered, though the pin is asked: a command that expands `~` or `$HOME` where
+ *   the copy names the session's home (the pin runs with a HOME of its own), a pin that is absent
+ *   (SKILL_CUTS_OMP unset or naming no file), of another SHA-256 or failing, an answer that names
+ *   an artifact other than `artifact://<N>` (a spill of its own) or is not one text, and a run
+ *   past the time limit.
  * - `find` and `ls`: no capture declares them, so they are not answered.
  */
 import { isUtf8 } from "node:buffer";
@@ -431,6 +498,7 @@ import {
   existsSync,
   fstatSync,
   lstatSync,
+  mkdtempSync,
   openSync,
   readdirSync,
   readFileSync,
@@ -439,7 +507,9 @@ import {
   rmSync,
   type Stats,
   statSync,
+  writeFileSync,
 } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainThread, parentPort, Worker, workerData } from "node:worker_threads";
@@ -458,8 +528,10 @@ import {
   splitPathAndSel,
   splitPreferringLiteral,
 } from "./arms";
-import { type Case, insideRoot, resolvedReadPath, textLines } from "./cases";
+import { type Case, insideRoot, resolvedReadPath, textLines, URL_TARGET } from "./cases";
 import { bytesAt, eachChunk, firstLine, Limiter, timeLimit } from "./common";
+import { NATIVES_VERSION, pinnedAddon, pinnedOmp } from "./natives";
+import { PIN_CALL_FILE, PIN_RESULT_MARKER, type PinCall, type PinResult } from "./pin-hook";
 
 /** The tools whose every call is read-only. */
 export const READ_ONLY_TOOLS = ["read", "grep", "glob", "find", "ls"] as const;
@@ -798,9 +870,17 @@ interface Group {
   readonly script: Script;
   readonly redirects: readonly Redirect[];
 }
-/** A parsed command: lists joined by `;` or line ends, each of pipelines joined by `&&` or `||`,
- *  each of commands joined by `|`. */
-type Script = readonly (readonly (readonly (SimpleCommand | Group)[])[])[];
+/** A pipeline of a list: its commands joined by `|`; `after`, the operator that joins it to the
+ *  pipeline before it in its list (`&&` or `||`; none for the list's first); and `source`, its text
+ *  as written, from its first word to its last (the text Oh My Pi's minimizer reads of a chain's
+ *  segment, `minimizerReads`). */
+interface Pipeline {
+  readonly commands: readonly (SimpleCommand | Group)[];
+  readonly after?: "&&" | "||";
+  readonly source: string;
+}
+/** A parsed command: lists joined by `;` or line ends, each of pipelines joined by `&&` or `||`. */
+type Script = readonly (readonly Pipeline[])[];
 
 /** Thrown inside `parseScript` at a shell form the read-only rule does not take. */
 class Untaken extends Error {}
@@ -811,6 +891,8 @@ class Untaken extends Error {}
  *  a backtick with no `\` in it, `;;`, `|&`, or a quote left open. */
 function parseScript(command: string): Script | undefined {
   let at = 0;
+  /** Where the last word, or the last group's `)` or `}`, the parser read ends. */
+  let tokenEnd = 0;
   const fail = (): never => {
     throw new Untaken();
   };
@@ -829,7 +911,7 @@ function parseScript(command: string): Script | undefined {
     return peek() === "}" && (next === undefined || " \t\n;|&)<>".includes(next));
   };
   const list = (end: "" | ")" | "}"): Script => {
-    const lists: (SimpleCommand | Group)[][][] = [];
+    const lists: Pipeline[][] = [];
     for (;;) {
       skipBlanks(true);
       const ch = peek();
@@ -850,22 +932,26 @@ function parseScript(command: string): Script | undefined {
     if (lists.length === 0) fail();
     return lists;
   };
-  const andOr = (): (SimpleCommand | Group)[][] => {
-    const pipelines = [pipeline()];
+  const andOr = (): Pipeline[] => {
+    const pipelines = [pipeline(undefined)];
     for (;;) {
       skipBlanks(false);
       const pair = `${peek() ?? ""}${peek(1) ?? ""}`;
       if (pair !== "&&" && pair !== "||") return pipelines;
       at += 2;
       skipBlanks(true);
-      pipelines.push(pipeline());
+      pipelines.push(pipeline(pair));
     }
   };
-  const pipeline = (): (SimpleCommand | Group)[] => {
+  const pipeline = (after: Pipeline["after"]): Pipeline => {
+    const start = at;
     const commands = [commandAt()];
     for (;;) {
       skipBlanks(false);
-      if (peek() !== "|" || peek(1) === "|") return commands;
+      if (peek() !== "|" || peek(1) === "|") {
+        const source = command.slice(start, tokenEnd);
+        return after === undefined ? { commands, source } : { commands, after, source };
+      }
       if (peek(1) === "&") fail();
       at++;
       skipBlanks(true);
@@ -881,6 +967,7 @@ function parseScript(command: string): Script | undefined {
       at++;
       const script = list(subshell ? ")" : "}");
       at++;
+      tokenEnd = at;
       const redirects: Redirect[] = [];
       for (;;) {
         skipBlanks(false);
@@ -1031,6 +1118,7 @@ function parseScript(command: string): Script | undefined {
       }
     }
     if (parts.length === 0) fail();
+    tokenEnd = at;
     return parts;
   };
   try {
@@ -1203,9 +1291,9 @@ function walkScript(
   walk: Walk
 ): string | undefined {
   for (const pipelines of script) {
-    for (const [index, pipeline] of pipelines.entries()) {
-      for (const command of pipeline) {
-        const own = pipeline.length > 1 ? forked(state) : state;
+    for (const [index, { commands }] of pipelines.entries()) {
+      for (const command of commands) {
+        const own = commands.length > 1 ? forked(state) : state;
         const why = walkCommand(command, own, maybe || index > 0, walk);
         if (why !== undefined) return why;
       }
@@ -1775,7 +1863,8 @@ function readOnlyScript(command: unknown): Script | undefined {
 
 /** The simple commands of `script`, those of its groups and command substitutions among them. */
 function simpleCommands(script: Script): SimpleCommand[] {
-  return script.flat(2).flatMap((command): SimpleCommand[] => {
+  const commands = script.flat().flatMap((pipeline) => pipeline.commands);
+  return commands.flatMap((command): SimpleCommand[] => {
     const subs = commandWords(command)
       .flat()
       .flatMap((part) => (part.kind === "sub" ? simpleCommands(part.script) : []));
@@ -1811,7 +1900,10 @@ export function readOnlyCall(name: string | undefined, input: unknown): boolean 
  *  made again while its answer is still worked out waits for that one; an answer whose working out
  *  fails is dropped) (the copy is read-only once made, so each such answer depends on those alone;
  *  a `bash` answer is not kept, its wall time being its own run's), which one stage's runs share
- *  (cli.ts); absent, none is kept. */
+ *  (cli.ts); absent, none is kept; `history`, the case's history, its messages before the step as
+ *  JSON (cli.ts), from which a call the pinned Oh My Pi answers takes its artifact's number
+ *  (`runArtifacts`) and a read of one of its internal URLs whether the history made the item
+ *  (`internalRead`); absent, an empty history. */
 export interface CheckoutCopy {
   readonly dir: string;
   readonly root: string;
@@ -1821,6 +1913,26 @@ export interface CheckoutCopy {
   readonly home?: string;
   readonly madeAt?: number;
   readonly answers?: Map<string, Promise<CheckoutAnswer | Unanswered>>;
+  readonly history?: string;
+}
+
+/** The artifacts of one run of a written case (replay.ts's checkout rounds) as the pinned Oh My Pi
+ *  numbers them: `last`, the highest `artifact://<n>` the run has seen, in the case's history
+ *  (`CheckoutCopy.history`) and in its answers, one past which the next is numbered; `saved`, the
+ *  raw output the pin saved for each artifact an answer of the run named, by its number. */
+export interface RunArtifacts {
+  last: number;
+  readonly saved: Map<number, string>;
+}
+
+/** A run's artifacts before its first call: `last` the highest `artifact://<n>` the case's history
+ *  names, 0 where it names none (so the first is 1, as the pin numbers a rewrite's first artifact
+ *  in an empty artifacts directory), the same in every arm and every run of a case. */
+export function runArtifacts(copy: CheckoutCopy): RunArtifacts {
+  const named = [...(copy.history ?? "").matchAll(/artifact:\/\/(\d+)/g)].map((each) =>
+    Number(each[1])
+  );
+  return { last: named.reduce((most, each) => Math.max(most, each), 0), saved: new Map() };
 }
 
 /** The session's home directory, which a written case's checkout copy expands `~` and `$HOME` to
@@ -2015,13 +2127,26 @@ function mountName(target: string): string {
   return target.replace(/[\\ \t\n]/g, (ch) => `\\${ch.charCodeAt(0).toString(8).padStart(3, "0")}`);
 }
 
+/** Where a sandbox that answers a call through the pinned Oh My Pi (`runSandboxed`'s `pin`) holds
+ *  it, each bound read-only: its binary's directory at `bin`, its native addon's at
+ *  `natives/<NATIVES_VERSION>` (the PI_NATIVES_DIR `natives`), and the call's own directory, the
+ *  hook and its call (`pinAnswer`), at `call`. */
+const PIN_MOUNT = "/mnt/pin";
+/** The pin's HOME in such a sandbox, which holds its session directory: an empty tmpfs of
+ *  PIN_HOME_BYTES, the sandbox's one writable file system. */
+const PIN_HOME = `${PIN_MOUNT}/home`;
+const PIN_HOME_BYTES = 64 * 1024 * 1024;
+
 /** The sandbox's making, in bash, run as the root of its own user namespace (`runSandboxed`): its
  *  own file system at /mnt; then, in one `mount -a` of a mount table of its own, the copy bound at
  *  CHECKOUT_MOUNT (read-only unless `rw`) and, where the command gets the session's home as
  *  SESSION_HOME_MOUNT (`sandboxHome`), bound again, read-only, at the checkout's root's place
  *  under it (`homebind`, its name in the table `homebindname`; the directories to it, or
  *  SESSION_HOME_MOUNT alone, `homedir`, made first), the directory of the runner's jj bound
- *  read-only at /mnt/jj, and an empty, read-only file system over each hidden directory and
+ *  read-only at /mnt/jj, where the command runs the pinned Oh My Pi (`pinbin`), its binary's
+ *  directory, its native addon's (`pinnatives`) and the call's own (`pincall`) bound read-only
+ *  under PIN_MOUNT and an empty tmpfs at PIN_HOME, its one writable file system, and an empty,
+ *  read-only file system over each hidden directory and
  *  /dev/null over each hidden file (`hiddenPaths`, each with its name in the table; one the
  *  sandbox's user can neither enter nor read, as `/root`, needs none, since no command of it can
  *  either); the runner's home made again, empty, in the one that holds it, made read-only after;
@@ -2040,12 +2165,15 @@ function mountName(target: string): string {
  *  util-linux 2.39.3 (EINVAL): libmount takes its options from the mount table, where a tmpfs
  *  made in this user namespace names its owner by an id the namespace does not map (measured in
  *  a grade Job on Linux 6.8, util-linux 2.39.3; gVisor with util-linux 2.41.5 takes it). */
-const SANDBOX_SETUP = `copyfs=$1 mode=$2 cwd=$3 jjfs=$4 wrapper=$5 jjconfig=$6 home=$7 hometree=$8 command=$9 programs=\${10} sessionhome=\${11} homedir=\${12} homebind=\${13} homebindname=\${14}
-shift 14
+const SANDBOX_SETUP = `copyfs=$1 mode=$2 cwd=$3 jjfs=$4 wrapper=$5 jjconfig=$6 home=$7 hometree=$8 command=$9 programs=\${10} sessionhome=\${11} homedir=\${12} homebind=\${13} homebindname=\${14} pinbin=\${15} pinnatives=\${16} pincall=\${17}
+shift 17
 fail() { printf '%s\\n' "$1" >&2; exit 125; }
 command -v setpriv >/dev/null || fail "find setpriv"
 mount -t tmpfs -o mode=0755 checkout-sandbox /mnt || fail "mount a file system of its own at /mnt"
 mkdir ${CHECKOUT_MOUNT} ${SANDBOX_HOME} /mnt/bin /mnt/jj || fail "make its directories"
+if [ -n "$pinbin" ]; then
+  mkdir -p ${PIN_MOUNT}/bin ${PIN_MOUNT}/natives/${NATIVES_VERSION} ${PIN_MOUNT}/call ${PIN_HOME} || fail "make the pin's directories"
+fi
 if [ -n "$homedir" ]; then mkdir -p "$homedir" || fail "make the session's home"; fi
 homemounted=
 {
@@ -2056,6 +2184,12 @@ homemounted=
   fi
   if [ -n "$homebind" ]; then printf '%s %s none bind,ro 0 0\\n' "$copyfs" "$homebindname"; fi
   if [ -n "$jjfs" ]; then printf '%s /mnt/jj none bind,ro 0 0\\n' "$jjfs"; fi
+  if [ -n "$pinbin" ]; then
+    printf '%s ${PIN_MOUNT}/bin none bind,ro 0 0\\n' "$pinbin"
+    printf '%s ${PIN_MOUNT}/natives/${NATIVES_VERSION} none bind,ro 0 0\\n' "$pinnatives"
+    printf '%s ${PIN_MOUNT}/call none bind,ro 0 0\\n' "$pincall"
+    printf 'checkout-sandbox-pin ${PIN_HOME} tmpfs mode=0755,size=${PIN_HOME_BYTES} 0 0\\n'
+  fi
   while [ $# -gt 1 ]; do
     each=$1 target=$2
     shift 2
@@ -2165,11 +2299,14 @@ const checkoutQueue = new Limiter(1);
  * Ended, with every process it started (SIGKILL; `--kill-child` ends the namespace's first
  * process, and the kernel the rest), once `limitMs` pass from the spawn without the sandbox's
  * ready marker (SANDBOX_READY), once `limitMs` pass from that marker, and once its output passes
- * OUTPUT_BYTES. Its output (standard error joined to it), exit code and wall time (from when the
+ * OUTPUT_BYTES (PIN_OUTPUT_BYTES with `pin`). Its output (standard error joined to it), exit code
+ * and wall time (from when the
  * sandbox is made and its command starts, at that marker); else why none: no `unshare`, a sandbox
  * not made, a program it lacks, the time limit or the output cap. With `home` (`sandboxHome`),
  * the command's HOME is `home.env`, the directory `home.dir` is made first, and the copy is bound
- * again at `home.bind`, where those are given.
+ * again at `home.bind`, where those are given. With `pin` (`pinAnswer`), the pinned Oh My Pi's
+ * binary's directory, its native addon's and the call's own are bound read-only under PIN_MOUNT,
+ * and PIN_HOME is an empty, writable tmpfs.
  */
 async function runSandboxed(
   dir: string,
@@ -2180,6 +2317,7 @@ async function runSandboxed(
     limitMs,
     programs,
     home,
+    pin,
   }: {
     command: string;
     cwd: string;
@@ -2187,6 +2325,7 @@ async function runSandboxed(
     limitMs: number;
     programs: readonly string[];
     home?: SandboxHomeView;
+    pin?: SandboxPin;
   }
 ): Promise<SandboxRun | Unanswered> {
   const unshare = Bun.which("unshare");
@@ -2230,14 +2369,31 @@ async function runSandboxed(
     home?.dir ?? "",
     home?.bind ?? "",
     home === undefined || home.bind === "" ? "" : mountName(home.bind),
+    pin === undefined ? "" : mountName(pin.bin),
+    pin === undefined ? "" : mountName(pin.natives),
+    pin === undefined ? "" : mountName(pin.call),
     ...hidden.paths.flatMap((each) => [each, mountName(each)]),
   ];
-  return checkoutQueue.run(() => runChild(argv, limitMs));
+  const outputBytes = pin === undefined ? OUTPUT_BYTES : PIN_OUTPUT_BYTES;
+  return checkoutQueue.run(() => runChild(argv, limitMs, outputBytes));
+}
+
+/** The pinned Oh My Pi a sandbox runs (`runSandboxed`'s `pin`), each a real directory of this
+ *  machine: `bin`, its binary's; `natives`, its native addon's; `call`, the call's own (the hook
+ *  and its call, `pinAnswer`). */
+interface SandboxPin {
+  readonly bin: string;
+  readonly natives: string;
+  readonly call: string;
 }
 
 /** The sandbox `runSandboxed` made `argv` for, spawned and bounded once it holds its place in the
  *  queue: the limit of its setup starts at the spawn, and the command's at SANDBOX_READY. */
-async function runChild(argv: string[], limitMs: number): Promise<SandboxRun | Unanswered> {
+async function runChild(
+  argv: string[],
+  limitMs: number,
+  outputBytes: number
+): Promise<SandboxRun | Unanswered> {
   const child = spawnSandbox(argv);
   const limit = timeLimit({ kill: () => child.kill("SIGKILL") }, limitMs);
   const chunks: Uint8Array[] = [];
@@ -2258,7 +2414,7 @@ async function runChild(argv: string[], limitMs: number): Promise<SandboxRun | U
     eachChunk(child.stdout, limit, (chunk) => {
       if (over) return;
       bytes += chunk.length;
-      if (bytes > OUTPUT_BYTES) {
+      if (bytes > outputBytes) {
         over = true;
         child.kill("SIGKILL");
         return;
@@ -2270,7 +2426,7 @@ async function runChild(argv: string[], limitMs: number): Promise<SandboxRun | U
   const ended = sandboxClock();
   limit.clear();
   if (limit.timedOut()) return { why: `it ran past the ${limitMs / 1000} s limit` };
-  if (over) return { why: `its output passes the ${OUTPUT_BYTES} bytes Oh My Pi shows whole` };
+  if (over) return { why: `its output passes the ${outputBytes} bytes Oh My Pi shows whole` };
   const lacks = SANDBOX_LACKS.exec(said);
   if (lacks !== null) {
     return {
@@ -2352,15 +2508,110 @@ export async function sandboxedBash(
     home,
   });
   if ("why" in ran) return ran;
-  const real = realpathSync(copy.dir);
   const text = ran.output.toString("utf8");
-  const output = [CHECKOUT_MOUNT, real, copy.dir].reduce(
-    (each, own) => each.split(own).join(copy.root),
+  const output = rootPaths(
+    copy,
     home?.env === SESSION_HOME_MOUNT && copy.home !== undefined
       ? text.split(SESSION_HOME_MOUNT).join(copy.home)
       : text
   );
   return { output, exitCode: ran.exitCode, wallTimeMs: ran.wallTimeMs };
+}
+
+/** `text`, a sandbox's output, with each of the copy's paths there (CHECKOUT_MOUNT, and the copy's
+ *  own as given and as its real path) as the session's checkout root. */
+function rootPaths(copy: CheckoutCopy, text: string): string {
+  const real = realpathSync(copy.dir);
+  return [CHECKOUT_MOUNT, real, copy.dir].reduce(
+    (each, own) => each.split(own).join(copy.root),
+    text
+  );
+}
+
+/** The name of the hook in a pin call's own directory (`pinAnswer`), and the hook's source. */
+const PIN_HOOK = "hook.ts";
+const PIN_HOOK_SOURCE = path.join(import.meta.dir, "pin-hook.ts");
+
+/** `value` as one word of bash, in single quotes. */
+function shellWord(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+/**
+ * The pinned Oh My Pi's own answer to `call` (pin-hook.ts's PinCall: its tool, its arguments, the
+ * session's paths in them as the sandbox's, and the files it seeds the session's artifacts
+ * directory with), run headless, with no model, in a sandbox of `copy` (`runSandboxed` with `pin`)
+ * from the session's working directory: `omp -p` with the hook pin-hook.ts and its call alone in a
+ * directory of the call's own, bound read-only; a fresh session in an empty HOME, PIN_HOME, the
+ * sandbox's one writable file system; no extension, skill, rule or context file discovered, no
+ * title; no variable of the runner's beyond SANDBOX_ENV's and PI_NATIVES_DIR, which names the
+ * pin's own addon (natives.ts's `pinnedAddon`), bound read-only; its binary the pin's own
+ * (natives.ts's `pinnedOmp`, its SHA-256 the release's), bound read-only. The run counts in the
+ * sandbox's BASH_TIME_LIMIT_MS from its ready marker, as a command's does, and is not answered
+ * past it; nor where `programs` (the call's programs that are no builtin of bash's) are on no
+ * directory of the sandbox's PATH. The tool's result and the artifacts it made (pin-hook.ts's
+ * PinResult), the sandbox's paths in them as the session's (`rootPaths`); or why none.
+ */
+async function pinAnswer(
+  copy: CheckoutCopy,
+  call: PinCall,
+  programs: readonly string[]
+): Promise<PinResult | Unanswered> {
+  const omp = pinnedOmp();
+  if ("why" in omp) return { why: `the runner has no pinned Oh My Pi binary: ${omp.why}` };
+  const addon = pinnedAddon();
+  if ("why" in addon) return { why: `the runner has no pinned Oh My Pi addon: ${addon.why}` };
+  const real = realpathSync(addon.file);
+  if (path.basename(real) !== path.basename(addon.file)) {
+    return {
+      why: `the pin's addon ${addon.file} is a link to ${real}, a file of another name, which the pin's loader would not find in its directory`,
+    };
+  }
+  const own = mkdtempSync(path.join(os.tmpdir(), "skill-cuts-pin-"));
+  try {
+    writeFileSync(path.join(own, PIN_HOOK), readFileSync(PIN_HOOK_SOURCE));
+    writeFileSync(path.join(own, PIN_CALL_FILE), JSON.stringify(call));
+    const omped = `${PIN_MOUNT}/bin/${path.basename(omp.file)}`;
+    const command = [
+      `HOME=${PIN_HOME}`,
+      `PI_NATIVES_DIR=${PIN_MOUNT}/natives`,
+      shellWord(omped),
+      "-p",
+      `--hook ${PIN_MOUNT}/call/${PIN_HOOK}`,
+      "--model stub/call",
+      `--session-dir ${PIN_HOME}/sessions`,
+      "--no-title --no-extensions --no-skills --no-rules --no-context-files",
+      `x 2>${PIN_HOME}/stderr || { cat ${PIN_HOME}/stderr; exit 1; }`,
+    ].join(" ");
+    const ran = await runSandboxed(copy.dir, {
+      command,
+      cwd: insideRoot(copy.root, copy.cwd) ?? "",
+      writable: false,
+      limitMs: BASH_TIME_LIMIT_MS,
+      programs,
+      pin: { bin: path.dirname(omp.file), natives: path.dirname(real), call: own },
+    });
+    if ("why" in ran) return ran;
+    const printed = ran.output.toString("utf8");
+    const at = printed.lastIndexOf(PIN_RESULT_MARKER);
+    if (ran.exitCode !== 0 || at < 0) {
+      return {
+        why: `the pinned Oh My Pi gave no answer (exit ${ran.exitCode}): ${firstLine(printed) || "it printed nothing"}`,
+      };
+    }
+    const result = JSON.parse(printed.slice(at + PIN_RESULT_MARKER.length)) as PinResult;
+    return {
+      content: result.content.map((part) =>
+        part.text === undefined ? part : { ...part, text: rootPaths(copy, part.text) }
+      ),
+      isError: result.isError,
+      artifacts: Object.fromEntries(
+        Object.entries(result.artifacts).map(([name, text]) => [name, rootPaths(copy, text)])
+      ),
+    };
+  } finally {
+    rmSync(own, { recursive: true, force: true });
+  }
 }
 
 /** A word `jj` of a shell command, where a program's name stands. */
@@ -2472,23 +2723,70 @@ const BASH_TIME_LIMIT_MS = 30_000;
 const OUTPUT_BYTES = 50 * 1024;
 const BASH_COLUMNS = 768;
 const GREP_COLUMNS = 512;
-/** Oh My Pi's minimizer passes an output shorter than this many characters through as it is
- *  (engine.rs lines 16-20). */
+/** The most a sandbox that runs the pin (`pinAnswer`) may print: its hook's one line, the JSON of
+ *  the tool's result and of the artifacts the call made, each of an output within OUTPUT_BYTES
+ *  (the runner's own run of the command was, first), each byte of which JSON may write as six. */
+const PIN_OUTPUT_BYTES = 4 * 1024 * 1024;
+/** Oh My Pi's minimizer passes an output of fewer characters (Rust's: code points) than this
+ *  through as it is (engine.rs lines 16-20). */
 const MINIMIZE_CHARS = 1_000;
-/** The read-only programs whose output Oh My Pi's minimizer may rewrite (filters/mod.rs lines
- *  42-60, and defs/jj.toml's pipeline for jj). */
-const MINIMIZED_PROGRAMS: Readonly<Record<string, true>> = {
-  ls: true,
-  tree: true,
-  find: true,
-  grep: true,
-  rg: true,
-  wc: true,
-  cat: true,
-  stat: true,
-  git: true,
-  jj: true,
+/** The read-only programs Oh My Pi's minimizer has neither a filter for (filters/mod.rs lines
+ *  40-98, `supports`) nor a built-in pipeline of (defs/*.toml, whose `match_command`s name `jj`
+ *  and `stat` of the read-only programs): their output is never rewritten. Of the rest, `ls`,
+ *  `tree`, `find`, `grep`, `rg`, `wc`, `cat`, `stat` and `jj` have a filter for every subcommand,
+ *  and git for those of MINIMIZED_GIT (`minimizerFilters`). */
+const UNFILTERED_PROGRAMS: Readonly<Record<string, true>> = {
+  cd: true,
+  head: true,
+  tail: true,
+  sed: true,
+  nl: true,
+  file: true,
+  pwd: true,
+  true: true,
+  echo: true,
+  printf: true,
+  unset: true,
+  export: true,
 };
+/** The git subcommands Oh My Pi's minimizer has a filter for (filters/git.rs lines 8-35): the
+ *  output of any other (`grep`, `ls-files`, `blame`, `rev-parse`, `remote`, …) is never
+ *  rewritten. */
+const MINIMIZED_GIT: Readonly<Record<string, true>> = {
+  status: true,
+  diff: true,
+  show: true,
+  log: true,
+  add: true,
+  commit: true,
+  push: true,
+  pull: true,
+  branch: true,
+  fetch: true,
+  stash: true,
+  worktree: true,
+  merge: true,
+  rebase: true,
+  checkout: true,
+  switch: true,
+  restore: true,
+  clean: true,
+  reset: true,
+  tag: true,
+};
+/** The git global options the minimizer's reading of a git command takes a value after, joined
+ *  (`-Cdir`, `--git-dir=x`) or as the next word (detect.rs lines 296-311 and 487-536,
+ *  `first_non_global_arg`); any other word starting with `-` before the subcommand it skips
+ *  alone. */
+const MINIMIZER_GIT_VALUES = [
+  "-C",
+  "-c",
+  "--git-dir",
+  "--work-tree",
+  "--namespace",
+  "--exec-path",
+  "--html-path",
+];
 /** GrepTool's caps at the pin (grep.ts lines 83-96): files one page shows, matches kept in a file
  *  of several and of one, the matches it fetches from its native search of one root
  *  (INTERNAL_TOTAL_CAP), and its context lines. */
@@ -4445,7 +4743,9 @@ function homeScript(script: Script): { readonly script: Script } | Unanswered {
     };
   };
   const scriptOf = (inner: Script): Script =>
-    inner.map((pipelines) => pipelines.map((pipeline) => pipeline.map(commandOf)));
+    inner.map((pipelines) =>
+      pipelines.map((pipeline) => ({ ...pipeline, commands: pipeline.commands.map(commandOf) }))
+    );
   const mapped = scriptOf(script);
   return why === undefined ? { script: mapped } : { why };
 }
@@ -4453,7 +4753,8 @@ function homeScript(script: Script): { readonly script: Script } | Unanswered {
 /** Whether a word of `script` (in its groups and command substitutions too) expands `$HOME`. */
 function expandsHome(script: Script): boolean {
   return script
-    .flat(2)
+    .flat()
+    .flatMap((pipeline) => pipeline.commands)
     .some(
       (command) =>
         (command.kind === "group" && expandsHome(command.script)) ||
@@ -4486,8 +4787,8 @@ function escapes(
     check: (command, state) => escapeFault(copy, command, state, walk),
     subValues: (sub, state) => {
       const [pipelines, ...more] = sub;
-      const [commands, ...others] = pipelines ?? [];
-      const [command, ...rest] = commands ?? [];
+      const [pipeline, ...others] = pipelines ?? [];
+      const [command, ...rest] = pipeline?.commands ?? [];
       if (more.length + others.length + rest.length > 0 || command?.kind !== "simple") {
         return undefined;
       }
@@ -4532,10 +4833,386 @@ function escapes(
   return walkScript(walked, { vars, cwds: [cwd], linked }, false, walk);
 }
 
-/** The `bash` call's answer (see the file's header). */
+/** The command the pin's bash tool runs, and its minimizer reads, for a call `command` that gives
+ *  no `cwd` and starts with `cd`, one path (its quotes and escapes taken off; no `$`, backtick or
+ *  `(` in it) and `&&` or `;`: the rest after them, the path taken as the call's `cwd` (tools/bash.ts
+ *  lines 1266-1290; shell-tokenize.ts lines 529-602, `extractLeadingCdTarget`, ported as it is
+ *  written). Undefined for any other command. The pin hoists a `;` only where the path is a
+ *  directory, which `minimizerRewrites` does not ask: it reads the command both ways. */
+function hoistedCd(command: string): string | undefined {
+  const prefix = /^cd[ \t]+/.exec(command);
+  if (prefix === null) return undefined;
+  let at = prefix[0].length;
+  let target = "";
+  let quote: string | undefined;
+  for (; at < command.length; at++) {
+    const ch = command[at] ?? "";
+    const next = command[at + 1];
+    if (quote === "'") {
+      if (ch === "'") quote = undefined;
+      else target += ch;
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === "\\" && next !== undefined) {
+        if (next === "\n" || next === "\r") return undefined;
+        if ('"\\$`'.includes(next)) {
+          target += next;
+          at++;
+          continue;
+        }
+      }
+      if (ch === '"') quote = undefined;
+      else target += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (ch === "\\" && next !== undefined) {
+      if (next === "\n" || next === "\r") return undefined;
+      target += next;
+      at++;
+      continue;
+    }
+    if (" \t\n\r&|;<>()".includes(ch)) break;
+    target += ch;
+  }
+  if (quote !== undefined || target === "" || /[$`(]/.test(target)) return undefined;
+  const separator = /^[ \t]*(&&|;(?![;&]))[ \t]*/.exec(command.slice(at));
+  return separator === null ? undefined : command.slice(at + separator[0].length);
+}
+
+/** The texts of `command` (parsed as `script`) that Oh My Pi's minimizer reads for a filter, each
+ *  as a whole (plan.rs lines 119-188 and 275-350, `analyze`; engine.rs lines 35-61, 87-125 and
+ *  172-178): the command itself where it is one simple command with a word, of one stage
+ *  (`Single`), whatever command substitution it holds; where it is two or more pipelines joined
+ *  only by `;`, line ends and `&&`, each stage of each a simple command with no command
+ *  substitution in its words, assignments or redirections, and the first with a word (`Chain`),
+ *  the text (`Pipeline.source`) of each pipeline of one stage, which the pin runs and reads alone
+ *  (one of several stages is `Piped` there); and none for any other: a `||` at its top level, a
+ *  pipeline of several stages alone (`Piped`), a group or a subshell, or a list of which a stage
+ *  holds a command substitution (`Compound`; the read-only rule takes no heredoc, process
+ *  substitution, arithmetic, `time` or `!`, which make one too). */
+function minimizerReads(command: string, script: Script): string[] {
+  const pipelines = script.flat();
+  if (pipelines.some((pipeline) => pipeline.after === "||")) return [];
+  const [first, ...more] = pipelines;
+  if (first === undefined) return [];
+  if (more.length === 0) {
+    const [only, ...piped] = first.commands;
+    return piped.length === 0 && only?.kind === "simple" && only.words.length > 0 ? [command] : [];
+  }
+  const chained = pipelines.every(
+    ({ commands }) =>
+      commands[0]?.kind === "simple" &&
+      commands[0].words.length > 0 &&
+      commands.every(
+        (each) =>
+          each.kind === "simple" &&
+          commandWords(each).every((word) => word.every((part) => part.kind !== "sub"))
+      )
+  );
+  if (!chained) return [];
+  return pipelines.filter(({ commands }) => commands.length === 1).map(({ source }) => source);
+}
+
+/** The words Oh My Pi's minimizer reads in a command's text (detect.rs lines 538-562,
+ *  `tokenize`): split at whitespace outside quotes (Rust's, TRAILING_WHITESPACE), each quote taken
+ *  off, an unquoted `\` taking the next character as it is, up to the first unquoted `;`, `|` or
+ *  `&`; no expansion read. */
+function minimizerTokens(text: string): string[] {
+  const tokens: string[] = [];
+  let current = "";
+  let quote: string | undefined;
+  const chars = [...text];
+  for (let n = 0; n < chars.length; n++) {
+    const ch = chars[n] ?? "";
+    if (quote === undefined && (ch === "'" || ch === '"')) quote = ch;
+    else if (quote !== undefined && ch === quote) quote = undefined;
+    else if (quote === undefined && ch === "\\") {
+      n++;
+      current += chars[n] ?? "";
+    } else if (quote === undefined && TRAILING_WHITESPACE.has(ch.codePointAt(0) ?? 0)) {
+      if (current !== "") tokens.push(current);
+      current = "";
+    } else if (quote === undefined && ";|&".includes(ch)) break;
+    else current += ch;
+  }
+  if (current !== "") tokens.push(current);
+  return tokens;
+}
+
+/** An assignment as the minimizer reads a word (detect.rs lines 110-120): a name of ASCII letters,
+ *  digits and `_`, not starting with a digit, then `=`. */
+const MINIMIZER_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+/** Whether Oh My Pi's minimizer has a filter for the command `text` (a whole command or a chain's
+ *  segment, `minimizerReads`), as it reads it (detect.rs lines 15-35, 66-158 and 283-311,
+ *  `detect`, `identity_has_filter` in engine.rs lines 162-170): its program the first of its words
+ *  (`minimizerTokens`) after its assignments and `env` with env's options, by its name after its
+ *  last `/`, lower-cased, none where no word is left (or env's `-S` splits a string); then git's a
+ *  filter where its subcommand, its first word after the global options (MINIMIZER_GIT_VALUES),
+ *  lower-cased, is one of MINIMIZED_GIT; one of UNFILTERED_PROGRAMS none; and any other program a
+ *  filter, as `ls`'s, `cat`'s and `jj`'s are (no other read-only program is left, so the runner
+ *  reads no other filter: a word read as the program that is no program's, such as a redirection
+ *  before the command's own, `<docs/ls head`, is taken as one that may be rewritten). */
+function minimizerFilters(text: string): boolean {
+  const tokens = minimizerTokens(text);
+  let at = 0;
+  for (;;) {
+    while (MINIMIZER_ASSIGNMENT.test(tokens[at] ?? "")) at++;
+    if (tokens[at] !== "env") break;
+    at++;
+    for (;;) {
+      const token = tokens[at];
+      if (token === undefined) break;
+      if (token === "--") {
+        at++;
+        break;
+      }
+      if (token === "-S" || token === "--split-string") return false;
+      if (["-u", "--unset", "-C", "--chdir"].includes(token)) {
+        if (at + 1 >= tokens.length) return false;
+        at += 2;
+      } else if (
+        ["-i", "-", "--ignore-environment"].includes(token) ||
+        token.startsWith("--unset=") ||
+        token.startsWith("--chdir=") ||
+        MINIMIZER_ASSIGNMENT.test(token)
+      ) {
+        at++;
+      } else break;
+    }
+  }
+  const word = tokens[at];
+  if (word === undefined) return false;
+  const program = word.slice(word.lastIndexOf("/") + 1).toLowerCase();
+  if (program === "") return false;
+  if (program !== "git") return !Object.hasOwn(UNFILTERED_PROGRAMS, program);
+  const args = tokens.slice(at + 1);
+  for (let n = 0; n < args.length; n++) {
+    const arg = args[n] ?? "";
+    if (arg === "--") return Object.hasOwn(MINIMIZED_GIT, (args[n + 1] ?? "").toLowerCase());
+    const valued = MINIMIZER_GIT_VALUES.some((flag) =>
+      arg.startsWith(flag.startsWith("--") && arg !== flag ? `${flag}=` : flag)
+    );
+    if (valued) {
+      if (MINIMIZER_GIT_VALUES.includes(arg)) n++;
+    } else if (!arg.startsWith("-")) return Object.hasOwn(MINIMIZED_GIT, arg.toLowerCase());
+  }
+  return false;
+}
+
+/** Whether Oh My Pi's minimizer may rewrite the output `output` of the `bash` call `command`
+ *  (parsed as `script`; `hoists`, whether the call gives no `cwd`, so the pin may run its rest
+ *  after a leading `cd`, `hoistedCd`): an output of MINIMIZE_CHARS characters or more, a text of
+ *  which it reads (`minimizerReads`, of the command and of that rest) with a filter
+ *  (`minimizerFilters`). A chain's segments are each read at their own output, which the runner
+ *  does not part, so it reads them all at the whole's. */
+function minimizerRewrites(
+  command: string,
+  script: Script,
+  hoists: boolean,
+  output: string
+): boolean {
+  if (output.length < MINIMIZE_CHARS || [...output].length < MINIMIZE_CHARS) return false;
+  const rest = hoists ? hoistedCd(command) : undefined;
+  const restScript = rest === undefined ? undefined : parseScript(rest);
+  const readings: [string, Script][] = [[command, script]];
+  if (rest !== undefined && restScript !== undefined) readings.push([rest, restScript]);
+  return readings.some(([text, parsed]) => minimizerReads(text, parsed).some(minimizerFilters));
+}
+
+/** Where a `bash` call Oh My Pi's minimizer may rewrite is not answered, why. */
+const MINIMIZED = "Oh My Pi's minimizer may rewrite its output";
+
+/**
+ * The `bash` call `input` (parsed as `script`, run from the session's directory `cwd`) whose
+ * output Oh My Pi's minimizer may rewrite (`minimizerRewrites`), answered by the pin's own bash
+ * tool (`pinAnswer`), its text and whether it is an error as the pin gives them: where the pin
+ * rewrote the output, it ends with `[raw output: artifact://<n>]` and the pin's notices after it,
+ * `<n>` the run's next artifact (`RunArtifacts`, one past the highest it has seen), whose raw
+ * output `run` keeps for a later read of it (`internalRead`). Not answered: where the pin's answer
+ * names an artifact other than that one (a spill of its own output), is not one text, or the pin
+ * gives none (`pinAnswer`); nor a command that expands `~` or `$HOME`, which the pin runs with a
+ * HOME of its own.
+ */
+async function minimizedAnswer(
+  copy: CheckoutCopy,
+  input: Record<string, unknown>,
+  {
+    command,
+    script,
+    cwd,
+    programs,
+  }: {
+    command: string;
+    script: Script;
+    cwd: string;
+    programs: readonly string[];
+  },
+  run: RunArtifacts
+): Promise<CheckoutAnswer | Unanswered> {
+  if (copy.home !== undefined) {
+    const read = homeScript(script);
+    if ("why" in read || expandsHome(read.script)) {
+      return {
+        why: `${MINIMIZED}, so the pinned Oh My Pi answers it, and it expands ~ or $HOME, which the pin runs with a HOME of its own`,
+      };
+    }
+  }
+  const id = run.last + 1;
+  const toSandbox = (text: string) => text.split(copy.root).join(CHECKOUT_MOUNT);
+  const pin = await pinAnswer(
+    copy,
+    {
+      tool: "bash",
+      arguments: {
+        ...input,
+        command: toSandbox(command),
+        ...(typeof input.cwd === "string" ? { cwd: toSandbox(cwd) } : {}),
+      },
+      // The pin numbers its own output's artifact first, then the rewrite's: a seed of `<n>`
+      // makes the rewrite's n + 2.
+      seed: id >= 2 ? { [`${id - 2}.seed.log`]: "" } : {},
+    },
+    programs
+  );
+  if ("why" in pin) return { why: `${MINIMIZED}, so the pinned Oh My Pi answers it: ${pin.why}` };
+  const [part, ...more] = pin.content;
+  if (part?.type !== "text" || part.text === undefined || more.length > 0) {
+    return { why: `${MINIMIZED}, and the pinned Oh My Pi's answer is not one text` };
+  }
+  const named = [...part.text.matchAll(/artifact:\/\/(\d+)/g)].map((each) => Number(each[1]));
+  const raw = pin.artifacts[`${id}.bash-original.log`];
+  if (named.length === 0) return { text: part.text, isError: pin.isError };
+  if (
+    named.some((each) => each !== id) ||
+    !part.text.includes(`[raw output: artifact://${id}]`) ||
+    raw === undefined
+  ) {
+    return {
+      why: `${MINIMIZED}, and the pinned Oh My Pi's answer names an artifact other than its rewrite's, artifact://${id}: ${named.map((each) => `artifact://${each}`).join(", ")}`,
+    };
+  }
+  run.last = id;
+  run.saved.set(id, raw);
+  return { text: part.text, isError: pin.isError };
+}
+
+/** The pinned Oh My Pi's internal URLs whose items a session makes as it runs (internal-urls/
+ *  artifact-protocol.ts, local-protocol.ts, history-protocol.ts, agent-protocol.ts and
+ *  proc-protocol.ts): a fresh session holds none (`internalRead`). */
+const SESSION_SCHEMES: Readonly<Record<string, true>> = {
+  artifact: true,
+  local: true,
+  history: true,
+  agent: true,
+  proc: true,
+};
+/** The pin's internal URLs of its own documents (xd-protocol.ts, omp-protocol.ts). */
+const DOC_SCHEMES: Readonly<Record<string, true>> = { xd: true, omp: true };
+
+/**
+ * A `read` of one of the pinned Oh My Pi's internal URLs (its `path` a URL, cases.ts's URL_TARGET;
+ * a skill's read is replay.ts's), answered by the pin's own read tool (`pinAnswer`) as a fresh
+ * session of the pin answers it, the session's working directory its own. A written case's
+ * history (`CheckoutCopy.history`) is its task and its skill's read: so a read of an item of
+ * SESSION_SCHEMES gets what a new session holds, nothing (`Local file not found: …`, `Artifact <n>
+ * not found. Available: none`, `history://`'s listing of its main session alone), but for an
+ * artifact a rewrite of this run's answers made (`RunArtifacts.saved`), which the fresh session's
+ * artifacts directory holds with the raw output the pin saved there, as the run's others; and it
+ * is not answered where the history names the item (its URL up to a `/` or a `:`, or the scheme
+ * bare), names any artifact (for an artifact the run did not make), or runs a subagent (for
+ * `history://` and `agent://`), rather than guess what the session held. A read of DOC_SCHEMES
+ * gets the pin's documents as they are, but the bare `xd://` listing, which lists the session's
+ * plugins' devices too, and a device the pin holds none of (`No such tool: …`), which one of them
+ * may be. Not answered either: any other scheme (the pin reads its configuration, its store, the
+ * network or a host it reaches, none of which the sandbox holds as the session did), an answer
+ * that names the pin's own session directory (`local://`'s root, `history://<id>` of its own
+ * session), one with rows where the session shows them other than hashline (the pin's default),
+ * and one the pin does not give (`pinAnswer`).
+ */
+async function internalRead(
+  copy: CheckoutCopy,
+  input: Record<string, unknown>,
+  rows: PathRows,
+  run: RunArtifacts
+): Promise<CheckoutAnswer | Unanswered> {
+  const other = otherKeys(input, ["path"]);
+  if (other !== undefined) return { why: other };
+  const target = String(input.path);
+  const scheme = (/^([a-z][a-z0-9+.-]*):\/\//i.exec(target)?.[1] ?? "").toLowerCase();
+  const rest = target.slice(scheme.length + 3);
+  const named = /^[^/:]*/.exec(rest)?.[0] ?? "";
+  const item = `${scheme}://${named}`;
+  const history = copy.history ?? "";
+  if (scheme === "artifact") {
+    const id = /^\d+$/.test(named) ? Number(named) : undefined;
+    if ((id === undefined || !run.saved.has(id)) && /artifact:\/\/\d/.test(history)) {
+      return {
+        why: `${target} is an artifact the run's answers did not make, and the case's history names artifacts of the session's, which a fresh session of the pin holds none of`,
+      };
+    }
+  } else if (Object.hasOwn(SESSION_SCHEMES, scheme)) {
+    if (history.includes(item)) {
+      return {
+        why: `the case's history names ${item}, an item of the session's that a fresh session of the pin holds none of`,
+      };
+    }
+    if ((scheme === "history" || scheme === "agent") && /"name":"task"/.test(history)) {
+      return {
+        why: `the case's history runs a subagent, which ${scheme}:// would name, and a fresh session of the pin runs none`,
+      };
+    }
+  } else if (Object.hasOwn(DOC_SCHEMES, scheme)) {
+    if (scheme === "xd" && named === "") {
+      return {
+        why: "xd:// lists the session's devices, its plugins' among them, which a fresh session of the pin loads none of",
+      };
+    }
+  } else {
+    return {
+      why: `${target} is read from the pin's ${scheme}:// handler, which reads the session's configuration, store, network or hosts, none of which a sandbox holds as the session did`,
+    };
+  }
+  const pin = await pinAnswer(
+    copy,
+    {
+      tool: "read",
+      arguments: input,
+      seed: Object.fromEntries([...run.saved].map(([id, raw]) => [`${id}.bash-original.log`, raw])),
+    },
+    []
+  );
+  if ("why" in pin) return { why: `${target} is read by the pinned Oh My Pi: ${pin.why}` };
+  const [part, ...more] = pin.content;
+  if (part?.type !== "text" || part.text === undefined || more.length > 0) {
+    return { why: `${target}: the pinned Oh My Pi's answer is not one text` };
+  }
+  if (scheme === "xd" && pin.isError) {
+    return {
+      why: `${target} names a device the pin's fresh session holds none of, which one of the session's plugins may: ${firstLine(part.text)}`,
+    };
+  }
+  if (part.text.includes(PIN_MOUNT)) {
+    return { why: `${target}: the pinned Oh My Pi's answer names its own session's directory` };
+  }
+  if (rows !== "hashline" && !pin.isError && /^1:/.test(part.text)) {
+    return {
+      why: `${target}: the pin's fresh session shows its rows hashline, where the session shows them ${rows}`,
+    };
+  }
+  return { text: part.text, isError: pin.isError };
+}
+
+/** The `bash` call's answer (see the file's header), its artifacts numbered as `run` holds them. */
 async function bashAnswer(
   copy: CheckoutCopy,
-  input: Record<string, unknown>
+  input: Record<string, unknown>,
+  run: RunArtifacts
 ): Promise<CheckoutAnswer | Unanswered> {
   const option = bashOptionFault(input);
   if (option !== undefined) return { why: option };
@@ -4595,26 +5272,9 @@ async function bashAnswer(
       why: `a line of its output passes the ${BASH_COLUMNS} bytes Oh My Pi shows, and the notice of its cut names the artifact the session saves the output to, whose id the copy cannot know`,
     };
   }
-  // The minimizer (crates/pi-shell/src/minimizer/plan.rs lines 1-32, engine.rs lines 33-125) may
-  // rewrite a command's output, at 1,000 characters or more, only where its top level is simple
-  // commands joined by `&&` and `;` and one of them, unpiped, runs a program a filter reads; a
-  // group or a subshell there keeps the whole command as it is, and so does a `||`, which the
-  // parsed script does not tell from an `&&`, so such a command is refused all the same.
-  const top = script.flat();
-  if (
-    output.length >= MINIMIZE_CHARS &&
-    top.every((pipeline) => pipeline.every((each) => each.kind === "simple")) &&
-    top.some((pipeline) => {
-      const [only, ...more] = pipeline;
-      const program = only?.kind === "simple" ? literal(only.words[0] ?? []) : undefined;
-      return (
-        more.length === 0 && program !== undefined && Object.hasOwn(MINIMIZED_PROGRAMS, program)
-      );
-    })
-  ) {
-    return {
-      why: "Oh My Pi's minimizer may rewrite its output, and a rewritten output ends with a notice naming the artifact the session saves the output to, whose id the copy cannot know",
-    };
+  if (minimizerRewrites(command, script, !input.cwd, output)) {
+    const looked = [...new Set(lookedFor)];
+    return minimizedAnswer(copy, input, { command, script, cwd, programs: looked }, run);
   }
   const lines = [
     output === "" ? (exitCode === 0 ? "(no output, exit code 0)" : "(no output)") : output,
@@ -4625,18 +5285,24 @@ async function bashAnswer(
 }
 
 /** The answer to the read-only call `name` with `input` from `copy` (see the file's header), its
- *  reads by path shown as `rows`, or why it is not answered. A `read`, `grep` or `glob` answer is
- *  kept in `copy.answers` from when the call is made, and given again to the same call. */
+ *  reads by path shown as `rows` and the pinned Oh My Pi's artifacts numbered as `run` holds them
+ *  (a run's own, `runArtifacts`; absent, a fresh one), or why it is not answered. A `read`, `grep`
+ *  or `glob` answer is kept in `copy.answers` from when the call is made, and given again to the
+ *  same call, but for a read of one of the pin's internal URLs (`internalRead`). */
 export async function answerCall(
   copy: CheckoutCopy,
   name: string | undefined,
   input: unknown,
-  rows: PathRows
+  rows: PathRows,
+  run: RunArtifacts = runArtifacts(copy)
 ): Promise<CheckoutAnswer | Unanswered> {
   if (typeof input !== "object" || input === null || Array.isArray(input)) {
     return { why: "its input is no object" };
   }
   const fields = input as Record<string, unknown>;
+  if (name === "read" && typeof fields.path === "string" && URL_TARGET.test(fields.path)) {
+    return internalRead(copy, fields, rows, run);
+  }
   if (name === "read" || name === "grep" || name === "glob") {
     const key = `${name}\0${rows}\0${JSON.stringify(fields)}`;
     const held = copy.answers?.get(key);
@@ -4649,7 +5315,7 @@ export async function answerCall(
     answer.catch(() => copy.answers?.delete(key));
     return answer;
   }
-  if (name === "bash") return bashAnswer(copy, fields);
+  if (name === "bash") return bashAnswer(copy, fields, run);
   return { why: `no capture declares a ${name} tool, so the runner rebuilds none of its forms` };
 }
 

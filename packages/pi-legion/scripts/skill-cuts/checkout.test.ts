@@ -15,6 +15,7 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { fileTag, snapshotTag } from "./arms";
 import {
   answerCall,
+  type CheckoutAnswer,
   type CheckoutCopy,
   colocateJj,
   grepScan,
@@ -22,11 +23,12 @@ import {
   readOnlyCall,
   removeOutsideLinks,
   resetSandboxSpawnForTests,
+  runArtifacts,
   sandboxedBash,
   sessionHome,
   setSandboxSpawnForTests,
 } from "./checkout";
-import { pinNatives } from "./test-natives";
+import { pinBinary, pinNatives } from "./test-natives";
 import { detachedCommit, gitIn, writeTree } from "./testdata/fixtures";
 
 const scratch = temporaryDirectory("skill-cuts-checkout", { real: true });
@@ -34,6 +36,9 @@ const scratch = temporaryDirectory("skill-cuts-checkout", { real: true });
  *  lines of a file out, for its block context, or a code file the pin may summarize): skipped, or
  *  under GITHUB_ACTIONS failing, where the runner finds none (test-natives.ts). */
 const natives = pinNatives("checkout.test.ts");
+/** The `test` of the rows that run the pinned Oh My Pi's own binary (checkout.ts's `pinAnswer`):
+ *  skipped, or under GITHUB_ACTIONS failing, where the runner finds none (test-natives.ts). */
+const pinned = pinBinary("checkout.test.ts");
 
 /** The made-up session's checkout root, as a written case names it. */
 const ROOT = "/work/acme/proj";
@@ -1875,50 +1880,351 @@ test("a read of a directory is answered with the pin's listing: entries two leve
   }
 });
 
+/** A made-up TypeScript file of 60 lines, over 1,000 characters. */
+const BIG_TS = Array.from(
+  { length: 60 },
+  (_, n) => `export const line${String(n + 1).padStart(2, "0")} = "${"v".repeat(20)}";\n`
+).join("");
+
+/** Why a call whose output the pin's minimizer may rewrite is not answered where the runner has no
+ *  pinned Oh My Pi binary, which answers it (checkout.ts's `minimizedAnswer`). */
+const NO_PIN =
+  "minimizer may rewrite its output, so the pinned Oh My Pi answers it: the runner has no pinned Oh My Pi binary: SKILL_CUTS_OMP names no file";
+
+/** `body`'s result with SKILL_CUTS_OMP unset while it runs, so the runner has no pinned Oh My Pi
+ *  binary, and a call the pin would answer is refused (NO_PIN). */
+async function withoutPinBinary<T>(body: () => Promise<T>): Promise<T> {
+  const restore = captureEnvironment(["SKILL_CUTS_OMP"]);
+  delete process.env.SKILL_CUTS_OMP;
+  try {
+    return await body();
+  } finally {
+    restore();
+  }
+}
+
 // Catches: a bash output line past 768 bytes but not 768 characters answered whole where the pin
 // cuts it; an output the minimizer may rewrite answered as it is (a chain whose `cat` is not piped
 // though another part is, a jj command's), or one it keeps as it is (in a subshell, or piped) not
-// answered; and either refusal not saying that the pin's notice names an artifact the copy cannot
-// know.
-test("a bash line past 768 bytes, and an output of 1000 characters or more of an unpiped command the minimizer reads in a chain of && and ;, are not answered, each naming the artifact the pin's notice names; a subshell's or a piped command's is answered", async () => {
-  const big = Array.from(
-    { length: 60 },
-    (_, n) => `export const line${String(n + 1).padStart(2, "0")} = "${"v".repeat(20)}";\n`
-  ).join("");
+// answered; a line's refusal not saying that the pin's notice names an artifact the copy cannot
+// know, and a rewrite's, with no pinned binary, not saying that the pin answers it.
+test("a bash line past 768 bytes is not answered, naming the artifact the pin's notice names; an output of 1000 characters or more of an unpiped command the minimizer reads in a chain of && and ; is not answered as it is, and with no pinned binary not at all, saying the pin answers it; a subshell's or a piped command's is answered", async () => {
   const copy = filesCopy("bash-wide", {
     "wide.txt": `${"é".repeat(400)}\n`,
     "pkg.json": '{ "name": "acme" }\n',
-    "big.ts": big,
+    "big.ts": BIG_TS,
   });
-  for (const [command, why] of [
-    ["cat wide.txt | head -5", "passes the 768 bytes Oh My Pi shows"],
-    [`cd ${ROOT} && cat pkg.json && sed -n 1,60p big.ts`, "minimizer may rewrite"],
-    ["cat big.ts; ls | head", "minimizer may rewrite"],
+  await withoutPinBinary(async () => {
+    expect(await bashText(copy, "cat wide.txt | head -5")).toEqual({
+      why: expect.stringMatching(
+        /passes the 768 bytes Oh My Pi shows.*the artifact .*whose id the copy cannot know/
+      ),
+    });
+    for (const command of [
+      `cd ${ROOT} && cat pkg.json && sed -n 1,60p big.ts`,
+      "cat big.ts; ls | head",
+    ]) {
+      expect({ command, answer: await bashText(copy, command) }).toEqual({
+        command,
+        answer: { why: expect.stringContaining(NO_PIN) },
+      });
+    }
+    expect(await bashText(copy, "(cat big.ts)")).toBe(BIG_TS);
+    expect(await bashText(copy, "cat big.ts | head -80")).toBe(BIG_TS);
+    const colocated = {
+      dir: gitCopy("minimized-jj", { "big.ts": BIG_TS }),
+      root: ROOT,
+      cwd: ROOT,
+      git: true,
+    };
+    expect(await colocateJj(colocated.dir)).toBe(true);
+    const jj = { ...colocated, jj: true as const };
+    expect(await bashText(jj, "jj file show big.ts")).toEqual({
+      why: expect.stringContaining(NO_PIN),
+    });
+    expect(await bashText(jj, "jj file show big.ts | head -80")).toBe(BIG_TS);
+  });
+}, 60_000);
+
+/** The text of each line of `lines`, each ended by a line end, as a command prints them. */
+function printed(lines: readonly string[]): string {
+  return lines.map((line) => `${line}\n`).join("");
+}
+
+// Catches: a git command whose subcommand the pin's minimizer has no filter for (`ls-files`,
+// `grep`, `blame`, after any global option) left unanswered at 1,000 characters or more, where the
+// pin shows its output whole; or `git status`, which it may rewrite, answered as it is.
+test("an output of 1000 characters or more of git with a subcommand the minimizer has no filter for (ls-files, grep, blame), after its global options, is answered as it is; git status's is not answered as it is (with no pinned binary, not at all)", async () => {
+  const modules = Object.fromEntries(
+    Array.from({ length: 60 }, (_, n) => {
+      const id = String(n + 1).padStart(2, "0");
+      return [`lib/module-${id}-of-the-package.ts`, `export const module${id} = ${n + 1};\n`];
+    })
+  );
+  const dir = gitCopy("minimizer-git", { ...modules, "big.ts": BIG_TS });
+  writeTree(
+    dir,
+    Object.fromEntries(
+      Array.from({ length: 60 }, (_, n) => [
+        `lib/untracked-${String(n + 1).padStart(2, "0")}-scratch-file.ts`,
+        "",
+      ])
+    )
+  );
+  const copy = { dir, root: ROOT, cwd: ROOT, git: true };
+  const files = Object.keys(modules);
+  const bodies = Object.values(modules).map((body) => body.trimEnd());
+  for (const [command, text] of [
+    ["git ls-files", printed([...files, "big.ts", "docs/guide.md", "src/app.py"].sort())],
+    ["git -C lib ls-files", printed(files.map((file) => file.slice("lib/".length)))],
+    ["git grep -n export lib", printed(files.map((file, n) => `${file}:1:${bodies[n]}`))],
+    ["git --no-pager grep -h export lib", printed(bodies)],
   ] as const) {
-    expect({ command, answer: await bashText(copy, command) }).toEqual({
+    expect({ command, chars: [...text].length >= 1000 }).toEqual({ command, chars: true });
+    expect({ command, answer: await bashText(copy, command) }).toEqual({ command, answer: text });
+  }
+  const blame = await sandboxedBash(copy, "git blame big.ts");
+  if ("why" in blame) throw new Error(blame.why);
+  expect([...blame.output].length).toBeGreaterThanOrEqual(1000);
+  expect(await bashText(copy, "git blame big.ts")).toBe(blame.output);
+  await withoutPinBinary(async () => {
+    for (const command of ["git status", "git -P status"]) {
+      expect({ command, answer: await bashText(copy, command) }).toEqual({
+        command,
+        answer: { why: expect.stringContaining(NO_PIN) },
+      });
+    }
+  });
+}, 60_000);
+
+// Catches: a list of pipelines one of whose commands holds a command substitution, or a command
+// with `||` at its top level, each of which the pin's minimizer keeps whole, left unanswered at
+// 1,000 characters or more (the runner's parse read a `||` as an `&&`); or one it may rewrite
+// answered as it is: a single command with a substitution, a chain of `&&` and `;` alone, and a
+// command the pin runs alone after it takes a leading `cd` as the call's directory.
+test("an output of 1000 characters or more is answered as it is where the minimizer keeps the command whole: a list of pipelines one of which holds a command substitution, and a command with || at its top level; a single command with a substitution, a chain of && and ; alone, and the one the pin runs after a leading cd, are not answered as they are (with no pinned binary, not at all)", async () => {
+  const names = Array.from(
+    { length: 60 },
+    (_, n) => `report-${String(n + 1).padStart(2, "0")}-quarterly-summary.txt`
+  );
+  const copy = filesCopy("minimizer-compound", {
+    ...Object.fromEntries(names.map((name) => [`notes/${name}`, ""])),
+    "big.ts": BIG_TS,
+  });
+  const notes = `${ROOT}/notes`;
+  const listing = printed(names);
+  expect([...listing].length).toBeGreaterThanOrEqual(1000);
+  for (const [command, cwd, text] of [
+    ["ls $(pwd); ls", notes, listing + listing],
+    ["ls `pwd` && ls", notes, listing + listing],
+    [`cd ${notes} && ls $(pwd) && ls`, undefined, listing + listing],
+    ["cat big.ts || echo none", undefined, BIG_TS],
+    ["cat notes/report-01-quarterly-summary.txt && cat big.ts || true", undefined, BIG_TS],
+    ["ls notes || true", undefined, listing],
+  ] as const) {
+    expect({ command, answer: await bashText(copy, command, cwd) }).toEqual({
       command,
-      answer: {
-        why: expect.stringMatching(
-          new RegExp(`${why}.*the artifact .*whose id the copy cannot know`)
-        ),
-      },
+      answer: text,
     });
   }
-  expect(await bashText(copy, "(cat big.ts)")).toBe(big);
-  expect(await bashText(copy, "cat big.ts | head -80")).toBe(big);
-  const colocated = {
-    dir: gitCopy("minimized-jj", { "big.ts": big }),
-    root: ROOT,
-    cwd: ROOT,
-    git: true,
-  };
-  expect(await colocateJj(colocated.dir)).toBe(true);
-  const jj = { ...colocated, jj: true as const };
-  expect(await bashText(jj, "jj file show big.ts")).toEqual({
-    why: expect.stringContaining("minimizer may rewrite"),
+  await withoutPinBinary(async () => {
+    for (const [command, cwd] of [
+      ["ls $(pwd)", notes],
+      ["ls `pwd`", notes],
+      [`cd ${notes} && ls $(pwd)`, undefined],
+      ["cat big.ts && echo none", undefined],
+      ["cat big.ts; true", undefined],
+      ["ls notes && true", undefined],
+    ] as const) {
+      expect({ command, answer: await bashText(copy, command, cwd) }).toEqual({
+        command,
+        answer: { why: expect.stringContaining(NO_PIN) },
+      });
+    }
   });
-  expect(await bashText(jj, "jj file show big.ts | head -80")).toBe(big);
 }, 60_000);
+
+/** The made-up checkout of the rows that run the pinned Oh My Pi: a directory `d` of 200 files. */
+const PIN_NAMES = Array.from(
+  { length: 200 },
+  (_, n) => `file-${String(n + 1).padStart(3, "0")}-name.txt`
+);
+
+/** A copy of that checkout under `name`, whose case's history is `history` (none by default). */
+function pinCopy(name: string, history?: string): CheckoutCopy {
+  const copy = filesCopy(name, Object.fromEntries(PIN_NAMES.map((each) => [`d/${each}`, ""])));
+  return history === undefined ? copy : { ...copy, history };
+}
+
+/** The chain the pin's minimizer rewrites in the pin rows, and the text the pin answers it with,
+ *  less the artifact's footer and the wall time: its listing filter's rewrite of `ls -la` (36
+ *  entries as `<name>  <size>`, the count of the rest, a summary), then of `ls` (its first 40 names
+ *  and its last 40, a `…` between). */
+const PIN_CHAIN = "ls -la d && ls d";
+const PIN_CHAIN_TEXT = printed([
+  ...PIN_NAMES.slice(0, 36).map((each) => `${each}  0B`),
+  "[…164 entries elided…]",
+  "",
+  "200 files, 0 dirs (200 .txt)",
+  "200 entries",
+  ...PIN_NAMES.slice(0, 40),
+  "…",
+  ...PIN_NAMES.slice(160),
+]);
+
+/** `answer` with its wall time's notice left out, which is each run's own. */
+function sansWallTime(answer: CheckoutAnswer | { why: string }): CheckoutAnswer | { why: string } {
+  return "why" in answer
+    ? answer
+    : { ...answer, text: answer.text.replace(/\n\nWall time: \d+\.\d\d seconds/, "") };
+}
+
+// Catches: a call whose output the pin's minimizer rewrites answered as the runner's own run
+// prints it, or left unanswered, where the pin's own bash tool gives it; the footer's artifact
+// numbered other than one past the case's history's highest, or unlike in two arms; and a read of
+// that artifact unanswered, or answered other than with the raw output the pin saved.
+pinned.test(
+  "a chain the pin's minimizer rewrites is answered by the pin's own bash tool, its text ending [raw output: artifact://1] where the case's history names none, and one past the highest artifact://<n> the history names, the same in two arms; a read of that artifact in the run gets the raw output the pin saved, in the pin's read's form",
+  async () => {
+    const copy = pinCopy("pin-chain");
+    const run = runArtifacts(copy);
+    expect(
+      sansWallTime(await answerCall(copy, "bash", { command: PIN_CHAIN }, "hashline", run))
+    ).toEqual({
+      text: `${PIN_CHAIN_TEXT}[raw output: artifact://1]\n`,
+      isError: false,
+    });
+    const raw = run.saved.get(1) ?? "";
+    const rawLines = raw.replace(/\n$/, "").split("\n");
+    // The raw output is the chain's own: `ls -la`'s long listing of `.`, `..` and each file after
+    // its total, then `ls`'s names.
+    expect(rawLines.length).toBe(1 + 2 + PIN_NAMES.length + PIN_NAMES.length);
+    expect(rawLines.slice(-PIN_NAMES.length)).toEqual(PIN_NAMES);
+    expect(rawLines.slice(3, 3 + PIN_NAMES.length).map((line) => line.split(" ").at(-1))).toEqual(
+      PIN_NAMES
+    );
+    expect(await answerCall(copy, "read", { path: "artifact://1" }, "hashline", run)).toEqual({
+      text: `${rawLines.slice(0, 300).join("\n")}\n\n[Showing lines 1-300 of ${rawLines.length}. Use :301 to continue]`,
+      isError: false,
+    });
+
+    // A case whose history names artifact://40: each arm's run numbers its artifact 41.
+    const named = pinCopy(
+      "pin-history",
+      JSON.stringify([
+        { role: "toolResult", content: [{ type: "text", text: "[raw output: artifact://40]\n" }] },
+      ])
+    );
+    const arms = [];
+    for (const _arm of ["first", "second"]) {
+      arms.push(
+        sansWallTime(
+          await answerCall(named, "bash", { command: PIN_CHAIN }, "hashline", runArtifacts(named))
+        )
+      );
+    }
+    expect(arms).toEqual([
+      { text: `${PIN_CHAIN_TEXT}[raw output: artifact://41]\n`, isError: false },
+      { text: `${PIN_CHAIN_TEXT}[raw output: artifact://41]\n`, isError: false },
+    ]);
+  },
+  120_000
+);
+
+// Catches: the runner's own Oh My Pi settings (its HOME's, a file PI_CONFIG_FILES names) reaching
+// the pin it runs, whose answer would then be the pod's, not the pin's at its defaults.
+pinned.test(
+  "the pin's answer to a call is the same with the runner's HOME holding Oh My Pi settings that turn its minimizer off and PI_CONFIG_FILES naming them",
+  async () => {
+    const copy = pinCopy("pin-settings");
+    const plain = sansWallTime(await answerCall(copy, "bash", { command: PIN_CHAIN }, "hashline"));
+    const home = path.join(scratch, "pin-settings-home");
+    const settings = path.join(home, ".omp", "agent", "config.yml");
+    writeTree(home, { ".omp/agent/config.yml": "shellMinimizer:\n  enabled: false\n" });
+    const restore = captureEnvironment(["HOME", "PI_CONFIG_FILES"]);
+    process.env.HOME = home;
+    process.env.PI_CONFIG_FILES = settings;
+    try {
+      const set = sansWallTime(await answerCall(copy, "bash", { command: PIN_CHAIN }, "hashline"));
+      expect(set).toEqual(plain);
+    } finally {
+      restore();
+    }
+    expect(plain).toEqual({
+      text: `${PIN_CHAIN_TEXT}[raw output: artifact://1]\n`,
+      isError: false,
+    });
+  },
+  120_000
+);
+
+// Catches: a binary of another build than the pin's run where the pin's own answers a call, or a
+// refusal that does not say which file it is and how to get the pin's.
+test("a call the pin would answer, with SKILL_CUTS_OMP naming a binary of another digest, is not answered, naming the file, its digest, the pin's and the steps", async () => {
+  const copy = pinCopy("pin-digest");
+  const fake = path.join(scratch, "pin-digest-omp");
+  writeFileSync(fake, "#!/bin/sh\nexit 0\n");
+  const digest = new Bun.CryptoHasher("sha256").update("#!/bin/sh\nexit 0\n").digest("hex");
+  const restore = captureEnvironment(["SKILL_CUTS_OMP"]);
+  process.env.SKILL_CUTS_OMP = fake;
+  try {
+    expect(await answerCall(copy, "bash", { command: PIN_CHAIN }, "hashline")).toEqual({
+      why: `Oh My Pi's minimizer may rewrite its output, so the pinned Oh My Pi answers it: the runner has no pinned Oh My Pi binary: ${fake} is another build's: its SHA-256 is ${digest}, and the pin's is 8cbeb1d5852f93e215f76a0907426b70fd25c9565baf8d021d2d6eefcfbe8e9b; to get the pin's binary, run gh release download v18.18.6-sami.20261119-162325 --repo cybermonklabs/oh-my-pi --pattern omp-v18.18.6-sami.20261119-162325-linux-x64.tar.gz, then tar -xzf omp-v18.18.6-sami.20261119-162325-linux-x64.tar.gz, and run the runner with SKILL_CUTS_OMP=<dir>/omp-v18.18.6-sami.20261119-162325-linux-x64/bin/omp`,
+    });
+  } finally {
+    restore();
+  }
+}, 60_000);
+
+// Catches: a read of one of the pin's internal URLs refused, where a fresh session of the pin
+// answers it as the session's own (its task and its skill's read made none of its items), or
+// answered with what the runner guesses rather than the pin's bytes; and one answered where the
+// session's history, its plugins or its configuration made the answer another.
+pinned.test(
+  "a read of the pin's internal URLs is answered as a fresh session of the pin answers it: history:// lists its main session alone, a local:// file is not found, an artifact no answer made is not found, an xd:// device's documents are the pin's; the bare xd:// listing, a device the pin lacks, an item the case's history names or a subagent it runs, and a scheme the pin reads from the session's configuration are not answered",
+  async () => {
+    const copy = pinCopy("pin-urls");
+    const read = (target: string, of: CheckoutCopy = copy) =>
+      answerCall(of, "read", { path: target }, "hashline");
+    const agents = await read("history://");
+    expect(agents).toEqual({ text: expect.any(String), isError: false });
+    expect("text" in agents ? agents.text : "").toMatch(
+      /^1:# Agents\n2:\n3:\| id \| status \| kind \| parent \| last activity \|\n4:\|---\|---\|---\|---\|---\|\n5:\| Main \| running \| main \| — \| \d+s ago \|\n6:\n7:Read a transcript with `read history:\/\/<id>`\.$/
+    );
+    expect(await read("local://notes.md")).toEqual({
+      text: "Local file not found: local://notes.md",
+      isError: true,
+    });
+    expect(await read("artifact://3")).toEqual({
+      text: "Artifact 3 not found. Available: none",
+      isError: true,
+    });
+    const lsp = await read("xd://lsp");
+    expect(lsp).toEqual({ text: expect.stringMatching(/^# lsp — LSP\n\n/), isError: false });
+    const made = (history: unknown[]) => ({ ...copy, history: JSON.stringify(history) });
+    const wrote = made([
+      { role: "toolResult", content: [{ type: "text", text: "Wrote local://notes.md" }] },
+    ]);
+    const spawned = made([
+      { role: "assistant", content: [{ type: "toolCall", id: "t1", name: "task", arguments: {} }] },
+    ]);
+    const saved = made([{ role: "toolResult", content: [{ type: "text", text: "artifact://2" }] }]);
+    for (const [target, of, why] of [
+      ["xd://", copy, "xd:// lists the session's devices"],
+      ["xd://no-such-device", copy, "a device the pin's fresh session holds none of"],
+      ["cfg://shellMinimizer", copy, "reads the session's configuration"],
+      ["local://notes.md", wrote, "the case's history names local://notes.md"],
+      ["history://", spawned, "the case's history runs a subagent"],
+      ["artifact://3", saved, "the case's history names artifacts of the session's"],
+    ] as const) {
+      expect({ target, answer: await read(target, of) }).toEqual({
+        target,
+        answer: { why: expect.stringContaining(why) },
+      });
+    }
+  },
+  120_000
+);
 
 // Catches: a quoted word that holds `$`, `?`, `*`, `{…,…}` or `~` (a pattern) refused as though the
 // shell expanded it, or an unquoted one that the shell does expand answered.

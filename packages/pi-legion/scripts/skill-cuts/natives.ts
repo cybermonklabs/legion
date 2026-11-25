@@ -22,6 +22,13 @@
  * file and the steps that give the pin's addon (PINNED_ADDON_STEPS). It never answers such a read
  * another way for want of the addon.
  *
+ * The pin's own binary (`pinnedOmp`) is the file SKILL_CUTS_OMP names, opened only where its
+ * SHA-256 is PINNED_OMP_DIGEST (the digest of the release archive's `bin/omp`), on linux-x64: the
+ * runner runs it headless in its sandbox to answer a bash call whose output the pin's minimizer may
+ * rewrite and a read of one of the pin's internal URLs (checkout.ts's `pinAnswer`). CI's install
+ * action exports it (.github/actions/install-skill-cuts-omp). Where it is absent or another build's
+ * the call is not answered, the reason naming the file and PINNED_OMP_STEPS.
+ *
  * Some languages' grammars are WebAssembly modules Oh My Pi downloads the first time it needs one
  * (packages/coding-agent/src/utils/grammars.ts, `ensureGrammar`), before it looks for a window's
  * blocks and before it summarizes a file: with the grammar the answer is tree-sitter's, and where
@@ -55,6 +62,17 @@ const PINNED_ADDON_DIGESTS: Readonly<Record<string, string>> = {
 
 /** How to get the pin's addon, which every refusal names. */
 const PINNED_ADDON_STEPS = `to get the pin's addon, run gh release download ${PIN_TAG} --repo cybermonklabs/oh-my-pi --pattern ${PIN_ASSET}, then tar -xzf ${PIN_ASSET}, then PI_NATIVES_DIR=<dir> omp-${PIN_TAG}-linux-x64/bin/omp --help (which extracts it into <dir>/${NATIVES_VERSION}), and run the runner with PI_NATIVES_DIR=<dir>`;
+
+/** The variable naming the pin's own `omp` binary (`pinnedOmp`): CI's pi-legion job names the one
+ *  it unpacks there (.github/actions/install-skill-cuts-omp). */
+const RUNNER_OMP = "SKILL_CUTS_OMP";
+
+/** The SHA-256 of the pin's linux-x64 binary, `bin/omp` of PIN_ASSET (measured with sha256sum on
+ *  the unpacked release asset, 2026-11-25). */
+const PINNED_OMP_DIGEST = "8cbeb1d5852f93e215f76a0907426b70fd25c9565baf8d021d2d6eefcfbe8e9b";
+
+/** How to get the pin's binary, which every refusal of it names. */
+const PINNED_OMP_STEPS = `to get the pin's binary, run gh release download ${PIN_TAG} --repo cybermonklabs/oh-my-pi --pattern ${PIN_ASSET}, then tar -xzf ${PIN_ASSET}, and run the runner with ${RUNNER_OMP}=<dir>/omp-${PIN_TAG}-linux-x64/bin/omp`;
 
 /** One span of the addon's structural summary of a text (crates/pi-natives' `SummarySegment`):
  *  `kept` (its lines' text) or `elided`, its lines 1-based and inclusive. */
@@ -207,6 +225,36 @@ export function pinnedAddon(): { readonly file: string } | { readonly why: strin
     };
   }
   return { file };
+}
+
+/**
+ * The pinned Oh My Pi's own binary, which checkout.ts runs headless to answer a call the pin's
+ * own tools shape (its shell minimizer's rewrite, a read of one of its internal URLs): the file
+ * RUNNER_OMP names, its real path, where its SHA-256 is PINNED_OMP_DIGEST, on linux-x64, the one
+ * platform whose digest is known; else why there is none, naming the file and PINNED_OMP_STEPS.
+ * It hashes a file once in a process, as `pinnedAddon` does.
+ */
+export function pinnedOmp(): { readonly file: string } | { readonly why: string } {
+  const platform = `${process.platform}-${process.arch}`;
+  if (platform !== "linux-x64") {
+    return {
+      why: `it is known by its SHA-256 on linux-x64 alone, and this host is ${platform}; on a linux-x64 host, ${PINNED_OMP_STEPS}`,
+    };
+  }
+  const given = process.env[RUNNER_OMP];
+  if (given === undefined || given === "") {
+    return { why: `${RUNNER_OMP} names no file; ${PINNED_OMP_STEPS}` };
+  }
+  if (!existsSync(given)) {
+    return { why: `${given}, which ${RUNNER_OMP} names, is not there; ${PINNED_OMP_STEPS}` };
+  }
+  const digest = digestOf(given);
+  if (digest !== PINNED_OMP_DIGEST) {
+    return {
+      why: `${given} is another build's: its SHA-256 is ${digest}, and the pin's is ${PINNED_OMP_DIGEST}; ${PINNED_OMP_STEPS}`,
+    };
+  }
+  return { file: realpathSync(given) };
 }
 
 /** The pinned Oh My Pi's native addon, opened once (see the file's header). Throws, with

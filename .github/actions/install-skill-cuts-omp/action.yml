@@ -15,7 +15,10 @@ description: >-
   own `bin/omp --help`, run with PI_NATIVES_DIR naming a directory of the job's own and a home of
   its own, extracts the addon into `<dir>/18.18.6`, as the runner's README says to, and natives.ts
   opens it only where its sha256 is the pin's. The release ships linux-x64 alone, so this action
-  refuses any other machine by name.
+  refuses any other machine by name. It also exports the archive's own `bin/omp` as SKILL_CUTS_OMP,
+  which checkout.ts runs headless, with no model call, in its sandbox to answer a bash call whose
+  output Oh My Pi's shell minimizer may rewrite and a read of one of Oh My Pi's internal URLs
+  (history://, local://, xd://, …), and opens only where its sha256 is the pin release's.
 runs:
   using: composite
   steps:
@@ -49,3 +52,4 @@ runs:
         sha256sum "$natives/18.18.6"/pi_natives.linux-x64-*.node
         echo "installed the $row addon in $(( $(date +%s) - started ))s"
         echo "SKILL_CUTS_NATIVES_DIR=$natives" >> "$GITHUB_ENV"
+        echo "SKILL_CUTS_OMP=$dir/bin/omp" >> "$GITHUB_ENV"

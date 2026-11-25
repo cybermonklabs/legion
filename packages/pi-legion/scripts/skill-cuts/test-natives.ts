@@ -10,14 +10,15 @@
  * LEGION_TEST_OMP) is a later build of 18.18.6 whose addon is another file, so it gives these rows
  * nothing: run them with PI_NATIVES_DIR naming the pin's addon (natives.ts's header says how to
  * get it). CI's pi-legion job installs it (.github/actions/install-skill-cuts-omp) and names it in
- * SKILL_CUTS_NATIVES_DIR.
+ * SKILL_CUTS_NATIVES_DIR. The rows that run the pin's own binary (checkout.ts's `pinAnswer`) are
+ * gated the same way on it too (`pinBinary`): SKILL_CUTS_OMP, which the same action sets.
  */
 import { afterAll, beforeAll, test } from "bun:test";
 import { mkdirSync, symlinkSync } from "node:fs";
 import path from "node:path";
 import { captureEnvironment, type EnvironmentRestore } from "@legion/test-fixtures/environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { NATIVES_VERSION, pinnedAddon } from "./natives";
+import { NATIVES_VERSION, pinnedAddon, pinnedOmp } from "./natives";
 
 /** A row of a test file: `test`'s own arguments. */
 type Row = (
@@ -39,22 +40,11 @@ type Row = (
 export function pinNatives(file: string): { readonly test: Row } {
   const found = pinnedAddon();
   if ("why" in found) {
-    const needs = `the pinned Oh My Pi's native addon (a read whose block context or summary it gives)`;
-    if (process.env.GITHUB_ACTIONS === "true") {
-      const failure = `This row of ${file} needs ${needs}, and the runner finds none: ${found.why}. Under GITHUB_ACTIONS such a row fails, never skips.`;
-      return {
-        test: (name, _fn, options) =>
-          test(
-            name,
-            () => {
-              throw new Error(failure);
-            },
-            options
-          ),
-      };
-    }
-    console.warn(`Skipped the rows of ${file} that need ${needs}: ${found.why}`);
-    return { test: (name, fn, options) => test.skip(name, fn, options) };
+    return gatedRows(
+      file,
+      "the pinned Oh My Pi's native addon (a read whose block context or summary it gives)",
+      found.why
+    );
   }
   const natives = temporaryDirectory("skill-cuts-natives");
   let restore: EnvironmentRestore | undefined;
@@ -68,4 +58,42 @@ export function pinNatives(file: string): { readonly test: Row } {
   });
   afterAll(() => restore?.());
   return { test };
+}
+
+/**
+ * The `test` of the rows of the test file `file` that run the pinned Oh My Pi's own binary
+ * (checkout.ts's `pinAnswer`): it needs the binary SKILL_CUTS_OMP names (natives.ts's
+ * `pinnedOmp`) and the pin's addon (`pinnedAddon`), which CI's pi-legion job installs both of
+ * (.github/actions/install-skill-cuts-omp). Where the runner finds either not, each such row
+ * skips outside CI, with one line printed naming the file and why, and fails by its own name
+ * under GITHUB_ACTIONS, as `pinNatives`' rows do. Call it once, at the file's module scope, after
+ * `pinNatives`, whose hooks name the addon.
+ */
+export function pinBinary(file: string): { readonly test: Row } {
+  const omp = pinnedOmp();
+  const addon = pinnedAddon();
+  const why = "why" in omp ? omp.why : "why" in addon ? addon.why : undefined;
+  if (why === undefined) return { test };
+  return gatedRows(file, "the pinned Oh My Pi's own binary and its native addon", why);
+}
+
+/** The rows of `file` that need `needs`, which the runner lacks for `why`: under GITHUB_ACTIONS
+ *  (exactly `true`) each fails by its own name, saying so; elsewhere each skips, one line printed
+ *  naming the file, what it needs and why. */
+function gatedRows(file: string, needs: string, why: string): { readonly test: Row } {
+  if (process.env.GITHUB_ACTIONS === "true") {
+    const failure = `This row of ${file} needs ${needs}, and the runner finds none: ${why}. Under GITHUB_ACTIONS such a row fails, never skips.`;
+    return {
+      test: (name, _fn, options) =>
+        test(
+          name,
+          () => {
+            throw new Error(failure);
+          },
+          options
+        ),
+    };
+  }
+  console.warn(`Skipped the rows of ${file} that need ${needs}: ${why}`);
+  return { test: (name, fn, options) => test.skip(name, fn, options) };
 }

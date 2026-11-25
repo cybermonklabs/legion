@@ -4,13 +4,18 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { pinnedAddon } from "./natives";
+import { pinnedAddon, pinnedOmp } from "./natives";
 
 // The runner's pinned Oh My Pi native addon (natives.ts), on made-up files: none of these rows
 // needs the real addon, and none opens one.
 
 const scratch = temporaryDirectory("skill-cuts-natives-loader");
-restoreEnvironment(["PI_NATIVES_DIR", "PI_NATIVE_VARIANT", "SKILL_CUTS_NATIVES_DIR"]);
+restoreEnvironment([
+  "PI_NATIVES_DIR",
+  "PI_NATIVE_VARIANT",
+  "SKILL_CUTS_NATIVES_DIR",
+  "SKILL_CUTS_OMP",
+]);
 
 /** The steps every refusal names. */
 const STEPS =
@@ -131,3 +136,30 @@ test("the runner's open of the addon refuses with the same reason, before it ope
     stdout: `a read's answer needs the pinned Oh My Pi's native addon: ${baseline} is another build's: its SHA-256 is ${digest}, and the pin's is ${PINNED}; ${STEPS}\n`,
   });
 }, 30_000);
+
+/** The steps every refusal of the pin's binary names. */
+const OMP_STEPS =
+  "to get the pin's binary, run gh release download v18.18.6-sami.20261119-162325 --repo cybermonklabs/oh-my-pi --pattern omp-v18.18.6-sami.20261119-162325-linux-x64.tar.gz, then tar -xzf omp-v18.18.6-sami.20261119-162325-linux-x64.tar.gz, and run the runner with SKILL_CUTS_OMP=<dir>/omp-v18.18.6-sami.20261119-162325-linux-x64/bin/omp";
+
+// Catches: a binary of another build run where the pin's own answers a call (checkout.ts's
+// `pinAnswer`: a later Oh My Pi's minimizer or read tool gives other text), or a refusal that
+// does not say which file it is and how to get the pin's.
+test("the pin's binary is the file SKILL_CUTS_OMP names, refused where none is named, none is there, its SHA-256 is another or the host is another platform, each naming the steps", () => {
+  delete process.env.SKILL_CUTS_OMP;
+  expect(onHost("linux", "x64", pinnedOmp)).toEqual({
+    why: `SKILL_CUTS_OMP names no file; ${OMP_STEPS}`,
+  });
+  const file = path.join(scratch, "omp");
+  process.env.SKILL_CUTS_OMP = file;
+  expect(onHost("linux", "x64", pinnedOmp)).toEqual({
+    why: `${file}, which SKILL_CUTS_OMP names, is not there; ${OMP_STEPS}`,
+  });
+  writeFileSync(file, "a made-up binary\n");
+  const digest = createHash("sha256").update("a made-up binary\n").digest("hex");
+  expect(onHost("linux", "x64", pinnedOmp)).toEqual({
+    why: `${file} is another build's: its SHA-256 is ${digest}, and the pin's is 8cbeb1d5852f93e215f76a0907426b70fd25c9565baf8d021d2d6eefcfbe8e9b; ${OMP_STEPS}`,
+  });
+  expect(onHost("linux", "arm64", pinnedOmp)).toEqual({
+    why: `it is known by its SHA-256 on linux-x64 alone, and this host is linux-arm64; on a linux-x64 host, ${OMP_STEPS}`,
+  });
+});

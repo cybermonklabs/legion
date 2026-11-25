@@ -698,12 +698,23 @@ sandbox's making are no part of it). The call's `pty`, `async`, `name` and `read
 absent where Oh My Pi reads them so (null or the text `null`, which its validation drops; `""`;
 `pty` or `async` false; a blank `name`; a `ready` with no log and no port); `pty: true`, `async:
 true`, a service's `name`, a `ready` with a log or a port, or any other value are not answered.
-An output past 50 KB, one with a line past 768 bytes, and one of 1,000 characters or more
-that Oh My Pi's minimizer may rewrite (a command whose top level is simple commands joined by
-`&&`, `;` or `||`, one of which, unpiped, runs `ls`, `tree`, `find`, `grep`, `rg`, `wc`, `cat`,
-`stat`, `git` or `jj`; not one in a group or a subshell) are not answered: Oh My Pi shows each
+An output past 50 KB, and one with a line past 768 bytes, are not answered: Oh My Pi shows each
 with a notice that names the artifact the session saves the whole output to, whose id is the
-session's own count of its artifacts, which a checkout cannot know. Every path an answer shows is
+session's own count of its artifacts, which the runner does not rebuild. An output of 1,000
+characters or more that Oh My Pi's minimizer may rewrite is answered by the pinned Oh My Pi's own
+bash tool (below), not by the runner's own run of the command, which only decides whether the pin
+is asked. The minimizer reads the command the pin runs (the call's own and, where the call gives
+no `cwd`, its rest after a leading `cd <path> &&` or `;`, which the pin's bash tool takes as the
+call's directory): a command that is one simple command of one stage is read whole, whatever
+command substitution it holds, and a list of two or more pipelines joined only by `;`, line ends
+and `&&`, each stage a simple command holding no command substitution, pipeline by pipeline (one
+of several stages not at all). It may rewrite what it reads of `ls`, `tree`, `find`, `grep`, `rg`,
+`wc`, `cat`, `stat`, `jj`, and `git` with a subcommand it has a filter for (`status`, `diff`,
+`show`, `log`, `branch`, `worktree`, …). Any other output is answered as the runner's own run
+prints it: one of `git grep`, `ls-files`, `blame`, `rev-parse` or `remote`, of `head`, `sed` and
+the other read-only programs, of a command with a `||` at its top level, of a group or a subshell,
+of a pipeline of several stages alone, and of a list one of whose commands holds a command
+substitution (`ls $(pwd) && ls`; the runner's parse tells `||` from `&&`). Every path an answer shows is
 the session's: the copy's path in the sandbox, and its own, as given and as its real path, become
 the session's checkout root in every output, so `pwd` gives the session's working directory,
 `git rev-parse --show-toplevel`, `git worktree list` and `jj root` its checkout root, and an
@@ -819,6 +830,55 @@ as though the rule had let each through: the key is in no answer, the home and `
 `env` shows no credential, no fsmonitor runs, the copy is read-only and there is no network; and
 `curl` is refused and never run.
 
+The pinned Oh My Pi's own tools answer a call whose answer they shape (`checkout.ts`'s
+`pinAnswer`): a `bash` call whose output the minimizer may rewrite, and a `read` of one of its
+internal URLs. The runner runs the pin's binary headless, with no model call, inside the same
+sandbox: `omp -p --hook <stub hook> --model stub/call --session-dir <dir> --no-title
+--no-extensions --no-skills --no-rules --no-context-files`. The stub hook (`pin-hook.ts`) registers
+an in-process provider `stub` (pi-ai's `createAssistantMessageEventStream`, a placeholder apiKey
+and a loopback URL nothing listens on; the sandbox has no network), makes one tool call with the
+call's arguments on its first turn, and on its next prints the tool's result text and the
+artifacts the call saved, which the runner takes as the answer; its `session_start` handler seeds
+the session's artifacts directory first. The binary is the file `SKILL_CUTS_OMP` names, opened
+only where its SHA-256 is the pin release's (`natives.ts`'s `pinnedOmp`, on linux-x64), with the
+pin's addon (`pinnedAddon`); CI's install action unpacks the release and exports it (to get it
+elsewhere: `gh release download v18.18.6-sami.20261119-162325 --repo cybermonklabs/oh-my-pi
+--pattern omp-v18.18.6-sami.20261119-162325-linux-x64.tar.gz`, `tar -xzf` it, and run the runner
+with `SKILL_CUTS_OMP=<dir>/omp-v18.18.6-sami.20261119-162325-linux-x64/bin/omp`); where it is
+absent or another build's, such a call is not answered, its reason saying why and how to get the
+pin's. The tests that run it skip outside CI where it is missing, with one line, and fail by their
+own name under `GITHUB_ACTIONS=true` (`test-natives.ts`'s `pinBinary`). In the sandbox the binary's
+directory, the addon's and the call's own (the hook and its call file) are bound read-only under
+`/mnt/pin`, and an empty 64 MiB tmpfs at `/mnt/pin/home` is the pin's `HOME` and holds its fresh
+session directory: the one writable file system, the checkout copy staying read-only; the pin gets
+only `PATH`, `HOME` and `PI_NATIVES_DIR` in its environment, no `PI_CONFIG_FILES`, and no
+setting, plugin, extension or skill of the host's, so the answer is the pin's at its defaults. The
+run is one sandbox of the queue, within the same 30 s from its ready marker, and the copy's paths
+in the result are the session's.
+
+A rewritten bash output ends with `[raw output: artifact://<N>]` and the pin's wall time and exit
+notices after it. `<N>` is one past the highest `artifact://<n>` in the case's history (the
+messages before the step) and in the run's earlier answers, 1 where there is none: the same in
+every arm and every run of a case (the stub seeds the artifacts directory with `<N-2>.seed.log`
+for an N of 2 or more, since the pin numbers its own output's artifact first). The pin saves the
+raw output as `<N>.bash-original.log`, which the run keeps: a later read of `artifact://<N>` in
+the same run (with `:raw` or a range too) is the pin's own read of it, in its form for an artifact.
+
+A read of one of the pin's internal URLs is answered by the pin's read tool as a fresh session of
+the pin answers it. A written case's history is its task and its skill's read and nothing else,
+so `local://`, `history://`, `agent://`, `proc://` and `artifact://` get what a new session holds
+(`Local file not found: local://notes.md`, `Artifact 3 not found. Available: none`, `history://`'s
+listing of its main session alone), except an artifact the run's own rewrite saved; `xd://<device>`
+and `omp://` documents come from the pin as they are. Not answered, rather than guessed: an item
+the case's history names (`local://notes.md` where it wrote it), any artifact where the history
+names artifacts the run did not make, `history://` and `agent://` where the history runs a
+subagent, the bare `xd://` listing and an `xd://` device the fresh session lacks (a plugin of the
+session may have mounted it), any other scheme (`cfg://`, `issue://`, `pr://`, `mcp://`, `ssh://`,
+`memory://`, `https://`: each reads configuration, a store, the network or a host the sandbox does
+not hold as the session did), an answer that names the pin's own session directory, one with rows
+where the session shows another form than hashline, and a read of a path outside the checkout,
+which stays unanswered.
+
 A runner process starts one checkout sandbox at a time, in request order.
 The queue limits sandboxes, not gateway calls, `read`, `grep`, or `glob`.
 On a two-CPU pod, eight concurrent `git status` commands all exceeded 30 s.
@@ -834,9 +894,12 @@ A reply one of whose read-only calls the copy answers in no form (a read with a 
 path outside the checkout, or under `~` where the case records no home, a `bash` option that
 asks for a terminal, a job or a service, a git or jj command where the copy is the tarball, a jj
 command where its colocation failed or whose checkout tracks a `.jj` at its root, a command whose
-sandbox cannot be made or one of whose programs the sandbox lacks, an output whose notice would
-name an artifact (past 50 KB, a line past 768 bytes, or one the minimizer may rewrite), a read of
-a file past 4 MiB or one whose block context or summary needs a grammar the pin downloads
+sandbox cannot be made or one of whose programs the sandbox lacks, an output past 50 KB or with a
+line past 768 bytes, a rewritten output (below) where the pin's binary or addon is absent or of
+another digest, the pin's run fails or passes the limit, or its answer names another artifact than
+the rewrite's, a command that expands `~` or `$HOME` where the pin would rewrite its output, a read
+of one of the pin's internal URLs that its fresh session cannot answer as the session's did
+(below), a read of a file past 4 MiB or one whose block context or summary needs a grammar the pin downloads
 ("Block context", below), a `find`
 or `ls` tool, a run past its time, a `grep` or `glob` past 30 s, a `grep` one regex test of which
 over a line took more than 100 ms; and any call but a skill read where the written case has no

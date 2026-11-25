@@ -63,10 +63,18 @@
  * the pin's summary (arms.ts's `summaryAnswer`); a read with a line selector with the lines it
  * names in the pin's form (arms.ts's `pathRangeAnswer`: one range, a list of ranges, the last N
  * lines, and `:raw` with none, one or several of them); a `grep` whose path keeps a file to line
- * ranges or is a glob, and a `glob` that reaches its limit, as checkout.ts's header says. A reply
- * one of whose read-only calls the copy answers in no form (a selector of a form not rebuilt, a
- * path outside the checkout, a git command where the copy holds no history, a form not rebuilt)
- * gets no verdict, never judged on that call: the replay rejects with UnansweredRead
+ * ranges or is a glob, and a `glob` that reaches its limit, as checkout.ts's header says; a `bash`
+ * call whose output the pin's minimizer may rewrite, answered by the pinned Oh My Pi's own bash
+ * tool run headless in the sandbox, its footer `[raw output: artifact://<N>]` numbered one past
+ * the highest artifact the case's history (`CheckoutCopy.history`) and this run's earlier answers
+ * name (`RunArtifacts`: one per run, passed to `answerCall`, so the number is the same in every
+ * arm and run of a case), and a later `read` of that artifact in the run; and a `read` of one of
+ * the pin's internal URLs (`history://`, `local://`, `xd://<device>`, …), answered by the pin's
+ * read tool as a fresh session answers it. A reply one of whose read-only calls the copy answers
+ * in no form (a selector of a form not rebuilt, a path outside the checkout, a git command where
+ * the copy holds no history, a rewritten output or an internal-URL read where the pin's binary is
+ * absent or the session's history made the item, a form not rebuilt) gets no verdict, never judged
+ * on that call: the replay rejects with UnansweredRead
  * (UNANSWERED_READ), naming the call and why, and cli.ts makes the run again as any run with no
  * verdict. Each such round's answers are recorded (`CheckoutRead`: the tool, its input, `from:
  * "checkout"`), and its calls go into the judged step before the reply that ends the run, as a
@@ -119,7 +127,14 @@ import {
   unknownSkill,
 } from "./arms";
 import { pathReadFile, skillReadFile } from "./cases";
-import { answerCall, type CheckoutCopy, readOnlyCall, type Unanswered } from "./checkout";
+import {
+  answerCall,
+  type CheckoutCopy,
+  type RunArtifacts,
+  readOnlyCall,
+  runArtifacts,
+  type Unanswered,
+} from "./checkout";
 import {
   type ContentBlock,
   freshIdentity,
@@ -451,14 +466,16 @@ function roundReads(
 
 /** The answers to a reply's `content` from the checkout copy `checkout` when every tool call of it
  *  is read-only (checkout.ts's `readOnlyCall`): each read of a skill file as `skillRead` answers
- *  it, each other call from the copy (`answerCall`), or, where `checkout` is why the case has none,
- *  with no answer; undefined when it holds no tool call or one that is not read-only; `why` a call
- *  of it is answered in no form, when one is (see the file's header). */
+ *  it, each other call from the copy (`answerCall`, the pinned Oh My Pi's artifacts numbered as the
+ *  run's `artifacts` hold them), or, where `checkout` is why the case has none, with no answer;
+ *  undefined when it holds no tool call or one that is not read-only; `why` a call of it is
+ *  answered in no form, when one is (see the file's header). */
 async function checkoutRound(
   content: readonly ContentBlock[],
   arm: Arm,
   copies: readonly InstalledCopy[],
-  checkout: CheckoutCopy | Unanswered
+  checkout: CheckoutCopy | Unanswered,
+  artifacts: RunArtifacts | undefined
 ): Promise<AnsweredCall[] | Unanswered | undefined> {
   const calls = toolCalls(content);
   if (calls.length === 0) return undefined;
@@ -474,7 +491,8 @@ async function checkoutRound(
       answers.push(skill);
       continue;
     }
-    const answer = "why" in checkout ? checkout : await answerCall(checkout, name, input, rows);
+    const answer =
+      "why" in checkout ? checkout : await answerCall(checkout, name, input, rows, artifacts);
     if ("why" in answer) return { why: `${name} ${JSON.stringify(input)}: ${answer.why}` };
     const { text, isError } = answer;
     const read = { from: "checkout", tool: name ?? "", input, isError } as const;
@@ -536,6 +554,9 @@ async function replaySent(
   const calls: ContentBlock[] = [];
   let rounds = 0;
   let checkoutRounds = 0;
+  // The pinned Oh My Pi's artifacts this run's answers make, numbered past the case's history's.
+  const artifacts =
+    checkout === undefined || "why" in checkout ? undefined : runArtifacts(checkout);
   for (let sends = 0; ; sends += 1) {
     let reply: Reply;
     try {
@@ -561,7 +582,9 @@ async function replaySent(
       answers = round;
     } else {
       const looked =
-        checkout === undefined ? undefined : await checkoutRound(content, arm, copies, checkout);
+        checkout === undefined
+          ? undefined
+          : await checkoutRound(content, arm, copies, checkout, artifacts);
       if (looked === undefined) return replayed;
       if ("why" in looked) throw new UnansweredRead(replayed, looked.why);
       if (checkoutRounds >= MAX_CHECKOUT_ROUNDS) {
