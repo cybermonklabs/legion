@@ -391,6 +391,72 @@ func TestAnAskReachesTheFreshSessionOfTheLaunchWhileTheOldSessionHoldsTheRole(t 
 	}
 }
 
+// A merge-queue removal is the merger's to read, and is delivered as a merge forward's message is
+// (deliverHeld): its row runs while the merger's launch 2 is still coming up and the listener still
+// names the session of launch 1 as the role's holder. Launch 2 cannot resume that session and
+// starts a fresh one in the same launch, which registers and comes ready, and claims the role only
+// later. A copy stored for the old session tells launch 2 nothing, so the row waits, and the fresh
+// session is told the removal once it holds the role. A row that ended on the copy the old session
+// took would leave the merger never told that its pull request left the merge queue.
+func TestARemovalReachesTheFreshSessionOfTheMergersLaunchWhileTheOldSessionHoldsTheRole(t *testing.T) {
+	t.Parallel()
+	const freshSession = "ses-fresh-merger"
+	publisher := &holderPublisher{}
+	runner, sup, pool, _ := mergeForwardRunnerAt(t, publisher, phase.Merging, workflow.PhaseStatus(phase.Merging), record.PullRequestOpen, nil)
+	token := mustClaimToken(t, "LEGION-208", claim.RoleMerger)
+	machine, _, err := sup.Create(context.Background(), supervise.Claim{Token: token, Project: "legion", Tree: "LEGION-208",
+		Issue: "LEGION-208", Role: claim.RoleMerger, Generation: 1, ServingGeneration: 1, State: supervise.StateFailed,
+		Failure: "deaths with work outstanding ran out", Session: "ses-merger", SessionFile: t.TempDir() + "/session.jsonl"}, "")
+	if err != nil {
+		t.Fatalf("create the failed merger's claim: %v", err)
+	}
+	sup.deps.Conns.(*fake.Conns).Register(token, fake.NewConn())
+	removal := record.MergeQueueRemoval{Number: 86, Head: "sha-1"}
+	publisher.holdBy(func() string { return "ses-merger" })
+	sup.deps.Runtime.(*fake.Runtime).ScriptResume(fake.SpawnResult{Err: fmt.Errorf("resume %s: %w: the session table holds no such session",
+		token, runtime.ErrSessionFileMissing)})
+	if err := machine.Handle(context.Background(), supervise.RequestOperatorRetry{Claim: token}); err != nil {
+		t.Fatalf("the operator's retry of the merger: %v", err)
+	}
+	machine.Wait()
+	if launching := machine.Claim(); launching.State != supervise.StateLaunching || launching.Generation != 2 || launching.Session != "" {
+		t.Fatalf("after the retry the merger is %s at launch %d recording session %q, want launch 2 launching a fresh session",
+			launching.State, launching.Generation, launching.Session)
+	}
+	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", removal, time.Now().Add(-time.Minute)))
+	drainAt(t, runner, 0, "the removal's attempt while launch 2 comes up")
+
+	for _, ev := range []supervise.Event{
+		supervise.StreamHello{Claim: token, Generation: 2},
+		supervise.RequestRegister{Claim: token, Generation: 2, Session: freshSession, SessionFile: t.TempDir() + "/fresh.jsonl"},
+		supervise.RequestReady{Claim: token, Generation: 2, Session: freshSession},
+	} {
+		if err := machine.Handle(context.Background(), ev); err != nil {
+			t.Fatalf("bring up the merger's launch 2: handle %T: %v", ev, err)
+		}
+	}
+	machine.Wait()
+	drainAt(t, runner, 10*time.Minute, "an attempt while the old session still holds the role")
+	publisher.holdBy(func() string { return freshSession })
+	drainAt(t, runner, 20*time.Minute, "an attempt once the fresh session holds the role")
+	drainAt(t, runner, 30*time.Minute, "a later attempt")
+
+	_, delivered := publisher.snapshot()
+	want := removal.Message("LEGION-208", "acme/widgets")
+	var fresh int
+	for _, published := range delivered {
+		if published.message == want && published.holder == freshSession {
+			fresh++
+		}
+	}
+	if fresh != 1 {
+		t.Errorf("the fresh session of the merger's launch 2 was told the removal %d times (every delivery: %+v), want once", fresh, delivered)
+	}
+	if rows := outboxRowsOfKind(t, pool, "LEGION-208", record.OutboxKindMergeQueueRemoval); rows != 0 {
+		t.Errorf("the outbox holds %d merge-queue removal rows of LEGION-208, want none", rows)
+	}
+}
+
 // The merger was asked to merge the base forward in merging, and the architect moved the issue
 // back to accepting, where that ask is owed to nobody, before the ask's row ran; the merger's
 // claim has failed. The row's attempt reads that the workflow no longer delivers it. Before the
