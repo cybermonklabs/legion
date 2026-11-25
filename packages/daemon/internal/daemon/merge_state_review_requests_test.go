@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/classify"
@@ -166,10 +167,10 @@ func TestAFieldErrorLeavesTheCountAndRollupUnread(t *testing.T) {
 }
 
 // A REST read answers no rollup of the head, so a read GitHub answers `blocked` and MERGEABLE asks
-// GitHub's GraphQL API for it before the answer is applied (readHeadChecks), and takes the count of
-// review requests from that same answer, so the count and the rollup are one response's: a review
-// requested between the REST read and the query is in both or in neither. A GraphQL answer about
-// another head, or none, is no rollup and no count, which the readers read again for.
+// GitHub's GraphQL API for its whole answer before it is applied (readWholeAnswer), and takes the
+// count of review requests from that same answer, so the count and the rollup are one response's:
+// a review requested between the REST read and the query is in both or in neither. A GraphQL
+// answer about another head, or none, is no rollup and no count, which the readers read again for.
 func TestAReadOfABlockedHeadAsksForItsRollup(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -267,14 +268,24 @@ func TestAFailedRollupBesideARunningCheckKeepsTheRoundUntilTheRunConcludes(t *te
 }
 
 // GitHub answers a `blocked` head `mergeable` null while it computes whether the head merges, and
-// may go on doing so. Nothing here injects a read: the settlement asks for one, the ladder reads
-// the head again because a null is no answer the round can decide on (classify.
-// MergeAnswerIncomplete), and the second null read in a row tells the architect, once, naming the
-// reads. The round stays in reviewing.
+// may go on doing so. Nothing here injects a read: the record holds a null read of the head two
+// minutes old, past classify.NullMergeableFloor, the settlement asks for a read, the ladder reads
+// the head again because a null is no answer the round can decide on
+// (classify.MergeAnswerIncomplete), and that read, the second null one in a row, tells the
+// architect, once, naming the reads. The round stays in reviewing.
 func TestAMergeabilityGitHubNeverComputesIsToldOnItsSecondRead(t *testing.T) {
 	t.Parallel()
 	nullPull := pullAnswer{body: `{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":null,"mergeable_state":"blocked","requested_reviewers":[],"requested_teams":[]}`}
-	rig := newReadRig(t, approvedCapture, func(int32) pullAnswer { return nullPull })
+	nullTwoMinutesAgo := func(t *testing.T, pool *store.Pool) {
+		t.Helper()
+		approvedCapture(t, pool)
+		if _, err := pool.Exec(context.Background(), `update pull_requests set merge_state = 'blocked', mergeability = 'UNKNOWN',
+			null_mergeable_reads = 1, null_mergeable_since = now() - interval '2 minutes', state_read_at = now() - interval '2 minutes',
+			evidence_read_at = now() - interval '2 minutes' where issue = 'CAPTURE-1'`); err != nil {
+			t.Fatalf("record the first null read: %v", err)
+		}
+	}
+	rig := newReadRig(t, nullTwoMinutesAgo, func(int32) pullAnswer { return nullPull })
 	rig.start(t)
 	testwait.Eventually(t, "the review-stuck notice of the null mergeability", func() bool {
 		return len(noticeReasons(t, rig.pool, "review-stuck")) > 0
@@ -418,5 +429,114 @@ func TestABlockedRestReadTakesItsVerdictFromTheGraphQLAnswer(t *testing.T) {
 	}
 	if pr := recordedPull(t, pool, "CAPTURE-1"); pr.MergeState != record.MergeStateDirty || pr.Mergeability != record.MergeabilityConflicting {
 		t.Fatalf("the record holds %s/%s, want the GraphQL answer's dirty/CONFLICTING", pr.MergeState, pr.Mergeability)
+	}
+}
+
+// A start read that GitHub's rate limit refuses ends the start read, since every read after it on
+// the installation meets the same limit, but it hands the limited head to its base's reads all the
+// same: the hand-off makes no GitHub call. The base's read answers clean, and the round ends;
+// nothing injects a read.
+func TestARateLimitedStartReadHandsItsHeadToItsBase(t *testing.T) {
+	t.Parallel()
+	rig := newReadRig(t, approvedOnMain, func(int32) pullAnswer { return cleanPull })
+	rig.refuseREST.Store(true)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go rig.w.readMergeStates(ctx)
+	concludedOnCode(t, rig.pool)
+	rig.w.readIssuesAtStart(ctx)
+	testwait.Eventually(t, "the base's read to end the round after the start read was rate-limited", func() bool {
+		got, _ := capturePhase(t, rig.pool)
+		return got == phase.Accepting
+	})
+	limited := loggedLines(t, rig.logs.String(), "read an issue's pull request as the daemon starts: GitHub's rate limit")
+	if len(limited) != 1 || limited[0]["left"] != float64(1) {
+		t.Fatalf("the start read logged %v, want one rate limit with the one issue left handed to its base", limited)
+	}
+}
+
+// A base query the rate limit refuses sends each pull request in it back along its ladder and asks
+// its round again once (readStopped): a head whose null `mergeable` run stands gets one
+// PullRequestMergeStateUnread for the refused query, not one from the query and one from the stop.
+func TestARateLimitedBaseQueryAsksEachRoundOnce(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	seedOnMain(t, pool, "CAPTURE-1", 86, phase.Testing, "testing", "U")
+	if _, err := pool.Exec(context.Background(), `update pull_requests set merge_state = 'blocked', mergeability = 'UNKNOWN',
+		null_mergeable_reads = 1, null_mergeable_since = now(), state_read_at = now(), evidence_read_at = now()
+		where issue = 'CAPTURE-1'`); err != nil {
+		t.Fatalf("record the null read: %v", err)
+	}
+	rig := newBatchRig(t, pool, func(query int32, asked []int, header http.Header) (int, string) {
+		if query == 1 {
+			header.Set("Retry-After", "1")
+			return http.StatusForbidden, `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`
+		}
+		return http.StatusOK, batchAnswer(t, asked, batchNode(86, "head-86", "MERGEABLE", "BLOCKED"))
+	})
+	pushOntoMain(t, pool, rig.w, "main-2")
+	testwait.Eventually(t, "86 answered after the limit and the batch ended", func() bool {
+		return recordedPull(t, pool, "CAPTURE-1").Mergeability == record.MergeabilityMergeable && rig.ended()
+	})
+	var asked int
+	if err := pool.QueryRow(context.Background(),
+		`select count(*) from processed_events where source = 'github' and event_id like 'merge-state-unread:%'`).Scan(&asked); err != nil {
+		t.Fatalf("count the rounds asked again: %v", err)
+	}
+	if asked != 1 {
+		t.Fatalf("the refused query asked the round again %d times, want once", asked)
+	}
+}
+
+// The GraphQL answer a REST read of a `blocked`, MERGEABLE head takes in its place is stamped with
+// the moment it arrived, not the REST read's: the workflow drops a read older than the one it
+// holds, so a batch answer that landed between the two calls must not outdate this one.
+func TestAWholeAnswerCarriesItsOwnReadTime(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	captureInTesting(t, pool)
+	rest := `{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":true,"mergeable_state":"blocked","requested_reviewers":[],"requested_teams":[]}`
+	api := pullStandInWith(t, rest, func(asked []int) string {
+		return batchAnswer(t, asked, batchNode(86, "code", "MERGEABLE", "BLOCKED"))
+	})
+	w := readRuntime(pool, api.URL, quietLogger())
+	var pull githubPullRequest
+	if err := json.Unmarshal([]byte(rest), &pull); err != nil {
+		t.Fatal(err)
+	}
+	_, pr := capturePhase(t, pool)
+	restAt := time.Now().UTC().Add(-time.Hour)
+	whole, at := w.readWholeAnswer(context.Background(), *pr, pull, restAt)
+	if whole.batch == nil || !at.After(restAt) {
+		t.Fatalf("the whole answer is a batch answer %t read at %v, want the GraphQL answer read after the REST read at %v", whole.batch != nil, at, restAt)
+	}
+}
+
+// A conflict's second read decides on the answer it applied. A REST read that answers `blocked`
+// and MERGEABLE is replaced by GitHub's GraphQL answer, which here is `mergeable` null: that is no
+// answer that decides, so the row reads GitHub again rather than finishing on the REST answer it
+// replaced.
+func TestAConflictSecondReadDecidesOnTheAnswerItApplied(t *testing.T) {
+	t.Parallel()
+	blockedPull := pullAnswer{body: `{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":true,"mergeable_state":"blocked","requested_reviewers":[],"requested_teams":[]}`}
+	rig := newReadRig(t, captureInTesting, func(read int32) pullAnswer {
+		switch read {
+		case 1:
+			return blockedPull
+		case 2:
+			return unknownPull
+		}
+		return conflictingPull
+	})
+	first := time.Now().UTC().Truncate(time.Microsecond)
+	rig.firstRead(t, first)
+	if ran := runSecondReads(t, rig.runner, first.Add(time.Minute)); ran != 1 {
+		t.Fatalf("%d second reads ran a minute after the first read, want one", ran)
+	}
+	if got := rig.reads.Load(); got != 2 {
+		t.Fatalf("GitHub was read %d times, want the REST read and the GraphQL read that replaced it", got)
+	}
+	if _, attempts, found := secondReadRow(t, rig.pool); !found || attempts != 1 {
+		t.Fatalf("the second read's row is queued %t after %d attempts, want it queued to read again: the applied answer was unknown", found, attempts)
 	}
 }

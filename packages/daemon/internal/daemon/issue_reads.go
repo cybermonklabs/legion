@@ -224,12 +224,13 @@ func issueRecord(ctx context.Context, pool *store.Pool, records record.Store, ke
 // (readIssuePullRequest): every issue with an open pull request recorded, and every issue whose
 // implementer completed with none open or merged recorded, which is the pull request this read
 // looks up by the branch. It is what covers a daemon that was down while GitHub made the
-// deliveries nothing redelivers. GitHub's rate limit ends the start read there, because every
-// read after it on the same installation meets the same limit, and the panes share it. Any other
-// read that fails is logged and the boot goes on; the record's open pull request is handed to the
-// reads of its base (followOnBase), and a run of null `mergeable` reads it holds asks the round
-// again (readFailed): a round that waits quietly on the head has no handoff coming that would
-// read it.
+// deliveries nothing redelivers. A read that fails is logged and the boot goes on; the record's
+// open pull request is handed to the reads of its base (followOnBase), and a run of null
+// `mergeable` reads it holds asks the round again (readFailed): a round that waits quietly on the
+// head has no handoff coming that would read it. GitHub's rate limit ends the start read there,
+// because every read after it on the same installation meets the same limit, and the panes share
+// it; the hand-off makes no GitHub call, so the limited issue and every one after it are handed
+// to the reads of their base all the same, which wait out the limit.
 //
 // A read that finds GitHub still computing the merge of an open pull request's head - merge state
 // `unknown`, or `mergeable` null - queues a ladder of reads for the issue (queueMergeState), which
@@ -247,7 +248,7 @@ func (w *workflowRuntime) readIssuesAtStart(ctx context.Context) {
 		}
 		return
 	}
-	for _, issue := range issues {
+	for i, issue := range issues {
 		if ctx.Err() != nil {
 			return
 		}
@@ -261,8 +262,14 @@ func (w *workflowRuntime) readIssuesAtStart(ctx context.Context) {
 		}
 		var answer *githubrest.Answer
 		if errors.As(err, &answer) && answer.RateLimited {
-			w.log.Error("read an issue's pull request as the daemon starts: GitHub's rate limit; the start reads no more issues, and each issue's next handoff reads it",
-				"issue", issue, "error", err)
+			// Every read after this one on the same installation meets the same limit, so the start
+			// reads no more issues; the hand-off below makes no GitHub call, so this issue and each
+			// one after it go to the reads of their base, which wait out the limit.
+			w.log.Error("read an issue's pull request as the daemon starts: GitHub's rate limit; the start reads no more issues, and the reads of each one's base read it",
+				"issue", issue, "left", len(issues)-i, "error", err)
+			for _, left := range issues[i:] {
+				w.startReadFailed(ctx, left)
+			}
 			return
 		}
 		w.log.Warn("read an issue's pull request as the daemon starts; the reads of its base read it again", "issue", issue, "error", err)

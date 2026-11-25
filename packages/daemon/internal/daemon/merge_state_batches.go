@@ -505,16 +505,7 @@ func (w *workflowRuntime) readBase(ctx context.Context, key string) {
 		part := queries[0]
 		outcome := w.readChunk(ctx, key, repo, base, part)
 		if outcome.unminted || outcome.after > 0 {
-			// The read stopped before GitHub answered any of these - a token the implement App
-			// could not mint, or a rate limit - which a failure that repeats would do on every
-			// turn: each pull request's round is asked again, so a run of null `mergeable` reads
-			// is told at the time bound though no read answers (readFailed).
-			for _, rest := range queries {
-				for _, r := range rest {
-					w.readFailed(ctx, r.pr)
-				}
-			}
-			w.readStopped(key, queries, outcome.after)
+			w.readStopped(ctx, key, queries, outcome.after)
 			return
 		}
 		queries = queries[1:]
@@ -528,6 +519,7 @@ func (w *workflowRuntime) readBase(ctx context.Context, key string) {
 			queries = append(singles, queries...)
 		default:
 			for _, r := range part {
+				w.readFailed(ctx, r.pr)
 				w.missed(key, r.issue, r.owed, 0, len(part) == 1)
 			}
 		}
@@ -536,11 +528,15 @@ func (w *workflowRuntime) readBase(ctx context.Context, key string) {
 
 // readStopped has each pull request of queries that key's batch still holds go on along its
 // ladder after the read stopped before a query answered it - a rate limit, due no sooner than
-// after on, or a token the implement App could not mint, after zero.
-func (w *workflowRuntime) readStopped(key string, queries [][]baseReading, after time.Duration) {
+// after on, or a token the implement App could not mint, after zero - and asks each one's round
+// again (readFailed), as every pull request a read sends back unanswered is: a failure that
+// repeats would stop every turn, and a run of null `mergeable` reads is then told at the time
+// bound though no read answers.
+func (w *workflowRuntime) readStopped(ctx context.Context, key string, queries [][]baseReading, after time.Duration) {
 	for _, part := range queries {
 		for _, r := range part {
 			if w.owns(key, r.issue) {
+				w.readFailed(ctx, r.pr)
 				w.missed(key, r.issue, r.owed, after, r.owed.alone)
 			}
 		}
@@ -593,9 +589,6 @@ func (w *workflowRuntime) readChunk(ctx context.Context, key string, repo ghrepo
 		after, _ := githubrest.RetryAfter(err)
 		w.log.Warn("github: read the merge state of the open pull requests on a base whose reads were asked for; their records stand as they were, and they are read again",
 			"repo", repo.String(), "base", base, "asked", numbers, "timedOut", got.timedOut, "retryAfter", after, "error", err)
-		for _, r := range part {
-			w.readFailed(ctx, r.pr)
-		}
 		return chunkOutcome{failed: true, timedOut: got.timedOut, after: after}
 	}
 	w.log.Info("github: read the merge state of pull requests on a base by number", "repo", repo.String(), "base", base,

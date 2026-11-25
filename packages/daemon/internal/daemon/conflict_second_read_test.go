@@ -229,7 +229,7 @@ func TestAConflictSecondReadCarriesTheBaseRules(t *testing.T) {
 // attach wires the outbox, applies its facts to w's engine, and logs to w's log.
 func secondReadRunner(w *workflowRuntime) *outbox {
 	return &outbox{pool: w.pool, records: record.NewStore(), handlers: w.handlers, dispatchProject: w.dispatchProject, log: w.log,
-		readPullRequest: w.readPullRequest, applyMergeability: w.applyAnswer, mergeStateWait: w.mergeStateWait,
+		readPullRequest: w.readPullRequest, applyMergeability: w.applyMergeability, mergeStateWait: w.mergeStateWait,
 		queueMergeStateFollow: w.queueMergeStateFollow, now: time.Now}
 }
 

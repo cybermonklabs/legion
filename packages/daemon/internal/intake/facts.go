@@ -595,8 +595,9 @@ type PullRequestOpened struct {
 func (PullRequestOpened) namedIssue() (string, bool) { return "", false }
 
 // OpenedRead is the PullRequestOpened a read of GitHub that found pull open on branch of repo
-// stands for, as its webhook would have carried it - a reopen when recorded is the same pull
-// request - and the event id, under source "github", it is applied under: the project, the
+// stands for, as its webhook would have carried it - its base, which the reads of the merge state
+// follow on before any of them has answered, and a reopen when recorded is the same pull request -
+// and the event id, under source "github", it is applied under: the project, the
 // repository and number, what the read observed, the head and GitHub's updated_at, and what the
 // workflow decides an opened by beside it, the issue's generation and its pull request record as
 // the read found it (nil for none: its number, state and clock). The id holds no read time and no
@@ -606,7 +607,7 @@ func (PullRequestOpened) namedIssue() (string, bool) { return "", false }
 // or a record that changed since (a new generation removes a closed one the opened was declined
 // against), makes a new one.
 func OpenedRead(project, repo, branch string, pull githubrest.PullRequest, generation uint64, recorded *record.PullRequest) (PullRequestOpened, string) {
-	fact := PullRequestOpened{Repo: repo, Number: pull.Number, Branch: branch, HeadSHA: pull.Head.SHA, Body: pull.Body,
+	fact := PullRequestOpened{Repo: repo, Number: pull.Number, Branch: branch, Base: pull.Base.Ref, HeadSHA: pull.Head.SHA, Body: pull.Body,
 		URL: pull.HTMLURL, UpdatedAt: pull.UpdatedAt, Reopened: recorded != nil && recorded.Number == pull.Number}
 	against := "none"
 	if recorded != nil {

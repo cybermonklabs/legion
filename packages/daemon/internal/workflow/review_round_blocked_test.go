@@ -33,10 +33,12 @@ type githubFake struct {
 	// reads is how many reads the engine has asked for that GitHub has not answered.
 	reads int
 	// answered is each state GitHub answered a read with, in order, and at the moment of the last
-	// answer: each read is a minute after the one before, so the record takes every one of them
-	// (StateReadAt).
+	// answer: each read is step after the one before (a minute unless a test sets it), so the
+	// record takes every one of them (StateReadAt), and the engine's clock stands at that moment
+	// as the fact is applied, as the daemon's does at a read it has just made.
 	answered []record.MergeState
 	at       time.Time
+	step     time.Duration
 }
 
 // newGitHubFake is the fake GitHub of pool's LEGION-208, wired into engine as its reader of the
@@ -44,7 +46,7 @@ type githubFake struct {
 // running, until a test says otherwise.
 func newGitHubFake(t *testing.T, pool *pgxpool.Pool, engine *Engine, state record.MergeState) *githubFake {
 	g := &githubFake{t: t, pool: pool, engine: engine, mergeable: record.MergeabilityMergeable, state: state,
-		checks: record.HeadChecksConcluded, at: time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)}
+		checks: record.HeadChecksConcluded, at: time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC), step: conflictConfirmWait}
 	engine.cfg.ReadMergeState = func(string) { g.reads++ }
 	return g
 }
@@ -69,12 +71,13 @@ func (g *githubFake) serve() {
 	}
 }
 
-// read is one read of #42 answered by GitHub, a minute after the read before it, about the head
-// the branch stands at, applied as the daemon applies its read.
+// read is one read of #42 answered by GitHub, step after the read before it, about the head the
+// branch stands at, applied as the daemon applies its read at the moment it was made.
 func (g *githubFake) read() {
 	g.t.Helper()
 	head := recordedPR(g.t, g.pool, "LEGION-208").HeadSHA
-	g.at = g.at.Add(conflictConfirmWait)
+	g.at = g.at.Add(g.step)
+	clockReads(g.engine, g.at)
 	g.answered = append(g.answered, g.state)
 	if result := applyFacts(g.t, g.pool, g.engine)("read-"+g.at.Format(time.RFC3339), intake.PullRequestMergeability{
 		Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: head, Mergeable: g.mergeable, MergeState: g.state,
@@ -254,31 +257,53 @@ func TestAnApprovalOfABlockedHeadWhoseChecksConcludedMovesToAccepting(t *testing
 	})
 
 	// GitHub answers `blocked` with `mergeable` null while a background job computes whether the
-	// head merges cleanly, routinely on the first read after a push. The first such read tells
-	// nobody; the second in a row at the same head tells the architect and the reviewer once,
-	// naming the reads; and the read that finds the head MERGEABLE ends the round.
+	// head merges cleanly, routinely on the first read after a push. A second null read sooner than
+	// classify.NullMergeableFloor after the first tells nobody; one at the floor tells the architect
+	// and the reviewer once, naming the reads; and the read that finds the head MERGEABLE ends the
+	// round.
 	t.Run("GitHub answers blocked before it computed whether the head merges", func(t *testing.T) {
 		pool, github := rig(t, record.MergeStateBlocked)
 		github.mergeable, github.checks = record.MergeabilityUnknown, record.HeadChecksUnread
 		github.apply("approve", approve)
 		waits(t, pool, "GitHub has not said the head merges, on a first read")
 		github.read()
+		waits(t, pool, "a second null read a minute after the first is below the floor")
+		github.step = classify.NullMergeableFloor
+		github.read()
 		if got := issuePhase(t, pool); got != phase.Reviewing {
 			t.Fatalf("LEGION-208 is in %s, want reviewing: GitHub still has not said the head merges", got)
 		}
 		told := reviewStuckNotices(t, pool)
-		if len(told) != 1 || !strings.Contains(told[0].Reason, "GitHub has answered `mergeable` null for it on 2 read(s) in a row") {
-			t.Fatalf("review-stuck notices %+v, want one naming two null reads in a row", told)
+		if len(told) != 1 || !strings.Contains(told[0].Reason, "GitHub has answered `mergeable` null for it on 3 read(s) in a row") {
+			t.Fatalf("review-stuck notices %+v, want one naming three null reads in a row", told)
 		}
 		github.read()
 		if again := reviewStuckNotices(t, pool); len(again) != 1 {
-			t.Fatalf("after a third null read the notices are %+v, want the one", again)
+			t.Fatalf("after a fourth null read the notices are %+v, want the one", again)
 		}
 		github.mergeable, github.checks = record.MergeabilityMergeable, record.HeadChecksConcluded
 		github.read()
 		if got := issuePhase(t, pool); got != phase.Accepting {
 			t.Fatalf("LEGION-208 is in %s, want accepting: the read found the head MERGEABLE", got)
 		}
+	})
+
+	// After a push to the base every waiting round's climb reads GitHub every 30 seconds, and
+	// GitHub answers `unknown`/null until it has computed the head again, within 15 s as measured
+	// (classify.NullMergeableFloor). Null reads of the climb below the floor - at 0, 30 and 60 s -
+	// are that routine recompute, not a head stuck: they tell nobody, and the read that finds the
+	// head MERGEABLE ends the round. A head still null at the climb's fourth read, 90 s on, is told
+	// (the classify rows at the floor).
+	t.Run("a climb's null reads 30 seconds apart after a push to the base", func(t *testing.T) {
+		pool, github := rig(t, record.MergeStateUnknown)
+		github.mergeable, github.checks, github.step = record.MergeabilityUnknown, record.HeadChecksUnread, 30*time.Second
+		github.apply("approve", approve)
+		github.read()
+		github.read()
+		waits(t, pool, "three null reads within a minute are GitHub's recompute")
+		github.state, github.mergeable, github.checks = record.MergeStateBlocked, record.MergeabilityMergeable, record.HeadChecksConcluded
+		github.read()
+		standsUntold(t, pool, phase.Accepting, "the recompute answered MERGEABLE")
 	})
 
 	// The bound is time, not a count: a first null read whose next reads all fail is told once
@@ -340,7 +365,7 @@ func TestAnApprovalOfABlockedHeadWhoseChecksConcludedMovesToAccepting(t *testing
 	// is beside it, so the reads that go on alternating tell nothing more.
 	t.Run("null reads alternating blocked and unknown", func(t *testing.T) {
 		pool, github := rig(t, record.MergeStateBlocked)
-		github.mergeable, github.checks = record.MergeabilityUnknown, record.HeadChecksUnread
+		github.mergeable, github.checks, github.step = record.MergeabilityUnknown, record.HeadChecksUnread, classify.NullMergeableFloor
 		github.apply("approve", approve)
 		waits(t, pool, "one null read, beside blocked")
 		github.state = record.MergeStateUnknown
@@ -359,11 +384,11 @@ func TestAnApprovalOfABlockedHeadWhoseChecksConcludedMovesToAccepting(t *testing
 	})
 
 	// A head GitHub answers only `unknown` with `mergeable` null is bounded as `blocked` is: told on
-	// the second null read in a row. Found while fixing the alternation hole: `unknown` was waited
-	// on quietly before the count was read at all.
+	// the second null read in a row at the floor. Found while fixing the alternation hole: `unknown`
+	// was waited on quietly before the count was read at all.
 	t.Run("null reads beside unknown alone", func(t *testing.T) {
 		pool, github := rig(t, record.MergeStateUnknown)
-		github.mergeable, github.checks = record.MergeabilityUnknown, record.HeadChecksUnread
+		github.mergeable, github.checks, github.step = record.MergeabilityUnknown, record.HeadChecksUnread, classify.NullMergeableFloor
 		github.apply("approve", approve)
 		waits(t, pool, "one null read, beside unknown")
 		github.read()
@@ -374,12 +399,13 @@ func TestAnApprovalOfABlockedHeadWhoseChecksConcludedMovesToAccepting(t *testing
 		}
 	})
 
-	// What holds a `blocked` head is part of the notice's key: told once for a null `mergeable`, the
-	// same head is told again when the next read finds it MERGEABLE with a review request open, and
-	// that second hold stays told once.
-	t.Run("a blocked head told for a null mergeable and then for a review request", func(t *testing.T) {
+	// What holds a `blocked` head is part of the notice's key, and the mark keeps every finding told
+	// for the head: told once for a null `mergeable`, the same head is told again when a review
+	// request holds it next, and findings that then take turns - a push to the base holding it on a
+	// null `mergeable` past the floor, then the review request again - tell nothing more.
+	t.Run("findings of one head that take turns are each told once", func(t *testing.T) {
 		pool, github := rig(t, record.MergeStateBlocked)
-		github.mergeable, github.checks = record.MergeabilityUnknown, record.HeadChecksUnread
+		github.mergeable, github.checks, github.step = record.MergeabilityUnknown, record.HeadChecksUnread, classify.NullMergeableFloor
 		github.apply("approve", approve)
 		github.read()
 		if told := reviewStuckNotices(t, pool); len(told) != 1 {
@@ -391,9 +417,38 @@ func TestAnApprovalOfABlockedHeadWhoseChecksConcludedMovesToAccepting(t *testing
 		if len(told) != 2 || !strings.Contains(told[1].Reason, "GitHub holds 1 review request(s) open") {
 			t.Fatalf("review-stuck notices %+v, want a second naming the open review request", told)
 		}
+		for turn := range 2 {
+			github.state, github.mergeable, github.checks = record.MergeStateUnknown, record.MergeabilityUnknown, record.HeadChecksUnread
+			github.read()
+			github.read()
+			github.state, github.mergeable, github.checks = record.MergeStateBlocked, record.MergeabilityMergeable, record.HeadChecksConcluded
+			github.read()
+			if again := reviewStuckNotices(t, pool); len(again) != 2 {
+				t.Fatalf("after turn %d of a null mergeable and the review request again the notices are %+v, want the two", turn+1, again)
+			}
+		}
+	})
+
+	// A head GitHub answers `behind`, then `unknown` with `mergeable` null past the floor while it
+	// recomputes, then `behind` again: `behind` is told once, the null `mergeable` is a finding of
+	// its own told once, and `behind` again tells nothing.
+	t.Run("behind, a null mergeable, then behind again", func(t *testing.T) {
+		pool, github := rig(t, record.MergeStateBehind)
+		github.step = classify.NullMergeableFloor
+		github.apply("approve", approve)
+		if told := reviewStuckNotices(t, pool); len(told) != 1 {
+			t.Fatalf("review-stuck notices %+v, want the one of behind", told)
+		}
+		github.state, github.mergeable, github.checks = record.MergeStateUnknown, record.MergeabilityUnknown, record.HeadChecksUnread
+		github.read()
+		github.read()
+		if told := reviewStuckNotices(t, pool); len(told) != 2 {
+			t.Fatalf("review-stuck notices %+v, want a second of the null mergeable", told)
+		}
+		github.state, github.mergeable, github.checks = record.MergeStateBehind, record.MergeabilityMergeable, record.HeadChecksConcluded
 		github.read()
 		if again := reviewStuckNotices(t, pool); len(again) != 2 {
-			t.Fatalf("after another read of the same hold the notices are %+v, want the two", again)
+			t.Fatalf("after behind again the notices are %+v, want the two", again)
 		}
 	})
 

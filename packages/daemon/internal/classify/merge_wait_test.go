@@ -106,10 +106,11 @@ func TestARoundWaitsOnTheMergeStateOnlyWhereAnApprovalStandsOnAHeadGitHubWillNot
 // head whose own checks are over and that only a push, a person or GitHub's own computation will
 // clear is told of. A `blocked` or `unknown` head is judged on the evidence the read that recorded
 // its state wrote, so an older read's evidence - a rollback's leftover - is no evidence. GitHub's
-// `mergeable` null is told from the second null read in a row, or once the first is
-// NullMergeableTellAfter old at the moment of the fact, beside `blocked` and `unknown` alike: an
-// `unknown`-only run was left waiting quietly for good until it was found while fixing the
-// alternation hole.
+// `mergeable` null is told from the second null read in a row at least NullMergeableFloor after
+// the first - so the climb's second read 30 seconds after a push to the base tells nothing - or
+// once the first is NullMergeableTellAfter old at the moment of the fact, beside `blocked` and
+// `unknown` alike: an `unknown`-only run was left waiting quietly for good until it was found
+// while fixing the alternation hole.
 func TestAMergeOutcomeTellsOnlyWhatNothingOnItsWayWillClear(t *testing.T) {
 	const head = "h2"
 	none, one := 0, 1
@@ -148,13 +149,18 @@ func TestAMergeOutcomeTellsOnlyWhatNothingOnItsWayWillClear(t *testing.T) {
 		{"blocked with an older read's evidence", base(older), read, MergeWaitsQuietly},
 		{"blocked with an older read's review request", base(func(pr *record.PullRequest) { older(pr); pr.ReviewsRequested = &one }), read, MergeWaitsQuietly},
 		{"blocked with a first null read", base(null(1)), read.Add(time.Minute), MergeWaitsQuietly},
-		{"blocked with a second null read in a row", base(null(2)), read.Add(time.Minute), MergeWaitsToldNullMergeable},
+		// A second null read 30 seconds after the first is the climb after a push to the base,
+		// meeting GitHub's routine recompute: below the floor it tells nothing.
+		{"blocked with a second null read below the floor", base(null(2)), read.Add(30 * time.Second), MergeWaitsQuietly},
+		{"blocked with a second null read just below the floor", base(null(2)), read.Add(NullMergeableFloor - time.Second), MergeWaitsQuietly},
+		{"blocked with a second null read at the floor", base(null(2)), read.Add(NullMergeableFloor), MergeWaitsToldNullMergeable},
 		{"blocked with a first null read the bound old", base(null(1)), read.Add(NullMergeableTellAfter), MergeWaitsToldNullMergeable},
 		{"blocked with a first null read just inside the bound", base(null(1)), read.Add(NullMergeableTellAfter - time.Second), MergeWaitsQuietly},
 		{"blocked with mergeability not read", base(func(pr *record.PullRequest) { pr.Mergeability = "" }), read.Add(time.Hour), MergeWaitsQuietly},
 		{"blocked with an older read's null reads", base(func(pr *record.PullRequest) { null(3)(pr); older(pr) }), read.Add(time.Hour), MergeWaitsQuietly},
 		{"unknown with a first null read", base(unknownNull(1)), read.Add(time.Minute), MergeWaitsQuietly},
-		{"unknown with a second null read in a row", base(unknownNull(2)), read.Add(time.Minute), MergeWaitsToldNullMergeable},
+		{"unknown with a second null read below the floor", base(unknownNull(2)), read.Add(30 * time.Second), MergeWaitsQuietly},
+		{"unknown with a second null read at the floor", base(unknownNull(2)), read.Add(NullMergeableFloor), MergeWaitsToldNullMergeable},
 		{"unknown with a first null read the bound old", base(unknownNull(1)), read.Add(NullMergeableTellAfter), MergeWaitsToldNullMergeable},
 		{"unknown with a check of the head running and null reads", base(func(pr *record.PullRequest) {
 			unknownNull(2)(pr)
@@ -168,8 +174,8 @@ func TestAMergeOutcomeTellsOnlyWhatNothingOnItsWayWillClear(t *testing.T) {
 			t.Errorf("%s: MergeOutcomeOf = %d, want %d", tc.name, got, tc.want)
 		}
 	}
-	for outcome, hold := range map[MergeOutcome]string{MergeWaitsToldNullMergeable: "mergeable-null", MergeWaitsToldReviewRequested: "review-requested",
-		MergeWaitsTold: "", MergeWaitsQuietly: "", MergeEndsRound: ""} {
+	for outcome, hold := range map[MergeOutcome]record.StuckHold{MergeWaitsToldNullMergeable: record.StuckHoldMergeableNull,
+		MergeWaitsToldReviewRequested: record.StuckHoldReviewRequested, MergeWaitsTold: "", MergeWaitsQuietly: "", MergeEndsRound: ""} {
 		if got := outcome.Hold(); got != hold {
 			t.Errorf("outcome %d holds %q, want %q", outcome, got, hold)
 		}

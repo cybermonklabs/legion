@@ -1059,9 +1059,9 @@ const (
 // mergeStateUnread asks the review round of the pull request fact names again after a read of its
 // merge state failed (intake.PullRequestMergeStateUnread), at the head the read was of. It records
 // nothing - the failed read answered nothing - and the round, judged at the engine's clock, tells
-// the architect of a `blocked` head whose `mergeable` null has stood since its first read for
-// classify.NullMergeableTellAfter, whatever the count of reads (classify.MergeOutcomeOf). A pull
-// request that is not open, or stands at another head, is not the one the read was of.
+// the architect of a `blocked` or `unknown` head whose `mergeable` null has stood since its first
+// read for classify.NullMergeableTellAfter, whatever the count of reads (classify.MergeOutcomeOf).
+// A pull request that is not open, or stands at another head, is not the one the read was of.
 func (e *Engine) mergeStateUnread(ctx context.Context, tx pgx.Tx, fact intake.PullRequestMergeStateUnread) (intake.Result, error) {
 	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
 	if err != nil || pr == nil || pr.State != record.PullRequestOpen || pr.HeadSHA != fact.HeadSHA {
@@ -1109,46 +1109,48 @@ const (
 	stuckApprovedOtherCode
 	// stuckMergeState: its approval approves the head's code, and GitHub answers for that head,
 	// whose own checks have all concluded, with a merge state the round waits on and is told of
-	// (classify.MergeWaitsTold): behind its base, a draft, dirty with no second read confirming it,
-	// or blocked while GitHub holds a review request open on it. Nothing the daemon does moves it:
-	// GitHub's answer is about the head on the branch, and only a push that earns the answer the
-	// base wants, or the review GitHub asked for, changes it. This cause alone does not wait for the
-	// reviewer's completion: the
-	// approval has already decided the round, and the completion is no part of what holds it.
+	// (classify.MergeOutcome's told waits): behind its base, a draft, dirty with no second read
+	// confirming it, blocked while GitHub holds a review request open on it, or blocked or unknown
+	// while GitHub has answered its `mergeable` null past classify's floor or bound. Nothing the
+	// daemon does moves it: GitHub's answer is about the head on the branch, and only a push that
+	// earns the answer the base wants, the review GitHub asked for, or GitHub's own computation
+	// changes it. This cause alone does not wait for the reviewer's completion: the approval has
+	// already decided the round, and the completion is no part of what holds it.
 	stuckMergeState
 )
 
 // round is reviewRound's account of a review round. A stuck round names its cause, the head it is
-// stuck at, the merge state GitHub gave for that head, and what the architect, the reviewer and a
-// restarted reviewer are told of it. waitsOnMergeState is the one thing the round is owed from
-// outside the record: an approval that stands on the head with GitHub's answer for it not one that
-// ends the round, which the daemon reads GitHub for (settleRound, daemon's readMergeState). It is
-// set for the round that waits quietly and for the stuck one alike, since the state GitHub gives a
-// head changes under it, and a read is the only thing that would ever say so. Which round that is,
-// is classify.RoundWaitsOnMergeState, and which of the two it is, classify.MergeOutcomeOf: the
-// engine and the state build read those rules, so the issue's view carries a mergeWait exactly
-// for the rounds the daemon reads GitHub for.
+// stuck at, the merge state GitHub gave for that head, what held the head beside that state when
+// the cause is stuckMergeState (a record.StuckHold, which the told mark keys a held head by), and
+// what the architect, the reviewer and a restarted reviewer are told of it. waitsOnMergeState is
+// the one thing the round is owed from outside the record: an approval that stands on the head
+// with GitHub's answer for it not one that ends the round, which the daemon reads GitHub for
+// (settleRound, daemon's readMergeState). It is set for the round that waits quietly and for the
+// stuck one alike, since the state GitHub gives a head changes under it, and a read is the only
+// thing that would ever say so. Which round that is, is classify.RoundWaitsOnMergeState, and which
+// of the two it is, classify.MergeOutcomeOf: the engine and the state build read those rules, so
+// the issue's view carries a mergeWait exactly for the rounds the daemon reads GitHub for.
 type round struct {
 	outcome           roundOutcome
 	cause             stuckCause
 	head              string
 	state             record.MergeState
-	hold              string
+	hold              record.StuckHold
 	reason            string
 	waitsOnMergeState bool
 }
 
-// stuckAs says whether r is stuck in the same way as other: the same cause at the same head,
-// held by the same thing. A fact that is not the reviewer's own tells only when the round is
-// stuck in a new way, so a second push classified late at the same head tells nothing. It is read
-// for the two causes a review decides - the round nothing decided, and the approval of other code
-// - and not for a round GitHub will not merge from, which is deduped against the mark the notice
-// leaves on the decision instead (settleRound, told): other is recomputed from the record as the
-// fact found it, so it remembers nothing of an answer GitHub gave and took back, and `behind`,
-// `unknown`, `behind` would tell twice.
+// stuckAs says whether r is stuck in the same way as other: the same cause at the same head. A
+// fact that is not the reviewer's own tells only when the round is stuck in a new way, so a second
+// push classified late at the same head tells nothing. It is read for the two causes a review
+// decides - the round nothing decided, and the approval of other code - and not for a round GitHub
+// will not merge from, which is deduped against the mark the notice leaves on the decision instead
+// (settleRound, told): other is recomputed from the record as the fact found it, so it remembers
+// nothing of an answer GitHub gave and took back, and `behind`, `unknown`, `behind` would tell
+// twice.
 func (r round) stuckAs(other round) bool {
 	return r.outcome == roundStuck && other.outcome == roundStuck &&
-		r.cause == other.cause && r.head == other.head && r.hold == other.hold
+		r.cause == other.cause && r.head == other.head
 }
 
 // stuckMergeStateReason is what the architect and the reviewer are told of an approval standing
@@ -1370,11 +1372,12 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // the dedup is against another thing, the reviewer is told as well as the architect, and the
 // notice names no topic - so settleRound asks which cause this is once and leaves it here.
 //
-// It is deduped against the mark the last notice left on the reviewer's decision (told), which
-// outlives the answers GitHub gives in between: the state is read back from GitHub every time,
-// and `behind`, `unknown`, `behind` is one finding told once. The mark is written with the
-// notice, so a notice linger holds (record.TreeLingers) leaves none and the head is told when
-// the tree runs again.
+// It is deduped against the findings already told for the head (told), which outlive the answers
+// GitHub gives in between: the state is read back from GitHub every time, and `behind`,
+// `unknown`, `behind` is one finding told once, as is a review request, a null `mergeable` after
+// a push to the base, and the review request again. The mark is written with the notice, so a
+// notice linger holds (record.TreeLingers) leaves none and the head is told when the tree runs
+// again.
 //
 // The reviewer's own message is a role message (record.RoleMessage, the way the daemon reaches a
 // role holder with something to read): the reviewer approved that head and would otherwise watch
@@ -1396,7 +1399,12 @@ func (e *Engine) tellStuckMergeState(ctx context.Context, tx pgx.Tx, issue recor
 		Body: "The round you approved is stuck: " + r.reason + "."}); err != nil {
 		return err
 	}
-	row.Decision.ToldStuckHead, row.Decision.ToldStuckState, row.Decision.ToldStuckHold = r.head, r.state, r.hold
+	d := row.Decision
+	if d.ToldStuckHead != r.head {
+		d.ToldStuck = nil
+	}
+	d.ToldStuckHead, d.ToldStuckState = r.head, r.state
+	d.ToldStuck = append(d.ToldStuck, toldFinding(r))
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return err
 	}
@@ -1415,18 +1423,35 @@ func reviewerToken(issue record.Issue) (claim.Token, error) {
 }
 
 // told says whether the notice a round GitHub will not merge from would write has already gone
-// out: the reviewer's decision carries the head, state and hold it was last reported stuck on
-// (record.ReviewDecision.ToldStuckHead). A held head is keyed by its hold rather than the state
+// out: the reviewer's decision carries every finding told for the head it was last reported stuck
+// on (record.ReviewDecision.ToldStuck). A held head's finding is its hold rather than the state
 // beside it: GitHub answers a null `mergeable` beside `blocked` and `unknown` in turn while it
-// computes, and that is one finding, told once. The hold is part of the key, so a `blocked` head
-// told of for a null `mergeable` is told again when a review request holds it next; keyed by head
-// and state alone, that second hold would stand in for the first and never be told - the same
-// kind of fault as a null run that a null `unknown` read set back. It answers for that cause
-// alone, which is the only caller (tellStuckMergeState); every other is deduped against the round
-// as the fact found it (stuckAs), which the record answers for them.
+// computes, and that is one finding. The mark keeps every finding, not the last: a head held on a
+// review request meets a null `mergeable` after each push to its base, and a mark that kept only
+// the last would tell the review request again each time - the same kind of fault as a null run
+// that a null `unknown` read set back, a stored value standing in for what was meant. A decision
+// an earlier release marked holds no list, and its ToldStuckState stands as the one finding. It
+// answers for that cause alone, which is the only caller (tellStuckMergeState); every other is
+// deduped against the round as the fact found it (stuckAs), which the record answers for them.
 func told(row record.PhaseRow, r round) bool {
-	return row.Decision != nil && row.Decision.ToldStuckHead == r.head && row.Decision.ToldStuckHold == r.hold &&
-		(r.hold != "" || row.Decision.ToldStuckState == r.state)
+	d := row.Decision
+	if d == nil || d.ToldStuckHead != r.head {
+		return false
+	}
+	findings := d.ToldStuck
+	if len(findings) == 0 && d.ToldStuckState != "" {
+		findings = []record.StuckTold{{State: d.ToldStuckState}}
+	}
+	return slices.Contains(findings, toldFinding(r))
+}
+
+// toldFinding is the finding a stuck round's notice tells (record.StuckTold): its hold, when one
+// holds the head, or else its merge state.
+func toldFinding(r round) record.StuckTold {
+	if r.hold != "" {
+		return record.StuckTold{Hold: r.hold}
+	}
+	return record.StuckTold{State: r.state}
 }
 
 // askMergeState asks the daemon to read GitHub's merge state for the pull request fact is of,
