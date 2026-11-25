@@ -362,14 +362,22 @@ func listItemMarker(ordered bool, number int, other bool) string {
 	}
 }
 
+// beginBlock records an identified block before any of its children. The caller closes its byte
+// range after rendering it. List items use the same offsets as other blocks, so the block index
+// can give each item a node at its existing block id.
+func (r *renderer) beginBlock(n *Node) int {
+	if id, ok := n.Attrs[BlockIDAttr].(string); ok && id != "" {
+		offset := len(r.blockOffsets)
+		r.blockOffsets = append(r.blockOffsets, BlockOffset{ID: id, Type: n.Type, From: r.b.Len()})
+		return offset
+	}
+	return -1
+}
+
 func (r *renderer) block(n *Node, prefix string) {
-	start := r.b.Len()
 	blockOffset := -1
 	if n.Type != "doc" && !isInlineNodeType(n.Type) {
-		if id, ok := n.Attrs[BlockIDAttr].(string); ok && id != "" {
-			blockOffset = len(r.blockOffsets)
-			r.blockOffsets = append(r.blockOffsets, BlockOffset{ID: id, Type: n.Type, From: start})
-		}
+		blockOffset = r.beginBlock(n)
 	}
 	defer func() {
 		if blockOffset >= 0 {
@@ -592,6 +600,7 @@ func (r *renderer) list(n *Node, prefix string) {
 				r.writeSyntax("\n" + strings.TrimRight(prefix, " ") + "\n" + prefix)
 			}
 		}
+		blockOffset := r.beginBlock(item)
 		marker := listItemMarker(n.Type == "ordered_list", start+index, other)
 		r.writeSyntax(marker)
 		// A task item holding only an empty paragraph is written as an empty item, as the browser
@@ -626,6 +635,9 @@ func (r *renderer) list(n *Node, prefix string) {
 		r.enterItem(item, indent, readsLoose)
 		r.itemBlocks(children, item.Attrs["spread"] == true, prefix, indent, skipped && marker != "* ")
 		r.leave()
+		if blockOffset >= 0 {
+			r.blockOffsets[blockOffset].To = r.b.Len()
+		}
 	}
 }
 

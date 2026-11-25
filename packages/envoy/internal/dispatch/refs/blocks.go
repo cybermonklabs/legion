@@ -2187,9 +2187,11 @@ func blockPairs(nodes []model.ArtifactBlock, located []text.Located, pointers []
 // holds it (pmdoc.TypedBlockIDAttribute), so the version write, indexing the tree, and the
 // reconciliation, reading the markdown back, list the same pointers under that id and resolve it
 // to the same node of the same render, and without the check both would write the same wrong edge
-// from that holder. A holder with no offset (a list item, a table cell) is never a node, so a typed
-// block after it is the id's node and keeps its pointers. One whose block is no node (an id past
-// the bound, say) or not its own writes nothing and is charged against no mention.
+// from that holder. A list item has an offset, so a list item holding an id first is the id's
+// node. It is no typed block holding a pointer, so a typed block after it that repeats the id
+// writes none, as one after a paragraph does. A holder with no offset (a table cell) is never a
+// node, so a typed block after it is the id's node and keeps its pointers. One whose block is no
+// node (an id past the bound, say) or not its own writes nothing and is charged against no mention.
 func pointerPairs(nodes []model.ArtifactBlock, pointers []Pointer) ([]blockPair, map[heldTarget]int) {
 	if len(pointers) == 0 {
 		return nil, nil
