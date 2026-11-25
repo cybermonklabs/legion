@@ -80,11 +80,12 @@
 #                 entries, and main holds them as entry files: an entry whose text opens an entry
 #                 file of the ref is refused, naming that file; run this with --base naming the base
 #                 branch's last commit before the squash, then merge main. A branch with more than
-#                 one merge base with the ref, which merged a commit of the ref's history apart
-#                 from the ref, is refused, naming them: which entries are the branch's own would
-#                 hang on the one git picks. Merge into the branch the ref as it was before it
-#                 merged the cutover, or rebase the branch's own commits onto that commit, so that
-#                 the two have one merge base.
+#                 one merge base with a ref that holds the cutover, which merged a commit of the
+#                 ref's history apart from the ref, is refused, naming them: which entries are the
+#                 branch's own would hang on the one git picks. Merge into the branch the ref as it
+#                 was before it merged the cutover; where that leaves more than one merge base,
+#                 rebase the branch's own commits onto that commit instead, which leaves it the one.
+#                 A ref that has not merged the cutover is refused for that first.
 #   --report      steps 1 to 4 read and nothing done: no file written, no merge, no Go toolchain,
 #                 and no git read but of commits, trees, the blobs of the files the branch changed
 #                 and those of the ref's entry files, so it runs in a blobless clone. It prints, for
@@ -137,22 +138,14 @@ root=$(git rev-parse --show-toplevel) || die "not in a git checkout"
 cd "$root"
 onto_sha=$(git rev-parse --verify -q "$onto^{commit}") || die "cannot read $onto"
 head_sha=$(git rev-parse --verify -q "${rev:-HEAD}^{commit}") || die "cannot read ${rev:-HEAD}"
-mapfile -t bases < <(git merge-base --all "$head_sha" "$onto_sha")
-[ "${#bases[@]}" -gt 0 ] || die "${rev:-HEAD} and $onto_name share no commit"
-if [ "${#bases[@]}" -gt 1 ]; then
-  list=
-  for b in "${bases[@]}"; do list+="${list:+, }${b:0:10}"; done
-  die "${rev:-HEAD} and $onto_name have ${#bases[@]} merge bases, $list: the branch merged a commit of the history of $onto_name apart from $onto_name itself, and which entries are its own would hang on the one git picks. Merge into the branch $onto_name as it was before it merged the cutover (the first parent of the commit that took \`const DaemonAPIVersion\` out of its version.go), so that the two have one merge base (where they still have more than one, rebase the branch's own commits onto that commit), then run this again"
-fi
-base=${bases[0]}
 
 # convert_py runs the conversion's reading and writing, one phase per call:
-#   analyze report|convert BASE HEAD MAIN NAME STATE REQUESTS REQUESTS_AT
-#                                                  steps 1 to 4 against MAIN, the ref the branch
-#                                                  merges, which messages call NAME (convert
-#                                                  writes them, STATE, and the entries' request
-#                                                  parts at REQUESTS, which is `git rev-parse
-#                                                  --git-path REQUESTS_AT`)
+#   analyze report|convert HEAD MAIN NAME STATE REQUESTS REQUESTS_AT
+#                                                  steps 1 to 4 over the merge base of HEAD and
+#                                                  MAIN, the ref the branch merges, which messages
+#                                                  call NAME (convert writes them, STATE, and the
+#                                                  entries' request parts at REQUESTS, which is
+#                                                  `git rev-parse --git-path REQUESTS_AT`)
 #   finish STATE                                   step 6 and the commit message, after the merge
 convert_py() {
   python3 - "$@" <<'PY'
@@ -714,9 +707,26 @@ class Edits:
         return text
 
 
-def analyze(mode, base, head, main, main_name, state_path, requests_path="", requests_at=""):
-    version_specs = read_blobs([f"{base}:{VERSION_GO}", f"{head}:{VERSION_GO}", f"{main}:{VERSION_GO}"])
-    base_version, head_version, main_version = (version_specs[f"{rev}:{VERSION_GO}"] for rev in (base, head, main))
+def merge_bases(head, ref):
+    """Each merge base of head and ref, as `git merge-base --all` prints them: none where the two share
+    no commit, where git exits 1 and prints nothing."""
+    result = subprocess.run(["git", "merge-base", "--all", head, ref], capture_output=True)
+    if result.returncode and (result.returncode != 1 or result.stdout.strip() or result.stderr.strip()):
+        die(f"git merge-base --all {head} {ref}: {result.stderr.decode(errors='replace').strip()}")
+    return result.stdout.decode().split()
+
+
+def before_cutover(name):
+    """The commit a refusal tells the author to merge or rebase onto: name as it was before it merged
+    the cutover."""
+    return (f"{name} as it was before it merged the cutover (the first parent of the commit that took "
+            f"`const DaemonAPIVersion` out of its {VERSION_GO})")
+
+
+def analyze(mode, head, main, main_name, state_path, requests_path="", requests_at=""):
+    bases = merge_bases(head, main)
+    version_specs = read_blobs([f"{rev}:{VERSION_GO}" for rev in (head, main, *bases[:1])])
+    head_version, main_version = (version_specs[f"{rev}:{VERSION_GO}"] for rev in (head, main))
     # The entry files call registerEntry, which a tree from before the cutover does not define, so the
     # ref the branch merges must hold the cutover; a version.go that git cannot read shows no cutover,
     # and is refused too.
@@ -727,6 +737,19 @@ def analyze(mode, base, head, main, main_name, state_path, requests_path="", req
             "cutover, and the entry files would call registerEntry, which it does not define. Where it is main, "
             "fetch main. Where it is the base branch of a stacked branch, that branch has not merged the cutover "
             "yet: convert it if it adds a numbered entry, else merge main into it, then run this with --base naming it")
+    # Which entries are the branch's own is read over its merge base with the ref. Where they have more
+    # than one, git picks which it prints, so the branch is refused. That comes after the check of the
+    # cutover above: before_cutover names a commit only a ref that has merged the cutover holds.
+    if not bases:
+        die(f"{head[:10]} and {main_name} share no commit")
+    if len(bases) > 1:
+        die(f"{head[:10]} and {main_name} have {len(bases)} merge bases, {', '.join(b[:10] for b in bases)}: the "
+            f"branch merged a commit of the history of {main_name} apart from {main_name} itself, and which entries "
+            f"are its own would hang on the one git picks. Merge {before_cutover(main_name)} into the branch, then "
+            "run this again; where that leaves more than one merge base, rebase the branch's own commits onto that "
+            "commit instead, which leaves it the one merge base")
+    base = bases[0]
+    base_version = version_specs[f"{base}:{VERSION_GO}"]
     if base_version is None or not CONST_LINE.search(base_version):
         die(f"the merge base {base[:10]} of {head[:10]} and {main_name} declares no `const DaemonAPIVersion` in "
             f"{VERSION_GO}: the branch has merged {main_name} after the cutover, and this script converts a branch "
@@ -747,9 +770,8 @@ def analyze(mode, base, head, main, main_name, state_path, requests_path="", req
     for number, theirs in stale:
         print(f"onmain {number} {theirs}")
     if stale and mode == "convert":
-        die("; ".join(f"entry {n} of this branch is main's entry {m}" for n, m in stale) +
-            ": the branch carries a change main already holds. Merge main as it was before the cutover "
-            "(the first parent of the commit that took `const DaemonAPIVersion` out of version.go) into the "
+        die("; ".join(f"entry {n} of this branch is entry {m} of {main_name}" for n, m in stale) +
+            f": the branch carries a change {main_name} already holds. Merge {before_cutover(main_name)} into the "
             "branch first, then convert it")
     entries = [e for e in entries if summary(e) not in on_main]
     # An entry whose text opens an entry file of main is a change main took after the cutover: the
@@ -1205,7 +1227,7 @@ def finish(state_path):
 
 phase = sys.argv[1]
 if phase == "analyze":
-    analyze(*sys.argv[2:10])
+    analyze(*sys.argv[2:9])
 elif phase == "fixtures":
     with open(sys.argv[2]) as f:
         state = json.load(f)
@@ -1220,7 +1242,7 @@ PY
 }
 
 if [ "$report" = 1 ]; then
-  convert_py analyze report "$base" "$head_sha" "$onto_sha" "$onto_name" ""
+  convert_py analyze report "$head_sha" "$onto_sha" "$onto_name" ""
   exit 0
 fi
 
@@ -1235,8 +1257,8 @@ state=$work/state.json
 requests_at=daemon-contract-convert/$branch/entry-requests.json
 requests=$(git rev-parse --path-format=absolute --git-path "$requests_at")
 
-echo "== steps 1 to 4: $branch at ${head_sha:0:10}, merge base ${base:0:10}"
-convert_py analyze convert "$base" "$head_sha" "$onto_sha" "$onto_name" "$state" "$requests" "$requests_at"
+echo "== steps 1 to 4: $branch at ${head_sha:0:10}"
+convert_py analyze convert "$head_sha" "$onto_sha" "$onto_name" "$state" "$requests" "$requests_at"
 [ -f "$state" ] || exit 0
 mapfile -t touched < <(python3 -c 'import json, sys; print("\n".join(json.load(open(sys.argv[1]))["touched"]))' "$state")
 mapfile -t gofiles < <(printf '%s\n' "${touched[@]}" | grep '\.go$' || true)
