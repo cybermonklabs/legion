@@ -8,7 +8,7 @@ import { join } from "node:path";
 
 import { type LegionRole, roleToken } from "@legion/contracts";
 
-import type { DispatchEvent, IssueSteps } from "../web/src/api/types";
+import type { DispatchEvent, IssueAskThreadRow, IssueSteps } from "../web/src/api/types";
 import { conversationItemId, pinnedItemMarker } from "../web/src/features/issue/pins";
 import { LIST_PAGE } from "../web/src/features/issue-page/details-leaves";
 import { KEY_REPORTS, PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
@@ -134,7 +134,15 @@ import { viewportAt } from "./issue-page-p";
 import { withoutScrollAnchoring } from "./mermaid-helpers";
 import { setCreatedAt, setEventCreatedAt } from "./seed";
 import { navigateInApp, ONE_PIXEL_PNG } from "./sends";
-import { type Browser, type BrowserContext, expect, type Locator, type Page, test } from "./test";
+import {
+  type Browser,
+  type BrowserContext,
+  expect,
+  type Locator,
+  type Page,
+  type Response,
+  test,
+} from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
 import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
@@ -299,18 +307,50 @@ async function seedHistoryThreads() {
   };
 }
 
+/**
+ * Watches, from the call on, the answers of the page's reads that the outline's posts come from:
+ * the issue's messages read (`GET /api/v1/issues/<key>/messages`), and the tree read with no view
+ * (`GET /api/v1/issues/<key>/tree`) where the page draws its outline from one. `stop` ends the
+ * watch and gives the body of the read the outline is drawn from, as text: the newest tree read's
+ * where the page made one, else the newest messages read's, and `undefined` where it made
+ * neither. A post's id in that text says the read returned the post.
+ */
+function watchOutlineReads(page: Page, key: string): { stop: () => Promise<string | undefined> } {
+  const reads: { body: Promise<string>; tree: boolean }[] = [];
+  const answered = (response: Response) => {
+    const url = new URL(response.url());
+    if (response.request().method() !== "GET") return;
+    const tree = url.pathname === `/api/v1/issues/${key}/tree` && !url.searchParams.has("view");
+    if (tree || url.pathname === `/api/v1/issues/${key}/messages`) {
+      reads.push({ body: response.text(), tree });
+    }
+  };
+  page.on("response", answered);
+  return {
+    stop: async () => {
+      page.off("response", answered);
+      const bodies = await Promise.all(
+        reads.map(async (read) => ({ body: await read.body, tree: read.tree }))
+      );
+      const trees = bodies.filter((read) => read.tree);
+      return (trees.length > 0 ? trees : bodies).at(-1)?.body;
+    },
+  };
+}
+
 // c-conversation-state. The conversation is the outline and nothing else: each seeded comment
 // and message a person took part in is one node, nothing offers a choice between words,
 // questions, pinned and everything, and Details draws none of them. An agent's note to the
-// issue's people and a thread between two agents are nodes of the outline too, and no entry of
-// the history: so is the seed's message by the session `legion-daemon`, which is no project's
-// daemon (`legion-daemon:<PROJECT>`). The history in the panel draws what no node does - the
-// status change, the claim, both handoffs, the three uploads, the thread the daemon began, an
-// agent's status note and the two comments agents wrote to each other, each once - and no event
-// of a node, no version of a document, no result against a check and no child's move. A person's
-// reply leaves the daemon's thread whole in the history, the reply among its turns, and moves
-// the agents' thread into the outline. The replies are sent by the API: the page draws no box at
-// the foot of the outline yet.
+// issue's people and a thread between two agents are no entry of the history, and nodes of the
+// outline only where the read the outline is drawn from returns them, as the issue's messages
+// read does and the issue's tree read does not: so is the seed's message by the session
+// `legion-daemon`, which is no project's daemon (`legion-daemon:<PROJECT>`). The history in the
+// panel draws what no node does - the status change, the claim, both handoffs, the three
+// uploads, the thread the daemon began, an agent's status note and the two comments agents wrote
+// to each other, each once - and no event of a node, no version of a document, no result against
+// a check and no child's move. A person's reply leaves the daemon's thread whole in the history,
+// the reply among its turns, and moves the agents' thread into the outline. The replies are sent
+// by the API: the page draws no box at the foot of the outline yet.
 test("the conversation is the outline and the history is in the panel", async ({ browser }) => {
   // The whole issue's seed and two loads of its page, the history read to its end between.
   test.setTimeout(240_000);
@@ -318,8 +358,10 @@ test("the conversation is the outline and the history is in the panel", async ({
     // The asks, comments and messages arrive by reads of their own after the tree, so the load
     // is waited out until its reads settle before the branches they draw are opened.
     const settling = watchApiRequests(page);
+    const outlineReads = watchOutlineReads(page, seeded.key);
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectLoadSettled(settling);
+    const outlineRead = await outlineReads.stop();
     await expectIssuePageDrawn(page);
     await unfoldEveryBranch(page);
     await openEveryDeeperBranch(page);
@@ -334,8 +376,27 @@ test("the conversation is the outline and the history is in the panel", async ({
       seeded.betweenAgents.root,
       seeded.betweenAgents.reply,
     ];
-    for (const id of turns) {
+    // An agent's untargeted notes, the daemon's message among them, and the thread between two
+    // agents, which the outline draws only where its read returns them; every other turn is of a
+    // thread a person took part in.
+    const agentsOnly = [
+      seeded.daemonMessage,
+      seeded.note,
+      seeded.betweenAgents.root,
+      seeded.betweenAgents.reply,
+    ];
+    for (const id of turns.filter((turn) => !agentsOnly.includes(turn))) {
       await expect(nodeRow(page, id), `${id} is not one node of the outline`).toHaveCount(1);
+    }
+    expect(outlineRead, "the page read neither the issue's messages nor its tree").toBeDefined();
+    for (const id of agentsOnly) {
+      const returned = outlineRead?.includes(id) === true;
+      await expect(
+        nodeRow(page, id),
+        returned
+          ? `${id} is not one node of the outline, though the page's read returned it`
+          : `${id} is in the outline, though the page's read did not return it`
+      ).toHaveCount(returned ? 1 : 0);
     }
     const daemonTurns = [seeded.daemonThread.root, seeded.daemonThread.reply];
     for (const id of daemonTurns) {
@@ -381,7 +442,8 @@ test("the conversation is the outline and the history is in the panel", async ({
     await newestHistoryEntry(page);
     const events = await allEvents(seeded.key);
     await readHistoryDown(page, seeded.key, events.length, (control) => control.click(), "gone");
-    // With the whole log read and drawn, no turn of a thread the outline draws is drawn here.
+    // With the whole log read and drawn, no turn of a thread a person took part in is drawn here,
+    // and neither is an agent's note or a turn between agents, whatever the outline's read held.
     for (const id of turns) {
       await expect(historyItem(page, id), `${id} is drawn in the history too`).toHaveCount(0);
     }
@@ -4704,9 +4766,12 @@ const factsFollower = { id: "e2e-facts-follower", kind: "session" as const };
 // history, as `AskEditHistory` draws it, the earlier wording behind its own disclosure; who a
 // person's answer reaches, as `AskRecipients` draws it, its asker and the agent that follows it;
 // and, behind the asker's name, which a press opens, the session's ID, its title and its tmux
-// target, each with its copy control. The question's thread is its own read, which the page sends
-// only once Details is open, and once: the page holds no read of the issue's questions with their
-// threads.
+// target, each with its copy control. The question's thread is the answer of the page's read of
+// the issue's questions with their threads where one held it before Details opened, and Details
+// then reads nothing of the question's own; else it is the question's own read, which the page
+// sends only once Details is open, and at most once. The facts are found by what Details' section
+// on the focused row draws, its heading, words and controls, and never through the row's body,
+// which a page that draws a row's facts on its face does not draw.
 // SLOW(>=2s): a question written, reworded and followed, and one load of the issue.
 test("the facts of a focused ask hold its edit history, its recipients and its copy handles", async ({
   browser,
@@ -4737,21 +4802,55 @@ test("the facts of a focused ask hold its edit history, its recipients and its c
           askReads.push(url.pathname);
         }
       });
+      // Each answer of the page's reads of the issue's questions with their threads, as whether
+      // it holds this question's thread, until Details opens.
+      const threadReads: Promise<boolean>[] = [];
+      const threadRead = (response: Response) => {
+        const url = new URL(response.url());
+        if (
+          response.request().method() === "GET" &&
+          url.pathname === `/api/v1/issues/${seeded.key}/asks` &&
+          url.searchParams.get("thread") === "1"
+        ) {
+          threadReads.push(
+            response
+              .json()
+              .then((rows: IssueAskThreadRow[]) =>
+                rows.some((row) => row.id === seeded.ask && row.thread != null)
+              )
+          );
+        }
+      };
+      page.on("response", threadRead);
 
       // With Details shut, the question focused, the page reads nothing of the question's own.
+      // The row is focused and read by the focus alone, as a page that draws a row's facts on
+      // its face draws the focused row no body.
       const shut = watchApiRequests(page);
       await gotoIssue(page, `/issues/${seeded.key}`);
       await expect(tree(page)).toBeVisible();
       await expectLoadSettled(shut);
-      await focusRow(page, seeded.ask);
+      const row = nodeRow(page, seeded.ask).first();
+      await expect(row, "the question is not a row of the outline").toBeVisible();
+      await row.focus();
+      await expect(row, "the question's row did not take the focus").toBeFocused();
       await expect.poll(() => focusedNodeId(page)).toBe(seeded.ask);
       await expect(marginShell(page)).toBeHidden();
       await expectLoadSettled(shut);
       expect(askReads, "the facts read the question with Details shut").toEqual([]);
+      // The load has settled, so every read of the questions' threads sent so far has answered.
+      page.off("response", threadRead);
+      const threadsBeforeOpen = threadReads.length;
+      const threadHeld = (await Promise.all(threadReads)).some((holds) => holds);
 
-      // Opened at the question's facts, the page reads the question once.
+      // Opened, Details draws the facts of the row the reader is on under their own heading.
       const opened = watchApiRequests(page);
-      const facts = await focusedRowFacts(page, seeded.ask);
+      await openDetails(page);
+      const facts = focusedNodeFacts(page);
+      await expect(
+        facts.getByRole("heading", { exact: true, name: PROPERTY_LABELS.focused_node }),
+        "Details draws no facts of the row the reader is on"
+      ).toBeVisible();
       await expect(facts.getByText(/^Edited /), "the ask's edit is not in its facts").toBeVisible();
       await facts.getByText("Show 1 previous version", { exact: true }).click();
       await expect(facts.getByText("Which store holds the drafts?", { exact: true })).toBeVisible();
@@ -4766,10 +4865,8 @@ test("the facts of a focused ask hold its edit history, its recipients and its c
       await expect(followers).toContainText(factsAsker.actor.origin.session_title);
       await expect(followers).toContainText("Facts follower (e2e)");
 
-      // The asker's name opens its copy handles.
-      const writtenBy = facts
-        .locator("dl > div")
-        .filter({ has: page.getByText(`${CONTROL_LABELS.written_by}:`, { exact: true }) });
+      // The asker's name, written by it, opens its copy handles.
+      await expect(facts.getByText(`${CONTROL_LABELS.written_by}:`, { exact: true })).toBeVisible();
       const { session_title: askerTitle, tmux: askerTmux } = factsAsker.actor.origin;
       const handles = [
         `Copy session ID ${factsAsker.actor.id}`,
@@ -4779,16 +4876,23 @@ test("the facts of a focused ask hold its edit history, its recipients and its c
       for (const name of handles) {
         await expect(facts.getByRole("button", { exact: true, name })).toHaveCount(0);
       }
-      await writtenBy.getByRole("button", { expanded: false }).click();
+      const askerName = (expanded: boolean) =>
+        facts.getByRole("button", { exact: true, expanded, name: askerTitle });
+      await askerName(false).click();
+      await expect(askerName(true), "the asker's name did not open its handles").toBeVisible();
       for (const name of handles) {
         await expect(
-          writtenBy.getByRole("button", { exact: true, name }),
+          facts.getByRole("button", { exact: true, name }),
           `the asker's handles hold no "${name}"`
         ).toBeVisible();
       }
 
       await expectLoadSettled(opened);
-      expect(askReads, "Details read the question other than once").toHaveLength(1);
+      const most = threadHeld ? 0 : 1;
+      expect(
+        askReads.length,
+        `Details read the question ${askReads.length} times, where ${threadsBeforeOpen} reads of the questions' threads before it opened ${threadHeld ? "held" : "did not hold"} its thread`
+      ).toBeLessThanOrEqual(most);
     }
   );
 });
