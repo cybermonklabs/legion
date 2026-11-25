@@ -1569,7 +1569,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				}
 				request := signedIn(t, httptest.NewRequest(http.MethodGet, "/api/v1/credential-requests?approver=me", nil), "alice")
 				response := httptest.NewRecorder()
-				routerFor(t, resolveWith(t, nil), routes.AppContextOptions{}).ServeHTTP(response, request)
+				routerFor(t, resolveWith(t, nil), routes.AppContextOptions{Store: storetest.Open(t)}).ServeHTTP(response, request)
 				if response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != "null" {
 					t.Errorf("unset: GET /api/v1/credential-requests answered %d %s, want 200 null", response.Code, response.Body.String())
 				}
