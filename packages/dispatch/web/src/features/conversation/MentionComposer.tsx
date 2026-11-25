@@ -254,6 +254,11 @@ interface MentionComposerProps {
    *  composer draws around itself, so the box goes with it: a closed or finishing composer with
    *  nothing of its own to show renders neither. */
   readonly frame?: string;
+  /** The class of the field's hint line, for a host whose box has no room for it on a narrow or
+   *  short screen: the phone thread composer keeps it for assistive technology alone there, as
+   *  the Agents page's broadcast box does (`MentionField`'s `hintClassName`). The field's own
+   *  class where unset. */
+  readonly hintClassName?: string;
   readonly edit?: { readonly body: string; readonly id: string };
   /** A host that keeps the draft itself, as the Inbox's compose dialog keeps the message across
    *  its change from one recipient to several and back: the field starts from `starting`, with
@@ -392,6 +397,7 @@ export function MentionComposer({
   frame,
   edit,
   heldSend = false,
+  hintClassName,
   hostDraft,
   seedMentions = [],
   inline = false,
@@ -1220,6 +1226,7 @@ export function MentionComposer({
         body={body}
         fieldRef={field}
         held={sending || holding}
+        hintClassName={hintClassName}
         inline={inline}
         issueKey={pickerIssue}
         label={bodyLabel}

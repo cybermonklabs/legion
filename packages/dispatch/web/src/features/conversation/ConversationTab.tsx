@@ -1654,6 +1654,10 @@ export function ConversationTab({
                 box="phone-thread-composer"
                 closed={isClosed}
                 frame={`fixed inset-x-0 bottom-0 z-20 border-t px-4 pt-4 pb-2 ${card} ${borderDefault}`}
+                // The hint line stays for assistive technology alone on a narrow or short screen,
+                // as the issue page's hint line does (INFRA-3949's R7): drawn, its six lines make
+                // the fixed frame taller than the foot rule can set the connection pill above.
+                hintClassName={`text-xs narrow-or-short:sr-only ${textMutedOnSurface}`}
                 intake={phone.threadIntake}
                 listed={listed}
                 mutationKey={phone.composerKey}
