@@ -49,8 +49,9 @@ const ServingFloor = 46
 // The entries from shapedAnswersContract through tasksContract use the constants named by
 // their entries; checksContract likewise records the arrival of each issue's open checks. A
 // renumber moves the entry, its shaping threshold and this list together. The other numbered
-// entries remain the released records named in version.go.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, deploymentRolesContract, strandedTokenContract, tasksContract, checksContract}
+// entries remain the released records named in version.go; 288, a task's sub-owner's, moves no
+// shape, so no threshold reads it and it stands here as its number.
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, deploymentRolesContract, strandedTokenContract, tasksContract, checksContract, 288}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
