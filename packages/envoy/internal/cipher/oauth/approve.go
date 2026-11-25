@@ -2,9 +2,7 @@ package oauth
 
 import (
 	"context"
-	"encoding/json"
 	"maps"
-	"net/http"
 	"time"
 
 	"authelia.com/provider/oauth2"
@@ -23,9 +21,6 @@ const formRequestedTokenType = "requested_token_type"
 // the approvals one run of an agent needs, short enough that a placeholder a session holds opens
 // the proxy for no longer than that.
 const ApproveGrantMaxLifetime = 15 * time.Minute
-
-// ApproveScope is the one OAuth scope of an approve grant and of the token the broker mints for it.
-const ApproveScope = oauthwire.ScopeApprove
 
 // ApproveName and ApproveWord are the approve capability's name and word: the profile whose dpop
 // block declares it and binds Dispatch's host, which is also the variable a session finds the
@@ -57,56 +52,44 @@ func (p *Provider) approveGrantLifetime() time.Duration {
 	return ApproveGrantMaxLifetime
 }
 
-// grantApprove answers a trade that asked for the proxy placeholder, on the exchange's open
-// transaction txCtx. Only a person's sign-in is granted it, and only by a broker that serves the
-// approve capability: every other trade is refused invalid_request, the subject token being sound
-// and the request asking for what its identity is not given. The grant holds the session the
-// exchange decided for the sign-in - its subject, principal and extra claims, the person and the
-// project scope person - less any projects, with the scope approve alone, the sign-in's
-// credential, which ends it when revoked, and the capability's entry digest. Nobody approves it:
-// the person's sign-in is its authority. The session name is claimed until the grant's end, the
-// transaction commits, and the answer is the placeholder as access_token, its type as
-// issued_token_type, the token_type N_A of a token that is no access token (RFC 8693 Section
-// 2.2.1), the seconds the grant lasts, the grant's id and the proxy release a session runs with,
-// with no-store. The library mints nothing, and no approve-capable token ever leaves the broker.
-func (p *Provider) grantApprove(ctx, txCtx context.Context, w http.ResponseWriter, request oauth2.AccessRequester, session *oauthstore.ExchangeSession, subjectTokenType, credentialID string, committed *bool) {
+// grantApprove writes the approve grant of a trade that asked for the proxy placeholder, in the
+// exchange's open transaction, which ctx carries, and answers the body exchangeGrant writes once
+// it has claimed the session name and committed. Only a person's sign-in is granted it, and only
+// by a broker that serves the approve capability: every other trade is refused invalid_request,
+// the subject token being sound and the request asking for what its identity is not given. The
+// grant holds the session the exchange decided for the sign-in - its subject, principal and extra
+// claims, the person and the project scope person - less any projects, with the scope approve
+// alone, the sign-in's credential, which ends it when revoked, and the capability's entry digest.
+// Nobody approves it: the person's sign-in is its authority. It sets the session's access-token
+// expiry to the grant's end, which the claim holds the session name until. The body is the
+// placeholder as access_token, its type as issued_token_type, the token_type N_A of a token that
+// is no access token (RFC 8693 Section 2.2.1), the seconds the grant lasts, the grant's id and the
+// proxy release a session runs with. The library mints nothing, and no approve-capable token ever
+// leaves the broker.
+func (p *Provider) grantApprove(ctx context.Context, session *oauthstore.ExchangeSession, subjectTokenType, credentialID string) (map[string]any, error) {
 	if subjectTokenType != oauthwire.SubjectTokenTypePerson || p.approve == nil || credentialID == "" {
-		p.writeError(ctx, w, request, oauth2.ErrInvalidRequest.WithHint("Only a person's sign-in is traded for the approve capability's proxy placeholder, on a broker that serves it."))
-		return
+		return nil, oauth2.ErrInvalidRequest.WithHint("Only a person's sign-in is traded for the approve capability's proxy placeholder, on a broker that serves it.")
 	}
 	held, err := placeholder.Mint(placeholder.MintedPrefix(ApproveWord))
 	if err != nil {
-		p.writeError(ctx, w, request, oauth2.ErrServerError.WithWrap(err).WithDebugError(err))
-		return
+		return nil, oauth2.ErrServerError.WithWrap(err).WithDebugError(err)
 	}
 	lifetime := p.approveGrantLifetime()
 	expires := time.Now().UTC().Add(lifetime).Truncate(time.Microsecond)
 	extra := maps.Clone(session.Extra)
 	delete(extra, ClaimProjects)
 	sessionName, _ := extra[ClaimSession].(string)
-	grant, err := p.store.CreateApproveGrant(txCtx, oauthstore.MintedGrant{
+	grant, err := p.store.CreateApproveGrant(ctx, oauthstore.MintedGrant{
 		ID: uuid.NewString(), Subject: session.Subject, Session: sessionName, Principal: session.Principal,
-		Scopes: []string{ApproveScope}, Extra: extra, ExpiresAt: expires, EntryDigest: p.approve.EntryDigest,
+		Scopes: []string{oauthwire.ScopeApprove}, Extra: extra, ExpiresAt: expires, EntryDigest: p.approve.EntryDigest,
 	}, credentialID, held)
 	if err != nil {
-		p.writeError(ctx, w, request, oauth2.ErrServerError.WithWrap(err).WithDebugError(err))
-		return
+		return nil, oauth2.ErrServerError.WithWrap(err).WithDebugError(err)
 	}
 	// The session name is held until the grant's end, as a token's claim holds it until the
 	// token's end (claimSession reads the session's access-token expiry).
 	session.SetExpiresAt(oauth2.AccessToken, expires)
-	taken, fixed, err := p.claimSession(txCtx, session)
-	if err != nil {
-		p.writeError(ctx, w, request, err)
-		return
-	}
-	if err := p.store.Commit(txCtx); err != nil {
-		p.writeError(ctx, w, request, oauth2.ErrServerError.WithWrap(err).WithDebugError(err))
-		return
-	}
-	*committed = true
-	logSessionTaken(session, taken, fixed)
-	answer := map[string]any{
+	return map[string]any{
 		"access_token":         held,
 		"issued_token_type":    oauthwire.TokenTypeProxyPlaceholder,
 		"token_type":           "N_A",
@@ -116,10 +99,5 @@ func (p *Provider) grantApprove(ctx, txCtx context.Context, w http.ResponseWrite
 			ProxyURL: p.approve.ProxyURL, CACertificate: p.approve.CACertificate, ProxyPassword: held,
 			Names: map[string]oauthwire.AirlockName{ApproveName: {Value: held, Slots: map[string]string{"value": held}, Hosts: []string{p.approve.Host}}},
 		},
-	}
-	w.Header().Set("Content-Type", "application/json;charset=UTF-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Pragma", "no-cache")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(answer)
+	}, nil
 }

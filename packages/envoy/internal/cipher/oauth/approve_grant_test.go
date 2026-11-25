@@ -317,6 +317,36 @@ func TestAPlaceholderTradeThatTakesASessionNameLogsIt(t *testing.T) {
 	}
 }
 
+// TestAPlaceholderTradeHoldsItsSessionNameUntilItsGrantEnds: a placeholder trade claims its session
+// name as every exchange does (claimSession), for the person, until oauthstore.SessionRetention
+// past the grant's end, which is the expiry the grant sets on the trade's session. While the claim
+// lasts, an identity paired with no other is refused the name.
+func TestAPlaceholderTradeHoldsItsSessionNameUntilItsGrantEnds(t *testing.T) {
+	f := newSignInFixtureWith(t, func(c *oauth.Config) { c.Approve = approveSettings() })
+	const session = "ada-box-held"
+	ctx := context.Background()
+	status, body := f.exchange(t, f.placeholderForm(t, session), newKey(t))
+	id, _ := body[oauthwire.ExtraGrantID].(string)
+	if status != http.StatusOK || id == "" {
+		t.Fatalf("the placeholder trade for %s = %d %v; want 200 and a grant", session, status, body)
+	}
+	grant, err := oauthstore.ApproveGrants{Store: oauthstore.New(f.pool)}.MintedByID(ctx, strings.TrimPrefix(id, "approve:"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var holder string
+	var until time.Time
+	if err := f.pool.QueryRow(ctx, `select principal, expires_at from oauth_session_bindings where session = $1`, session).Scan(&holder, &until); err != nil {
+		t.Fatalf("the claim on %s: %v; want the placeholder trade to have claimed it", session, err)
+	}
+	if want := grant.ExpiresAt.Add(oauthstore.SessionRetention); holder != exchange.PersonPrincipal(person) || !until.Equal(want) {
+		t.Fatalf("the claim on %s = %s until %s; want %s until %s, the retention past the grant's end", session, holder, until, exchange.PersonPrincipal(person), want)
+	}
+	if _, err := f.store.BindSession(ctx, session, "account:system:serviceaccount:legion:stranger", false, time.Now().Add(time.Hour)); !errors.Is(err, oauthstore.ErrSessionHeld) {
+		t.Fatalf("a stranger's claim of %s = %v; want ErrSessionHeld", session, err)
+	}
+}
+
 // TestTheSweepDeletesApproveGrantsThatHaveEnded: every review trades a grant of its own, so the
 // broker's sweep (oauthstore.Store.Sweep) deletes each grant past its end, through the table's
 // expires index, and keeps a live one, so the table does not grow with every review ever made.
