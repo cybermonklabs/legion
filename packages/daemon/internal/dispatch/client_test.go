@@ -494,6 +494,74 @@ func TestUploadArtifactSendsTheDocumentUnderTheDaemonSessionAndReadsItsSlug(t *t
 	}
 }
 
+// The read of a document's token answers the whole-document token and the version, and a document
+// the issue does not hold is ErrDocumentNotFound around Dispatch's own refusal. An upload over a
+// token names it as the precondition, and one with no token names none. A token the document moved
+// past is refused 409 PRECONDITION_FAILED: the answer is a StaleDocument carrying the token that
+// stands, which PermanentRefusal still reads as Dispatch's coded refusal.
+func TestAnUploadOverATokenNamesItAndAStaleTokenAnswersTheTokenThatStands(t *testing.T) {
+	const standing = "sha256:b"
+	var preconditions []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBearer(t, r)
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues/LEGION-5/artifacts/close-wait-md/text":
+			writeJSONStatus(t, w, http.StatusOK, map[string]any{"markdown": "# Waits\n", "token": standing, "version": 4})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues/LEGION-6/artifacts/close-wait-md/text":
+			writeJSONStatus(t, w, http.StatusNotFound, map[string]string{"code": ArtifactNotFound, "error": `document "close-wait-md" not found by slug`})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/issues/LEGION-5/artifacts":
+			var body struct {
+				Name         string `json:"name"`
+				Precondition *struct {
+					Document string `json:"document"`
+				} `json:"precondition"`
+			}
+			decodeJSON(t, r, &body)
+			named := ""
+			if body.Precondition != nil {
+				named = body.Precondition.Document
+			}
+			preconditions = append(preconditions, named)
+			if named != "" && named != standing {
+				writeJSONStatus(t, w, http.StatusConflict, map[string]any{"code": "PRECONDITION_FAILED", "error": "document precondition failed",
+					"current": map[string]any{"document": standing, "blocks": []any{}, "version": 4}, "mismatches": []any{}})
+				return
+			}
+			writeJSONStatus(t, w, http.StatusCreated, map[string]any{"artifact": map[string]any{"slug": "close-wait-md", "name": body.Name}, "version": map[string]any{"number": 5}})
+		default:
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client := New(server.URL, dispatchToken)
+	ctx := context.Background()
+
+	read, err := client.ArtifactToken(ctx, "LEGION-5", "close-wait-md")
+	if err != nil || read != (DocumentToken{Token: standing, Version: 4}) {
+		t.Fatalf("token read = %+v, %v; want the token and version Dispatch answered", read, err)
+	}
+	if read, err := client.ArtifactToken(ctx, "LEGION-6", "close-wait-md"); !errors.Is(err, ErrDocumentNotFound) || !Missing(err) {
+		t.Fatalf("token read of a document never written = %+v, %v; want ErrDocumentNotFound around Dispatch's 404", read, err)
+	}
+	if slug, err := client.UploadArtifactOver(ctx, "LEGION-5", "close-wait.md", "# Waits\n", ""); err != nil || slug != "close-wait-md" {
+		t.Fatalf("an upload naming no token = %q, %v; want the slug", slug, err)
+	}
+	if slug, err := client.UploadArtifactOver(ctx, "LEGION-5", "close-wait.md", "# Waits\n", standing); err != nil || slug != "close-wait-md" {
+		t.Fatalf("an upload over the standing token = %q, %v; want the slug", slug, err)
+	}
+	_, err = client.UploadArtifactOver(ctx, "LEGION-5", "close-wait.md", "# Waits\n", "sha256:a")
+	var stale *StaleDocument
+	if !errors.As(err, &stale) || stale.Current != standing {
+		t.Fatalf("an upload over a token the document moved past = %v, want a StaleDocument naming %s", err, standing)
+	}
+	if refusal, permanent := PermanentRefusal(err); !permanent || refusal.Code != "PRECONDITION_FAILED" {
+		t.Fatalf("the stale upload's refusal = %v, want Dispatch's coded 409", err)
+	}
+	if want := []string{"", standing, "sha256:a"}; !slices.Equal(preconditions, want) {
+		t.Fatalf("the uploads named %q, want %q", preconditions, want)
+	}
+}
+
 // The artifact read carries the approval Dispatch derives, who gave the review it shows, the latest
 // review's time and its event's sequence (none from a Dispatch that predates the sequence).
 func TestApprovalReturnsCurrentDocumentApproval(t *testing.T) {

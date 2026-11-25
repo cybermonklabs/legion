@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/steprecord"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // liveRepo is the repository every issue a live proof and the idle rig seed is on.
@@ -22,15 +23,18 @@ const liveRepo = "acme/widgets"
 // issue list — grown into the board the daemon reads and writes: it holds each issue's status, parent and
 // labels, as Dispatch's own board does, answers the issue reads the daemon makes (the outbox's
 // before a status write, a release's walk up an issue's parent chain, an event's walk up its
-// Dispatch chain to the top) and 404s an issue it does not hold, records every status and message
+// Dispatch chain to the top, the read of the children for a close) with no child, and 404s an
+// issue it does not hold, records every status and message
 // the daemon posted, so a step can read back what the daemon told Dispatch and tell a write that
 // never came from one it cannot see, serves the handoff records a step seeds (handoff), which a
 // phase completion names and the daemon reads back, and takes the record of each step the daemon
 // writes (putStep), the rating a retro gave the plan (putRating) and the plan of each run (putPlan)
 // from the daemon's own session alone, as Dispatch's routes take them, and refuses a write whose id
 // names another issue's record or plan 409 STEP_OTHER_ISSUE or PLAN_OTHER_ISSUE, as Dispatch's store
-// does, keeping nothing of it. Anything else is a call a live proof does not expect, and fails the
-// test as workflowConfig's stand-in does.
+// does, keeping nothing of it. It keeps no document: the read of close-wait.md's token answers a
+// missing document's 404, and an upload of close-wait.md answers the slug Dispatch files it under,
+// keeping nothing (closeWaitUpload). Anything else is a call a live proof does not expect, and
+// fails the test as workflowConfig's stand-in does.
 type liveDispatch struct {
 	t       *testing.T
 	project string
@@ -139,6 +143,14 @@ func (b *liveDispatch) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// broad arm answering a narrow route is worse than no arm at all, which at least fails here.
 	case req.Method == http.MethodGet && key != "" && path == "/api/v1/issues/"+key:
 		b.showIssue(key, w)
+	// The read of the token of an issue's close-wait.md before the close_wait_publish row writes it
+	// (dispatch.Client's ArtifactToken). This board keeps no document, so it answers as Dispatch
+	// answers for a document never written, and the row's write names no token.
+	case req.Method == http.MethodGet && key != "" && path == "/api/v1/issues/"+key+"/artifacts/"+record.CloseWaitDocumentSlug+"/text":
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"code":"`+dispatch.ArtifactNotFound+`","error":"document \"`+record.CloseWaitDocumentSlug+`\" not found by slug"}`)
+	case req.Method == http.MethodPost && key != "" && path == "/api/v1/issues/"+key+"/artifacts":
+		b.closeWaitUpload(key, req, w)
 	case req.Method == http.MethodPost && strings.HasSuffix(path, "/messages"):
 		b.record(liveDispatchWrite{Issue: key, Body: b.decode(req, w)}, w)
 	case req.Method == http.MethodPatch && key != "" && path == "/api/v1/issues/"+key:
@@ -197,8 +209,34 @@ func (b *liveDispatch) showIssue(key string, w http.ResponseWriter) {
 		_, _ = io.WriteString(w, `{"code":"NOT_FOUND","error":"no such issue"}`)
 		return
 	}
-	if err := json.NewEncoder(w).Encode(b.issueBody(key)); err != nil {
+	body := b.issueBody(key)
+	// The issue read lists the issue's direct children (Dispatch's issue detail), which a listing
+	// does not carry. This board places no child under an issue for the close's read.
+	body["children"] = []any{}
+	if err := json.NewEncoder(w).Encode(body); err != nil {
 		b.t.Errorf("write the Dispatch issue %s: %v", key, err)
+	}
+}
+
+// closeWaitUpload answers the upload of key's close-wait.md (dispatch.Client's
+// UploadArtifactOver) as Dispatch answers a document upload: 201 with the artifact and its slug.
+// The board keeps nothing of it, and an upload of any other document fails the test, as a call a
+// live proof does not expect.
+func (b *liveDispatch) closeWaitUpload(key string, req *http.Request, w http.ResponseWriter) {
+	var upload struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&upload); err != nil || upload.Name != record.CloseWaitDocumentName {
+		b.t.Errorf("Dispatch upload of %s = %q (%v), want %s", key, upload.Name, err, record.CloseWaitDocumentName)
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+	if err := json.NewEncoder(w).Encode(map[string]any{
+		"artifact": map[string]any{"slug": record.CloseWaitDocumentSlug, "name": record.CloseWaitDocumentName, "kind": "doc", "issue_key": key},
+		"version":  map[string]any{"number": 1},
+	}); err != nil {
+		b.t.Errorf("write the Dispatch upload of %s: %v", key, err)
 	}
 }
 

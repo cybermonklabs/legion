@@ -985,6 +985,8 @@ func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 		return r.conflictConfirm(ctx, row, value)
 	case record.MergeForwardMessage:
 		return r.mergeForwardMessage(ctx, row, value)
+	case record.CloseWaitPublish:
+		return r.closeWaitPublish(ctx, row, value)
 	default:
 		return fmt.Errorf("outbox row %d: no executor for %T", row.ID, payload)
 	}
