@@ -181,13 +181,12 @@ func runPackages(dir string, rows []row, rowTimeout time.Duration, keep string, 
 // record in keep. The verdicts read the report rather than Bun's console, which prints no line for
 // a passing test where AGENT or CLAUDECODE is set, as it is in an agent's shell.
 func runBunFiles(repo string, rows []row, keep string) ([]bunRun, error) {
-	var files []string
+	files := make([]string, 0, len(rows))
 	for _, r := range rows {
-		if !slices.Contains(files, r.File) {
-			files = append(files, r.File)
-		}
+		files = append(files, r.File)
 	}
 	slices.Sort(files)
+	files = slices.Compact(files)
 	var steps strings.Builder
 	runs := make([]bunRun, 0, len(files))
 	for i, file := range files {
