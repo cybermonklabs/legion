@@ -32,7 +32,8 @@ import (
 )
 
 // c-p99 (the spec's R11, the plan's T16): neither the one read nor a write gets slower
-// beyond R11's bounds, every figure taken in this one run on two builds over one corpus.
+// beyond R11's bounds, every figure of a run taken in that run on two builds over one corpus: each
+// write held to its bound in its own run, and the read judged over three such runs.
 //
 // It times two processes the same way: the build of the commit BASELINE_SHA names (buildBaseline),
 // checked out as base-p99 under a directory of the test's own in TMPDIR (testtmp.Dir) and booted
@@ -71,13 +72,15 @@ import (
 //     the dashboard reads, against the reads it replaces on the base build - GET /api/v1/inbox
 //     ?assignee=me, GET /api/v1/me/replies?kind=reply,agent&state=inbox and GET
 //     /api/v1/agents/{session_id}/messages for each conversation the reader started - taken one
-//     after another and summed, which is the base build's p50 the read is held to: at most
-//     oneInboxReadBound times it;
-//   - the writes (oneInboxWritePaths), each held to at most its own bound in oneInboxWriteBounds
-//     times the base build's p50 of the same path, but for putProjectDefaultAssignee's move of
-//     many asks, which moves more than one ask a reading, holds to no bound, and is printed with
-//     the count it moved. Its move of one ask is timed and bounded as patchIssue's and
-//     putAskAskedOf's are.
+//     after another and summed, which is the base build's p50 the read's own p50 is set beside.
+//     Each run prints both p50s and fails on neither: the read is judged over three runs, the
+//     median of their p50s of it at most oneInboxReadBound times the median of the base build's
+//     (Verification's c-p99, dispatch://INFRA-1098/spec#b-r-no-regression@v173);
+//   - the writes (oneInboxWritePaths), each held in its own run to at most its own bound in
+//     oneInboxWriteBounds times the base build's p50 of the same path, but for
+//     putProjectDefaultAssignee's move of many asks, which moves more than one ask a reading,
+//     holds to no bound, and is printed with the count it moved. Its move of one ask is timed and
+//     bounded as patchIssue's and putAskAskedOf's are.
 //
 // Then, on an audit of each database (installOneInboxAudit): the rows one comment in the thread
 // at the bound writes, held to two per participant beside its fixed rows; and, on this build, each
@@ -85,16 +88,21 @@ import (
 // the first sort and four for each of the second, with its fixed rows printed apart, and to a count
 // of statements that does not grow from its move of one ask to its move of many.
 //
-// Every figure is printed on a line of its own under the prefix c-p99:. The read's and the writes'
-// p50 bounds, the scan rule, the hint rule, the row rules and the statement rule are what fail it,
-// and, before any of them, a table of write bounds that does not match the write paths
-// (requireOneInboxWriteBoundsMatchPaths); every p95 and p99 is a reading of the pod and fails
-// nothing. It runs when LEGION_SCALE_TEST is 1, as a14 does: seeding two corpora and taking its
-// readings costs minutes, which no ordinary run pays.
+// Every figure is printed on a line of its own under the prefix c-p99:. The writes' p50 bounds,
+// each in its own run, the scan rule, the hint rule, the row rules and the statement rule are what
+// fail it, and, before any of them, a table of write bounds that does not match the write paths
+// (requireOneInboxWriteBoundsMatchPaths). The read's p50 ratio fails no run: each run prints the
+// two p50s of each shape again on a c-p99: read-p50 line, and Verification's c-p99 judges the read
+// over three runs' lines. Every p95 and p99 is a reading of the pod and fails nothing. It runs
+// when LEGION_SCALE_TEST is 1, as a14 does: seeding two corpora and taking its readings costs
+// minutes, which no ordinary run pays.
 
 const (
-	// oneInboxReadBound is R11's bound on the one read: its p50 at most twice the p50 of the
-	// reads it replaces, taken in the same run (the root spec's R22).
+	// oneInboxReadBound is R11's bound on the one read: the median of three runs' p50 of it at most
+	// twice the median of the three runs' p50 of the reads it replaces, each run taking both (the
+	// root spec's R22). Verification's c-p99 judges it over the three runs' c-p99: read-p50 lines
+	// (dispatch://INFRA-1098/spec#b-r-no-regression@v173); no run fails on it, and each prints it
+	// on its c-p99: read lines beside that run's ratio.
 	oneInboxReadBound = 2.0
 	// oneInboxAgentToken is the agent bearer newTestServer's server trusts (sharedAgentTokens).
 	oneInboxAgentToken = "agent-token"
@@ -130,11 +138,12 @@ var oneInboxWriteBounds = map[string]float64{
 	"snooze":                           1.50,
 }
 
-// oneInboxReader is one shape the read is measured over: the person whose read it is, and the
-// sessions of the conversations they started, one direct-reply read of the base build each.
+// oneInboxReader is one shape the read is measured over: the shape in words; its key, which holds
+// no space, as the c-p99: read-p50 line prints it; the person whose read it is; and the sessions
+// of the conversations they started, one direct-reply read of the base build each.
 type oneInboxReader struct {
-	shape, login string
-	sessions     []string
+	shape, key, login string
+	sessions          []string
 }
 
 // oneInboxReaders are the corpus's shapes as reads: the median person, whose history holds the
@@ -142,11 +151,11 @@ type oneInboxReader struct {
 // person of the reply chain at the walk's depth bound; the person whose history is a hundred times
 // the median; and the person whose history is empty.
 var oneInboxReaders = []oneInboxReader{
-	{"the thread of 1,000 participants", oneInboxMedianReader, []string{oneInboxPersonSession(17)}},
-	{"the thread of one", oneInboxSolo, nil},
-	{"the reply chain at the walk's depth bound", oneInboxChain, nil},
-	{"the history a hundred times the median", oneInboxHeavy, []string{oneInboxHeavySession}},
-	{"the empty history", oneInboxEmpty, nil},
+	{"the thread of 1,000 participants", "thread-of-1000", oneInboxMedianReader, []string{oneInboxPersonSession(17)}},
+	{"the thread of one", "thread-of-one", oneInboxSolo, nil},
+	{"the reply chain at the walk's depth bound", "reply-chain", oneInboxChain, nil},
+	{"the history a hundred times the median", "heavy-history", oneInboxHeavy, []string{oneInboxHeavySession}},
+	{"the empty history", "empty-history", oneInboxEmpty, nil},
 }
 
 // oneInboxHere is this build as c-p99 drives it: its handler in the process, over a store traced
@@ -162,9 +171,11 @@ type oneInboxHere struct {
 }
 
 func TestOneInboxP99HoldsTheReadsAndTheWrites(t *testing.T) {
-	// Not parallel: it holds the one read's p50 to oneInboxReadBound and each write's to its bound
-	// in oneInboxWriteBounds times the base build's p50, round trips on loopback timed in this run,
-	// wall clock that the load of the tests beside it can push past.
+	// Not parallel: it prints the one read's p50 beside the base build's, which Verification's
+	// c-p99 judges over three runs against oneInboxReadBound
+	// (dispatch://INFRA-1098/spec#b-r-no-regression@v173), and fails this run where a write's p50
+	// is above its bound in oneInboxWriteBounds times the base build's, round trips on loopback
+	// timed in this run, wall clock that the load of the tests beside it can push past.
 	if os.Getenv(dismissedScaleEnv) != "1" {
 		t.Skipf("set %s=1 to take c-p99's measurement", dismissedScaleEnv)
 	}
@@ -645,8 +656,12 @@ func oneInboxPercentiles(readings []time.Duration) (string, time.Duration) {
 // measureOneInboxRead takes oneInboxReadings readings of the one read of reader on this build and
 // of the reads it replaces on the base build, after one of each not counted, alternating which
 // build is read first, and prints both builds' p50, p95 and p99 on one line, with each of the base
-// build's reads apart and what each build answered. It fails where the one read's p50 is above
-// oneInboxReadBound times the base build's.
+// build's reads apart and what each build answered, and the two p50s again on a c-p99: read-p50
+// line under reader's key. It fails no run on the read's ratio: Verification's c-p99 judges the
+// read over three runs' c-p99: read-p50 lines, the median of their p50s of the one read at most
+// oneInboxReadBound times the median of the base build's
+// (dispatch://INFRA-1098/spec#b-r-no-regression@v173). Each write still fails in its own run
+// (measureOneInboxWrite).
 func measureOneInboxRead(t *testing.T, reader oneInboxReader, base, this *oneInboxSide) {
 	t.Helper()
 	replaced := []string{"/api/v1/inbox?assignee=me", "/api/v1/me/replies?kind=reply,agent&state=inbox"}
@@ -726,10 +741,7 @@ func measureOneInboxRead(t *testing.T, reader oneInboxReader, base, this *oneInb
 		"(%s) | p50 ratio=%.2f bound=%.2f n=%d taken_at=%s",
 		reader.shape, reader.login, oneInboxOneRead, thisFigures, entries, len(replaced), baseFigures, asks, rows,
 		strings.Join(each, "; "), ratio, oneInboxReadBound, len(ones), oneInboxNow())
-	if ratio > oneInboxReadBound {
-		t.Errorf("the one read of %s has p50 %.2fms, %.2f times the base build's %.2fms for the reads it replaces, above R11's %.2f",
-			reader.shape, msOf(thisP50), ratio, msOf(baseP50), oneInboxReadBound)
-	}
+	t.Logf("c-p99: read-p50 shape=%s this_ms=%.2f base_ms=%.2f", reader.key, msOf(thisP50), msOf(baseP50))
 }
 
 // measureOneInboxWrite takes oneInboxReadings readings of path on each build, after one of each
