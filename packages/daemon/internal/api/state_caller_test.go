@@ -1032,7 +1032,8 @@ func withoutLowestContract(t *testing.T, body []byte) string {
 
 // servedShape applies to want, a body decoded from the state this contract writes, what an older
 // caller is served that no column of the tables calling it names: the stand-ins of keys a
-// contract removed, and two bands of keys this contract writes. A caller below checkRoleContract
+// contract removed, and three bands of keys this contract writes. A caller below checksContract
+// is served each issue without `checks` (api's withoutChecks); a caller below checkRoleContract
 // is served each issue's check without `role` (api's withoutCheckRole); a caller below
 // fixAttemptsContract is served `fixAttempts` of 0 on each pull request and `max_fix_attempts` of
 // 3 in the settings block (withFixAttempts, withMaxFixAttempts); and a caller below
@@ -1055,6 +1056,9 @@ func servedShape(want map[string]any, contract int) {
 			if contract < stateMachineContract {
 				delete(pull, "mergeState")
 			}
+		}
+		if contract < checksContract {
+			delete(issue, "checks")
 		}
 		if check, carries := issue["check"].(map[string]any); carries && contract < checkRoleContract {
 			delete(check, "role")

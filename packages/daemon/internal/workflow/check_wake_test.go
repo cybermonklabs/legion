@@ -249,14 +249,14 @@ func TestAnUnreportedLastLookClosesTheCheckAsNotRun(t *testing.T) {
 	}
 }
 
-// A pending on an issue back in the workflow — a root reopened inside its linger, whose
-// implementer works the new run — names the wake and suspends nobody: the claims and the pod are
-// the run's. The row, finding the issue in a phase when it comes due, starts no look and is
-// queued again a look bound later rather than dropped, so a check whose issue re-entered the
-// workflow and closed again on the same merge still holds its agent's wake.
+// A pending on an issue back in the workflow — a root reopened inside its linger, on a new
+// generation, whose implementer works the new run — names the wake and suspends nobody: the claims
+// and the pod are the run's. The row, finding the issue in a later run when it comes due, starts no
+// look and is queued again a look bound later rather than dropped, so a check whose issue
+// re-entered the workflow and closed again on the same merge still holds its agent's wake.
 func TestAPendingOnAnIssueBackInTheWorkflowNamesItsWakeAndSuspendsNobody(t *testing.T) {
 	rig := rootCheckRig(t)
-	if _, err := rig.pool.Exec(context.Background(), "update issues set phase = 'admitted', status = 'todo', linger_until = null where key = 'LEGION-208'"); err != nil {
+	if _, err := rig.pool.Exec(context.Background(), "update issues set phase = 'admitted', status = 'todo', linger_until = null, generation = generation + 1 where key = 'LEGION-208'"); err != nil {
 		t.Fatal(err)
 	}
 	suspends := len(superviseRowsOf(t, rig.pool, "LEGION-208", "suspend"))

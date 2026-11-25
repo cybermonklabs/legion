@@ -990,12 +990,18 @@ type issueCheck struct {
 }
 
 // openChecks is every open production check the state's issues carry, oldest opened first and then
-// by issue key, so the oldest is the one named whatever order the map came in.
+// by issue key, so the oldest is the one named whatever order the map came in. An issue serves
+// each of its open checks under `checks` (api.Issue.Checks), the newest also under `check`; a
+// daemon below the contract that added `checks` serves `check` alone, which is then the one read.
 func openChecks(issues map[string]api.Issue) []issueCheck {
 	var checks []issueCheck
 	for key, issue := range issues {
-		if issue.Check != nil {
-			checks = append(checks, issueCheck{issue: key, check: *issue.Check})
+		served := issue.Checks
+		if len(served) == 0 && issue.Check != nil {
+			served = []api.CheckView{*issue.Check}
+		}
+		for _, check := range served {
+			checks = append(checks, issueCheck{issue: key, check: check})
 		}
 	}
 	slices.SortFunc(checks, func(a, b issueCheck) int {

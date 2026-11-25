@@ -71,11 +71,11 @@ import (
 // dispatch://INFRA-1997's commit statuses of the checked head (20261117112334) are named here too:
 // that version stands above every other of this list but dispatch://INFRA-4109's 20261117200337,
 // each version this comment names after that one, from the name of each step's agent
-// (20261117213545) to the removal of a removed task's working copy (20261123072431),
-// dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's design news (20261119203047) and
-// the copy's applied sequence (20261121170714) among them, so an upgrade of a database main
-// migrated applies it just before them. It adds pull_requests.statuses at its default, the empty
-// list, and it touches no outbox_kind_check.
+// (20261117213545) through the production check of each merge (20261123154051) and the
+// base fixed at a task's start (20261123221142), including the design news (20261119203047),
+// the copy's applied sequence (20261121170714) and the tasks a plan added (20261123200630),
+// so an upgrade of a database main migrated applies it just before them. It adds
+// pull_requests.statuses at its default, the empty list, and touches no outbox_kind_check.
 // The reviewer's reviewed commit (20261116234034, `phases.reviewed_head`) is named here for the
 // same reason: it adds one column at its default, which every row it finds reads as no commit
 // (migration_20261116234034_test.go), it stands below the design news too, and it touches no
@@ -176,9 +176,18 @@ import (
 // tables at each read), and restate 20261121165047's kinds with task_pull_requests_close
 // (migration_20261122122826_test.go).
 // The removal of a removed task's working copy (20261123072431) stands above every other version
-// of this list: it touches no table but the outbox's check, and restates 20261122122826's kinds
-// with task_copy_remove, so that list is the last word of outbox_kind_check now
-// (migration_20261123072431_test.go).
+// of this list that writes outbox_kind_check: it touches no table but the outbox's check, and
+// restates 20261122122826's kinds with task_copy_remove, so that list is the last word of
+// outbox_kind_check now (migration_20261123072431_test.go).
+// The production check of each merge (20261123154051) stands above every other version of this
+// list, so an upgrade applies it last: it keys production_checks by the issue and the moment the
+// check opened and adds production_checks.generation and production_checks.task at their
+// defaults, which every row it finds reads as a check of run 0 and of no task
+// (migration_20261123154051_test.go), and it touches no outbox_kind_check.
+// The base a task's start fixed (20261123221142) stands above it, so an upgrade applies it last of
+// all: it adds plan_tasks.base and writes it for each task that runs at the upgrade, which a store
+// main migrated holds none of, since main runs no plan, and it touches no outbox_kind_check
+// (migration_20261123221142_test.go).
 // The branch of a pending delivery (20261122131321) is applied after all of these and touches no
 // outbox_kind_check: it adds pending_task_deliveries.branch at its default, the empty string, on
 // every row it finds, so it needs no row of its own here (migration_20261122131321_test.go).
@@ -208,7 +217,8 @@ var thisBranchsMigrations = []int{
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
 	20261117204629, 20261117213545, 20261117223524, 20261117224125, 20261119003157, 20261119203047,
 	20261120012547, 20261120042902, 20261120055717, 20261121165047, 20261121170714, 20261121183336,
-	20261122072945, 20261122074350, 20261122122826, 20261122131321, 20261123072431, 20261123200630,
+	20261122072945, 20261122074350, 20261122122826, 20261122131321, 20261123072431, 20261123154051,
+	20261123200630, 20261123221142,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -232,8 +242,9 @@ var thisBranchsMigrations = []int{
 // claim's 20261122074350, the branch of a pending delivery's 20261122131321, and the six the task
 // copies add, the working copies of a saved bundle (20261117204629), the held task
 // (20261117224125), the copies of a plan's tasks (20261121165047), the pull requests by task
-// (20261122122826), the removal of a removed task's working copy (20261123072431) and the tasks
-// each version of a plan added (20261123200630). That is why
+// (20261122122826), the removal of a removed task's working copy (20261123072431) the production check of each merge (20261123154051), the tasks
+// each version of a plan added (20261123200630), and the base fixed at a task's start
+// (20261123221142). That is why
 // the loop below holds the list rather than counting it, so that a version added above any of them
 // is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544

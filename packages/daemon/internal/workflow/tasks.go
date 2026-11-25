@@ -28,6 +28,25 @@ func needsDone(stored *record.StoredPlan, task record.PlanTask) bool {
 	return true
 }
 
+// lastToFinish says whether the end of s's task ends its issue: each other task of the plan of s's
+// run, as the store holds it in tx, is done or left the workflow (record.TaskLeft). That holds for a
+// plan of one task, and for a run with no plan rows, whose one walk is the issue's own. It is the one
+// statement of "this task's end ends the issue", which two readers ask before they wait for the
+// issues beneath: the close of a merge (closeMerged) and the hold before a retro (beneathRetro).
+// Every other task's merge, and its retro, waits for nothing beneath.
+func (e *Engine) lastToFinish(ctx context.Context, tx pgx.Tx, s TaskScope) (bool, error) {
+	if s.plan == nil {
+		return true, nil
+	}
+	stored, err := e.store.Plan(ctx, tx, s.issue.Key, s.issue.Generation)
+	if err != nil || stored == nil {
+		return true, err
+	}
+	return !slices.ContainsFunc(stored.Tasks, func(row record.PlanTask) bool {
+		return row.Task != s.walk.Task && row.State != record.TaskDone && row.State != record.TaskLeft
+	}), nil
+}
+
 // tasksWaitingOn is each task of stored, the plan of a run, that needs task, itself or through
 // other tasks, and is neither done nor left, in task id order: the tasks a stop of task holds,
 // while each other task goes on. None for no plan.

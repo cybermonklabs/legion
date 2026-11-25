@@ -1842,6 +1842,58 @@ func TestPlainStateSummarizesTheOpenProductionChecks(t *testing.T) {
 	}
 }
 
+// An issue whose tasks merged one after another holds an open production check of each merge, and
+// the daemon serves each under the issue's `checks`, with the newest also under `check`: plain
+// `legion state` counts each and names the oldest of them. A daemon below the contract that added
+// `checks` serves `check` alone, and the line counts that one.
+func TestTheStateLineCountsEachOpenCheckOfAnIssue(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
+	first := `{"repo":"sjawhar/legion","pullRequest":1301,"mergeCommit":"a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0","openedAt":"2026-10-19T09:00:00Z",` +
+		`"role":"tester","looks":1,"lookOpen":true,"lastWake":{"kind":"merge","detail":"a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0","at":"2026-10-19T09:00:00Z"},` +
+		`"nextWakeAt":"2026-10-19T11:00:00Z","last":false}`
+	second := `{"repo":"sjawhar/legion","pullRequest":1302,"mergeCommit":"b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1","openedAt":"2026-10-19T12:00:00Z",` +
+		`"role":"tester","looks":1,"lookOpen":true,"lastWake":{"kind":"merge","detail":"b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1","at":"2026-10-19T12:00:00Z"},` +
+		`"nextWakeAt":"2026-10-19T14:00:00Z","last":false}`
+	issue := func(checks string) string {
+		return `{"LEGION-240":{"key":"LEGION-240","generation":1,"phase":"implementing","status":"in_progress","check":` + second + checks + `}}`
+	}
+	for _, tc := range []struct {
+		name, issues, want string
+	}{
+		{
+			name:   "a daemon at the contract serves both under checks",
+			issues: issue(`,"checks":[` + first + `,` + second + `]`),
+			want:   "open production checks: 2; the oldest, LEGION-240 #1301 at a1b2c3d, worked by the tester, look 1 woken by merge at 2026-10-19T09:00:00Z, next look 2026-10-19T11:00:00Z\n",
+		},
+		{
+			name:   "a daemon below the contract serves the newest under check alone",
+			issues: issue(""),
+			want:   "open production checks: 1; the oldest, LEGION-240 #1302 at b2c3d4e, worked by the tester, look 1 woken by merge at 2026-10-19T12:00:00Z, next look 2026-10-19T14:00:00Z\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			served := "{" + daemon + `,"issues":` + tc.issues + "}"
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(served))
+			}))
+			defer server.Close()
+			t.Chdir(t.TempDir())
+			t.Setenv("LEGION_DAEMON_URL", server.URL)
+			t.Setenv("LEGION_ISSUE", "")
+
+			var out, errb bytes.Buffer
+			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
+			}
+		})
+	}
+}
+
 // Plain `legion state` names the oldest head's merge wait by what its record holds:
 //   - a merge state and a read time -> `GitHub said <state>, read <time>`
 //   - a merge state and no read time -> `GitHub said <state>, read time not recorded`

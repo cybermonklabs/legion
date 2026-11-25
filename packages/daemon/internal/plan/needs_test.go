@@ -244,29 +244,3 @@ func TestAnEndedContextStopsTheCheckOfCycles(t *testing.T) {
 		t.Fatalf("Validate under an ended context = %d refusals and error %v, want none and %v", len(refusals), err, context.Canceled)
 	}
 }
-
-// The work of an issue merges as one change, at the end of the one task that no task needs, so
-// a plan with more than one such task is refused as not carried out yet, naming them in id order.
-// A plan whose tasks all lead to one task is taken. The fault is two tasks whose work would each
-// merge by itself, taken; the control is Supported without the refusal, whose answer to a and b is
-// none.
-func TestTwoTasksThatNoTaskNeedsAreNotCarriedOutYet(t *testing.T) {
-	two := planOf(t, 1, taskNeeding("b"), taskNeeding("a"))
-	if got := Sinks(two.Tasks); !reflect.DeepEqual(got, []string{"a", "b"}) {
-		t.Fatalf("Sinks(b, a) = %q, want [a b], in id order", got)
-	}
-	want := []Refusal{
-		{Task: "", Reason: "the plan has 2 tasks that no task needs (a, b), and the work of each would merge by itself." + yet},
-	}
-	if got := Supported(two, builtin); !reflect.DeepEqual(got, want) {
-		t.Fatalf("Supported(a, b) =\n%+v\nwant\n%+v", got, want)
-	}
-
-	aToE := planOfTasksAToE(t)
-	if got := Sinks(aToE.Tasks); !reflect.DeepEqual(got, []string{"e"}) {
-		t.Fatalf("Sinks(the plan of tasks a to e) = %q, want [e]", got)
-	}
-	if got := Supported(aToE, builtin); len(got) != 0 {
-		t.Fatalf("Supported(the plan of tasks a to e) = %+v, want none: e alone is a task that no task needs", got)
-	}
-}

@@ -1,6 +1,8 @@
 package record
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"slices"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -94,6 +96,33 @@ func RoleName(role string) claim.Agent {
 		role = role[:maxAgentName]
 	}
 	return claim.Agent(role)
+}
+
+// CheckAgent is the agent that works the production check of task's merge, for the checking role
+// role: the agent of task's last step of that role (PlanStep.AgentName, of the step at the highest
+// place), and where task has none, a fresh agent of the task, `check-<slug>` (plan.TaskSlug), or
+// `check-t-` and the first 12 lower-case hexadecimal characters of the SHA-256 of the task's id
+// where that name is longer than maxAgentName bytes. steps are the plan's steps; only task's are
+// read, so no other task's agent and no list of names enter the answer, and the name of a fresh
+// agent depends on the task alone. A step of the key owner names no agent of the issue (its agent
+// is the tree's architect), so it counts as none. A step's agent takes a fresh agent's name only
+// where a role is itself named `check-<slug>`, and none is.
+func CheckAgent(steps []PlanStep, task string, role claim.Role) claim.Agent {
+	var agent claim.Agent
+	last := 0
+	for _, step := range steps {
+		if name := step.AgentName(); step.Task == task && claim.Role(step.Role) == role && name != "" && step.Position > last {
+			agent, last = name, step.Position
+		}
+	}
+	if agent != "" {
+		return agent
+	}
+	if fresh := "check-" + plan.TaskSlug(task); len(fresh) <= maxAgentName {
+		return claim.Agent(fresh)
+	}
+	sum := sha256.Sum256([]byte(task))
+	return claim.Agent("check-t-" + hex.EncodeToString(sum[:6]))
 }
 
 // UnnamedAgents is the first step of each agent of named, steps NameAgents gave, but the owner,

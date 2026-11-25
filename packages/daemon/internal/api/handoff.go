@@ -185,7 +185,16 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		s.writeFailure(w, r, http.StatusConflict, "HANDOFF_NO_CLAIM", "the daemon supervises no claim for this grant")
 		return
 	}
-	position, err := s.handoffPosition(r.Context(), grant.Issue, grant.Role, grant.Claim)
+	// The run, the phase entry and the production check look this completion belongs to are the
+	// task's that the worker took, which the claim answers (supervise.Claim.ServingRun,
+	// ServingEntry, ServingCheck) and nothing on the request says. The claim is read once,
+	// here, and the route, the run, the entry, the check and the queued task the refusals name all
+	// come from that one read: Claim() waits for the decision in flight, so two reads can straddle
+	// one and answer from different decisions — a run taken before a delivery was confirmed beside
+	// the entry that confirmation left.
+	c := machine.Claim()
+	look := c.ServingCheck()
+	position, err := s.handoffPosition(r.Context(), grant.Issue, grant.Role, grant.Claim, look.OpenedAt)
 	if err != nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the issue record")
 		return
@@ -195,17 +204,9 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		s.writeFailure(w, r, http.StatusNotFound, "ISSUE_NOT_FOUND", "issue is not recorded")
 		return
 	}
-	// The run, the phase entry and the production check look this completion belongs to are the
-	// task's that the worker took, which the claim answers (supervise.Claim.ServingRun,
-	// ServingEntry, ServingCheck) and nothing on the request says. The claim is read once,
-	// here, and the route, the run, the entry and the queued task the refusals name all come
-	// from that one read: Claim() waits for the decision in flight, so two reads can straddle one
-	// and answer from different decisions — a run taken before a delivery was confirmed beside
-	// the entry that confirmation left.
-	c := machine.Claim()
 	// A completion is a check report when the caller's own live assignment is a look of its
 	// issue's production check (the doc above), and a phase completion otherwise.
-	if look := c.ServingCheck(); look.Look > 0 {
+	if look.Look > 0 {
 		s.checkReport(w, r, grant, position.check, look, req)
 		return
 	}
@@ -772,21 +773,21 @@ func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Reques
 // refused report changes nothing, leaves the look open, and the report sent again, corrected, is
 // recorded:
 //
-//   - CHECK_NOT_OPEN: the issue has no open check (a done issue whose check closed, or one never
-//     opened, since nothing merged), or the one it has is not the check this look belongs to — a
-//     later merge of the same issue replaced it (record.ProductionCheck.NamedBy), and its looks
-//     count from one again, so the look reported names no look of the check the issue holds.
+//   - CHECK_NOT_OPEN: the check of the caller's look is not open (closed by a report, its last
+//     look or a later run's merge), or the issue has none (nothing merged). The check is read by
+//     the moment it opened, which the claim's look names (supervise.CheckLook.OpenedAt, written by
+//     workflow's startLook), so a report is held to its own check whatever other checks of the
+//     issue are open.
 //   - CHECK_ROLE_MISMATCH: the grant is not the check's own role (record.ProductionCheck.Role,
 //     the role the check opened with). The API is the only layer that holds the caller's role —
 //     intake.CheckReport carries a claim token, not a role — so this is the one place that can
 //     hold a report to the role the check records. What it guards is one path: a start row
-//     queued before start rows carried the check instance (record.SuperviseRequest.CheckOpenedAt,
-//     written by workflow's startLook), whose zero instance NamedBy takes for whatever check the
-//     issue holds now. That row's look is the earlier check's, worked by the role that check
-//     opened with, and the check open now — a later merge's, under a project whose
+//     queued before start rows carried the check instance (record.SuperviseRequest.CheckOpenedAt),
+//     whose look names none, so the issue's newest check is read for it
+//     (record.Store.ProductionCheckOf). That row's look is an earlier check's, worked by the role
+//     that check opened with, and the newest — a later merge's, under a project whose
 //     `production_check` names another role — records the other. Every look the running daemon
-//     starts is the check's own role's (startLook starts check.Role) and names its instance, so
-//     the two checks above answer every other claim that holds a look of another role.
+//     starts is the check's own role's (startLook starts check.Role) and names its instance.
 //   - CHECK_VERDICT_REQUIRED: the verdict is not one of pass, pending or fail.
 //   - CHECK_WAKE_REQUIRED: a pending on a look that is not the check's last (Last) names no
 //     wakeAt. The checking agent names its own next look, and nothing else would start one.
@@ -801,21 +802,15 @@ func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Reques
 // older one. The look sent is the caller's own, not whichever look the check has reached, so a
 // report from a turn that outlived its look is held to the look it was given and the engine
 // refuses it (CHECK_LOOK_NOT_OPEN) rather than recording it as the current look's. The event is
-// the issue, the check (record.ProductionCheck.ID: a later merge of the same issue replaces the
-// check and counts its looks from one again, and the rerun's report on look 1 is a new fact, not
-// the first check's), the look and the verdict: a retried report of the same look is the same
+// the issue, the check (record.ProductionCheck.ID: each check of an issue counts its looks from
+// one, so a report on one check's look 1 is another fact than one on another's), the look and
+// the verdict: a retried report of the same look is the same
 // fact, and one the engine refuses — the look ended by its bound before the report landed — is
 // left unmarked (intake's ApplyFact), so the checking role's next send of it applies, and the
 // report of the next look is a new fact.
 func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant credential.Grant, check *record.ProductionCheck, look supervise.CheckLook, req HandoffCompleteRequest) {
 	if check == nil || !check.Open() {
 		s.writeFailure(w, r, http.StatusConflict, "CHECK_NOT_OPEN", fmt.Sprintf("%s has no open production check; this completion changed nothing", grant.Issue))
-		return
-	}
-	if !check.NamedBy(look.OpenedAt) {
-		s.writeFailure(w, r, http.StatusConflict, "CHECK_NOT_OPEN", fmt.Sprintf(
-			"look %d of %s belongs to a production check a later merge replaced; the check open now was opened %s and counts its looks from one again, so this completion changed nothing",
-			look.Look, grant.Issue, check.OpenedAt.UTC().Format(time.RFC3339)))
 		return
 	}
 	if grant.Role != check.Role {
@@ -856,7 +851,7 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 	}
 	eventID := fmt.Sprintf("check:%s:%s:%d:%s", grant.Issue, check.ID(), look.Look, req.Verdict)
 	result, err := s.apply(r.Context(), "api", eventID, intake.CheckReport{Issue: grant.Issue, Claim: grant.Claim, Look: look.Look,
-		Verdict: req.Verdict, Summary: req.Summary, WakeAt: req.WakeAt})
+		Verdict: req.Verdict, Summary: req.Summary, WakeAt: req.WakeAt, OpenedAt: check.OpenedAt})
 	if err != nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply handoff fact")
 		return

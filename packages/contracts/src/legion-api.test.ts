@@ -1237,6 +1237,34 @@ test("the state golden carries a done issue's open production check", () => {
   expect(LegionStateResponse.safeParse(state).success).toBeFalse();
 });
 
+// Contract 267: an issue whose tasks merged one after another holds an open production check of
+// each merge, served oldest first under `checks`, with the newest also under `check`. The state
+// golden's LEGION-207 holds its one open check under both. A served issue with two checks parses
+// and keeps each check's own `openedAt`, and a check under `checks` is held to the same schema as
+// `check`, so one with no role is refused there too.
+test("an issue's checks carry each of its open production checks", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, { check?: Record<string, unknown>; checks?: Record<string, unknown>[] }>;
+  };
+  const closed = state.issues["LEGION-207"];
+  if (closed === undefined || closed.check === undefined) {
+    throw new Error("state fixture lacks LEGION-207 or its check");
+  }
+  expect(closed.checks).toEqual([closed.check]);
+
+  const older = { ...closed.check, pullRequest: 1238, openedAt: "2026-09-22T07:40:12Z" };
+  closed.checks = [older, closed.check];
+  const parsed = LegionStateResponse.safeParse(state);
+  expect(parsed.error?.issues ?? []).toEqual([]);
+  expect(parsed.data?.issues["LEGION-207"]?.checks?.map((check) => check.openedAt)).toEqual([
+    "2026-09-22T07:40:12Z",
+    "2026-09-22T08:40:12Z",
+  ]);
+
+  closed.checks = [{ ...older, role: "" }, closed.check];
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+});
+
 // The state golden carries two reviewing issues whose rounds wait on GitHub's merge state for
 // their heads: LEGION-218, waiting for a first answer — the head it waits on, when GitHub last
 // moved that head and no settled check run on it yet, with no state read and no told marks — and
@@ -2853,16 +2881,17 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // aside: the mark names the contract the caller is served at, 199, the recorded contract below
   // the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which moved no answer's
   // shape, and the lowest plugin contract reports the claims of the snapshot the route projected
-  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Four bands stand
+  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Five bands stand
   // above 199: the repositories block's, the roles of a deployment's (contract 221), which serves
   // the state golden's issues at step and its claims of a role of the deployment as a caller below
   // 221 reads them (`belowDeploymentRoles`), the stranded claims' token's (contract 222), which
-  // serves each claim nothing will wake without its `token` (`withoutStrandedTokens`), and the
-  // issues' tasks' (contract 224), which serves each issue without its `tasks` (`withoutTasks`).
+  // serves each claim nothing will wake without its `token` (`withoutStrandedTokens`), the issues'
+  // tasks' (contract 224), which serves each issue without its `tasks` (`withoutTasks`), and the
+  // issues' checks' (contract 267), which serves each issue without its `checks` (`withoutChecks`).
   // One value strip stands above 199 as well: `caches`, the source of the repository-cache-room
   // row, arrived at contract 213, so that row is served here without its `source`, every other
   // field of it and every other row as the state golden holds them. So the narrowing changes this
-  // one block and, beside it, only what those three bands and that strip change.
+  // one block and, beside it, only what those four bands and that strip change.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -2900,7 +2929,10 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     ...below,
     capabilities: withoutCachesSource,
     issues: Object.fromEntries(
-      Object.entries(issues).map(([key, { tasks: _tasks, ...issue }]) => [key, issue])
+      Object.entries(issues).map(([key, { tasks: _tasks, checks: _checks, ...issue }]) => [
+        key,
+        issue,
+      ])
     ),
     ...(stranded === undefined
       ? {}

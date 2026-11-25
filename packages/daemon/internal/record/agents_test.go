@@ -1,6 +1,9 @@
 package record
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -74,5 +77,52 @@ func TestARowWrittenBeforeTheColumnReadsAsItsRole(t *testing.T) {
 	}
 	if got := (PlanStep{Role: "tester", AgentKey: "a", Agent: "implementer"}).AgentName(); got != "implementer" {
 		t.Errorf("AgentName = %q, want the name the row holds", got)
+	}
+}
+
+// A merge's production check goes to its task's last agent of the checking role, and where the task
+// has no step of that role, to a fresh agent of the task, named from the task alone: `check-<slug>`,
+// or, where that is longer than an agent's name may be, `check-t-` and the first 12 hexadecimal
+// characters of the SHA-256 of the task's id. No other task's agents and no list of names enter it,
+// so the name is the same whatever else the plan holds, and each is a name an agent's token takes.
+//
+// The fault it catches is the check of a task with no step of the role going to the session of
+// another task's agent of that role, which is no fresh agent (its control: CheckAgent answering the
+// role's own name where the task has none, under which b's check goes to "tester").
+func TestTheCheckGoesToTheTasksLastAgentOfTheRoleElseAFreshOne(t *testing.T) {
+	steps := []PlanStep{
+		{Task: "a", Position: 1, Role: "implementer", Agent: "implementer"},
+		{Task: "a", Position: 2, Role: "tester", Agent: "t"},
+		{Task: "b", Position: 1, Role: "implementer", AgentKey: "k", Agent: "implementer"},
+		{Task: "c", Position: 1, Role: "tester", Agent: "tester"},
+	}
+	long := strings.Repeat("x", 40)
+	sum := sha256.Sum256([]byte(long))
+	hashed := claim.Agent("check-t-" + hex.EncodeToString(sum[:6]))
+	for _, tc := range []struct {
+		name  string
+		steps []PlanStep
+		task  string
+		want  claim.Agent
+	}{
+		{"a task with a tester step", steps, "a", "t"},
+		{"its last tester step", append(append([]PlanStep{}, steps...), PlanStep{Task: "a", Position: 3, Role: "tester", AgentKey: "q", Agent: "q"}), "a", "q"},
+		{"a task with no tester step, beside a task whose tester is named tester", steps, "b", "check-b"},
+		{"the same task with no other task's steps", steps[2:3], "b", "check-b"},
+		{"the same task with no steps at all", nil, "b", "check-b"},
+		{"a task whose id is 40 characters", nil, long, hashed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := CheckAgent(tc.steps, tc.task, claim.RoleTester)
+			if got != tc.want {
+				t.Fatalf("CheckAgent(%s, tester) = %q, want %q", tc.task, got, tc.want)
+			}
+			if len(got) > maxAgentName {
+				t.Fatalf("CheckAgent(%s, tester) = %q, %d bytes, want at most %d", tc.task, got, len(got), maxAgentName)
+			}
+			if _, err := claim.AgentToken("legion", "LEGION-208", got); err != nil {
+				t.Fatalf("CheckAgent(%s, tester) = %q, which no agent's token takes: %v", tc.task, got, err)
+			}
+		})
 	}
 }

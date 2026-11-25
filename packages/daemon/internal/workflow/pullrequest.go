@@ -406,12 +406,14 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, s TaskScope, pr *rec
 }
 
 // merged records the pull request merged, with its merge commit, whatever the issue's phase, and
-// closes an issue that awaits its merge (awaitsMerge; closeMerged): one in merging, where the
-// merger merges and the merge is what ends that phase, and one held from merging, by a failed
-// merger's claim, an escalation, its owner's stop of its task at its merge or the upgrade's data
-// move, since the merge is the one fact GitHub never sends again and it puts the work on main. A
-// merge before merging is the architect's to act on, as the shipped daemon routes it: it is told,
-// and the merge closes the issue once it reaches merging (transition). A redelivered merge
+// closes the merge of its task where that task awaits its merge (awaitsMerge, on the copy of the
+// issue read for the task; closeMerged): one in merging, where the merger merges and the merge is
+// what ends that act, and one held from merging, by a failed merger's claim, an escalation, its
+// owner's stop of its task at its merge or the upgrade's data move, since the merge is the one fact
+// GitHub never sends again and it puts the work on main. Before that close it queues the close of
+// the pull requests whose work the merge holds (closeHeldPullRequests). A merge before merging is
+// the architect's to act on, as the shipped daemon routes it: it is told, and the merge closes the
+// task's merge, and queues that close, once it reaches merging (transition). A redelivered merge
 // changes nothing.
 //
 // It records the head the merge names, as a close does (closed). A synchronize or a push of that
@@ -445,15 +447,15 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 	if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 		return intake.Result{}, err
 	}
-	if err := e.closeOtherTaskPullRequests(ctx, tx, *pr); err != nil {
-		return intake.Result{}, err
-	}
 	scope, err := e.issueOfPullRequest(ctx, tx, *pr)
 	if err != nil || scope == nil {
 		return intake.Result{}, err
 	}
 	issue := &scope.issue
 	if awaitsMerge(*issue) {
+		if err := e.closeHeldPullRequests(ctx, tx, *scope, *pr); err != nil {
+			return intake.Result{}, err
+		}
 		return intake.Result{}, e.closeMergedTelling(ctx, tx, *scope, pr)
 	}
 	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "pr-merged", Role: claim.RoleArchitect,
@@ -463,45 +465,55 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 	return intake.Result{}, e.reaskRound(ctx, tx, *scope, pr, prior, byMerge)
 }
 
-// closeOtherTaskPullRequests queues the close of each other open pull request of merged's issue
-// (record.TaskPullRequestsClose), each with the comment `Merged in #<n>.`, where merged, the pull
-// request the fact just recorded merged, is the pull request of the task that merges
-// (record.Store.MergePullRequest): its merge put the work of every task on the default branch, and
-// GitHub leaves the pull request of each other task open. It closes only the pull request of a
-// task of the issue's plan, on a branch a task holds (record.StoredPlan.HoldsBranch, the rule the
-// recorder reads, issueForBranch): a row on any other branch is no task's, and the implement App
-// closes no pull request Legion did not open. The merge of any other task's pull request closes
-// nothing, and neither does the merge of an issue whose other pull requests are closed or that has
-// none, as an issue of one task has none. It is written in the merge's own transaction, so the row
-// is queued once, as GitHub sends the merge once.
-func (e *Engine) closeOtherTaskPullRequests(ctx context.Context, tx pgx.Tx, merged record.PullRequest) error {
-	sink, err := e.store.MergePullRequest(ctx, tx, merged.Issue)
-	if err != nil || sink == nil || sink.Number != merged.Number || !e.sameRepository(sink.Repo, merged.Repo) {
-		return err
-	}
-	issue, err := e.store.Issue(ctx, tx, merged.Issue)
-	if err != nil || issue == nil {
-		return err
-	}
-	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
+// closeHeldPullRequests queues, in the transaction of the merge of s's task, whose pull request
+// merged is, the close of the open pull request of each task whose work that merge holds
+// (record.StoredPlan.HeldBy) (record.TaskPullRequestsClose), with the comment `Merged in #<n>.`:
+// that work is on the default branch now, and GitHub leaves each of those pull requests open. Where
+// that merge ends the issue (lastToFinish), the row also holds each other open pull request of the
+// issue, with the comment `Issue <KEY> is done; its last merge is #<n>.`; each other task that
+// merges is done there, so its pull request is merged and no close reaches it. It is called at
+// the two places a task's merge closes it, one place for one merge: the merge landing where the
+// task awaits it (merged), and the task reaching merging on a pull request merged already
+// (transition). So a merge that lands while its task stands short of its merge queues its row when
+// the task reaches its merge, and a person's merge of a done task's pull request queues none. A
+// pull request an earlier merge closed is not open, so a task two merges hold is closed once, by
+// the first. It closes only a pull request on a branch a task of the plan holds
+// (record.StoredPlan.HoldsBranch, the rule the recorder reads, issueForBranch): the implement App
+// closes no pull request Legion did not open. No row is queued where there is none to close. The
+// row is written before the close of the merge, in its transaction, so a leave that close makes
+// names none of them (toldPullRequests), and it is queued once, as the merge closes once.
+func (e *Engine) closeHeldPullRequests(ctx context.Context, tx pgx.Tx, s TaskScope, merged record.PullRequest) error {
+	stored, err := e.store.Plan(ctx, tx, s.issue.Key, s.issue.Generation)
 	if err != nil {
 		return err
 	}
-	prs, err := e.store.TaskPullRequests(ctx, tx, merged.Issue)
+	last, err := e.lastToFinish(ctx, tx, s)
+	if err != nil {
+		return err
+	}
+	var held []string
+	if stored != nil {
+		held = stored.HeldBy(s.walk.Task)
+	}
+	prs, err := e.store.TaskPullRequests(ctx, tx, s.issue.Key)
 	if err != nil {
 		return err
 	}
 	var open []int
 	for _, pr := range prs {
-		if pr.State == record.PullRequestOpen && pr.Number != merged.Number && stored.HoldsBranch(issue.Key, pr.Branch) {
+		if pr.State == record.PullRequestOpen && stored.HoldsBranch(s.issue.Key, pr.Branch) && (last || slices.Contains(held, pr.Task)) {
 			open = append(open, pr.Number)
 		}
 	}
 	if len(open) == 0 {
 		return nil
 	}
-	return e.enqueue(ctx, tx, issue.Key, record.TaskPullRequestsClose{Generation: issue.Generation, Numbers: open,
-		Comment: fmt.Sprintf("Merged in #%d.", merged.Number)})
+	slices.Sort(open)
+	comment := fmt.Sprintf("Merged in #%d.", merged.Number)
+	if last {
+		comment = fmt.Sprintf("Issue %s is done; its last merge is #%d.", s.issue.Key, merged.Number)
+	}
+	return e.enqueue(ctx, tx, s.issue.Key, record.TaskPullRequestsClose{Generation: s.issue.Generation, Numbers: open, Comment: comment})
 }
 
 // waitingForTree is what the architect that owns a merged issue is told when the merge of its pull
@@ -531,23 +543,34 @@ func (e *Engine) closeMergedTelling(ctx context.Context, tx pgx.Tx, s TaskScope,
 		Reason: waitingForTree(issue.Key, pr.Number, waiting)})
 }
 
-// closeMerged closes issue, which awaits its merge in merging (or is held from merging, a hold the
-// close clears: a failed merger's claim, an escalation, a stopped task's or the upgrade's data
-// move's), on its merged pull request pr, and reports
-// the issues it waited for instead, empty when it closed. In a running tree the close is the
-// table's row to done (transition), which leaves: a child's close retires five of its claims and
-// opens its production check in the live session of the role the project's `production_check`
-// names, and retires all six and opens no check where that setting is off; a root's close lingers
-// its tree and opens its check behind the linger's rows (leave). A merge is the one fact GitHub
-// never sends again, so one that lands while the tree lingers, where no transition runs, still
-// closes the issue: it writes what leave would that a lingering tree allows — the phase done, the
-// status done, the pull request disarmed, the architect above a child told child-closed — and
-// opens the check, whose first look is a wake, since the linger suspended that role. It retires
+// closeMerged closes the merge of s's task, which awaits its merge in merging (or is held from
+// merging, a hold the close clears: a failed merger's claim, an escalation, a stopped task's or the
+// upgrade's data move's), on its merged pull request pr, and reports the issues it waited for
+// instead, empty when it closed. The merge of a task makes that task done. It ends the issue only
+// where each other task of the plan is done or left (lastToFinish), and only that merge waits for
+// the issues beneath: the merge of any other task moves its task to done at once, and the issue
+// goes on in the phase its tasks put it in. Each merge has its own production check. The merge of
+// a task that is not the last opens the check of its own merge here (openCheck), in a running tree
+// and in a lingering one alike; the merge that ends the issue opens its check through the issue's
+// leave, which checks each merge of the run that has none (leaveByTasks). In a running tree the
+// close is the table's row to done (transition), which leaves where the issue is then done: a
+// child's close retires each of its claims but the claim of each production check that stays open
+// past it, and opens the check of each merge of its run that has none in that check's agent's live
+// session, and retires every claim and opens no check where the project's `production_check` is
+// off; a root's close lingers its tree and opens its check behind the linger's rows
+// (leave). A merge is the one fact GitHub never sends again, so one that lands while the tree
+// lingers, where no transition runs, still moves its task to done and ends the merge step. Where
+// that merge ends the issue it writes the phase done and the status done, and the issue leaves
+// through the one place of a leave its tasks make (leaveByTasks), which in a lingering tree tells
+// the architect above a child child-closed and opens the check of each merged pull request of the
+// run that has none. The merge of any other task writes the task's move and the issue in the phase
+// its tasks put it in, and opens the check of its merge, and nothing of a close. In a lingering
+// tree each first look is a wake, since the linger suspended that role. A lingering merge retires
 // nobody and suspends nothing: the linger's own rows already did, and the tree's close retires
 // every member's claims. The boot's sweep closes a migrated issue the same way (booted).
 //
-// A merged issue's close waits for the issues beneath it, on the one set both acceptance rules
-// read (OpenBeneath): for a tree root that is every other member of the tree still in the
+// The last merge's close waits for the issues beneath the issue, on the one set both acceptance
+// rules read (OpenBeneath): for a tree root that is every other member of the tree still in the
 // workflow, read from the flat tree rather than the parent relation because the linger its close
 // begins stops every member whatever it hangs under — a child's finished phase would be refused
 // 409 TREE_LINGERING and its work lost — and for an issue below the root it is the issues whose
@@ -569,30 +592,42 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, s TaskScope, pr *re
 	// keeps too (moveTask), and the close below writes the move to done.
 	s.issue.Phase, s.issue.Hold = phase.Merging, nil
 	issue := s.issue
+	last, err := e.lastToFinish(ctx, tx, s)
+	if err != nil {
+		return nil, err
+	}
 	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
 	if err != nil {
 		return nil, err
 	}
 	if !lingers {
-		waiting, err := e.openBeneath(ctx, tx, issue)
-		if err != nil {
+		if last {
+			waiting, err := e.openBeneath(ctx, tx, issue)
+			if err != nil {
+				return nil, err
+			}
+			if len(waiting) > 0 {
+				e.logOnCommit(ctx, "workflow: a merged issue's close waits for the issues beneath it", "issue", issue.Key, "tree", issue.Tree,
+					"pullRequest", pr.Number, "waitingFor", strings.Join(waiting, ", "))
+				return waiting, nil
+			}
+		}
+		if err := e.transition(ctx, tx, s, TriggerPullRequestMerged, record.TaskPlace{}, record.PhaseRow{}, pr, ""); err != nil || last {
 			return nil, err
 		}
-		if len(waiting) > 0 {
-			e.logOnCommit(ctx, "workflow: a merged issue's close waits for the issues beneath it", "issue", issue.Key, "tree", issue.Tree,
-				"pullRequest", pr.Number, "waitingFor", strings.Join(waiting, ", "))
-			return waiting, nil
-		}
-		return nil, e.transition(ctx, tx, s, TriggerPullRequestMerged, record.TaskPlace{}, record.PhaseRow{}, pr, "")
+		return nil, e.openCheck(ctx, tx, issue, *pr, false)
 	}
 	w := s.walk
 	row, ok := w.row(issue.Phase, TriggerPullRequestMerged, record.TaskPlace{}, Snapshot{Phase: issue.Phase})
 	if !ok {
 		return nil, nil
 	}
-	status := PhaseStatus(row.To)
-	if err := e.status(ctx, tx, issue, status, ""); err != nil {
-		return nil, err
+	status := ""
+	if last {
+		status = PhaseStatus(row.To)
+		if err := e.status(ctx, tx, issue, status, ""); err != nil {
+			return nil, err
+		}
 	}
 	// The merge ends the merge step the linger left open, passed: no transition runs in a lingering
 	// tree, so this move names that end itself, as a move of the table does (nameMoveEnd).
@@ -606,17 +641,17 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, s TaskScope, pr *re
 	if status != "" {
 		s.issue.Status = status
 	}
-	if _, err := e.putScope(ctx, tx, &s); err != nil {
+	written, err := e.putScope(ctx, tx, &s)
+	if err != nil {
 		return nil, err
 	}
-	issue = s.issue
-	e.logOnCommit(ctx, "workflow: a lingering tree's member closed at its merge", "issue", issue.Key, "tree", issue.Tree, "pullRequest", pr.Number, "status", issue.Status)
-	if !claim.IsTreeRoot(issue.Key, issue.Tree) {
-		if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: fmt.Sprintf("%s is done", issue.Key)}); err != nil {
-			return nil, err
-		}
+	if !last {
+		e.logOnCommit(ctx, "workflow: a lingering tree's member's task is done at its merge, and the member goes on", "issue", issue.Key,
+			"task", w.Task, "tree", issue.Tree, "pullRequest", pr.Number, "phase", written.Phase)
+		return nil, e.openCheck(ctx, tx, written, *pr, true)
 	}
-	return nil, e.openCheck(ctx, tx, issue, *pr, true)
+	e.logOnCommit(ctx, "workflow: a lingering tree's member closed at its merge", "issue", issue.Key, "tree", issue.Tree, "pullRequest", pr.Number, "status", written.Status)
+	return nil, e.leaveByTasks(ctx, tx, written)
 }
 
 // closed records the pull request closed unmerged, which a re-admitted generation drops, and tells
@@ -719,14 +754,18 @@ func (e *Engine) mergeQueueReadDone(ctx context.Context, tx pgx.Tx, fact intake.
 }
 
 // MergingAt reads in tx what the merging rule judges issue key by: the issue, whether its tree
-// lingers (record.TreeLingers) and the pull request of its work's merge, the one of the task that
-// merges (record.Store.MergePullRequest), which no other task's pull request is. It returns the
-// issue and that pull request, with why the workflow no longer works the issue's merging phase at
-// head of pull request number (leftMergingAt), "" while it does. An issue the record does not hold
-// is a nil issue, no pull request and no reason. The facts that write the read and the merger's
-// message (dequeued, mergeQueueReadDone) and the daemon's outbox rows that read the pull request
-// and deliver the message read the issue through this one read, so all four judge it from the
-// same records. It is exported for those outbox rows (the daemon's mergingAt).
+// lingers (record.TreeLingers) and the pull request whose merge is judged. For an issue with plan
+// rows that is the issue's pull request number (record.Store.TaskPullRequests), the pull request of
+// a task, judged by the place of that task (record.PullRequest.Task, record.StoredPlan.TaskOf): with
+// several tasks the issue's phase is its least finished task's, so a task stands at its merge while
+// the issue stands in another phase. For an issue with no plan rows it is the pull request of its
+// work's merge (record.Store.MergePullRequest), judged by the issue's phase. It returns the issue
+// and that pull request, with why the workflow no longer works that merge at head of pull request
+// number (leftMergingAt), "" while it does. An issue the record does not hold is a nil issue, no
+// pull request and no reason. The facts that write the read and the merger's message (dequeued,
+// mergeQueueReadDone) and the daemon's outbox rows that read the pull request and deliver the
+// message read the issue through this one read, so all four judge it from the same records. It is
+// exported for those outbox rows (the daemon's mergingAt).
 func MergingAt(ctx context.Context, store record.Store, tx pgx.Tx, key string, number int, head string) (*record.Issue, *record.PullRequest, string, error) {
 	issue, err := store.Issue(ctx, tx, key)
 	if err != nil || issue == nil {
@@ -736,27 +775,68 @@ func MergingAt(ctx context.Context, store record.Store, tx pgx.Tx, key string, n
 	if err != nil {
 		return nil, nil, "", err
 	}
-	pr, err := store.MergePullRequest(ctx, tx, key)
+	stored, err := store.Plan(ctx, tx, key, issue.Generation)
 	if err != nil {
 		return nil, nil, "", err
 	}
-	return issue, pr, leftMergingAt(*issue, lingers, pr, number, head), nil
+	if stored == nil {
+		pr, err := store.MergePullRequest(ctx, tx, key)
+		if err != nil {
+			return nil, nil, "", err
+		}
+		stands := ""
+		if issue.Phase != phase.Merging {
+			stands = fmt.Sprintf("the issue stands in %s, not merging", issue.Phase)
+		}
+		return issue, pr, leftMergingAt(*issue, stands, lingers, pr, number, head), nil
+	}
+	prs, err := store.TaskPullRequests(ctx, tx, key)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	var pr *record.PullRequest
+	if at := slices.IndexFunc(prs, func(row record.PullRequest) bool { return row.Number == number }); at >= 0 {
+		pr = &prs[at]
+	}
+	return issue, pr, leftMergingAt(*issue, taskMergingAt(stored, pr), lingers, pr, number, head), nil
 }
 
-// leftMergingAt says why the workflow no longer works issue's merging phase at head of pull
-// request number, or "" while it does: the issue stands in merging itself, not held from it; it
-// is in the workflow; its tree does not linger (lingers, record.TreeLingers); and the pull request
-// the record holds for it (pr, nil for none) is number, open, at head. In each other state no
-// merger is told of a removal from the merge queue at head: the workflow no longer works that
-// phase at that head, and the merger of a lingering tree is suspended by its close and would
-// never hold its role to hear it. The facts that write the read and the merger's message
-// (dequeued, mergeQueueReadDone) and the daemon's outbox rows that read the pull request and
-// deliver the message all judge by this one rule, through MergingAt, so no two of them disagree
-// about an issue that left merging.
-func leftMergingAt(issue record.Issue, lingers bool, pr *record.PullRequest, number int, head string) string {
+// taskMergingAt says why the task of pr, a pull request of an issue whose plan is stored, stands
+// at no merge the merger works, "" where it runs at its merge (record.PlaceMerge): a pull request
+// on a branch no task holds is no task's, a task elsewhere on its line stands at that place, and a
+// task at its merge that does not run there (held, done or stopped) is in that state. A pull
+// request the record does not hold is leftMergingAt's to name.
+func taskMergingAt(stored *record.StoredPlan, pr *record.PullRequest) string {
+	if pr == nil {
+		return ""
+	}
+	task, ok := stored.TaskOf(pr.Task)
 	switch {
-	case issue.Phase != phase.Merging:
-		return fmt.Sprintf("the issue stands in %s, not merging", issue.Phase)
+	case !ok:
+		return fmt.Sprintf("pull request #%d is no task's", pr.Number)
+	case task.Place.Kind != record.PlaceMerge:
+		return fmt.Sprintf("task %s stands at %s, not at its merge", task.Task, taskPlaceWords(stored, task))
+	case task.State != record.TaskRunning:
+		return fmt.Sprintf("task %s is %s at its merge", task.Task, task.State)
+	}
+	return ""
+}
+
+// leftMergingAt says why the workflow no longer works the merge of pull request number at head,
+// or "" while it does: the work stands at that merge itself, not held from it (stands, the issue's
+// phase for an issue with no plan rows and the place of the pull request's task for an issue with
+// plan rows, MergingAt, "" where it stands there); the issue is in the workflow; its tree does not
+// linger (lingers, record.TreeLingers); and the pull request the record holds for it (pr, nil for
+// none) is number, open, at head. In each other state no merger is told of a removal from the
+// merge queue at head: the workflow no longer works that merge at that head, and the merger of a
+// lingering tree is suspended by its close and would never hold its role to hear it. The facts
+// that write the read and the merger's message (dequeued, mergeQueueReadDone) and the daemon's
+// outbox rows that read the pull request and deliver the message all judge by this one rule,
+// through MergingAt, so no two of them disagree about a merge that ended.
+func leftMergingAt(issue record.Issue, stands string, lingers bool, pr *record.PullRequest, number int, head string) string {
+	switch {
+	case stands != "":
+		return stands
 	case record.OutOfWorkflow(issue.Status):
 		return fmt.Sprintf("the issue is out of the workflow at status %s", issue.Status)
 	case lingers:

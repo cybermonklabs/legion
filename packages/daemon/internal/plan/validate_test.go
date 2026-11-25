@@ -90,6 +90,24 @@ func TestValidateRefusesAPlanWithNoTask(t *testing.T) {
 	}
 }
 
+// A plan of one task whose block says whether its work merges is taken, either way: `merges`
+// on the task of a one-task plan asks for what this release does, a retro and a merge of that
+// task, so Supported has no cause in it. The block's word is read as taskOf reads it.
+func TestAOneTaskPlanThatSaysWhetherItMergesIsTaken(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  bool
+	}{{"true", true}, {"false", false}} {
+		p, err := FromBlocks("ACME-1", "plan-md", 1, []Block{{ID: "a", Type: TaskBlockType, Attributes: map[string]string{"merges": tc.value, "steps": "implementer"}, Text: "Do it."}})
+		if err != nil || len(p.Tasks) != 1 || p.Tasks[0].ID != "a" || p.Tasks[0].Merges != tc.want {
+			t.Fatalf("FromBlocks(merges=%q) = %+v, %v; want task a with Merges %v", tc.value, p.Tasks, err, tc.want)
+		}
+		if r := Supported(p, builtin); r != nil {
+			t.Fatalf("Supported(merges=%q) = %+v, want none", tc.value, r)
+		}
+	}
+}
+
 // Legion takes a plan of several tasks whose needs lead to one task that no task needs: the plan
 // of tasks a to e, where c needs b, d needs a and c, and e needs d, and the plan of two tasks where
 // b needs a, are each answered no refusal by either check, since this release runs each task of a
@@ -114,6 +132,29 @@ func TestAPlanOfSeveralTasksIsTaken(t *testing.T) {
 	}
 }
 
+// Legion takes a plan in which the work of several tasks merges, each by itself: the tasks a to e
+// where b says merges, whose work merges at b and at e, and four tasks with no needs, whose work
+// merges at each of them, are answered no reason of a cause this release does not carry out.
+//
+// The fault it catches is a plan of more than one task that merges refused as not carried out yet
+// (its control: the Supported of the release before, which refuses the four tasks with the reason
+// of four tasks that no task needs).
+func TestAPlanWithSeveralMergesIsTaken(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		tasks []Task
+	}{
+		{"the tasks a to e, where b says merges", tasksAToE("b")},
+		{"four tasks with no needs", fourApart},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Supported(Plan{Tasks: tc.tasks}, builtin); got != nil {
+				t.Fatalf("Supported(%s) = %+v, want none", tc.name, got)
+			}
+		})
+	}
+}
+
 // Each cause this release does not carry out yet (Supported), with its exact text and its task.
 // Each cause gets one reason, so a plan with two causes gets two. The taken plans are the subsets
 // of today's line that keep the implementer, with the owner's acceptance, and with a key on a role
@@ -126,11 +167,6 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 		plan Plan
 		want []Refusal
 	}{
-		{name: "more than one task that no task needs", plan: Plan{Tasks: []Task{
-			{ID: "a", Steps: implementer}, {ID: "b", Steps: implementer}, {ID: "c"},
-		}}, want: []Refusal{
-			{Task: "", Reason: "the plan has 3 tasks that no task needs (a, b, c), and the work of each would merge by itself." + yet},
-		}},
 		{name: "needs that lead to one task", plan: planOf(t, 1, taskNeeding("a", "b", "dispatch://ACME-1/artifact/plan-md#b-c"), taskNeeding("b"), taskNeeding("c"))},
 		{name: "a step that reads a pull request before the implementer", plan: oneTask("a", "reviewer implementer"),
 			want: []Refusal{{Task: "a", Reason: "step 1 of task a names reviewer, and no step before it names the role implementer, whose pull request reviewer reads; a role of this deployment that reports pass or fail needs none." + yet}}},
@@ -149,8 +185,6 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 			want: []Refusal{{Task: "a", Reason: "step 2 of task a names the key r." + yet}}},
 		{name: "a role block", plan: func() Plan { p := oneTask("a", "implementer"); p.RoleBlocks = []string{"prober"}; return p }(),
 			want: []Refusal{{Task: "", Reason: "the plan defines the role prober." + yet}}},
-		{name: "merges", plan: withTask(Task{ID: "a", Merges: true, Steps: implementer}),
-			want: []Refusal{{Task: "a", Reason: "task a names merges." + yet}}},
 		{name: "owner", plan: withTask(Task{ID: "f", Owner: "architect"}),
 			want: []Refusal{{Task: "f", Reason: "task f names owner." + yet}}},
 		{name: "part_of", plan: withTask(Task{ID: "f1", PartOf: "f", Steps: implementer}),
@@ -175,10 +209,10 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 
 	// Both checks run, so a plan with causes of each kind gets the reasons of both.
 	twoTasks := oneTask("a", "implementer prober")
-	twoTasks.Tasks = append(twoTasks.Tasks, Task{ID: "b", Steps: implementer})
+	twoTasks.Tasks = append(twoTasks.Tasks, Task{ID: "b", Owner: "architect"})
 	got := append(Supported(twoTasks, builtin), validated(t, twoTasks, builtin)...)
 	want := []Refusal{
-		{Task: "", Reason: "the plan has 2 tasks that no task needs (a, b), and the work of each would merge by itself." + yet},
+		{Task: "b", Reason: "task b names owner." + yet},
 		{Task: "a", Reason: "step 2 of task a names the role prober, which neither the deployment nor the plan defines."},
 	}
 	if !reflect.DeepEqual(got, want) {

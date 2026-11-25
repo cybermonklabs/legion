@@ -27,8 +27,8 @@ func numbersOf(prs []PullRequest) []string {
 // Each task of an issue keeps its own pull request, on its own branch: the pull request of task b
 // opened after task a's stands beside it rather than taking its place, and a later write of a's
 // row leaves b's as it was. Each task's branch is the one its start gave it (AssignTaskBranch).
-// Each task's row is read by the issue and the task; the row of the task that merges, the one
-// task no task needs, is read by the issue alone, for one issue and for several at once; and every
+// Each task's row is read by the issue and the task; the row of the issue's merge, b's, the one task
+// that merges, is read by the issue alone, for one issue and for several at once; and every
 // row of the issue is read in task order. An issue with no plan rows keeps its one row under the
 // task "", which is the row of its merge.
 func TestTwoTasksOfOneIssueKeepTwoPullRequests(t *testing.T) {

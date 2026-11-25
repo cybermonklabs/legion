@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -23,7 +24,8 @@ import (
 // (record.PhaseRow.LastHandoff), the phase entry the completing role's current phase is on
 // (record.PhaseRow.Entry, 0 on a row no start has stamped) and whether the start that raised it
 // moved the issue back (record.PhaseRow.EntryMovedBack), its pull request record, nil while none
-// is recorded, and its production check, nil while none was ever opened.
+// is recorded, and its production check that the caller's live look is of, nil where no such
+// check was opened.
 //
 // Of a plan of any count of tasks, one among them, the task is named in ofTask, and the position is
 // that task's: issue stands where the issue stands for that task alone (standingOfTask), the pass
@@ -52,9 +54,10 @@ type completionPosition struct {
 }
 
 // handoffPosition reads key's position (completionPosition) for the completing role and the claim
-// that completes, whose phases row names the entry it was last raised to; an issue the workflow
-// does not record is a position with no issue and no error.
-func (s *server) handoffPosition(ctx context.Context, key string, role claim.Role, completing claim.Token) (completionPosition, error) {
+// that completes, whose phases row names the entry it was last raised to, and the check opened at
+// checkOpenedAt, the check of the caller's live look (the issue's newest for the zero time).
+// An issue the workflow does not record is a position with no issue and no error.
+func (s *server) handoffPosition(ctx context.Context, key string, role claim.Role, completing claim.Token, checkOpenedAt time.Time) (completionPosition, error) {
 	var position completionPosition
 	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead}, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := s.records.Issue(ctx, tx, key)
@@ -105,7 +108,7 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 				return err
 			}
 		}
-		if position.check, err = s.records.ProductionCheck(ctx, tx, key); err != nil {
+		if position.check, err = s.records.ProductionCheckOf(ctx, tx, key, checkOpenedAt); err != nil {
 			return err
 		}
 		return nil
@@ -121,9 +124,10 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 // step the claim's agent works (record.Issue.StepOfAgent), which is that act; for an agent that
 // works none, the task of the step the latest phases row of rows that names the claim runs
 // (latestStepTask), which a completion reports that arrives after its step ended or before its
-// start was delivered; and for a claim that no row names a step for, the task that merges
-// (record.StoredPlan.MergingTask), whose work a row raised before the plan is of. The act of a task
-// whose step the agent does not work is read from the act of each task (record.Store.TaskActs).
+// start was delivered; and for a claim that no row names a step for, the one task of the plan that
+// has a merge (record.StoredPlan.OnlyTaskThatMerges), whose work a row raised before the plan is
+// of, and none where several tasks have one. The act of a task whose step the agent does not work
+// is read from the act of each task (record.Store.TaskActs).
 // ok is false where none of these is a task of stored: the completion is of no step of the plan.
 func (s *server) completingTask(ctx context.Context, tx pgx.Tx, issue record.Issue, stored *record.StoredPlan, rows []record.PhaseRow, completing claim.Token) (record.PlanTask, *record.RunningStep, bool, error) {
 	_, agent, _ := completing.Cut()
@@ -133,7 +137,7 @@ func (s *server) completingTask(ctx context.Context, tx pgx.Tx, issue record.Iss
 	}
 	id := latestStepTask(rows, completing)
 	if id == "" {
-		id, _ = stored.MergingTask()
+		id, _ = stored.OnlyTaskThatMerges()
 	}
 	task, ok := stored.TaskOf(id)
 	if !ok {

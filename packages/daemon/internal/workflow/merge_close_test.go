@@ -688,7 +688,7 @@ func productionCheck(t *testing.T, pool *pgxpool.Pool, issue string) *record.Pro
 	var check *record.ProductionCheck
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		var err error
-		check, err = record.NewStore().ProductionCheck(t.Context(), tx, issue)
+		check, err = record.NewStore().ProductionCheckOf(t.Context(), tx, issue, time.Time{})
 		return err
 	})
 	return check

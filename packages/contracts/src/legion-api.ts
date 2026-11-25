@@ -795,8 +795,8 @@ const legionAssignment = z.object({
 /** `api.Issue` — `workers` is keyed by a plain string, not by the role names this build knows, so
  * a role a later daemon adds is read rather than refused; the key list is held by the golden test
  * in `legion-api.test.ts`, not by this schema. A phase that has not run has no entry, so the value
- * is optional. `waitingOn` is present only in `awaiting_person`; `check` is the issue's open
- * production check, present only on a `done` issue while the check is open. */
+ * is optional. `waitingOn` is present only in `awaiting_person`; `check` is the issue's newest open
+ * production check, present only while a check is open, and `checks` each open check. */
 const legionIssue = z.object({
   key: nonEmptyString.optional(),
   generation: z.number().int().nonnegative().optional(),
@@ -878,6 +878,12 @@ const legionIssue = z.object({
   why: legionWhyView.optional(),
   waitingOn: legionWaitingOn.optional(),
   check: legionCheckView.optional(),
+  /** Each open production check of the issue, oldest first, the last of them the one `check` shows
+   * (contract 267): an issue whose tasks merged one after another holds a check of each merge.
+   * Absent while none is open, and a daemon below contract 267 serves none at all
+   * (`api.withoutChecks`), which is why a reader takes it as optional. No plugin code reads a field
+   * of it (LEGION_ANSWER_READS), so each field is optional, as `check`'s unread ones are. */
+  checks: z.array(legionCheckView.partial()).optional(),
   /** `mergeWait` is what this issue's review round waits on from GitHub (contract 133): present
    * only while the round waits on GitHub's merge state for the pull request's head, so every
    * issue whose round waits on nothing from GitHub has none, and a daemon before `mergeWait`'s

@@ -16,16 +16,19 @@ import (
 // startTaskCopy gives s's task its branch at a start of the task, in the transaction
 // that starts it (record.Store.AssignTaskBranch: once, the issue's own branch for the first task of
 // the generation to start where no earlier generation gave it, or the one task of a plan of one,
-// else the first give of the task's slug no generation of the issue gave), and answers whether it
-// queued the join of the task's needs. A task whose branch is not the
-// issue's own, or that needs other tasks, gets one task_branch row (record.TaskBranch), which makes
-// its branch on GitHub at the joined work of its needs and ends with the fact that starts its step
-// (intake.TaskJoined). The task that holds the issue's own branch and needs none queues nothing:
-// the issue_branch row its first step queues makes that branch (gateOpened). Its one caller is the
-// start of every step (Engine.start), at each start of a task, the first and a start again. A task
-// the plan does not hold is refused, naming it. The plan it reads after the give is s's plan from
-// then on, so the start's text reads the task's branch and the base of its pull request from it
-// (standingPart) and reads no plan again.
+// else the first give of the task's slug no generation of the issue gave), fixes the base of the
+// task's pull request for its run, and answers whether it queued the join of the task's needs. The
+// base is the one the plan gives at this start (record.StoredPlan.PlannedBase), read once the task
+// holds its branch, which its join branch is named from, and written on its row
+// (record.Store.SetTaskBase): every reader of a task's base reads it (BaseOf) until the task's
+// next start, whatever a later version says of who needs it or whether it merges. A task whose
+// branch is not the issue's own, or that needs other tasks, gets one task_branch row
+// (record.TaskBranch), which makes its branch on GitHub at the joined work of its needs and ends
+// with the fact that starts its step (intake.TaskJoined). The task that holds the issue's own branch
+// and needs none queues nothing: the issue_branch row its first step queues makes that branch
+// (gateOpened). Its one caller is the start of every step (Engine.start), at each start of a task,
+// the first and a start again, and the join again at a new generation (joinAgain). A task the plan
+// does not hold is refused, naming it.
 func (e *Engine) startTaskCopy(ctx context.Context, tx pgx.Tx, s *TaskScope) (bool, error) {
 	issue, task := s.issue, s.walk.Task
 	branch, err := e.store.AssignTaskBranch(ctx, tx, issue.Key, issue.Generation, task)
@@ -43,6 +46,19 @@ func (e *Engine) startTaskCopy(ctx context.Context, tx pgx.Tx, s *TaskScope) (bo
 	if !ok {
 		return false, fmt.Errorf("start the copy of task %s of %s: its plan holds no such task", task, issue.Key)
 	}
+	base, _, err := stored.PlannedBase(issue, task)
+	if err != nil {
+		return false, err
+	}
+	if err := e.store.SetTaskBase(ctx, tx, issue.Key, issue.Generation, task, base); err != nil {
+		return false, err
+	}
+	for i := range stored.Tasks {
+		if stored.Tasks[i].Task == task {
+			stored.Tasks[i].Base = base
+			break
+		}
+	}
 	s.plan = stored
 	if branch == claim.IssueBranch(issue.Key) && len(row.Needs) == 0 {
 		return false, nil
@@ -58,10 +74,13 @@ func (e *Engine) startTaskCopy(ctx context.Context, tx pgx.Tx, s *TaskScope) (bo
 // through Engine.start, the start of every step, so at no commit does the step wait for nothing with
 // nothing of it started: start raises its entry, or writes that it waits for its agent where that
 // agent runs a step of another task. Its task is told where its work stands and its own pull
-// request, as the start after the wait for an agent tells it (handOn). Any other end of a join
-// changes nothing: one of a generation the issue has left, of a task its plan no longer holds or
-// whose step waits for no join, and one onto another branch or from other needs, a row that a stop
-// and a later version of the task left behind, whose start again queued a join of its own.
+// request, as the start after the wait for an agent tells it (handOn). The end of the row a merge's
+// start queued (fact.Base set) joined nothing: it records the base on the task's pull request and
+// as the task's base (mergeBaseSet), leaves the join's conflicts as they are, and starts the merge.
+// Any other end of a join changes nothing: one of a generation the issue has left, of a task its
+// plan no longer holds or whose step waits for no join, and one onto another branch or from other
+// needs, a row that a stop and a later version of the task left behind, whose start again queued a
+// join of its own.
 func (e *Engine) taskJoined(ctx context.Context, tx pgx.Tx, fact intake.TaskJoined) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil || issue.Generation != fact.Generation {
@@ -82,11 +101,17 @@ func (e *Engine) taskJoined(ctx context.Context, tx pgx.Tx, fact intake.TaskJoin
 			"joined_branch", fact.Branch, "joined_needs", fact.Needs)
 		return intake.Result{}, nil
 	}
-	if err := e.store.SetJoinConflicts(ctx, tx, issue.Key, issue.Generation, fact.Task, fact.Conflicts); err != nil {
-		return intake.Result{}, err
-	}
-	if err := e.store.SetJoinUnmerged(ctx, tx, issue.Key, issue.Generation, fact.Task, fact.Unmerged); err != nil {
-		return intake.Result{}, err
+	if fact.Base != "" {
+		if err := e.mergeBaseSet(ctx, tx, *issue, fact); err != nil {
+			return intake.Result{}, err
+		}
+	} else {
+		if err := e.store.SetJoinConflicts(ctx, tx, issue.Key, issue.Generation, fact.Task, fact.Conflicts); err != nil {
+			return intake.Result{}, err
+		}
+		if err := e.store.SetJoinUnmerged(ctx, tx, issue.Key, issue.Generation, fact.Task, fact.Unmerged); err != nil {
+			return intake.Result{}, err
+		}
 	}
 	if err := e.store.SetStepWait(ctx, tx, issue.Key, issue.Generation, fact.Task, record.StepWaitNone, nil); err != nil {
 		return intake.Result{}, err
@@ -97,6 +122,25 @@ func (e *Engine) taskJoined(ctx context.Context, tx pgx.Tx, fact intake.TaskJoin
 	}
 	return intake.Result{}, e.startAfterWait(ctx, tx, s, "workflow: a task's join ended, and its step starts",
 		"branch", fact.Branch, "needs", fact.Needs, "conflicts", fact.Conflicts, "unmerged", fact.Unmerged)
+}
+
+// mergeBaseSet records base, the default branch the row of a merge's start set the base of fact's
+// task's open pull request to (intake.TaskJoined.Base), on that pull request's row
+// (record.Store.PullRequestOfTask, PutPullRequest) and as the task's base (SetTaskBase), so the start
+// of the merge that follows finds the base equal and starts the merger (Engine.start's
+// mergeWaitsForBase).
+func (e *Engine) mergeBaseSet(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.TaskJoined) error {
+	pr, err := e.store.PullRequestOfTask(ctx, tx, issue.Key, fact.Task)
+	if err != nil {
+		return err
+	}
+	if pr != nil && pr.Base != fact.Base {
+		pr.Base = fact.Base
+		if err := e.store.PutPullRequest(ctx, tx, *pr); err != nil {
+			return err
+		}
+	}
+	return e.store.SetTaskBase(ctx, tx, issue.Key, issue.Generation, fact.Task, fact.Base)
 }
 
 // stepOfStart is the running step start starts on issue (record.Issue.Running): the step of the

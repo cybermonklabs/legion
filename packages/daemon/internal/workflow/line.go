@@ -18,7 +18,7 @@ import (
 // Walk is the line of phases one task of an issue's run walks, and where that task stands on it. A
 // run with plan rows (record.Store.Plan at the issue's generation) walks the line of each of its
 // tasks' steps (plan.Line): each step runs as the phase of its role, then Legion's own retro and
-// merge where the task is the one that merges (Merges). A run with none, which is every issue that
+// merge where the task's work merges by itself (Merges). A run with none, which is every issue that
 // ran before plan rows existed, walks today's line, phase.Order, as the steps of the task default
 // (todaysSteps), with Stored false, and its table is Table, row for row. Every behaviour that
 // differs from today reads Stored and nothing else; the steps of both are read the same way
@@ -46,10 +46,10 @@ type Walk struct {
 	// Line is the phases the task walks: one for each step, then retro and merging where the task
 	// merges.
 	Line []phase.Phase
-	// Merges says whether the task is the one task of the plan in force that no task needs
-	// (plan.Sinks over the tasks' needs), whose work is the issue's that merges, so its line ends
-	// with Legion's retro and merge; a task another task needs is done at its last step. It is
-	// true for a run with no plan rows and for a plan of one task.
+	// Merges says whether the task's work merges by itself under the plan in force
+	// (record.StoredPlan.Merging: its block says merges, or it is a task of the top level that no
+	// task needs), so its line ends with Legion's retro and merge; any other task is done at its
+	// last step. It is true for a run with no plan rows and for a plan of one task.
 	Merges bool
 	// State and Place are where the task stands (record.PlanTask); zero where the run has no
 	// plan rows, whose place is the issue's phase alone.
@@ -98,7 +98,7 @@ func walksOf(key string, stored *record.StoredPlan) []Walk {
 	if stored == nil {
 		return []Walk{todaysWalk()}
 	}
-	merging, _ := stored.MergingTask()
+	merging := stored.Merging()
 	walks := make([]Walk, len(stored.Tasks))
 	for at, task := range stored.Tasks {
 		walks[at] = walkOfTask(key, stored, task, merging)
@@ -106,10 +106,10 @@ func walksOf(key string, stored *record.StoredPlan) []Walk {
 	return walks
 }
 
-// walkOfTask is the walk of task, a task of stored, the plan of the issue keyed key, whose task
-// that merges is merging (record.StoredPlan.MergingTask), "" for none.
-func walkOfTask(key string, stored *record.StoredPlan, task record.PlanTask, merging string) Walk {
-	steps, merges := stored.Steps[task.Task], task.Task == merging
+// walkOfTask is the walk of task, a task of stored, the plan of the issue keyed key, whose tasks
+// whose work merges by itself are merging (record.StoredPlan.Merging).
+func walkOfTask(key string, stored *record.StoredPlan, task record.PlanTask, merging []string) Walk {
+	steps, merges := stored.Steps[task.Task], slices.Contains(merging, task.Task)
 	return Walk{Stored: true, Task: task.Task, Branch: task.BranchOf(key), Text: task.BlockText, Steps: steps, Needs: task.Needs,
 		Line: plan.Line(namedSteps(steps), merges), Merges: merges, State: task.State, Place: task.Place, StoppedReason: task.StoppedReason,
 		HoldReason: task.HoldReason, Wait: task.StepWait, WaitSince: task.StepWaitSince, StartReason: task.StartReason, Version: stored.Version}
@@ -148,11 +148,14 @@ func (w Walk) PlaceOf(p phase.Phase) (record.TaskPlace, bool) {
 }
 
 // AgentAt is the name of the agent that does the work of place on w (record.PlanStep.AgentName), the
-// one place the workflow names a step's agent: for a step, the agent of that step, so the steps of
+// one place the workflow names an act's agent: for a step, the agent of that step, so the steps of
 // one key name one agent; for the retro, the agent of the task's last step of the type
-// implementation, which runs it. It is "" for the merge, for a walk with no plan rows, for a step
-// of the key owner, whose claim is no name on the issue, and for a place the task does not hold:
-// there the role stands for the agent (Engine.stepToken).
+// implementation, which runs it; and for the merge, the merger, one agent of the issue that does
+// the merge of each task (its role's own name, whose token is the merger's claim, as
+// record.RunningStep names it), so two merges of one issue run one at a time (Engine.start). It is
+// "" for a walk with no plan rows, for a step of the key owner, whose claim is no name on the
+// issue, and for a place the task does not hold: there the role stands for the agent
+// (Engine.stepToken).
 func (w Walk) AgentAt(place record.TaskPlace) claim.Agent {
 	if !w.Stored {
 		return ""
@@ -168,6 +171,8 @@ func (w Walk) AgentAt(place record.TaskPlace) claim.Agent {
 				return w.Steps[i].AgentName()
 			}
 		}
+	case record.PlaceMerge:
+		return claim.Agent(claim.RoleMerger)
 	}
 	return ""
 }

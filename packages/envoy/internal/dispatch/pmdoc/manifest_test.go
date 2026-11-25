@@ -278,9 +278,10 @@ func manifestAsOf(t *testing.T, version int) []byte {
 // (ErrUnknownElement), which the document service answers 409 DOC_NEWER_CONTENT for rather than
 // repairing or rebuilding the document. The name says "this version" from when version 3 was the
 // manifest's; the Verification document's check names the row, so it keeps its name, and the
-// elements versions 4 and 5 add each have a row of their own
+// elements versions 4, 5 and 11 add each have a row of their own
 // (TestTheAttributeVersionFourAddsIsUnknownToABuildAtVersionThree,
-// TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour).
+// TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour,
+// TestTheAttributeMergesIsUnknownToABuildOneVersionBack).
 func TestTheTypedBlocksThisVersionAddsAreUnknownToABuildAtTheVersionBefore(t *testing.T) {
 	const adds = 3
 	added := []string{"requirement", "plan_task", "check"}
@@ -413,6 +414,62 @@ func TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour(t *testing.T)
 	}
 	if err := stored.Validate(); !errors.Is(err, ErrUnknownElement) {
 		t.Errorf("a build at version %d reading a stored plan task carrying steps = %v, want ErrUnknownElement", before, err)
+	}
+}
+
+// The plan_task block's merges attribute, which manifest version 11 adds (whether the work of a
+// plan task merges by itself, "true" or "false"), is staged by its own numbers in the same way:
+// this build reads and writes it, and a build one version back declares the plan_task block and
+// its steps but not merges, so it creates none carrying it and reads a stored plan task carrying
+// one as an element it does not know (ErrUnknownElement, answered 409 DOC_NEWER_CONTENT). Versions
+// 6 to 10 are other changes' numbers, so the build one version back is a build at version 10.
+func TestTheAttributeMergesIsUnknownToABuildOneVersionBack(t *testing.T) {
+	const adds = 11
+	attribute := Element{Kind: AttributeElement, Block: "plan_task", Name: "merges"}
+	versions, declared := attribute.Versions()
+	if !declared || versions != (BlockElementVersions{Since: adds, CreatableSince: adds}) {
+		t.Fatalf("attribute merges of plan_task = %+v, %t; want since and creatable_since %d", versions, declared, adds)
+	}
+	if SchemaVersion() < adds {
+		t.Fatalf("SchemaVersion() = %d, below the version %d that adds merges", SchemaVersion(), adds)
+	}
+	const markdown = ":::plan_task{#a merges=\"true\" steps=\"implementer\"}\nDo it.\n:::\n"
+	const withoutMerges = ":::plan_task{#a steps=\"implementer\"}\nDo it.\n:::\n"
+	stored, err := Parse(markdown)
+	if err != nil {
+		t.Fatalf("this build reads a plan task carrying merges: %v", err)
+	}
+	for _, value := range []string{"true", "false"} {
+		written := ":::plan_task{#a merges=\"" + value + "\" steps=\"implementer\"}\nDo it.\n:::\n"
+		if _, err := ParseForWrite(written, nil); err != nil {
+			t.Fatalf("this build writes a plan task carrying merges=%q: %v", value, err)
+		}
+	}
+	const maybe = ":::plan_task{#a merges=\"maybe\" steps=\"implementer\"}\nDo it.\n:::\n"
+	if _, err := ParseForWrite(maybe, nil); err == nil || !strings.Contains(err.Error(), "must be one of true, false") {
+		t.Errorf("this build writing a plan task carrying merges=\"maybe\" = %v, want a refusal naming the choices true and false", err)
+	}
+
+	before := adds - 1
+	restore, err := UseManifestForTest(manifestAsOf(t, before))
+	if err != nil {
+		t.Fatalf("install the manifest as of version %d: %v", before, err)
+	}
+	t.Cleanup(restore)
+	if !IsTypedBlock("plan_task") {
+		t.Fatalf("a build at version %d does not declare the plan_task block, which version 3 adds", before)
+	}
+	if _, err := ParseForWrite(withoutMerges, nil); err != nil {
+		t.Errorf("a build at version %d writing a plan task without merges = %v, want no error", before, err)
+	}
+	if _, err := ParseForWrite(markdown, nil); !errors.Is(err, ErrUnknownElement) || !strings.Contains(err.Error(), "merges") {
+		t.Errorf("a build at version %d writing a plan task carrying merges = %v, want ErrUnknownElement naming it", before, err)
+	}
+	if _, err := Parse(markdown); !errors.Is(err, ErrUnknownElement) || !strings.Contains(err.Error(), "merges") {
+		t.Errorf("a build at version %d parsing a plan task carrying merges = %v, want ErrUnknownElement naming it", before, err)
+	}
+	if err := stored.Validate(); !errors.Is(err, ErrUnknownElement) {
+		t.Errorf("a build at version %d reading a stored plan task carrying merges = %v, want ErrUnknownElement", before, err)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -16,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 )
 
 // branchClient is the client a write of one of issue's branches is made with, and the repository
@@ -38,26 +40,29 @@ func (r *outbox) branchClient(ctx context.Context, issue record.Issue) (githubre
 }
 
 // taskBranch makes the GitHub branch of the row's task (record.PlanTask.BranchOf) start from the
-// joined work of the tasks it needs, the work its first step starts on. A task that needs none
-// starts at the default branch the issue's record names; one that needs some starts at the head of
-// its first need's branch, in the order of its needs. A task whose pull request is based on its join
-// branch (record.StoredPlan.BaseOf: a task with several needs that does not merge) joins them there
-// rather than on its branch, which then starts at the join branch's head, so its pull request shows
-// its own work alone. Each need is then merged into the branch the join is made on in that order
-// (ghbranch.Merge), whether the row created the branch or GitHub had it: a branch GitHub has keeps
-// its head, so the row joins each need whose head the branch does not hold, and GitHub answers a
-// need the branch holds with nothing to merge, which moves no ref, so a row that runs
-// again changes nothing. Each start of the task queues the row (workflow's startTaskCopy, at the
-// start of every step), the first and a start again, so a need a later version gave a stopped task
-// is joined into its branch when it starts again. A merge GitHub refuses as a conflict is no
-// refusal: the branch stands on the needs that joined. A task none of whose steps implements then
-// gets its pull request from Legion, where its branch holds work its base lacks
+// joined work of the tasks it needs, the work its first step starts on. That work is on the
+// branches the task starts from (record.StoredPlan.StartsFrom): the branch of each need whose work
+// did not merge, in the order of its needs, then the default branch the issue's record names once
+// where the work of any need merged, so the branch of a merged need, which GitHub can have deleted
+// at its merge, is never read. A task that starts from none starts at the default branch; one that
+// starts from some starts at the head of the first. A task whose pull request is based on its join
+// branch (record.StoredPlan.BaseOf: a task that starts from several branches and does not merge)
+// joins them there rather than on its branch, which then starts at the join branch's head, so its
+// pull request shows its own work alone. Each branch it starts from is then merged into the branch
+// the join is made on in that order (ghbranch.Merge), whether the row created the branch or GitHub
+// had it: a branch GitHub has keeps its head, so the row joins each branch whose head the branch
+// does not hold, and GitHub answers one the branch holds with nothing to merge, which moves no ref,
+// so a row that runs again changes nothing. Each start of the task queues the row (workflow's
+// startTaskCopy, at the start of every step), the first and a start again, so a need a later version
+// gave a stopped task is joined into its branch when it starts again. A merge GitHub refuses as a
+// conflict is no refusal: the branch stands on the needs that joined. A task none of whose steps
+// implements then gets its pull request from Legion, where its branch holds work its base lacks
 // (openTaskPullRequest), since no step of it opens one. Once its merges end, the end of the join is
 // applied as a fact (intake.TaskJoined, joined) at the row's own generation, naming the branch,
 // the needs it joined, each need GitHub refused as a conflict and whether the join branch merged
 // into the task's branch (joinBranch): the workflow writes those on the task, for its first step to
-// repair, and starts the step that waits for that join, and changes
-// nothing where the task no longer waits for it, a task a stop and a later version changed while
+// repair, and starts the step that waits for that join, and changes nothing where the task no
+// longer waits for it, a task a stop and a later version changed while
 // the row joined, whose start again queued a join of its own, or a run a re-admission carried to
 // the next generation, whose join the settle of that re-admission queued again there (workflow's
 // joinAgain). A row of a task its plan no longer holds, of a generation the issue has left, or of a
@@ -94,15 +99,14 @@ func (r *outbox) taskBranch(ctx context.Context, row record.OutboxRow, payload r
 			"task", payload.Task, "generation", payload.Generation)
 		return nil
 	}
-	needs := make([]record.PlanTask, 0, len(task.Needs))
-	for _, id := range task.Needs {
-		need, ok := stored.TaskOf(id)
-		if !ok {
-			return fmt.Errorf("make the branch of task %s of %s: it needs %s, which its plan holds no task of", task.Task, issue.Key, id)
-		}
-		needs = append(needs, need)
-	}
 	branch := task.BranchOf(issue.Key)
+	if task.Place.Kind == record.PlaceMerge {
+		return r.mergeBase(ctx, row, issue, task, branch, payload.Generation)
+	}
+	starts, err := stored.StartsFrom(issue, task.Task)
+	if err != nil {
+		return fmt.Errorf("make the branch %s of task %s of %s: %w", branch, task.Task, issue.Key, err)
+	}
 	base, join, err := stored.BaseOf(issue, task.Task)
 	if err != nil {
 		return fmt.Errorf("make the branch %s of task %s of %s: %w", branch, task.Task, issue.Key, err)
@@ -111,7 +115,7 @@ func (r *outbox) taskBranch(ctx context.Context, row record.OutboxRow, payload r
 	if join {
 		onto = base
 	}
-	conflicts, unmerged, err := r.joinBranch(ctx, issue, branch, onto, needs)
+	conflicts, unmerged, err := r.joinBranch(ctx, issue, branch, onto, starts, task.Needs)
 	var missing *needBranchMissing
 	if errors.As(err, &missing) {
 		return r.joinCannotEnd(ctx, row, issue, task, missing)
@@ -126,6 +130,43 @@ func (r *outbox) taskBranch(ctx context.Context, row record.OutboxRow, payload r
 	}
 	return r.joined(ctx, row, intake.TaskJoined{Issue: issue.Key, Generation: payload.Generation, Task: task.Task, Branch: branch, Needs: task.Needs,
 		Conflicts: conflicts, Unmerged: unmerged})
+}
+
+// mergeBase serves the row the start of a task's merge queued (workflow's Engine.start), where the
+// task's open pull request is based on a branch other than the issue's default branch: the base its
+// start fixed, a need's branch or its join branch, where a later version made the task merge. It
+// creates no branch, merges nothing and reads no join branch. It reads the task's open pull request
+// on GitHub and sets its base to the default branch the issue's record names where GitHub's differs
+// (ghbranch.SetBase), as branchClient makes each write of a branch, within branchRowTimeout, then
+// applies the end of the join with that base (intake.TaskJoined.Base), which records it and starts
+// the merge. A row that runs again finds the base set and sends no second PATCH. A task with no open
+// pull request recorded has no base to move, and its merge starts. A failure fails the row, which
+// tries again on its backoff, and the merge waits for it.
+func (r *outbox) mergeBase(ctx context.Context, row record.OutboxRow, issue record.Issue, task record.PlanTask, branch string, generation uint64) error {
+	var pr *record.PullRequest
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		pr, err = r.records.PullRequestOfTask(ctx, tx, issue.Key, task.Task)
+		return err
+	}); err != nil {
+		return fmt.Errorf("read the pull request of task %s of %s, whose merge waits for its base: %w", task.Task, issue.Key, err)
+	}
+	if pr != nil && pr.State == record.PullRequestOpen {
+		client, repo, err := r.branchClient(ctx, issue)
+		if err != nil {
+			return err
+		}
+		writeCtx, cancel := context.WithTimeout(ctx, branchRowTimeout)
+		defer cancel()
+		moved, err := ghbranch.SetBase(writeCtx, client, repo, pr.Number, issue.DefaultBranch)
+		if err != nil {
+			return fmt.Errorf("move the pull request of task %s of %s to its default branch at its merge: %w", task.Task, issue.Key, err)
+		}
+		r.log.Info("outbox task branch: the pull request of a task at its merge is based on the default branch", "row", row.ID, "issue", issue.Key,
+			"task", task.Task, "pullRequest", pr.Number, "base", issue.DefaultBranch, "moved", moved)
+	}
+	return r.joined(ctx, row, intake.TaskJoined{Issue: issue.Key, Generation: generation, Task: task.Task, Branch: branch, Needs: task.Needs,
+		Base: issue.DefaultBranch})
 }
 
 // openTaskPullRequest opens the pull request of task of issue, on branch against base, as
@@ -156,14 +197,26 @@ func (r *outbox) openTaskPullRequest(ctx context.Context, issue record.Issue, ta
 	return err
 }
 
-// closeTaskPullRequests closes each pull request the row names, of tasks of the row's issue (the
-// other tasks' at the merge, a removed task's at the version that removed it, an earlier run's at
+// closeTaskPullRequests closes each pull request the row names, of tasks of the row's issue (those
+// whose work a merge holds, a removed task's at the version that removed it, an earlier run's at
 // the first step of a run started again), as branchClient makes each write of a branch (the
-// implement App), within branchRowTimeout:
-// the row's comment is written on each, then it is closed (ghbranch.ClosePullRequest). A pull
-// request GitHub shows closed already is done, so a row that runs again, or one that a failure cut
-// short and that runs again on its backoff, closes only those still open. A row of a generation the
-// issue has left finishes without acting.
+// implement App), within branchRowTimeout: each is closed, then the row's comment is written on it
+// once, as the implement App's login (ghbranch.ClosePullRequest), which the outbox's token source
+// answers, as the boot requires of it (appauth.Logins). A row that runs again finds each close and
+// each comment an earlier try made. A row of a generation the issue has left finishes without
+// acting.
+//
+// It reads each answer as one of these (ghbranch.RefusedForGood decides which failure is for
+// good), and logs one line of each number:
+//   - closed now, closed by Legion before, or merged: the number is done;
+//   - closed by someone else, or closed with no closer GitHub names: the number is done, with no
+//     comment, and the line names that login (INFO), the null (INFO) or GitHub's answer (WARN);
+//   - closed, and its comment refused for good: the pull request is closed, so the number is done,
+//     and a WARN line names GitHub's answer;
+//   - its close refused for good, so it stays open: the row goes on to the rest, and then answers
+//     *pullRequestsCloseRefused, naming each such number, which ends the row and tells the issue's
+//     architect once (permanentRefusal, finishRefused);
+//   - any other failure can pass: the row answers it at once and runs again whole on its backoff.
 func (r *outbox) closeTaskPullRequests(ctx context.Context, row record.OutboxRow, payload record.TaskPullRequestsClose) error {
 	issue, err := r.issue(ctx, row.Issue)
 	if err != nil {
@@ -180,17 +233,117 @@ func (r *outbox) closeTaskPullRequests(ctx context.Context, row record.OutboxRow
 	if err != nil {
 		return err
 	}
+	logins, ok := r.tokens.(appauth.Logins)
+	if !ok {
+		return fmt.Errorf("close the pull requests of tasks of %s: the GitHub App token source answers no App login, which the comment is written as", issue.Key)
+	}
+	login, err := logins.AppLogin(ctx, appauth.Implement)
+	if err != nil {
+		return fmt.Errorf("read the implement App's login to close the pull requests of tasks of %s: %w", issue.Key, err)
+	}
+	refused := &pullRequestsCloseRefused{issue: issue.Key, comment: payload.Comment}
 	for _, number := range payload.Numbers {
-		closed, err := ghbranch.ClosePullRequest(ctx, github, repo, number, payload.Comment)
-		if err != nil {
+		closed, err := ghbranch.ClosePullRequest(ctx, github, repo, number, payload.Comment, login)
+		line := []any{"row", row.ID, "issue", issue.Key, "pullRequest", number}
+		switch {
+		case err == nil && closed.Now:
+			r.log.Info("outbox closed the pull request of a task of the issue", append(line, "comment", payload.Comment)...)
+		case err == nil && closed.Merged:
+			r.log.Info("outbox left the merged pull request of a task of the issue as it is", line...)
+		case err == nil && closed.By == login:
+			r.log.Info("outbox found the pull request of a task of the issue closed by Legion before, and its comment written once", append(line, "comment", payload.Comment)...)
+		case err == nil && closed.By != "":
+			r.log.Info("outbox left the pull request of a task of the issue as its closer left it, with no comment: Legion did not close it", append(line, "closedBy", closed.By)...)
+		case err == nil && closed.Unread == ghbranch.ClosedByNull:
+			r.log.Info("outbox left the pull request of a task of the issue closed, with no comment: GitHub names no one who closed it", append(line, "unread", closed.Unread)...)
+		case err == nil:
+			r.log.Warn("outbox left the pull request of a task of the issue closed, with no comment: GitHub refused the read of who closed it", append(line, "unread", storetext.FarSideError(closed.Unread))...)
+		case (closed.Now || closed.By != "") && ghbranch.RefusedForGood(err):
+			r.log.Warn("outbox closed the pull request of a task of the issue, and GitHub refused its comment for good", append(line, "error", storetext.FarSideError(err.Error()))...)
+		case ghbranch.RefusedForGood(err):
+			refused.refused = append(refused.refused, closeRefused{number: number, err: err})
+		default:
 			return fmt.Errorf("close the pull request #%d of a task of %s: %w", number, issue.Key, err)
 		}
-		if closed {
-			r.log.Info("outbox closed the pull request of a task of the issue", "row", row.ID, "issue", issue.Key, "pullRequest", number,
-				"comment", payload.Comment)
-		}
+	}
+	if len(refused.refused) > 0 {
+		return refused
 	}
 	return nil
+}
+
+// pullRequestsCloseRefused is a row that closes pull requests of tasks of issue, with comment, that
+// GitHub refused for good to close each pull request of refused: each stays open, and a try again
+// would meet the same answer, so the row ends and the issue's architect is told once (notice).
+type pullRequestsCloseRefused struct {
+	issue   string
+	comment string
+	refused []closeRefused
+}
+
+// closeRefused is a pull request whose close GitHub refused for good, and the failure it answered.
+type closeRefused struct {
+	number int
+	err    error
+}
+
+func (e *pullRequestsCloseRefused) Error() string {
+	return fmt.Sprintf("GitHub refused the close of %s of %s for good: %s", e.named(), e.issue, e.answers())
+}
+
+// numbers is the number of each pull request whose close GitHub refused, in the row's order.
+func (e *pullRequestsCloseRefused) numbers() []int {
+	numbers := make([]int, len(e.refused))
+	for i, refused := range e.refused {
+		numbers[i] = refused.number
+	}
+	return numbers
+}
+
+// named is the pull requests whose close GitHub refused, as words: `pull request #43`, `pull
+// requests #43 and #45`, `pull requests #43, #45 and #47`.
+func (e *pullRequestsCloseRefused) named() string {
+	numbers := make([]string, len(e.refused))
+	for i, refused := range e.refused {
+		numbers[i] = fmt.Sprintf("#%d", refused.number)
+	}
+	if len(numbers) == 1 {
+		return "pull request " + numbers[0]
+	}
+	return "pull requests " + strings.Join(numbers[:len(numbers)-1], ", ") + " and " + numbers[len(numbers)-1]
+}
+
+// answers is GitHub's answer to each refused close, each bounded as a far side's text is
+// (storetext.FarSideError): the one answer alone, or each after its number, `#43: <answer>; #45:
+// <answer>`. A GitHub answer reads `<status> to <method> <path>: <body>`; a refusal of the
+// private-name rules reads as its own error.
+func (e *pullRequestsCloseRefused) answers() string {
+	answers := make([]string, len(e.refused))
+	for i, refused := range e.refused {
+		text := refused.err.Error()
+		var answer *githubrest.Answer
+		if errors.As(refused.err, &answer) {
+			text = fmt.Sprintf("%d to %s %s: %s", answer.Status, answer.Method, answer.Path, answer.Body)
+		}
+		answers[i] = storetext.FarSideError(text)
+		if len(e.refused) > 1 {
+			answers[i] = fmt.Sprintf("#%d: %s", refused.number, answers[i])
+		}
+	}
+	return strings.Join(answers, "; ")
+}
+
+// notice is the pull-request-close-refused notice that tells the issue's architect which pull
+// requests stay open, that Legion will not try again, how to close each, the comment Legion was
+// writing and GitHub's answer to each.
+func (e *pullRequestsCloseRefused) notice() record.Notice {
+	it := "it"
+	if len(e.refused) > 1 {
+		it = "each"
+	}
+	return record.Notice{Kind: "pull-request-close-refused", Role: claim.RoleArchitect,
+		Reason: fmt.Sprintf("GitHub refused Legion's close of %s of %s, as it would refuse %s again, so %s stays open and Legion will not try again. Close %s with gh pr close where its work should not land. The comment Legion was writing: %q GitHub answered: %s",
+			e.named(), e.issue, it, it, it, e.comment, e.answers())}
 }
 
 // joined applies fact, the end of the join row made (intake.TaskJoined), through the outbox's
@@ -205,47 +358,57 @@ func (r *outbox) joined(ctx context.Context, row record.OutboxRow, fact intake.T
 	return nil
 }
 
-// joinBranch makes onto, the branch the join of needs is made on, on GitHub at the head of the first
-// of needs, or at the issue's default branch where it needs none, unless GitHub has it, and merges
-// each of needs into it in order, with the message `<KEY>: join the work of task <id>`, as
+// joinBranch makes onto, the branch the join of starts, the branches the task starts from
+// (record.StoredPlan.StartsFrom), is made on, on GitHub at the head of the first of starts, or at the
+// issue's default branch where it names none, unless GitHub has it, and merges each of starts into
+// it in order, with the message `<KEY>: join the work of task <id>` for a need's branch and
+// `<KEY>: join <default branch>, which holds the work of task <id>` for the default branch, as
 // branchClient makes each write of a branch, within branchRowTimeout. Where onto is not branch, the
 // task's join branch, branch is then made at onto's head, unless GitHub has it, and onto is merged
-// into it, so a branch GitHub has, with the task's own work on it, takes what its needs did since.
-// It answers the id of each need whose merge into onto GitHub refused as a conflict, nil for none,
-// which the task's first step repairs on onto, and whether GitHub refused the merge of onto into
-// branch as a conflict (unmerged), which only the task's own work on branch makes and which that
-// step repairs on branch: two facts, since the first step repairs each on another branch, and a
-// repair on branch of a need's conflict would show that need's work in the task's pull request,
-// which is based on onto. GitHub's 404 for a need's branch, to the read of the first need's head or
-// to a merge of a need, is a *needBranchMissing naming that need.
-func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch, onto string, needs []record.PlanTask) (conflicts []string, unmerged bool, err error) {
+// into it, with the message `<KEY>: join the work of tasks <needs>`, so a branch GitHub has, with
+// the task's own work on it, takes what its needs did since. It answers the id of each need whose
+// work GitHub refused to merge into onto as a conflict (for the default branch, each need whose work
+// it holds), nil for none, which the task's first step repairs on onto, and whether
+// GitHub refused the merge of onto into branch as a conflict (unmerged), which only the task's own
+// work on branch makes and which that step repairs on branch: two facts, since the first step
+// repairs each on another branch, and a repair on branch of a need's conflict would show that
+// need's work in the task's pull request, which is based on onto. GitHub's 404 for a branch of
+// starts, to the read of the first one's head or to a merge of one, is a *needBranchMissing naming
+// that branch and the needs whose work it holds.
+func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch, onto string, starts []record.StartBranch, needs []string) (conflicts []string, unmerged bool, err error) {
 	ctx, cancel := context.WithTimeout(ctx, branchRowTimeout)
 	defer cancel()
 	github, repo, err := r.branchClient(ctx, issue)
 	if err != nil {
 		return nil, false, err
 	}
+	missing := func(start record.StartBranch, err error) error {
+		return &needBranchMissing{branch: start.Branch, needs: start.Needs, merged: start.Branch == issue.DefaultBranch, err: err}
+	}
 	base := issue.DefaultBranch
-	if len(needs) > 0 {
-		base = needs[0].BranchOf(issue.Key)
+	if len(starts) > 0 {
+		base = starts[0].Branch
 	}
 	if err := ghbranch.Create(ctx, github, repo, onto, base); err != nil {
-		if len(needs) > 0 && githubAnswered(err, http.StatusNotFound) {
-			return nil, false, &needBranchMissing{need: needs[0].Task, branch: base, err: err}
+		if len(starts) > 0 && githubAnswered(err, http.StatusNotFound) {
+			return nil, false, missing(starts[0], err)
 		}
 		return nil, false, err
 	}
-	for _, need := range needs {
-		head := need.BranchOf(issue.Key)
-		joined, err := ghbranch.Merge(ctx, github, repo, onto, head, fmt.Sprintf("%s: join the work of task %s", issue.Key, need.Task))
+	for _, start := range starts {
+		message := fmt.Sprintf("%s: join the work of %s", issue.Key, idsNamed("task", start.Needs))
+		if start.Branch == issue.DefaultBranch {
+			message = fmt.Sprintf("%s: join %s, which holds the work of %s", issue.Key, start.Branch, idsNamed("task", start.Needs))
+		}
+		joined, err := ghbranch.Merge(ctx, github, repo, onto, start.Branch, message)
 		if err != nil {
 			if githubAnswered(err, http.StatusNotFound) && !mergeBaseMissing(err) {
-				return nil, false, &needBranchMissing{need: need.Task, branch: head, err: err}
+				return nil, false, missing(start, err)
 			}
 			return nil, false, err
 		}
 		if joined == ghbranch.MergeConflict {
-			conflicts = append(conflicts, need.Task)
+			conflicts = append(conflicts, start.Needs...)
 		}
 	}
 	if onto == branch {
@@ -254,26 +417,44 @@ func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch, ont
 	if err := ghbranch.Create(ctx, github, repo, branch, onto); err != nil {
 		return nil, false, err
 	}
-	ids := make([]string, 0, len(needs))
-	for _, need := range needs {
-		ids = append(ids, need.Task)
-	}
-	joined, err := ghbranch.Merge(ctx, github, repo, branch, onto, fmt.Sprintf("%s: join the work of tasks %s", issue.Key, strings.Join(ids, ", ")))
+	joined, err := ghbranch.Merge(ctx, github, repo, branch, onto, fmt.Sprintf("%s: join the work of %s", issue.Key, idsNamed("task", needs)))
 	if err != nil {
 		return nil, false, err
 	}
 	return conflicts, joined == ghbranch.MergeConflict, nil
 }
 
-// needBranchMissing is a join that cannot end: GitHub has no branch, branch, of the need need, so
-// the row waits for that branch on its backoff (joinCannotEnd).
+// idsNamed is noun and the one id of ids, or noun's plural and each id, as the words of a join name
+// the tasks or needs whose work a branch holds: `task b`, `tasks a, b`.
+func idsNamed(noun string, ids []string) string {
+	if len(ids) == 1 {
+		return noun + " " + ids[0]
+	}
+	return noun + "s " + strings.Join(ids, ", ")
+}
+
+// needBranchMissing is a join that cannot end: GitHub has no branch, branch, that holds the work of
+// needs, a need's own branch, or the default branch, which holds the work of each need that merged
+// (merged), so the row waits for that branch on its backoff (joinCannotEnd).
 type needBranchMissing struct {
-	need, branch string
-	err          error
+	branch string
+	needs  []string
+	merged bool
+	err    error
 }
 
 func (e *needBranchMissing) Error() string {
-	return fmt.Sprintf("GitHub has no branch %s of the need %s: %v", e.branch, e.need, e.err)
+	return fmt.Sprintf("GitHub has no branch %s%s: %v", e.branch, e.holds("the"), e.err)
+}
+
+// holds is what the missing branch holds, as the words that name it go on: ` of <whose> need <id>`
+// for a need's own branch, and `, which holds the work of <whose> need <id>` for the default branch,
+// with `needs` and each id for several.
+func (e *needBranchMissing) holds(whose string) string {
+	if e.merged {
+		return fmt.Sprintf(", which holds the work of %s %s", whose, idsNamed("need", e.needs))
+	}
+	return fmt.Sprintf(" of %s %s", whose, idsNamed("need", e.needs))
 }
 
 func (e *needBranchMissing) Unwrap() error { return e.err }
@@ -302,7 +483,7 @@ const taskJoinToldPrefix = "the owner is told: "
 // wait for the join, and at the row's first such answer the issue's architect, the task's owner, is
 // told once, in a task-join-failed notice that names the task, the need and the branch.
 func (r *outbox) joinCannotEnd(ctx context.Context, row record.OutboxRow, issue record.Issue, task record.PlanTask, missing *needBranchMissing) error {
-	words := fmt.Sprintf("task %s of %s waits for the join of its needs: GitHub has no branch %s of its need %s", task.Task, issue.Key, missing.branch, missing.need)
+	words := fmt.Sprintf("task %s of %s waits for the join of its needs: GitHub has no branch %s%s", task.Task, issue.Key, missing.branch, missing.holds("its"))
 	if !strings.HasPrefix(row.LastError, taskJoinToldPrefix) {
 		notice := record.Notice{Kind: "task-join-failed", Role: claim.RoleArchitect, Reason: words + ". Push that branch again, or stop the task with stop_task."}
 		if err := r.enqueueNotice(ctx, issue.Key, notice.Kind, notice); err != nil {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
@@ -139,9 +140,11 @@ type ReturnCounts struct {
 // held, "" for one whose agent's claim failed and for every task that is not held. StepWait and
 // StepWaitSince are what the step at a running task's place waits for and since when, nil where it
 // waits for nothing (SetStepWait). Branch is the GitHub branch the task works on, "" until its
-// first start gives it one (AssignTaskBranch), and JoinConflicts is the id of each need whose merge
-// GitHub refused as a conflict, into the branch the join of its needs is made on: its join branch
-// where it has one (StoredPlan.BaseOf), else its branch (SetJoinConflicts). JoinUnmerged says
+// first start gives it one (AssignTaskBranch), and JoinConflicts is the id of each need whose work
+// GitHub refused to merge as a conflict, into the branch the join of its needs is made on: its join
+// branch where it has one (StoredPlan.BaseOf), else its branch (SetJoinConflicts). The work of a
+// need that merged is the default branch's, so a conflict in the merge of the default branch names
+// each need whose work the default branch holds (StoredPlan.StartsFrom). JoinUnmerged says
 // GitHub refused as a conflict the merge of its join branch into its branch, which the task's own
 // work there makes at a start again (SetJoinUnmerged). StartReason is why the step the task stands
 // at was started: a start again at its first step, or a move back to an earlier step
@@ -173,6 +176,12 @@ type PlanTask struct {
 	StepWait       StepWait
 	StepWaitSince  *time.Time
 	StartReason    string
+	// Base is the base the task's latest start fixed for its pull request (SetTaskBase, written
+	// where the start joins its needs): the base the plan gave it then (StoredPlan.PlannedBase),
+	// which stands for its run whatever a later version says of who needs it or whether it merges.
+	// "" for a task that has not started, and for one a release before this one started; BaseOf
+	// reads the plan's base for both.
+	Base string
 }
 
 // BranchOf is the GitHub branch task works on, for the task of the issue keyed issueKey: the branch
@@ -242,20 +251,108 @@ type StoredPlan struct {
 	Steps   map[string][]PlanStep
 }
 
-// MergingTask is the task of p whose work is the issue's that merges: the one task no task needs
-// (plan.Sinks), whatever the plan's count of tasks, and none (false) where the plan holds no task,
-// or more than one task no task needs, which plan.Supported refuses. It is the one rule every
-// reader of the task that merges reads by: the walk of each task (its retro and merge), the base of
-// a task's pull request (BaseOf) and the read of an issue's merge pull request (MergePullRequest).
-func (p *StoredPlan) MergingTask() (string, bool) {
-	tasks := make([]plan.Task, len(p.Tasks))
-	for i, row := range p.Tasks {
-		tasks[i] = plan.Task{ID: row.Task, Needs: row.Needs}
-	}
-	if sinks := plan.Sinks(tasks); len(sinks) == 1 {
-		return sinks[0], true
+// OnlyTaskThatMerges is the one task of p that has a merge, done or to come (TasksThatMerge), and
+// none (false) where p holds no such task or more than one. It is what a reader takes for a fact
+// that no row ties to a task, whose work is the issue's own: a completion, a move back or a read
+// of a row raised before the plan, and a promotion whose role works no step. Where several tasks
+// merge, such a fact is of no one task, so it moves none.
+func (p *StoredPlan) OnlyTaskThatMerges() (string, bool) {
+	if tasks := p.TasksThatMerge(); len(tasks) == 1 {
+		return tasks[0], true
 	}
 	return "", false
+}
+
+// Merging is the ids of the tasks of p whose work merges by itself, in id order: the rule of the
+// plan (plan.Merging) over each task of p that is not left, each as its row gives its id, its
+// needs, its part_of and its merges. A left task, whose issue left the workflow before the task
+// was done, neither merges nor needs: a need that only it names keeps no task from merging. It
+// answers which tasks will merge under the plan p is, so a version that changes a task's needs or
+// its merges changes it; whether a task's work merged already is WorkMerged's.
+func (p StoredPlan) Merging() []string {
+	return p.mergeRule(false)
+}
+
+// mergeRule is the rule of the plan (plan.Merging), its one caller, over each task of p as its row
+// gives its id, its needs, its part_of and its merges: over each task that is not left (Merging), or
+// over every task where withLeft says so (TasksThatMerge).
+func (p StoredPlan) mergeRule(withLeft bool) []string {
+	tasks := make([]plan.Task, 0, len(p.Tasks))
+	for _, row := range p.Tasks {
+		if row.State == TaskLeft && !withLeft {
+			continue
+		}
+		tasks = append(tasks, plan.Task{ID: row.Task, Needs: row.Needs, PartOf: row.PartOf, Merges: row.Merges})
+	}
+	return plan.Merging(tasks)
+}
+
+// WorkMerged says whether the work of task of p merged: its row is done at its merge. A merge
+// writes that fact: the workflow's close of a merged pull request (closeMerged) moves the task
+// from its merge to done by the table's row that keeps the place, and only a task at its merge
+// takes that row. No later write changes it: a later version's write of a task the generation
+// holds keeps its state and its place (PutPlan), the workflow refuses a version that changes a done
+// task (intake.FinishedTask), and a leave keeps a done task done. A person's close of the issue
+// while the task stands at its merge writes done there too, and that issue is out of the workflow.
+// It reads the row and never Merging, which answers which tasks will merge under the plan in
+// force: a version that adds a need on a merged task takes it out of Merging and leaves WorkMerged
+// true. A task p does not hold did not merge.
+func (p StoredPlan) WorkMerged(task string) bool {
+	row, ok := p.TaskOf(task)
+	return ok && row.workMerged()
+}
+
+// workMerged says whether t is done at its merge (WorkMerged).
+func (t PlanTask) workMerged() bool {
+	return t.State == TaskDone && t.Place == TaskPlace{Kind: PlaceMerge}
+}
+
+// HeldBy is the id of each task whose work the merge of task of p holds, in id order: each task
+// that task needs, and each task that such a task needs, through tasks whose work did not merge
+// (WorkMerged). A need whose work merged ends the walk there, since its work, and all the work it
+// holds, is on the default branch already. It is the one statement of which pull requests a merge
+// closes (the workflow's closeHeldPullRequests). None for a task that needs none, and for a task p
+// does not hold.
+func (p StoredPlan) HeldBy(task string) []string {
+	row, ok := p.TaskOf(task)
+	if !ok {
+		return nil
+	}
+	held := map[string]bool{}
+	walk := slices.Clone(row.Needs)
+	for len(walk) > 0 {
+		id := walk[len(walk)-1]
+		walk = walk[:len(walk)-1]
+		if held[id] || p.WorkMerged(id) {
+			continue
+		}
+		held[id] = true
+		if need, ok := p.TaskOf(id); ok {
+			walk = append(walk, need.Needs...)
+		}
+	}
+	return slices.Sorted(maps.Keys(held))
+}
+
+// TasksThatMerge is the ids of the tasks of p that have a merge, done or to come, in id order: each
+// task that the rule of the plan merges over every task of p, a left task as its row stood before
+// its leave, and each task whose work merged (WorkMerged). A running generation holds no left task,
+// so there it is each task that will merge (Merging) and each whose work merged. A generation whose
+// issue left the workflow keeps each task its leave wrote left where it stood, with its needs and
+// its merges, since one leave writes every task of the generation at once and no later leave
+// writes them again: such a task's merge can still land, or have landed, as a person's merge of its
+// pull request or a merge queue's, before a later leave sets the issue done. It is the one set of
+// the merges of a run: the merge pull requests of an issue (Store.MergePullRequests), its merge
+// (Store.MergePullRequest) and the one task that merges (OnlyTaskThatMerges) read it.
+func (p StoredPlan) TasksThatMerge() []string {
+	tasks := p.mergeRule(true)
+	for _, row := range p.Tasks {
+		if row.workMerged() && !slices.Contains(tasks, row.Task) {
+			tasks = append(tasks, row.Task)
+		}
+	}
+	slices.Sort(tasks)
+	return tasks
 }
 
 // TaskOf is the task of p whose id is id, and false where p holds none, or where there is no plan
@@ -308,12 +405,12 @@ func (p StoredPlan) TasksOfBranch(issueKey, branch string) []string {
 }
 
 // takesIssueBranch says whether task, a task of p, takes the issue's own branch at its first start
-// before any other task can start: it is the task that merges (MergingTask) and needs none, so it
-// is the whole of the issue's work and its first start is the generation's first, which
+// before any other task can start: it is the only task that merges (OnlyTaskThatMerges) and needs
+// none, so it is the whole of the issue's work and its first start is the generation's first, which
 // AssignTaskBranch gives the issue's branch. A plan whose task that merges needs another starts
 // that other first, and which of its tasks starts first is not known before then.
 func (p StoredPlan) takesIssueBranch(task PlanTask) bool {
-	merging, ok := p.MergingTask()
+	merging, ok := p.OnlyTaskThatMerges()
 	return ok && merging == task.Task && len(task.Needs) == 0
 }
 
@@ -334,15 +431,15 @@ func (p StoredPlan) TaskOfBranch(issueKey, branch string) (string, bool) {
 }
 
 // HoldsBranch says whether a pull request on branch is one of the issue keyed issueKey, whose plan
-// at its generation p is (nil for an issue with no plan rows there): the one rule by which the
-// workflow records a pull request (its issueForBranch), and by which the merge of the pull request
-// of the task that merges closes the others (closeOtherTaskPullRequests). It is where a task of the
-// plan holds branch (TasksOfBranch), and the issue's own branch (claim.IssueBranch) where there is
-// no plan, as an issue that ran before plans did. A pull request on any other branch of an issue's
-// shape (claim.BranchIssue) is none of the issue's: a person's or a fork's on a name no task was
-// given, and one whose row the record deleted when it let the pull request go, whose task a later
-// version removed or whose run was started again. The recorder reads one fact more for the one case
-// HoldsBranchBeforeItsStart names.
+// at its generation p is (nil, or no tasks, for an issue with no plan rows there): the one rule by
+// which the workflow records a pull request (its issueForBranch), and by which a merge closes the
+// pull requests whose work it holds (closeHeldPullRequests). It is
+// where a task of the plan holds branch (TasksOfBranch), and the issue's own branch
+// (claim.IssueBranch) where the plan holds no task, as an issue that ran before plans did. A pull
+// request on any other branch of an issue's shape (claim.BranchIssue) is none of the issue's: a
+// person's or a fork's on a name no task was given, and one whose row the record deleted when it
+// let the pull request go, whose task a later version removed or whose run was started again. The
+// recorder reads one fact more for the one case HoldsBranchBeforeItsStart names.
 func (p *StoredPlan) HoldsBranch(issueKey, branch string) bool {
 	if p == nil {
 		return branch == claim.IssueBranch(issueKey)
@@ -365,40 +462,86 @@ func (p *StoredPlan) HoldsBranchBeforeItsStart(issueKey, branch string) bool {
 	})
 }
 
-// BaseOf is the branch the pull request of task of p, the plan of issue, is based on, and whether
-// it is the task's join branch, which the join of its needs makes (join true): the one rule the
-// join's executor, the opener of a task's pull request, the task text and the judgement of a later
-// version of the plan read. It is issue's default branch for the task that merges (MergingTask), for
-// a task that needs none and for a task none of whose steps is of the type implementation, whose
-// pull request shows the joined work of its needs, which its steps read. A task with one need is
-// based on that need's branch (BranchOf). A task with several is based on its join branch, its own
-// branch and claim.JoinBranchSuffix, where the work of its needs is joined and from which its branch
-// starts, so its pull request shows its own work alone. It is read for a task its first start gave a
-// branch (AssignTaskBranch). A task p does not hold, and a need it does not hold, are an error naming
-// it: plan.Validate refuses such a plan, so p holding one is a defect, which no base would answer
+// StartBranch is a branch the work of a task starts from (StoredPlan.StartsFrom), and the id of
+// each of the task's needs whose work it holds, in the order of the task's needs: one need whose
+// work did not merge, on its own branch, or each need whose work merged, on the issue's default
+// branch.
+type StartBranch struct {
+	Branch string
+	Needs  []string
+}
+
+// StartsFrom is the branches the work of task of p, the plan of issue, starts from, the branches
+// the join of its needs reads, in order: the branch of each need whose work did not merge
+// (BranchOf), in the order of its needs, then the issue's default branch once where the work of any
+// need merged (WorkMerged), since that branch holds it. So no reader reads the branch of a merged
+// need, which GitHub can have deleted at its merge. Whether a need merged is the fact its merge
+// wrote, which no later version changes, never Merging: a version that needs a merged task takes it
+// out of Merging. A task that needs none starts from no branch: its branch starts at the default
+// branch. A task p does not hold, and a need it does not hold, are an error naming it:
+// plan.Validate refuses such a plan, so p holding one is a defect, which no branch would answer
 // truly.
-func (p StoredPlan) BaseOf(issue Issue, task string) (base string, join bool, err error) {
+func (p StoredPlan) StartsFrom(issue Issue, task string) ([]StartBranch, error) {
 	of, ok := p.TaskOf(task)
 	if !ok {
-		return "", false, fmt.Errorf("the base of task %s of %s: its plan holds no such task", task, issue.Key)
+		return nil, fmt.Errorf("the branches task %s of %s starts from: its plan holds no such task", task, issue.Key)
 	}
-	var first PlanTask
-	for i, id := range of.Needs {
+	var starts []StartBranch
+	var merged []string
+	for _, id := range of.Needs {
 		need, ok := p.TaskOf(id)
-		if !ok {
-			return "", false, fmt.Errorf("the base of task %s of %s: it needs %s, which its plan holds no task of", task, issue.Key, id)
-		}
-		if i == 0 {
-			first = need
+		switch {
+		case !ok:
+			return nil, fmt.Errorf("the branches task %s of %s starts from: it needs %s, which its plan holds no task of", task, issue.Key, id)
+		case p.WorkMerged(id):
+			merged = append(merged, id)
+		default:
+			starts = append(starts, StartBranch{Branch: need.BranchOf(issue.Key), Needs: []string{id}})
 		}
 	}
-	if merging, merges := p.MergingTask(); len(of.Needs) == 0 || merges && merging == task || !p.Implements(task) {
+	if len(merged) > 0 {
+		starts = append(starts, StartBranch{Branch: issue.DefaultBranch, Needs: merged})
+	}
+	return starts, nil
+}
+
+// PlannedBase is the branch the plan gives as the base of the pull request of task of p, the plan
+// of issue, and whether it is the task's join branch, where the join of its needs is made (join
+// true). It is issue's default branch for a task that merges (Merging), for a task none of whose
+// steps is of the type implementation, whose pull request shows the joined work of its needs, which
+// its steps read, and for a task that starts from no branch (StartsFrom), one that needs none. A
+// task that starts from one branch is based on it: its one need's branch, or the default branch
+// where the work of each of its needs merged. A task that starts from several is based on its join
+// branch, its own branch and claim.JoinBranchSuffix, where they are joined and from which its branch
+// starts, so its pull request shows its own work alone. It is read for a task its first start gave a
+// branch (AssignTaskBranch). A task or a need p does not hold is StartsFrom's error.
+func (p StoredPlan) PlannedBase(issue Issue, task string) (base string, join bool, err error) {
+	starts, err := p.StartsFrom(issue, task)
+	switch {
+	case err != nil:
+		return "", false, err
+	case len(starts) == 0 || slices.Contains(p.Merging(), task) || !p.Implements(task):
 		return issue.DefaultBranch, false, nil
+	case len(starts) == 1:
+		return starts[0].Branch, false, nil
 	}
-	if len(of.Needs) > 1 {
-		return of.BranchOf(issue.Key) + claim.JoinBranchSuffix, true, nil
+	of, _ := p.TaskOf(task)
+	return of.BranchOf(issue.Key) + claim.JoinBranchSuffix, true, nil
+}
+
+// BaseOf is the branch the pull request of task of p, the plan of issue, is based on, and whether
+// it is the task's join branch, which the join of its needs makes (join true): the one rule the
+// join's executor, the opener of a task's pull request, the task text and the completion's check of
+// the pull request's base read. It is the base the task's latest start fixed (PlanTask.Base), which
+// stands for the task's run whatever a later version says, so a version that changes whether a
+// running task merges moves no base; and the base the plan gives (PlannedBase) for a task that has
+// not started, or that a release before this one started, whose row holds none. A task or a need p
+// does not hold is its error.
+func (p StoredPlan) BaseOf(issue Issue, task string) (base string, join bool, err error) {
+	if of, ok := p.TaskOf(task); ok && of.Base != "" {
+		return of.Base, of.Base == of.BranchOf(issue.Key)+claim.JoinBranchSuffix, nil
 	}
-	return first.BranchOf(issue.Key), false, nil
+	return p.PlannedBase(issue, task)
 }
 
 // Implements says whether a step of task of p is of the type implementation: the step that opens
@@ -656,7 +799,7 @@ const planTaskColumns = `plan_tasks.issue, plan_tasks.generation, plan_tasks.tas
 	plan_tasks.state, plan_tasks.stopped_reason, plan_tasks.running_kind, plan_tasks.position,
 	plan_tasks.pass, plan_tasks.rounds, plan_tasks.conflict_rounds, plan_tasks.backward_moves, plan_tasks.cap_told,
 	plan_tasks.branch, plan_tasks.join_conflicts, plan_tasks.join_unmerged, plan_tasks.hold_reason, plan_tasks.step_wait,
-	plan_tasks.step_wait_since, plan_tasks.start_reason`
+	plan_tasks.step_wait_since, plan_tasks.start_reason, plan_tasks.base`
 
 // scanPlanTasks reads every row of a query of planTaskColumns and closes rows.
 func scanPlanTasks(rows pgx.Rows) ([]PlanTask, error) {
@@ -669,7 +812,8 @@ func scanPlanTasks(rows pgx.Rows) ([]PlanTask, error) {
 		if err := rows.Scan(&task.Issue, &generation, &task.Task, &task.PlanVersion, &task.BlockText, &task.Needs, &task.PartOf,
 			&task.OwnerRole, &task.Merges, &task.StepsByDefault, &task.State, &task.StoppedReason, &task.Place.Kind, &task.Place.Position,
 			&task.Counts.Pass, &task.Counts.Rounds, &task.Counts.ConflictRounds, &moves, &task.Counts.CapTold,
-			&task.Branch, &task.JoinConflicts, &task.JoinUnmerged, &task.HoldReason, &task.StepWait, &task.StepWaitSince, &task.StartReason); err != nil {
+			&task.Branch, &task.JoinConflicts, &task.JoinUnmerged, &task.HoldReason, &task.StepWait, &task.StepWaitSince, &task.StartReason,
+			&task.Base); err != nil {
 			return nil, err
 		}
 		task.Generation = uint64(generation)
@@ -755,14 +899,28 @@ func (s *Postgres) PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Is
 	return earlier, nil
 }
 
+// SetTaskBase writes base, the base a start of task of the plan of issue at generation fixed for
+// the task's pull request (PlanTask.Base), which stands for the task's run. A task the plan does
+// not hold is refused, naming it.
+func (s *Postgres) SetTaskBase(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task, base string) error {
+	tag, err := tx.Exec(ctx, `update plan_tasks set base = $4 where issue = $1 and generation = $2 and task = $3`, issue, int64(generation), task, base)
+	if err != nil {
+		return fmt.Errorf("write the base %s of task %s of %s at generation %d: %w", base, task, issue, generation, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("write the base %s of task %s of %s at generation %d: the plan holds no such task", base, task, issue, generation)
+	}
+	return nil
+}
+
 // CarryPlan copies the plan of issue at generation from to generation to: every version, with the
 // tasks each recorded it added, every task and every step. carried is a hand-over that carries its
 // run, whose tasks go on where they stood, so each task keeps its state, its hold's reason, its
 // place, its step's wait and since when, its
-// counts, its branch and the needs whose join conflicted, and the generation every name it gave a
+// counts, its branch, the base its start fixed and the needs whose join conflicted, and the generation every name it gave a
 // task (AssignTaskBranch), since the run goes on in those branches. Without carried, the plan
 // starts from its start: each task waits at no act with no hold, no step wait, every count 0 and
-// no branch, and to has given no name yet. The names from gave stay given to the issue
+// no branch and no base, and to has given no name yet. The names from gave stay given to the issue
 // (AssignTaskBranch reads them at every generation), so no task of a plan of several takes one of
 // them, the issue's branch among them, while the one task of a plan of one takes the issue's
 // branch, as an issue always did. Neither copies a count of starts, which step_starts keeps by
@@ -791,10 +949,10 @@ func (s *Postgres) CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from,
 	if carried {
 		tasks = `insert into plan_tasks (issue, generation, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default,
 			state, stopped_reason, hold_reason, running_kind, position, step_wait, step_wait_since, pass, rounds, conflict_rounds,
-			backward_moves, cap_told, branch, join_conflicts, join_unmerged, start_reason)
+			backward_moves, cap_told, branch, join_conflicts, join_unmerged, start_reason, base)
 			select issue, $3, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default,
 			state, stopped_reason, hold_reason, running_kind, position, step_wait, step_wait_since, pass, rounds, conflict_rounds,
-			backward_moves, cap_told, branch, join_conflicts, join_unmerged, start_reason
+			backward_moves, cap_told, branch, join_conflicts, join_unmerged, start_reason, base
 			from plan_tasks where issue = $1 and generation = $2`
 		names = []string{`insert into plan_branches (issue, generation, branch)
 			select issue, $3, branch from plan_branches where issue = $1 and generation = $2 on conflict do nothing`}

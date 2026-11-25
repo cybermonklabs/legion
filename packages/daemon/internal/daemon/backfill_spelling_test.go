@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -191,6 +192,148 @@ func TestTheBackfillLeavesARecordWhosePullRequestIsOnAnotherRepository(t *testin
 			}
 			if got.Repo != "acme/widgets" || got.GitHubRepo != "acme/widgets" {
 				t.Fatalf("LEGION-1 = %s (GitHub's %s), want acme/widgets", got.Repo, got.GitHubRepo)
+			}
+		})
+	}
+}
+
+// seedTaskPullRequests writes LEGION-1 with no repository and a plan at its generation 1 of tasks,
+// each with one step, the implementer's, and each started in id order, so each takes its own
+// branch (record.Store.AssignTaskBranch), and moved to its step in the state its row names: a
+// running task works its step, a done one finished it, its last. Each of prs is open on the branch
+// of its task.
+func seedTaskPullRequests(t *testing.T, pool *store.Pool, records *record.Postgres, tasks []record.PlanTask, prs map[string]record.PullRequest) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq, repo, default_branch)
+		values ('LEGION-1', 'LEGION-1', 'LEGION', 'root', 'implementing', 1, 'in_progress', 'A', 1, '', '')`); err != nil {
+		t.Fatal(err)
+	}
+	v := record.PlanVersion{Issue: "LEGION-1", Generation: 1, Version: 1, ArtifactID: "plan-1", Source: record.PlanSourceOwner,
+		GivenBy: "legion-legion-legion-1-architect", GivenAt: time.Date(2026, 11, 24, 9, 0, 0, 0, time.UTC)}
+	rows := make([]record.PlanTask, 0, len(tasks))
+	var steps []record.PlanStep
+	for _, task := range tasks {
+		rows = append(rows, record.PlanTask{Issue: "LEGION-1", Generation: 1, Task: task.Task, PlanVersion: 1, BlockText: "Do " + task.Task + ".",
+			Needs: task.Needs, Merges: task.Merges, State: record.TaskWaiting})
+		steps = append(steps, record.PlanStep{Issue: "LEGION-1", Generation: 1, Task: task.Task, Position: 1, Role: "implementer",
+			Type: "implementation", Agent: claim.Agent("implementer-" + task.Task)})
+	}
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		if err := records.PutPlan(ctx, tx, v, rows, steps); err != nil {
+			return err
+		}
+		for _, task := range tasks {
+			branch, err := records.AssignTaskBranch(ctx, tx, "LEGION-1", 1, task.Task)
+			if err != nil {
+				return err
+			}
+			if err := records.MoveTask(ctx, tx, "LEGION-1", 1, task.Task, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, task.State); err != nil {
+				return err
+			}
+			pr, ok := prs[task.Task]
+			if !ok {
+				continue
+			}
+			pr.Issue, pr.Branch, pr.HeadSHA, pr.State = "LEGION-1", branch, "head-"+task.Task, record.PullRequestOpen
+			if err := records.PutPullRequest(ctx, tx, pr); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// backfillLeft runs the backfill over LEGION-1, which Dispatch resolves to acme/widgets, and
+// fails t unless it leaves the record unfilled, logged with cause.
+func backfillLeft(t *testing.T, pool *store.Pool, records *record.Postgres, cause string) {
+	t.Helper()
+	github := newNamedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main", "zeta/tools": "zeta/tools@main"})
+	client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-1", ResolvedRepo: "acme/widgets"}}}
+	left, logged := backfillLogged(t, pool, records, client, t.TempDir(),
+		newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), ghrepo.Renames{})
+	if want := leftAs("LEGION-1", "acme/widgets", cause); !left || !strings.Contains(logged, want) {
+		t.Fatalf("backfill left %t, logging:\n%s\nwant the record left, logged as %s", left, logged, want)
+	}
+	if got := recordedIssue(t, &workflowRuntime{pool: pool, records: records, log: quietLogger()}, "LEGION-1"); got.Repo != "" {
+		t.Fatalf("LEGION-1 = %s after the backfill left it, want it unfilled", got.Repo)
+	}
+}
+
+// A record written before the record carried its repository is filled only where the pull request
+// of each of its tasks is on the repository Dispatch resolves it to, not only that of the merge
+// still to come. LEGION-1's plan holds a and b, running, each needing nothing, so each merges by
+// itself: a's pull request #7 is on acme/widgets, which Dispatch resolves, and b's #8 is on
+// zeta/tools. The record is left, the log naming #8 and the fix.
+//
+// The fault it catches is a record filled on a repository the issue did not work in, read from one
+// merge of several (its control: the backfill reading the issue's merge pull request alone, a's #7,
+// the first merge not done, under which the record is filled with acme/widgets).
+func TestTheBackfillLeavesARecordWhoseSecondMergingTasksPullRequestIsOnAnotherRepository(t *testing.T) {
+	t.Parallel()
+	pool, records := isolatedOutboxPool(t), record.NewStore()
+	seedTaskPullRequests(t, pool, records,
+		[]record.PlanTask{{Task: "a", State: record.TaskRunning}, {Task: "b", State: record.TaskRunning}},
+		map[string]record.PullRequest{"a": {Repo: "acme/widgets", Number: 7}, "b": {Repo: "zeta/tools", Number: 8}})
+	backfillLeft(t, pool, records, "Dispatch resolves it to acme/widgets, but its pull request #8 is on zeta/tools: set the issue's repository in Dispatch to zeta/tools (dispatch issue-update --issue LEGION-1 --repo zeta/tools)")
+}
+
+// A task whose work does not merge by itself has a pull request too, which names the repository
+// the issue worked in as well as a merge's does. LEGION-1's plan holds a, done at its last step,
+// and b, which needs a and merges: a's pull request #7 is on zeta/tools and b's #8 on acme/widgets,
+// which Dispatch resolves. The record is left, the log naming #7 and the fix.
+//
+// The fault it catches is a record filled on a repository the issue worked in only through a task
+// that does not merge by itself (its control: the backfill reading the pull requests of the merges
+// alone, b's #8, under which the record is filled with acme/widgets).
+func TestTheBackfillLeavesARecordWhoseNonMergingTasksPullRequestIsOnAnotherRepository(t *testing.T) {
+	t.Parallel()
+	pool, records := isolatedOutboxPool(t), record.NewStore()
+	seedTaskPullRequests(t, pool, records,
+		[]record.PlanTask{{Task: "a", State: record.TaskDone},
+			{Task: "b", Needs: []string{"a"}, Merges: true, State: record.TaskRunning}},
+		map[string]record.PullRequest{"a": {Repo: "zeta/tools", Number: 7}, "b": {Repo: "acme/widgets", Number: 8}})
+	backfillLeft(t, pool, records, "Dispatch resolves it to acme/widgets, but its pull request #7 is on zeta/tools: set the issue's repository in Dispatch to zeta/tools (dispatch issue-update --issue LEGION-1 --repo zeta/tools)")
+}
+
+// Where the pull request of each task is on the repository Dispatch resolves, in any case, the
+// record is filled with acme/widgets, GitHub's spelling acme/widgets beside it, and nothing is
+// left. Two plans: the one above, with a's #7 on ACME/Widgets and b's #8 on acme/widgets; and a and
+// b, running, each needing nothing, so each merges by itself, with a's #7 on acme/widgets and b's
+// #8 on ACME/Widgets.
+//
+// The fault it catches is a record left over a pull request on its own repository spelled in
+// another case (its control: the backfill comparing the repositories by exact text, under which
+// the record is left over #7 in the first plan and over #8, the second merge's, in the second).
+func TestTheBackfillFillsARecordWhoseEveryTaskPullRequestIsOnTheResolvedRepository(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		tasks []record.PlanTask
+		prs   map[string]record.PullRequest
+	}{
+		{"a task that does not merge and one that merges",
+			[]record.PlanTask{{Task: "a", State: record.TaskDone}, {Task: "b", Needs: []string{"a"}, Merges: true, State: record.TaskRunning}},
+			map[string]record.PullRequest{"a": {Repo: "ACME/Widgets", Number: 7}, "b": {Repo: "acme/widgets", Number: 8}}},
+		{"two tasks that merge",
+			[]record.PlanTask{{Task: "a", State: record.TaskRunning}, {Task: "b", State: record.TaskRunning}},
+			map[string]record.PullRequest{"a": {Repo: "acme/widgets", Number: 7}, "b": {Repo: "ACME/Widgets", Number: 8}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pool, records := isolatedOutboxPool(t), record.NewStore()
+			seedTaskPullRequests(t, pool, records, tc.tasks, tc.prs)
+			github := newNamedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main"})
+			client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-1", ResolvedRepo: "acme/widgets"}}}
+			left, logged := backfillLogged(t, pool, records, client, t.TempDir(),
+				newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), ghrepo.Renames{})
+			if left {
+				t.Fatalf("backfill left a record, logging:\n%s\nwant LEGION-1 filled", logged)
+			}
+			if got := recordedIssue(t, &workflowRuntime{pool: pool, records: records, log: quietLogger()}, "LEGION-1"); got.Repo != "acme/widgets" || got.GitHubRepo != "acme/widgets" {
+				t.Fatalf("LEGION-1 = %s (GitHub's %s), want acme/widgets (GitHub's acme/widgets)", got.Repo, got.GitHubRepo)
 			}
 		})
 	}

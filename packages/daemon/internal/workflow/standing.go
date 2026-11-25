@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -157,7 +158,9 @@ func readPull(row *record.PullRequest) taskPull { return taskPull{row: row, read
 // than the issue's default branch (record.StoredPlan.BaseOf), and "" where it gives that branch;
 // join, that base where it is the task's join branch, the branch the join of its needs is made on,
 // and "" for a task with no join branch; conflicts, each need whose join GitHub refused as a
-// conflict (record.PlanTask.JoinConflicts), with its branch, in the order the row holds them; and
+// conflict (record.PlanTask.JoinConflicts), with the branch the task starts from that holds its work
+// (record.StoredPlan.StartsFrom), in the order the row holds them: the need's own branch, or the
+// default branch where its work merged, since GitHub can have deleted its branch at that merge; and
 // unmerged, whether GitHub refused as a conflict the merge of the task's join branch into its
 // branch (record.PlanTask.JoinUnmerged), false for a task with no join branch.
 type planTold struct {
@@ -167,13 +170,15 @@ type planTold struct {
 	unmerged  bool
 }
 
-// joinConflict is a need of a task whose join GitHub refused as a conflict, and the need's branch.
+// joinConflict is a need of a task whose join GitHub refused as a conflict, and the branch the task
+// starts from that holds the need's work (record.StoredPlan.StartsFrom).
 type joinConflict struct {
 	task, branch string
 }
 
 // planToldOf is planTold of task of stored, the plan of issue's run, and nothing for no plan. A task
-// or a need the plan does not hold is an error (record.StoredPlan.BaseOf).
+// or a need the plan does not hold is an error (record.StoredPlan.BaseOf). A conflict of a need the
+// task does not start from, which no join of its needs now made, is not told.
 func planToldOf(issue record.Issue, stored *record.StoredPlan, task string) (planTold, error) {
 	if stored == nil {
 		return planTold{}, nil
@@ -189,10 +194,15 @@ func planToldOf(issue record.Issue, stored *record.StoredPlan, task string) (pla
 	if join {
 		told.join = base
 	}
+	starts, err := stored.StartsFrom(issue, task)
+	if err != nil {
+		return planTold{}, err
+	}
 	of, _ := stored.TaskOf(task)
 	for _, need := range of.JoinConflicts {
-		row, _ := stored.TaskOf(need)
-		told.conflicts = append(told.conflicts, joinConflict{task: need, branch: row.BranchOf(issue.Key)})
+		if at := slices.IndexFunc(starts, func(start record.StartBranch) bool { return slices.Contains(start.Needs, need) }); at >= 0 {
+			told.conflicts = append(told.conflicts, joinConflict{task: need, branch: starts[at].Branch})
+		}
 	}
 	told.unmerged = join && of.JoinUnmerged
 	return told, nil

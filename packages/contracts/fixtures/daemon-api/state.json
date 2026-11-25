@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 224,
-    "caller": 224
+    "daemon": 267,
+    "caller": 267
   },
   "admission": {
     "cap": 7,
@@ -128,7 +128,25 @@
         },
         "nextWakeAt": "2026-10-06T08:40:12Z",
         "last": false
-      }
+      },
+      "checks": [
+        {
+          "repo": "acme/widgets",
+          "pullRequest": 1239,
+          "mergeCommit": "3e9c0a7b5d2f4e8a1c6b9d0f2a4e7c5b8d1f3a60",
+          "openedAt": "2026-09-22T08:40:12Z",
+          "role": "implementer",
+          "looks": 2,
+          "lookOpen": true,
+          "lastWake": {
+            "kind": "issue.deployed",
+            "detail": "run 38230245571 completed 2026-09-22T09:10:44Z",
+            "at": "2026-09-22T09:10:51Z"
+          },
+          "nextWakeAt": "2026-10-06T08:40:12Z",
+          "last": false
+        }
+      ]
     },
     "LEGION-208": {
       "key": "LEGION-208",

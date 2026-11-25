@@ -262,32 +262,50 @@ func TestAVersionThatChangesTheStoppedTaskStartsItAgain(t *testing.T) {
 	}
 }
 
-// A version that adds a need of the task that merges is refused while that task stands at its
-// retro or its merge, where the work of the issue merges: of the plan a to e at e's retro, a version
-// that adds h, needing e, is refused with one reason of h.
+// A version that adds a need on a task at its retro is refused where it changes whether the work of
+// that task merges, and taken where it does not: of the plan a to e at e's retro, a version that
+// adds h, needing e, takes the merge off e, and is refused with the one reason of e. Where e's block
+// says merges, e still merges with h needing it, and the same version is taken: h waits for e.
 //
-// The fault it catches is a need on the work the issue merges once it is merging (its control:
-// planGiven without the refusal, which takes the version).
+// The fault it catches is a need that takes the merge off the work of a task once its retro has
+// started (its control: planGiven without the refusal, which takes the version), and a refusal of
+// a need that changes no task's merge (its control: the refusal of each need on a task at its
+// retro, the revision before, which refuses the version where e says merges).
 func TestAVersionThatNeedsTheMergingTaskAtItsRetroIsRefused(t *testing.T) {
-	pool := migratedPool(t)
-	engine := returnEngine()
-	root := stepRoot(t, pool, phase.Retro)
-	seedTasks(t, pool, root.Key, root.Generation,
-		planTask{id: "a", steps: []string{"implementer:a"}, agents: []claim.Agent{"impl-a"}, state: record.TaskDone, place: atStep(1)},
-		planTask{id: "b", steps: []string{"implementer:b"}, agents: []claim.Agent{"impl-b"}, state: record.TaskDone, place: atStep(1)},
-		planTask{id: "c", steps: []string{"implementer:c"}, agents: []claim.Agent{"impl-c"}, needs: []string{"b"}, state: record.TaskDone, place: atStep(1)},
-		planTask{id: "d", steps: []string{"implementer:d"}, agents: []claim.Agent{"impl-d"}, needs: []string{"a", "c"}, state: record.TaskDone, place: atStep(1)},
-		planTask{id: "e", steps: []string{"tester:e"}, agents: []claim.Agent{"test-e"}, needs: []string{"d"}, state: record.TaskRunning,
-			place: record.TaskPlace{Kind: record.PlaceRetro}})
-	result := applyFacts(t, pool, engine)("version-2", laterVersion(t, root.Key, root.Generation, 2,
-		keyed(t, "a", "", []string{"implementer:a"}), keyed(t, "b", "", []string{"implementer:b"}), keyed(t, "c", "", []string{"implementer:c"}, "b"),
-		keyed(t, "d", "", []string{"implementer:d"}, "a", "c"), keyed(t, "e", "", []string{"tester:e"}, "d"), keyed(t, "h", "", []string{"implementer:h"}, "e")))
-	want := []plan.Refusal{{Task: "h", Reason: "task h needs task e, which stands at its retro, where the work of the issue merges. This release of Legion does not carry it out yet."}}
-	if result.Refusal == nil || !reflect.DeepEqual(result.Refusal.Reasons, want) {
-		t.Fatalf("the version that adds h, needing e at its retro, = %+v, want refused with %+v", result, want)
-	}
-	if _, ok := tasksOf(t, pool, engine, root.Key)["h"]; ok {
-		t.Fatalf("the plan of %s holds h after its version was refused", root.Key)
+	for _, says := range []bool{false, true} {
+		t.Run(map[bool]string{false: "e merges as the task no task needs", true: "e says merges"}[says], func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := returnEngine()
+			root := stepRoot(t, pool, phase.Retro)
+			seedTasks(t, pool, root.Key, root.Generation,
+				planTask{id: "a", steps: []string{"implementer:a"}, agents: []claim.Agent{"impl-a"}, state: record.TaskDone, place: atStep(1)},
+				planTask{id: "b", steps: []string{"implementer:b"}, agents: []claim.Agent{"impl-b"}, state: record.TaskDone, place: atStep(1)},
+				planTask{id: "c", steps: []string{"implementer:c"}, agents: []claim.Agent{"impl-c"}, needs: []string{"b"}, state: record.TaskDone, place: atStep(1)},
+				planTask{id: "d", steps: []string{"implementer:d"}, agents: []claim.Agent{"impl-d"}, needs: []string{"a", "c"}, state: record.TaskDone, place: atStep(1)},
+				planTask{id: "e", steps: []string{"tester:e"}, agents: []claim.Agent{"test-e"}, needs: []string{"d"}, state: record.TaskRunning,
+					place: record.TaskPlace{Kind: record.PlaceRetro}})
+			eBlock := keyed(t, "e", "", []string{"tester:e"}, "d")
+			if says {
+				markMerges(t, pool, root.Key, "e")
+				eBlock.Merges = true
+			}
+			result := applyFacts(t, pool, engine)("version-2", laterVersion(t, root.Key, root.Generation, 2,
+				keyed(t, "a", "", []string{"implementer:a"}), keyed(t, "b", "", []string{"implementer:b"}), keyed(t, "c", "", []string{"implementer:c"}, "b"),
+				keyed(t, "d", "", []string{"implementer:d"}, "a", "c"), eBlock, keyed(t, "h", "", []string{"implementer:h"}, "e")))
+			if says {
+				mustTake(t, "the version that adds h, needing e, which says merges, at its retro", result)
+				assertTask(t, tasksOf(t, pool, engine, root.Key), "h", record.TaskWaiting, record.TaskPlace{})
+				return
+			}
+			want := []plan.Refusal{{Task: "e", Reason: "task e stands at its retro, which has started, so this version cannot change whether its work merges. " +
+				"Keep each need on task e as it is until it is done."}}
+			if result.Refusal == nil || !reflect.DeepEqual(result.Refusal.Reasons, want) {
+				t.Fatalf("the version that adds h, needing e at its retro, = %+v, want refused with %+v", result, want)
+			}
+			if _, ok := tasksOf(t, pool, engine, root.Key)["h"]; ok {
+				t.Fatalf("the plan of %s holds h after its version was refused", root.Key)
+			}
+		})
 	}
 }
 
@@ -303,18 +321,18 @@ func cNeedsAB(t *testing.T, extra ...plan.Task) []plan.Task {
 		keyed(t, "c", "", []string{"planner:cp", "implementer:c"}, "a", "b")}, extra...)
 }
 
-// A version that moves the base of a task that has started and is not stopped is refused: of tasks
-// a and b, which are done, and c, which needs both and is the task that merges, standing at its
-// first step on its own branch legion/LEGION-208.c, so its pull request is based on main, a version
-// that adds d, needing c, would base c on its join branch legion/LEGION-208.c.join, which c's start
-// as the task that merges never made. It is refused with one reason of c, which names both bases,
-// d is not added, and c's implementation step is told no base. The same holds while c is held at
+// A version that changes the base the plan gives a task that has started keeps the base its start
+// fixed: of tasks a and b, which are done, and c, which needs both and is the task that merges,
+// standing at its first step on its own branch legion/LEGION-208.c, its start having fixed its base
+// main (record.PlanTask.Base), a version that adds d, needing c, gives c the join branch
+// legion/LEGION-208.c.join, which c's start never made. It is taken, d is added, and c's
+// implementation step is told no base: c's base is still main. The same holds while c is held at
 // its first step.
 //
 // The fault it catches is a version that moves the base of a running task, whose later steps are
-// then told a branch that does not exist (its control: planGiven without the refusal, which takes
-// the version, and c's implementation step is told legion/LEGION-208.c.join).
-func TestAVersionThatMovesTheBaseOfAStartedTaskIsRefused(t *testing.T) {
+// then told a branch that does not exist (its control: BaseOf as the plan's base alone, the
+// revision before, under which c's implementation step is told legion/LEGION-208.c.join).
+func TestAVersionKeepsTheBaseOfAStartedTask(t *testing.T) {
 	for _, held := range []bool{false, true} {
 		t.Run(map[bool]string{false: "running", true: "held"}[held], func(t *testing.T) {
 			pool := migratedPool(t)
@@ -326,39 +344,37 @@ func TestAVersionThatMovesTheBaseOfAStartedTaskIsRefused(t *testing.T) {
 				planTask{id: "c", steps: []string{"planner:cp", "implementer:c"}, agents: []claim.Agent{"plan-c", "impl-c"}, needs: []string{"a", "b"},
 					state: record.TaskRunning, place: atStep(1)})
 			seedTaskBranch(t, pool, root.Key, "c", "legion/"+root.Key+".c")
-			if held {
-				seedRecord(t, pool, func(tx pgx.Tx) error {
-					return record.NewStore().HoldTask(t.Context(), tx, root.Key, root.Generation, "c", "")
-				})
-			}
+			seedRecord(t, pool, func(tx pgx.Tx) error {
+				if err := record.NewStore().SetTaskBase(t.Context(), tx, root.Key, root.Generation, "c", "main"); err != nil {
+					return err
+				}
+				if !held {
+					return nil
+				}
+				return record.NewStore().HoldTask(t.Context(), tx, root.Key, root.Generation, "c", "")
+			})
 
-			result := applyFacts(t, pool, engine)("version-2", laterVersion(t, root.Key, root.Generation, 2,
-				cNeedsAB(t, keyed(t, "d", "", []string{"tester:d"}, "c"))...))
-			want := []plan.Refusal{{Task: "c", Reason: "task c has started on the base main, and this version would base it on legion/LEGION-208.c.join: " +
-				"stop it with stop_task before you change its base."}}
-			if result.Refusal == nil || !reflect.DeepEqual(result.Refusal.Reasons, want) {
-				t.Errorf("the version that adds d, needing the started c, = %+v, want refused with %+v", result, want)
-			}
-			if _, ok := tasksOf(t, pool, engine, root.Key)["d"]; ok {
-				t.Errorf("the plan of %s holds d after its version was refused", root.Key)
+			mustTake(t, "the version that adds d, needing the started c", applyFacts(t, pool, engine)("version-2", laterVersion(t, root.Key, root.Generation, 2,
+				cNeedsAB(t, keyed(t, "d", "", []string{"tester:d"}, "c"))...)))
+			if _, ok := tasksOf(t, pool, engine, root.Key)["d"]; !ok {
+				t.Errorf("the plan of %s holds no d after its version was taken", root.Key)
 			}
 			lacks(t, "implementer of c", stepLines(t, pool, engine, root.Key, "c", atStep(2)), toldABase)
 		})
 	}
 }
 
-// A version may move the base of a task that waits, and not of one that has started: of tasks a,
-// running at its one step on its own branch legion/LEGION-208.a with its pull request #44, b, done,
-// and c, which needs both and is the task that merges, waiting, version 2 adds d, needing c, and is
-// taken, since c has not started: c's implementation step is told its join branch. Once a is done c
-// starts on its own branch, legion/LEGION-208.c, and version 3, which removes d, would make c the
-// task that merges again, based on main: it is refused with one reason of c, which names both
-// bases, and d stays.
+// A version may change the base the plan gives a task that waits, which its start then fixes, and
+// never the base of one that has started: of tasks a, running at its one step on its own branch
+// legion/LEGION-208.a with its pull request #44, b, done, and c, which needs both and is the task
+// that merges, waiting, version 2 adds d, needing c, and is taken: once a is done c starts on its
+// own branch, legion/LEGION-208.c, its start fixes its join branch, and its implementation step is
+// told it. Version 3, which removes d, makes c the task that merges again, whose plan's base is
+// main: it is taken, d goes, and c's implementation step is still told its join branch.
 //
-// The fault it catches is a version that moves the merge back to a task that started as no task
-// that merges, on its join branch (its control: planGiven without the refusal, which takes version
-// 3), and a refusal of a version that moves the base of a task that waits (its control: the refusal
-// of every task whatever its state, which refuses version 2).
+// The fault it catches is a version that moves the base of a task that started on its join branch
+// (its control: BaseOf as the plan's base alone, under which c's step is told no base after version
+// 3).
 func TestAVersionMovesTheBaseOfAWaitingTaskAndNotOfAStartedOne(t *testing.T) {
 	pool := migratedPool(t)
 	engine := returnEngine()
@@ -373,6 +389,7 @@ func TestAVersionMovesTheBaseOfAWaitingTaskAndNotOfAStartedOne(t *testing.T) {
 		Branch: "legion/" + root.Key + ".a", HeadSHA: "head-a", Failing: []string{}})
 	apply := applyFacts(t, pool, engine)
 	dBlock := keyed(t, "d", "", []string{"tester:d"}, "c")
+	joined := " Open the pull request of this task against legion/LEGION-208.c.join: gh pr create --base legion/LEGION-208.c.join."
 
 	mustTake(t, "version 2, which adds d while c waits", apply("version-2", laterVersion(t, root.Key, root.Generation, 2, cNeedsAB(t, dBlock)...)))
 	tasks := tasksOf(t, pool, engine, root.Key)
@@ -381,19 +398,14 @@ func TestAVersionMovesTheBaseOfAWaitingTaskAndNotOfAStartedOne(t *testing.T) {
 
 	taskMoves(t, pool, engine, root.Key, "a", TriggerImplementationReady, "")
 	c := tasksOf(t, pool, engine, root.Key)["c"]
-	if c.State != record.TaskRunning || c.Branch != "legion/"+root.Key+".c" {
-		t.Fatalf("task c once a is done = %+v, want running on legion/%s.c", c, root.Key)
+	if c.State != record.TaskRunning || c.Branch != "legion/"+root.Key+".c" || c.Base != "legion/"+root.Key+".c.join" {
+		t.Fatalf("task c once a is done = %+v, want running on legion/%s.c with its join branch as its base", c, root.Key)
 	}
-	endsWith(t, "implementer of c", stepLines(t, pool, engine, root.Key, "c", atStep(2)),
-		" Open the pull request of this task against legion/LEGION-208.c.join: gh pr create --base legion/LEGION-208.c.join.")
+	endsWith(t, "implementer of c", stepLines(t, pool, engine, root.Key, "c", atStep(2)), joined)
 
-	result := apply("version-3", laterVersion(t, root.Key, root.Generation, 3, cNeedsAB(t)...))
-	want := []plan.Refusal{{Task: "c", Reason: "task c has started on the base legion/LEGION-208.c.join, and this version would base it on main: " +
-		"stop it with stop_task before you change its base."}}
-	if result.Refusal == nil || !reflect.DeepEqual(result.Refusal.Reasons, want) {
-		t.Errorf("version 3, which removes d while c runs, = %+v, want refused with %+v", result, want)
+	mustTake(t, "version 3, which removes d while c runs", apply("version-3", laterVersion(t, root.Key, root.Generation, 3, cNeedsAB(t)...)))
+	if _, ok := tasksOf(t, pool, engine, root.Key)["d"]; ok {
+		t.Errorf("the plan of %s holds d after version 3 removed it", root.Key)
 	}
-	if _, ok := tasksOf(t, pool, engine, root.Key)["d"]; !ok {
-		t.Errorf("the plan of %s lost d to a version that was refused", root.Key)
-	}
+	endsWith(t, "implementer of c", stepLines(t, pool, engine, root.Key, "c", atStep(2)), joined)
 }

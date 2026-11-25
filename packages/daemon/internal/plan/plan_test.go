@@ -98,10 +98,9 @@ func TestLineOfTheDefaultStepsIsTodaysOrder(t *testing.T) {
 	}
 }
 
-// The work of an issue merges once, at the end of the task no task needs, so only the task that
-// merges walks Legion's retro and merge after its steps: a task another task needs ends at its
-// last step. The fault it catches is a task that does not merge running a retro and a merge of its
-// own (its control: Line appending them whatever merges says).
+// Only a task whose work merges by itself walks Legion's retro and merge after its steps: any
+// other task ends at its last step. The fault it catches is a task that does not merge running a
+// retro and a merge of its own (its control: Line appending them whatever merges says).
 func TestALineOfATaskThatDoesNotMergeEndsAtItsLastStep(t *testing.T) {
 	steps, _ := ParseSteps("implementer reviewer")
 	if got, want := Line(steps, false), []phase.Phase{phase.Implementing, phase.Reviewing}; !reflect.DeepEqual(got, want) {

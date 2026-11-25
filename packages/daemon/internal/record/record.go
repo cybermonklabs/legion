@@ -1534,13 +1534,16 @@ func (m MergeState) Mergeable() bool {
 	return m == MergeStateClean || m == MergeStateUnstable || m == MergeStateHasHooks
 }
 
-// ProductionCheck is an issue's production check: the work after the close in which the role the
-// project's `production_check` named at the open, which Role records, drives the merged change in
-// production and reports what it saw. There is one record
-// per issue, opened at the merge; a later merge of the same issue — a rerun's, after a re-entry or
-// a reopen inside the linger closed the first — replaces it (workflow.openCheck) and counts its
-// looks from one again, so OpenedAt is the check instance's identity (ID): what tells the two
-// checks' looks apart in the events their rows and reports are recorded under. It copies the
+// ProductionCheck is the production check of a merge of an issue: the work after the close in
+// which the role the project's `production_check` named at the open, which Role records, drives
+// the merged change in production and reports what it saw. An issue keeps a record of each check
+// it opened, keyed by the moment it opened: a later merge of the same issue — a rerun's, after a
+// re-entry or a reopen inside the linger closed the first — opens a check of its own and closes
+// an earlier one still open as not run (workflow.openCheck), so OpenedAt is the check instance's
+// identity (ID): what tells two checks of one issue, and their looks, which each counts from one,
+// apart in the events their rows and reports are recorded under. Generation is the issue's run at
+// the merge, and Task the task whose merge the check checks, "" for an issue with no plan rows; a
+// check that a release before them wrote reads run 0 and no task. It copies the
 // repository, the pull request's number and the merge commit, and is fenced on itself (the issue,
 // the check and the look number) rather than on the tree generation, so a re-admission that
 // clears the tree's merged pull requests leaves it as it is. Looks counts the checking role's
@@ -1580,6 +1583,8 @@ type ProductionCheck struct {
 	Last           bool
 	ClosedAt       *time.Time
 	Outcome        CheckOutcome
+	Generation     uint64
+	Task           string
 }
 
 // Open says whether the check is still open: no look has closed it.
@@ -1592,14 +1597,6 @@ func (c ProductionCheck) Open() bool { return c.ClosedAt == nil }
 // value the engine opened the check with (workflow.openCheck truncates its clock to it) and the
 // one every later read returns spell the same id, whatever location either carries.
 func (c ProductionCheck) ID() string { return strconv.FormatInt(c.OpenedAt.UnixMicro(), 10) }
-
-// NamedBy says whether openedAt names this check instance, as the rows and facts of a check carry
-// its OpenedAt: a zero openedAt names no instance — a row queued before the rows carried one — and
-// so names this one too; another instant names another check of the issue, one a later merge
-// replaced, whose looks count from one again, or the one that replaced this.
-func (c ProductionCheck) NamedBy(openedAt time.Time) bool {
-	return openedAt.IsZero() || openedAt.Equal(c.OpenedAt)
-}
 
 // CheckOutcome is how a production check closed; "" while it is open.
 type CheckOutcome string
@@ -2117,11 +2114,16 @@ type Store interface {
 	// PullRequestOfTask is the pull request of task of issue, the one on the branch task holds
 	// (PullRequest.Task), nil for none ("" is the task of an issue with no plan rows).
 	PullRequestOfTask(ctx context.Context, tx pgx.Tx, issue, task string) (*PullRequest, error)
-	// MergePullRequest is the pull request of the task of issue that merges: the task of the plan
-	// at the issue's generation that merges (StoredPlan.MergingTask), or task "" where the issue
-	// has no plan rows at its generation; nil where that task has none, and where the plan holds no
-	// task that merges.
+	// MergePullRequest is the pull request of the merge of issue: for an issue with plan rows at its
+	// generation, the row of the first task that has a merge, done or to come
+	// (StoredPlan.TasksThatMerge), that is not done, in task id order, else of the last of them; the
+	// row of the task "" where the issue has no plan rows there. nil where that task has none, and
+	// where no task of the plan has a merge.
 	MergePullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error)
+	// MergePullRequests is the pull request of each task of issue that has a merge, done or to come
+	// (StoredPlan.TasksThatMerge), in task id order; the one row of the task "" where the issue has
+	// no plan rows at its generation. A task with no pull request has none here.
+	MergePullRequests(ctx context.Context, tx pgx.Tx, issue string) ([]PullRequest, error)
 	// TaskPullRequests is each pull request of issue, by task (PullRequest.Task), those of one task
 	// by branch.
 	TaskPullRequests(ctx context.Context, tx pgx.Tx, issue string) ([]PullRequest, error)
@@ -2146,10 +2148,18 @@ type Store interface {
 	// DeletePullRequest deletes the row of issue's pull request on branch, the table's key; a branch
 	// the record holds no row for deletes nothing.
 	DeletePullRequest(ctx context.Context, tx pgx.Tx, issue, branch string) error
-	// ProductionCheck is issue's production check, nil for none; PutProductionCheck writes it,
-	// one per issue.
-	ProductionCheck(ctx context.Context, tx pgx.Tx, issue string) (*ProductionCheck, error)
+	// ProductionCheckOf reads one check of issue by the moment it opened, and the newest for the
+	// zero time, the read of a row or a fact that names no check, nil where no check of issue
+	// opened then; ProductionChecksOf is each check of issue, newest first. PutProductionCheck
+	// writes a check, one for each moment a check of issue opened.
+	ProductionCheckOf(ctx context.Context, tx pgx.Tx, issue string, openedAt time.Time) (*ProductionCheck, error)
+	ProductionChecksOf(ctx context.Context, tx pgx.Tx, issue string) ([]ProductionCheck, error)
 	PutProductionCheck(ctx context.Context, tx pgx.Tx, check ProductionCheck) error
+	// CarryProductionChecks moves each open check of issue at generation from to generation to: a
+	// hand-over that carries its run carries the run of its open checks with it, so a check opened
+	// at a merge of that run is still a check of the run that holds the issue. A closed check keeps
+	// the generation it opened in.
+	CarryProductionChecks(ctx context.Context, tx pgx.Tx, issue string, from, to uint64) error
 	// OpenProductionChecks is every open check, oldest opened first, then by issue;
 	// OpenProductionChecksOfTree those of tree's issues, in the same order.
 	OpenProductionChecks(ctx context.Context, tx pgx.Tx) ([]ProductionCheck, error)
@@ -2407,6 +2417,9 @@ type Store interface {
 	// SetStepWait writes what the step at a running task's place waits for, since at;
 	// StepWaitNone with a nil at ends its wait.
 	SetStepWait(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, wait StepWait, at *time.Time) error
+	// SetTaskBase writes the base a start of task fixed for its pull request (PlanTask.Base), which
+	// stands for the task's run.
+	SetTaskBase(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task, base string) error
 	// AgentWaiter is the running task whose step has waited longest for agent (its wait agent, by
 	// the moment it began, then by task id), "" where no step waits for it.
 	AgentWaiter(ctx context.Context, tx pgx.Tx, issue string, generation uint64, agent claim.Agent) (string, error)
@@ -2690,6 +2703,9 @@ type Store interface {
 	// generation, whatever its lease or its next_at: the join of the task's needs at that
 	// generation has not ended.
 	TaskBranchQueued(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string) (bool, error)
+	// QueuedPullRequestCloses is the number of each pull request a queued row closing pull requests
+	// of issue at generation (TaskPullRequestsClose) names, in number order; none for no such row.
+	QueuedPullRequestCloses(ctx context.Context, tx pgx.Tx, issue string, generation uint64) ([]int, error)
 	// StepStopQueued says whether the outbox still holds a supervise row of issue whose op is
 	// step_stop, queued before the row before, whatever its lease or its next_at: the process of a
 	// stopped task's step may still run.

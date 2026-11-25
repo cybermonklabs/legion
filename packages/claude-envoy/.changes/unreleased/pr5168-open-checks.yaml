@@ -1,0 +1,5 @@
+kind: Changed
+body: "The plugin declares the daemon API contract that serves its `legion` tool each open production check of an issue (`checks`)."
+time: 2026-11-24T17:43:24.000000000Z
+custom:
+    Issue: pr5168
