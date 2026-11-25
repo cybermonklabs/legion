@@ -1337,10 +1337,18 @@ test("a hook whose jj and token command each run out their time waits on exactly
       [
         JJ_START,
         JJ_WAIT,
+        // The token command's start, in a group of its own under the watch (spawnWatched), and
+        // the runner's timer that ends that group at `COMMAND_TIMEOUT_MS` (envoy-config.ts's
+        // runCommand): the read waits on the command without holding the process.
+        {
+          file: "packages/envoy-client/src/process-group.ts",
+          kind: "Bun.spawn",
+          command: "/bin/sh",
+          ms: -1,
+        },
         {
           file: "packages/envoy-client/src/envoy-config.ts",
-          kind: "Bun.spawnSync",
-          command: "/bin/sh",
+          kind: "setTimeout",
           ms: COMMAND_TIMEOUT_MS,
         },
       ],
@@ -2026,13 +2034,15 @@ const REVIEWED_WAIT_SITES: readonly {
       "signal this scan traces to AbortSignal.timeout; `init` is that request's own",
   },
   {
-    file: "packages/envoy-client/src/envoy-config.ts",
-    text: 'Bun.spawnSync(["/bin/sh", "-c", command]',
+    file: "packages/envoy-client/src/process-group.ts",
+    text: 'Bun.spawn<"pipe", Out, Err>(groupWatchedBy(argv)',
     count: 1,
     bound:
-      "the `!` token command's start: its timeout is `commandTimeoutMs(env)` (envoy-config.ts:52), " +
-      "COMMAND_TIMEOUT_MS's 10 s unless a test sets ENVOY_COMMAND_TIMEOUT_MS, which nothing the hook " +
-      "runs under sets; the census's command row holds it at exactly 10 s in the hook's own process",
+      "spawnWatched's start of a command in a group of its own; the caller that awaits it bounds " +
+      "the wait: the `!` token command's runner (envoy-config.ts's runCommand) ends the group at " +
+      "setTimeout(`commandTimeoutMs(env)`), COMMAND_TIMEOUT_MS's 10 s unless a test sets " +
+      "ENVOY_COMMAND_TIMEOUT_MS, which nothing the hook runs under sets; the census's command row " +
+      "holds that timer at exactly 10 s in the hook's own process",
   },
   {
     file: "packages/envoy-client/src/dispatch-cwd.ts",

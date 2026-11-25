@@ -219,7 +219,7 @@ export function lostDispatchUrlNotice(
  * set turns Dispatch off with an error that says so, rather than writing with another credential
  * beside them.
  */
-export function dispatchSettings(
+export async function dispatchSettings(
   env: DispatchEnvironment,
   config: EnvoyConfig,
   options: {
@@ -230,8 +230,8 @@ export function dispatchSettings(
     /** True for the `dispatch` command, the one caller that takes the token files. */
     readonly tokenFiles?: boolean | undefined;
   } = {}
-): DispatchConfigResolution {
-  const target = dispatchTarget(env, config, options.tokenFiles === true);
+): Promise<DispatchConfigResolution> {
+  const target = await dispatchTarget(env, config, options.tokenFiles === true);
   if (!target.enabled) return target;
   const { url, urlSetting, source } = target;
   let credential: RequestCredential;
@@ -242,7 +242,7 @@ export function dispatchSettings(
       credential = bearerCredential(
         source.kind === "variable"
           ? source.token
-          : fileBearer(source, url, "DISPATCH", env, options.commands)
+          : await fileBearer(source, url, "DISPATCH", env, options.commands)
       );
     }
   } catch (error) {
@@ -271,15 +271,19 @@ export function dispatchSettings(
 }
 
 /**
- * The URL `dispatchSettings` resolves from `config` and the environment, without reading the token:
- * no `!` command runs, and no outcome of one is needed. Undefined when Dispatch is off before its
- * token is read: nothing names it, a file turns it off or cannot be used, `DISPATCH_URL` is no
+ * The URL `dispatchSettings` resolves from `config` and the environment, without the token's
+ * value: no `!` command runs, and no outcome of one is needed; a `DISPATCH_TOKEN_FILE` is read, as
+ * the resolution reads it, without holding the event loop. Undefined when Dispatch is off before
+ * its token is read: nothing names it, a file turns it off or cannot be used, `DISPATCH_URL` is no
  * http(s) URL, or no token source is configured. For a caller on a deadline that holds a list read
  * from one Dispatch URL and must know whether it is the configured one while the token's command
  * has not run in its process (`readSessionAnswers`' `dispatchUrl`).
  */
-export function dispatchUrl(env: DispatchEnvironment, config: EnvoyConfig): string | undefined {
-  const target = dispatchTarget(env, config);
+export async function dispatchUrl(
+  env: DispatchEnvironment,
+  config: EnvoyConfig
+): Promise<string | undefined> {
+  const target = await dispatchTarget(env, config);
   return target.enabled ? target.url : undefined;
 }
 
@@ -486,12 +490,13 @@ function readTradeSetting(env: DispatchEnvironment): ReadTrade | undefined | Sec
 /** Dispatch as `dispatchSettings` resolves it up to its token: its URL, the setting that URL was
  * read from (`urlSetting`: `DISPATCH_URL`, `dispatch.serverUrl in <file>`, or Dispatch's default),
  * and the token's source, or off saying why. The token files come first, for a caller that takes
- * them (`tokenFiles`). Reads a `DISPATCH_TOKEN_FILE`, never runs a `!` command. */
-function dispatchTarget(
+ * them (`tokenFiles`). Reads a `DISPATCH_TOKEN_FILE` without holding the event loop, never runs a
+ * `!` command. */
+async function dispatchTarget(
   env: DispatchEnvironment,
   config: EnvoyConfig,
   tokenFiles = false
-): SectionOff | DispatchTarget {
+): Promise<SectionOff | DispatchTarget> {
   if (config.kind === "failed") return offWithError(config.error);
   const files = tokenFilesTarget(env, config, tokenFiles);
   if (files !== undefined) return files;
@@ -543,7 +548,7 @@ function dispatchTarget(
       source =
         checkout !== null && checkoutServer !== undefined
           ? checkoutPair(checkout, checkoutServer)
-          : bearerSource(env, "DISPATCH", () => writtenToken(config, checkout));
+          : await bearerSource(env, "DISPATCH", () => writtenToken(config, checkout));
     } catch (error) {
       return offWithError(messageFor(error));
     }
