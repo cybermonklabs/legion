@@ -6,13 +6,7 @@ import { deletedMark, editedMark } from "./actor-text";
 import { dispatchWordsText, QUESTION_HEAD, textHead } from "./ask-answer";
 import { leftOutWords, type ReadTime } from "./dispatch-commands/as-of";
 import type { DispatchConfigResolution } from "./dispatch-config";
-import {
-  AnswerCut,
-  DispatchClient,
-  DispatchNoRouteError,
-  DispatchServiceError,
-  isNoRoute,
-} from "./dispatch-http";
+import { AnswerCut, DispatchClient, DispatchNoRouteError, isNoRoute } from "./dispatch-http";
 import { ownerTitle } from "./dispatch-owner";
 import { sessionDirectory, writeAtomically } from "./dispatch-session-directory";
 import { messageFor } from "./errors";
@@ -153,18 +147,6 @@ function windowOf(
 function windowEnd(asOf: string | undefined, now: () => number): number {
   const cut = asOf === undefined ? Number.NaN : Date.parse(asOf);
   return Number.isNaN(cut) ? now() : cut;
-}
-
-/** Whether Dispatch refused a read's `since` (400 INVALID_QUERY), as it refuses one more than 7
- *  days before the cut it answers at: the answer to a read that asked by a kept cut its token no
- *  longer reads at. */
-function keptCutRefused(error: unknown): boolean {
-  return (
-    error instanceof DispatchServiceError &&
-    error.fromDispatch &&
-    error.status === 400 &&
-    error.code === "INVALID_QUERY"
-  );
 }
 
 /**
@@ -572,13 +554,14 @@ async function settleWithin<T>(
  * memory and in `answers.json` (`as_of`), so the fresh list and each list carried from it print an
  * ask's question the answer left out as left out at that cut; a list from a file with no cut
  * prints it as left out by Dispatch. Dispatch answers such a token at its cut whatever the read
- * sends, so a read under it counts the 72 hours back from the cut, not from this host's clock: the
- * `since` it sends, and every render of its list, its `words` and its `since`. A token's cut is
- * fixed, so a read asks for the 72 hours before the cut the list read before kept. When the answer
- * names another cut than the one the read asked by (the list kept none, or the answer names
- * none), the read asks once more, at once, for the 72 hours before the cut that answer named (by
- * this host's clock where it named none), and that second answer is the read's own: it is the
- * same read in flight, under the same 10 s, and when it fails the read fails.
+ * sends, so a read under it counts the 72 hours back from the cut, not from this host's clock:
+ * every render of its list, its `words` and its `since`. Where the list read before kept a cut,
+ * the read sends no `since`, and Dispatch answers the 72 hours before the cut it reads at, the
+ * token's, whatever cut the list kept. When the answer's having a cut differs from the list's
+ * (the list kept none, as on a token's first read, or the session's token now reads the present),
+ * the read asks once more, at once, as that answer was answered: with no `since` at a cut, by
+ * this host's clock at none. That second answer is the read's own: it is the same read in flight,
+ * under the same 10 s, and when it fails the read fails.
  */
 export async function readSessionAnswers(
   options: ReadSessionAnswersOptions
@@ -665,33 +648,30 @@ export async function readSessionAnswers(
     // A replayed agent reads under a token that carries a cut, and Dispatch answers it at that
     // cut whatever the read sends, leaving out each question the records at the cut cannot give:
     // each request learns the cut its answer names, and the list keeps it, so such a question
-    // prints as left out at it and the list's 72 hours count back from it.
-    const ask = async (asOf: string | undefined) => {
+    // prints as left out at it and the list's 72 hours count back from it. A read at a cut sends
+    // no `since`: Dispatch counts the 72 hours back from the cut it answers at, which is the
+    // token's, whatever cut the list kept (api/session_answers.go, parseSessionAnswersSince). A
+    // read of the present sends the 72 hours by this host's clock.
+    const ask = async (atCut: boolean) => {
       const cut = new AnswerCut();
       const response = await client.sessionAnswers(
         session,
         {
-          since: new Date(windowEnd(asOf, now) - SESSION_ANSWERS_WINDOW_MS).toISOString(),
+          ...(atCut ? {} : { since: new Date(now() - SESSION_ANSWERS_WINDOW_MS).toISOString() }),
           maxChars: SESSION_ANSWERS_MAX_CHARS,
         },
         cut
       );
-      return { response, asOf: cut.cut, askedBy: asOf };
+      return { response, asOf: cut.cut, atCut };
     };
-    // A token's cut is fixed, so the read asks by the cut the list read before kept. An answer
-    // that names another (none was kept, as on a token's first read) answered the 72 hours before
-    // the wrong time, so the read asks once more, at once, by the time that answer names. A kept
-    // cut that the session's token no longer reads at (a token of the present, or a later cut,
-    // more than 7 days after it) is refused 400 INVALID_QUERY for its since: the read then asks
-    // by this host's clock, as a read that kept no cut does, and the rule above takes the cut
-    // that answer names, so a stale cut in answers.json never fails every later read.
-    const kept = current.cache?.as_of;
-    const started = ask(kept)
-      .catch((error: unknown) => {
-        if (kept !== undefined && keptCutRefused(error)) return ask(undefined);
-        throw error;
-      })
-      .then((answer) => (answer.asOf === answer.askedBy ? answer : ask(answer.asOf)))
+    // The read asks as the list read before was answered: at a cut where it kept one. An answer
+    // whose having a cut differs (a token's first read, or a session whose token now reads the
+    // present) answered the wrong window, so the read asks once more, at once, as that answer was
+    // answered.
+    const started = ask(current.cache?.as_of !== undefined)
+      .then((answer) =>
+        answer.atCut === (answer.asOf !== undefined) ? answer : ask(answer.asOf !== undefined)
+      )
       .then(
         ({ response, asOf }): ReadOutcome => {
           // A 200 whose body is no answers list (a proxy's page, another service on the URL) is a

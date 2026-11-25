@@ -1412,8 +1412,6 @@ describe("readSessionAnswers", () => {
 describe("readSessionAnswers under a token that carries a cut", () => {
   /** The cut the token carries, as Dispatch names it. */
   const CUT = "2026-10-27T09:00:00.000000Z";
-  /** Where the window of a read at the cut starts: 72 hours before it. */
-  const CUT_SINCE = "2026-10-24T09:00:00.000Z";
   /** An answer whose ask's question the answer at the cut left out. */
   const unworded = { ...answer, ask: { id: "ask-1" } } as unknown as SessionAnswer;
   /** Dispatch's answer at the cut: one item, its question named absent. */
@@ -1442,11 +1440,11 @@ describe("readSessionAnswers under a token that carries a cut", () => {
     expect(fresh.text).toContain(`Question: left out at ${CUT}`);
     expect(fresh.text).not.toContain("undefined");
     // The read sent no cut: the token's cut is Dispatch's to apply. It asked by this host's clock,
-    // not knowing the cut yet; the answer named it, and the read asked once more, at once, for
-    // the 72 hours before the cut.
+    // not knowing the cut yet; the answer named it, and the read asked once more, at once, with no
+    // `since`, so Dispatch answers the 72 hours before the cut.
     expect(paths).toEqual([
       `/api/v1/agents/${session}/answers?since=${encodeURIComponent(SINCE)}&max_chars=8000`,
-      `/api/v1/agents/${session}/answers?since=${encodeURIComponent(CUT_SINCE)}&max_chars=8000`,
+      `/api/v1/agents/${session}/answers?max_chars=8000`,
     ]);
     expect(JSON.parse(readFileSync(cacheFile(root, session), "utf-8")).as_of).toBe(CUT);
 
@@ -1550,51 +1548,53 @@ describe("readSessionAnswers under a token that carries a cut", () => {
     expect(first).toEqual(atCut);
     expect(first.text).toContain(written.text);
     // The read did not know the cut when it asked, so it asked by the host's clock, after the
-    // cut, and got nothing; the answer named the cut, and the read asked once more, at once, for
-    // the 72 hours before it.
+    // cut, and got nothing; the answer named the cut, and the read asked once more, at once, with
+    // no `since`, which Dispatch answers for the 72 hours before the cut.
     expect(sinces).toHaveLength(2);
     expect(Date.parse(sinces[0] ?? "")).toBeGreaterThan(cutAt);
-    expect(sinces[1]).toBe(cutSince);
+    expect(sinces[1]).toBeNull();
 
-    // A token's cut is fixed, so the next read asks for the 72 hours before the cut the list
-    // kept: one request.
+    // The list kept the cut, so the next read sends no `since`: one request.
     const second = await readSessionAnswers(options);
     expect(second).toEqual(atCut);
-    expect(sinces.slice(2)).toEqual([cutSince]);
+    expect(sinces.slice(2)).toEqual([null]);
   });
 
-  // The cut a list kept is the token's, and answers.json outlives a token: a session whose next
-  // token reads the present gets a `since` 72 hours before a cut more than 7 days old refused by
-  // Dispatch. The read then asks by this host's clock, as one that kept no cut does, and the
-  // present's answer, which names no cut, is the list.
-  test("a kept cut the token no longer reads at: the refused read asks again by the host's clock", async () => {
+  // answers.json outlives a token, so the cut a list kept need not be the session's token's. The
+  // read at a cut sends no `since`, so Dispatch answers the 72 hours before the cut the token
+  // reads at, whatever cut the list kept; only an answer of the present makes the read ask again,
+  // by this host's clock.
+  test("a kept cut that is not the token's: a later cut is read in one request, the present in two", async () => {
     const hour = 3_600_000;
     const now = Date.now();
-    const cutAt = now - 240 * hour;
-    const cut = `${new Date(cutAt).toISOString().slice(0, -1)}000Z`;
-    const cutSince = new Date(cutAt - 72 * hour).toISOString();
-    const atTheCut = message(
-      "m-before-cut",
-      new Date(cutAt - 5 * hour).toISOString(),
+    const firstCutAt = now - 240 * hour;
+    const laterCutAt = firstCutAt + 120 * hour;
+    const named = (at: number) => `${new Date(at).toISOString().slice(0, -1)}000Z`;
+    const atFirst = message(
+      "m-first",
+      new Date(firstCutAt - 5 * hour).toISOString(),
       "Words then."
+    );
+    const atLater = message(
+      "m-later",
+      new Date(laterCutAt - 5 * hour).toISOString(),
+      "Words later."
     );
     const recent = message("m-recent", new Date(now - hour).toISOString(), "Words now.");
     const session = newSession();
     const sinces: (string | null)[] = [];
-    let present = false;
+    /** The cut the session's token reads at, or undefined for the present. */
+    let tokenCut: number | undefined = firstCutAt;
     const { fetchImpl } = fakeDispatchFetch({
       handler: (call) => {
         const asked = call.url.searchParams.get("since");
         sinces.push(asked);
-        const end = present ? Date.now() : cutAt;
+        const end = tokenCut ?? Date.now();
         const since = asked === null ? end - 72 * hour : Date.parse(asked);
         if (since < end - 7 * 24 * hour) {
-          return json(
-            { code: "INVALID_QUERY", error: "since must be no more than 7 days before now" },
-            400
-          );
+          return json({ code: "INVALID_QUERY", error: "since is more than 7 days back" }, 400);
         }
-        const items = [atTheCut, recent].filter(
+        const items = [atFirst, atLater, recent].filter(
           (item) => Date.parse(item.at) >= since && Date.parse(item.at) <= end
         );
         const body = { session_id: session, since: asked, total: items.length, items };
@@ -1602,32 +1602,44 @@ describe("readSessionAnswers under a token that carries a cut", () => {
           status: 200,
           headers: {
             "Content-Type": "application/json",
-            ...(present ? {} : { [DISPATCH_AS_OF_HEADER]: cut }),
+            ...(tokenCut === undefined ? {} : { [DISPATCH_AS_OF_HEADER]: named(tokenCut) }),
           },
         });
       },
     });
     const options = { session, dispatch: dispatchAt(), env: envAt(stateDir()), fetchImpl };
 
-    const atCut = await readSessionAnswers(options);
-    expect(atCut.text).toContain(atTheCut.text);
+    const first = await readSessionAnswers(options);
+    expect(first.text).toContain(atFirst.text);
 
-    // The session's token now reads the present.
-    present = true;
+    // The token now reads at a cut 5 days later: one request with no `since`, answered for the 72
+    // hours before that cut.
+    tokenCut = laterCutAt;
     sinces.length = 0;
-    const now2 = await readSessionAnswers(options);
-    expect(now2.source).toBe("fresh");
-    expect(now2.text).toContain(recent.text);
-    expect(now2.text).not.toContain(atTheCut.text);
-    // It asked by the kept cut and was refused, then asked by the host's clock.
+    const later = await readSessionAnswers(options);
+    expect(later.source).toBe("fresh");
+    expect(later.text).toContain(atLater.text);
+    expect(later.text).not.toContain(atFirst.text);
+    expect(later.since).toBe(new Date(laterCutAt - 72 * hour).toISOString());
+    expect(sinces).toEqual([null]);
+
+    // The token now reads the present: the answer names no cut, so the read asks again by this
+    // host's clock.
+    tokenCut = undefined;
+    sinces.length = 0;
+    const present = await readSessionAnswers(options);
+    expect(present.source).toBe("fresh");
+    expect(present.text).toContain(recent.text);
+    expect(present.text).not.toContain(atLater.text);
     expect(sinces).toHaveLength(2);
-    expect(sinces[0]).toBe(cutSince);
-    expect(Date.parse(sinces[1] ?? "")).toBeGreaterThan(cutAt);
+    expect(sinces[0]).toBeNull();
+    expect(Date.parse(sinces[1] ?? "")).toBeGreaterThan(laterCutAt);
 
     // The present's list kept no cut, so the next read asks by the host's clock at once.
     sinces.length = 0;
     const again = await readSessionAnswers(options);
     expect(again.text).toContain(recent.text);
     expect(sinces).toHaveLength(1);
+    expect(sinces[0]).not.toBeNull();
   });
 });

@@ -1448,9 +1448,9 @@ each member it left out, as it tells a read at a cut, and refuses nothing, since
 present names no cut (`AnswerCut`, an `AsOfRead` with no `asOf`). The reads outside the seven
 commands learn the cut this way: the answers list on every model request (`readSessionAnswers`,
 which keeps the cut with the list in memory and in `answers.json` as `as_of`, and counts the
-list's 72 hours back from the cut, not from the host's clock: a read that did not know the cut
-asks once more, at once, for the 72 hours before the cut its answer named, and a kept cut that
-Dispatch refuses is asked again by the host's clock), the open-asks
+list's 72 hours back from the cut, not from the host's clock: a read whose list kept a cut sends
+no `since`, and Dispatch answers the 72 hours before the cut it reads at; a read whose answer's
+having a cut differs from its list's asks once more, at once), the open-asks
 summary of the Claude Code and Codex hooks, and `dispatch issues`. Every renderer prints a member
 that an answer left out as `left out at <cut>` where it knows the cut and as `left out by Dispatch`
 where it does not (`leftOutWords`), and never throws on it. A member whose absence says something
