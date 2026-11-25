@@ -64,6 +64,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -729,12 +730,7 @@ func (g *gate) changed(dir string, match func(string) bool) (map[string]map[int]
 }
 
 func (g *gate) exemptFile(name string) bool {
-	for _, f := range g.inv.Gate.ExemptFiles {
-		if f == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(g.inv.Gate.ExemptFiles, name)
 }
 
 func (g *gate) exempt(file, function string) string {

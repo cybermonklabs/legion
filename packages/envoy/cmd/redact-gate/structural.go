@@ -636,13 +636,7 @@ func (w *walker) guards(cond ast.Expr, index types.Object) bool {
 }
 
 func (w *walker) listed(t types.Type, operands []string) bool {
-	s := typeString(t)
-	for _, o := range operands {
-		if o == s {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(operands, typeString(t))
 }
 
 func isUnsafePointer(t types.Type) bool {

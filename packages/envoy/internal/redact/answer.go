@@ -95,17 +95,30 @@ type answerStream struct {
 	left int64
 }
 
+// emptyReads is how many reads at the limit that give no byte and no error the stream asks again
+// before it fails with io.ErrNoProgress, as bufio does: an io.Reader may answer (0, nil), which
+// says nothing about the body.
+const emptyReads = 100
+
 func (s *answerStream) Read(p []byte) (int, error) {
 	if s.body == nil || s.body == http.NoBody {
 		return 0, io.EOF
 	}
 	if s.left <= 0 {
-		// One byte more tells a body that ends at the limit from one that runs past it.
+		// One byte more tells a body that ends at the limit from one that runs past it. A read
+		// that fails there is that failure, as any other read's is (unreadable), never the
+		// body's end: a transport error at the limit is no complete body.
 		var one [1]byte
-		if n, _ := s.body.Read(one[:]); n > 0 {
-			return 0, ErrAnswerTooLarge
+		for range emptyReads {
+			n, err := s.body.Read(one[:])
+			switch {
+			case n > 0:
+				return 0, ErrAnswerTooLarge
+			case err != nil:
+				return 0, unreadable(err)
+			}
 		}
-		return 0, io.EOF
+		return 0, unreadable(io.ErrNoProgress)
 	}
 	if int64(len(p)) > s.left {
 		p = p[:s.left]
