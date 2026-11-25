@@ -22,12 +22,19 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { connect, createServer, type Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { gzipSync } from "node:zlib";
-import { dispatchToolSpecs } from "@legion/contracts";
+import {
+  dispatchToolSpecs,
+  IDEMPOTENCY_KEY_HEADER,
+  NO_ROUTE_MESSAGE_PREFIX,
+} from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
 import { commandName } from "../dispatch-command";
+import { DispatchClient } from "../dispatch-http";
 import { brokerStandIns } from "./broker-stand-ins";
+import { CALLS, type ClientMethod, clientMethodNames } from "./dispatch-client-calls";
 
 /** One proxy run of this file, in this process: what it printed so far, and its exit. */
 interface ProxyRun {
@@ -1995,8 +2002,8 @@ test("answers 502 PROXY_DISPATCH_UNREACHABLE when Dispatch does not answer", asy
   expect((await finish(run)).code).toBe(0);
 }, 15_000);
 
-/** A request the proxy refuses with 405, how it is sent, and the command its answer names where
- *  the plan names one. */
+/** A request the proxy refuses with 405, how it is sent, and the one command its answer names;
+ *  its answer names no command where `names` is not set. */
 interface RefusedRequest {
   readonly what: string;
   readonly send: (socket: string) => Promise<Answer>;
@@ -2034,6 +2041,10 @@ function refusedRequests(): readonly RefusedRequest[] {
       what: "POST /api/v1/issues/DSP-1/comments/x with an Idempotency-Key",
       send: sent("POST", `${COMMENTS}/x`, keyed(), body),
     },
+    {
+      what: "POST /api/v1/issues/DSP-1/artifacts/spec/edits with an Idempotency-Key",
+      send: sent("POST", "/api/v1/issues/DSP-1/artifacts/spec/edits", keyed(), body),
+    },
     { what: "GET /healthz", send: sent("GET", "/healthz"), names: "api" },
     { what: "GET /", send: sent("GET", "/"), names: "api" },
     { what: "GET /apix", send: sent("GET", "/apix"), names: "api" },
@@ -2042,6 +2053,7 @@ function refusedRequests(): readonly RefusedRequest[] {
     {
       what: "PATCH /api/v1/issues/DSP-1",
       send: sent("PATCH", "/api/v1/issues/DSP-1", json, JSON.stringify({ title: "Renamed" })),
+      names: "issue-update",
     },
     { what: "DELETE /api/v1/issues/DSP-1", send: sent("DELETE", "/api/v1/issues/DSP-1") },
     {
@@ -2064,10 +2076,15 @@ function refusedRequests(): readonly RefusedRequest[] {
       send: sent("DELETE", "/api/v1/messages/m-1"),
       names: "delete-message",
     },
-    { what: "OPTIONS /api/v1/issues", send: sent("OPTIONS", "/api/v1/issues") },
+    {
+      what: "OPTIONS /api/v1/issues",
+      send: sent("OPTIONS", "/api/v1/issues"),
+      names: "api",
+    },
     {
       what: "CONNECT dispatch:443",
       send: written("CONNECT dispatch:443 HTTP/1.1\r\nHost: dispatch:443\r\n\r\n"),
+      names: "api",
     },
     {
       what: "a GET with Upgrade: websocket",
@@ -2083,15 +2100,33 @@ function refusedRequests(): readonly RefusedRequest[] {
           "",
         ].join("\r\n")
       ),
+      names: "api",
     },
     {
       what: "the asterisk form OPTIONS *",
       send: written("OPTIONS * HTTP/1.1\r\nHost: dispatch\r\nConnection: close\r\n\r\n"),
+      names: "api",
     },
-    { what: "GET /api/../healthz", send: written(rawGet("/api/../healthz")) },
-    { what: "GET /api/%2e%2e/healthz", send: written(rawGet("/api/%2e%2e/healthz")) },
-    { what: "GET /api/v1/./issues", send: written(rawGet("/api/v1/./issues")) },
-    { what: "GET /api\\v1\\issues", send: written(rawGet("/api\\v1\\issues")) },
+    {
+      what: "GET /api/../healthz",
+      send: written(rawGet("/api/../healthz")),
+      names: "api",
+    },
+    {
+      what: "GET /api/%2e%2e/healthz",
+      send: written(rawGet("/api/%2e%2e/healthz")),
+      names: "api",
+    },
+    {
+      what: "GET /api/v1/./issues",
+      send: written(rawGet("/api/v1/./issues")),
+      names: "api",
+    },
+    {
+      what: "GET /api\\v1\\issues",
+      send: written(rawGet("/api\\v1\\issues")),
+      names: "api",
+    },
   ];
 }
 
@@ -2107,13 +2142,175 @@ test("refuses each other method and path with 405 PROXY_METHOD_REFUSED, names th
     expect(answer.headers["content-type"] ?? "", what).toStartWith("application/json");
     const { code, error } = refusalOf(answer);
     expect({ what, code }).toEqual({ what, code: "PROXY_METHOD_REFUSED" });
-    const commands = namedCommands(error);
-    expect({ what, error, names: commands.length > 0 }).toEqual({ what, error, names: true });
-    if (names !== undefined) expect(commands, `${what}: ${error}`).toContain(names);
+    // The command to use where a dispatch command sends the request, and none where none does.
+    expect({ what, error, commands: namedCommands(error) }).toEqual({
+      what,
+      error,
+      commands: names === undefined ? [] : [names],
+    });
   }
 
   expect(dispatch.received).toEqual([]);
   expect((await finish(run)).code).toBe(0);
+}, 20_000);
+
+/** One request but a GET that a DispatchClient method sends, as the client sends it. */
+interface ClientWrite {
+  readonly call: ClientMethod;
+  readonly method: string;
+  /** The path and the query. */
+  readonly target: string;
+  /** Its `Idempotency-Key`; null for a request that carries none, a PUT or a DELETE. */
+  readonly key: string | null;
+}
+
+/** Dispatch's answer to a request it has no route for, as a build older than the route answers
+ *  it (`isNoRoute` in dispatch-http.ts). */
+function noRouteAnswer(method: string, path: string): Response {
+  const error = `${NO_ROUTE_MESSAGE_PREFIX}${method} ${path}`;
+  return Response.json({ code: "NOT_FOUND", error }, { status: 404 });
+}
+
+/**
+ * Each request but a GET that each call of `CALLS` sends, as DispatchClient sends it. The calls run
+ * twice: first with each request answered `{}`, then with each request answered as a Dispatch
+ * answers a route it does not have. So a call that asks an older route when Dispatch has no route
+ * for the newer one (`DispatchNoRouteError`) sends the older route too, as
+ * `syncArchitectureSources` sends `POST /api/v1/projects/{key}/architecture-source/sync`. A
+ * request that a call sends more than once is kept once.
+ */
+async function clientWrites(): Promise<ClientWrite[]> {
+  const answers: readonly ((method: string, path: string) => Response)[] = [
+    () => Response.json({}),
+    noRouteAnswer,
+  ];
+  const writes = new Map<string, ClientWrite>();
+  for (const answer of answers) {
+    for (const call of Object.keys(CALLS) as ClientMethod[]) {
+      const recording = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const method = init?.method ?? "GET";
+        const { pathname, search } = new URL(input instanceof Request ? input.url : input);
+        const target = `${pathname}${search}`;
+        const seen = `${call} ${method} ${target}`;
+        if (method !== "GET" && !writes.has(seen)) {
+          const key = new Headers(init?.headers).get(IDEMPOTENCY_KEY_HEADER);
+          writes.set(seen, { call, method, target, key });
+        }
+        return answer(method, pathname);
+      }) as typeof fetch;
+      const client = new DispatchClient(
+        "http://dispatch.test",
+        bearerCredential("secret"),
+        recording,
+        { sleep: async () => {} }
+      );
+      await CALLS[call](client).catch(() => undefined);
+    }
+  }
+  return [...writes.values()];
+}
+
+/**
+ * The command that the refusal of each request but a GET of each DispatchClient method names: the
+ * `dispatch` command that sends that request (`dispatch-commands/`), or null where no command
+ * sends it. A method that sends such a request and has no entry fails the walk below, and so does
+ * an entry for a method that sends none.
+ */
+const COMMAND_OF: Partial<Record<ClientMethod, string | null>> = {
+  issue: "issue",
+  updateIssue: "issue-update",
+  // `dispatch issue-update` with --include-children, --unlink-children or --include-parent.
+  changeIssueStatus: "issue-update",
+  claimIssue: "claim",
+  releaseIssueClaim: "claim",
+  ask: "ask",
+  artifactAsk: "ask",
+  editAsk: "edit-ask",
+  resolveAsk: "resolve-ask",
+  followAsk: "follow",
+  unfollowAsk: "follow",
+  comment: "comment",
+  // `dispatch suggest` sends the requests that `dispatch comment` sends.
+  suggest: "comment",
+  artifactComment: "comment",
+  artifactSuggest: "comment",
+  resolveComment: "resolve-comment",
+  editComment: "edit-comment",
+  deleteComment: "delete-comment",
+  message: "message",
+  // `dispatch message` that answers a direct message, and the pictures of that answer.
+  messageReply: "message",
+  agentArtifact: "message",
+  editMessage: "edit-message",
+  deleteMessage: "delete-message",
+  agentMessage: "send-to-agent",
+  artifact: "artifact",
+  projectArtifact: "artifact",
+  // `dispatch artifact` checks an inline text before it uploads the text.
+  markdownRoundTrip: "artifact",
+  docEdit: "doc-edit",
+  requestApproval: "request-approval",
+  planApprove: "plan-approve",
+  reviewArtifact: "review",
+  recordResult: "result",
+  dryRunResult: "result",
+  retractResult: "result",
+  writeHandoff: "handoff-write",
+  createProject: "project",
+  related: "related",
+  // The route, and the older route where Dispatch has no route for the newer one.
+  syncArchitectureSources: "architecture-sync",
+  syncArchitectureSource: "architecture-sync",
+  // The host plugins' reply to a delivery. No command calls it, but its reply to a message is the
+  // request that `messageReply` sends.
+  deliveryReply: "message",
+  // No command sends these requests.
+  acceptMessageDelivery: null,
+  nameArtifactVersion: null,
+};
+
+/** The methods whose request is the one write that the proxy sends with its key (R2), a comment
+ *  POST on an issue: the walk sends their request with no key, which the proxy refuses. */
+const SENT_WITH_A_KEY: Partial<Record<ClientMethod, true>> = { comment: true, suggest: true };
+
+test("refuses each write DispatchClient sends with 405 PROXY_METHOD_REFUSED, names the dispatch command that sends it or none, and sends nothing", async () => {
+  // `CALLS` calls each method of the client.
+  expect(clientMethodNames().sort()).toEqual(Object.keys(CALLS).sort());
+  const writes = await clientWrites();
+  // Each method that sends a request but a GET has its entry, and each entry's method sends one.
+  const calls = [...new Set<string>(writes.map(({ call }) => call))].sort();
+  expect(calls).toEqual(Object.keys(COMMAND_OF).sort());
+  // The older sync route, which the client asks only where Dispatch has no route for the newer one.
+  const shapes = writes.map(({ method, target }) => `${method} ${target}`);
+  expect(shapes).toContain("POST /api/v1/projects/DSP/architecture-source/sync");
+  for (const command of Object.values(COMMAND_OF)) {
+    if (typeof command === "string") expect([...COMMANDS]).toContain(command);
+  }
+
+  const broker = standInBroker({ kind: "token", seconds: 3600 });
+  const dispatch = standInDispatch();
+  const run = await startedProxy(podProxyEnvironment(broker.url, dispatch.url));
+  for (const { call, method, target, key } of writes) {
+    const headers: Record<string, string> = {};
+    if (key !== null && SENT_WITH_A_KEY[call] !== true) headers[IDEMPOTENCY_KEY_HEADER] = key;
+    const answer = await viaSocket(run.socket, target, { method, headers });
+    const { code, error } = refusalOf(answer);
+    const command = COMMAND_OF[call] ?? null;
+    const seen = { status: answer.status, code, commands: namedCommands(error) };
+    expect({ call, method, target, ...seen }).toEqual({
+      call,
+      method,
+      target,
+      status: 405,
+      code: "PROXY_METHOD_REFUSED",
+      commands: command === null ? [] : [command],
+    });
+  }
+
+  expect(dispatch.received).toEqual([]);
+  const exit = await finish(run);
+  expect(exit.code).toBe(0);
+  expect(lastLine(exit.stderr)).toBe(exitLine(0, 1, 0));
 }, 20_000);
 
 test("answers each refusal of its own with 400, 405 or 502 and a code that starts with PROXY_", async () => {

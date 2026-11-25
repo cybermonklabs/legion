@@ -115,29 +115,69 @@ const NOT_COPIED = new Set([
 /** The one write the proxy sends (R2). */
 const COMMENT_PATH = /^\/api\/v1\/issues\/[^/]+\/comments$/;
 
-/** The dispatch command for each write a refusal names, by the route Dispatch serves it at and,
- *  for a route that serves one write for each of several methods, by the method too: a row that
- *  names a method matches only a request of that method. The first row that matches is named. */
-const WRITE_COMMANDS: readonly (readonly [RegExp, string, string?])[] = [
-  [/^\/api\/v1\/issues$/, "issue"],
-  [/^\/api\/v1\/issues\/[^/]+$/, "issue-update"],
-  [/^\/api\/v1\/issues\/[^/]+\/claim$/, "claim"],
-  [/^\/api\/v1\/(?:issues|artifacts)\/[^/]+\/comments$/, "comment"],
-  [/^\/api\/v1\/comments\/[^/]+\/resolve$/, "resolve-comment"],
-  [/^\/api\/v1\/comments\/[^/]+$/, "edit-comment", "PATCH"],
-  [/^\/api\/v1\/comments\/[^/]+$/, "delete-comment", "DELETE"],
-  [/^\/api\/v1\/issues\/[^/]+\/messages$/, "message"],
-  [/^\/api\/v1\/messages\/[^/]+$/, "edit-message", "PATCH"],
-  [/^\/api\/v1\/messages\/[^/]+$/, "delete-message", "DELETE"],
-  [/^\/api\/v1\/agents\/[^/]+\/messages$/, "send-to-agent"],
-  [/^\/api\/v1\/(?:issues|artifacts)\/[^/]+\/asks$/, "ask"],
-  [/^\/api\/v1\/asks\/[^/]+$/, "edit-ask"],
-  [/^\/api\/v1\/asks\/[^/]+\/resolve$/, "resolve-ask"],
-  [/^\/api\/v1\/(?:issues\/[^/]+\/results|results\/[^/]+\/retract)$/, "result"],
-  [/^\/api\/v1\/artifacts\/[^/]+\/plan-reviews$/, "plan-approve"],
-  [/\/edits$/, "doc-edit"],
-  [/^\/api\/v1\/(?:issues|projects|agents)\/[^/]+\/artifacts$|\/versions$/, "artifact"],
+/**
+ * The dispatch command that sends each other write of the `dispatch` commands: its name, the
+ * method, and the route Dispatch serves the write at (`routes_table.go`), where each `{…}` stands
+ * for one segment of the path. A refusal names the command of the row that has the method of the
+ * request, and whose route the path of the request fills. No `dispatch` command sends a write that
+ * no row holds, so its refusal names no command. The tool specs (`dispatchToolSpecs`) give no
+ * method or route for a command, so the rows are written here. `dispatch-proxy.test.ts` sends each
+ * write of `DispatchClient` through the proxy and reads the name in each refusal.
+ *
+ * Three names are not the obvious ones. `dispatch suggest` sends the comment routes too, which the
+ * rows name `comment`. `dispatch message` uploads the pictures of a reply to a direct message to
+ * the agent's artifacts. `dispatch artifact` checks an inline text with the markdown round trip
+ * before it uploads the text. The second sync of `architecture-sync` is the route of a Dispatch
+ * older than the first, which `DispatchClient` asks when the first has no route. The POST of
+ * {@link COMMENT_PATH} has no row: the proxy sends it when it carries a key, and its refusal
+ * without a key names `dispatch comment`.
+ */
+const WRITE_COMMANDS: readonly (readonly [command: string, method: string, route: string])[] = [
+  ["issue", "POST", "/api/v1/issues"],
+  ["issue-update", "PATCH", "/api/v1/issues/{key}"],
+  ["issue-update", "POST", "/api/v1/issues/{key}/status-change"],
+  ["claim", "POST", "/api/v1/issues/{key}/claim"],
+  ["claim", "DELETE", "/api/v1/issues/{key}/claim"],
+  ["comment", "POST", "/api/v1/artifacts/{id}/comments"],
+  ["resolve-comment", "POST", "/api/v1/comments/{id}/resolve"],
+  ["edit-comment", "PATCH", "/api/v1/comments/{id}"],
+  ["delete-comment", "DELETE", "/api/v1/comments/{id}"],
+  ["message", "POST", "/api/v1/issues/{key}/messages"],
+  ["message", "POST", "/api/v1/messages/{id}/reply"],
+  ["message", "POST", "/api/v1/agents/{session_id}/artifacts"],
+  ["edit-message", "PATCH", "/api/v1/messages/{id}"],
+  ["delete-message", "DELETE", "/api/v1/messages/{id}"],
+  ["send-to-agent", "POST", "/api/v1/agents/{session_id}/messages"],
+  ["ask", "POST", "/api/v1/issues/{key}/asks"],
+  ["ask", "POST", "/api/v1/artifacts/{id}/asks"],
+  ["edit-ask", "PATCH", "/api/v1/asks/{id}"],
+  ["resolve-ask", "POST", "/api/v1/asks/{id}/resolve"],
+  ["follow", "PUT", "/api/v1/asks/{id}/followers/{session_id}"],
+  ["follow", "DELETE", "/api/v1/asks/{id}/followers/{session_id}"],
+  ["result", "POST", "/api/v1/issues/{key}/results"],
+  ["result", "POST", "/api/v1/issues/{key}/results/dry-run"],
+  ["result", "POST", "/api/v1/results/{id}/retract"],
+  ["handoff-write", "POST", "/api/v1/issues/{key}/handoffs/{phase}"],
+  ["artifact", "POST", "/api/v1/issues/{key}/artifacts"],
+  ["artifact", "POST", "/api/v1/projects/{key}/artifacts"],
+  ["artifact", "POST", "/api/v1/markdown/round-trip"],
+  ["doc-edit", "POST", "/api/v1/artifacts/{id}/edits"],
+  ["request-approval", "POST", "/api/v1/artifacts/{id}/approval-requests"],
+  ["plan-approve", "POST", "/api/v1/artifacts/{id}/plan-reviews"],
+  ["review", "POST", "/api/v1/artifacts/{id}/versions/{number}/reviews"],
+  ["project", "POST", "/api/v1/projects"],
+  ["related", "POST", "/api/v1/projects/{key}/related"],
+  ["architecture-sync", "POST", "/api/v1/projects/{key}/architecture-sources/sync"],
+  ["architecture-sync", "POST", "/api/v1/projects/{key}/architecture-source/sync"],
+  ["architecture-sync", "POST", "/api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync"],
 ];
+
+/** Each row of {@link WRITE_COMMANDS}, with its route cut at each `/` as a path is. */
+const WRITE_ROUTES = WRITE_COMMANDS.map(([command, method, route]) => ({
+  command,
+  method,
+  route: route.split("/"),
+}));
 
 /** What the exit line counts (`proxyExitLine`, R4). */
 class Tally {
@@ -383,9 +423,9 @@ function resolvesElsewhere(path: string): boolean {
 }
 
 /**
- * Why the proxy sends no `method` to `path`, naming the dispatch command to use instead; undefined
- * for the two kinds of request it sends (R2, R5): a GET under `/api/`, and the comment POST that
- * carries an `Idempotency-Key`.
+ * Why the proxy sends no `method` to `path`, naming the dispatch command to use instead where a
+ * `dispatch` command sends the request; undefined for the two kinds of request it sends (R2, R5):
+ * a GET under `/api/`, and the comment POST that carries an `Idempotency-Key`.
  */
 function methodRefusal(method: string, path: string, key: string | undefined): string | undefined {
   const quoted = JSON.stringify(path);
@@ -403,16 +443,30 @@ function methodRefusal(method: string, path: string, key: string | undefined): s
       : `${SENDS} This comment POST carries no Idempotency-Key header. Send it with one, so a resend posts the comment once, or post the comment with dispatch comment.`;
   }
   if (method === "POST" || method === "PUT" || method === "PATCH" || method === "DELETE") {
-    const named = WRITE_COMMANDS.find(
-      ([route, , only]) => route.test(path) && (only === undefined || only === method)
-    )?.[1];
-    const use =
-      named === undefined
-        ? "dispatch --help lists one for each write, such as dispatch comment for a comment and dispatch issue-update for an issue's fields"
-        : `dispatch ${named}`;
-    return `${SENDS} ${method} ${quoted} is another write, and each other write goes through the dispatch command named for it, so AskGate reviews it wherever AskGate gates that command: ${use}.`;
+    const named = writeCommand(method, path);
+    if (named === undefined) {
+      return `${SENDS} ${method} ${quoted} is another write, and no dispatch command sends it, so this refusal names no command to use instead.`;
+    }
+    return `${SENDS} ${method} ${quoted} is another write, and each other write goes through the dispatch command named for it, so AskGate reviews it wherever AskGate gates that command: dispatch ${named}.`;
   }
   return `${SENDS} ${method} is no method it sends. Read the route with a GET, or with dispatch api.`;
+}
+
+/** The dispatch command of the row of {@link WRITE_COMMANDS} that has `method`, and whose route
+ *  `path` fills segment for segment; undefined where it fills no row's route. */
+function writeCommand(method: string, path: string): string | undefined {
+  const segments = path.split("/");
+  for (const row of WRITE_ROUTES) {
+    if (row.method !== method || row.route.length !== segments.length) continue;
+    if (row.route.every((part, at) => fills(part, segments[at] ?? ""))) return row.command;
+  }
+  return undefined;
+}
+
+/** Whether a path's `segment` fills `part` of a route: a `{…}` part takes each segment that is
+ *  not empty, and each other part takes only itself. */
+function fills(part: string, segment: string): boolean {
+  return part.startsWith("{") ? segment !== "" : part === segment;
 }
 
 /** The names a `Connection` header lists, each a header of this hop alone. */
