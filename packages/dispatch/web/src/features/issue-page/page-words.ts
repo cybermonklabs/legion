@@ -845,8 +845,8 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   also_under: "Also under",
   /** Names a person's answer, drawn in the ask's own row and body, never as a node of its own
    *  (R1); the answer itself is the person's own words (`NodeRow.tsx`'s `AskAnswer`). It is also
-   *  the focused open question's control that answers it, which sets the line at the foot of the
-   *  outline to answer it (R16, the prototype's `.acts`), as `a` does. */
+   *  the focused open question's control that sets the writer's answer to it, as `a` does (R16,
+   *  the prototype's `.acts`); nothing sends that answer yet (`OutlineWriter.answer`). */
   answer: "Answer",
   /** What the line at the foot of the outline says of the open question it answers, before the
    *  question's own first line (the prototype's `.tgt.ans`). */
@@ -873,8 +873,8 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   approval_version_of: "of",
   /** Leaves an editor with the value the issue had, in every editor the page opens. */
   cancel: "Cancel",
-  /** Changes the reader's own answer to a question, on its focused row: the line at the foot of
-   *  the outline answers it again over that answer (the old conversation's ask card's control). */
+  /** Changes the reader's own answer to a question, on its focused row: sets the writer's answer
+   *  to a change of it (`OutlineWriter.answer`; the old conversation's ask card's control). */
   change_answer: "Change answer",
   /** Answers an agent's decision with a change, on the decision's own node (R7). It opens the
    *  composer below, whose comment is anchored to the decision's own words. */

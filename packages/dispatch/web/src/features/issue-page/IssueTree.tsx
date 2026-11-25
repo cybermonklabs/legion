@@ -1193,7 +1193,7 @@ export function IssueTree({
 
   // A write from the line at the foot takes the reader to what they wrote: their newest
   // node under what the write answered - the reply, the comment, the question - its branch
-  // unfolded, inside the viewport and focused, or, for an answer, the question's own row. The
+  // unfolded, inside the viewport and focused, or, for a `self` landing, `under`'s own row. The
   // send has landed when the line asks, but the read that draws it is still out, so the nodes
   // of theirs already under it are noted first and the one that is new is gone to once a read
   // draws it. A read that never draws one where it was looked for - a filter's view that holds

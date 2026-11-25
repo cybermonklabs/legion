@@ -20,7 +20,7 @@ import { rowKeyOf } from "./tree-keys";
  * line has said what their next turn answers, so nothing else is the point while they hold it,
  * not even a question that waits on them; with nothing aimed, a question that waits on them is
  * the turn that is theirs, whatever was said after it; and with neither, the conversation stands
- * where it last moved. An answer the writer holds aims nothing: the ask's own body answers it.
+ * where it last moved. An answer the writer holds aims nothing (`OutlineWriter.answer`).
  *
  * A node drawn under several parents is one placement per parent: every placement but its edited
  * place is transcluded, and the branch under a transcluded placement repeats the edited place's

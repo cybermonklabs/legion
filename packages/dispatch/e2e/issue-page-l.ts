@@ -28,7 +28,7 @@ import { onScreen } from "./issue-page-i";
  * - **A line** of it, a `form[data-issue-composer]`: the one that writes on the issue, a reply or
  *   a statement's comment, which stays mounted, hidden, while the line that edits a comment is
  *   drawn in its place. So a row reads the line that is drawn with `:visible`. No line answers a
- *   question: an ask's own body does.
+ *   question (`OutlineWriter.answer`).
  * - In a line: the target line `[data-composer-target]` above it while it has a target, which
  *   names the target by its author and its kind and draws none of its words, with its control
  *   named `CONTROL_LABELS.write_on_issue`; the field, a `textarea`; the kinds' chips

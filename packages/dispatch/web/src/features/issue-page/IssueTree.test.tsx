@@ -8557,7 +8557,7 @@ test("a landing's late fallback leaves the focus where the reader moved it", asy
   }
 });
 
-// `r` sets the line at the foot to reply to the focused row, and `a` sets it to answer the
+// `r` sets the line at the foot to reply to the focused row, and `a` the writer's answer to the
 // focused open question (`useTreeKeymap.ts`'s `tree-reply` and `tree-answer`). A comment takes
 // no answer, so `a` on one leaves the line as it was and says nothing at the row.
 test("r and a on the focused row set the page's writer", async () => {

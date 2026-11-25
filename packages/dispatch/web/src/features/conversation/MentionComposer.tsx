@@ -245,9 +245,12 @@ export interface OutlineLook {
    *  address, as a reply is, so what the line keeps it keeps for the statement
    *  (`AwayDraft.statement`). The line's `end` ends it, as it ends a reply. */
   readonly anchor?: StatementAnchor;
-  /** The word of the control at the right of the target line, which ends the target (`end`); the
-   *  composer names the control by it where Send refuses a reply to a post deleted since. */
+  /** The word of the control at the right of the target line, which ends the target (`end`). */
   readonly cancelReply: string;
+  /** What Send's refusal of a reply to a post deleted since says after the composer's own words
+   *  that the post was deleted: the host's own sentence for where the line sends the draft
+   *  instead, in place of the one every other composer says of its Cancel reply. */
+  readonly deletedReplyWay: string;
   /** What the target line's control and Escape do: the host ends the line's target - a reply, a
    *  statement, an edit - or, with none, leaves the line. The composer counts each as the reader's
    *  own move of its address, as Cancel reply is (`ownMoves`), so the draft goes with it. */
@@ -1090,15 +1093,15 @@ export function MentionComposer({
   // draft, and a refusal it holds, to the composer's own address, where it goes as a message that
   // answers none. An edit waiting beside a newer body is the reader's to take back or drop before
   // anything is saved, and so is a draft a margin compose kept for other words, before anything
-  // is sent. The issue page's line names Cancel reply by the word of its own control that ends the
-  // reply (`OutlineLook.cancelReply`).
+  // is sent. The issue page's line says, in its host's words, where it sends the draft instead
+  // (`OutlineLook.deletedReplyWay`).
   const deletedReply =
     replyTo === null || postDeletion(replyParent) === null
       ? undefined
       : `The ${replyTo.parentKind} this reply answers was deleted, so it takes no reply.` +
         (standing
           ? ""
-          : ` Press ${outline?.cancelReply ?? "Cancel reply"} to send it as a message that answers none.`);
+          : ` ${outline?.deletedReplyWay ?? "Press Cancel reply to send it as a message that answers none."}`);
   const submitReason = refusedKind
     ? "This issue is closed. Reopen it to send."
     : (deletedReply ??

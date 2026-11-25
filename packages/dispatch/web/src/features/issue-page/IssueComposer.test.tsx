@@ -288,7 +288,8 @@ test("the box draws two kinds, and none with a target or on a closed issue", asy
 // R1: while a view is on or a document is open the box is hidden, never unmounted, so what the
 // reader typed is there when it is drawn again; it is drawn there once the reader asks to write -
 // a Reply or an Edit, which put the caret in its field (IC:83) - or while a send of the line's
-// own is out. An Answer asks for nothing here: the ask's own body answers it.
+// own is out. An Answer asks for nothing here: the box sends no answer
+// (`OutlineWriter.answer`).
 test("under a view or a document the box is hidden until the reader asks to write, and its draft is kept", async () => {
   const user = userEvent.setup();
   const page = renderPage();
@@ -1113,7 +1114,7 @@ test("a link to the agent the reader writes at the front, in place of the box's 
   expect(writeField().value).toBe(OWN_LINK_IN_FRONT);
 });
 
-// R5: the box answers no ask - the ask's own body does. The writer's answer to an open question,
+// R5: the box answers no ask (`OutlineWriter.answer`). The writer's answer to an open question,
 // its change of the reader's own answer and an option pressed on a question's row each leave the
 // box as it is with no target: its write line drawn with its kinds and its draft, no target line,
 // no field but its own, and the caret where the reader left it, on a row outside the box. The
@@ -1834,9 +1835,10 @@ test("a stopped reply let go with the target line's control is sent under a new 
 // A comment or a message its author deleted takes no reply (`409 POST_DELETED`), and its row
 // offers no Reply, so the box answers one only where the delete came while it was open. The box
 // reads the post as the outline's comments read holds it now (`MentionComposer`'s `replyParent`),
-// so Send refuses the reply before it goes, in the composer's words with the box's own control
-// for Cancel reply (`OutlineLook.cancelReply`), on a line under the box that Send's refusal
-// names; neither Send nor Enter sends anything, and the words and the target stay.
+// so Send refuses the reply before it goes, in the composer's words and then the box's own
+// sentence for where it sends the draft instead (`OutlineLook.deletedReplyWay`), which names the
+// box's control that writes on the issue, on a line under the box that Send's refusal names;
+// neither Send nor Enter sends anything, and the words and the target stay.
 test("a reply open when its comment is deleted is refused before Send, and a press sends nothing", async () => {
   const user = userEvent.setup();
   const createComment = stub(
@@ -1866,9 +1868,10 @@ test("a reply open when its comment is deleted is refused before Send, and a pre
   });
   await act(() => page.client.invalidateQueries({ queryKey: ["comments", KEY] }));
 
+  expect(ANSWER_LINES.deleted_reply_way).toContain(`Press ${CONTROL_LABELS.write_on_issue} `);
   const refused =
     "The comment this reply answers was deleted, so it takes no reply. " +
-    `Press ${CONTROL_LABELS.write_on_issue} to send it as a message that answers none.`;
+    ANSWER_LINES.deleted_reply_way;
   const line = await within(composerBox()).findByText(refused);
   const send = within(composerBox()).getByRole("button", { name: CONTROL_LABELS.send });
   expect({

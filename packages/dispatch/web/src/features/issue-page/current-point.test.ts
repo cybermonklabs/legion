@@ -412,7 +412,7 @@ function renderPoint(root: TreeNode) {
 }
 
 // The hook reads the writer's two targets and nothing else it holds: an answer the writer holds
-// aims nothing, since the ask's own body answers it, and a kind switched while the line replies
+// aims nothing (`OutlineWriter.answer`), and a kind switched while the line replies
 // leaves the point as it was, the same path and not merely an equal one.
 test("the page's point follows the writer's targets and nothing else the writer holds", () => {
   const question = ask("a1", at(1));
