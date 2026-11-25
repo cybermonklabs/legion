@@ -237,25 +237,29 @@
 # ends the mode exit 2, naming it and, at the end of the line, what provides it. --help
 # prints the same table after this header, from the same function, so the list a reader reads
 # is the list the mode checks. --self-test needs its own lines and every line of --replay,
-# --shape, --citations, --landed and --published, since it runs each of them; check.test.sh
-# checks the lines of --self-test alone before its first case, since each run a case makes
-# checks its own mode's. Before any of them, every run checks the tools its ending is written
-# with ("The run's own scratch and record" above), which --help prints first. GNU timeout is
-# the one line read before the mode starts, since the mode itself runs under it (run_mode): a
-# run with no timeout on PATH ends exit 2 there, of the kind prerequisite, every assertion
-# the mode declares unrun, naming timeout and what provides it by the mode's own line of the
-# table, never the 127 of a program that is not there.
+# --shape, --citations, --landed and --published, since it runs each of them, but for
+# --replay's omp and IOC_OMP_MODELS: each fixture run it makes is given the stub omp and its
+# models.yml in place of the caller's (FIXTURE_OMP_STUB, FIXTURE_OMP_MODELS), so it reads
+# neither (SELF_TEST_STUBBED). check.test.sh checks the lines of --self-test alone before its
+# first case, since each run a case makes checks its own mode's. Before any of them, every
+# run checks the tools its ending is written with ("The run's own scratch and record" above),
+# which --help prints first. GNU timeout is the one line read before the mode starts, since
+# the mode itself runs under it (run_mode): a run with no timeout on PATH ends exit 2 there,
+# of the kind prerequisite, every assertion the mode declares unrun, naming timeout and what
+# provides it by the mode's own line of the table, never the 127 of a program that is not
+# there.
 #
 # The row i-skills-run makes the one model session --replay spends on:
 # evidence/accord-skills-run.sh installs the two ACCORD skills into a new omp HOME and runs
 # one headless omp session on them, capped by the --max-cost its row's command passes, a flag
 # omp --help prints. It needs IOC_OMP_MODELS, the path of an omp models.yml that reaches a
-# model, omp, and tar, three lines of the prerequisite table for --replay and so for the
-# --self-test that runs it; the credential in that file reaches no file of this tree and no
-# line the gate prints. --self-test and check.test.sh run the row under tests/omp-stub/omp, a
-# stub that plays the session on canned replies (FIXTURE_OMP_STUB), and no run of theirs
-# reaches a model. A session whose gateway gave no answer is a read of a source that did not
-# answer, by the live-read rule above, and never a FAIL.
+# model, omp, and tar, three lines of the prerequisite table for --replay; the credential in
+# that file reaches no file of this tree and no line the gate prints. --self-test and
+# check.test.sh run the row under tests/omp-stub/omp, a stub that plays the session on canned
+# replies (FIXTURE_OMP_STUB), with the models.yml beside it, which names no provider, as
+# IOC_OMP_MODELS (FIXTURE_OMP_MODELS), and no run of theirs reaches a model, so --self-test
+# needs tar alone of the three (SELF_TEST_STUBBED). A session whose gateway gave no answer is
+# a read of a source that did not answer, by the live-read rule above, and never a FAIL.
 #
 # --landed runs the committed proof of each landed step, the command sources.json commits
 # for it, from the root of this tree, and a proof that exits non-zero is the step failing, a
@@ -973,8 +977,9 @@ usage() {
 # mode | kind | name | what needs it | what provides it. The one table of what each mode
 # needs before it judges anything: prerequisites reads it before the mode's first live
 # read and first assertion, and --help prints it, so the two cannot drift. --self-test
-# needs its lines and those of the five modes it runs (prerequisite_rows). The last column
-# is what a reader runs to provide it, and may hold a |. How each kind is checked:
+# needs its lines and those of the five modes it runs, but the two its fixture's stub stands
+# for (prerequisite_rows, SELF_TEST_STUBBED). The last column is what a reader runs to
+# provide it, and may hold a |. How each kind is checked:
 #   tool       the program is on PATH
 #   variable   the variable is set, one whose name ends _FILE names a readable file, one
 #              whose name ends _MODELS names a readable file, which no line the gate prints
@@ -1046,16 +1051,28 @@ self-test|tool|timeout|ends each run of the gate the self-test and check.test.sh
 TABLE
 }
 
+# SELF_TEST_STUBBED; the lines of --replay, as kind:name, that --self-test leaves out. Each
+# fixture run it makes is given the stub omp of tests/omp-stub first on PATH
+# (FIXTURE_OMP_STUB) and the models.yml beside it as IOC_OMP_MODELS (FIXTURE_OMP_MODELS), so
+# the stub stands for both and no run of the self-test reads the caller's omp or models file.
+# Without the list, as the tester's note of round 52 found, --self-test ended cannot run,
+# exit 2, on a machine with no omp or no IOC_OMP_MODELS, which none of its runs reads.
+# --replay keeps both lines, and --self-test keeps tar, which the script unpacks the skills
+# with under the stub too.
+SELF_TEST_STUBBED=" tool:omp variable:IOC_OMP_MODELS "
+
 # prerequisite_rows <mode>; the lines of prerequisite_table the mode needs, without the
-# mode, as kind|name|what needs it|what provides it, each kind and name once. cases names
+# mode, as kind|name|what needs it|what provides it, each kind and name once; for
+# self-test, the lines of the five modes it runs too, but SELF_TEST_STUBBED's. cases names
 # what check.test.sh checks before its first case, the lines of --self-test alone, which
 # its fixture builder needs; each run a case makes checks the lines of its own mode.
 prerequisite_rows() {
-    local modes=" $1 " mode kind name why provides seen=" "
-    [ "$1" = self-test ] && modes=" self-test replay shape citations landed published "
+    local modes=" $1 " left_out=" " mode kind name why provides seen=" "
+    [ "$1" = self-test ] && modes=" self-test replay shape citations landed published " left_out="$SELF_TEST_STUBBED"
     [ "$1" = cases ] && modes=" self-test "
     while IFS='|' read -r mode kind name why provides; do
         case "$modes" in *" $mode "*) ;; *) continue ;; esac
+        case "$left_out" in *" $kind:$name "*) continue ;; esac
         case "$seen" in *" $kind:$name "*) continue ;; esac
         seen="$seen$kind:$name "
         printf '%s|%s|%s|%s\n' "$kind" "$name" "$why" "$provides"
@@ -1162,7 +1179,9 @@ prerequisites_report() {
     printf '\nWhat each mode needs (prerequisite_table). A mode checks its own before it reads or\n'
     printf 'judges anything, and one that is missing ends the mode exit 2, naming it and, last,\n'
     printf 'what provides it. --self-test needs its own and those of --replay, --shape,\n'
-    printf -- '--citations, --landed and --published, which it runs. --coverage and --help need nothing.\n'
+    printf -- "--citations, --landed and --published, which it runs, but --replay's omp and\n"
+    printf "IOC_OMP_MODELS, for which its fixture's stub omp and models.yml stand. --coverage and\n"
+    printf -- '--help need nothing.\n'
     printf '\nevery mode, before anything else (ENDING_TOOLS)\n'
     printf '  %-9s %-20s %s\n' tool "${ENDING_TOOLS// /, }" "make the run's own scratch and write and read its ending record"
     printf '  %-9s %-20s provided by: %s\n' '' '' "$ENDING_TOOLS_FROM"

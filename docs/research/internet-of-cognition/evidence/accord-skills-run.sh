@@ -193,6 +193,11 @@ SUBS = ("init", "roster", "frame", "glossary", "verify", "lock", "execution-mess
 CHECK_RE = re.compile(r'<accord-delivery\b[^>]*\bcheck="([0-9a-f]+)"')
 SKILL_RE = re.compile(r"accord-(initiator|receiver)")
 CMD_RE = re.compile(r"(?:accord_initiator\.py[\"']?|\$\{?ACCORD\}?[\"']?)\s+(?:--state\s+\S+\s+)?(" + "|".join(SUBS) + r")\b")
+# The start of what each command of the script prints, one JSON object whose first two keys
+# are "ok" and "phase", the subcommand (argparse's dest), a refusal with "ok": false. The
+# objects nested in its "data" carry a "phase" too, but none starts with "ok", and a string
+# in it escapes its quotes, so only the object a call printed matches.
+RESULT_RE = re.compile(r'\{\s*"ok":\s*(true|false),\s*"phase":\s*"(' + "|".join(SUBS) + r')"')
 SKILLS = {"accord-initiator", "accord-receiver"}
 
 
@@ -307,6 +312,20 @@ for ev in events:
             # The script prints "ok": false on every refusal, a run in a loop included.
             text = "".join(c.get("text", "") for c in result.get("content") or [] if isinstance(c, dict))
             refused += max(failed, len(re.findall(r'"ok":\s*false', text)))
+    elif kind == "tool_execution_end" and ev.get("toolName") == "eval":
+        # A session can run the script through its eval tool too, whose events carry the code
+        # and what it printed, and no trace of what ran. The code is no record of the calls:
+        # in the real run of the tester's report of round 52, the first cell defined a function
+        # that ran the script and called it, and each later cell held only calls of that
+        # function, which name the script nowhere, so a reading of the code missed about nine
+        # calls of ten. What each call printed is read instead, one object per call
+        # (RESULT_RE), its phase the subcommand and "ok": false a refusal.
+        result = ev.get("result") or {}
+        text = "".join(c.get("text", "") for c in result.get("content") or [] if isinstance(c, dict))
+        for ok, phase in RESULT_RE.findall(text):
+            calls.append(phase)
+            if ok == "false":
+                refused += 1
 
 print("orchestrator read skills: " + (" ".join(sorted(read_by_orchestrator)) or "(none)"))
 subagents.discard(None)

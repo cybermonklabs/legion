@@ -7218,11 +7218,11 @@ done
 # assertion it leaves of the kind prerequisite and none failed, its last line naming the
 # variable and what provides it. Case 228 is the honest form.
 #
-# Cases 225 to 230 run the row on the stub (check.sh's FIXTURE_OMP_STUB), never on a model. The
-# stub reads its mode from a file beside itself, so each case copies it (accord_stub) and
-# writes the mode. The script reads a clone of cognition-protocols at the commit sources.json
-# pins, which is made once here, under the cases' scratch, by env.sh's rule; where it cannot be
-# made, each case that needs it could not run, of the kind source.
+# Cases 225 to 230 and 246 run the row on the stub (check.sh's FIXTURE_OMP_STUB), never on a
+# model. The stub reads its mode from a file beside itself, so each case copies it
+# (accord_stub) and writes the mode. The script reads a clone of cognition-protocols at the
+# commit sources.json pins, which is made once here, under the cases' scratch, by env.sh's
+# rule; where it cannot be made, each case that needs it could not run, of the kind source.
 ACCORD_CASE="$WORK/accord-skills-run"
 ACCORD_CLONES="$ACCORD_CASE/clones"
 mkdir -p "$ACCORD_CLONES" "$ACCORD_CASE/home" "$ACCORD_CASE/tmp"
@@ -7757,6 +7757,39 @@ one_failure_result "a landed step whose commit the default branch's history does
     '^1 of 2 assertions failed: published-tree$' \
     "^FAIL published-tree: the landed step 'An execution record under the gen_ai\\. names' commits $side_commit, and the default branch's history at $fixture_head does not hold that commit, so its sentences are not read\$" \
     "$(fixture_published "$dir")"
+
+# 246. The report of the row i-skills-run counts the initiator calls a session makes through its
+# eval tool as it counts those through its bash tool (the tester's notes of round 52). omp's eval
+# tool runs code, and its events carry the code and what it printed, never the bash tool's trace
+# of what ran, and the code is no record of the calls: in the real run the tester printed, the
+# first cell defined a function handle(a, r) that ran the script and called it, and each later
+# cell held only calls of handle, which name the script nowhere. The case runs the script by hand
+# on the stub in its locked mode, every call through bash, and in its locked-eval mode, which
+# plays the same session with each handle call in cells of that shape, init and
+# execution-message through bash: both runs must end 0 on "result: locked", their "initiator
+# commands:" lines must be equal, and so must their "initiator calls:" lines. Over the locked
+# stub each script below printed "initiator commands: execution-message handle init" and
+# "initiator calls: 13, refused: 0". Over the locked-eval stub the script of ded1a321, which
+# read the bash tool alone, printed "initiator commands: execution-message init" and "initiator
+# calls: 3, refused: 0"; one that read each cell's code for the script's name printed the
+# commands whole but "initiator calls: 4, refused: 0", the first cell's call alone; the script
+# now reads what each call printed and prints 13 calls there, as over the locked stub.
+eval_case="the report of the row i-skills-run counts the initiator calls a session makes through its eval tool as those through bash: over one locked session played with every call through bash and with each handle call in eval cells, its initiator commands and initiator calls lines are equal"
+if ! accord_unrun "$eval_case"; then
+    bash_out="$(accord_run "$(accord_stub locked)" --max-cost 7 2>&1)"
+    bash_status=$?
+    eval_out="$(accord_run "$(accord_stub locked-eval)" --max-cost 7 2>&1)"
+    eval_status=$?
+    bash_report="$(printf '%s\n' "$bash_out" | grep -E '^initiator (commands|calls): ')"
+    eval_report="$(printf '%s\n' "$eval_out" | grep -E '^initiator (commands|calls): ')"
+    if [ "$bash_status" = 0 ] && [ "$(printf '%s\n' "$bash_out" | tail -1)" = 'result: locked' ] &&
+        [ "$eval_status" = 0 ] && [ "$(printf '%s\n' "$eval_out" | tail -1)" = 'result: locked' ] &&
+        [ "$(printf '%s\n' "$bash_report" | grep -c .)" = 2 ] && [ "$eval_report" = "$bash_report" ]; then
+        case_passed "$eval_case"
+    else
+        case_failed "$eval_case" "over bash, exit $bash_status, last line '$(printf '%s\n' "$bash_out" | tail -1 | cut -c1-120)', '${bash_report//$'\n'/; }'; over eval, exit $eval_status, last line '$(printf '%s\n' "$eval_out" | tail -1 | cut -c1-120)', '${eval_report//$'\n'/; }'"
+    fi
+fi
 
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending

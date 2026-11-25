@@ -11,18 +11,24 @@ It answers the four calls the script makes, in the shapes omp 18.18.6 gives them
 $HOME/.omp/agent/skills as omp's native user provider does, and one print-mode session
 (`-p --mode json ...`), whose JSON event stream carries the events the script reads: the
 orchestrator's read of skill://accord-initiator, each bash call of accord_initiator.py with
-the bash tool's trace of its argv and status, each task subagent's progress with its read of
-skill://accord-receiver and its result, and the assistant messages with their usage. The
-specialists are played by canned replies, and the initiator is the installed script itself,
-run on them, so the state file it writes at $ACCORD_STATE is a real one.
+the bash tool's trace of its argv and status, or, in the mode locked-eval, each handle call
+through the eval tool with its code and what it printed, each task subagent's progress with
+its read of skill://accord-receiver and its result, and the assistant messages with their
+usage. The specialists are played by canned replies, and the initiator is the installed
+script itself, run on them, so the state file it writes at $ACCORD_STATE is a real one.
 
 The script runs omp under env -i, so the stub reads its mode from the file omp-stub-mode
 beside it, not from the environment; check.test.sh copies this directory and writes the file:
-  locked   (the default) the protocol runs to INTENT-LOCKED, each reply echoing its check;
-  stalled  the session ends after the CONVENE round, with the state at frame_0;
-  429      the gateway refuses the first request with HTTP 429 and omp exits 1;
-  503      the same with HTTP 503, a server error;
-  401      the same with HTTP 401, a refusal of the credential.
+  locked       (the default) the protocol runs to INTENT-LOCKED, each reply echoing its check;
+  locked-eval  the same, but each handle call runs through the eval tool, as the real session
+               of round 52 made it: the first cell defines handle(a, r), which runs the script
+               on the list form of its argv and prints what it printed, and calls it once, and
+               each later cell holds only a call of handle; each cell's result is what the
+               call printed, with no trace; init and execution-message stay bash calls;
+  stalled      the session ends after the CONVENE round, with the state at frame_0;
+  429          the gateway refuses the first request with HTTP 429 and omp exits 1;
+  503          the same with HTTP 503, a server error;
+  401          the same with HTTP 401, a refusal of the credential.
 
 A session writes its arguments, one a line, into the file omp-stub-args beside it, so that
 check.test.sh reads which cost cap the script passed on.
@@ -43,6 +49,7 @@ GATEWAY = {"429": "429 Too Many Requests: rate limit reached for the team",
            "503": "503 Service Unavailable: the upstream is overloaded",
            "401": "401 Unauthorized: the credential was refused"}
 call_id = 0
+handle_defined = False
 
 
 def emit(event):
@@ -66,11 +73,24 @@ def tool(name, args, result):
 
 
 def initiator(*argv):
+    global handle_defined
     script = os.path.join(SKILLS, "accord-initiator", "scripts", "accord_initiator.py")
     run = subprocess.run(["python3", script, *argv], capture_output=True, text=True)
-    node = {"k": "simple", "argv": ["python3", script, *argv], "st": run.returncode, "runs": 1}
-    tool("bash", {"command": " ".join(["python3", script, argv[0], "..."])},
-         {"content": [{"type": "text", "text": run.stdout}], "details": {"trace": {"units": [{"nodes": [node]}]}}})
+    if MODE == "locked-eval" and argv[0] == "handle":
+        # The cells as the tester printed them from the real run: no cell after the first names
+        # the script, or "handle" as an item of a list.
+        code = f"handle({json.dumps(argv[2])}, '''{argv[4]}''')"
+        if not handle_defined:
+            handle_defined = True
+            listed = ", ".join(json.dumps(a) for a in ("python3", script, "handle", "--agent"))
+            code = (f"import subprocess\ndef handle(a, r):\n"
+                    f"    p = subprocess.run([{listed}, a, \"--reply\", r], capture_output=True, text=True)\n"
+                    f"    print(p.stdout, p.stderr)\n{code}")
+        tool("eval", {"language": "py", "code": code}, {"content": [{"type": "text", "text": run.stdout}]})
+    else:
+        node = {"k": "simple", "argv": ["python3", script, *argv], "st": run.returncode, "runs": 1}
+        tool("bash", {"command": " ".join(["python3", script, argv[0], "..."])},
+             {"content": [{"type": "text", "text": run.stdout}], "details": {"trace": {"units": [{"nodes": [node]}]}}})
     assistant()
     return json.loads(run.stdout)
 
