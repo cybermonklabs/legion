@@ -2675,7 +2675,9 @@ func (w *workflowRuntime) applySessionFact(c supervise.Claim, id string, fact in
 }
 
 // providerErrorRunReached tells who must know that a role's turns keep ending in a provider error
-// (supervise's Deps.ProviderErrorRunReached), and it is the one place that says who that is:
+// (supervise's Deps.ProviderErrorRunReached), and it is one of the two places that say who that is,
+// with the provider-errors paragraph of docs/site/src/content/docs/legion/troubleshooting.md, which
+// changes with it:
 //
 //   - a run of a phase worker's claim tells the architect that owns the issue and the project's
 //     controller;

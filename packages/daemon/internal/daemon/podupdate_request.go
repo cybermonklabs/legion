@@ -20,17 +20,17 @@ const requestedPodUpdateReasons = "the project's controller asked for the replac
 // requestPodUpdate opens the update round over issue's pod on the request of the project's
 // controller (api.Options.RequestPodUpdate, the route POST /legion/v1/issues/pod-update). The
 // round is the one a drift opens, opened through the sweep's own opening step
-// (openPodUpdateUnderLimits): posted to every claim of the issue that has run a worker
-// (openPodUpdate), charged to the project's limits as the sweep charges an opening
-// (recordPodUpdateOpening), and carried from then on by the sweep alone. Its reasons say the
-// controller asked for it (requestedPodUpdateReasons). The sweep asks each role of the pod, at
-// the first sweep that reads the round recorded on its claim, to push its work and answer
-// ready_for_update (askRound), and replaces the pod once every role it asks has answered, no turn
-// runs and no claim with a process in the pod reports background work that runs or has sent no
-// report since its last turn started (roundEnd.holding), or at the round's bound whatever they
-// said (completePodUpdate). No drift is needed for any of that: a round open over the pod its
-// claims record goes on, drift or no drift, until its pod is replaced or gone
-// (reconcileIssuePodUpdate).
+// (openPodUpdateUnderLimits): posted to every claim of the issue that has run a worker, and to
+// every claim whose launch waits on the pod (openPodUpdate, postedClaims), charged to the
+// project's limits as the sweep charges an opening (recordPodUpdateOpening), and carried from then
+// on by the sweep alone. Its reasons say the controller asked for it (requestedPodUpdateReasons).
+// The sweep asks each role of the pod, at the first sweep that reads the round recorded on its
+// claim, to push its work and answer ready_for_update (askRound), and replaces the pod once every
+// role it asks has answered, no turn runs and no claim with a process in the pod reports
+// background work that runs or has sent no report since its last turn started
+// (roundEnd.holding), or at the round's bound whatever they said (completePodUpdate). No drift is
+// needed for any of that: a round open over the pod its claims record goes on, drift or no drift,
+// until its pod is replaced or gone (reconcileIssuePodUpdate).
 //
 // It reads the issue as the sweep groups it — every claim of the issue that has not retired — and
 // answers, in this order:

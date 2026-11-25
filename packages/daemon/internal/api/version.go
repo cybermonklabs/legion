@@ -3803,7 +3803,7 @@ package api
 // The notice of a forgotten session that entry 189 adds, `session-forgotten`, goes to the
 // issue's architect alone, as `session-lost` does: the controller is told of neither (#4065),
 // and no shape moves.
-// Contract 270 is served down by 193's rule (#3659): every answer goes through one writer, which
+// Contract 292 is served down by 193's rule (#3659): every answer goes through one writer, which
 // shapes it to the contract its caller reads. The agent actions' answer and the pod update's are
 // two rows of answers.go's table, `agent-action` on the four routes and `pod-update` on
 // `issues/pod-update`, each arrived whole with its routes at this contract (agentActionsContract),
@@ -3817,11 +3817,11 @@ package api
 // `POD_HELD_BY_PAUSE`, is an `api.Failure`, which no contract shapes. The five routes' request
 // records start at this contract (`packages/contracts/fixtures/daemon-api/request-shapes.json`). No
 // key and no value of any other answer moved, so this contract's records of every other answer are
-// 256's, under its own number. agentActionsContract is now the last number of answers.go's
+// 275's, under its own number. agentActionsContract is now the last number of answers.go's
 // SupportedContracts, after shapedAnswersContract, 199, repositoriesLiveContract,
 // childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract,
-// intakeGiveUpsContract, 232, podHoldContract, priorityContract and causeTimesContract, and a
-// renumber of this entry moves that constant with it.
+// intakeGiveUpsContract, 232, podHoldContract, priorityContract, causeTimesContract and
+// dispatchCredentialContract, and a renumber of this entry moves that constant with it.
 // (This change took 136, from a census of `const DaemonAPIVersion` at refs/pull/<n>/head of
 // every open pull request that changes version.go or whose file list GitHub cut at 100, taken at
 // 2026-11-15T06:21:19Z over the 148 open pull requests on main d7dce730: main declared 133, and the
