@@ -137,32 +137,37 @@ type PodReplacementFinish struct {
 
 // FinishPodReplacement finishes the record of operation, a replacement of issue's pod whose act is
 // made. In one transaction it deletes that record and every standing record of the issue that the
-// act took with it (takenWith), and queues notice, where it is not nil, as the issue's outbox row
-// (insertOutboxRow). A target is taken once, so every act recorded on a target the act took is
-// over once the act is made, and the issue's architect is told of it once (the Legion reviewer's
-// Important 1 on #5285 at 7da847c0): two acts on one target each stand recorded under an operation
-// of their own (a replacement by issue and the launch that replaced the round's pod while it
-// waited, a launch that failed and the act after it, a launch that stopped before its delete and
+// act took with it (takenWith), and queues the act's notice, where there is one, as the issue's
+// outbox row (insertOutboxRow). A target is taken once, so every act recorded on a target the act
+// took is over once the act is made, and the issue's architect is told of it once (the Legion
+// reviewer's Important 1 on #5285 at 7da847c0): two acts on one target each stand recorded under an
+// operation of their own (a replacement by issue and the launch that replaced the round's pod while
+// it waited, a launch that failed and the act after it, a launch that stopped before its delete and
 // the next launch), and the runtime reads each made from the target alone. The finish reads the
 // finished record whole from its row, and the issue's other records with their rows locked, and
 // decides in Go which of them go, by the targets each names (PodReplacement.Targets), so the rule
-// of what an act takes is written once (the Legion reviewer's Important on #5285 at 69e00593). The
-// notice is queued exactly when the records go, so a store that refuses either keeps them all as
-// they were, and a later finish of any of those records finds nothing and queues nothing. A nil
-// notice finishes the records with nothing queued: an act made over a read that found nothing,
-// which is the last read of the target before it was taken. A notice of an issue of another
-// project than project is queued by no daemon of this one, so the records go with no row queued,
-// and Told says so.
+// of what an act takes is written once (the Legion reviewer's Important on #5285 at 69e00593).
+//
+// notice, where it is not nil, is asked for the act's notice in the same transaction, with every
+// record the finish took (PodReplacementFinish.Took), so the notice is built from the reads of all
+// of them and not only of the record the caller finishes (internal/daemon's tellingRead; the Legion
+// reviewer's item 2 on #5285 at 69e00593). It answers nil where the act owes nobody a notice: every
+// read it took found nothing that origin does not hold. Its error is the finish's, which then
+// takes nothing. The notice is queued exactly when the records go, so a store that refuses either
+// keeps them all as they were, and a later finish of any of those records finds nothing and asks
+// for no notice. A notice of an issue of another project than project is queued by no daemon of
+// this one, so the records go with no row queued, and Told says so.
 //
 // yield is a finish whose caller's own call took nothing of the record's target: the runtime found
 // the target taken already, and answered without asking the act's last word. Where a standing
 // record of another act names that target beside its own (Targets: a launch's delete of the
 // issue's Sandbox and its kept volume over the pod, WithPod), that act took it, and the finish
-// yields to it: it deletes the finished record alone, as the record of an act not made, and queues
-// nothing, and the other record tells the architect once its own act is confirmed (the Legion
-// reviewer's Important on #5285 at 69e00593, path a). Where no such record stands, the finish
-// takes what the act took, as every other finish does.
-func (s *Store) FinishPodReplacement(ctx context.Context, project, issue, operation string, yield bool, notice *IdleReleaseRow) (PodReplacementFinish, error) {
+// yields to it: it deletes the finished record alone, as the record of an act not made, and asks
+// for no notice, and the other record tells the architect once its own act is confirmed (the
+// Legion reviewer's Important on #5285 at 69e00593, path a). Where no such record stands, the
+// finish takes what the act took, as every other finish does.
+func (s *Store) FinishPodReplacement(ctx context.Context, project, issue, operation string, yield bool,
+	notice func(took []PodReplacement) (*IdleReleaseRow, error)) (PodReplacementFinish, error) {
 	var finish PodReplacementFinish
 	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		finish = PodReplacementFinish{}
@@ -210,10 +215,17 @@ func (s *Store) FinishPodReplacement(ctx context.Context, project, issue, operat
 		for _, r := range took {
 			finish.Took = append(finish.Took, r.PodReplacement)
 		}
-		if notice == nil || !claim.KeyOfProject(project, issue) {
+		if notice == nil {
 			return nil
 		}
-		if _, err := insertOutboxRow(ctx, tx, project, issue, *notice); err != nil {
+		row, err := notice(finish.Took)
+		if err != nil {
+			return err
+		}
+		if row == nil || !claim.KeyOfProject(project, issue) {
+			return nil
+		}
+		if _, err := insertOutboxRow(ctx, tx, project, issue, *row); err != nil {
 			return err
 		}
 		finish.Told = true

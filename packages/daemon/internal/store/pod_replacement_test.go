@@ -33,7 +33,7 @@ func TestTheFinishOfAnActFinishesEveryRecordOfItsTarget(t *testing.T) {
 			t.Fatalf("record %s: %v", r.Operation, err)
 		}
 	}
-	notice := workspaceTakenRow(t)
+	notice := workspaceTaken(t, nil)
 
 	finish, err := st.FinishPodReplacement(ctx, "legion", rootIssue, "launch-1", false, notice)
 	if err != nil || !finish.Found || !finish.Told {
@@ -138,7 +138,8 @@ func TestTheFinishOfAnActTakesTheRecordsOfEveryTargetItTook(t *testing.T) {
 					t.Fatalf("record %s: %v", r.Operation, err)
 				}
 			}
-			finish, err := st.FinishPodReplacement(ctx, "legion", rootIssue, tc.operation, tc.yield, workspaceTakenRow(t))
+			var handed []PodReplacement
+			finish, err := st.FinishPodReplacement(ctx, "legion", rootIssue, tc.operation, tc.yield, workspaceTaken(t, &handed))
 			if err != nil || !finish.Found {
 				t.Fatalf("the finish of %s = %+v, %v; want its record found", tc.operation, finish, err)
 			}
@@ -150,6 +151,9 @@ func TestTheFinishOfAnActTakesTheRecordsOfEveryTargetItTook(t *testing.T) {
 				t.Errorf("the finish of %s took %v, yielded %t and told %t; want it to take %v, yield %t and tell %t",
 					tc.operation, took, finish.Yielded, finish.Told, tc.took, yielded, !yielded)
 			}
+			if len(handed) != len(finish.Took) || len(handed) > 0 && handed[0].Operation != took[0] {
+				t.Errorf("the notice was asked for with %d records, want every record the finish took, %v, oldest first", len(handed), took)
+			}
 			if standing := operationsStanding(t, st); !slices.Equal(standing, tc.standing) {
 				t.Errorf("records standing once %s is finished = %v, want %v", tc.operation, standing, tc.standing)
 			}
@@ -160,15 +164,21 @@ func TestTheFinishOfAnActTakesTheRecordsOfEveryTargetItTook(t *testing.T) {
 	}
 }
 
-// workspaceTakenRow is a workspace-taken notice to rootIssue's architect, as a finish queues it.
-func workspaceTakenRow(t *testing.T) *IdleReleaseRow {
+// workspaceTaken is the notice a finish asks for: a workspace-taken notice to rootIssue's
+// architect. It keeps in handed, where it is not nil, the records the finish took.
+func workspaceTaken(t *testing.T, handed *[]PodReplacement) func([]PodReplacement) (*IdleReleaseRow, error) {
 	t.Helper()
 	row, err := record.NewOutboxRow(rootIssue, record.Notice{Kind: record.WorkspaceTakenNotice, Role: claim.RoleArchitect,
 		Reason: "The pod is gone."}, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &IdleReleaseRow{Kind: string(row.Kind), Payload: row.Payload}
+	return func(took []PodReplacement) (*IdleReleaseRow, error) {
+		if handed != nil {
+			*handed = took
+		}
+		return &IdleReleaseRow{Kind: string(row.Kind), Payload: row.Payload}, nil
+	}
 }
 
 // workspaceTakenQueued is how many workspace-taken notices to rootIssue the outbox holds.

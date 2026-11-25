@@ -1239,9 +1239,9 @@ func (s *supervision) overtakenByLaunch(ctx context.Context, recorded store.PodR
 // It logs the bound's own line where the bound let the replacement through (ended, what the last
 // word or the launch read of the round's end under the pod's launch turn), since the replacement
 // is made by then, finishes the replacement's record, recorded, telling the issue's architect what
-// the replacement took where the read before it found work or failed (finishReplacement), and
-// only then logs the replacement's line and ends the round on the claims of members
-// (endPodUpdates). A store that refuses the finish
+// the replacement took where the read that tells most of the records the finish takes found work or
+// failed (finishReplacement, tellingRead), and only then logs the replacement's line and ends the
+// round on the claims of members (endPodUpdates). A store that refuses the finish
 // leaves the round open with its record (the Legion reviewer's point D on fa9deb04): the notice
 // names what the round's claims record — the members that had not answered, and whether the kept
 // volume was still the round's — and the end clears it, so a later sweep finishes the record from
@@ -1281,9 +1281,8 @@ func (s *supervision) roundReplaced(ctx context.Context, issue, round, pod, reas
 	if kept {
 		line = append(line, "keptVolume", true)
 	}
-	var reason string
-	if !read.clean() {
-		reason = workspaceTakenMessage(issue, round, pod, reasons, named, read.work, read.err, kept)
+	message := func(told recordedRead) string {
+		return workspaceTakenMessage(issue, round, pod, reasons, named, told.work, told.err, kept)
 	}
 	// The bound's line comes before the finish: the replacement is made, and a retry of a refused
 	// finish (finishReplacements) carries no reading of the bound, so this is the line's one chance.
@@ -1299,7 +1298,7 @@ func (s *supervision) roundReplaced(ctx context.Context, issue, round, pod, reas
 	// queues the architect's notice: a store that refuses that notice leaves the round open, and
 	// each later sweep tries again, so the line that says the round is over comes once, after the
 	// finish commits.
-	finish, finished := s.finishReplacement(ctx, recorded.Operation, issue, pod, yield, reason, "round", round)
+	finish, finished := s.finishReplacement(ctx, recorded.Operation, issue, pod, yield, message, "round", round)
 	switch {
 	case !finished:
 		s.log.Info("supervise: the pod of this update round is replaced, and the round stays open: the store refused to finish the replacement's record and to queue the architect's workspace-taken notice with it; a later sweep finishes it",

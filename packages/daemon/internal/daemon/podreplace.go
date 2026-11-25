@@ -125,6 +125,58 @@ func (r replacementRecord) taken(recorded store.PodReplacement) runtime.TakenPod
 	return taken
 }
 
+// recordedRead is a read of the issue's workspace as a record holds it (replacementRecord.work):
+// what it found, or the error it failed with.
+type recordedRead struct {
+	work runtime.WorkspaceWork
+	err  error
+}
+
+// weight is how much the read tells the issue's architect: 2 for a read that found work that no
+// branch or tag on origin holds, 1 for a read that failed, and 0 for a read that found nothing.
+func (r recordedRead) weight() int {
+	switch {
+	case r.err != nil:
+		return 1
+	case r.work.HoldsWork():
+		return 2
+	}
+	return 0
+}
+
+// tellingRead is the read the notice of one act tells, of every record the act's finish took (took,
+// oldest first, store.PodReplacementFinish.Took): a read that found work that no branch or tag on
+// origin holds tells over one that failed, and a read that failed over one that found nothing, and
+// of reads that weigh the same the newest tells (the Legion reviewer's item 2 on #5285 at
+// 69e00593). One act can stand under the records of acts made over reads of their own, and the
+// newest of them is not always the last read before the take: a replacement by issue reads outside
+// the pod's launch turn and records before it waits for that turn, so its record can be newer than
+// a launch's whose read named commits. tells is false where every read found nothing: the act owes
+// nobody a notice. A record this daemon cannot read tells nothing.
+func tellingRead(took []store.PodReplacement) (read recordedRead, tells bool) {
+	for _, r := range took {
+		var rec replacementRecord
+		if json.Unmarshal(r.Record, &rec) != nil {
+			continue
+		}
+		var held recordedRead
+		held.work, held.err = rec.work(r.PodUID)
+		if held.weight() > 0 && held.weight() >= read.weight() {
+			read, tells = held, true
+		}
+	}
+	return read, tells
+}
+
+// launchMessage is the notice of a launch's own replacement, taken (launchTakenMessage), over the
+// read the notice tells (tellingRead) in place of the launch's own.
+func launchMessage(taken runtime.TakenPod) func(recordedRead) string {
+	return func(read recordedRead) string {
+		taken.Work, taken.Err = read.work, read.err
+		return launchTakenMessage(taken)
+	}
+}
+
 // recordRoundReplacement writes the record of round's replacement of issue's pod, made over read,
 // the round recording reasons (roundRecordOf), before the runtime is asked to act: through a
 // process (replacePodForRound) or by issue (replaceIssuePodForRound) before the call, and at a
@@ -177,26 +229,33 @@ func (s *supervision) forgetReplacement(ctx context.Context, recorded store.PodR
 
 // finishReplacement finishes the record of operation, a replacement of issue's pod pod, now the
 // act is made: it deletes the record, with every record of an act the act took with it (what each
-// record's act takes, store.PodReplacement.Targets), and, in the same transaction, queues reason,
-// where it is not "", as the issue's architect's workspace-taken notice
-// (store.Store.FinishPodReplacement). yield is a round's call that took nothing, which yields to
-// the record of a launch's act that took the pod with its Sandbox's volume: that record tells the
-// architect, and this one goes alone, with nothing queued (roundReplaced). It answers what the
-// finish did, and false where the store refused: the records then stand for a later sweep
-// (finishReplacements). A record that the finish of another act took, or another finish of the
-// same act, is finished already, and nothing is queued for it here (the Legion reviewer's
-// Important 1 on #5285 at 7da847c0). attrs name the replacement on its lines.
-func (s *supervision) finishReplacement(ctx context.Context, operation, issue, pod string, yield bool, reason string, attrs ...any) (store.PodReplacementFinish, bool) {
+// record's act takes, store.PodReplacement.Targets), and, in the same transaction, queues the
+// issue's architect's workspace-taken notice where the read it tells found work or failed
+// (store.Store.FinishPodReplacement). The notice is message, the caller's words of the act, over
+// the read of every record the finish took that tells most (tellingRead), so one act is told from
+// the one read that says most of what it took, whichever of its records the caller finishes. yield
+// is a round's call that took nothing, which yields to the record of a launch's act that took the
+// pod with its Sandbox's volume: that record tells the architect, and this one goes alone, with
+// nothing queued (roundReplaced). It answers what the finish did, and false where the store
+// refused: the records then stand for a later sweep (finishReplacements). A record that the finish
+// of another act took, or another finish of the same act, is finished already, and nothing is
+// queued for it here (the Legion reviewer's Important 1 on #5285 at 7da847c0). attrs name the
+// replacement on its lines.
+func (s *supervision) finishReplacement(ctx context.Context, operation, issue, pod string, yield bool, message func(recordedRead) string,
+	attrs ...any) (store.PodReplacementFinish, bool) {
 	attrs = append([]any{"issue", issue, "pod", pod, "operation", operation}, attrs...)
-	var notice *store.IdleReleaseRow
-	if reason != "" {
-		row, err := record.NewOutboxRow(issue, record.Notice{Kind: record.WorkspaceTakenNotice, Role: claim.RoleArchitect, Reason: reason}, s.plan.clock.Now())
-		if err != nil {
-			s.log.Error("supervise: encode the issue's architect's notice of what a replacement of its pod took; its record stands, and a later sweep tells the architect",
-				append(attrs, "error", err)...)
-			return store.PodReplacementFinish{}, false
+	noticed := false
+	notice := func(took []store.PodReplacement) (*store.IdleReleaseRow, error) {
+		read, tells := tellingRead(took)
+		if !tells {
+			return nil, nil
 		}
-		notice = &store.IdleReleaseRow{Kind: string(row.Kind), Payload: row.Payload}
+		row, err := record.NewOutboxRow(issue, record.Notice{Kind: record.WorkspaceTakenNotice, Role: claim.RoleArchitect, Reason: message(read)}, s.plan.clock.Now())
+		if err != nil {
+			return nil, fmt.Errorf("encode the issue's architect's notice of what the replacement took: %w", err)
+		}
+		noticed = true
+		return &store.IdleReleaseRow{Kind: string(row.Kind), Payload: row.Payload}, nil
 	}
 	finish, err := s.supervisor.store.FinishPodReplacement(ctx, s.plan.project, issue, operation, yield, notice)
 	switch {
@@ -212,7 +271,7 @@ func (s *supervision) finishReplacement(ctx context.Context, operation, issue, p
 	case finish.Yielded:
 		s.log.Info("supervise: the record of this replacement of the issue's pod yields to the record of a launch's act that took the pod with its Sandbox's volume; it is forgotten, nothing is queued for it, and the launch's record tells the architect",
 			attrs...)
-	case notice == nil:
+	case !noticed:
 	case !finish.Told:
 		s.log.Info("supervise: the issue's architect is not told what a replacement of its pod took: its issue is another project's, whose rows this daemon writes none of",
 			attrs...)
@@ -257,7 +316,7 @@ func (s *supervision) tellLaunchTook(ctx context.Context, taken runtime.TakenPod
 			append([]any{"issue", taken.Issue, "pod", taken.PodUID}, attrs...)...)
 		return
 	}
-	s.finishReplacement(ctx, taken.Operation, taken.Issue, taken.PodUID, false, launchTakenMessage(taken), attrs...)
+	s.finishReplacement(ctx, taken.Operation, taken.Issue, taken.PodUID, false, launchMessage(taken), attrs...)
 }
 
 // finishReplacements finishes, at the start of a sweep, every record of a replacement that a call
@@ -286,7 +345,8 @@ func (s *supervision) tellLaunchTook(ctx context.Context, taken runtime.TakenPod
 //   - An act made was made by the recorded replacement: its suspension landed, whether or not the
 //     call answered so. The round ends as that replacement, from the read made before it
 //     (roundReplaced), with the members that had not answered named, and the architect is told
-//     what it took. A launch's record tells the architect from the launch's own read.
+//     what it took. A launch's record tells the architect in the launch's words. Each tells from
+//     the read that tells most of the records its finish takes (below).
 //
 // The sweep finishes each target once (the Legion reviewer's Important 3 on #5285 at acda4d1e). It
 // decides the records newest first, but every record of a launch's delete of the issue's Sandbox
@@ -294,9 +354,15 @@ func (s *supervision) tellLaunchTook(ctx context.Context, taken runtime.TakenPod
 // ages (sweepOrder): such a record names that pod beside its own target, and the act that took the
 // pod is the launch's, so it decides the pod before a round's record of it does (the Legion
 // reviewer's Important on #5285 at 69e00593). A target is taken once, so the finish of the record
-// that decides it takes every record of a target its act took (store.PodReplacement.Targets), and
-// the notice is the deciding record's: the last read recorded before the target was taken. A
-// later record of a target this sweep has decided is decided by what that deciding record did:
+// that decides it takes every record of a target its act took (store.PodReplacement.Targets), with
+// one notice, in the deciding record's words, from the read of all the records it took that tells
+// most: a read that found work that no branch or tag on origin holds over one that failed, a read
+// that failed over one that found nothing, and of reads that weigh the same the newest
+// (tellingRead; the Legion reviewer's item 2 on #5285 at 69e00593). The newest record is not
+// always the last read before the take: a replacement by issue reads outside the pod's launch turn
+// and records before it waits for that turn, so its record, over a read that failed, can be newer
+// than a launch's whose read named commits. A later record of a target this sweep has decided is
+// decided by what that deciding record did:
 //
 //   - Gone: the deciding record's finish took it. A launch's record, or a record of the round that
 //     ended, went with it. A record of another round, which a launch's finish took, ends that
@@ -386,7 +452,7 @@ func (s *supervision) finishReplacements(ctx context.Context, claims []supervise
 			s.log.Info("supervise: a recorded replacement of the issue's pod took nothing: its target is still in use, the pod running as the issue's own or the Sandbox of the volume running a pod on it; its record is forgotten", attrs...)
 		case !ofRound:
 			taken := rec.taken(r)
-			finish, finished := s.finishReplacement(ctx, r.Operation, r.Issue, r.PodUID, false, launchTakenMessage(taken), "claim", taken.Claim, "why", taken.Why)
+			finish, finished := s.finishReplacement(ctx, r.Operation, r.Issue, r.PodUID, false, launchMessage(taken), "claim", taken.Claim, "why", taken.Why)
 			decideFinish(decided, went, keys, targetDecided{finished: finished}, finish)
 		default:
 			told := s.noticeGroup(claimsOf(claims, r.Issue))
