@@ -138,3 +138,19 @@ func HoldsToken(text string) bool { return tokenForm.MatchString(text) }
 
 // RedactTokens is text with every GitHub token form in it (HoldsToken) replaced by "[redacted]".
 func RedactTokens(text []byte) []byte { return tokenForm.ReplaceAll(text, []byte("[redacted]")) }
+
+// plainMessage is a message of GitHub's that is plain words: letters, spaces and a sentence's
+// punctuation, at most 200 characters, the shape of each message GitHub's REST API writes for a
+// read it refuses ("Not Found", "Bad credentials", "Moved Permanently"). A digit, a slash, a colon
+// or an underscore is none of it, so no URL and no token GitHub mints has the shape.
+var plainMessage = regexp.MustCompile(`^[A-Za-z][A-Za-z ,.'()-]{0,199}$`)
+
+// PlainMessage says whether message, a message of GitHub's answer, is plain words (plainMessage).
+func PlainMessage(message string) bool { return plainMessage.MatchString(message) }
+
+// repositoryRedirect is where GitHub's redirect for a repository that moved points: the
+// repository by its id on api.github.com, with no user information, query or fragment.
+var repositoryRedirect = regexp.MustCompile(`^https://api\.github\.com/repositories/[0-9]+$`)
+
+// RepositoryRedirect says whether location, a Location of GitHub's answer, is repositoryRedirect.
+func RepositoryRedirect(location string) bool { return repositoryRedirect.MatchString(location) }
