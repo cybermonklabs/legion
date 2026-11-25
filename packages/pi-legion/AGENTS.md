@@ -15,8 +15,8 @@ The daemon client, the claim boot, the `legion` tool's phase ops and the phase r
 
 ## Rules
 
-- The committed `package.json` declares no daemon API contract: each pack step writes `legion.daemonApiVersion` into the manifest it packs, and the code reads the number only through `daemonContract()` (`packages/contracts/src/daemon-contract.ts`), which takes a packed manifest's field and, in a checkout, counts the entry fixtures.
-  A change to a shape the daemon client parses, or to a variable a pane reads, adds a contract entry with `bash scripts/daemon-contract-entry.sh <slug>` and edits no number, as `CONTRIBUTING.md` says.
+- `package.json`'s `legion.daemonApiVersion` equals `DaemonAPIVersion` in `packages/daemon/internal/api/version.go`:
+  a change to a shape the daemon client parses, or to a variable a pane reads, bumps both in the same commit, by the rule in that file's doc comment.
 
 - Build every tool schema field through the injected `pi.zod` (`toolSchema` in `src/tools.ts`):
   Oh My Pi's converter reads internals only its own Zod produces, and one field from another Zod fails the whole extension load.

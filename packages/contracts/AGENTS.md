@@ -18,9 +18,6 @@ It has no release of its own; its consumers bundle it.
 - `src/legion-api.ts` mirrors the daemon's Go wire shapes by hand.
   Import it as `@legion/contracts/legion-api`, never from the barrel, so a bundle that does not speak to the daemon does not carry it.
 
-- `fixtures/daemon-api/contracts/` holds one fixture for each contract entry of the daemon, which `go test ./internal/api -update` in `packages/daemon` writes, and `fixtures/daemon-api/released-contracts.json` holds the numbers released before entries.
-  The daemon's contract number is the greatest of those numbers plus the count of entry fixtures (`daemonContract()` in `src/daemon-contract.ts` counts them in a checkout), so a comment or a test here names a new entry by its id, never by a number (`CONTRIBUTING.md` says how an entry is added).
-
 - A delivery mode goes into `DELIVERY_CAPABILITIES` before any server, adapter or UI accepts it.
 
 - Declare a new wire field in every nested `z.object` that reads it: a zod object drops the keys it does not declare.
