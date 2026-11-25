@@ -2,7 +2,6 @@ package docs
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -295,15 +294,13 @@ func (s *Service) textAsks(ctx context.Context, artifactID string, tree *pmdoc.N
 	return entries, nil
 }
 
-// askNodeAnswer is what an ask's node holds of its answer: its answer state (answer_state), and
-// for an answer who gave it (the answered_by relation's person), when (answered_at), the options
-// chosen (selected) and the words (answer), each "" or nil where the node holds none. planned is
-// whether it is what a change the reading transaction plans leaves on the node
-// (plannedAskNodeAnswer), which the transaction may not have written to the node or the row yet.
+// askNodeAnswer is what an ask's node holds of its answer, as the one decoder of the node's
+// answer reads it (asks.NodeAnswer): its answer state, and for an answer who gave it, when, the
+// options chosen and the words, each "" or nil where the node holds none. planned is whether it
+// is what a change the reading transaction plans leaves on the node (plannedAskNodeAnswer), which
+// the transaction may not have written to the node or the row yet.
 type askNodeAnswer struct {
-	state, answeredBy, answeredAt string
-	selected                      []string
-	answer                        *string
+	asks.NodeAnswer
 	// kept for one release: catch-up
 	planned bool
 }
@@ -352,19 +349,8 @@ func askNodeAnswers(ctx context.Context, tx pgx.Tx, ids []string) (map[string]as
 			answer = &askNodeAnswer{}
 			held[id] = answer
 		}
-		switch kind {
-		case graphstore.TupleAnswerState:
-			answer.state = value
-		case graphstore.TupleAnswer:
-			answer.answer = &value
-		case graphstore.TupleSelected:
-			if err := json.Unmarshal([]byte(value), &answer.selected); err != nil {
-				return nil, fmt.Errorf("the node of ask %s holds selected %q, which is no list of labels: %w", id, value, err)
-			}
-		case graphstore.TupleAnsweredAt:
-			answer.answeredAt = value
-		case graphstore.TupleAnsweredBy:
-			answer.answeredBy = value
+		if err := answer.Read(kind, value); err != nil {
+			return nil, fmt.Errorf("read the answer of ask %s off its node: %w", id, err)
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -372,7 +358,7 @@ func askNodeAnswers(ctx context.Context, tx pgx.Tx, ids []string) (map[string]as
 	}
 	answers := make(map[string]askNodeAnswer, len(held))
 	for id, answer := range held {
-		if answer.state != "" {
+		if answer.State != "" {
 			answers[id] = *answer
 		}
 	}
@@ -391,14 +377,15 @@ func askNodeAnswers(ctx context.Context, tx pgx.Tx, ids []string) (map[string]as
 // state, and for an answer the person, the time, the options and the words it states on the node
 // (asks' answerFacts).
 func plannedAskNodeAnswer(ask model.Ask) askNodeAnswer {
-	held := askNodeAnswer{state: ask.State}
+	held := askNodeAnswer{NodeAnswer: asks.NodeAnswer{State: ask.State}}
 	// kept for one release: catch-up
 	held.planned = true
-	if ask.Answer != nil {
-		held.answeredBy = asks.AnswererOf(*ask.Answer)
-		held.answeredAt = asks.AnsweredAtValue(ask.Answer.At)
-		held.selected = append([]string{}, ask.Answer.Selected...)
-		held.answer = ask.Answer.Text
+	if answer := ask.Answer; answer != nil {
+		at := answer.At
+		held.AnsweredBy = asks.AnswererOf(*answer)
+		held.AnsweredAt = &at
+		held.Selected = append([]string{}, answer.Selected...)
+		held.Answer = answer.Text
 	}
 	return held
 }
@@ -409,7 +396,7 @@ func plannedAskNodeAnswer(ask model.Ask) askNodeAnswer {
 // the state, open where the node holds none; who answered, when, the options chosen (never a nil
 // list) and the words, for an answered ask; and for a copy, the source ask and its document.
 func textAskOf(blockID string, answer askNodeAnswer, source, copied string) model.TextAsk {
-	entry := model.TextAsk{BlockID: blockID, State: answer.state}
+	entry := model.TextAsk{BlockID: blockID, State: answer.State}
 	if entry.State == "" {
 		entry.State = asks.StateOpen
 	}
@@ -417,9 +404,12 @@ func textAskOf(blockID string, answer askNodeAnswer, source, copied string) mode
 		entry.CopiedFrom, entry.CopiedFromDocument = source, copied
 	}
 	if entry.State == asks.StateAnswered {
-		selected := append([]string{}, answer.selected...)
-		entry.AnsweredBy, entry.AnsweredAt = answer.answeredBy, answer.answeredAt
-		entry.Selected, entry.Answer = &selected, answer.answer
+		selected := append([]string{}, answer.Selected...)
+		entry.AnsweredBy = answer.AnsweredBy
+		if answer.AnsweredAt != nil {
+			entry.AnsweredAt = asks.AnsweredAtValue(*answer.AnsweredAt)
+		}
+		entry.Selected, entry.Answer = &selected, answer.Answer
 	}
 	return entry
 }

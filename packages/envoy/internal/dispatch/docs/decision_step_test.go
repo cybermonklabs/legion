@@ -29,6 +29,10 @@ import (
 // its catch-up owes.
 const catchUpCommit = "1150115011501150115011501150115011501150"
 
+// catchUpFixCommit is another commit of this release, as a fix rolled forward after a rollback
+// serves; the release before serves previousReleaseCommit (graph_previous_release_version_test.go).
+const catchUpFixCommit = "5570557055705570557055705570557055705570"
+
 // catchUpAlice is the person who answers, resolves and follows in these tests.
 var catchUpAlice = model.Actor{Kind: "user", ID: "alice"}
 
@@ -601,7 +605,7 @@ func TestABootWaitsForTheStepsLockOnlyWhilePhaseOneOwesARow(t *testing.T) {
 	if _, err := holder.Exec(ctx, `select pg_advisory_lock($1)`, decisionStepLock); err != nil {
 		t.Fatalf("take the step's lock: %v", err)
 	}
-	if owed, err := graphcensus.AsksOwed(ctx, database.Pool); err != nil || owed {
+	if owed, err := graphcensus.AsksOwed(ctx, database); err != nil || owed {
 		t.Fatalf("phase 1 owes a row %t (%v) on an empty database, want nothing owed", owed, err)
 	}
 	bootCtx, cancelBoot := context.WithTimeout(ctx, 10*time.Second)
@@ -613,7 +617,7 @@ func TestABootWaitsForTheStepsLockOnlyWhilePhaseOneOwesARow(t *testing.T) {
 	t.Logf("the boot with nothing owed answered in %s while another session held the step's lock", time.Since(started))
 
 	ask, issue := seedUnmarkedAsk(t, database, "OWED")
-	if owed, err := graphcensus.AsksOwed(ctx, database.Pool); err != nil || !owed {
+	if owed, err := graphcensus.AsksOwed(ctx, database); err != nil || !owed {
 		t.Fatalf("phase 1 owes a row %t (%v) once the release before wrote an ask, want one owed", owed, err)
 	}
 	owedCtx, cancelOwed := context.WithTimeout(ctx, time.Minute)
@@ -643,7 +647,121 @@ func TestABootWaitsForTheStepsLockOnlyWhilePhaseOneOwesARow(t *testing.T) {
 	if !askMarked(t, database, ask) {
 		t.Fatalf("the ask of %s names no node after the boot, want its phase 1 to have marked it", issue)
 	}
-	if owed, err := graphcensus.AsksOwed(ctx, database.Pool); err != nil || owed {
+	if owed, err := graphcensus.AsksOwed(ctx, database); err != nil || owed {
 		t.Fatalf("phase 1 owes a row %t (%v) after the boot, want nothing owed", owed, err)
+	}
+}
+
+// A row the backfill's object pass cannot write, because the store holds its node in another
+// project (graphstore.ErrProjectMoved), is one no run cures, and it stops no boot: phase 1 runs
+// the asks and follower passes past it, as the backfill command runs its passes past such a row,
+// logs it, and owes nothing for it after, so the boot after it runs no phase 1 at all. Were the
+// row owed, or its refusal a failure, every process of this build would exit at boot
+// (cmd/dispatch) until a person repaired the store.
+//
+// The release before writes an ask on issue MOVED-1, a session's follow of it and a document of
+// the issue, none of them naming a node, and the store holds the document's address gone in
+// project ELSEWHERE. A boot answers nil, the ask and its follower row then name their node, phase
+// 1 owes nothing, and a second boot answers nil and leaves it so.
+func TestABootRunsTheAskPassesPastARowWhoseNodeStandsInAnotherProject(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	ask, issue := seedUnmarkedAsk(t, database, "MOVED")
+	at := time.Now().UTC().Add(-time.Hour)
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `insert into projects (key, name, default_assignee) values ('ELSEWHERE', 'Elsewhere', 'alice')`); err != nil {
+			return err
+		}
+		moved := graphstore.ArtifactNode(issue+"/moved-md", "ELSEWHERE", "", catchUpAlice, at)
+		if err := graphstore.Write(ctx, tx, []graphstore.Node{moved}, nil); err != nil {
+			return err
+		}
+		moved.State, moved.MadeAt = graphstore.StateGone, at.Add(time.Minute)
+		if err := graphstore.Write(ctx, tx, []graphstore.Node{moved}, nil); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
+			values ($1, 'MOVED', 'moved-md', 'Moved', 'doc', '{"kind":"user","id":"alice"}')
+		`, issue); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `insert into ask_followers (ask_id, session_id) values ($1::uuid, $2)`, ask, catchUpSession)
+		return err
+	}); err != nil {
+		t.Fatalf("seed the document whose node stands in another project and the ask's follower: %v", err)
+	}
+	for boot := 1; boot <= 2; boot++ {
+		if err := NewDecisionStep(database, catchUpCommit, nil).Boot(ctx); err != nil {
+			t.Fatalf("boot %d answered %v, want nil: a row no run cures stops no boot", boot, err)
+		}
+		if !askMarked(t, database, ask) {
+			t.Fatalf("the ask of %s names no node after boot %d, want the asks pass to have marked it", issue, boot)
+		}
+		var followed bool
+		if err := database.Pool.QueryRow(ctx, `
+			select node_kind is not null from ask_followers where ask_id = $1::uuid and session_id = $2
+		`, ask, catchUpSession).Scan(&followed); err != nil || !followed {
+			t.Fatalf("the follower row of %s names its node %t (%v) after boot %d, want the follower pass to have marked it",
+				catchUpSession, followed, err, boot)
+		}
+		if owed, err := graphcensus.AsksOwed(ctx, database); err != nil || owed {
+			t.Fatalf("phase 1 owes a row %t (%v) after boot %d, want nothing owed: the one row left is one no run cures", owed, err, boot)
+		}
+	}
+}
+
+// The catch-up's window opens where the fleet last stood whole on a build that marks no row
+// before the migration that gives the asks rows their marker was applied, so a rollback to the
+// release before and a second roll forward pass over no event that release appended on a row a
+// build of this release marked. The release before announces its build again once the fleet
+// stands whole on it after the rollback, later than an event it appended after this build's last
+// pass, and the step's high-water mark is a process's own: a window opening at that announcement
+// would leave the event out of every pass after it, and the backfill, which reads no marked row,
+// would not state it either.
+//
+// The release before announces its build before the migration. This build marks an ask, runs its
+// final catch-up pass, which finds nothing to state, and announces its build. The release before
+// then serves alone: it answers the ask, which states nothing on the ask's node, and announces its
+// build again. A process of this release then rolls forward again, of this commit and of another,
+// and its first tick states the answer on the ask's node under the release before's ask.answered.
+func TestTheCatchUpOfARollForwardAfterARollbackStatesWhatTheReleaseBeforeWroteInBetween(t *testing.T) {
+	for name, commit := range map[string]string{"this commit": catchUpCommit, "another commit of this release": catchUpFixCommit} {
+		t.Run(name, func(t *testing.T) {
+			database := storetest.Open(t)
+			ctx := context.Background()
+			announce := func(commit string) {
+				t.Helper()
+				if _, err := database.Pool.Exec(ctx, `insert into server_build_announcements (commit) values ($1)`, commit); err != nil {
+					t.Fatalf("announce %s: %v", commit, err)
+				}
+			}
+			before, err := database.Pool.Exec(ctx, `
+				insert into server_build_announcements (commit, announced_at)
+				select $1, m.applied_at - interval '1 hour' from schema_migrations m where m.version = $2
+			`, previousReleaseCommit, askNodeMigration)
+			if err != nil || before.RowsAffected() != 1 {
+				t.Fatalf("announce the release before ahead of migration %d: %d row(s) (%v), want one", askNodeMigration, before.RowsAffected(), err)
+			}
+			ask, issue := seedCatchUpAsk(t, database, "ROLL")
+			if err := NewDecisionStep(database, catchUpCommit, nil).Tick(ctx); err != nil {
+				t.Fatalf("run this build's final pass before the rollback: %v", err)
+			}
+			announce(catchUpCommit)
+
+			answered := answerAsThePreviousBuild(t, database, issue, ask, "Ship")
+			announce(previousReleaseCommit)
+			if _, event := newestAnswerState(t, database, ask); event == answered {
+				t.Fatalf("the ask's node holds the release before's ask.answered %d before the roll forward, want it stated by none", answered)
+			}
+
+			if err := NewDecisionStep(database, commit, nil).Tick(ctx); err != nil {
+				t.Fatalf("run the first tick of the roll forward: %v", err)
+			}
+			if state, event := newestAnswerState(t, database, ask); state != asks.StateAnswered || event != answered {
+				t.Errorf("the ask's node holds answer_state %q under event %d after the roll forward's first tick, want answered under the release before's ask.answered %d",
+					state, event, answered)
+			}
+		})
 	}
 }

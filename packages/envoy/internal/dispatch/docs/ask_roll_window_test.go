@@ -266,8 +266,8 @@ func TestAVersionWrittenBeforeTheCatchUpKeepsTheAnswerTheReleaseBeforeWroteIntoT
 			if err != nil {
 				t.Fatalf("read the ask's node: %v", err)
 			}
-			if held := nodes[ask.ID]; held.state == asks.StateAnswered {
-				t.Errorf("the ask's node holds it answered by %q after the write, want it as the window left it, for the catch-up to state", held.answeredBy)
+			if held := nodes[ask.ID]; held.State == asks.StateAnswered {
+				t.Errorf("the ask's node holds it answered by %q after the write, want it as the window left it, for the catch-up to state", held.AnsweredBy)
 			}
 		})
 	}

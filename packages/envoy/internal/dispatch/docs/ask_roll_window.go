@@ -5,7 +5,6 @@ import (
 	"reflect"
 	"slices"
 	"sync/atomic"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -190,10 +189,12 @@ func withoutUnkeptAskAttributes(node *pmdoc.Node) bool {
 // kept for one release: stored-ask-state
 func onItsNode(ask model.Ask, nodes map[string]askNodeAnswer) model.Ask {
 	held := nodes[ask.ID]
-	ask.State, ask.Answer = held.state, nil
-	if held.state == asks.StateAnswered {
-		at, _ := time.Parse(time.RFC3339Nano, held.answeredAt)
-		ask.Answer = &model.AskAnswer{User: held.answeredBy, At: at, Selected: held.selected, Text: held.answer}
+	ask.State, ask.Answer = held.State, nil
+	if held.State == asks.StateAnswered {
+		ask.Answer = &model.AskAnswer{User: held.AnsweredBy, Selected: held.Selected, Text: held.Answer}
+		if held.AnsweredAt != nil {
+			ask.Answer.At = *held.AnsweredAt
+		}
 	}
 	return ask
 }
@@ -216,7 +217,7 @@ func onItsNode(ask model.Ask, nodes map[string]askNodeAnswer) model.Ask {
 // kept for one release: stored-ask-state
 // kept for one release: catch-up
 func keptFromItsNode(ask model.Ask, nodes map[string]askNodeAnswer) model.Ask {
-	if held, stated := nodes[ask.ID]; !stated || held.state != ask.State && !held.planned {
+	if held, stated := nodes[ask.ID]; !stated || held.State != ask.State && !held.planned {
 		return ask
 	}
 	return onItsNode(ask, nodes)

@@ -175,13 +175,17 @@ func ParseWritten(markdown string, live *Node) (*Node, WrittenReadBack, error) {
 // as ParseForWrite parses a fragment: a leading `---` line is a horizontal rule, as it is anywhere
 // after a document's start. Written where the document begins (opensDocument), a closed
 // front-matter block opening the markdown is front matter, as Parse reads it. Its tables' short
-// rows are padded on budget, the caller write's, which its other fragments share.
+// rows are padded on budget, the caller write's, which its other fragments share. It judges the
+// markdown against no document, so an element this build cannot create yet is refused wherever
+// it is written: a write into a live document parses with ParseFragmentHolding.
 func ParseFragment(markdown string, opensDocument bool, budget *WriteBudget) (*Node, error) {
 	return parseForWrite(markdown, nil, opensDocument, "", budget)
 }
 
-// ParseFragmentHolding parses an insertion into live without carrying any of live's block IDs
-// into the fragment. Elements live already holds need not be creatable by this build.
+// ParseFragmentHolding is ParseFragment of markdown written into live - an insert, a replace's
+// `with`, an accepted suggestion - which carries none of live's block IDs into the fragment. An
+// element live already holds need not be creatable by this build, as an upload of the whole
+// document over live may keep it.
 func ParseFragmentHolding(markdown string, opensDocument bool, budget *WriteBudget, live *Node) (*Node, error) {
 	return parseForWriteHolding(markdown, nil, live, opensDocument, "", budget)
 }

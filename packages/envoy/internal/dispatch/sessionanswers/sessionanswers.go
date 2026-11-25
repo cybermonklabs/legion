@@ -31,8 +31,14 @@ const declinedResolution = `resolution->>'kind' = '` + model.AskResolutionDeclin
 // holds otherwise; and the row's own answer where the row names no node, its answer's one record
 // until the boot step's backfill marks it. The node holds no act, so scan lays the row's on it
 // where the row holds the same person's answer at the same time, as api's askNodeAnswer.applyTo
-// does. api's reader is not this package's to import (api imports it), so the statement is written
-// here over the same facts.
+// does.
+//
+// It decodes the node's facts in SQL rather than through the decoder every reader in Go shares
+// (asks.NodeAnswer): the one statement of List reads the answers of every ask that reached the
+// session at once, and holds them to the window and orders them among the comments, messages and
+// declines by the answer's own time (query's answer arm, `(n.answer->>'at')::timestamptz`), so the
+// time must be read in the statement. Its cast refuses a node's answered_at that is no time, which
+// fails the read as the decoder fails it.
 var nodeAnswer = `case when a.node_kind is null then a.answer else (
 		select case when f.state = '` + asks.StateAnswered + `' then jsonb_build_object(
 			'user', f.answered_by, 'selected', coalesce(f.selected::jsonb, '[]'::jsonb), 'text', f.answer, 'at', f.answered_at) end

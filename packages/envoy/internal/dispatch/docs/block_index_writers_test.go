@@ -573,10 +573,11 @@ var indexPasses = map[string]string{
 	"api/issue_ask_lifecycle.go#recordRestoredAsksTx":  "the asks an issue's reopen restores and the events it appended",
 	"docs/approval_carry.go#answerApprovalAsk":         "the approval the carry answers and the event it appended",
 	// A settlement states on each ask node the readability of its block that the reconciliation
-	// read (G1): the reason a block fails the strict read for, as the node's `invalid` value, and
-	// that value's retraction once the block reads again. It reads the value each node holds only
-	// to state what moved, never a side of a projection to mend the other.
-	"docs/ask_blocks.go#stateInvalidReasons": "the readability the settlement's reconciliation read of the document's ask blocks, and the invalid value each of their asks' nodes holds",
+	// read, through the writer of that value (asks.PlanInvalidReasons): the reason a block fails
+	// the strict read for, as the node's `invalid` value, and that value's retraction once the
+	// block reads again. It reads the value each node holds only to state what moved, never a side
+	// of a projection to mend the other.
+	"asks/invalid.go#PlanInvalidReasons": "the readability the settlement's reconciliation read of the document's ask blocks, and the invalid value each of their asks' nodes holds",
 	// A settlement states on each copy's block node the ask its classification read it a copy of,
 	// and retracts the copied_from of each block that holds one and is no longer an ask block. It
 	// reads the copied_from each block node holds only to find those blocks, a relation no table

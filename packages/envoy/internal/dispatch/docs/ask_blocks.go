@@ -18,7 +18,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -227,71 +226,13 @@ func (r *settlementReconciliation) claimCopies(ctx context.Context, tx pgx.Tx, a
 }
 
 // stateInvalidReasons plans what settlement writes on the node of each ask it read the
-// readability of the block of (G1): the reason each block that fails the strict read fails it for,
+// readability of the block of: the reason each block that fails the strict read fails it for,
 // where the block has an ask row (invalid), as the node's `invalid` value; and, for each ask whose
-// block reads again (readable), the retraction of the value its node holds. A node already holding
-// the reason, and one holding none whose block reads, is written nothing, so a settlement that
-// moved no block's readability appends nothing. Only an ask whose row names its node has one
-// (asks.node_kind): a row the release before wrote is stated on the store by the boot step's
-// backfill. It answers the step that states them under cause, nil where there is none to state,
-// in who's name at at.
+// block reads again (readable), the retraction of the value its node holds. The one writer of the
+// ask node's tuples plans them (asks.PlanInvalidReasons). It answers the step that states them
+// under cause, nil where there is none to state, in who's name at at.
 func (r *settlementReconciliation) stateInvalidReasons(ctx context.Context, tx pgx.Tx, who model.Actor, at time.Time) (func(b *store.WriteBatch, cause int64) error, error) {
-	if len(r.invalid) == 0 && len(r.readable) == 0 {
-		return nil, nil
-	}
-	kind := schemanodes.StoreName("ask", "invalid")
-	invalid := slices.Sorted(maps.Keys(r.invalid))
-	rows, err := tx.Query(ctx, `
-		select k.id::text, coalesce(held.to_id, ''), coalesce(held.asserted, false)
-		from asks k
-		left join lateral (
-			select t.to_id, t.asserted from graph_tuples t
-			where t.from_kind = $2 and t.from_id = k.id::text and t.kind = $3 and t.to_kind = $4
-			order by t.seq desc limit 1
-		) held on true
-		where k.id = any($1::uuid[]) and k.node_kind is not null
-		order by k.id
-	`, slices.Concat(invalid, r.readable), graphstore.KindAsk, kind, graphstore.KindValue)
-	if err != nil {
-		return nil, fmt.Errorf("read the readability the ask nodes hold: %w", err)
-	}
-	var tuples []graphstore.Tuple
-	for rows.Next() {
-		var ask, current string
-		var holds bool
-		if err := rows.Scan(&ask, &current, &holds); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("read the readability an ask node holds: %w", err)
-		}
-		tuple := graphstore.Tuple{
-			FromKind: graphstore.KindAsk, FromID: ask, Kind: kind, ToKind: graphstore.KindValue,
-			At: at, Who: who,
-		}
-		reason, flagged := r.invalid[ask]
-		switch {
-		case flagged && (!holds || current != reason):
-			tuple.ToID, tuple.Asserted = reason, true
-		case !flagged && holds:
-			tuple.ToID = current
-		default:
-			continue
-		}
-		tuples = append(tuples, tuple)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the readability the ask nodes hold: %w", err)
-	}
-	if len(tuples) == 0 {
-		return nil, nil
-	}
-	return func(b *store.WriteBatch, cause int64) error {
-		for index := range tuples {
-			tuples[index].SourceEvent = cause
-		}
-		graphstore.QueueWrite(b, nil, tuples)
-		return nil
-	}, nil
+	return asks.PlanInvalidReasons(ctx, tx, r.invalid, r.readable, who, at)
 }
 
 // blockRepair is one attribute repair settlement made to the block of type blockType carrying

@@ -134,18 +134,18 @@ var storeWriteCallSites = map[string]string{
 	// the answer, resolve and decline routes' transition, an issue's close and reopen, the
 	// approval carry's answer, and a settlement's retractions and restorations (appendEvents,
 	// above). The settlement states beside them the readability of each ask whose block it read,
-	// as that ask node's `invalid` value (G1), and the backfill of the boot step's first phase
-	// states the asks and the followers written before this release, each batch under its owners'
-	// locks first. The decisions step's catch-up drives Settle, under the ask's owner lock and then
-	// its row.
+	// as that ask node's `invalid` value, through the writer of that value (PlanInvalidReasons),
+	// and the backfill of the boot step's first phase states the asks and the followers written
+	// before this release, each batch under its owners' locks first. The decisions step's catch-up
+	// drives Settle, under the ask's owner lock and then its row.
 	"api/ask_transitions.go#closeAskTx":                  "api#TestEveryAskTransitionAndKeepTakesTheStoreLockOrder",
 	"api/issue_ask_lifecycle.go#recordWithdrawnAsksTx":   "api#TestEveryAskTransitionAndKeepTakesTheStoreLockOrder",
 	"api/issue_ask_lifecycle.go#recordRestoredAsksTx":    "api#TestEveryAskTransitionAndKeepTakesTheStoreLockOrder",
 	"asks/followers.go#CatchUpFollower":                  "docs#TestTheDecisionsStepsWritersTakeTheStoreLockOrder",
+	"asks/invalid.go#PlanInvalidReasons":                 "docs#TestEverySettlementWriterTakesTheStoreLockOrder",
 	"asks/settle.go#Queue":                               "docs#TestTheCatchUpTakesTheAsksOwnerRowBeforeItsRow",
 	"docs/approval_carry.go#answerApprovalAsk":           "docs#TestEverySettlementWriterTakesTheStoreLockOrder",
 	"docs/ask_blocks.go#claimCopies":                     "docs#TestEverySettlementWriterTakesTheStoreLockOrder",
-	"docs/ask_blocks.go#stateInvalidReasons":             "docs#TestEverySettlementWriterTakesTheStoreLockOrder",
 	"graphcensus/backfill_asks.go#writeAskBatch":         "graphcensus#TestTheAskBatchesTakeEveryOwnerRowBeforeTheirRows",
 	"graphcensus/backfill_asks.go#writeAskFollowerBatch": "graphcensus#TestTheAskBatchesTakeEveryOwnerRowBeforeTheirRows",
 	// The publisher's record of a batch, which splices the store's arms into its statement, and

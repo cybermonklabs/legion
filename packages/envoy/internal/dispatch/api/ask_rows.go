@@ -356,58 +356,12 @@ type nodeFact struct {
 	ToID   string `json:"to_id"`
 }
 
-// askNodeAnswer is what the node of an ask holds of its answer state (askNodeAnswerKinds), each
-// field nil where the node holds none. named says the ask's row names the node, so the node holds
-// its answer (askNodeAnswerColumn).
+// askNodeAnswer is what the node of an ask holds of its answer state (askNodeAnswerKinds), as the
+// one decoder of the node's answer reads it (asks.NodeAnswer). named says the ask's row names the
+// node, so the node holds its answer (askNodeAnswerColumn).
 type askNodeAnswer struct {
-	named      bool
-	State      *string
-	Answer     *string
-	Selected   []string
-	AnsweredAt *time.Time
-	AnsweredBy *string
-	Resolution *model.AskResolution
-}
-
-// read takes value, the far end of one fact of the node of kind, where kind is one of
-// askNodeAnswerKinds, and answers whether it was one, with the reason where the value does not
-// parse: an answer state none of the three, a selection that is no list of labels, a time that is
-// none, or a resolution that is no JSON of its shape.
-func (node *askNodeAnswer) read(kind, value string) (bool, error) {
-	switch kind {
-	case graphstore.TupleAnswerState:
-		switch value {
-		case asks.StateOpen, asks.StateAnswered, asks.StateResolved:
-			node.State = &value
-		default:
-			return true, fmt.Errorf("answer_state holds %q, which is none of open, answered and resolved", value)
-		}
-	case graphstore.TupleAnswer:
-		node.Answer = &value
-	case graphstore.TupleSelected:
-		selected := []string{}
-		if err := json.Unmarshal([]byte(value), &selected); err != nil {
-			return true, fmt.Errorf("selected holds %q, which is no list of labels: %w", value, err)
-		}
-		node.Selected = selected
-	case graphstore.TupleAnsweredAt:
-		at, err := time.Parse(time.RFC3339Nano, value)
-		if err != nil {
-			return true, fmt.Errorf("answered_at holds %q, which is no time: %w", value, err)
-		}
-		node.AnsweredAt = &at
-	case graphstore.TupleAnsweredBy:
-		node.AnsweredBy = &value
-	case graphstore.TupleResolution:
-		var resolution model.AskResolution
-		if err := json.Unmarshal([]byte(value), &resolution); err != nil {
-			return true, fmt.Errorf("resolution holds %q, which is no resolution: %w", value, err)
-		}
-		node.Resolution = &resolution
-	default:
-		return false, nil
-	}
-	return true, nil
+	named bool
+	asks.NodeAnswer
 }
 
 // readAskNodeAnswer decodes askNodeAnswerColumn, or answers which of its facts does not parse. A
@@ -422,7 +376,7 @@ func readAskNodeAnswer(encoded []byte) (askNodeAnswer, error) {
 	}
 	node := askNodeAnswer{named: true}
 	for _, fact := range facts {
-		if _, err := node.read(fact.Kind, fact.ToID); err != nil {
+		if err := node.Read(fact.Kind, fact.ToID); err != nil {
 			return askNodeAnswer{}, err
 		}
 	}
@@ -463,17 +417,14 @@ func (node askNodeAnswer) applyTo(ask *model.Ask) {
 	}
 	row := ask.Answer
 	ask.State, ask.Answer, ask.Resolution = asks.StateOpen, nil, nil
-	if node.State != nil {
-		ask.State = *node.State
+	if node.State != "" {
+		ask.State = node.State
 	}
 	switch ask.State {
 	case asks.StateAnswered:
-		answer := &model.AskAnswer{Selected: append([]string{}, node.Selected...), Text: node.Answer}
+		answer := &model.AskAnswer{Selected: append([]string{}, node.Selected...), Text: node.Answer, User: node.AnsweredBy}
 		if node.AnsweredAt != nil {
 			answer.At = *node.AnsweredAt
-		}
-		if node.AnsweredBy != nil {
-			answer.User = *node.AnsweredBy
 		}
 		if row != nil && row.At.Equal(answer.At) && model.CanonicalLogin(row.User) == answer.User {
 			answer.Act = row.Act

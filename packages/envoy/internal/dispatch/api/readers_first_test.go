@@ -29,6 +29,24 @@ func TestTheNewTypesAreReadButNotWrittenBeforeTheirNodePass(t *testing.T) {
 			"actor": sessionActor(), "ops": []map[string]string{op},
 		})
 	}
+	// suggest opens, as a session, a suggestion on issue key's spec of with over quote, and answers
+	// its id; accept accepts it as alice.
+	suggest := func(key, quote, with string) string {
+		t.Helper()
+		created := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+key+"/comments", map[string]any{
+			"body": "suggested", "anchor": map[string]any{"artifact": "spec", "quote": quote},
+			"suggestion": map[string]string{"replace_with": with}, "actor": sessionActor(),
+		})
+		if created.Code != http.StatusCreated {
+			t.Fatalf("suggest %q over %q on %s: %d %s", with, quote, key, created.Code, created.Body.String())
+		}
+		return decodeBody[struct {
+			ID string `json:"id"`
+		}](t, created).ID
+	}
+	accept := func(comment string) *httptest.ResponseRecorder {
+		return dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment+"/accept", map[string]any{}, "alice")
+	}
 	const initialAsk = ":::ask{#read-it}\nWhich day?\n\n- Friday\n- Monday\n:::\n"
 	insertDecisionMarkdown(t, handler, id, initialAsk, 2)
 	asks := settledDecisionBlocks(t, handler, documents, issue.Key, id, map[string]string{"read-it": "Which day?"})
@@ -42,7 +60,7 @@ func TestTheNewTypesAreReadButNotWrittenBeforeTheirNodePass(t *testing.T) {
 	target := "dispatch://" + issue.Key + "/spec#b-target"
 	shaped := `shaped="` + target + `"`
 	askWithShaped := ":::ask{#read-it " + shaped + "}\nWhich day?\n\n- Friday\n- Monday\n:::\n"
-	for _, tc := range []struct{ element, markdown, insert string }{
+	for index, tc := range []struct{ element, markdown, insert string }{
 		{`typed block "decision"`, intro + requirement + initialAsk + "\n" + bareDecision, bareDecision},
 		{`typed block "reading"`, intro + requirement + askWithReading, strings.Replace(askWithReading, "#read-it", "#other-ask", 1)},
 		{`attribute "shaped" of typed block "ask"`, intro + requirement + askWithShaped, strings.Replace(askWithShaped, "#read-it", "#other-ask", 1)},
@@ -56,6 +74,9 @@ func TestTheNewTypesAreReadButNotWrittenBeforeTheirNodePass(t *testing.T) {
 			{"doc-edit insert", func() *httptest.ResponseRecorder {
 				return edit(map[string]string{"op": "insert", "after": "end", "markdown": tc.insert})
 			}},
+			{"doc-edit replace", func() *httptest.ResponseRecorder {
+				return edit(map[string]string{"op": "replace", "find": "Introductory prose.", "with": "Introductory prose.\n\n" + tc.insert})
+			}},
 		} {
 			response := write.run()
 			refusal := decodeBody[struct {
@@ -67,6 +88,22 @@ func TestTheNewTypesAreReadButNotWrittenBeforeTheirNodePass(t *testing.T) {
 			if got := latestVersion(t, database, id).Number; got != before {
 				t.Fatalf("%s of %s changed version from %d to %d", write.name, tc.element, before, got)
 			}
+		}
+		// An accepted suggestion writes its text into the document as an insert does, so one that
+		// brings the element into a document holding none of it is refused too. Each suggestion
+		// is made on a document of a project of its own, which holds none of the three.
+		plain := createInteractionIssue(t, handler, "SUG"+string(rune('A'+index)), "Suggest "+tc.element, intro+requirement)
+		suggestion := suggest(plain.Key, "Introductory prose.", "Introductory prose.\n\n"+tc.insert)
+		unaccepted := latestVersion(t, database, plain.PrimaryArtifactID).Number
+		response := accept(suggestion)
+		refusal := decodeBody[struct {
+			Error string `json:"error"`
+		}](t, response)
+		if response.Code != http.StatusBadRequest || !strings.Contains(refusal.Error, want) {
+			t.Fatalf("accepted suggestion of %s = %d %s, want refusal %q", tc.element, response.Code, response.Body.String(), want)
+		}
+		if got := latestVersion(t, database, plain.PrimaryArtifactID).Number; got != unaccepted {
+			t.Fatalf("accepted suggestion of %s changed version from %d to %d", tc.element, unaccepted, got)
 		}
 	}
 
@@ -137,5 +174,22 @@ func TestTheNewTypesAreReadButNotWrittenBeforeTheirNodePass(t *testing.T) {
 	var typed int
 	if err := database.Pool.QueryRow(t.Context(), `select count(*) from graph_tuples where from_kind = 'block' and from_id = $1 and kind in ('uncertainty', 'decided_by', 'from_ask')`, address).Scan(&typed); err != nil || typed != 0 {
 		t.Fatalf("the second decision has %d typed tuples (%v), want none", typed, err)
+	}
+	// A replace and an accepted suggestion whose text holds a decision write it beside the stored
+	// one, as the insert above does, and each is accepted.
+	replaced := strings.Replace(decision, "#decide", "#replaced", 1)
+	if response := edit(map[string]string{"op": "replace", "find": "Uploaded prose.", "with": "Replaced prose.\n\n" + replaced}); response.Code != http.StatusOK {
+		t.Fatalf("replace with a decision beside the stored decision: %d %s", response.Code, response.Body.String())
+	}
+	requireRead("Replaced prose.", stored+4)
+	requirePointer()
+	suggested := strings.Replace(decision, "#decide", "#suggested", 1)
+	if response := accept(suggest(issue.Key, "Replaced prose.", "Suggested prose.\n\n"+suggested)); response.Code != http.StatusOK {
+		t.Fatalf("accept a suggestion of a decision beside the stored decision: %d %s", response.Code, response.Body.String())
+	}
+	requireRead("Suggested prose.", latestVersion(t, database, id).Number)
+	requirePointer()
+	if live, _ := documentTexts(t, handler, id); !strings.Contains(live, ":::decision{#replaced") || !strings.Contains(live, ":::decision{#suggested") {
+		t.Fatalf("the live text after the replace and the accept lacks a decision either wrote, want both:\n%s", live)
 	}
 }

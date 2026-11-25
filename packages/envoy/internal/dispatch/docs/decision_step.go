@@ -87,6 +87,12 @@ type DecisionStep struct {
 	caughtUpThrough int64
 	// kept for one release: catch-up
 	caughtUpAbove []int64
+	// windowOpens is where the catch-up's window opens (catchUpWindowOpens), and windowRead
+	// whether a pass has read it: the first pass reads it, and every pass after it reads from it.
+	// kept for one release: catch-up
+	windowOpens int64
+	// kept for one release: catch-up
+	windowRead bool
 	// backfillUnknown is whether a tick reads graphcensus.AsksOwed even where it owes no
 	// catch-up: true until a read of it finds nothing owed with no other build live, and again
 	// once a tick sees another build live.
@@ -188,14 +194,15 @@ func (c *stepConn) release(logger *slog.Logger) {
 // read is a tick's work, as a row written after a read under the lock would be. Where a row is
 // owed, it waits for the step's lock and reads AsksOwed again, since the holder may have stated
 // the row meanwhile, and runs phase 1 where one still stands. It answers a failure of any of
-// these, which stops the boot. It reads nothing else - not whether another build is live, which
+// these, which stops the boot; a row phase 1 leaves because the store holds its node in another
+// project is no failure (backfill). It reads nothing else - not whether another build is live, which
 // phase 1 does not wait on - so the boot waits on no table phase 1 does not read. Its context is
 // marked for the pool's nested-acquire guard (store.WithTransactionTracking), as every entry point
 // of the pool's transactions marks its own.
 // kept for one release: decisions-step
 func (s *DecisionStep) Boot(ctx context.Context) error {
 	ctx = store.WithTransactionTracking(ctx)
-	owed, err := graphcensus.AsksOwed(ctx, s.database.Pool)
+	owed, err := graphcensus.AsksOwed(ctx, s.database)
 	if err != nil || !owed {
 		return err
 	}
@@ -207,7 +214,7 @@ func (s *DecisionStep) Boot(ctx context.Context) error {
 	if _, err := conn.lock(ctx, decisionStepLock, true); err != nil {
 		return fmt.Errorf("take the decision step's lock: %w", err)
 	}
-	if owed, err = graphcensus.AsksOwed(ctx, s.database.Pool); err != nil || !owed {
+	if owed, err = graphcensus.AsksOwed(ctx, s.database); err != nil || !owed {
 		return err
 	}
 	return s.backfill(ctx)
@@ -308,7 +315,7 @@ func (s *DecisionStep) probe(ctx context.Context) (decisionStepWork, error) {
 	}
 	// kept for one release: catch-up
 	if s.backfillUnknown || s.catchUpOwed {
-		if work.backfill, err = graphcensus.AsksOwed(ctx, s.database.Pool); err != nil {
+		if work.backfill, err = graphcensus.AsksOwed(ctx, s.database); err != nil {
 			return decisionStepWork{}, err
 		}
 		s.backfillUnknown = work.backfill || work.other
@@ -316,15 +323,21 @@ func (s *DecisionStep) probe(ctx context.Context) (decisionStepWork, error) {
 	return work, nil
 }
 
-// backfill runs phase 1 and logs what each of its passes stated.
+// backfill runs phase 1 and logs what each of its passes stated. A row its object pass leaves
+// because the store holds the row's node in another project (graphstore.ErrProjectMoved) is one
+// no run cures, so it fails neither phase 1 nor the boot, and phase 1 owes nothing for it
+// (graphcensus.AsksOwed): it is logged for a person, and the project census names the row.
 // kept for one release: decisions-step
 func (s *DecisionStep) backfill(ctx context.Context) error {
 	done, err := graphcensus.BackfillAsks(ctx, s.database)
-	for _, kind := range done {
+	for _, kind := range done.Kinds {
 		if kind.Rows > 0 {
 			s.logger.Info("dispatch: decisions step stated rows written before this release on the store",
 				"kind", kind.Kind, "rows", kind.Rows, "tuples", kind.Tuples, "remaining", kind.Remaining)
 		}
+	}
+	if done.Moved != nil {
+		s.logger.Error("dispatch: decisions step left rows whose node the store holds in another project", "error", done.Moved)
 	}
 	if err != nil {
 		return fmt.Errorf("decisions step, the backfill: %w", err)
@@ -444,13 +457,39 @@ func scanCaughtUpEvent(row pgx.CollectableRow) (caughtUpEvent, error) {
 // kept for one release: decisions-step
 const decisionStepMarksKept = 8
 
+// askNodeMigration is the migration that gives the asks and ask_followers rows their marker
+// (20261125163550_asks_node): no build marks a row before it is applied, and every build of this
+// release applies it before it serves.
+// kept for one release: catch-up
+const askNodeMigration = 20261125163550
+
+// catchUpWindowOpens is the read of where the catch-up's window opens (catchUp): the newest event
+// created before the newest server_build_announcements row announced before the migration $1
+// (askNodeMigration) was applied, 0 where there is none.
+// kept for one release: catch-up
+const catchUpWindowOpens = `
+	select coalesce((
+		select e.id from events e
+		where e.created_at < (
+			select a.announced_at from server_build_announcements a
+			where a.announced_at < (select m.applied_at from schema_migrations m where m.version = $1)
+			order by a.seq desc limit 1)
+		order by e.id desc limit 1), 0)`
+
 // catchUp is phase 2, and reports whether an ask failed. Its window opens at the newest
-// server_build_announcements row naming a commit other than this process's own: the fleet last
-// stood whole on another build then, and every process of this build started after it. Where none
-// names another commit, as on a database this build created, it opens at the first event. A pass
-// reads the window's events no tuple states once (caughtUpRead), from the step's high-water mark
-// on, and catches each ask up in a transaction of its own (catchUpAsk); a failure on one is logged
-// and leaves the others to go on.
+// server_build_announcements row announced before the migration that gives the asks rows their
+// marker was applied (catchUpWindowOpens): the fleet last stood whole then on a build that marks
+// no row, no row was marked before the migration, and every process of a build that marks one
+// started after it. So the window holds every event a process of another build appended on a row
+// a build of this release marked, whatever was announced since: a rollback to the release before
+// announces that build again once the fleet stands whole on it, and an event that build appended
+// after this build's last pass and before that announcement is in the window of the next roll
+// forward's first pass, of this commit or of another of this release. Where no announcement
+// precedes the migration, as on a database a build of this release created, it opens at the first
+// event. The step reads it on its first pass and keeps it, since nothing it is read from moves
+// once the migration is applied. A pass reads the window's events no tuple states once
+// (caughtUpRead), from the step's high-water mark on, and catches each ask up in a transaction of
+// its own (catchUpAsk); a failure on one is logged and leaves the others to go on.
 //
 // An event that needs nothing - one older than the node's newest tuple of its attribute, a follow
 // the backfill already stated at the sentinel, an event of an ask the backfill has not marked yet -
@@ -464,31 +503,27 @@ const decisionStepMarksKept = 8
 // left out of its read as it is of every read.
 // kept for one release: catch-up
 func (s *DecisionStep) catchUp(ctx context.Context) (bool, error) {
-	var start int64
-	if err := s.database.Pool.QueryRow(ctx, `
-		select coalesce((
-			select e.id from events e
-			where e.created_at < (select a.announced_at from server_build_announcements a
-			                      where a.commit <> $1 order by a.seq desc limit 1)
-			order by e.id desc limit 1), 0)
-	`, s.commit).Scan(&start); err != nil {
-		return false, fmt.Errorf("read where the catch-up's window opens: %w", err)
-	}
 	floor, newest, err := s.writerFloor(ctx)
 	if err != nil {
 		return false, fmt.Errorf("read which events the catch-up reads final: %w", err)
 	}
-	if newest < s.caughtUpThrough {
-		// The log holds no event as far as the mark (TRUNCATE ... RESTART IDENTITY): its ids are
-		// a new log's, and nothing the mark says holds of them.
-		s.caughtUpThrough, s.caughtUpAbove = 0, nil
+	if newest < s.caughtUpThrough || newest < s.windowOpens {
+		// The log holds no event as far as the mark or the window's start (TRUNCATE ... RESTART
+		// IDENTITY): its ids are a new log's, and nothing either says holds of them.
+		s.caughtUpThrough, s.caughtUpAbove, s.windowRead = 0, nil, false
+	}
+	if !s.windowRead {
+		if err := s.database.Pool.QueryRow(ctx, catchUpWindowOpens, askNodeMigration).Scan(&s.windowOpens); err != nil {
+			return false, fmt.Errorf("read where the catch-up's window opens: %w", err)
+		}
+		s.windowRead = true
 	}
 	read := s.caughtUpAbove
 	if read == nil {
 		// A nil list is bound as null, and no id is unequal to every member of null.
 		read = []int64{}
 	}
-	rows, err := s.database.Pool.Query(ctx, caughtUpRead, max(start, s.caughtUpThrough), read)
+	rows, err := s.database.Pool.Query(ctx, caughtUpRead, max(s.windowOpens, s.caughtUpThrough), read)
 	if err != nil {
 		return false, fmt.Errorf("read the events no tuple states: %w", err)
 	}
