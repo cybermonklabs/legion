@@ -1,7 +1,6 @@
 package intake
 
 import (
-	"encoding/json"
 	"fmt"
 	"slices"
 
@@ -33,7 +32,7 @@ type StatusChange struct {
 // serves it. The outbox reads the events after a set-back's sequence with it, so that the set-back
 // never writes over a later status change. Only a status change counts for that check: a comment,
 // a message or the daemon's own reason post moves the sequence and changes no status. An
-// issue.updated whose payload does not decode is an error in fixed text (oauth2call.DecodeError),
+// issue.updated whose payload does not decode is an error in fixed text (oauth2call.UnmarshalData),
 // because a log the daemon cannot read tells it nothing it can act on.
 func StatusChangeOf(event dispatch.Event) (StatusChange, error) {
 	change := StatusChange{Seq: event.Seq, Actor: event.Actor, DaemonActor: event.DaemonActor(), Changed: event.Type == "issue.closed"}
@@ -44,8 +43,8 @@ func StatusChangeOf(event dispatch.Event) (StatusChange, error) {
 		Changed []string `json:"changed"`
 	}
 	if len(event.Payload) > 0 {
-		if err := json.Unmarshal(event.Payload, &issue); err != nil {
-			return StatusChange{}, fmt.Errorf("decode the issue payload of Dispatch event %d: %w", event.Seq, oauth2call.DecodeError(err, event.Payload, &issue))
+		if err := oauth2call.UnmarshalData(event.Payload, &issue); err != nil {
+			return StatusChange{}, fmt.Errorf("decode the issue payload of Dispatch event %d: %w", event.Seq, err)
 		}
 	}
 	change.Changed = slices.Contains(issue.Changed, "status")

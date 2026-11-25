@@ -343,7 +343,7 @@ func isIssueEvent(typ string) bool {
 
 // decodeDispatchEvent decodes a checked Dispatch event of the daemon's project by its type, adding
 // to unread each field it took as unknown. A payload that does not decode is an error in fixed
-// text (oauth2call.DecodeError), never json's error.
+// text (oauth2call.UnmarshalData), never json's error.
 func decodeDispatchEvent(event dispatch.Event, unread *[]string) (Fact, error) {
 	if isIssueEvent(event.Type) {
 		var issue struct {
@@ -362,8 +362,8 @@ func decodeDispatchEvent(event dispatch.Event, unread *[]string) (Fact, error) {
 			// and absent from an event retained from before it did, which says nothing of the claim.
 			Claim json.RawMessage `json:"claim"`
 		}
-		if err := json.Unmarshal(event.Payload, &issue); err != nil {
-			return nil, fmt.Errorf("decode Dispatch issue payload: %w", oauth2call.DecodeError(err, event.Payload, &issue))
+		if err := oauth2call.UnmarshalData(event.Payload, &issue); err != nil {
+			return nil, fmt.Errorf("decode Dispatch issue payload: %w", err)
 		}
 		if issue.Key != event.IssueKey {
 			return nil, fmt.Errorf("Dispatch issue event payload key disagrees with event issue_key")
@@ -375,8 +375,8 @@ func decodeDispatchEvent(event dispatch.Event, unread *[]string) (Fact, error) {
 		missing := issue.ResolvedRepo == nil
 		var resolved *string
 		if !missing {
-			if err := json.Unmarshal(issue.ResolvedRepo, &resolved); err != nil {
-				return nil, fmt.Errorf("decode Dispatch issue payload resolved_repo: %w", oauth2call.DecodeError(err, issue.ResolvedRepo, &resolved))
+			if err := oauth2call.UnmarshalData(issue.ResolvedRepo, &resolved); err != nil {
+				return nil, fmt.Errorf("decode Dispatch issue payload resolved_repo: %w", err)
 			}
 		}
 		parent := ""
@@ -403,8 +403,8 @@ func decodeDispatchEvent(event dispatch.Event, unread *[]string) (Fact, error) {
 			Version    int    `json:"version"`
 			Reason     string `json:"reason"`
 		}
-		if err := json.Unmarshal(event.Payload, &artifact); err != nil {
-			return nil, fmt.Errorf("decode Dispatch artifact payload: %w", oauth2call.DecodeError(err, event.Payload, &artifact))
+		if err := oauth2call.UnmarshalData(event.Payload, &artifact); err != nil {
+			return nil, fmt.Errorf("decode Dispatch artifact payload: %w", err)
 		}
 		if artifact.ArtifactID == "" {
 			return nil, fmt.Errorf("Dispatch %s payload has no artifact_id", event.Type)
@@ -428,8 +428,8 @@ func decodeDispatchEvent(event dispatch.Event, unread *[]string) (Fact, error) {
 				Number int `json:"number"`
 			} `json:"version"`
 		}
-		if err := json.Unmarshal(event.Payload, &artifact); err != nil {
-			return nil, fmt.Errorf("decode Dispatch artifact version payload: %w", oauth2call.DecodeError(err, event.Payload, &artifact))
+		if err := oauth2call.UnmarshalData(event.Payload, &artifact); err != nil {
+			return nil, fmt.Errorf("decode Dispatch artifact version payload: %w", err)
 		}
 		if artifact.ArtifactID == "" {
 			return nil, fmt.Errorf("Dispatch artifact.version payload has no artifact_id")
@@ -522,8 +522,8 @@ func decodeDispatchEvent(event dispatch.Event, unread *[]string) (Fact, error) {
 			State     string `json:"ask_state"`
 			WaitingOn string `json:"ask_waiting_on"`
 		}
-		if err := json.Unmarshal(event.Payload, &comment); err != nil {
-			return nil, fmt.Errorf("decode Dispatch %s payload: %w", event.Type, oauth2call.DecodeError(err, event.Payload, &comment))
+		if err := oauth2call.UnmarshalData(event.Payload, &comment); err != nil {
+			return nil, fmt.Errorf("decode Dispatch %s payload: %w", event.Type, err)
 		}
 		if comment.Ask == "" {
 			return nil, nil
@@ -550,8 +550,8 @@ func decodeDispatchEvent(event dispatch.Event, unread *[]string) (Fact, error) {
 		var payload struct {
 			Claim json.RawMessage `json:"claim"`
 		}
-		if err := json.Unmarshal(event.Payload, &payload); err != nil {
-			return nil, fmt.Errorf("decode Dispatch %s payload: %w", event.Type, oauth2call.DecodeError(err, event.Payload, &payload))
+		if err := oauth2call.UnmarshalData(event.Payload, &payload); err != nil {
+			return nil, fmt.Errorf("decode Dispatch %s payload: %w", event.Type, err)
 		}
 		// A claim event whose claim cannot be named records nothing: the next issue event, the
 		// periodic re-read or the next boot's listing carries the claim Dispatch shows.
@@ -579,15 +579,15 @@ type eventClaim struct {
 
 // issueEventClaim reads an issue event's claim, `<kind>:<id>`, "" for null, and whether the event
 // showed it at all: an absent field, or a claim naming no actor, is unknown, the latter named in
-// unread. A claim that does not decode is named in unread in fixed text (oauth2call.DecodeError),
+// unread. A claim that does not decode is named in unread in fixed text (oauth2call.UnmarshalData),
 // and neither name quotes the claim.
 func issueEventClaim(raw json.RawMessage, unread *[]string) (string, bool) {
 	if raw == nil {
 		return "", false
 	}
 	var claimed *eventClaim
-	if err := json.Unmarshal(raw, &claimed); err != nil {
-		*unread = append(*unread, fmt.Sprintf("claim does not decode: %v", oauth2call.DecodeError(err, raw, &claimed)))
+	if err := oauth2call.UnmarshalData(raw, &claimed); err != nil {
+		*unread = append(*unread, fmt.Sprintf("claim does not decode: %v", err))
 		return "", false
 	}
 	if claimed == nil {
@@ -628,11 +628,11 @@ type askPayload struct {
 }
 
 // decodeAskPayload reads event's ask, refusing one with no id, with its kind as askKind keeps it.
-// A payload that does not decode is named in fixed text (oauth2call.DecodeError).
+// A payload that does not decode is named in fixed text (oauth2call.UnmarshalData).
 func decodeAskPayload(event dispatch.Event, unread *[]string) (askPayload, error) {
 	var ask askPayload
-	if err := json.Unmarshal(event.Payload, &ask); err != nil {
-		return askPayload{}, fmt.Errorf("decode Dispatch %s payload: %w", event.Type, oauth2call.DecodeError(err, event.Payload, &ask))
+	if err := oauth2call.UnmarshalData(event.Payload, &ask); err != nil {
+		return askPayload{}, fmt.Errorf("decode Dispatch %s payload: %w", event.Type, err)
 	}
 	if ask.ID == "" {
 		return askPayload{}, fmt.Errorf("Dispatch %s payload has no id", event.Type)
