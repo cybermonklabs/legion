@@ -18,7 +18,7 @@ Read, against the goal, every check and every requirement:
 
 2. `dispatch results --issue <issue>`: whether a pass stands for each `before_merge` check at the head the step before your acceptance passed;
 
-3. where a reviewer step comes before your acceptance, the reviewer's verdict: the `approve` its completion sent, which `phase-finished` carries, at the head its `review` handoff names (`dispatch handoff-read --issue <issue> --phase review`), never a review on GitHub, which decides nothing, and each claim of its prose, against the code at that head;
+3. where a reviewer step comes before your acceptance, the reviewer's verdict: the `decision` its `review` handoff records, `approved` for its `approve`, at the head that handoff names (`dispatch handoff-read --issue <issue> --phase review`), and, for a verdict past review, the reviewer's message on your role topic; never a review on GitHub, which decides nothing; and each claim of its prose, against the code at that head;
 
 4. `gh pr view <n> --json mergeable,mergeStateStatus`: a `CONFLICTING` head whose checks passed is accepted as any other (*A conflicting head*, below).
 

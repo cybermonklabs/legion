@@ -157,8 +157,8 @@ The repository's branch protection and code-owner rules decide when it lands: a 
 only you can give is waited for. Legion turns auto-merge on nowhere, approves no pull request on
 your behalf and changes nobody's right to merge. Where the base requires `legion-verdict` and that
 check reads `failure` for a commit of the change that no agent of the task read, the merger merges
-nothing and the architect asks you, since only a person can merge that head, by INFRA-455's
-break-glass step.
+nothing and the architect asks you, since only a person can merge that head, by a break-glass
+merge: a GitHub owner turns the ruleset's rule off for that one merge and on again right after it.
 
 The merge closes the issue: it moves to `done` the moment GitHub reports the pull request merged.
 A root with work still running beneath it is the exception: its merge is recorded and the issue

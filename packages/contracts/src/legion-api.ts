@@ -2179,13 +2179,15 @@ export const LEGION_REVIEWER_VERDICTS = ["approve", "changes"] as const;
 
 /** `api.ReviewVerdictRequest`, the verdict past review of the agent of a review step (`POST
  * /legion/v1/review-verdict`, contract 272): its `verdict` on `commit`, the head its issue's pull
- * request moved to while the issue stands in accepting, retro or merging, and `summary`. `issue`
- * is the issue the verdict is for: the architect that ran a child's owner acceptance names it,
- * since its grant is of its own issue, and the reviewer leaves it out, so the grant's issue is the
- * one. It writes no handoff and ends no phase. The daemon refuses a caller that the record names
- * the agent of no review step of that issue's task (`VERDICT_CALLER_FORBIDDEN`), an issue that does
- * not stand past its review (`VERDICT_NOT_PAST_REVIEW`) and a commit that is not the pull
- * request's current head (`VERDICT_HEAD_NOT_CURRENT`); it answers an empty object. */
+ * request moved to once a review step of the issue's task has passed, and `summary`. `issue` is
+ * the issue the verdict is for: the architect that ran a child's owner acceptance names it, since
+ * its grant is of its own issue, and the reviewer leaves it out, so the grant's issue is the one.
+ * It writes no handoff and ends no phase. The daemon refuses a caller that the record names the
+ * agent of no review step of that issue's task (`VERDICT_CALLER_FORBIDDEN`), a caller whose own
+ * step has not passed, as the step that runs now has not, whose verdict is the reviewer's
+ * completion or the owner's sign-off or move back (`VERDICT_NOT_PAST_REVIEW`), and a commit that
+ * is not the pull request's current head (`VERDICT_HEAD_NOT_CURRENT`); it answers an empty
+ * object. */
 export const LegionReviewVerdictRequest = z.strictObject({
   grantId: nonEmptyString,
   verdict: z.enum(LEGION_REVIEWER_VERDICTS),
@@ -2323,9 +2325,10 @@ export const LegionWaveReleaseRequest = z.strictObject({
  * more issues than its own, so its request names `issue` (required for that grant); a phase
  * worker's grant names its own issue, so `issue` may be left out and, when given, must be the
  * grant's (`ISSUE_NOT_GRANTS`). `commit` is the head the architect sends back, required for that
- * grant (contract 272): the daemon takes the move only where it is the pull request's current head
- * (`VERDICT_HEAD_NOT_CURRENT` otherwise, changing nothing) and records it there as the owner's
- * acceptance's `changes`. A phase worker names none. */
+ * grant (contract 272): the daemon takes the move only from the claim the acceptance step's record
+ * names as its agent (`VERDICT_CALLER_FORBIDDEN` otherwise) and only where `commit` is the pull
+ * request's current head (`VERDICT_HEAD_NOT_CURRENT` otherwise), changing nothing when it refuses,
+ * and records it there as the owner's acceptance's `changes`. A phase worker names none. */
 export const LegionPhaseBackwardRequest = z.strictObject({
   grantId: nonEmptyString,
   to: z.enum(LEGION_PHASE_BACKWARD_TARGETS),
@@ -2357,12 +2360,14 @@ export const LegionEscalateRequest = z.strictObject({
 /** `api.SignOffRequest`, the owning architect's acceptance of an issue in `accepting` at `commit`,
  * the head it accepts, which moves its task to its next step, or to `retro` where the acceptance is
  * the task's last step; the daemon refuses it in every other phase (`SIGNOFF_OUTSIDE_ACCEPTING`).
- * From contract 272 it names that head, and the daemon takes it only where it is the pull request's
- * current head (`VERDICT_HEAD_NOT_CURRENT` otherwise, changing nothing) and records it there as the
- * owner's acceptance's `approve`. From contract 219 the daemon judges it again when it applies it,
- * and refuses it, changing nothing, where the architect no longer owns the issue (`ISSUE_NOT_OWNED`,
- * or `ISSUE_OUTSIDE_TREE` once the issue left its tree), where the run of the issue it read has
- * ended (`SIGNOFF_STALE_GENERATION`), and where the run of `accepting` it read has ended
+ * From contract 272 it names that head, and the daemon takes it only from the claim the acceptance
+ * step's record names as its agent (`VERDICT_CALLER_FORBIDDEN` otherwise) and only where that head
+ * is the pull request's current head (`VERDICT_HEAD_NOT_CURRENT` otherwise), changing nothing when
+ * it refuses, and records it there as the owner's acceptance's `approve`. From contract 219 the
+ * daemon judges it again when it applies it, and refuses it, changing nothing, where the architect
+ * no longer owns the issue (`ISSUE_NOT_OWNED`, or `ISSUE_OUTSIDE_TREE` once the issue left its
+ * tree), where the run of the issue it read has ended (`SIGNOFF_STALE_GENERATION`), and where the
+ * run of `accepting` it read has ended
  * (`SIGNOFF_STALE_ENTRY`). Since contract 51 it is also refused while an issue beneath that one is
  * still in the workflow (`SIGNOFF_CHILD_IN_WORKFLOW`, naming them): children are accepted and
  * merged before their parent, since a parent is accepted only once no issue beneath it is still in

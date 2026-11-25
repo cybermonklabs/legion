@@ -247,7 +247,7 @@ func (s *supervision) reviewerPodlessRound(ctx context.Context, issue string, gr
 // replacement deletes the disk of every role that ever ran in it, and a claim whose agent ran may
 // have left unpushed work there; the round holds that disk for such a claim's answer until its
 // bound. A pod round with a process in it passes such a claim over (roundAsks,
-// roundClock.passesOver, dispatch://INFRA-4109 R1), since a pod that keeps running keeps its
+// roundClock.passesOver), since a pod that keeps running keeps its
 // disk; this rule is the podless round's alone. A failed claim waits for nothing here either: its
 // launches or prompts ran out, and only a retry brings it back.
 func podlessWaiting(group []supervise.Claim, round string, clock roundClock) []supervise.Claim {

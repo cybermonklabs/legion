@@ -4,7 +4,7 @@
 // decide a head by this one rule.
 //
 // On a head a Legion issue owns, the verdict follows the checks of the task, the steps of its plan
-// (Steps) and the change's commits, after INFRA-4930's R28 and R29 with the departures R4 names:
+// (Steps) and the change's commits, as R4 states them:
 // the head concludes success only when each check of the task reads yes at that head, whatever
 // steps the plan names; every testing step passed there and every review step's agent approved
 // there; and each commit of the change has a reader (readsCommit): the agent of a review step that
@@ -239,7 +239,7 @@ func CommitsWithNoReader(in Inputs) []string {
 	return unread
 }
 
-// readsCommit is whether step's agent reads commit at the head (INFRA-4930's R14 and R29, with R4's
+// readsCommit is whether step's agent reads commit at the head (the reader rule of R4, with its
 // departures): the step is a review step whose agent approved the head, or a testing step that
 // passed there, as it does when each check of the task reads yes; its claim records a session; and
 // none of those sessions made the commit. A commit with no Omp-Session line has no agent maker, so

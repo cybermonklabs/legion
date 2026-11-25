@@ -138,11 +138,14 @@ func TestReviewVerdictFactIsRouted(t *testing.T) {
 	}
 }
 
-// R5 and C57: past review, the verdict of the agent of a review step of the task at the current
-// head is that step's verdict there, and it writes no handoff and moves no phase: the reviewer's
-// approve or changes is also the round's decision there, and the owner's, from the architect that
-// ran its acceptance, is its acceptance's verdict and leaves the round's decision as it stood. Each
-// asks for the write of legion-verdict at that head in its own pass.
+// R5 and C57: past review, the verdict of the agent of a review step of the task that has passed,
+// at the current head, is that step's verdict there, and it writes no handoff and moves no phase:
+// the reviewer's approve or changes is also the round's decision there, and the owner's, from the
+// architect that ran its acceptance, is its acceptance's verdict and leaves the round's decision as
+// it stood. Each asks for the write of legion-verdict at that head in its own pass. In accepting
+// the owner's acceptance is the step that runs, which review_verdict refuses
+// (TestReviewVerdictRefusesTheStepRunningNow), so the owner's verdict is sent here in retro and in
+// merging alone.
 func TestAReviewVerdictPastReviewMovesNoPhase(t *testing.T) {
 	for _, stand := range []struct {
 		at     phase.Phase
@@ -160,6 +163,9 @@ func TestAReviewVerdictPastReviewMovesNoPhase(t *testing.T) {
 			{name: "the owner's approve", fact: ownerVerdict("approve", headTwo), step: acceptanceStep, by: architectClaim, state: "approved"},
 			{name: "the owner's changes", fact: ownerVerdict("changes", headTwo), step: acceptanceStep, by: architectClaim, state: "approved"},
 		} {
+			if stand.at == phase.Accepting && tc.by == architectClaim {
+				continue
+			}
 			t.Run(string(stand.at)+", "+tc.name, func(t *testing.T) {
 				pool := seedPastReview(t, stand.at, stand.status)
 				var asked []string

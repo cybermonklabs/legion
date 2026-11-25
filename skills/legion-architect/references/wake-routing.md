@@ -1,11 +1,11 @@
 # Wake routing
 
 Read this when a wake reaches you.
-A wake about an issue reaches its own architect while that architect holds its role, else the nearest one above that does.
+A wake about an issue reaches its own architect while it holds its role, else the nearest one above that does.
 A `child-status` or `child-closed`, and a `worker-died` or `worker-stalled` about a child's own architect, reach the architect above the child.
 Your role prompt describes most notices; this table says what to do.
 "Section N" is that section of `skill://legion-architect`.
-Where a row says to ask a person, a child's own architect sends the question to the architect above it.
+Where a row says to ask a person, a child's own architect asks the architect above it instead.
 
 | Wake | What to do |
 | --- | --- |
@@ -54,4 +54,4 @@ Read what every counted round found, choose one, act on it, and post the rounds 
 - **Accept the rounds**: each round found less than the one before, and the last found no defect in the change itself.
   A later notice accepts again only when its round found less.
 
-A finding that changes what the spec requires or a check proves is also a spec change ("After approval" in design-gate.md), never instead of the choice.
+A finding that changes what the spec requires or a check proves is also a spec change ("After approval" in `skill://legion-architect/references/design-gate.md`), never instead of the choice.

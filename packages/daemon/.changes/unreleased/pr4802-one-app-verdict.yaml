@@ -27,8 +27,9 @@ body: |-
       reviewer's completion with no verdict is refused. The owner's acceptance is a review step
       too: `sign_off` is its `approve` and a move back out of `accepting` its `changes`, and each
       names the `commit` it accepts or sends back, which must be the pull request's current head.
-      After a push past review, `POST /legion/v1/review-verdict` takes the new verdict of each
-      review step's agent: the reviewer's, and the owner's, which names its `issue`. A testing
+      After a push past review, `POST /legion/v1/review-verdict` takes the new verdict of the agent
+      of each review step that has passed, and of no step that runs now: the reviewer's, and the
+      owner's once its acceptance has passed, which names its `issue`. A testing
       step's completion carries no verdict, and any other role's verdict is refused. A review by
       the App, and a person's approval, decide no round.
     - A reviewer's approval ends the review round on a head GitHub reports `blocked` once every

@@ -1614,7 +1614,8 @@ These arrive as messages on the Dispatch issue:
   the head, no commit has a reader, and the run's summary says so. A task whose plan has no testing
   step and no review step ends here too. No push or move back cures it: the merger merges nothing,
   sends nothing back and tells the task's owner once for that head, naming each commit with no
-  reader, and the owner asks a person, who can merge that head by INFRA-455's break-glass step.
+  reader, and the owner asks a person, who can merge that head by a break-glass merge: a GitHub
+  owner turns the ruleset's rule off for that one merge and on again right after it.
   The run is the daemon's own check run on the head, and its summary names each commit with no
   reader:
   `gh api 'repos/<owner>/<repo>/commits/<head>/check-runs?check_name=legion-verdict' --jq '.check_runs[] | [.conclusion, .output.title, .output.summary]'`.

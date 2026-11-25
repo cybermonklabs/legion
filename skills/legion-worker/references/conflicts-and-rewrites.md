@@ -29,11 +29,7 @@ Every role reads a merge of the base the same way:
 - `git show --remerge-diff <merge>` shows its resolution, and `git diff --stat <merge>^1 <merge>` lists the files the base brought in.
 - A check those files or the resolution can reach runs again, and a check the merge was made for has no pass to carry.
 
-For a reviewer, this lists your session's reviews, oldest first; no line, or `no head` on the last one, means you read the whole diff:
-
-```bash
-gh api --paginate repos/<o>/<r>/pulls/<n>/reviews --jq '.[] | {id, state, submitted_at, footer: ([.body // "" | scan("<!-- legion: (\\{.*?\\}) -->")] | last | .[0]? // "" | try fromjson catch {})} | select(.footer.phase == "review" and .footer.session == "<your session id>") | [.id, .state, .submitted_at, (.footer.head // "no head")] | @tsv'
-```
+A reviewer reads, beside the merge, the change's own commits since the head `skill://legion-worker/references/merge-gate.md#a-merge-of-the-base-is-reviewed-for-what-it-changed` names.
 
 ## The daemon's ask
 

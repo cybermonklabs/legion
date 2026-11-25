@@ -63,9 +63,9 @@ type ReviewVerdictRequest struct {
 }
 
 // reviewVerdict is the verdict past review: each time the head of an issue's pull request moves
-// while the issue stands past its review (record.InSlotlessPhase: accepting, retro or merging, or held
-// from one of them), and so with no review round open, the agent of each review step of the issue's
-// task sends its verdict on the new head here: the reviewer, and the architect that ran the owner's
+// once a review step of the issue's task has passed (workflow's reviewVerdict, by the step walk),
+// and so with no review round open, the agent of each review step of that task that has passed
+// sends its verdict on the new head here: the reviewer, and the architect that ran the owner's
 // acceptance, which names the issue it is for (ReviewVerdictRequest.Issue). The call is no
 // completion and writes no handoff: it queues one intake.ReviewVerdict fact of the issue it names,
 // or of the grant's issue where it names none, which the workflow records as that step's verdict at
@@ -80,10 +80,12 @@ type ReviewVerdictRequest struct {
 //
 // The workflow judges the rest on the record under the fact's lock (workflow's reviewVerdict),
 // each refusal recording nothing: a claim the record names the agent of no review step of the
-// issue's task (VERDICT_CALLER_FORBIDDEN, 403), an issue that does not stand past its review
-// (VERDICT_NOT_PAST_REVIEW, 409), a lingering tree (TREE_LINGERING), and a commit that is not the
-// head the daemon's record holds for the issue's pull request (VERDICT_HEAD_NOT_CURRENT, 409): the
-// record's own head and never GitHub's, as the entry fence reads it (behindEntryClause).
+// issue's task (VERDICT_CALLER_FORBIDDEN, 403), a caller whose own step has not passed, as the
+// step that runs now has not, whose verdict is the reviewer's completion or the owner's sign_off
+// or move back (VERDICT_NOT_PAST_REVIEW, 409), a lingering tree (TREE_LINGERING), and a commit
+// that is not the head the daemon's record holds for the issue's pull request
+// (VERDICT_HEAD_NOT_CURRENT, 409): the record's own head and never GitHub's, as the entry fence
+// reads it (behindEntryClause).
 //
 // The fact is the request's own (requestFactID): two calls are two verdicts, the later one
 // standing, so an agent that changes its verdict at one head is heard however often it does.

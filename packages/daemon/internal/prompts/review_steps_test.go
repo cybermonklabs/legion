@@ -43,7 +43,8 @@ func TestEachReviewStepSendsItsVerdictAtTheHeadItRead(t *testing.T) {
 		{"each check reads yes there, whatever steps the plan names"},
 		{"a merge state the round does not end at", "`behind` its base, `draft`, or `dirty` before a second read confirms it"},
 		{"and at `blocked` once every check run GitHub reported on that head has concluded"},
-		{"`legion-verdict: failure (a commit with no reader)`", "no worker's change cures it", "INFRA-455's break-glass step"},
+		{"`legion-verdict: failure (a commit with no reader)`", "no worker's change cures it", "only a person merges that head, by a break-glass merge",
+			"a GitHub owner turns the ruleset's rule off for that one merge"},
 	}
 	ownerRetired := append([]string{
 		"the daemon also asks the reviewer for its verdict on the new head",
@@ -116,10 +117,10 @@ func TestEachReviewStepSendsItsVerdictAtTheHeadItRead(t *testing.T) {
 // summary names each commit with no reader. No worker's change cures that, so the merger neither
 // merges nor sends the issue back: it tells the owner of the task once for that head, naming each
 // commit with no reader and each check with no counted pass, and records that message in a
-// `dispatch comment` that keeps it from sending a second (INFRA-4930's R28). The message asks no
-// person for an approval. The composed merger prompt keys that case on the run's title, gives the
-// read that prints it, and says each of those acts. This shows the text is loaded, never that a
-// merger follows it.
+// `dispatch comment` that keeps it from sending a second. The message asks no person for an
+// approval, since only a person merges that head, by a break-glass merge. The composed merger
+// prompt keys that case on the run's title, gives the read that prints it, and says each of those
+// acts. This shows the text is loaded, never that a merger follows it.
 func TestTheMergerTellsTheOwnerOfACommitWithNoReaderOncePerHead(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -135,7 +136,8 @@ func TestTheMergerTellsTheOwnerOfACommitWithNoReaderOncePerHead(t *testing.T) {
 		{"with `envoy_publish` to its encoded role token", "name the pull request, the head, each commit the summary names",
 			"each check of the task with no counted pass at that head"},
 		{"record that message in a `dispatch comment` on the issue that names the head"},
-		{"The message asks no person for an approval"},
+		{"The message asks no person for an approval", "only a person merges that head, by a break-glass merge",
+			"a GitHub owner turns the ruleset's rule off for that one merge"},
 		{"unless the run's title names a commit with no reader"},
 	} {
 		if !clauseHolds(text, terms...) {
