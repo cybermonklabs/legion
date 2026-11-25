@@ -4620,7 +4620,7 @@ In the whole event log, the largest amount by which an event was older than an e
 Within one issue, the largest amount by which an event was older than an event with a lower `seq` was 8.9 s.
 
 At a cut, an issue's `closed_at` is the one that its newest `issue.created`, `issue.updated` or `issue.closed` at the cut gives, never the row's, and at a cut inside a close's own transaction it can be later than the cut.
-A close written before this change records there the start of its transaction, earlier than the stamp its row held by at most the length of that transaction, which is the error of a cut, so the answer does not leave `closed_at` out.
+A close written by a release older than the first one that answers `as_of` records there the start of its transaction, earlier than the stamp its row held by at most the length of that transaction, which is the error of a cut, so the answer does not leave `closed_at` out.
 
 **What a read at a cut costs.**
 `TestAsOfCostOnACorpusCopy` (`internal/dispatch/api/as_of_cost_test.go`) times the statements of the past-time reads against a copy of production's events, and skips unless `DISPATCH_ASOF_CORPUS_URL` names one.
@@ -4632,8 +4632,8 @@ A search at a cut ranks the matches of each kind of post on their rank first, an
 On a copy of 1,127,985 events in the pod, with PostgreSQL restarted before each query and the copy in the pod's page cache, a keyword search for the commonest word at the copy's newest event took 6.3 s on its first run and 5.7 s warm, a common word 2.9 s and 2.6 s, and no past-time first run took more than 6.3 s.
 With the copy out of the page cache, each first run read its pages from the pod's disk and took up to 15.1 s, as the present search for the commonest word took 16.6 s there, against 4.8 s with the copy in the page cache.
 A query of excluded words alone at the copy's newest event, which matches nearly every post, took 19 s warm.
-On the synthetic corpus, on 16 vCPUs, vacuumed and analyzed as production's tables are, a search with meaning at a cut took at most 4.2 s on its first run after a restart of PostgreSQL and at most 1.6 s warm, against at most 6.6 s and 3.9 s at the present.
-On its first run right after the build, while the checkpoint of the index build still wrote, it took up to 7.2 s, up to 5.8 s of it reading pages, and the present search's first run ended at the 15 s bound.
+On the synthetic corpus, on 16 vCPUs, vacuumed and analyzed as production's tables are, with each statement at a cut in a read-only transaction of its own, a search with meaning at a cut took at most 3.4 s on its first run after a restart of PostgreSQL and at most 2.9 s warm, against at most 8.3 s and 8.0 s at the present.
+On its first run right after the build it took at most 2.9 s, and the present search at most 7.5 s.
 Random vectors spread the HNSW graph unlike production's embeddings, so that is no measure of production's meaning arms, and the copy of the events holds no document text, so the document leg was timed on empty text.
 
 ## Routes
