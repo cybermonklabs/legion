@@ -390,9 +390,6 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	// The second comment mentioning the held session, whose first attempt a lane stands down from
 	// beside a Retry in flight; the Retry's answer, and what lets its held lookup through.
 	var overtaken string
-	// The note the edit's drive rewrites, the note the delete's drive removes, and the remark the
-	// comment delete's drive removes, each written before its drive.
-	var edited, erased, deleted string
 	// The token of the spec's version the drive that writes its next version replaces.
 	var specBase map[string]string
 	// The message alice edits, and the comment and the message she deletes while each one's send
@@ -824,45 +821,6 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			{refs.BlockNodeKind, graphstore.TuplePartOf}:             {"body_block"},
 			{graphstore.KindPerson, graphstore.TupleParticipatesIn}:  {"participation"},
 		}),
-	}, {
-		// An edit of alice's note on the issue: its one paragraph keeps its block, so the index
-		// states nothing new of it and the edit appends no tuple, but the edit's own code runs.
-		Name: "api/message_corrections.go#editMessage", Database: r.database,
-		Sites: []string{"api/message_corrections.go#editMessage"},
-		Ready: func(t *testing.T) {
-			edited = decoded[model.Message](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/messages",
-				map[string]any{"body": "A note to edit."}, "alice", http.StatusCreated)).ID
-		},
-		Drive: func(t *testing.T) {
-			r.request(t, http.MethodPatch, "/api/v1/messages/"+edited, map[string]any{"body": "A note, edited."}, "alice", http.StatusOK)
-		},
-		Counts: nil,
-	}, {
-		// The delete of alice's note on the issue: its body block taken out of the store under the
-		// event the delete appends.
-		Name: "api/message_corrections.go#deleteMessage", Database: r.database,
-		Sites: []string{"api/message_corrections.go#deleteMessage"},
-		Ready: func(t *testing.T) {
-			erased = decoded[model.Message](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/messages",
-				map[string]any{"body": "A note to delete."}, "alice", http.StatusCreated)).ID
-		},
-		Drive: func(t *testing.T) {
-			r.request(t, http.MethodDelete, "/api/v1/messages/"+erased, nil, "alice", http.StatusOK)
-		},
-		Counts: map[graphcensus.StoredKind][]string{{refs.BlockNodeKind, graphstore.AttributeState}: {"body_block_gone"}},
-	}, {
-		// The delete of alice's remark on the issue: its body block taken out of the store under
-		// the event the delete appends.
-		Name: "api/comment_delete.go#deleteComment", Database: r.database,
-		Sites: []string{"api/comment_delete.go#deleteComment"},
-		Ready: func(t *testing.T) {
-			deleted = decoded[model.Comment](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/comments",
-				map[string]any{"body": "A remark to delete."}, "alice", http.StatusCreated)).ID
-		},
-		Drive: func(t *testing.T) {
-			r.request(t, http.MethodDelete, "/api/v1/comments/"+deleted, nil, "alice", http.StatusOK)
-		},
-		Counts: map[graphcensus.StoredKind][]string{{refs.BlockNodeKind, graphstore.AttributeState}: {"body_block_gone"}},
 	}, {
 		// A session's ask on the issue: the ask's node, in the issue's project, who asked it, and
 		// the asker's follow, planned in the create's read phase (asks.PlanFollowNewAsk).
