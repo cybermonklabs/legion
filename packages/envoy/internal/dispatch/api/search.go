@@ -1313,12 +1313,13 @@ const searchRequestKeyHex = 16
 // searchRequestKey is the keyed hash a search's request line names as search_key: the first
 // searchRequestKeyHex hex characters of HMAC-SHA256 under the server's searchLogKey over the
 // normalized request, one JSON array of q as the handler holds it after trimming, project,
-// number_project, status, author, updated_since in RFC 3339 UTC with nanoseconds or "", limit,
-// offset, keywords_only and trees. Two requests that differ in any of them carry two keys, and
-// one request sent again carries one, so the log counts repeats of a search without holding its
-// text. The caller is not in it: the line names the caller already, and a key that callers share
-// counts the repeats across them. The key is the server's own and is written nowhere, so neither
-// the hash of a guessed query nor any other hash a reader can make matches it.
+// number_project, status, author, updated_since in RFC 3339 UTC with nanoseconds or "", kinds
+// (the normalized kind set), limit, offset, keywords_only and trees. Two requests that differ in
+// any of them carry two keys, and one request sent again carries one, so the log counts repeats
+// of a search without holding its text. The caller is not in it: the line names the caller
+// already, and a key that callers share counts the repeats across them. The key is the server's
+// own and is written nowhere, so neither the hash of a guessed query nor any other hash a reader
+// can make matches it.
 func (s *server) searchRequestKey(parameters searchParameters) string {
 	since := ""
 	if parameters.since != nil {
@@ -1326,8 +1327,8 @@ func (s *server) searchRequestKey(parameters searchParameters) string {
 	}
 	// Strings, integers and booleans, which json.Marshal always encodes.
 	normalized, _ := json.Marshal([]any{parameters.text, parameters.project, parameters.numberProject,
-		parameters.status, parameters.author, since, parameters.limit, parameters.offset,
-		parameters.keywordsOnly, parameters.trees})
+		parameters.status, parameters.author, since, parameters.kinds, parameters.limit,
+		parameters.offset, parameters.keywordsOnly, parameters.trees})
 	mac := hmac.New(sha256.New, s.searchLogKey)
 	mac.Write(normalized)
 	return hex.EncodeToString(mac.Sum(nil)[:searchRequestKeyHex/2])

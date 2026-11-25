@@ -4599,7 +4599,7 @@ Each item below names a field of the line, then what it holds.
 - `search_key`
 
   Only on a search's line (`GET /api/v1/search` and `GET /api/v1/search/results`): 16 hex characters, the first 64 bits of an HMAC-SHA256 of the normalized request.
-  The request is one JSON array of `q` after trimming, `project`, `number_project`, `status`, `author`, `updated_since` (RFC 3339 in UTC with nanoseconds, or empty), `limit`, `offset`, `keywords_only` and whether the caller reads display trees; the caller is not in it.
+  The request is one JSON array of `q` after trimming, `project`, `number_project`, `status`, `author`, `updated_since` (RFC 3339 in UTC with nanoseconds, or empty), `kind` (the normalized kind set), `limit`, `offset`, `keywords_only` and whether the caller reads display trees; the caller is not in it.
   One search sent again carries one key, and two searches that differ in any of those carry two, so the log counts repeats of a search without holding its text.
   The key of the HMAC is 32 random bytes the server makes when it starts and never writes out, so no setting names it, two processes key the same search differently, and nobody who reads the log can hash a guessed query to match it.
 

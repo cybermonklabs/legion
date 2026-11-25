@@ -231,12 +231,12 @@ func sendSearch(t *testing.T, handler http.Handler, logged *logBuffer, path stri
 // without the server's key, each cut to the 16 hex characters the line keeps: SHA-256 of q,
 // SHA-256 of the normalized request searchRequestKey hashes, and HMAC-SHA256 of that request under
 // the empty key. The normalized request is written here from the parameters as D5 lists them,
-// not by the server's own code, for a search that names no updated_since, limit or offset and
+// not by the server's own code, for a search that names no updated_since, kind, limit or offset and
 // asks for no display trees.
 func unkeyedHashes(query url.Values) []string {
 	q := strings.TrimSpace(query.Get("q"))
 	normalized, _ := json.Marshal([]any{q, query.Get("project"), query.Get("number_project"), query.Get("status"),
-		query.Get("author"), "", searchDefaultLimit, 0, query.Get("keywords_only") == "true", false})
+		query.Get("author"), "", 0, searchDefaultLimit, 0, query.Get("keywords_only") == "true", false})
 	textSum := sha256.Sum256([]byte(q))
 	requestSum := sha256.Sum256(normalized)
 	emptyKey := hmac.New(sha256.New, nil)
@@ -317,8 +317,9 @@ func TestASearchsRequestLineNamesItsKeyAndShape(t *testing.T) {
 // Each member of the normalized request moves the key: a search that differs from another in
 // one of them alone is named by another search_key, one row for each member, and the same search
 // sent again is named by the same key, so the difference is the member's and not a key drawn
-// afresh. Two spellings the handler reads as one request, a q with blanks around it and an
-// updated_since in another zone at the same instant, are named by one key.
+// afresh. Two spellings the handler reads as one request - a q with blanks around it, an
+// updated_since in another zone at the same instant, or equivalent kind sets - are named by one
+// key.
 func TestEachSearchParameterMovesTheKey(t *testing.T) {
 	handler := newTestHandler(t)
 	createInteractionIssue(t, handler, "MOVE", "Lighthouse keeper roster", "The keeper logs the tide at dawn.")
@@ -341,6 +342,7 @@ func TestEachSearchParameterMovesTheKey(t *testing.T) {
 		{member: "status", set: func(query url.Values) { query.Set("status", model.IssueStatuses[0]) }},
 		{member: "author", set: func(query url.Values) { query.Set("author", "alice") }},
 		{member: "updated_since", set: func(query url.Values) { query.Set("updated_since", "2026-01-02T03:04:05Z") }},
+		{member: "kind", set: func(query url.Values) { query.Set("kind", "issue") }},
 		{member: "limit", set: func(query url.Values) { query.Set("limit", "5") }},
 		{member: "offset", set: func(query url.Values) { query.Set("offset", "1") }},
 		{member: "keywords_only", set: func(query url.Values) { query.Set("keywords_only", "true") }},
@@ -365,6 +367,12 @@ func TestEachSearchParameterMovesTheKey(t *testing.T) {
 		{"updated_since in another zone at the same instant",
 			url.Values{"q": {"lighthouse"}, "updated_since": {"2026-01-02T03:04:05Z"}},
 			url.Values{"q": {"lighthouse"}, "updated_since": {"2026-01-02T05:04:05+02:00"}}},
+		{"reordered and repeated kind parameters",
+			url.Values{"q": {"lighthouse"}, "kind": {"issue", "document"}},
+			url.Values{"q": {"lighthouse"}, "kind": {"document", "issue", "issue"}}},
+		{"every kind named explicitly",
+			base(),
+			url.Values{"q": {"lighthouse"}, "kind": searchIndexedKinds[:]}},
 	} {
 		_, first := sendSearch(t, handler, logged, "/api/v1/search", same.first, false)
 		_, second := sendSearch(t, handler, logged, "/api/v1/search", same.second, false)
