@@ -14,9 +14,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 func TestBackfillAnchorBlocksPinsResolvableLegacyRowsOnce(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "Introduction.\n\nTarget passage.\n")
 	askID := insertAnchoredAsk(t, service, artifactID, "Target passage")
@@ -77,6 +79,7 @@ func TestBackfillAnchorBlocksPinsResolvableLegacyRowsOnce(t *testing.T) {
 // that both writes stand: the refresh clears the orphan flag, the backfill pins the block, and
 // the row carries both at the end.
 func TestAnchorRefreshAndBackfillSerialiseOnTheRowsOwner(t *testing.T) {
+	t.Parallel()
 	const holdKey = int64(4815162342)
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
@@ -122,7 +125,7 @@ func TestAnchorRefreshAndBackfillSerialiseOnTheRowsOwner(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("create anchor refresh hold trigger: %v", err)
 	}
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		_, _ = service.store.Pool.Exec(context.Background(), `drop trigger if exists dispatch_test_hold_anchor_refresh on events`)
 		_, _ = service.store.Pool.Exec(context.Background(), `drop function if exists dispatch_test_hold_anchor_refresh()`)
 	})
@@ -220,6 +223,7 @@ func waitForHeldAnchorRefresh(t *testing.T, service *Service, key int64) {
 		if err := service.store.Pool.QueryRow(context.Background(), `
 			select count(*) from pg_locks
 			where locktype = 'advisory' and not granted
+				and database = (select oid from pg_database where datname = current_database())
 				and ((classid::bigint << 32) | objid::bigint) = $1
 		`, key).Scan(&waiting); err != nil {
 			t.Fatalf("read the anchor refresh hold: %v", err)
@@ -245,6 +249,7 @@ func waitForHeldOwnerLock(t *testing.T, service *Service, owner store.Owner) {
 		if err := service.store.Pool.QueryRow(context.Background(), `
 			select count(*) from pg_locks
 			where locktype = 'advisory' and not granted and objsubid = 2
+				and database = (select oid from pg_database where datname = current_database())
 				and classid = ($2::bigint & 4294967295)::oid
 				and objid = (hashtext($1)::bigint & 4294967295)::oid
 		`, owner.LockKey(), int64(store.OwnerLockNamespace)).Scan(&waiting); err != nil {
@@ -259,6 +264,7 @@ func waitForHeldOwnerLock(t *testing.T, service *Service, owner store.Owner) {
 }
 
 func TestBlockForQuoteLeavesTopLevelCrossBlockAnchorsUnpinned(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "One.\n\nTwo.\n")
 

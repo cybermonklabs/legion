@@ -346,7 +346,7 @@ func TestABackfillKilledAfterOneBatchLeavesThatBatchsDocumentsOwed(t *testing.T)
 		t.Fatalf("hold issue CORE-2's owner lock: %v", err)
 	}
 	pid, answered := startBackfill(t, database)
-	if early, done := storetest.WaitForQueuedBehind(t, holder, pid, answered, 30*time.Second); done {
+	if early, done := storetest.WaitForQueuedBehind(t, holder, pid, answered); done {
 		t.Fatalf("the backfill answered (report %#v, err %v) without waiting on its second batch's owner lock", early.report, early.err)
 	}
 	var terminated bool

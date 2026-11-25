@@ -117,8 +117,16 @@ type editPreconditionError struct {
 // names the number it read beside its write and adds the sentence saying where a current token
 // is printed (writeUploadDocumentError).
 func editPreconditionBody(failed *docs.ErrPreconditionFailed) editPreconditionError {
+	return preconditionBody(failed.CurrentDocument, failed.Mismatches, failed.Error())
+}
+
+// preconditionBody is that body from its parts: the token that stands, the mismatches that named
+// what the caller expected, and the sentence saying so. A block mismatch's current token is
+// listed in current.blocks. A file's upload, whose refusal no document write raises, builds its
+// body here (fileUploadPreconditionBody).
+func preconditionBody(currentDocument string, mismatches []model.EditPreconditionMismatch, message string) editPreconditionError {
 	currentBlocks := make([]model.EditBlockPrecondition, 0)
-	for _, mismatch := range failed.Mismatches {
+	for _, mismatch := range mismatches {
 		if mismatch.Scope == "block" && mismatch.Current != nil {
 			currentBlocks = append(currentBlocks, model.EditBlockPrecondition{
 				ID: mismatch.BlockID, Token: *mismatch.Current,
@@ -127,9 +135,9 @@ func editPreconditionBody(failed *docs.ErrPreconditionFailed) editPreconditionEr
 	}
 	return editPreconditionError{
 		Code:       "PRECONDITION_FAILED",
-		Current:    editPreconditionCurrent{Blocks: currentBlocks, Document: failed.CurrentDocument},
-		Error:      failed.Error(),
-		Mismatches: failed.Mismatches,
+		Current:    editPreconditionCurrent{Blocks: currentBlocks, Document: currentDocument},
+		Error:      message,
+		Mismatches: mismatches,
 	}
 }
 

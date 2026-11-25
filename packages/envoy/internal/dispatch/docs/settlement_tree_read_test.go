@@ -60,6 +60,7 @@ func describeError(err error) string {
 // takes its copy from the room itself and starts the replica from it, which the tree read then
 // walks, and after each of its browser edits.
 func TestTheSettlementTreeReadMatchesTheReadPointsTreeAcrossTheCorpus(t *testing.T) {
+	t.Parallel()
 	reads, documents := driveCorpusRooms(t, func(at corpusRoom) {
 		if err := settlementTreeReads(t, at); err != nil {
 			t.Fatalf("%s: both reads of a corpus document answered %s, want the tree", at.stage, describeError(err))
@@ -73,6 +74,7 @@ func TestTheSettlementTreeReadMatchesTheReadPointsTreeAcrossTheCorpus(t *testing
 // read point's state refuse it alike, with the error a read of the document answers
 // (OutsideSchemaError), so the two reads agree on the refusal as well as on the tree.
 func TestTheSettlementTreeReadOfARoomOutsideTheSchemaRefusesItAsTheReadPointDoes(t *testing.T) {
+	t.Parallel()
 	service := &Service{}
 	live := newDocumentCopy()
 	if err := crdt.ApplyUpdateV1(live, newProofHistory(t, 1).write("## Heading\n\nA paragraph.\n"), nil); err != nil {
@@ -145,6 +147,7 @@ func lastParagraphText(t *testing.T, live *crdt.Doc) *crdt.YXmlText {
 // carries: the service's settlement read (treePoint) is the read point's state decoded and read
 // (atPoint, stateTree), at the same point in the same room instance.
 func TestTheSettlementTreeReadOfAResidentRoomMatchesTheReadPointsTree(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "# Settlement read\n\n"+

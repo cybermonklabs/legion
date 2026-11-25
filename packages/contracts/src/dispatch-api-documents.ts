@@ -28,6 +28,11 @@ export const versionFields = {
    *  version of the artifact read; absent from every other version and from a server that
    *  predates it. */
   digest: z.string().optional(),
+  /** A file's or an image's version token, `sha256:` and the SHA-256 of its bytes: what an upload
+   *  replacing that version names as its precondition's `document`, and what `dispatch doc-read`
+   *  prints for it. Absent on a document's version, whose token is its live tree's (`/text`), and
+   *  from a server that predates it. */
+  token: z.string().optional(),
 };
 
 export const VersionSchema = z.strictObject(versionFields).readonly();

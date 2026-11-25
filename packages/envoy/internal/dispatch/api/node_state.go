@@ -7,25 +7,25 @@ package api
 //
 // The node state takes five values (graphstore.NodeStates) and no other: a word that is none of
 // them is graphstore's 400 INVALID_ATTRIBUTE_VALUE, refused before anything is read or stored. The
-// state route takes proposed, overtaken and live on any node the store holds that is not gone, and
-// gone on a node that belongs to no document alone - a lens, a finding, a risk or a constraint -
-// because a document's own write removes its block. gone is final: every write on a gone node is
-// 409 NODE_GONE, naming it (nodeGone), the state route's and the settle's, and the reasoning
-// routes' write of a lens, a finding, a risk or a pointer on it (findWrittenNode). The write that
-// takes a node to gone takes its whole part_of subtree to gone with it, at every depth and of
-// every kind, those nodes the caller may not see among them (writeNodeState, spec requirement
-// r-proposed), so that move is a person's alone on a lens, a finding, a risk and a constraint
-// alike, whatever stands under the node (goneNotPermitted). settled goes through the settle alone,
-// which a person makes on any proposal and any other caller on a proposal its own credential wrote
-// (maySettle). The state route holds every other move of a node into or out of proposed or settled
-// to that one rule too, and refuses any other caller 403 STATE_NOT_PERMITTED: a move out of settled
-// undoes what a settle decided, a move out of proposed ends a proposal and counts a proposed check
-// or plan task as serving its requirement as a settle would, and a move into proposed takes a
-// requirement's gaps out of the coverage read and the approval request. Both routes share one body
-// (writeNodeStateAs), which records one writer for one person, and write through writeNodeState,
-// at graphstore.NoEvent: no event is appended and no delivery is sent, as for every node of these
-// kinds (reasoning_write.go), and the reads answer the new state at once, since every one of them
-// reads the node's row.
+// state route takes proposed, overtaken and live on any node the store holds that is not gone but
+// the block of an `:::ask` block, and gone on a node that belongs to no document alone - a lens, a
+// finding, a risk or a constraint - because a document's own write removes its block. gone is
+// final: every write on a gone node is 409 NODE_GONE, naming it (nodeGone), the state route's and
+// the settle's, and the reasoning routes' write of a lens, a finding, a risk or a pointer on it
+// (findWrittenNode). The write that takes a node to gone takes its whole part_of subtree to gone
+// with it, at every depth and of every kind, those nodes the caller may not see among them
+// (writeNodeState, spec requirement r-proposed), so that move is a person's alone on a lens, a
+// finding, a risk and a constraint alike, whatever stands under the node (goneNotPermitted).
+// settled goes through the settle alone, which a person makes on any proposal and any other caller
+// on a proposal its own credential wrote (maySettle). The state route holds every other move of a
+// node into or out of proposed or settled to that one rule too, and refuses any other caller 403
+// STATE_NOT_PERMITTED: a move out of settled undoes what a settle decided, a move out of proposed
+// ends a proposal and counts a proposed check or plan task as serving its requirement as a settle
+// would, and a move into proposed takes a requirement's gaps out of the coverage read and the
+// approval request. Both routes share one body (writeNodeStateAs), which records one writer for
+// one person, and write through writeNodeState, at graphstore.NoEvent: no event is appended and no
+// delivery is sent, as for every node of these kinds (reasoning_write.go), and the reads answer
+// the new state at once, since every one of them reads the node's row.
 //
 // On an issue Legion runs, only a person or an architect of the issue or of an issue above it
 // writes the state of a requirement, criterion or check node: each route holds such a write to the
@@ -36,6 +36,14 @@ package api
 // holds: no writer, the backfill among them, writes a graph_nodes row for one, so every read
 // answers it live (refs.StoredStateAndVisibility). The state route refuses it every value, naming
 // why (itemBlockRefusal), and the settle refuses it as a node that is not proposed.
+//
+// A document's `:::ask` block is a node (`<ref_key>#<block id>`, dispatch://<KEY>/spec#b-<block id>
+// for the spec's). It marks the question's place in its document and is not a block of the ask's
+// own text. Only the ask node (`ask/<uuid>`, dispatch://<KEY>/ask/<uuid>) holds the question's state.
+// Both routes refuse a write on the block with 409 ASK_HOLDS_STATE and write nothing
+// (askHoldsState). The refusal names the ask that holds the question's state: the block's own
+// ask, or the source ask for a copy. If it has neither, the refusal says no ask holds the
+// question yet. A write by the ask's own address writes the ask's node as it writes any other.
 //
 // `{id}` is the node's store address, one percent-encoded path segment that FindNodeUnderIssue
 // decodes (node_address.go). A node the caller may not see, a node of another issue and an address
@@ -55,6 +63,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // Codes of the two routes' own refusals, and of a write on a gone node.
@@ -76,6 +85,10 @@ const (
 	// of a node into or out of proposed or settled by a caller who is neither a person nor the
 	// node's own author (maySettle).
 	codeStateNotPermitted = "STATE_NOT_PERMITTED"
+	// codeAskHoldsState is a write of any value, the settle's among them, on the block node of an
+	// `:::ask` block of a document: the block is only the question's place in its document, and
+	// the question's state is its ask node's alone (askHoldsState), so the write is refused.
+	codeAskHoldsState = "ASK_HOLDS_STATE"
 )
 
 // nodeGone is the 409 NODE_GONE of a write on the node of kind kind that address names, which
@@ -123,6 +136,59 @@ func itemBlockRefusal(target stateTarget, asked string) error {
 type stateTarget struct {
 	kind, address string
 	end           storedEnd
+}
+
+// askOfBlockQuery answers the ID of the ask that holds the question's state for the `:::ask`
+// block at stored kind $1 and address $2. It looks up document_blocks by
+// document_blocks_node_address (migration 20261111043000) and joins the block's own ask by
+// document and block ID, matching the block ID keys for asks_block_id_unique (migration 0127).
+// If the block has no ask of its own, it reads the source ask from the block's current asserted
+// copied_from tuple (graphstore.CurrentTupleRead). It answers null for an ask block with
+// neither and no row for any other node.
+var askOfBlockQuery = `
+	select coalesce(k.id::text, copied.to_id)
+	from document_blocks b
+	left join asks k on k.block_artifact_id = b.artifact_id
+		and block_id_key(k.block_id) = block_id_key(b.block_id) and k.block_id = b.block_id
+	left join lateral (
+		select c.to_id
+		from (` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_id, t.asserted, t.seq`,
+	`t.from_kind = b.node_kind and t.from_id = b.node_address and t.kind = '`+graphstore.TupleCopiedFrom+`'
+			and t.to_kind = '`+graphstore.KindAsk+`'`) + `) c
+		where k.id is null and c.asserted
+		order by c.seq desc limit 1
+	) copied on true
+	where b.node_kind = $1 and b.node_address = $2 and b.type = 'ask'`
+
+// askHoldsState refuses a write on the block node of an `:::ask` block with 409 ASK_HOLDS_STATE
+// and returns nil for other nodes. It reads in the write's transaction (q) only for nodes the
+// graph addresses as blocks (graphstore.AddressKind), not lens findings, which are also stored
+// as blocks. The refusal names the block and the ask that holds the question's state: the
+// block's own ask, or the source ask for a copy (askOfBlockQuery). Both are under the route's
+// issue key: findWrittenNode checks the block's issue and settlement takes copy sources from
+// the same owner's documents (docs' copiedAskSourcesQuery). If there is no ask yet, the refusal
+// says so. In either case the write stores nothing.
+func askHoldsState(ctx context.Context, q refs.Queryer, key string, target stateTarget) error {
+	if graphstore.AddressKind(target.end.kind, target.end.id) != refs.BlockNodeKind {
+		return nil
+	}
+	var askID *string
+	err := q.QueryRow(ctx, askOfBlockQuery, target.end.kind, target.end.id).Scan(&askID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read the ask of the block %s %s: %w", target.end.kind, target.end.id, err)
+	}
+	if askID == nil {
+		return errorf(http.StatusConflict, codeAskHoldsState,
+			"the %s %s is an :::ask block, and an ask holds the question's state, not the block: no ask holds this question yet, so nothing was written",
+			target.kind, target.address)
+	}
+	ask := refs.AskRef(text.Ref{IssueKey: key, ID: *askID})
+	return errorf(http.StatusConflict, codeAskHoldsState,
+		"the %s %s is an :::ask block: the ask %s holds the question's state. Write the state on the ask. Nothing was written.",
+		target.kind, target.address, ask)
 }
 
 // goneNodeUnderIssueQuery is whether the store holds the node whose stored kind and id are $1 and
@@ -216,11 +282,14 @@ type nodeWriterCheck func(ctx context.Context, q queryer, writer specWriter, key
 // the five the node state takes (graphstore.CheckAttributeValue), so a word that is none of them is
 // 400 INVALID_ATTRIBUTE_VALUE, naming the attribute and the word, and nothing is read or stored.
 // The node is found under the issue for the caller (findWrittenNode): 404 NOT_FOUND for a node the
-// caller may not see, and 409 NODE_GONE for a gone one. The write is writeNodeState's, in one
-// transaction, and the answer is the node as it left it with the state it held before. Past the
-// route's rule, under the issue's owner lock writeNodeState takes, the write is held to
-// refuseWriter, the check of who writes a requirement, criterion or check node: 403
-// DOCUMENT_WRITER_NOT_ARCHITECT on such a node of an issue Legion runs from a writer who is no
+// caller may not see, and 409 NODE_GONE for a gone one. The block node of an `:::ask` block is then
+// 409 ASK_HOLDS_STATE, naming the ask whose node holds the question's state, or saying no ask
+// holds it yet (askHoldsState). The check runs in the same transaction and before anything is
+// written, so the refusal stores no tuple and no row. A write by the ask's own address goes
+// through writeNodeState as on any other node, and the answer includes its state before and
+// after the write. Past the route's rule, under the issue's owner lock writeNodeState takes, the
+// write is held to refuseWriter, the check of who writes a requirement, criterion or check node:
+// 403 DOCUMENT_WRITER_NOT_ARCHITECT on such a node of an issue Legion runs from a writer who is no
 // person and no architect of the issue or of an issue above it, and nothing is stored.
 func (s *server) writeNodeStateAs(w http.ResponseWriter, r *http.Request, supplied *model.Actor, asked string, rule nodeStateRule, refuseWriter nodeWriterCheck) {
 	proving, resolved, ok := s.resolveCaller(w, r)
@@ -258,6 +327,10 @@ func (s *server) writeNodeStateAs(w http.ResponseWriter, r *http.Request, suppli
 		return
 	}
 	target := stateTarget{kind: found.Kind, address: cmp.Or(found.Ref, id), end: end.stored()}
+	if err := askHoldsState(ctx, tx, key, target); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	checked := specWriter{actor: writer, person: proving.Credential.Holds(model.ScopePerson)}
 	node, previous, err := writeNodeState(ctx, tx, nodeStateWrite{
 		issue: key, target: target, state: asked, who: writer, at: at,
@@ -288,9 +361,9 @@ func (s *server) writeNodeStateAs(w http.ResponseWriter, r *http.Request, suppli
 type nodeStateInput struct {
 	Actor *model.Actor `json:"actor"`
 	// State is the value the node's state is written at: proposed, overtaken or live on any node
-	// the store holds that is not gone, and gone on a lens, a finding, a risk or a constraint, by
-	// a person alone, taking the node's whole part_of subtree with it. settled is written by the
-	// settle alone, and any other word is no value of the node state.
+	// the store holds that is not gone, but not on the block of an `:::ask` block of a document.
+	// Only a person can write gone, on a lens, a finding, a risk or a constraint, taking the node's
+	// whole part_of subtree with it. The settle alone writes settled. No other word is a state.
 	State string `json:"state" required:"true" enum:"live,gone,proposed,overtaken"`
 }
 
@@ -316,16 +389,20 @@ func stateRefusal(target stateTarget, held, asked string) error {
 // node {id} names, by the caller (writeNodeStateAs). A node the caller may not see under the issue
 // is 404 NOT_FOUND, and a gone node 409 NODE_GONE: gone is final, since proposed, overtaken or live
 // would bring back a node its writer took out, and a block of a document a version dropped would
-// then read as a present block no version holds. The node's kind then decides (stateRefusal): the
-// route writes proposed, overtaken and live on any node the store holds, and gone on a lens, a
-// finding, a risk or a constraint alone, and refuses settled and gone on any other node with 409
-// NODE_STATE_NOT_WRITABLE. A node the store holds no row of is the same 409: a block of an ask, a
-// comment or a message, of which the store keeps none (itemBlockRefusal), and a node written
-// before the store existed that the backfill has not reached yet. A move into gone, which the route
-// makes on a lens, a finding, a risk or a constraint alone, is a person's alone (goneNotPermitted),
-// read off the credential and nothing under the node, since it takes the node's whole part_of
-// subtree with it. Any other move of the node into or out of proposed or settled
-// (takesTheSettleRule) then takes the settle's caller rule over the node's made_by (maySettle).
+// then read as a present block no version holds. The block node of an `:::ask` block is 409
+// ASK_HOLDS_STATE whatever the value, naming the block's own ask or the source ask for a copy,
+// or saying no ask holds the question yet (askHoldsState). Nothing is written. The node's kind
+// then decides for every other node (stateRefusal): the route writes proposed, overtaken and live
+// on any other node the store holds, and gone on a lens, a finding, a risk or a constraint alone,
+// and refuses settled and gone on any other node
+// with 409 NODE_STATE_NOT_WRITABLE. A node the store holds no row of is the same 409: a block of
+// an ask, a comment or a message, of which the store keeps none (itemBlockRefusal), and a node
+// written before the store existed that the backfill has not reached yet. A move into gone, which
+// the route makes on a lens, a finding, a risk or a constraint alone, is a person's alone
+// (goneNotPermitted), read off the credential and nothing under the node, since it takes the
+// node's whole part_of subtree with it. Any other move of the node into or out of proposed or
+// settled (takesTheSettleRule) then takes the settle's caller rule over the node's made_by
+// (maySettle).
 // Any other caller is 403 STATE_NOT_PERMITTED, naming the node, and nothing is stored, so the
 // shared bearer, which proves no author, makes no such move. On a requirement, criterion or check
 // node of an issue Legion runs, a writer who is no person and no architect of the issue or of an
@@ -407,14 +484,16 @@ func maySettle(proving, author model.Actor) bool {
 // settleNode is POST /api/v1/issues/{key}/nodes/{id}/settle: the one write that settles a proposed
 // node, appending one state tuple at settled written by the caller (writeNodeStateAs). A node the
 // caller may not see under the issue is 404 NOT_FOUND, the same words a node nobody wrote answers;
-// a gone node is 409 NODE_GONE; any other node not at proposed, a node the store holds no row of
-// among them, which every read answers live, is 409 NODE_NOT_PROPOSED; and a caller who is neither
-// a person nor the proposal's own author (maySettle) is 403 SETTLE_NOT_PERMITTED. A node's author
-// is its made_by: for a block of a document the writer of the version that first held the block,
-// not whoever marked it proposed. On a requirement, criterion or check node of an issue Legion
-// runs, a writer who is no person and no architect of the issue or of an issue above it is then
-// 403 DOCUMENT_WRITER_NOT_ARCHITECT (refuseSpecWriterOfNode), its own proposal among them, and
-// nothing is stored.
+// a gone node is 409 NODE_GONE; the block node of an `:::ask` block is 409 ASK_HOLDS_STATE, naming
+// the ask whose node holds the question's state (its own or the source of a copy), or saying no
+// ask holds it yet, and writing nothing (askHoldsState); any other node not at proposed, a node
+// the store holds no row of among them, which every read answers live, is 409 NODE_NOT_PROPOSED;
+// and a caller who is neither a person nor the proposal's own author (maySettle) is 403
+// SETTLE_NOT_PERMITTED. A node's author is its made_by: for a block of a document the writer of
+// the version that first held the block, not whoever marked it proposed. On a requirement,
+// criterion or check node of an issue Legion runs, a writer who is no person and no architect of
+// the issue or of an issue above it is then 403 DOCUMENT_WRITER_NOT_ARCHITECT
+// (refuseSpecWriterOfNode), its own proposal among them, and nothing is stored.
 func (s *server) settleNode(w http.ResponseWriter, r *http.Request) {
 	var input actorInput
 	if !s.decodeOptionalJSON(w, r, &input) {

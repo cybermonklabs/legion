@@ -627,7 +627,7 @@ func refuseSpecWriterOfMovedSubtree(ctx context.Context, tx pgx.Tx, writer specW
 	if runs {
 		return refuseSpecWriter(ctx, tx, writer, specWrite{act: specWriteMoveAway, issue: key, to: to, toChecked: toChecked})
 	}
-	descendants, err := refs.IssueDescendantRows(ctx, tx, everyReader, key)
+	descendants, err := refs.IssueDescendantRows(ctx, tx, key)
 	if err != nil || len(descendants) == 0 {
 		return err
 	}

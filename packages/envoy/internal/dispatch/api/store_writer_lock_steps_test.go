@@ -31,9 +31,10 @@ const storeStepWait = 20 * time.Second
 // and tuple store's writers, beside the test that drives each site's lock steps. The sites below
 // live here, and this test drives each of them:
 //
-//   - the comment path (createCommentFor, with the node it queues through graphstore.QueueNodes
-//     and the tuples through graphstore.QueueCaused, then graphstore.QueueAuthored), run on an
-//     issue and on a project document;
+//   - the comment path (createCommentFor, through queueCommentRow, which queues the node through
+//     graphstore.QueueNodes before the row, and queueCommentCreated, which queues the tuples
+//     through graphstore.QueueCaused, then graphstore.QueueAuthored), run on an issue and on a
+//     project document;
 //   - a session's reply to a mention (replyComment, through the same three, and then
 //     queueAnsweredDelivery, which records the session the answered attempt reached: that session
 //     is the reply's author, whose node row the reply already holds, and its delivered_to tuple is

@@ -3933,8 +3933,9 @@ connection, so the auth service must do that when its handler stops answering.
 The two options apply to every client connection on the server. A client whose event loop blocks,
 or whose link stalls, keeps its connection through any stall shorter than 40 s, and is closed as
 stale after one longer than 40 to 80 s; under the defaults, 4 to 8 minutes (the same test file
-keeps a client through a 15 s stall). envoy-client's own 10 s `Bun.spawnSync` block
-(`packages/envoy-client/src/envoy-config.ts:332-372`) is survived. A client that sends nothing for
+keeps a client through a 15 s stall). envoy-client's settings read no longer blocks: a `!` token
+command runs while the client's event loop goes on serving (`runCommand` in
+`packages/envoy-client/src/envoy-config.ts`). A client that sends nothing for
 a whole 20 s interval while the server's queue to it takes more than about 40 to 60 s to drain is
 closed as stale 40 to 60 s in, where under the defaults the server kept it 4 to 6 minutes; no hub
 client is known to read that slowly. All in-cluster sessions reach
@@ -4080,7 +4081,16 @@ It publishes to:
   It retries the open in the background (1 s doubling to 5 min, and at once after each NATS
   reconnect), so it takes the grant without a restart;
 - `$JS.API.STREAM.PURGE.KV_envoy_interests`, which the interest bucket's delete-marker collection
-  sends.
+  sends, and `$JS.API.STREAM.PURGE.KV_envoy_known_sessions`, which the known-session store's
+  purge of its replaced chunks' markers sends every five minutes (a user without it keeps those
+  markers for the bucket's 30-day MaxAge, and its listener logs one WARN and serves on).
+  NATS grants a purge by stream alone: the subject a purge filters to is in the request, not in
+  the subject the grant matches, so each entry lets its user purge any key of that bucket.
+  That removes nothing the user's `$KV.<bucket>.>` write could not: a delete or a rollup purge
+  of a key already removes its record and its history and leaves one marker, and the stream purge
+  removes that marker too.
+  Its one difference is that a purge of a live record leaves no marker a watcher is delivered, so
+  a running listener keeps serving that record until it reads the bucket again.
 
 Each bucket in that list is granted to every user built on this set: the listener's own, the host
 user a host's sessions share (`HostPermissions`) and Dispatch's.

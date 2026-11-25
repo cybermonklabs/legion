@@ -44,6 +44,7 @@ import (
 // TestTheBlockAndTheLinkThePreviousReleaseDroppedAreGoneAfterTheBackfill, run here after the
 // backfill rather than before it.
 func TestALinkThePreviousReleaseAddsAfterTheBackfillReachesTheStore(t *testing.T) {
+	t.Parallel()
 	link := writePreviousReleaseLink(t)
 	database, document, refKey, middle, added := link.database, link.document, link.refKey, link.middle, link.added
 	ctx := context.Background()

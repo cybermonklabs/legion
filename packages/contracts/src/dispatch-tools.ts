@@ -161,16 +161,55 @@ export const PATH_KEEPS_BYTES =
 const ARTIFACT_CONTENT_NAME_RULE = `${CONTENT_IS_MARKDOWN}, so a document's name ends in .md or .markdown or has no extension, under content and under neither flag alike; upload any other file (.jsonl, .tsv, .json, .txt) with ${PATH_KEEPS_BYTES}.`;
 
 /**
- * What `dispatch artifact` says of a name the owner already holds. The command refuses it before
- * it uploads anything, because an upload of that name writes the document's next version and
- * replaces its text. `force` is what asks for that version. The refusal is the command's; the
- * API's own guard is the document token, which Dispatch checks under the write's lock where a
- * replacement names it, the Dispatch page's own upload among them. A replacement naming none is
- * taken unchecked for now and refused 400 PRECONDITION_REQUIRED in a later release (INFRA-4980),
- * so the rule names both.
+ * What `dispatch artifact` says of a name the owner already holds as a document, when the upload
+ * is a document too. The command refuses it before it uploads anything, because an upload of that
+ * name writes the document's next version and replaces its text. `force` is what asks for that
+ * version. The refusal is the command's; the API's own guard is the document token, which
+ * Dispatch checks under the write's lock where a replacement names it, the Dispatch page's own
+ * upload among them. A replacement naming none is taken unchecked for now and refused 400
+ * PRECONDITION_REQUIRED in a later release, so the rule names both. A name held as a file or a
+ * picture is refused by fileNameExistsRule, and an upload of another kind than the name holds by
+ * artifactKindConflictRule, both below.
  */
 export const ARTIFACT_NAME_EXISTS_RULE =
   'An upload under the name of a document the owner already holds is refused: it writes that document\'s next version, over the text it holds. Change a document with dispatch doc-edit. To write the next version, send the upload again with force (--force) and the token of the version it replaces (--precondition-json \'{"document":"sha256:…"}\', the token dispatch doc-read prints).';
+
+/** An artifact's kind as a refusal names it: `doc` is a document and `image` a picture; any other
+ *  kind a later Dispatch states is named as it is. */
+function artifactKindWord(kind: string): string {
+  return { doc: "document", file: "file", image: "picture" }[kind] ?? kind;
+}
+
+/**
+ * What `dispatch artifact` says of a name the owner holds as a file or a picture, when the upload
+ * is of that kind too. A file holds no text dispatch doc-edit changes, so its one way to a next
+ * version is the upload. The rule prints no token: a conditional write names the version its
+ * writer read, so the writer sends the token its own `dispatch doc-read` printed, and a writer
+ * whose read is stale is refused 409 rather than handed the newest token to overwrite it with.
+ * Where the standing version states no token (`statesToken` false), an upload naming one is
+ * refused - by a Dispatch from before file tokens 400 INVALID_PRECONDITION, and for a version
+ * stored with no hash 409 PRECONDITION_FAILED - so the rule names `--force` alone, which both take.
+ */
+export function fileNameExistsRule(kind: string, statesToken: boolean): string {
+  const what = artifactKindWord(kind);
+  const head = `An upload under the name of a ${what} the owner already holds is refused: it writes that ${what}'s next version, over the bytes it holds.`;
+  if (!statesToken) {
+    return `${head} The version standing under the name states no token, so an upload naming one is refused: to write the next version, read the ${what} again with dispatch doc-read, then send the upload again with force (--force) alone.`;
+  }
+  return `${head} To write the next version, send the upload again with force (--force) and the token of the version you read: --precondition-json '{"document":"<the Document token your own dispatch doc-read of the ${what} printed>"}'. A version written since that read refuses it 409 PRECONDITION_FAILED: read the ${what} again before you replace it.`;
+}
+
+/**
+ * What `dispatch artifact` says of a name the owner holds as one kind of artifact when the upload
+ * is of another, decided as Dispatch decides it: a declared Markdown upload is a document, bytes
+ * that are a PNG, JPEG, GIF or WebP are a picture, and anything else is a file. Dispatch refuses
+ * such an upload under that name whatever it carries, `--force` and a token included (400
+ * ARTIFACT_KIND_MISMATCH, "give it another name"), so the rule names another name and nothing
+ * else.
+ */
+export function artifactKindConflictRule(held: string, upload: string): string {
+  return `This upload is a ${artifactKindWord(upload)}, and the name holds a ${artifactKindWord(held)}: Dispatch keeps one kind under one name, so this upload cannot be its next version, with force or without. Give the upload another name.`;
+}
 
 /**
  * What `dispatch artifact` says of inline text the store would change. The command renders the
@@ -220,18 +259,22 @@ function preconditionArgument<E extends SchemaNode<E>>(z: SchemaApi<E>): E {
     .optional();
 }
 
-/** The guard dispatch_artifact takes. An upload rewrites the whole document, so only the
- *  document token says which text it replaces: the server refuses a blocks guard on an upload
- *  (400 INVALID_PRECONDITION), and a writer is offered no shape it would refuse. */
+/** The guard dispatch_artifact takes. An upload rewrites the whole document or file, so only the
+ *  token of the version it replaces says what it replaces: the server refuses a blocks guard on
+ *  an upload (400 INVALID_PRECONDITION), and a writer is offered no shape it would refuse. A
+ *  file's or a picture's version has a token too, which dispatch doc-read prints in the same
+ *  line, so the one shape serves both. */
 function uploadPreconditionArgument<E extends SchemaNode<E>>(z: SchemaApi<E>): E {
   return z
     .object({
       document: z
         .string({ min: 1 })
-        .describe("Token for the exact canonical document returned by dispatch doc-read."),
+        .describe(
+          "Token of the version this upload replaces, as dispatch doc-read prints it for a document, a file or a picture."
+        ),
     })
     .describe(
-      "The token of the version this upload replaces, which an upload over a document the owner already holds must name; a first upload under a name replaces nothing and names none."
+      "The token of the version this upload replaces, which an upload over a document, a file or a picture the owner already holds names; a first upload under a name replaces nothing and names none."
     )
     .optional();
 }
@@ -421,6 +464,7 @@ const ISSUE_UPDATE_DONE_RULE =
   "status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes so the close carries its note";
 const ISSUE_UPDATE_REASON_RULE = "reason goes only with status done";
 const ISSUE_UPDATE_LABELS_RULE = "labels_add goes without labels";
+const ISSUE_UPDATE_LABELS_REFUSAL = `${ISSUE_UPDATE_LABELS_RULE}: labels replaces every label the issue holds and labels_add adds to them, so name the labels to add in labels_add alone, or the whole set in labels alone.`;
 
 /** The options of dispatch_issue_update that say what happens to the issues under the issue or
  *  above it when its status changes. A call that sets one to true sends the status change route
@@ -515,13 +559,13 @@ function issueReasonProblem(input: {
 
 /** The refusal of the parts of dispatch_issue_update's rule `value` breaks, or undefined when it
  *  keeps the rule: reason is the close's note, so it goes with status done and with nothing else;
- *  labels replaces every label and labels_add adds to them, so a call names one of the two, as
- *  the route refuses both; an option of the status change goes with status alone; and the update
- *  names at least one field to change. It names every part of the reason's, the labels' and the
- *  options' rules the call broke, joined in one refusal, so its caller fixes them all and calls
- *  once. The field part is read only when the call keeps those three: a call refused for its
- *  reason is never told it names no field. `check` and `refusal` both read this one function, so
- *  the refusal never names a part the call kept. */
+ *  labels replaces every label and labels_add adds to them, so a call names one of the two, as the
+ *  route refuses both; an option of the status change goes with status alone, and with reason when
+ *  the status is done; and the update names at least one field to change. It names every part of
+ *  the reason's, the labels' and the options' rules the call broke, joined in one refusal, so its
+ *  caller fixes them all and calls once. The field part is read only when the call keeps those
+ *  three: a call refused for its reason is never told it names no field. `check` and `refusal`
+ *  both read this one function, so the refusal never names a part the call kept. */
 function issueUpdateProblem(value: unknown): string | undefined {
   const input = value as {
     readonly status?: unknown;
@@ -547,10 +591,7 @@ function issueUpdateProblem(value: unknown): string | undefined {
   const optionsProblem = issueStatusOptionsProblem(value as Readonly<Record<string, unknown>>);
   const broken = brokenParts([
     [reasonProblem === undefined, reasonProblem ?? ""],
-    [
-      input.labels === undefined || input.labels_add === undefined,
-      `${ISSUE_UPDATE_LABELS_RULE}: labels replaces every label the issue holds and labels_add adds to them, so name the labels to add in labels_add alone, or the whole set in labels alone.`,
-    ],
+    [input.labels === undefined || input.labels_add === undefined, ISSUE_UPDATE_LABELS_REFUSAL],
     [optionsProblem === undefined, optionsProblem ?? ""],
   ]);
   if (broken !== undefined) return broken;
@@ -2115,6 +2156,7 @@ export const dispatchToolSpecs = [
       "After the markdown it prints every open thread anchored on the document in full: an open ask with its id and question and each reply's author, time and text, and a comment thread with its root's id, author, time, quote and text and each reply's author, time and text, in order; a resolved thread, and an ask that is answered or resolved, is not printed. " +
       "A picture (an uploaded PNG, JPEG, GIF or WebP of at most 3,750,000 bytes, 5 MB once base64-encoded) comes back as an image you see, with its name, type, size and version, every time you ask, including one a read already showed this session; " +
       "any other file that is not UTF-8 text is described, with the route that serves its bytes. " +
+      "A read of an uploaded file or picture prints, in its header before the file's text, the latest version's token as a `Document token: sha256:…` line, which dispatch artifact's precondition takes for the next version, or a named version's hash as a `Content: sha256:…` line; the text after the header is the stored file unchanged, except that the dispatch command adds a line feed after a file that ends without one and, under Claude Code or Codex, cuts an output past 25,000 characters and writes the whole of it to a file it names. " +
       OWNER_REFERENCE,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE).optional(),
@@ -2480,7 +2522,7 @@ export const dispatchToolSpecs = [
       `${ARTIFACT_SOURCE_RULE} ` +
       `${ARTIFACT_NAME_EXISTS_RULE} A call that stores nothing - no path, and content absent or blank - is refused under a held name even with force and a token, so a title typed twice never empties the document that holds it; that refusal names no token, since no token makes such a call one Dispatch takes. ` +
       "A markdown document is at most 1 MiB and any other file at most 25 MiB. " +
-      "An upload that replaces a document the owner already holds under that name says which version it replaces: precondition.document takes the document token dispatch doc-read prints as `Document token: sha256:…`, and Dispatch checks it under the write's own lock. An upload that names none is taken for now without a check, since older dispatch commands cannot name one; name the token wherever the command can, because a later release refuses an upload naming none with 400 PRECONDITION_REQUIRED. A token behind the live document is refused with 409 PRECONDITION_FAILED. The refusal tells you to read the document again with dispatch doc-read, which prints the token the document carries now, and to upload again naming that token. A first upload under a name replaces no version, and a file that is not a document holds no token, so neither names one. " +
+      "An upload that replaces a document the owner already holds under that name says which version it replaces: precondition.document takes the document token dispatch doc-read prints as `Document token: sha256:…`, and Dispatch checks it under the write's own lock. An upload that names none is taken for now without a check, since older dispatch commands cannot name one; name the token wherever the command can, because a later release refuses an upload naming none with 400 PRECONDITION_REQUIRED. A token behind the live document is refused with 409 PRECONDITION_FAILED. The refusal tells you to read the document again with dispatch doc-read, which prints the token the document carries now, and to upload again naming that token. An upload that replaces a file or a picture names the token of the version it replaces the same way, the `Document token:` line dispatch doc-read prints for its latest version, and any other token is refused with 409 PRECONDITION_FAILED; one naming none is taken unchecked. The command's refusal of a name the owner holds prints no token: for a file or a picture it names --force with the token your own dispatch doc-read printed, or --force alone where Dispatch states no token for the file, since such a Dispatch refuses a token on a file's upload; for an upload of another kind than the name holds (a declared Markdown upload is a document, PNG, JPEG, GIF or WebP bytes a picture, anything else a file) it names another name, since Dispatch refuses it under that name with 400 ARTIFACT_KIND_MISMATCH. A first upload under a name replaces no version, so it names none. " +
       `${ARTIFACT_CONTENT_NAME_RULE} ${ARTIFACT_STORED_TEXT_RULE} ` +
       "Markdown is also refused with 413 CAP_EXCEEDED when it makes more than 65,536 elements (a block weighs 3, and an empty list item, quote, footnote definition or typed block 3 more for the empty paragraph it holds; a table cell 4, a hard line break 3, an image 3, a piece of inline HTML 2, an autolink 2, a footnote reference 2; inline syntax, marks, lines of text and backslash escapes or character references 1 each), or when a new version would leave the document's stored markdown (what its text reads back as) longer than 1 MiB or making more than 65,536 elements, and longer or heavier than before; shorten it or split it across documents. " +
       "In a table row, write every | in a cell as \\|, in code too: a | after two backslashes ends the cell, and a row with more cells than its table is refused. " +
@@ -3342,7 +3384,11 @@ export const dispatchToolSpecs = [
       "NODE_STATE_NOT_WRITABLE, naming the node's kind, its state and the value: gone on a " +
       "block of a document, an issue, a document, an ask, a comment or a message, and any " +
       "state on a block of an ask, a comment or a message, which the store keeps no node of " +
-      "and every read answers live. Settle a proposal with dispatch settle. A node taken gone " +
+      "and every read answers live. A write on the block of an :::ask block of a document " +
+      "returns 409 ASK_HOLDS_STATE and writes nothing, naming the ask whose node holds the " +
+      "question's state (its own ask or the source ask for a copy) or saying no ask holds " +
+      "it yet. Write the state on the named ask instead. " +
+      "Settle a proposal with dispatch settle. A node taken gone " +
       "takes what stands under it, those nodes you may not see included, so a person alone " +
       "takes a lens, a finding, a risk or a constraint to gone: any other caller, the node's " +
       "own author included, is refused with 403 STATE_NOT_PERMITTED naming the node, whatever " +
@@ -3375,8 +3421,10 @@ export const dispatchToolSpecs = [
       "that names a person, the same session for a broker session that names none, the same " +
       "workload for a pod's service-account token. Any other is refused with 403 " +
       "SETTLE_NOT_PERMITTED; the deployment's shared agent token proves no author, so it " +
-      "settles nothing. A gone node is refused with 409 NODE_GONE, and any other node that is " +
-      "not proposed with 409 NODE_NOT_PROPOSED. " +
+      "settles nothing. A gone node is refused with 409 NODE_GONE. A settle on the block of " +
+      "an :::ask block returns 409 ASK_HOLDS_STATE and writes nothing, naming the ask whose " +
+      "node holds the question's state (its own ask or the source ask for a copy) or saying " +
+      "no ask holds it yet. Any other node not at proposed is refused with 409 NODE_NOT_PROPOSED. " +
       "dispatch proposed lists the issue's proposed nodes. " +
       `${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
     arguments: (z) => ({

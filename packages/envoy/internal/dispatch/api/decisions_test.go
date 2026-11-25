@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The Decisions read reads the store alone. Its entries are held
@@ -422,23 +423,19 @@ func TestIssueDecisionsListTheSpecsOpenQuestions(t *testing.T) {
 }
 
 // waitForOpenQuestions reads the view until it holds want open questions: settlement indexes a
-// spec's ask blocks, and until it has the issue holds none.
+// spec's ask blocks, and until it has the issue holds none. Its one bound is the test binary's
+// deadline (testwait.UntilPolling), and its failure prints the questions it last read.
 func waitForOpenQuestions(t *testing.T, handler http.Handler, key string, want int) (issueDecisions, []string) {
 	t.Helper()
 	var view issueDecisions
-	questions := []string{}
-	for range 200 {
+	questions := testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("the issue's decisions to hold %d open questions (the questions last read)", want), func() ([]string, bool) {
 		view = readIssueDecisions(t, handler, key)
-		questions = questions[:0]
+		questions := []string{}
 		for _, question := range view.OpenQuestions {
 			questions = append(questions, question.Question)
 		}
-		if len(questions) == want {
-			return view, questions
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	t.Fatalf("open_questions = %v, want %d of them", questions, want)
+		return questions, len(questions) == want
+	})
 	return view, questions
 }
 

@@ -15,6 +15,7 @@ import (
 // that attribute. It reads with the attribute's default, as the browser editor reads it, and the
 // rendering writes that default. A tree built without the attribute validates and renders the same.
 func TestATypedBlockMissingADefaultedAttributeReadsAsItsDefault(t *testing.T) {
+	t.Parallel()
 	const want = ":::callout{#callout-1 kind=\"note\" title=\"\"}\nBody.\n:::\n"
 	tree, err := Parse(":::callout{#callout-1 kind=\"warning\" title=\"Read this\"}\nBody.\n:::\n")
 	if err != nil {
@@ -63,6 +64,7 @@ func TestATypedBlockMissingADefaultedAttributeReadsAsItsDefault(t *testing.T) {
 // The manifest names every node and mark of the Proof schema, and this package's node and mark
 // sets are the manifest's.
 func TestTheManifestNamesEveryNodeAndMarkThisPackageKnows(t *testing.T) {
+	t.Parallel()
 	wantNodes := []string{
 		"blockquote", "bullet_list", "code_block", "doc", "footnote_definition", "footnote_reference",
 		"frontmatter", "hardbreak", "heading", "hr", "html", "image", "list_item", "ordered_list",
@@ -459,12 +461,25 @@ func changeManifestAttribute(t *testing.T, value *BlockSchema, block, attribute 
 }
 
 // installStoreManifest installs value as the server installs what it read from the store, and
-// puts this build's own manifest back when the test ends.
+// puts this build's own manifest back when the test ends. The manifest is the whole process's
+// (active), so a test that calls this runs alone (runsAlone).
 func installStoreManifest(t *testing.T, value BlockSchema) error {
 	t.Helper()
+	runsAlone(t)
 	previous := active.Load()
 	t.Cleanup(previous.install)
 	return Install(value)
+}
+
+// runsAlone makes the testing package refuse t as a parallel test, now and later: t.Setenv fails
+// a test that has called t.Parallel, or whose parent has, and t.Parallel fails a test that has
+// called t.Setenv. Every helper that swaps the process-wide manifest or block schema calls it, so
+// a test that swaps either cannot run beside the tests that read it, and cannot restore it out of
+// order with another swapper (pmdoctest.UseBlockSchema keeps the same rule). Nothing reads the
+// variable.
+func runsAlone(t testing.TB) {
+	t.Helper()
+	t.Setenv("PMDOC_TEST_SWAPS_THE_BLOCK_SCHEMA", "1")
 }
 
 // A store whose enum default a newer release moved to a choice it added installs on the build

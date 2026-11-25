@@ -84,9 +84,8 @@ export async function withMarksEditor(
         ydoc,
       });
     } finally {
-      handle.destroy();
-      // The editor tears its view down asynchronously; its plugins' teardown needs the DOM.
-      while (!view.isDestroyed) await Promise.resolve();
+      // The editor's own teardown runs after its view's, and its plugins' teardown needs the DOM.
+      await handle.destroy();
     }
   });
 }

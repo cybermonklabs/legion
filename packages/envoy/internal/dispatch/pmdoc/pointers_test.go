@@ -39,9 +39,11 @@ func oneAttribute(name string, attr BlockAttributeSchema) BlockAttributes {
 }
 
 // useTestBlockSchema makes value the block schema for the rest of t, restoring the one before by
-// a t.Cleanup (pmdoctest.UseBlockSchema, which this package's tests cannot import).
+// a t.Cleanup (pmdoctest.UseBlockSchema, which this package's tests cannot import). The schema is
+// the whole process's, so a test that calls this runs alone (runsAlone).
 func useTestBlockSchema(t testing.TB, value BlockSchema) {
 	t.Helper()
+	runsAlone(t)
 	restore, err := SetBlockSchemaForTest(value)
 	if err != nil {
 		t.Fatalf("use test block schema: %v", err)
@@ -117,6 +119,7 @@ func TestABlockPointerSchemaDeclaresANameAndTargets(t *testing.T) {
 // this file to. A row's items are the item kinds the attribute declares; a row naming none is read
 // under an attribute that declares none.
 func TestABlockPointerAttributeDecidesTheSharedCorpus(t *testing.T) {
+	t.Parallel()
 	raw, err := os.ReadFile("testdata/block-pointer-values.json")
 	if err != nil {
 		t.Fatalf("read table: %v", err)
@@ -176,6 +179,7 @@ func TestABlockPointerAttributeDecidesTheSharedCorpus(t *testing.T) {
 // (RenderWithBlockOffsets, which GET /api/v1/artifacts/{id}/blocks lists) holds for the corpus is
 // one, and a list item or a table's row or cell, which it never holds, is not.
 func TestBuiltInBlockTargetsAreTheBlocksTheBlockListHolds(t *testing.T) {
+	t.Parallel()
 	paths, err := filepath.Glob("testdata/corpus/*.md")
 	if err != nil || len(paths) == 0 {
 		t.Fatalf("corpus: %v (%d documents)", err, len(paths))

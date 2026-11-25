@@ -78,7 +78,7 @@ func TestAPreventedByAppendedWhileItsCheckIsMarkedGoneIsNotLeftStanding(t *testi
 		}, "alice")
 	}()
 	var appended *httptest.ResponseRecorder
-	waitUntil(t, 30*time.Second, "the append to "+rig.otherIssueCheck+" waiting on the index pass, or answering", func() bool {
+	waitUntil(t, "the append to "+rig.otherIssueCheck+" waiting on the index pass, or answering", func() bool {
 		select {
 		case appended = <-answered:
 			return true

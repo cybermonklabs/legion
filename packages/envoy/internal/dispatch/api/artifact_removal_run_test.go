@@ -64,20 +64,11 @@ func (r runDocumentRig) intoRun(t *testing.T, what string) []string {
 }
 
 // outOfDocument is each changed_by_run alice reads out of the document, its ?from= read by the
-// document's uuid as GET /api/v1/references reads it, as the `<kind>/<id>` it ends at, sorted.
+// document's uuid as GET /api/v1/references reads it, as the `<kind>/<id>` it ends at, sorted
+// (changedByRunOutOf).
 func (r runDocumentRig) outOfDocument(t *testing.T, what, documentID string) []string {
 	t.Helper()
-	edges, err := refs.Edges(context.Background(), r.database.Pool, runDocumentAuthor, refs.Query{Direction: "out", Kind: graphstore.KindArtifact, ID: documentID})
-	if err != nil {
-		t.Fatalf("%s: read alice's ?from= of document %s: %v", what, documentID, err)
-	}
-	var to []string
-	for _, edge := range edges {
-		if edge.Kind == graphstore.TupleChangedByRun {
-			to = append(to, edge.Node.Kind+"/"+edge.Node.ID)
-		}
-	}
-	slices.Sort(to)
+	to := changedByRunOutOf(t, r.database, graphstore.KindArtifact, documentID)
 	t.Logf("%s: the ?from= of document %s lists the changed_by_run edges to %v", what, documentID, to)
 	return to
 }

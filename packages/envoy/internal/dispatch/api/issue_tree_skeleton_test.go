@@ -106,7 +106,7 @@ func requireCommentsBeforeRefused(t *testing.T, handler http.Handler, key, query
 // route's description names both.
 func TestTheTreeReadPagesTheCommentsNewestFirst(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
-	createProjects(t, handler, "CORE")
+	createTestProject(t, handler, "CORE")
 	key := decodeBody[struct {
 		Key string `json:"key"`
 	}](t, created(t, "the issue", dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{

@@ -83,7 +83,8 @@ names the issues that stop it and offers a choice:
 
 The page offers the first two when a child stops the change, and the third when a parent stops it.
 Each choice lists the changes it makes before you choose it. Dispatch leaves a comment on each
-other issue a choice changes. The issue you moved gets no comment, since the change is your own.
+other issue a choice changes. When a choice changed at least one other issue, the issue you moved
+gets one more comment that lists those changes.
 
 ## The List and the Board
 

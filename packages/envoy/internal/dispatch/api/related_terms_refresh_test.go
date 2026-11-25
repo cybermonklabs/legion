@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // refreshTermStatsPass runs one refresh of the project and answers what it did: whether it
@@ -332,13 +333,8 @@ func TestRefreshFromTheRelatedCheckAppliesTheQueuedChanges(t *testing.T) {
 	`, issue.Key); err != nil {
 		t.Fatalf("write a comment: %v", err)
 	}
-	select {
-	case result := <-srv.ensureSearchTermStats(project):
-		if result.Err != nil {
-			t.Fatalf("the check's refresh failed: %v", result.Err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the check's refresh did not end")
+	if result := testwait.Receive(t, "the check's refresh of the term statistics to end", srv.ensureSearchTermStats(project)); result.Err != nil {
+		t.Fatalf("the check's refresh failed: %v", result.Err)
 	}
 	// The issue is born converted, so its tree and its decisions query write versions, whose
 	// document_search rows queue changes too; those name no project (searchTermDocument) and wait

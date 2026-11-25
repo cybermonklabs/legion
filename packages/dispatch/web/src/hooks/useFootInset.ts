@@ -44,8 +44,9 @@ import { type RefObject, useLayoutEffect } from "react";
  *   - The margin's sheet below `xl` while it is collapsed (`MarginSheet`).
  *   - The Agents page's broadcast composer, sticky to the foot of the page's scroll
  *     (`AgentsPage`), wherever it is on screen, stuck or resting at the end of the list: the
- *     wrapper that holds it with the sends, and, on a narrow or short screen, where the wrapper
- *     has no box, the composer's own section, which is what sticks there.
+ *     wrapper that holds it with the sends, and the composer's own section, which is what sticks
+ *     on a narrow or short screen, where the wrapper has no box. Elsewhere the wrapper's band
+ *     holds the section's.
  *   - The agent live view's composer (`AgentThread`), in the flow of a page that fills the
  *     screen; the rows laid out under it, the row of pickers and the switch lines, in the one box
  *     that holds both (`AgentConversationPage`); and the live thread's own `Jump to latest`, just
@@ -215,25 +216,60 @@ import { type RefObject, useLayoutEffect } from "react";
  * padding can move what the floats lie over - the issues table's box gives way to it - but only
  * off the floats, which then lie over that padding, and a point there hits that element itself,
  * so the mark holds. Each pass finds every scroller under a float, unmarks every scroller marked
- * before that it no longer finds - its attribute, its property and any inline padding - and
- * writes a mark, a property or a padding only where its value changes. So no page keeps end room
- * it no longer needs, and at rest a pass writes nothing.
+ * before that it no longer finds - its attribute, its property and any inline padding - unless
+ * the reader stands in its room (below), and writes a mark, a property or a padding only where
+ * its value changes. So no page keeps end room it no longer needs once the reader is out of it,
+ * and at rest a pass writes nothing.
  *
- * - Why it runs only while a float shows. With no float nothing lies over content, so no scroller
- *   needs room, and a pass reads layout on every scroll. So while no float has a box the hook
- *   listens to nothing, and when the last float loses its box it unmarks every scroller before it
- *   stops listening. While one has a box, a pass runs at most once per animation frame: after
- *   each `publish`, on any scroll, on a window resize, and when elements join or leave the page (a
- *   `MutationObserver` over `body`, for `childList` and `subtree` only). The observer does not
- *   watch attributes or styles, so the hook's marks and end room do not wake it. Only taking end
- *   room away from a scroller scrolled to its end can clamp its scroll and wake one more pass,
- *   which then finds the same marks.
+ * - Why room the reader stands in stays. End room added below the end of a scroll moves nothing,
+ *   but room taken away while the reader stands in it shortens the scroll under them: its
+ *   `scrollTop` clamps to the new end, and the content they read jumps down by what was taken.
+ *   A reader at the end of the issues table's box who discards Pending changes stands in room it
+ *   gave: at 1280x720 the table's last row jumped 58px down as it went. A float that shows after
+ *   the reader reached the end - the chord indicator - adds room below them, which they do not
+ *   stand in. So room a scroller would lose - all it holds, where no float lies over it any
+ *   more, or the part above what the floats left still need - stays whole while the reader
+ *   stands in that part: while the scroll that room lengthens (the document's for the element
+ *   that carries `data-document-scroll`) is off its start and has less than that part left to
+ *   its end (`standsInRoom`). The first pass after a scroll that leaves it takes it away, and
+ *   then nothing clamps. A scroller whose reader is out of its room loses it at once, at the pass
+ *   that no longer needs it, and a window resize, which moves the content anyway, reads every
+ *   mark afresh and keeps none.
+ * - Why the document's room is kept for a box it holds too. The document's room is padding, and
+ *   a page that gives way to it rather than lengthening passes the clamp on: the issues table
+ *   sizes its box to the window less that padding, so taking the padding grows the box by it and
+ *   shortens the box's own scroll by as much. At 1600x1000 the page fits the window, the
+ *   document's own scroll is at its start and clamps nothing, and the table's last row still
+ *   went down 58px as Pending changes was discarded. So the document's scroller keeps its room
+ *   while a box it holds would be clamped by losing it: a box whose scroll is off its start with
+ *   less than that room left to its end (`clampsABoxItHolds`). Only a box whose scroll has moved
+ *   can clamp, which is what that walk reads first.
+ * - Why the passes run only while a float shows or a scroller holds room. With no float nothing
+ *   lies over content, so no scroller needs room, and a pass reads layout on every scroll. So
+ *   while no float has a box and no scroller holds room, nothing asks for a pass: the hook listens
+ *   for none of the events below (`listenWhileNeeded`). While a float has a box, or a scroller
+ *   holds room, it listens for any scroll, a window resize, and elements that join or leave the
+ *   page (a `MutationObserver` over `body`, for `childList` and `subtree` only), and each of them
+ *   asks for a pass at the next animation frame. While a float has a box, each `publish` asks for
+ *   one too. Passes asked for in one frame run once. A `publish` that leaves no float asks for
+ *   none, but the one at which the last float loses its box runs a pass at once, which unmarks
+ *   every scroller whose reader is out of its room. A pass stops the listening once no float has
+ *   a box and no scroller holds room. The observer does not watch attributes or styles, so the
+ *   hook's marks and end room do not wake it. Only taking end room away from a scroller scrolled
+ *   to its end can clamp its scroll and wake one more pass, which then finds the same marks; and
+ *   the hook takes none from under the reader.
+ * - What listens with no float shown. The measures of the foot elements listen whatever the
+ *   floats (`useFootInset`): each registered element keeps its own `ResizeObserver` and a window
+ *   resize listener, and each page element that has a box and is neither fixed nor sticky to the
+ *   top also keeps a capture scroll listener and the same observer over its parent (`followMoves`).
+ *   Each of them measures its element and publishes again, and with no float shown that `publish`
+ *   asks for no pass.
  *
  * `--foot-clearance` is registered as not inherited (`styles.css`), so a scroller inside a marked
  * one, while it holds no room of its own, reads 0, never the room of the scroller around it. The
  * spacer takes its own scroller's value by `inherit`, which reaches that scroller alone.
  */
-const FOOT_LAYERS = [
+export const FOOT_LAYERS = [
   { name: "page", property: "--foot-page-inset" },
   { name: "banner", property: "--foot-banner-inset" },
   { name: "status", property: "--foot-status-inset" },
@@ -296,7 +332,7 @@ const marks = new Map<HTMLElement, Mark>();
 export const MARK_ATTRIBUTE = "data-foot-clearance";
 
 /** The custom property that holds a scroller's end room, on its own inline style. */
-const CLEARANCE_PROPERTY = "--foot-clearance";
+export const CLEARANCE_PROPERTY = "--foot-clearance";
 
 /** The attribute by which the page states, on `<main>` or, in the new issue page's frame, on the
  *  frame's column, that the document scrolls that element's content (`FOOT_LAYERS` says why the
@@ -322,6 +358,9 @@ let resized = false;
 
 /** What wakes a pass when elements join or leave the page, made at the first float. */
 let mutations: MutationObserver | undefined;
+
+/** Whether the hook listens for what moves content under the floats (`listenWhileNeeded`). */
+let listening = false;
 
 function floatsOf(layer: FootLayer): Map<Element, Float> {
   const floats = layerFloats.get(layer) ?? new Map<Element, Float>();
@@ -536,13 +575,13 @@ function unmark(scroller: HTMLElement): void {
 }
 
 /**
- * Marks `scroller` and gives it end room for `clearance` pixels, the one way it takes it
- * (`FOOT_LAYERS` says which and why), read as it is marked: the spacer, `clearance` less its own
- * bottom padding, or its inline bottom padding, the larger of its own and `clearance`. The
- * document's scroller (`byDocument`) always takes the padding. Each is rounded up to a whole
- * pixel, which the inline style keeps as written, and only a value that changes is written.
+ * The mark `scroller` takes for end room of `clearance` pixels, the one way it takes it
+ * (`FOOT_LAYERS` says which and why), read from its styles as it is marked and from the mark it
+ * holds after: the spacer, `clearance` less its own bottom padding, or its inline bottom padding,
+ * the larger of its own and `clearance`. The document's scroller (`byDocument`) always takes the
+ * padding. Each is rounded up to a whole pixel, which the inline style keeps as written.
  */
-function mark(scroller: HTMLElement, clearance: number, byDocument: boolean): void {
+function markFor(scroller: HTMLElement, clearance: number, byDocument: boolean): Mark {
   let held = marks.get(scroller);
   if (held === undefined) {
     const computed = getComputedStyle(scroller);
@@ -558,27 +597,78 @@ function mark(scroller: HTMLElement, clearance: number, byDocument: boolean): vo
   }
   if (held.way === "after") {
     const own = Number.parseFloat(getComputedStyle(scroller).paddingBottom) || 0;
-    const room = Math.max(0, Math.ceil(clearance - own));
-    writePixels(scroller.style, CLEARANCE_PROPERTY, room);
-    marks.set(scroller, { room, way: "after" });
-  } else {
-    const padding = Math.max(held.own, Math.ceil(clearance));
-    writePixels(scroller.style, "padding-bottom", padding);
-    marks.set(scroller, { own: held.own, room: padding - held.own, way: "padding" });
+    return { room: Math.max(0, Math.ceil(clearance - own)), way: "after" };
   }
-  if (scroller.getAttribute(MARK_ATTRIBUTE) !== held.way) {
-    scroller.setAttribute(MARK_ATTRIBUTE, held.way);
+  return {
+    own: held.own,
+    room: Math.max(held.own, Math.ceil(clearance)) - held.own,
+    way: "padding",
+  };
+}
+
+/** Marks `scroller` with `next` (`markFor`) and gives it the end room that holds: its property,
+ *  or its inline bottom padding, its own and the room together. Only a value that changes is
+ *  written. */
+function mark(scroller: HTMLElement, next: Mark): void {
+  if (next.way === "after") writePixels(scroller.style, CLEARANCE_PROPERTY, next.room);
+  else writePixels(scroller.style, "padding-bottom", next.own + next.room);
+  marks.set(scroller, next);
+  if (scroller.getAttribute(MARK_ATTRIBUTE) !== next.way) {
+    scroller.setAttribute(MARK_ATTRIBUTE, next.way);
   }
+}
+
+/**
+ * Whether taking `room` from the document's scroller `scroller` would clamp a box it holds: a
+ * box whose own scroll has moved off its start and has less than `room` left to its end. The
+ * document's room is padding, and the page it holds can give way to it rather than lengthen
+ * (`FOOT_LAYERS`): the issues table sizes its box to the window less that padding, so taking the
+ * padding grows the box by it, the box's own scroll shortens by as much, and a reader at its end
+ * is clamped - at 1600x1000 the table's last row went down 58px as Pending changes was
+ * discarded. Only a box whose scroll has moved can clamp, so the walk reads `scrollTop` first,
+ * which is a property read, and asks for a style only where it is not at a start.
+ */
+function clampsABoxItHolds(scroller: HTMLElement, room: number): boolean {
+  for (const box of scroller.querySelectorAll<HTMLElement>("*")) {
+    if (box.scrollTop <= 0 || box.scrollHeight - box.scrollTop - box.clientHeight >= room) {
+      continue;
+    }
+    const { overflowY } = getComputedStyle(box);
+    if (overflowY === "auto" || overflowY === "scroll") return true;
+  }
+  return false;
+}
+
+/**
+ * Whether the reader stands in the last `room` pixels of the end room `scroller` holds, so that
+ * taking them away would clamp a scroll and move what they read (`FOOT_LAYERS` says why those
+ * stay): the scroll that room lengthens - the document's where `scroller` carries
+ * `data-document-scroll`, its own otherwise - is off its start and has less than `room` left to
+ * its end; or, for the document's scroller, a box it holds would be clamped by the page giving
+ * way to that padding (`clampsABoxItHolds`). A scroll at its start never clamps, and a scroller
+ * no longer in the page holds no reader.
+ */
+function standsInRoom(scroller: HTMLElement, room: number): boolean {
+  if (!scroller.isConnected) return false;
+  const byDocument = scroller.hasAttribute(DOCUMENT_SCROLL_ATTRIBUTE);
+  const scroll = byDocument ? document.documentElement : scroller;
+  if (scroll.scrollTop > 0 && scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < room) {
+    return true;
+  }
+  return byDocument && clampsABoxItHolds(scroller, room);
 }
 
 /**
  * One pass over the scrollers under the floats (`FOOT_LAYERS` says what those are and why each
  * part holds). It finds the scroller under each point of each float and the floats found over
- * each scroller, and gives each scroller whose clearance is more than 0 its end room. Every
- * scroller marked before that it does not find it unmarks. After a window resize it unmarks every
- * scroller first, so each mark it keeps is read afresh. It reads every box before it writes
- * anything, and between unmarking and marking a scroller it reads only styles, so the browser
- * never lays out a scroller without its end room and clips a scroll at its end.
+ * each scroller, and gives each scroller whose clearance is more than 0 its end room. Room a
+ * scroller would lose - all it holds, where the pass does not find it, or the part above what it
+ * now needs - it keeps whole while the reader stands in that part (`standsInRoom`), and every
+ * other scroller marked before that it does not find it unmarks. After a window resize it
+ * unmarks every scroller first, so each mark it keeps is read afresh. It reads every box before
+ * it writes anything, and between unmarking and marking a scroller it reads only styles, so the
+ * browser never lays out a scroller without its end room and clips a scroll at its end. It
+ * then listens, or stops, as `listenWhileNeeded` says.
  */
 function clearScrollers(): void {
   clearFrame = 0;
@@ -603,21 +693,25 @@ function clearScrollers(): void {
       }
     }
   }
-  const clearances = new Map<
-    HTMLElement,
-    { readonly byDocument: boolean; readonly clearance: number }
-  >();
+  if (resized) for (const scroller of marks.keys()) unmark(scroller);
+  resized = false;
+  const next = new Map<HTMLElement, Mark>();
   for (const [scroller, { byDocument, floats, lo }] of found) {
     const held: PageBand[] = [];
     for (const [element, band] of pageBands) if (scroller.contains(element)) held.push(band);
     const clearance = footClearance(lo, footCeiling(lo, held), floats, gap);
-    if (clearance > 0) clearances.set(scroller, { byDocument, clearance });
+    if (clearance > 0) next.set(scroller, markFor(scroller, clearance, byDocument));
   }
-  for (const scroller of marks.keys()) if (resized || !clearances.has(scroller)) unmark(scroller);
-  resized = false;
-  for (const [scroller, { byDocument, clearance }] of clearances) {
-    mark(scroller, clearance, byDocument);
+  const kept = new Set<HTMLElement>();
+  for (const [scroller, held] of marks) {
+    const room = next.get(scroller)?.room ?? 0;
+    if (room < held.room && standsInRoom(scroller, held.room - room)) kept.add(scroller);
   }
+  for (const scroller of marks.keys()) {
+    if (!next.has(scroller) && !kept.has(scroller)) unmark(scroller);
+  }
+  for (const [scroller, taken] of next) if (!kept.has(scroller)) mark(scroller, taken);
+  listenWhileNeeded();
 }
 
 /** Asks for a pass at the next animation frame, once however often it is asked. */
@@ -632,31 +726,44 @@ function clearAfterResize(): void {
 }
 
 /**
- * Holds `placed`, every float that has a box, for the passes (`placedFloats`). While a float has a
- * box, listens for what moves content under the floats and asks for a pass; once none has,
- * unmarks every scroller and then stops listening (`FOOT_LAYERS` says why).
+ * Listens for what moves content under the floats, and asks for a pass at each, while a float has
+ * a box or a scroller still holds end room, and stops once neither holds (`FOOT_LAYERS` says
+ * why): a pass leaves a scroller its room while the reader stands in it, and only a pass after
+ * the scroll that leaves it takes it away.
  */
-function followFloats(placed: readonly PlacedFloat[]): void {
-  const wasFollowing = placedFloats.length > 0;
-  placedFloats = placed;
-  if (placed.length > 0) {
-    if (!wasFollowing) {
-      window.addEventListener("scroll", clearNextFrame, { capture: true, passive: true });
-      window.addEventListener("resize", clearAfterResize);
-      mutations ??= new MutationObserver(clearNextFrame);
-      mutations.observe(document.body, { childList: true, subtree: true });
-    }
-    clearNextFrame();
+function listenWhileNeeded(): void {
+  const wanted = placedFloats.length > 0 || marks.size > 0;
+  if (wanted === listening) return;
+  listening = wanted;
+  if (wanted) {
+    window.addEventListener("scroll", clearNextFrame, { capture: true, passive: true });
+    window.addEventListener("resize", clearAfterResize);
+    mutations ??= new MutationObserver(clearNextFrame);
+    mutations.observe(document.body, { childList: true, subtree: true });
     return;
   }
-  if (!wasFollowing) return;
-  cancelAnimationFrame(clearFrame);
-  clearFrame = 0;
-  resized = false;
-  for (const scroller of marks.keys()) unmark(scroller);
   window.removeEventListener("scroll", clearNextFrame, { capture: true });
   window.removeEventListener("resize", clearAfterResize);
   mutations?.disconnect();
+}
+
+/**
+ * Holds `placed`, every float that has a box, for the passes (`placedFloats`). While a float has a
+ * box, asks for a pass at the next frame; once the last one has gone, runs the pass at once, so
+ * a scroller whose reader is out of its room loses it at once and one whose reader stands in it
+ * keeps it (`FOOT_LAYERS` says why).
+ */
+function followFloats(placed: readonly PlacedFloat[]): void {
+  const hadFloats = placedFloats.length > 0;
+  placedFloats = placed;
+  if (placed.length > 0) {
+    listenWhileNeeded();
+    clearNextFrame();
+    return;
+  }
+  if (!hadFloats) return;
+  cancelAnimationFrame(clearFrame);
+  clearScrollers();
 }
 
 /**
@@ -665,7 +772,8 @@ function followFloats(placed: readonly PlacedFloat[]): void {
  * for the floats of the layer above (`freeInset`), writes it, and adds those floats' bands at that
  * property to the obstacles of the layers higher up. The gap is 1rem. Then it holds every float
  * at the properties it has just chosen, for the scrollers under the floats, and asks for a pass
- * over them while a float has a box, or unmarks them once none has (`followFloats`).
+ * over them while a float has a box, or runs one at once as the last float goes, which takes the
+ * room the reader is out of (`followFloats`).
  *
  * It measures nothing. A published property moves the floats that read it, but the hook places a
  * float's band from that property, not from where the float is. No page element reads a layer's
@@ -745,7 +853,7 @@ export function useFootInset(
     };
     let following = false;
     let parent: Element | null = null;
-    const follow = (moves: boolean) => {
+    const followMoves = (moves: boolean) => {
       if (moves !== following) {
         following = moves;
         if (moves) {
@@ -769,7 +877,7 @@ export function useFootInset(
       const { position, top } = getComputedStyle(element);
       const placed = box.height > 0 && !(position === "sticky" && top !== "auto");
       const fixed = position === "fixed";
-      follow(placed && !fixed);
+      followMoves(placed && !fixed);
       const screen = window.innerHeight;
       if (placed && box.top < screen && box.bottom > 0) {
         pageBands.set(element, {
@@ -793,7 +901,7 @@ export function useFootInset(
     window.addEventListener("resize", measure);
     measure();
     return () => {
-      follow(false);
+      followMoves(false);
       sizes.disconnect();
       window.removeEventListener("resize", measure);
       cancelAnimationFrame(frame);

@@ -163,7 +163,10 @@ func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 // answers no reader, or it answers no node at all, or it reads one node its caller has already
 // read through a read that binds that node's predicate and answers nothing of any other node. A
 // read whose answer reaches a reader and names a node is none of these: it takes the acting
-// person instead, and the census above holds it to the registry.
+// person instead, and the census above holds it to the registry. The one other reason is a rule
+// of a write that must hold over every node, seen or not (IssueAncestors, IssueDescendantRows):
+// such a read binds no predicate, because a rule that skipped a node would let the write break
+// it, and its entry says which nodes the write names to the caller who asked for it.
 const (
 	serverWork = "the server's own work: a pass or a write calls it, and its answer reaches no reader"
 	noNode     = "it answers no node: a fact about one row the caller names, never a node's id or text"
@@ -205,8 +208,16 @@ var readsWithoutAViewer = map[string]string{
 		"not what a reader sees: the nodes of a conversation reach a reader through nodeRegistry's loaders, which bind the " +
 		"reader's predicate (ConversationNodes)",
 	"IssueAncestors": "every caller is a rule of a write - a reparent's cycle refusal, an issue event's ancestors, the near-copy " +
-		"gate's exclusion, a block pointer's ancestor rule and the scope a result's check resolves in - and a rule that " +
-		"skipped an issue it may not see would let a cycle through that issue or route an event short of its root",
+		"gate's exclusion, a block pointer's ancestor rule, the scope a result's check resolves in and a status change's " +
+		"include_parent plan, which moves each ancestor that is not in work into work so that the parent status rule (R24) " +
+		"holds - and a rule that skipped an issue it may not see would let a cycle through that issue, route an event short " +
+		"of its root or leave an ancestor out of work above an issue in work; the status change's plan names the ancestors " +
+		"it will move to the caller who asked to move them, in its dry run, its answer and its 403 PROJECT_SCOPE",
+	"IssueDescendantRows": "every caller is a rule of a write - a status change's plan, which moves or unlinks every open " +
+		"issue under the parent so that the parent status rule (R24) holds, and the check of who moves a subtree that " +
+		"holds an issue Legion runs - and a rule that skipped an issue it may not see would leave that issue open under a " +
+		"done parent or let the move through; the plan names the issues it will move or unlink to the caller who asked to " +
+		"move or unlink them, in its dry run, its answer and its 403 PROJECT_SCOPE",
 	"IssueRepository":  noNode,
 	"ItemBlockAt":      nodeDetail,
 	"ItemsOwedWindows": serverWork,
@@ -557,10 +568,6 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 	}
 	record("IssueDescendants", "IssueDescendants of CORE-1", func() error {
 		_, err := IssueDescendants(ctx, recorder, who, "CORE-1")
-		return err
-	})
-	record("IssueDescendantRows", "IssueDescendantRows of CORE-1", func() error {
-		_, err := IssueDescendantRows(ctx, recorder, who, "CORE-1")
 		return err
 	})
 	record("LensCatalogue", "LensCatalogue", func() error {

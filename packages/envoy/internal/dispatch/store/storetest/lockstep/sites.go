@@ -55,10 +55,10 @@ var storeWriteCallSites = map[string]string{
 	"cmd/dispatch-seed/write_docs.go#writeDocument": "cmd/dispatch-seed#TestTheSeedsDocumentWriteTakesTheStoreLockOrder",
 	"docs/block_index.go#indexOwedDocument":         "docs#TestEveryDocsStoreWriterTakesTheStoreLockOrder",
 	"docs/block_index.go#causeRoomFacts":            "docs#TestEveryDocsStoreWriterTakesTheStoreLockOrder",
-	// The comment path (createCommentFor): the comment's node before the comments row that names
-	// it (graphstore.QueueNodes, in queueCommentRow), then its tuples and its cause under the event
-	// appended after both, and who wrote it (graphstore.QueueCaused and QueueAuthored, in
-	// queueCommentCreated).
+	// The comment path, which the comment route and the comment an issue write leaves share: the
+	// comment's node before the comments row that names it (queueCommentRow, through
+	// graphstore.QueueNodes), then its tuples and its cause under the event appended after both,
+	// and who wrote it (queueCommentCreated, through QueueCaused and QueueAuthored).
 	"api/comment_create.go#queueCommentCreated": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/comment_create.go#queueCommentRow":     "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// A delivery's reply and the settle of a delivery attempt, which records the session the

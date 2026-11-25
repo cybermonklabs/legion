@@ -91,7 +91,7 @@ func queueAppend(b *store.WriteBatch, write appending) {
 		nodes = nil
 	}
 	own := statedAttributes(write.tuples, write.tuple)
-	for _, segment := range appendSegments(len(order), before, len(nodes), appendRows) {
+	for _, segment := range appendSegments(len(order), before, len(nodes)) {
 		queueAppendStatement(b, order[segment.tuplesFrom:segment.tuplesTo], majors[segment.tuplesFrom:segment.tuplesTo],
 			nodes[segment.nodesFrom:segment.nodesTo], write, own, baseSlot)
 	}
@@ -155,15 +155,15 @@ func appendOrder(tuples int, tuple func(index int) Tuple, baseAt int) (order []i
 // moves onto their cause.
 type appendSegment struct{ tuplesFrom, tuplesTo, nodesFrom, nodesTo int }
 
-// appendSegments cuts an append into statements of at most rows tuples and nodes each, in the
-// append's own order: the tuples before the base slot, then the nodes, whose base attributes
-// stand at that slot, then the tuples after it. A write of rows or fewer is one statement, and
-// one with nothing to append is none.
-func appendSegments(tuples, before, nodes, rows int) []appendSegment {
+// appendSegments cuts an append into statements of at most appendRows tuples and nodes each, in
+// the append's own order: the tuples before the base slot, then the nodes, whose base attributes
+// stand at that slot, then the tuples after it. A write of appendRows or fewer is one statement,
+// and one with nothing to append is none.
+func appendSegments(tuples, before, nodes int) []appendSegment {
 	total := tuples + nodes
 	var segments []appendSegment
-	for start := 0; start < total; start += rows {
-		end := min(start+rows, total)
+	for start := 0; start < total; start += appendRows {
+		end := min(start+appendRows, total)
 		segments = append(segments, appendSegment{
 			tuplesFrom: tupleAt(start, before, nodes), tuplesTo: tupleAt(end, before, nodes),
 			nodesFrom: min(max(start-before, 0), nodes), nodesTo: min(max(end-before, 0), nodes),
@@ -209,7 +209,7 @@ func queueAppendStatement(b *store.WriteBatch, order []int, majors []int64, node
 		}
 		return append(append(params, nodeArgs...), write.mark, baseSlot, write.sentinel), nil
 	}
-	stated := orderedTuples(tupleArrayCount + 1)
+	stated := orderedTuples()
 	if len(nodes) == 0 {
 		counted(b.QueueBuilt("append graph tuples", `
 			insert into graph_tuples (`+tupleWriteColumns+`)
@@ -292,11 +292,10 @@ func queueAppendStatement(b *store.WriteBatch, order []int, majors []int64, node
 // pointer's writer takes first - so the second reads, in this statement's snapshot, the tuple the
 // first committed. Its arguments build at Send, as every statement of the append's do.
 func queueChangedByRun(b *store.WriteBatch, changes []Tuple, run string, appended *int64) {
-	majorsAt := tupleArrayCount + 1
-	runParam := "$" + strconv.Itoa(majorsAt+1)
+	runParam := "$" + strconv.Itoa(tupleMajorsParam+1)
 	counted(b.QueueBuilt("append graph tuples", `
 		with changes as (
-			`+orderedTuples(majorsAt)+`
+			`+orderedTuples()+`
 		),
 		changes_held as (
 			select from_kind, from_id from (
@@ -328,12 +327,16 @@ func queueChangedByRun(b *store.WriteBatch, changes []Tuple, run string, appende
 	}), appended)
 }
 
+// tupleMajorsParam is the number of the parameter a tuple append binds its majors array at: the
+// one after the tupleArrayCount arrays of tupleParams.
+const tupleMajorsParam = tupleArrayCount + 1
+
 // orderedTuples is the select of the tuples an append binds from the first parameter on
-// (tupleParams, tupleArrays), each at the place in the append the bigint array bound at majors
-// names, and first among the rows that share that place.
-func orderedTuples(majors int) string {
+// (tupleParams, tupleArrays), each at the place in the append the bigint array bound at
+// tupleMajorsParam names, and first among the rows that share that place.
+func orderedTuples() string {
 	return `select ` + tupleSelect + `, major, 0::bigint as minor
-		from unnest(` + tupleArrays(1) + `, $` + strconv.Itoa(majors) + `::bigint[])
+		from unnest(` + tupleArrays(1) + `, $` + strconv.Itoa(tupleMajorsParam) + `::bigint[])
 			as tuple(` + tupleWriteColumns + `, major)`
 }
 

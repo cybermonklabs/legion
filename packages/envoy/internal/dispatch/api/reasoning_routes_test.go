@@ -103,17 +103,10 @@ func (r reasoningRig) counts(kind, tupleKind string) (nodes, tuples int) {
 }
 
 // current is the far ends of the asserted tuples of kind out of the node the store keys by
-// fromKind and fromID, each as `<kind>/<id>`, sorted.
+// fromKind and fromID, each as `<kind>/<id>` (farEnds), sorted.
 func (r reasoningRig) current(fromKind, fromID, kind string) []string {
 	r.t.Helper()
-	held, err := graphstore.CurrentOut(context.Background(), r.database.Pool, fromKind, fromID, []string{kind})
-	if err != nil {
-		r.t.Fatalf("read the %s tuples out of %s %s: %v", kind, fromKind, fromID, err)
-	}
-	ends := make([]string, 0, len(held))
-	for _, tuple := range held {
-		ends = append(ends, tuple.ToKind+"/"+tuple.ToID)
-	}
+	ends := farEnds(r.t, r.database, fromKind, fromID, kind)
 	slices.Sort(ends)
 	return ends
 }

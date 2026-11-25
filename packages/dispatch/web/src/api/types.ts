@@ -145,6 +145,7 @@ export type {
   DeliveryWaitingPR,
   DispatchEvent,
   DispatchScope,
+  DispatchTokenScope,
   DispatchUser,
   DisplayTree,
   DocumentRead,

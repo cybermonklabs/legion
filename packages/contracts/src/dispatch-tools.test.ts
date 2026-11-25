@@ -19,7 +19,9 @@ import {
   type DispatchToolSpec,
   dispatchToolSchema,
   dispatchToolSpecs,
+  ISSUE_STATUS_OPTIONS,
   ISSUE_STATUSES,
+  ISSUE_UPDATE_PATCH_FIELDS,
   NODE_VISIBILITIES,
   POINTER_ACTIONS,
   POINTER_KINDS,
@@ -1188,6 +1190,28 @@ describe("dispatchToolSpecs", () => {
     const update: DispatchToolSpec = specFor("dispatch_issue_update");
     expect(update.validation?.message).toContain("; labels_add goes without labels.");
     expect(update.description).toContain("labels_add adds labels and keeps every label");
+  });
+
+  // The status change route takes the status, the options and the actor, and drops each other
+  // member of its body with no error. So every argument of the tool but issue, status, reason and
+  // the three options is a field of the PATCH that no option goes with, and an option beside
+  // labels_add is refused as an option beside any other such field is.
+  test("dispatch_issue_update refuses an option beside each field the status change does not take", () => {
+    const update = specFor("dispatch_issue_update").arguments(schemaApi) as Record<string, unknown>;
+    const taken: readonly string[] = ["issue", "status", "reason", ...ISSUE_STATUS_OPTIONS];
+    expect(new Set<string>(ISSUE_UPDATE_PATCH_FIELDS)).toEqual(
+      new Set(Object.keys(update).filter((field) => !taken.includes(field)))
+    );
+    const beside = schemaFor("dispatch_issue_update").safeParse({
+      issue: "DSP-1",
+      status: "in_progress",
+      include_parent: true,
+      labels_add: ["api"],
+    });
+    expect(beside.success).toBe(false);
+    expect(beside.error?.issues.map((issue) => issue.message)).toEqual([
+      "With include_parent, give status alone, and reason when the status is done. This call also names labels_add. Send those fields in a call of their own.",
+    ]);
   });
 
   // The server owns the bound on an ask's question too, and names it in its refusal.

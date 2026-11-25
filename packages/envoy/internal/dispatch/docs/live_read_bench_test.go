@@ -11,6 +11,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // BenchmarkLiveDocumentRead measures what a read of a resident room costs by each way it can be
@@ -173,7 +174,7 @@ func BenchmarkKeystrokeBesideReads(b *testing.B) {
 func benchmarkReplica(b *testing.B, service *Service, live *crdt.Doc) *renderedReplica {
 	b.Helper()
 	log := live.OpenUpdateLog()
-	b.Cleanup(log.Close)
+	testcleanup.Add(b, log.Close)
 	replica := service.keepReplica(live, log, nil, nil)
 	live.Transact(func(*crdt.Transaction) {})
 	replica.observe("bench")

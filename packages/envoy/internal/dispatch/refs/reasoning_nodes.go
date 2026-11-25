@@ -185,14 +185,14 @@ func GoneOrStaleRow(alias string) string {
 	return `(` + alias + `.state = '` + graphstore.StateGone + `' or ` + staleOfKindSQL(alias+`.kind`, alias+`.id`) + `)`
 }
 
-// notStaleOfLiteralKind is StaleSQL negated and opened with ` and `, over the node of kind whose
-// id address names, for a predicate over one kind: the test for a standing kind, read under the
-// kind the store keys it by, and nothing for every other kind.
+// notStaleOfLiteralKind is StaleSQL negated, over the node of kind whose id address names, for a
+// predicate over one kind: the test for a standing kind, read under the kind the store keys it by,
+// and true for every other kind. A caller opens it with ` and `, as it does the helpers beside it.
 func notStaleOfLiteralKind(kind, address string) string {
 	if !slices.Contains(standingKinds, kind) {
-		return ""
+		return "true"
 	}
-	return ` and not ` + StaleSQL(`'`+StoredKindOf(kind)+`'`, address)
+	return `not ` + StaleSQL(`'`+StoredKindOf(kind)+`'`, address)
 }
 
 // CurrentFarEndSQL is the read of the far end of the current tuple of kind out of the node whose

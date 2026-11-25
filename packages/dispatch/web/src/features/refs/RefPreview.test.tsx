@@ -1562,7 +1562,7 @@ test("a block card marks its post's edit, and a block of a deleted post says the
         : commentRead({ id })
     )
   );
-  const blockNode = (block: string, editedAt: string | undefined) => ({
+  const blockNode = (block: string, editedAt: string | undefined): GraphReferences => ({
     edges: [],
     node: {
       ...graphNodeFields(),

@@ -1762,6 +1762,7 @@ packages/daemon/internal/prompts/go/planner.md	no
 packages/daemon/internal/prompts/go/reviewer.md	no
 packages/daemon/internal/prompts/go/tester.md	no
 packages/daemon/internal/prompts/go/worker-common.md	no
+packages/daemon/internal/prompts/handoff_rules_test.go	no
 packages/daemon/internal/prompts/part_rules_test.go	no
 packages/daemon/internal/prompts/prompts.go	no
 packages/daemon/internal/prompts/prompts_test.go	no

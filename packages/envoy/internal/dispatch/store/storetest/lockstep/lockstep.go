@@ -28,6 +28,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // Wait bounds each wait of a lock-step test: for the writer to queue behind the next hold once the
@@ -104,7 +105,7 @@ func Begin(t testing.TB, database *store.Store, hold *Hold) {
 		t.Fatalf("begin the transaction holding %s: %v", hold.Name, err)
 	}
 	hold.Tx = tx
-	t.Cleanup(hold.Release)
+	testcleanup.Add(t, hold.Release)
 }
 
 // Release lets go of the row, once.
@@ -326,7 +327,7 @@ func WaitingStatement(t testing.TB, database *store.Store, pid uint32) string {
 func Follow(t testing.TB, database *store.Store, run string, pid uint32, done <-chan error, holds []*Hold) []*Hold {
 	t.Helper()
 	ctx := context.Background()
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		for _, hold := range holds {
 			hold.Release()
 		}
