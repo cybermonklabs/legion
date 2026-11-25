@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
@@ -77,9 +78,19 @@ func TestALaterAdminConnectionEndsByTheConnectEnd(t *testing.T) {
 	defer giveUp.Stop()
 	select {
 	case err := <-answered:
-		t.Logf("the late admin connection answered %v after %s, %s before the connect end", err, time.Since(began).Round(time.Second), time.Until(end).Round(time.Second))
+		left := time.Until(end)
+		t.Logf("the late admin connection answered %v after %s, %s before the connect end", err, time.Since(began).Round(time.Second), left.Round(time.Second))
 		if err == nil {
 			t.Fatal("a connect whose login was held 900 s answered no error")
+		}
+		if !pgconn.Timeout(err) {
+			t.Fatalf("the late admin connection ended on %v; want pgx's connect timeout", err)
+		}
+		// The bound is whole seconds, rounded down (testdb.TimeoutUntil), so the timeout comes up
+		// to a second before the end; a timeout well before it is a bound that ended for another
+		// reason, as a shorter connect_timeout would.
+		if left > 5*time.Second {
+			t.Fatalf("the late admin connection timed out %s before the connect end; want it to time out at that end", left.Round(time.Second))
 		}
 	case <-giveUp.C:
 		t.Fatalf("the late admin connection had not ended %s after it began, %s past the connect end (the binary's deadline less %s): its connect timeout outlasts that end", time.Since(began).Round(time.Second), time.Since(end).Round(time.Second), testwait.Margin)

@@ -58,10 +58,12 @@ func makeProcessDir() (dir string, release func(), err error) {
 // whose name's pid runs in no process of this PID namespace: its process has ended. It holds the
 // lock while it removes the directory. A directory whose lock a process holds is kept, whatever
 // pid its name carries: its process runs, in whatever PID namespace. So is one whose pid runs
-// here, even with its lock free: a cmdtest from before the lock (main's, or a branch not yet
-// merged with it) makes its directory with no lock, and a sweep must not remove it while its
-// process builds into it. A directory it cannot open or remove is kept too: it is someone else's
-// to remove, or the next run's.
+// here, even with its lock free: this branch's own cmdtest from before the lock makes its directory
+// with no lock, and a sweep must not remove it while its process builds into it. A directory of
+// #5123's cmdtest, which names it os.MkdirTemp("", "cmdtest-"), that is cmdtest-<digits> with no
+// dash after the digits, is never read: the name check (processOfBuildsDir) refuses it. A
+// directory it cannot open or remove is kept too: it is someone else's to remove, or the next
+// run's.
 func removeBuildsOfEndedProcesses() {
 	root := os.TempDir()
 	entries, err := os.ReadDir(root)

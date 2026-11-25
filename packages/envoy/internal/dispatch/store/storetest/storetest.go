@@ -91,12 +91,18 @@ func migrateWithThisTree(databaseURL string) error {
 
 // ready makes sure the package's TestMain runs Run, skips t when DISPATCH_TEST_DATABASE_URL is
 // unset, and opens the admin pool, once. It makes no template: each is made by the first test that
-// asks for it (OpenFrom). Every connect it, clone and Empty make waits until the test binary's
-// deadline less testwait's margin (testdb.WithConnectDeadline), not pgx's two minutes, so a
-// Postgres that a loaded machine slows only slows a test; the admin pool's later connections end
-// there too (openAdmin). The admin URL is read before the Once, so a URL that cannot be read
-// fails each test that asks, and never leaves the Once done with no admin pool for a later test
-// to call.
+// asks for it (OpenFrom). The server's URL is kept as DISPATCH_TEST_DATABASE_URL names it, with no
+// bound of this package's (shared.server), so no connect inherits the bound of the test that opened
+// the pool. Each connect string this package hands out instead takes, when it is made, the seconds
+// left until the test binary's deadline less testwait's margin (testdb.WithConnectDeadline), not
+// pgx's two minutes: a clone's store, Empty's URL, and the URL each template's migrate is given,
+// made by the test that asks for the template when it asks (OpenFrom). The admin pool's connections
+// take that bound as each is made (openAdmin). A pool opened from such a string measures its bound
+// from when the string was made: a connection it makes s seconds later can end s seconds past the
+// binary's deadline less the margin, which a migrate, made and run at once, and a test's own store
+// keep within the margin unless the test runs on for longer than it. The admin URL is read before
+// the Once, so a URL that cannot be read fails each test that asks, and never leaves the Once done
+// with no admin pool for a later test to call.
 func ready(t testing.TB) {
 	t.Helper()
 	if !shared.main {
@@ -106,9 +112,12 @@ func ready(t testing.TB) {
 	if raw == "" {
 		t.Skip(DatabaseURLEnv + " must be set to run Postgres-backed Dispatch tests")
 	}
-	admin := testdb.WithConnectDeadline(t, raw)
+	if _, err := url.Parse(raw); err != nil {
+		// url.Parse's own error quotes the URL it was given, which carries a credential.
+		t.Fatalf("parse %s: %v", DatabaseURLEnv, errors.Unwrap(err))
+	}
 	end, bounded := testdb.ConnectEnd(t)
-	shared.once.Do(func() { shared.err = openAdmin(admin, end, bounded) })
+	shared.once.Do(func() { shared.err = openAdmin(raw, end, bounded) })
 	if shared.err != nil {
 		t.Fatalf("open the admin pool: %v", shared.err)
 	}
@@ -164,8 +173,11 @@ type templateDatabase struct {
 // alone: it returns a store on a new database cloned from the template of key, dropped after t
 // ends. The template is made once per key in the test binary, by the first test that asks: a new
 // empty database whose connection string migrate is given, which migrate migrates and leaves
-// with no connection open. A template whose migrate failed, or ended its test, fails every test
-// that asks for it again.
+// with no connection open. That string's connect bound is the seconds left, when the template is
+// made, until the binary's deadline less testwait's margin (testdb.WithConnectDeadline with the
+// test that asks), so a template first asked for long after the admin pool opened still fails on
+// pgx's error inside the margin. A template whose migrate failed, or ended its test, fails every
+// test that asks for it again.
 func OpenFrom(t testing.TB, key string, migrate func(databaseURL string) error) *store.Store {
 	t.Helper()
 	ready(t)
@@ -194,7 +206,7 @@ func OpenFrom(t testing.TB, key string, migrate func(databaseURL string) error) 
 		}
 		// Named once it exists, so Run drops exactly the templates that were made.
 		entry.name = name
-		if err := migrate(databaseURL(shared.server, entry.name)); err != nil {
+		if err := migrate(testdb.WithConnectDeadline(t, databaseURL(shared.server, entry.name))); err != nil {
 			entry.err = fmt.Errorf("migrate template database: %w", err)
 			return
 		}
@@ -306,11 +318,12 @@ func dropDatabase(name string) {
 }
 
 // openAdmin opens the admin pool, on the server raw names, that every database and template is
-// created and dropped through. The pool outlives the test that opens it and makes connections
-// for later tests, so a connection's connect timeout is not raw's, which is what was left of the
-// binary's deadline when that first test began: each new connection takes the seconds left until
-// end as it is made (testdb.TimeoutUntil), so one made late ends on pgx's own error with
-// testwait's margin left, not after go test's alarm. Without bounded (no deadline) raw's stands.
+// created and dropped through, and keeps raw as the server's URL (shared.server), with no bound of
+// this package's. The pool outlives the test that opens it and makes connections for later tests,
+// so a connection's connect timeout is not one fixed when the pool opened: each new connection
+// takes the seconds left until end as it is made (testdb.TimeoutUntil), so one made late ends on
+// pgx's own error with testwait's margin left, not after go test's alarm. Without bounded (no
+// deadline) raw's stands.
 func openAdmin(raw string, end time.Time, bounded bool) error {
 	server, err := url.Parse(raw)
 	if err != nil {

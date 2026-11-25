@@ -266,10 +266,10 @@ func TestMainRemovesTheBuildsOfEndedProcesses(t *testing.T) {
 	}
 }
 
-// TestMainKeepsAnUnlockedDirectoryOfAProcessThatRuns: a cmdtest from before the lock (main's, or a
-// branch not yet merged with it) makes its directory of builds with no lock. Main keeps such a
-// directory while its name's pid runs here, so a sweep beside that process does not remove the
-// builds it is still making.
+// TestMainKeepsAnUnlockedDirectoryOfAProcessThatRuns: this branch's cmdtest from before the lock
+// makes its directory of builds with no lock. Main keeps such a directory while its name's pid runs
+// here, so a sweep beside that process does not remove the builds it is still making. (#5123's
+// directories, cmdtest-<digits>, are kept by the name check before any of this.)
 func TestMainKeepsAnUnlockedDirectoryOfAProcessThatRuns(t *testing.T) {
 	tmp := t.TempDir()
 	unlocked := filepath.Join(tmp, processDirPrefix+strconv.Itoa(os.Getpid())+"-nolock")
