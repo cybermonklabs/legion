@@ -754,26 +754,23 @@ func TestAWriteOfTheSameURLKeepsTheHoldAndAWriteOfAnotherURLRecordsItsRelease(t 
 // TestTheReleasedHoldersKeepTheNewestEight: R3-i bounds how long one message holds the durable's
 // ack floor at stateMaxHolds hand-backs, about 11 minutes. A write of the setting that names
 // another URL ends the hold of the message that holds the owed read, and the cursor records that
-// message as released until it comes back (released_holders), the newest last, maxReleasedHolders
-// at the most. The test writes INFRA's cursor by hand: it follows the setting's URL, owes the read
-// for retry and names stream sequence 109 as its holder, gone back twice, and it records the eight
-// messages 101 to 108 as released, none of which has come back. A write of another URL, the ninth
-// release, records 109 as the newest and drops the oldest record, 101: the cursor then records 102
-// to 109. A write of a third URL after it finds no holder and keeps those eight as they are.
+// message as released until it comes back (released_holders), the newest last, 8 at the most
+// (maxReleasedHolders, read-rule-cases row 6.3b). The test writes INFRA's cursor by hand: it
+// follows the setting's URL, owes the read for retry and names stream sequence 109 as its holder,
+// gone back twice, and it records the eight messages 101 to 108 as released, none of which has
+// come back. A write of another URL, the ninth release, records 109 as the newest and drops the
+// oldest record, 101: the cursor then records 102 to 109. A write of a third URL after it finds no
+// holder and keeps those eight as they are.
 //
-// The test catches a cursor that keeps one released holder, one that drops the earlier records
-// when it adds one, and one that records more than eight. At 8a18f054 the cursor kept one
-// (released_holder): each write of another URL that found a holder recorded it over the one
-// before, so after this write the cursor would record 109 alone, and 102 to 108 would be judged as
-// any message at their next deliveries.
+// The test catches a cursor that keeps fewer than eight, which after the write of another URL
+// records fewer than 102 to 109; one that drops the earlier records when it adds one, which then
+// records 109 alone, as the cursor at 8a18f054 did with its one released_holder; and one that
+// records more than eight, which then keeps 101 too.
 func TestTheReleasedHoldersKeepTheNewestEight(t *testing.T) {
 	const settingURL, anotherURL, thirdURL = "http://127.0.0.1:1", "http://another-daemon.example", "http://third-daemon.example"
-	const holder = 101 + maxReleasedHolders
+	const holder = 109
 	database, _ := configured(t, settingURL)
-	released := make([]int64, 0, maxReleasedHolders)
-	for i := range int64(maxReleasedHolders) {
-		released = append(released, 101+i)
-	}
+	released := []int64{101, 102, 103, 104, 105, 106, 107, 108}
 	if _, err := database.Pool.Exec(t.Context(), `
 		insert into legion_event_cursors (project, state_url, read_reasons, last_read_started_at, read_holder, read_holds, released_holders)
 		values ('INFRA', $1, '{retry}', now() - interval '10 seconds', $2, 2, $3)
@@ -788,10 +785,10 @@ func TestTheReleasedHoldersKeepTheNewestEight(t *testing.T) {
 	}
 
 	write(anotherURL)
-	want := append(slices.Clone(released[1:]), holder)
+	want := []int64{102, 103, 104, 105, 106, 107, 108, 109}
 	if c := cursorOf(t, database, "INFRA"); !slices.Equal(c.releasedHolders, want) || c.readHolder != nil || c.readHolds != 0 || c.readOwed {
-		t.Errorf("INFRA's cursor after a ninth write of another URL that found a holder is %s, want %v recorded as released: the newest %d, the oldest, %d, dropped and the holder %d last; and no holder, no hand-back counted and nothing owed",
-			c, want, maxReleasedHolders, released[0], holder)
+		t.Errorf("INFRA's cursor after a ninth write of another URL that found a holder is %s, want %v recorded as released: the newest 8, the oldest, 101, dropped and the holder 109 last; and no holder, no hand-back counted and nothing owed",
+			c, want)
 	}
 	write(thirdURL)
 	if c := cursorOf(t, database, "INFRA"); !slices.Equal(c.releasedHolders, want) {

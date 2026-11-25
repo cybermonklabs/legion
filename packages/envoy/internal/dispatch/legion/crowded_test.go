@@ -99,12 +99,19 @@ func TestFifteenProjectsInSlowReadsLeaveTheWindowAMessageOfAnotherProject(t *tes
 // TestAProjectPastTheCapDuringAGoodReadThatGoesQuietIsReadWithinTheMinute: R3 keeps a project that
 // goes quiet at most one minute behind while its reads succeed. INFRA's gap read at 12 is in flight,
 // held by its daemon, which serves 30. Near the end of that read's minute on the intake's clock,
-// INFRA publishes 15 messages at or below 30, which wait on INFRA's runner behind the read, and
-// then 31 to 33, past the read's snapshot and past the cap of stateMaxWaiting messages: each owes
-// a gap read, which the read in flight does not clear (recordWhole), the first of them holds it and
-// goes back to the stream until the minute ends, and the other two join it and are acknowledged.
-// The read succeeds at 30, and INFRA goes quiet. Within the time left of the minute and a few
-// seconds, a gap read is made, and INFRA-1's phase reaches 33's reviewing.
+// INFRA publishes 15 messages at or below 30, 13 to 27, which wait on INFRA's runner behind the
+// read, and then 31 to 33, past the read's snapshot and past the cap of 16 messages waiting
+// (stateMaxWaiting, read-rule-cases row 8.1): each owes a gap read, which the read in flight does
+// not clear (recordWhole), the first of them holds it and goes back to the stream until the minute
+// ends, and the other two join it and are acknowledged. So while 31 holds the read, gone back
+// once, INFRA holds 17 messages of the window: 16 waiting on its runner, 12 to 27, and 31. The
+// read succeeds at 30, and INFRA goes quiet. Within the time left of the minute and a few seconds,
+// a gap read is made, and INFRA-1's phase reaches 33's reviewing.
+//
+// The test catches a cap other than 16. It reads the window while the first message past the cap
+// has gone back once: that message goes back again each holdAtLeast once the minute is over, and
+// is let go after stateMaxHolds hand-backs, after which INFRA holds one message fewer. With a cap
+// of 15 INFRA holds 16 messages while that message has gone back once, and with a cap of 17, 18.
 func TestAProjectPastTheCapDuringAGoodReadThatGoesQuietIsReadWithinTheMinute(t *testing.T) {
 	// left is what is left of the read's minute when the messages past the cap arrive.
 	const left = 5 * time.Second
@@ -126,17 +133,24 @@ func TestAProjectPastTheCapDuringAGoodReadThatGoesQuietIsReadWithinTheMinute(t *
 	// The read in flight serves the state at 30, which it took as it began; any later read serves 33.
 	daemon.serves(daemonState("INFRA", 33, phase("reviewing")))
 	rig.clock.advance(ReadRetryAfter - left)
-	for seq := 13; seq < 13+stateMaxWaiting-1; seq++ {
+	for seq := 13; seq <= 27; seq++ {
 		rig.publish("INFRA", change(seq, "INFRA-1", moved("phase", "implementing")))
 	}
 	for seq, past := range []string{"testing", "merging", "reviewing"} {
 		rig.publish("INFRA", change(31+seq, "INFRA-1", moved("phase", past)))
 	}
+	// held is INFRA's share of the window while the first message past the cap has gone back once.
+	var held int
 	rig.waitFor(20*time.Second, func() bool {
 		info := rig.consumerInfo()
-		return info.NumPending == 0 && info.NumAckPending == stateMaxWaiting+1
+		if info.NumPending != 0 || len(rig.logRecords(heldLine)) != 1 {
+			return false
+		}
+		held = info.NumAckPending
+		return held == 17
 	}, func() string {
-		return fmt.Sprintf("INFRA holds %+v, want %d messages waiting on its runner and one held", rig.consumerInfo(), stateMaxWaiting)
+		return fmt.Sprintf("INFRA holds %d messages of the window while the first message past the cap has gone back once, want 17: 16 waiting on its runner and that message (%+v)",
+			held, rig.consumerInfo())
 	})
 
 	release()

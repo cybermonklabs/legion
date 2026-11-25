@@ -433,15 +433,20 @@ func TestAWriteBackToADaemonMarkedAsNoDaemonOfTheProjectAppliesItsMessages(t *te
 	}
 }
 
-// TestTheMarksOfStoresThatAreNoDaemonOfTheProjectKeepTheNewestEight: a cursor marks at most
-// maxForeignStores stores as no daemon of its project, the newest kept (marked). INFRA's daemon is
-// read well, and then nine senders, each in a store of its own, publish in turn, each a minute
-// after the last read on the intake's clock: each message makes one store read, which finds INFRA's
-// store unchanged and marks the message's store. The cursor then marks the newest eight stores. A
+// TestTheMarksOfStoresThatAreNoDaemonOfTheProjectKeepTheNewestEight: a cursor marks at most 8
+// stores as no daemon of its project, the newest kept (maxForeignStores, marked; item 4 of
+// read-rule-cases' "Where the table differs from the 17:41Z words"). INFRA's daemon is read well,
+// and then nine senders, each in a store of its own, publish in turn, each a minute after the last
+// read on the intake's clock: each message makes one store read, which finds INFRA's store
+// unchanged and marks the message's store. The cursor then marks the newest eight stores. A
 // message of a store still marked makes no read, and the next message of the first sender, whose
 // mark went, makes one store read again, which marks its store as the newest.
+//
+// The test catches a cursor that marks fewer than eight stores, which after the nine senders has
+// no mark of the second sender's store, and one that marks more than eight, which keeps the first
+// sender's mark.
 func TestTheMarksOfStoresThatAreNoDaemonOfTheProjectKeepTheNewestEight(t *testing.T) {
-	const senders = maxForeignStores + 1
+	const senders = 9
 	stores := make([]string, senders)
 	for i := range stores {
 		stores[i] = fmt.Sprintf("%08d-6b1e-4c2a-9d3f-5e7a0b4c8d21", i+1)
@@ -467,16 +472,16 @@ func TestTheMarksOfStoresThatAreNoDaemonOfTheProjectKeepTheNewestEight(t *testin
 		}
 	}
 	if c := cursorOf(t, rig.database, "INFRA"); !slices.Equal(c.foreignStateIDs, stores[1:]) {
-		t.Fatalf("INFRA's cursor marks %v after %d senders, want the newest %d stores %v", c.foreignStateIDs, senders, maxForeignStores, stores[1:])
+		t.Fatalf("INFRA's cursor marks %v after %d senders, want the newest 8 stores %v", c.foreignStateIDs, senders, stores[1:])
 	}
 
 	send(stores[4])
-	if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { return daemon.served() > senders+1 }) {
-		t.Errorf("INFRA's daemon served %d reads after a message of a store still marked, want %d: that message made a read", daemon.served(), senders+1)
+	if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { return daemon.served() > 10 }) {
+		t.Errorf("INFRA's daemon served %d reads after a message of a store still marked, want 10: that message made a read", daemon.served())
 	}
 	send(stores[0])
-	if served := daemon.served(); served != senders+2 {
-		t.Errorf("INFRA's daemon served %d reads after the first sender's next message, want %d: one store read again, once its mark went", served, senders+2)
+	if served := daemon.served(); served != 11 {
+		t.Errorf("INFRA's daemon served %d reads after the first sender's next message, want 11: one store read again, once its mark went", served)
 	}
 	reads := wholeReadsOf(t, rig.database, "INFRA")
 	requireWholeRead(t, reads[len(reads)-1], ReadReasonStore, true)

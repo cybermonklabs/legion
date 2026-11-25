@@ -2657,16 +2657,19 @@ func oneTo(n int) []any {
 // holds its project's owed read while the project's reads fail, and so how long it holds the
 // durable's ack floor below it. INFRA's daemon refuses every read after its good starting read. A
 // gap makes a read, which fails, and goes back to the stream holding the read, owed for retry; each
-// redelivery makes the read again, and each read fails. The message goes back stateMaxHolds times,
-// 10, once after each of its first 10 failed reads, the cursor counting each hand-back, and its
-// delivery after them, whose read is the 11th to fail, is acknowledged and logged at WARN: nothing
-// of INFRA waits for an ack, the ack floor passes the message, the cursor names no holder and
-// counts no hand-back, and the read stays owed for retry. INFRA's next message makes that read,
-// and the daemon answers it. The intake's clock jumps ReadRetryAfter less holdAtLeast at each
-// reading (intakeClock.jumps), so each hand-back is holdAtLeast long rather than a minute, and each
-// redelivery finds the read due.
+// redelivery makes the read again, and each read fails. The message goes back 10 times, R3-i's
+// bound (stateMaxHolds), once after each of its first 10 failed reads, the cursor counting each
+// hand-back, and its delivery after them, the 11th, whose read is the 11th to fail, is
+// acknowledged and logged at WARN: nothing of INFRA waits for an ack, the ack floor passes the
+// message, the cursor names no holder and counts no hand-back, and the read stays owed for retry.
+// INFRA's next message makes that read, and the daemon answers it. The intake's clock jumps
+// ReadRetryAfter less holdAtLeast at each reading (intakeClock.jumps), so each hand-back is
+// holdAtLeast long rather than a minute, and each redelivery finds the read due.
+//
+// The test catches a bound other than 10 hand-backs: a lower one lets the message go before its
+// 11th read, and a higher one sends it back after its 11th failed read.
 func TestAHeldReadThatKeepsFailingLetsItsMessageGoAfterTenHandBacks(t *testing.T) {
-	const failures = stateMaxHolds + 1
+	const failures = 11
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
@@ -2703,18 +2706,18 @@ func TestAHeldReadThatKeepsFailingLetsItsMessageGoAfterTenHandBacks(t *testing.T
 	if !slices.Equal(reasons, want) {
 		t.Errorf("INFRA's failed reads were for %v, want %v: the gap's, then the retries its message made", reasons, want)
 	}
-	if got := rig.heldValues(holder, "delivery"); !slices.Equal(got, oneTo(stateMaxHolds)) {
-		t.Errorf("the message went back at its deliveries %v, want %v: once after each failed read but the last", got, oneTo(stateMaxHolds))
+	if got := rig.heldValues(holder, "delivery"); !slices.Equal(got, oneTo(10)) {
+		t.Errorf("the message went back at its deliveries %v, want %v: once after each failed read but the last", got, oneTo(10))
 	}
-	if got := rig.heldValues(holder, "handBack"); !slices.Equal(got, oneTo(stateMaxHolds)) {
-		t.Errorf("the cursor counted the hand-backs %v, want %v", got, oneTo(stateMaxHolds))
+	if got := rig.heldValues(holder, "handBack"); !slices.Equal(got, oneTo(10)) {
+		t.Errorf("the cursor counted the hand-backs %v, want %v", got, oneTo(10))
 	}
 	released := rig.awaitLogRecords(releasedLine, 1)
 	if len(released) != 1 || released[0]["level"] != "WARN" || released[0]["project"] != "INFRA" ||
 		released[0]["streamSeq"] != float64(holder) || released[0]["delivery"] != float64(failures) ||
-		released[0]["handBacks"] != float64(stateMaxHolds) {
-		t.Errorf("the release lines = %v, want one WARN naming INFRA, the message, its delivery %d and its %d hand-backs",
-			released, failures, stateMaxHolds)
+		released[0]["handBacks"] != float64(10) {
+		t.Errorf("the release lines = %v, want one WARN naming INFRA, the message, its delivery 11 and its 10 hand-backs",
+			released)
 	}
 	if c := cursorOf(t, rig.database, "INFRA"); !slices.Equal(c.readReasons, []string{ReadReasonRetry}) || c.readHolder != nil ||
 		c.readHolds != 0 || c.lastSeq == nil || *c.lastSeq != 10 {
@@ -2736,8 +2739,8 @@ func TestAHeldReadThatKeepsFailingLetsItsMessageGoAfterTenHandBacks(t *testing.T
 	if phase := currentValues(t, rig.database, "INFRA")["INFRA-1/phase"]; phase != `"testing"` {
 		t.Errorf("INFRA-1's phase is %s, want the read's testing", phase)
 	}
-	if got := len(rig.logRecords(heldLine)); got != stateMaxHolds {
-		t.Errorf("%d hand-backs logged, want the held message's %d and none for the next message", got, stateMaxHolds)
+	if got := len(rig.logRecords(heldLine)); got != 10 {
+		t.Errorf("%d hand-backs logged, want the held message's 10 and none for the next message", got)
 	}
 }
 
