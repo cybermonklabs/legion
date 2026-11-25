@@ -7,7 +7,6 @@ import { dayLabel } from "../activity/activity-model";
 import { buildIssuePath, buildReferencePath, parseNodeReference } from "../refs/routes";
 import {
   buildHistory,
-  HISTORY_PAGE,
   type HistoryBlock,
   type HistoryDay,
   type HistoryEntry,
@@ -18,6 +17,7 @@ import {
   turnPlace,
 } from "./history-model";
 import { CONTROL_LABELS, DECLARED_WORDS, wordsIn } from "./page-words";
+import { PAGE_SIZE } from "./show-more-fixture";
 
 /**
  * The issue's history as the panel draws it: every event that is no row of the outline, newest
@@ -710,8 +710,8 @@ test("the history is drawn 20 entries at a time, a thread and a run of uploads o
   const days = daysOf(events, 32, [thread, ...replies]);
   expect(entriesIn(days), "the history holds 41 claims, a thread and a run").toBe(43);
 
-  const first = historyDownTo(days, placeUnder(days, undefined, HISTORY_PAGE));
-  expect(entriesIn(first.days)).toBe(HISTORY_PAGE);
+  const first = historyDownTo(days, placeUnder(days, undefined, PAGE_SIZE));
+  expect(entriesIn(first.days)).toBe(PAGE_SIZE);
   expect(
     flat(first.days).some((entry) => entry.kind === "unread"),
     "the line that says what is new is not drawn among the first entries"
@@ -721,19 +721,19 @@ test("the history is drawn 20 entries at a time, a thread and a run of uploads o
 
   const second = historyDownTo(
     days,
-    placeUnder(days, placeUnder(days, undefined, HISTORY_PAGE), HISTORY_PAGE)
+    placeUnder(days, placeUnder(days, undefined, PAGE_SIZE), PAGE_SIZE)
   );
-  expect(entriesIn(second.days)).toBe(2 * HISTORY_PAGE);
+  expect(entriesIn(second.days)).toBe(2 * PAGE_SIZE);
   expect(second.left).toBe(3);
 
-  const end = placeUnder(days, placeUnder(days, undefined, 2 * HISTORY_PAGE), HISTORY_PAGE);
+  const end = placeUnder(days, placeUnder(days, undefined, 2 * PAGE_SIZE), PAGE_SIZE);
   const whole = historyDownTo(days, end);
   expect(entriesIn(whole.days)).toBe(43);
   expect(whole.left).toBe(0);
   expect(flat(whole.days).at(-1)?.kind, "the run of three uploads is not the last entry").toBe(
     "uploads"
   );
-  expect(placeUnder(days, end, HISTORY_PAGE), "no entry is left under the last one").toEqual(end);
+  expect(placeUnder(days, end, PAGE_SIZE), "no entry is left under the last one").toEqual(end);
 });
 
 // The history is drawn down to the place of the last entry drawn: an entry that arrives above
@@ -741,11 +741,11 @@ test("the history is drawn 20 entries at a time, a thread and a run of uploads o
 test("an entry that arrives above the entries drawn is drawn, and every entry drawn stays", () => {
   seq = 0;
   const events = claims(30);
-  const end = placeUnder(daysOf(events), undefined, HISTORY_PAGE);
+  const end = placeUnder(daysOf(events), undefined, PAGE_SIZE);
   const arrived = event("issue.claimed", "2026-11-15T12:00:00Z", {});
 
   const drawn = historyDownTo(daysOf([...events, arrived]), end);
-  expect(entriesIn(drawn.days)).toBe(HISTORY_PAGE + 1);
+  expect(entriesIn(drawn.days)).toBe(PAGE_SIZE + 1);
   expect(flat(drawn.days)[0]?.id).toBe(`event:${arrived.id}`);
   expect(drawn.left).toBe(10);
 });
@@ -757,9 +757,9 @@ test("the line that says what is new is drawn only with the entry under it", () 
   const events = claims(25);
   // Read through the fifth claim: the line stands under the twentieth entry.
   const days = daysOf(events, 5);
-  const first = historyDownTo(days, placeUnder(days, undefined, HISTORY_PAGE));
+  const first = historyDownTo(days, placeUnder(days, undefined, PAGE_SIZE));
   expect(flat(first.days).map((entry) => entry.kind)).not.toContain("unread");
-  const next = historyDownTo(days, placeUnder(days, undefined, HISTORY_PAGE + 1));
+  const next = historyDownTo(days, placeUnder(days, undefined, PAGE_SIZE + 1));
   expect(flat(next.days).at(-2)?.kind).toBe("unread");
 });
 
@@ -770,7 +770,7 @@ test("a turn's place is its thread's, and the history drawn down to it draws its
   const root = message("daemon", "2026-11-15T09:00:00Z", DAEMON);
   const reply = message("reply", "2026-11-15T12:00:00Z", PERSON, { in_reply_to: "daemon" });
   const days = daysOf(claims(30), 0, [], [{ message: root, replies: [reply] }]);
-  const first = historyDownTo(days, placeUnder(days, undefined, HISTORY_PAGE));
+  const first = historyDownTo(days, placeUnder(days, undefined, PAGE_SIZE));
   expect(threadsIn(flat(first.days)), "the thread is among the first entries").toEqual([]);
 
   const toTurn = historyDownTo(days, turnPlace(days, "reply"));

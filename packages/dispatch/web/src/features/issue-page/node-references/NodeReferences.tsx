@@ -208,11 +208,10 @@ function ReferenceList({
   issueKey: string | undefined;
   rows: readonly ReferenceRow[];
 }): ReactNode {
-  const list = useRef<HTMLUListElement>(null);
-  const pages = useListPages();
+  const pages = useListPages<HTMLUListElement>();
   return (
     <>
-      <ul className="mt-1 flex min-w-0 flex-col gap-0.5" ref={list}>
+      <ul className="mt-1 flex min-w-0 flex-col gap-0.5" ref={pages.list}>
         {rows.slice(0, pages.drawn).map((row) => {
           const route = row.ref === undefined ? undefined : parseNodeReference(row.ref);
           // The edge's own word where the model gives the tuple one, and the kind of node where
@@ -270,7 +269,7 @@ function ReferenceList({
           );
         })}
       </ul>
-      {pages.more(rows.length, (index) => list.current?.children[index], "mt-1")}
+      {pages.more(rows.length, undefined, "mt-1")}
     </>
   );
 }

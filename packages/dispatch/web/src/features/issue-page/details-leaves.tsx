@@ -1,4 +1,4 @@
-import { type ReactNode, type Ref, useEffect, useRef, useState } from "react";
+import { type ReactNode, type Ref, type RefObject, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 
 import { pageInkText, pageMutedText, pageQuietText, pageRowBorder } from "../../theme/classes";
@@ -36,30 +36,33 @@ export function IssueList({
 }: {
   issues: readonly { readonly key: string; readonly title: string | undefined }[];
 }): ReactNode {
-  const list = useRef<HTMLDivElement>(null);
-  const pages = useListPages();
+  const pages = useListPages<HTMLDivElement>();
   return (
-    <div className="flex w-full min-w-0 flex-col gap-1" ref={list}>
+    <div className="flex w-full min-w-0 flex-col gap-1" ref={pages.list}>
       {issues.slice(0, pages.drawn).map((one) => (
         <IssueLine issueKey={one.key} key={one.key} title={one.title} />
       ))}
-      {pages.more(issues.length, (index) => list.current?.children[index])}
+      {pages.more(issues.length)}
     </div>
   );
 }
 
 /** The pages of one list of unbounded length in Details (`useListPages`). */
-export interface ListPages {
+export interface ListPages<E extends Element> {
   /** How many of the list's entries it draws: its first `LIST_PAGE`, and `LIST_PAGE` more for
    *  each press of its Show more. */
   readonly drawn: number;
+  /** The box the list draws its entries in, each entry one child of it in the list's order,
+   *  for the list to hand to that box: where a press of Show more finds the first entry it drew
+   *  unless the list says otherwise (`more`'s `entry`). */
+  readonly list: RefObject<E | null>;
   /** The list's Show more, which the list draws under its entries: for a list of `count`
    *  entries, nothing once every entry is drawn. `entry` is the list's entry at a place of it,
-   *  as the page draws it, which the press moves the focus to. `className` places the control
-   *  in the list that draws it. */
+   *  as the page draws it, which the press moves the focus to: by default the child of `list`
+   *  at that place. `className` places the control in the list that draws it. */
   readonly more: (
     count: number,
-    entry: (index: number) => Element | null | undefined,
+    entry?: (index: number) => Element | null | undefined,
     className?: string
   ) => ReactNode;
 }
@@ -79,11 +82,13 @@ export interface ListPages {
  * away, as the list falls to what it draws, hands nothing on: that loss is not the reader's, and
  * the focus stays on the page's body.
  */
-export function useListPages(): ListPages {
+export function useListPages<E extends Element = HTMLElement>(): ListPages<E> {
   const [drawn, setDrawn] = useState(LIST_PAGE);
+  const list = useRef<E>(null);
   return {
     drawn,
-    more: (count, entry, className = "") =>
+    list,
+    more: (count, entry = (index) => list.current?.children[index], className = "") =>
       count <= drawn ? null : (
         <ShowMore
           className={className}

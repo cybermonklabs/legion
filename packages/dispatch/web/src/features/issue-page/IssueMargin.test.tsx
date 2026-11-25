@@ -101,7 +101,7 @@ import {
   NODE_TYPE_NAMES,
 } from "./page-words";
 import { architecture, offPageColours } from "./shared-controls-fixture";
-import { SHOW_MORE, showMoreName } from "./show-more-fixture";
+import { PAGE_SIZE, SHOW_MORE, showMoreName } from "./show-more-fixture";
 import { DetailsSlot } from "./slots/details";
 import { firstUsableIn, usableControl } from "./usable-control";
 import { blockedByRefusal } from "./useIssueBlockedBy";
@@ -184,11 +184,6 @@ function advancesRefusal(): ApiError {
 function keysFrom2(count: number): string[] {
   return Array.from({ length: count }, (_, index) => `CORE-${index + 2}`);
 }
-
-/** How many entries each list of Details draws at first, and how many more each press of its
- *  Show more draws: 20. It is written here rather than read from the page, so a page that draws
- *  any other number of entries fails the cases below. */
-const PAGE = 20;
 
 /** The row of Details' Files and documents, whose label carries the count of its entries. */
 function filesRow(): HTMLElement {
@@ -1219,7 +1214,7 @@ test("a blocked-by list that would make a loop is the page's sentence about the 
 
 // Only a list of unbounded length draws 20 entries at a time under Show more. An issue waits on at
 // most `MAX_ISSUE_BLOCKERS` issues, so the Blocked by row draws every one of them and no Show more.
-test("the blockers never fold", async () => {
+test("Blocked by draws every issue this one waits on whole, with no Show more", async () => {
   const { getIssue, restore } = stubIssueApi();
   const blockers = keysFrom2(MAX_ISSUE_BLOCKERS);
   getIssue.mockResolvedValue({ ...issue, blocked_by: blockers });
@@ -1232,7 +1227,7 @@ test("the blockers never fold", async () => {
       within(row)
         .getAllByRole("link")
         .map((link) => link.textContent),
-      "the Blocked by row folds the issues this one waits on"
+      "the Blocked by row does not draw every issue this one waits on"
     ).toEqual(blockers);
     expect(
       within(row).queryByRole("button", { name: SHOW_MORE }),
@@ -2718,7 +2713,7 @@ test("Blocks' titles Retry taken away by what waits on the issue changed back el
 });
 
 /** How many entries each list of `MANY_ENTRIES` holds: two pages of 20 and five entries more. */
-const MANY = 2 * PAGE + 5;
+const MANY = 2 * PAGE_SIZE + 5;
 
 /** `count` names, `stem` and a number from 1, padded so that they sort as they are numbered. */
 function numbered(stem: string, count: number): string[] {
@@ -2754,10 +2749,10 @@ const MANY_ENTRIES: IssueDetails = {
 /** `MANY` pins of the reader's: comments of CORE-1, and lines of its history after them, which
  *  Pinned lists as one list. */
 const MANY_PINS = [
-  ...numbered("00000000-0000-4000-8000-0000000000", PAGE + 5).map((id) =>
+  ...numbered("00000000-0000-4000-8000-0000000000", PAGE_SIZE + 5).map((id) =>
     conversationItemId("comment", id)
   ),
-  ...Array.from({ length: MANY - PAGE - 5 }, (_, index) => eventItemId({ id: 900 + index })),
+  ...Array.from({ length: MANY - PAGE_SIZE - 5 }, (_, index) => eventItemId({ id: 900 + index })),
 ];
 
 /** The reads of Details of `MANY_ENTRIES`, with the reader's `MANY_PINS` and `MANY` issues waiting
@@ -2788,11 +2783,12 @@ function stubManyEntries(): () => void {
   };
 }
 
-/** The chips drawn of the box of chips with the test id `testId`: the components'. */
+/** The chips drawn of the box of chips with the test id `testId`, the components', each by the
+ *  mark the line gives a chip where Details pages them (`data-component-chip`). */
 function drawnChips(testId: string): HTMLElement[] {
-  return [...screen.getByTestId(testId).querySelectorAll<HTMLElement>(":scope > span")].filter(
-    (chip) => !chip.hidden
-  );
+  return [
+    ...screen.getByTestId(testId).querySelectorAll<HTMLElement>("[data-component-chip]"),
+  ].filter((chip) => !chip.hidden);
 }
 
 /** One list of Details that `MANY_ENTRIES` fills: the box it and its Show more are drawn in, and
@@ -2856,17 +2852,19 @@ test.each(
 
   try {
     await waitFor(() =>
-      expect(list.entries(), "the list does not draw its first 20 entries").toHaveLength(PAGE)
+      expect(list.entries(), "the list does not draw its first 20 entries").toHaveLength(PAGE_SIZE)
     );
     const more = within(list.box()).getByRole("button", { name: SHOW_MORE });
-    expect(more.textContent).toBe(showMoreName(MANY - PAGE));
+    expect(more.textContent).toBe(showMoreName(MANY - PAGE_SIZE));
 
     act(() => more.focus());
     await user.keyboard("{Enter}");
-    expect(list.entries(), "Show more did not draw the next 20 entries").toHaveLength(2 * PAGE);
-    expect(more.textContent).toBe(showMoreName(MANY - 2 * PAGE));
+    expect(list.entries(), "Show more did not draw the next 20 entries").toHaveLength(
+      2 * PAGE_SIZE
+    );
+    expect(more.textContent).toBe(showMoreName(MANY - 2 * PAGE_SIZE));
     expect(
-      list.entries()[PAGE]?.contains(document.activeElement),
+      list.entries()[PAGE_SIZE]?.contains(document.activeElement),
       "Show more did not move the focus to the first entry it drew"
     ).toBe(true);
 
@@ -2875,7 +2873,7 @@ test.each(
     expect(list.entries()).toHaveLength(MANY);
     expect(more.isConnected, "Show more stayed once every entry was drawn").toBe(false);
     expect(
-      list.entries()[2 * PAGE]?.contains(document.activeElement),
+      list.entries()[2 * PAGE_SIZE]?.contains(document.activeElement),
       "Show more went with the last entries and did not move the focus to the first it drew"
     ).toBe(true);
   } finally {
@@ -7498,6 +7496,48 @@ test("Unpin gives the focus to the next pin, else the one before, else the Pinne
   }
 });
 
+// Pinned draws its first 20 pins. Unpin on the 20th, the last pin drawn, takes its row away,
+// and the 21st pin, which no row drew, is drawn in its place: the focus goes to that pin's link,
+// at the place of the row the Unpin took away, and not to the 19th pin before it. A choice made
+// before the list is drawn again finds no pin after the 20th, and takes the one before.
+test("Unpin of the last pin drawn gives the focus to the pin drawn in its place", async () => {
+  const user = userEvent.setup();
+  const { getMyState, pinReads, restore } = stubIssueApi();
+  const ids = numbered("6d9f3a4b-8c5e-4fa0-9b2c-3d4e5f6a7b", PAGE_SIZE + 5);
+  const words = (index: number) => `Pin ${String(index + 1).padStart(2, "0")}.`;
+  getMyState.mockResolvedValue(pinnedState(...ids.map((id) => conversationItemId("comment", id))));
+  pinReads.comments.mockResolvedValue(ids.map((id, index) => commentOf(id, words(index))));
+  // The unpin is held out, so the page shows its own state of the pins throughout.
+  const putIssueState = spyOn(api, "putIssueState").mockReturnValue(new Promise(() => undefined));
+  const { unmount } = renderDetails();
+
+  try {
+    const pins = await screen.findByRole("region", { name: CONTROL_LABELS.pinned });
+    await within(pins).findByRole("link", { name: words(PAGE_SIZE - 1) });
+    const rows = () => within(pins).getAllByRole("listitem");
+    expect(rows(), "Pinned does not draw its first 20 pins").toHaveLength(PAGE_SIZE);
+    const last = rows()[PAGE_SIZE - 1];
+    if (last === undefined) throw new Error("Pinned draws no 20th pin");
+    act(() => within(last).getByRole("button", { name: CONTROL_LABELS.unpin }).focus());
+    await user.keyboard("{Enter}");
+
+    await waitFor(() => expect(last.isConnected, "the 20th pin's row stayed").toBe(false));
+    expect(rows(), "Pinned does not draw 20 pins after the Unpin").toHaveLength(PAGE_SIZE);
+    const inItsPlace = within(pins).getByRole("link", { name: words(PAGE_SIZE) });
+    expect(rows()[PAGE_SIZE - 1]?.contains(inItsPlace), "the 21st pin is not drawn 20th").toBe(
+      true
+    );
+    expect(
+      document.activeElement,
+      `Unpin of the last pin drawn did not give the focus to the pin drawn in its place (focus: ${document.activeElement?.textContent})`
+    ).toBe(inItsPlace);
+  } finally {
+    unmount();
+    putIssueState.mockRestore();
+    restore();
+  }
+});
+
 // The two comments of CORE-1 the table below pins, each drawn by its words.
 const FIRST_PIN = "4b7d1e2f-6a3c-4d8e-9f0a-1b2c3d4e5f60";
 const SECOND_PIN = "5c8e2f3a-7b4d-4e9f-8a1b-2c3d4e5f6a71";
@@ -7642,8 +7682,8 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
   [
     "Blocks' Show more, the issues that wait falling to 20",
     {
-      after: { waiting: keysFrom2(PAGE) },
-      before: { waiting: keysFrom2(PAGE + 1) },
+      after: { waiting: keysFrom2(PAGE_SIZE) },
+      before: { waiting: keysFrom2(PAGE_SIZE + 1) },
       focused: async () =>
         within(await drawnRow(PROPERTY_LABELS.blocks)).findByRole("button", { name: SHOW_MORE }),
     },
@@ -7792,8 +7832,8 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
   [
     "Files' Show more, the files falling to 20",
     {
-      after: { issue: withNotes(PAGE - 1) },
-      before: { issue: withNotes(PAGE) },
+      after: { issue: withNotes(PAGE_SIZE - 1) },
+      before: { issue: withNotes(PAGE_SIZE) },
       focused: async () => {
         await screen.findByTestId("issue-files");
         return within(filesRow()).getByRole("button", { name: SHOW_MORE });

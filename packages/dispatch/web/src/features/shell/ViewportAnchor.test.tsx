@@ -2076,6 +2076,34 @@ test("a scroll another script made records nothing, and the row a host keeps sta
   }
 });
 
+// A host scrolls the box it named itself through the anchor (`scrollBox`), as Details' history
+// brings the control a press of its Show more focuses into view. The anchor marks that scroll as
+// its own: its event, which the reader's key just before it would make the reader's scroll,
+// records nothing, and the row the host keeps stays kept. Read as the reader's, the event let the
+// host's place go for the row in the middle of the view. The window never moves.
+test("a host's scroll of its box through the anchor records nothing at its event, and moves no window", async () => {
+  const user = userEvent.setup();
+  const box = drawFrameByFrame(ids(30), { ownsScrollAnchoring: true });
+  try {
+    box.scroller.scrollTop = 100;
+    anchor.current?.keepRow(rowOf("r8"));
+    // The reader's key, which makes a scroll heard soon after it the reader's own.
+    await user.keyboard("{ArrowDown}");
+    anchor.current?.scrollBox(60);
+    expect(box.scroller.scrollTop).toBe(160);
+    expect(window.scrollY, "the host's scroll of its box moved the window").toBe(0);
+    // The next frame reports it with the box's own scroll event, which user-event has no form for.
+    fireEvent.scroll(box.scroller);
+    box.frameEnds();
+    expect(chosen(), "the host's own scroll let the host's place go").toEqual({
+      id: "r8",
+      via: "kept",
+    });
+  } finally {
+    box.unmount();
+  }
+});
+
 // A host that takes its box over draws its rows under 1,000 px of other content, as Details draws
 // its history under its sections. The reader's focus is on r10's control, in view. A key then
 // moves the focus out of the list, to a control in the content above it, and the page's own

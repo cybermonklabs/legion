@@ -99,13 +99,15 @@ export function DetailsPeople({ issue }: DetailsMoreProps): ReactNode {
   // A control of the Subscribers row that the reader's own press takes away hands the focus on in
   // the row rather than let it fall to the page, as Unpin in Pinned hands it on (`IssuePins.tsx`):
   // an Unsubscribe the reader pressed and confirmed, which goes with its agent's row once its
-  // write lands and the agents are read again, to the next agent's Unsubscribe; a Retry the reader
-  // pressed, which goes with its line once what it sent again has landed or been read, to the
-  // Unsubscribe whose write is out (`useRetryHandOff`); each else to the Subscribers control. A
-  // control that goes with no press of the reader's - an agent another session unsubscribes, a
-  // line a read that answers on its own takes away - leaves the focus on the page's body, as on
-  // every page of Dispatch, and nothing in the row takes it. The Confirm dialog gives the focus
-  // back to the Unsubscribe it opened from itself (`useDialog`).
+  // write lands and the agents are read again, to the Unsubscribe drawn in its place once the
+  // list is drawn again - the next agent's, or the first of the next page's where the row was the
+  // last one drawn - else the one before it; a Retry the reader pressed, which goes with its line
+  // once what it sent again has landed or been read, to the Unsubscribe whose write is out
+  // (`useRetryHandOff`); each else to the Subscribers control. A control that goes with no press
+  // of the reader's - an agent another session unsubscribes, a line a read that answers on its
+  // own takes away - leaves the focus on the page's body, as on every page of Dispatch, and
+  // nothing in the row takes it. The Confirm dialog gives the focus back to the Unsubscribe it
+  // opened from itself (`useDialog`).
   const afterRetry = () => {
     const writing = subscribers.unsubscribe.isPending ? refused : undefined;
     return (
@@ -127,7 +129,8 @@ export function DetailsPeople({ issue }: DetailsMoreProps): ReactNode {
   const unsubscribing = useRef<string | null>(null);
   useLayoutEffect(() => {
     const before = unsubscribes.current;
-    unsubscribes.current = drawnUnsubscribes().map((control, index) => ({
+    const now = drawnUnsubscribes();
+    unsubscribes.current = now.map((control, index) => ({
       control,
       session: subscribers.rows[index]?.session_id,
     }));
@@ -146,9 +149,12 @@ export function DetailsPeople({ issue }: DetailsMoreProps): ReactNode {
     if (held.current !== gone) return;
     held.current = null;
     if (document.activeElement !== null && document.activeElement !== document.body) return;
-    const next = before
-      .slice(at + 1)
-      .find(({ control }) => control.isConnected && !control.disabled)?.control;
+    const next =
+      now.slice(at).find((control) => !control.disabled) ??
+      now
+        .slice(0, at)
+        .reverse()
+        .find((control) => !control.disabled);
     (next ?? subscribersControl.current)?.focus();
   });
   return (

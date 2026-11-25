@@ -166,7 +166,10 @@ export function FocusedNodeFacts({
 /** The copy handles of the session that asked the question the reader is on, as the ask card
  *  draws them behind its asker's name: the session's ID, the title the session gave itself
  *  where it gave one, and its tmux target where it has one, each with its copy control. Each
- *  control's name is the ask card's, "Copy session ID …". */
+ *  control's name is the ask card's, "Copy session ID …". The rules of which handles a session
+ *  offers are a copy of `inbox/AskCard.tsx`'s, which draws them under its own labels: the
+ *  session's ID always, its title where it is not empty, its tmux target where it has one. A
+ *  change to those rules there is made here too. */
 function AskerHandles({ asker }: { asker: Actor }): ReactNode {
   const title = asker.origin?.session_title?.trim();
   const tmux = asker.origin?.tmux;
@@ -219,6 +222,12 @@ function AskThreadFacts({
   // the Details drawer, which opens shut.
   const drawer = useMarginDrawer();
   const open = drawer === undefined || drawer.open;
+  // The key and the read are those of `ConversationTab.tsx`'s read of the issue's questions with
+  // their threads (`["asks", key, "thread"]`): an observer that sends no read (`enabled: false`)
+  // shares that read only while the two keys are equal, and with any other key it holds nothing
+  // and every focused question reads its own thread. The factory `issueAskThreadsQuery` that the
+  // threaded asks read brings, in its `useIssueTree.ts`, takes the place of this key and this
+  // read when the second of the two changes, that read and this page, merges.
   const threads = useQuery({
     enabled: false,
     queryFn: () => api.listIssueAskThreads(issueKey, "all"),

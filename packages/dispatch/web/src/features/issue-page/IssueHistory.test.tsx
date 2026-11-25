@@ -18,12 +18,11 @@ import { buildIssuePath } from "../refs/routes";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { measureNearWords } from "./clamp-fixtures";
 import { HistoryHandoff } from "./HistoryHandoff";
-import { HISTORY_PAGE } from "./history-model";
 import { type AddressedTurn, IssueHistory } from "./IssueHistory";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { failRefreshOverHeld } from "./refresh-over-held-fixture";
-import { SHOW_MORE, showMoreName } from "./show-more-fixture";
+import { PAGE_SIZE, SHOW_MORE, showMoreName } from "./show-more-fixture";
 
 const KEY = "CORE-1";
 
@@ -796,16 +795,16 @@ test("the history draws 20 entries at a time, and Show more says how many are le
   try {
     unmount = drawHistory(undefined).unmount;
     const more = await screen.findByRole("button", { name: SHOW_MORE });
-    expect(drawnEntries(), "the history drew every entry at once").toHaveLength(HISTORY_PAGE);
+    expect(drawnEntries(), "the history drew every entry at once").toHaveLength(PAGE_SIZE);
     expect(more.textContent).toBe(showMoreName(25));
     expect(more.querySelector("[data-history-left]")?.textContent).toBe("25");
 
     act(() => more.focus());
     await userEvent.keyboard("{Enter}");
-    expect(drawnEntries()).toHaveLength(2 * HISTORY_PAGE);
+    expect(drawnEntries()).toHaveLength(2 * PAGE_SIZE);
     expect(more.querySelector("[data-history-left]")?.textContent).toBe("5");
     expect(
-      drawnEntries()[HISTORY_PAGE]?.contains(document.activeElement),
+      drawnEntries()[PAGE_SIZE]?.contains(document.activeElement),
       "Show more did not move the focus to the first entry it drew"
     ).toBe(true);
 
@@ -814,7 +813,7 @@ test("the history draws 20 entries at a time, and Show more says how many are le
     expect(drawnEntries()).toHaveLength(45);
     expect(more.isConnected, "Show more stayed once every entry was drawn").toBe(false);
     expect(
-      drawnEntries()[2 * HISTORY_PAGE]?.contains(document.activeElement),
+      drawnEntries()[2 * PAGE_SIZE]?.contains(document.activeElement),
       "Show more went with the last entries and did not move the focus to the first it drew"
     ).toBe(true);
     expect(
@@ -851,7 +850,7 @@ test("Show more says + while an older page is unread, no number once every entry
   try {
     unmount = drawHistory(undefined).unmount;
     const more = await screen.findByRole("button", { name: SHOW_MORE });
-    expect(drawnEntries()).toHaveLength(HISTORY_PAGE);
+    expect(drawnEntries()).toHaveLength(PAGE_SIZE);
     expect(left(), "the count of entries left says no + with an older page unread").toBe("5+");
 
     await userEvent.click(more);
@@ -889,7 +888,7 @@ test("Show more says + while an older page is unread, no number once every entry
 // heading. Neither move scrolls Details: the reader keeps their place. A refetch that fails over
 // the pages held draws no line, so the Retry is a read's that failed holding no page.
 test("a control of the history that goes away under the focus leaves the focus in the history", async () => {
-  const firstPage = pageOf(HISTORY_PAGE, 400);
+  const firstPage = pageOf(PAGE_SIZE, 400);
   const olderPage = [claimAgo(10, 300), claimAgo(9, 301)];
   let down = false;
   const reads = [
@@ -906,20 +905,20 @@ test("a control of the history that goes away under the focus leaves the focus i
   try {
     const drawn = drawHistory(undefined);
     unmount = drawn.unmount;
-    const older = await screen.findByRole("button", { name: CONTROL_LABELS.show_more });
+    const more = await screen.findByRole("button", { name: CONTROL_LABELS.show_more });
     const list = screen.getByRole("list", { name: CONTROL_LABELS.history_list });
     const before = new Set(list.querySelectorAll("a[href], button"));
     const focus = spyOn(HTMLElement.prototype, "focus");
-    older.focus();
+    more.focus();
     await userEvent.keyboard("{Enter}");
-    await waitFor(() => expect(older.isConnected).toBe(false));
+    await waitFor(() => expect(more.isConnected).toBe(false));
     const active = document.activeElement;
     expect(
       active !== null && list.contains(active) && !before.has(active),
       "Show more went away with the log's end and the focus did not go to the page it read"
     ).toBe(true);
     expect(
-      drawnEntries()[HISTORY_PAGE]?.contains(active),
+      drawnEntries()[PAGE_SIZE]?.contains(active),
       "the focus is not on the first entry the page added"
     ).toBe(true);
     expect(focus.mock.calls.at(-1), "handing the focus on scrolled Details").toEqual([
@@ -955,7 +954,7 @@ test("a control of the history that goes away under the focus leaves the focus i
 // drawn, the next page answered 500 once, and its Retry pressed by keyboard put the focus on
 // the heading "History" once the page landed.
 test("the Retry of a failed next page hands the focus to the page it read, as Show more does", async () => {
-  const firstPage = pageOf(HISTORY_PAGE, 400);
+  const firstPage = pageOf(PAGE_SIZE, 400);
   const olderPage = [claimAgo(10, 300), claimAgo(9, 301)];
   let down = true;
   const reads = [
@@ -972,9 +971,9 @@ test("the Retry of a failed next page hands the focus to the page it read, as Sh
 
   try {
     unmount = drawHistory(undefined).unmount;
-    const older = await screen.findByRole("button", { name: CONTROL_LABELS.show_more });
+    const more = await screen.findByRole("button", { name: CONTROL_LABELS.show_more });
     const list = screen.getByRole("list", { name: CONTROL_LABELS.history_list });
-    older.focus();
+    more.focus();
     await userEvent.keyboard("{Enter}");
     const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
     const before = new Set(list.querySelectorAll("a[href], button"));
@@ -984,14 +983,14 @@ test("the Retry of a failed next page hands the focus to the page it read, as Sh
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull()
     );
-    await waitFor(() => expect(older.isConnected).toBe(false));
+    await waitFor(() => expect(more.isConnected).toBe(false));
     const active = document.activeElement;
     expect(
       active !== null && list.contains(active) && !before.has(active),
       "the Retry of the next page went away once it landed and the focus did not go to the page it read"
     ).toBe(true);
     expect(
-      drawnEntries()[HISTORY_PAGE]?.contains(active),
+      drawnEntries()[PAGE_SIZE]?.contains(active),
       "the focus is not on the first entry the page added"
     ).toBe(true);
   } finally {
@@ -1007,7 +1006,7 @@ test("the Retry of a failed next page hands the focus to the page it read, as Sh
 // (`chromium-focus-fixup.ts`). A keyboard reader stays on the Retry while it reads, and when its
 // read fails again.
 test("a history Retry pressed by keyboard keeps the focus while it reads and when its read fails again", async () => {
-  const firstPage = pageOf(HISTORY_PAGE, 400);
+  const firstPage = pageOf(PAGE_SIZE, 400);
   let readLog = async (): Promise<DispatchEvent[]> => [...firstPage];
   let readOlder = async (): Promise<DispatchEvent[]> => {
     throw new Error("the next page is down");
@@ -1237,7 +1236,7 @@ test("a first read of the log that failed keeps its line and its Retry, with the
 // hands the focus on to the first of them, as it does when the log's end takes it away; it says
 // how many entries of that page are left, with "+" as the log holds pages older than it.
 test("Show more pressed by keyboard keeps the focus while its page is read, then hands it to the page it read", async () => {
-  const firstPage = pageOf(HISTORY_PAGE, 600);
+  const firstPage = pageOf(PAGE_SIZE, 600);
   const secondPage = Array.from({ length: 200 }, (_, index) => claimAgo(400 - index, index + 201));
   // The next page is held out until the case lets it land.
   const older = Promise.withResolvers<DispatchEvent[]>();
@@ -1256,29 +1255,29 @@ test("Show more pressed by keyboard keeps the focus while its page is read, then
     const drawn = drawHistory(undefined);
     unmount = drawn.unmount;
     const fetchStatus = () => drawn.queryClient.getQueryState(["events", KEY])?.fetchStatus;
-    const load = await screen.findByRole("button", { name: CONTROL_LABELS.show_more });
+    const more = await screen.findByRole("button", { name: CONTROL_LABELS.show_more });
     const list = screen.getByRole("list", { name: CONTROL_LABELS.history_list });
     const before = new Set(list.querySelectorAll("a[href], button"));
     restoreFocus = emulateChromiumFocusFixup();
-    load.focus();
+    more.focus();
     await userEvent.keyboard("{Enter}");
     await waitFor(() => expect(fetchStatus()).toBe("fetching"));
     expect(
       document.activeElement,
       "Show more left the focus on the page while its page was read"
-    ).toBe(load);
-    expect(load.getAttribute("aria-busy")).toBe("true");
+    ).toBe(more);
+    expect(more.getAttribute("aria-busy")).toBe("true");
 
     older.resolve([...secondPage]);
     await waitFor(() => expect(fetchStatus()).toBe("idle"));
     await waitFor(() =>
-      expect(load.querySelector("[data-history-left]")?.textContent).toBe("180+")
+      expect(more.querySelector("[data-history-left]")?.textContent).toBe("180+")
     );
-    expect(drawnEntries()).toHaveLength(2 * HISTORY_PAGE);
+    expect(drawnEntries()).toHaveLength(2 * PAGE_SIZE);
     expect(
       screen.getByRole("button", { name: SHOW_MORE }),
       "the log has older pages after the second, so Show more stays"
-    ).toBe(load);
+    ).toBe(more);
     const active = document.activeElement;
     expect(
       active !== null && list.contains(active) && !before.has(active),
@@ -1349,7 +1348,7 @@ test("two presses of the log's Retry before a render send one read, and the focu
 });
 
 test("two presses of Show more before a render read its page once, and the focus still goes to the page it read", async () => {
-  const firstPage = pageOf(HISTORY_PAGE, 600);
+  const firstPage = pageOf(PAGE_SIZE, 600);
   const secondPage = Array.from({ length: 200 }, (_, index) => claimAgo(400 - index, index + 201));
   // The next page is held out until the case lets it land.
   const older = Promise.withResolvers<DispatchEvent[]>();
@@ -1370,15 +1369,15 @@ test("two presses of Show more before a render read its page once, and the focus
     const drawn = drawHistory(undefined);
     unmount = drawn.unmount;
     const fetchStatus = () => drawn.queryClient.getQueryState(["events", KEY])?.fetchStatus;
-    const load = await screen.findByRole("button", { name: CONTROL_LABELS.show_more });
+    const more = await screen.findByRole("button", { name: CONTROL_LABELS.show_more });
     const list = screen.getByRole("list", { name: CONTROL_LABELS.history_list });
     const before = new Set(list.querySelectorAll("a[href], button"));
-    act(() => load.focus());
+    act(() => more.focus());
 
     // Both presses in one task inside one `act`, so React draws nothing between them.
     act(() => {
-      load.click();
-      load.click();
+      more.click();
+      more.click();
     });
     expect(
       olderReads(),
@@ -1388,7 +1387,7 @@ test("two presses of Show more before a render read its page once, and the focus
     await act(async () => older.resolve([...secondPage]));
     await waitFor(() => expect(fetchStatus()).toBe("idle"));
     await waitFor(() =>
-      expect(load.querySelector("[data-history-left]")?.textContent).toBe("180+")
+      expect(more.querySelector("[data-history-left]")?.textContent).toBe("180+")
     );
     expect(olderReads()).toBe(1);
     const active = document.activeElement;
@@ -1403,7 +1402,7 @@ test("two presses of Show more before a render read its page once, and the focus
 });
 
 test("two presses of the next page's Retry before a render read that page once, and the focus still goes to the page it read", async () => {
-  const firstPage = pageOf(HISTORY_PAGE, 400);
+  const firstPage = pageOf(PAGE_SIZE, 400);
   const olderPage = [claimAgo(10, 300), claimAgo(9, 301)];
   let readOlder = async (): Promise<DispatchEvent[]> => {
     throw new Error("the next page is down");
@@ -1423,9 +1422,9 @@ test("two presses of the next page's Retry before a render read that page once, 
 
   try {
     unmount = drawHistory(undefined).unmount;
-    const load = await screen.findByRole("button", { name: CONTROL_LABELS.show_more });
+    const more = await screen.findByRole("button", { name: CONTROL_LABELS.show_more });
     const list = screen.getByRole("list", { name: CONTROL_LABELS.history_list });
-    act(() => load.focus());
+    act(() => more.focus());
     await userEvent.keyboard("{Enter}");
     const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
     const before = new Set(list.querySelectorAll("a[href], button"));
@@ -1449,7 +1448,7 @@ test("two presses of the next page's Retry before a render read that page once, 
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull()
     );
-    await waitFor(() => expect(load.isConnected).toBe(false));
+    await waitFor(() => expect(more.isConnected).toBe(false));
     expect(olderReads()).toBe(sent + 1);
     const active = document.activeElement;
     expect(
@@ -1467,7 +1466,7 @@ test("two presses of the next page's Retry before a render read that page once, 
 // and read no page. Only the reader's own read of the next page takes a press made meanwhile, so
 // a press while a refetch is out reads the next page.
 test("Show more pressed while a refetch of the log is out reads the next page", async () => {
-  const firstPage = pageOf(HISTORY_PAGE, 600);
+  const firstPage = pageOf(PAGE_SIZE, 600);
   const secondPage = Array.from({ length: 200 }, (_, index) => claimAgo(400 - index, index + 201));
   let readFirst = async (): Promise<DispatchEvent[]> => [...firstPage];
   const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
@@ -1489,14 +1488,14 @@ test("Show more pressed while a refetch of the log is out reads the next page", 
     const drawn = drawHistory(undefined);
     unmount = drawn.unmount;
     const fetchStatus = () => drawn.queryClient.getQueryState(["events", KEY])?.fetchStatus;
-    const load = await screen.findByRole("button", { name: CONTROL_LABELS.show_more });
+    const more = await screen.findByRole("button", { name: CONTROL_LABELS.show_more });
     readFirst = () => refetched.promise;
     act(() => {
       void drawn.queryClient.invalidateQueries({ queryKey: ["events", KEY] });
     });
     await waitFor(() => expect(fetchStatus()).toBe("fetching"));
 
-    await userEvent.click(load);
+    await userEvent.click(more);
     expect(olderReads(), "Show more pressed while a refetch of the log was out read no page").toBe(
       1
     );
@@ -1518,7 +1517,7 @@ test("Show more pressed while a refetch of the log is out reads the next page", 
 // press, which stood just above Show more, rather than to the history's heading above the whole
 // list, off screen for a reader at its foot.
 test("Show more whose last page adds no entry hands the focus to the control above where it stood", async () => {
-  const firstPage = pageOf(HISTORY_PAGE, 400);
+  const firstPage = pageOf(PAGE_SIZE, 400);
   const lastPage = [outlineEventAgo(10, 300), outlineEventAgo(9, 301)];
   const reads = [
     spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
@@ -1533,7 +1532,7 @@ test("Show more whose last page adds no entry hands the focus to the control abo
 
   try {
     unmount = drawHistory(undefined).unmount;
-    const load = await screen.findByRole("button", { name: CONTROL_LABELS.show_more });
+    const more = await screen.findByRole("button", { name: CONTROL_LABELS.show_more });
     const list = screen.getByRole("list", { name: CONTROL_LABELS.history_list });
     const before = [...list.querySelectorAll("a[href], button")];
     const above = before.at(-1) ?? null;
@@ -1542,11 +1541,11 @@ test("Show more whose last page adds no entry hands the focus to the control abo
       "the last entry's Pin is not the last control above Show more"
     ).toBe(true);
     restoreFocus = emulateChromiumFocusFixup();
-    load.focus();
+    more.focus();
     await userEvent.keyboard("{Enter}");
-    await waitFor(() => expect(load.isConnected).toBe(false));
+    await waitFor(() => expect(more.isConnected).toBe(false));
     expect(drawnEntries(), "the last page added an entry, so the row proves nothing").toHaveLength(
-      HISTORY_PAGE
+      PAGE_SIZE
     );
     expect(
       list.querySelectorAll("a[href], button"),
@@ -1635,7 +1634,7 @@ function installDetailsLayout(
 // reader's place at each focus that moves into it, so it holds the entry the hand-on put the
 // focus in and keeps it in place as the entries above it change height.
 test("the entry Show more hands the focus to keeps its place in Details' view as the entries above it change height", async () => {
-  const firstPage = pageOf(HISTORY_PAGE, 400);
+  const firstPage = pageOf(PAGE_SIZE, 400);
   const olderPage = [claimAgo(10, 300), claimAgo(9, 301)];
   const reads = [
     spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
@@ -1665,14 +1664,14 @@ test("the entry Show more hands the focus to keeps its place in Details' view as
 
   try {
     unmount = drawHistory(undefined, box).unmount;
-    const older = await screen.findByRole("button", { name: CONTROL_LABELS.show_more });
-    await waitFor(() => expect(rows()).toHaveLength(HISTORY_PAGE));
+    const more = await screen.findByRole("button", { name: CONTROL_LABELS.show_more });
+    await waitFor(() => expect(rows()).toHaveLength(PAGE_SIZE));
     // Details scrolled down to Show more: the first entry the older page adds lands in the
     // middle of the view.
-    box.scrollTop = LIST_TOP + (HISTORY_PAGE - 2) * ROW_HEIGHT + 2 * 1000 - VIEW_HEIGHT / 2;
-    older.focus();
+    box.scrollTop = LIST_TOP + (PAGE_SIZE - 2) * ROW_HEIGHT + 2 * 1000 - VIEW_HEIGHT / 2;
+    more.focus();
     await userEvent.keyboard("{Enter}");
-    await waitFor(() => expect(older.isConnected).toBe(false));
+    await waitFor(() => expect(more.isConnected).toBe(false));
     const entry = document.activeElement?.closest<HTMLElement>("[data-history-entry]");
     if (entry === null || entry === undefined) {
       throw new Error("Show more handed the focus to no entry of the history");
@@ -1714,7 +1713,7 @@ test("the entry Show more hands the focus to keeps its place in Details' view as
 // to one above it (seen at -639 px in the browser, where a long turn was cut). The history keeps
 // the place of the entry next to Show more from the press until the page's read has settled.
 test("Show more keeps the place of the entry above it from the press, as its page lands with a change of height of the entry above that entry", async () => {
-  const firstPage = pageOf(HISTORY_PAGE, 400);
+  const firstPage = pageOf(PAGE_SIZE, 400);
   const olderPage = [claimAgo(10, 300), claimAgo(9, 301)];
   const reads = [
     spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
@@ -1739,18 +1738,18 @@ test("Show more keeps the place of the entry above it from the press, as its pag
 
   try {
     unmount = drawHistory(undefined, box).unmount;
-    const older = await screen.findByRole("button", { name: CONTROL_LABELS.show_more });
-    await waitFor(() => expect(rows()).toHaveLength(HISTORY_PAGE));
+    const more = await screen.findByRole("button", { name: CONTROL_LABELS.show_more });
+    await waitFor(() => expect(rows()).toHaveLength(PAGE_SIZE));
     const last = box.querySelector<HTMLElement>('[data-history-entry="event:381"]');
     if (last === null) throw new Error("the last entry drawn is not drawn");
     // Details scrolled down to Show more: the last entry drawn stands 400 px down the view,
     // under the tall entry, which holds the middle of the view.
-    box.scrollTop = LIST_TOP + (HISTORY_PAGE - 2) * ROW_HEIGHT + 1000 - 400;
+    box.scrollTop = LIST_TOP + (PAGE_SIZE - 2) * ROW_HEIGHT + 1000 - 400;
     const stood = last.getBoundingClientRect().top;
     expect(stood).toBe(400);
-    older.focus();
+    more.focus();
     await userEvent.keyboard("{Enter}");
-    await waitFor(() => expect(older.isConnected).toBe(false));
+    await waitFor(() => expect(more.isConnected).toBe(false));
 
     expect(
       last.getBoundingClientRect().top,
@@ -1773,6 +1772,186 @@ test("Show more keeps the place of the entry above it from the press, as its pag
     expect(
       at.top >= last.getBoundingClientRect().bottom,
       "Show more handed the focus to a control above the entry next to it"
+    ).toBe(true);
+  } finally {
+    unmount?.();
+    restoreLayout();
+    box.remove();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+/** The history of 45 claims (`claimAgo`), every one on the log's first page, drawn in a box of
+ *  Details' own laid out by `heightOf` (`installDetailsLayout`), and scrolled to `scrollTop`:
+ *  Show more under its first 20 draws the next 20 with no read. Returns the box, Show more, and
+ *  what puts everything back. */
+async function drawFortyFiveIn(
+  heightOf: (row: Element) => number,
+  scrollTop: number
+): Promise<{ box: HTMLElement; more: HTMLElement; restore: () => void }> {
+  const restoreReads = stubHistoryReads(
+    Array.from({ length: 45 }, (_, index) => claimAgo(45 - index, index + 1))
+  );
+  // Details' own box, which the history scrolls in, at the top of the window.
+  const box = document.body.appendChild(document.createElement("div"));
+  box.style.overflowY = "auto";
+  const restoreLayout = installDetailsLayout(box, heightOf);
+  const { unmount } = drawHistory(undefined, box);
+  const restore = () => {
+    unmount();
+    restoreLayout();
+    box.remove();
+    restoreReads();
+  };
+  try {
+    const more = await screen.findByRole("button", { name: SHOW_MORE });
+    expect(drawnEntries()).toHaveLength(PAGE_SIZE);
+    box.scrollTop = scrollTop;
+    return { box, more, restore };
+  } catch (error) {
+    restore();
+    throw error;
+  }
+}
+
+// The last press of Show more on a real issue drew its entries under a new day's line, and the
+// first of them stood below Details' view. The press moved the focus to that entry's control with
+// no scroll, so the focus stood where a keyboard reader could not see it. The press brings the
+// control it focuses into Details' view by the least scroll, by its foot from below, writing
+// Details' box alone: the page under it does not scroll, and no element is scrolled into view.
+// Here the 20th entry is 560 px tall and fills Details' view to its foot, so the first entry the
+// press draws stands wholly below the view.
+test("a keyboard press of Show more whose first entry stands below Details' view moves the focus to that entry's control, wholly in Details' view, and scrolls no page", async () => {
+  const { box, more, restore } = await drawFortyFiveIn(
+    (row) => (row.getAttribute("data-history-entry") === "event:26" ? 560 : ROW_HEIGHT),
+    LIST_TOP + (PAGE_SIZE - 1) * ROW_HEIGHT - 40
+  );
+  const intoView = spyOn(Element.prototype, "scrollIntoView");
+  const focus = spyOn(HTMLElement.prototype, "focus");
+
+  try {
+    const first = () => drawnEntries()[PAGE_SIZE];
+    act(() => more.focus());
+    await userEvent.keyboard("{Enter}");
+    expect(drawnEntries()).toHaveLength(2 * PAGE_SIZE);
+    const focused = document.activeElement;
+    expect(
+      focused !== null && first()?.contains(focused) === true,
+      "Show more did not move the focus to the first entry it drew"
+    ).toBe(true);
+    expect(focused, "the focus is not on the first entry's control").toBe(
+      first()?.querySelector("a[href], button:not(:disabled)") ?? null
+    );
+    const at = focused?.getBoundingClientRect();
+    expect(
+      at !== undefined && at.top >= 0 && at.bottom <= VIEW_HEIGHT,
+      `Show more moved the focus to a control out of Details' view (${at?.top} to ${at?.bottom} px, the view 0 to ${VIEW_HEIGHT})`
+    ).toBe(true);
+    expect(at?.bottom, "Details scrolled more than the least that shows the control").toBe(
+      VIEW_HEIGHT
+    );
+    expect(window.scrollY, "the page under Details scrolled").toBe(0);
+    expect(
+      intoView,
+      "an element was scrolled into view, which scrolls the page too"
+    ).not.toHaveBeenCalled();
+    expect(focus.mock.calls.at(-1), "the focus moved with a scroll of its own").toEqual([
+      { preventScroll: true },
+    ]);
+    expect(box.scrollTop).toBe(LIST_TOP + (PAGE_SIZE - 1) * ROW_HEIGHT);
+  } finally {
+    intoView.mockRestore();
+    focus.mockRestore();
+    restore();
+  }
+});
+
+// The first entry a press of Show more draws stands in Details' view: the press moves the focus
+// to its control and moves Details by nothing.
+test("a keyboard press of Show more whose first entry stands in Details' view moves Details by nothing", async () => {
+  const scrollTop = LIST_TOP + (PAGE_SIZE - 1) * ROW_HEIGHT - 300;
+  const { box, more, restore } = await drawFortyFiveIn(() => ROW_HEIGHT, scrollTop);
+
+  try {
+    act(() => more.focus());
+    await userEvent.keyboard("{Enter}");
+    expect(drawnEntries()).toHaveLength(2 * PAGE_SIZE);
+    const focused = document.activeElement;
+    expect(
+      focused !== null && drawnEntries()[PAGE_SIZE]?.contains(focused) === true,
+      "Show more did not move the focus to the first entry it drew"
+    ).toBe(true);
+    expect(focused?.getBoundingClientRect().top).toBe(340);
+    expect(box.scrollTop, "a focus already in Details' view moved Details").toBe(scrollTop);
+  } finally {
+    restore();
+  }
+});
+
+// The press reads the log's next page, which adds ten files to the run of uploads drawn last, in
+// view above Show more, and draws the next entries under that run. The run grows to 440 px, so
+// the files it gained stand in Details' view and the first entry drawn under them does not, by
+// 20 px. The focus went to a file the page added, which was in view, and not to the first entry
+// the press drew. It goes to that entry, and Details is brought to it by those 20 px.
+test("a press of Show more moves the focus to the first entry it drew though a control the page added to a run above stands in view and that entry does not", async () => {
+  const firstPage = [
+    ...Array.from({ length: PAGE_SIZE - 1 }, (_, index) => claimAgo(400 - index, index + 1)),
+    upload(381, 20, "shot-00.png"),
+    ...Array.from({ length: 180 }, (_, index) => outlineEventAgo(380 - index, 20)),
+  ];
+  const olderPage = [
+    ...Array.from({ length: 10 }, (_, index) =>
+      upload(200 - index, 21 + index, `shot-${index}.png`)
+    ),
+    ...Array.from({ length: 25 }, (_, index) => claimAgo(190 - index, 100 + index)),
+  ];
+  const reads = [
+    spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+      options?.before === undefined ? [...firstPage] : [...olderPage]
+    ),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  // Details' own box, which the history scrolls in, at the top of the window.
+  const box = document.body.appendChild(document.createElement("div"));
+  box.style.overflowY = "auto";
+  // A run of uploads is a line for each of its files; every other entry is one line.
+  const restoreLayout = installDetailsLayout(
+    box,
+    (row) => ROW_HEIGHT * Number(row.getAttribute("data-history-uploads") ?? 1)
+  );
+  let unmount: (() => void) | undefined;
+
+  try {
+    const drawn = drawHistory(undefined, box);
+    unmount = drawn.unmount;
+    const more = await screen.findByRole("button", { name: CONTROL_LABELS.show_more });
+    await waitFor(() => expect(drawnEntries()).toHaveLength(PAGE_SIZE));
+    // Details scrolled down to the run of one upload, 140 px down its view, Show more under it.
+    box.scrollTop = LIST_TOP + (PAGE_SIZE - 1) * ROW_HEIGHT - 140;
+    act(() => more.focus());
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(drawn.queryClient.getQueryState(["events", KEY])?.fetchStatus).toBe("idle")
+    );
+    await waitFor(() => expect(drawnEntries()).toHaveLength(2 * PAGE_SIZE));
+    const added = box.querySelector<HTMLElement>('[data-history-entry="file:200"] a[href]');
+    const addedAt = added?.getBoundingClientRect();
+    expect(
+      addedAt !== undefined && addedAt.top >= 0 && addedAt.bottom <= VIEW_HEIGHT,
+      "no control the page added to the run stands in Details' view, so the row proves nothing"
+    ).toBe(true);
+
+    const focused = document.activeElement;
+    expect(
+      focused?.closest("[data-history-entry]")?.getAttribute("data-history-entry"),
+      "Show more moved the focus to a control other than the first entry it drew"
+    ).toBe("event:190");
+    const at = focused?.getBoundingClientRect();
+    expect(
+      at !== undefined && at.top >= 0 && at.bottom <= VIEW_HEIGHT,
+      `Show more moved the focus to a control out of Details' view (${at?.top} to ${at?.bottom} px, the view 0 to ${VIEW_HEIGHT})`
     ).toBe(true);
   } finally {
     unmount?.();

@@ -145,6 +145,9 @@ const LIST_TOKENS = {
   },
 } as const;
 
+/** The look of an excerpt's words (`Excerpt`), clamped or drawn whole: one list for both. */
+const EXCERPT_WORDS = "mt-1 whitespace-pre-wrap text-sm";
+
 /** Beyond this the row clamps the excerpt and offers to expand it. The real clamp is CSS, so
  *  this is the text shape that makes a clamp likely rather than a measurement. */
 const CLAMP_LINES = 3;
@@ -240,17 +243,25 @@ function groupBySource(edges: readonly GraphEdge[]): SourceGroup[] {
 function Excerpt({
   text,
   tokens,
+  whole = false,
 }: {
   text: string;
   tokens: { readonly excerpt: string; readonly link: string };
+  /** Whether the excerpt is drawn whole, as the new page's Details draws each one (`page`): with
+   *  no clamp and no Show more, a long word broken where it must be rather than run past its row.
+   *  Every other page passes nothing, and the excerpt clamps as it always has. */
+  whole?: boolean;
 }): ReactNode {
   const [expanded, setExpanded] = useState(false);
   const clampable = text.split("\n").length > CLAMP_LINES || text.length > CLAMP_CHARACTERS;
+  if (whole) {
+    return <p className={`${EXCERPT_WORDS} [overflow-wrap:anywhere] ${tokens.excerpt}`}>{text}</p>;
+  }
 
   return (
     <>
       <p
-        className={`mt-1 whitespace-pre-wrap text-sm ${expanded || !clampable ? "" : "line-clamp-3"} ${tokens.excerpt}`}
+        className={`${EXCERPT_WORDS} ${expanded || !clampable ? "" : "line-clamp-3"} ${tokens.excerpt}`}
       >
         {text}
       </p>
@@ -372,9 +383,9 @@ export function ReferencedBy({
   // its rows the same way, and shares the list's pages, its control and its count. A card the
   // cut falls in draws the rows before the cut, and a card after the cut is not drawn.
   const paged = page ? pages : undefined;
-  let rowsLeft = paged?.drawn ?? Number.POSITIVE_INFINITY;
   let rowCount = 0;
   if (paged !== undefined) {
+    let rowsLeft = paged.drawn;
     const drawnGroups = groups.flatMap((group) => {
       rowCount += group.edges.length;
       const drawnEdges = group.edges.slice(0, rowsLeft);
@@ -383,14 +394,16 @@ export function ReferencedBy({
     });
     groups.splice(0, groups.length, ...drawnGroups);
   }
-  // Each row drawn in pages carries the list's own mark, by which the press of the control finds
-  // the first row it drew, by its place in the sequence: the row's card where the row is its
-  // card's first, whose link names the source, and else the row itself.
+  // Each row drawn in pages carries the list's own mark, and each card its card mark
+  // (`data-reference-card`), by which the press of the control finds the first row it drew, by
+  // its place in the sequence: the row's card where the row is its card's first, whose link
+  // names the source, and else the row itself.
   const rowsMark = useId();
   const rowAt = (index: number) => {
     const marked = `[data-reference-rows="${CSS.escape(rowsMark)}"]`;
     const row = document.querySelectorAll(marked)[index];
-    return row?.parentElement?.firstElementChild === row ? row.parentElement?.parentElement : row;
+    const card = row?.closest("[data-reference-card]");
+    return card?.querySelector(marked) === row ? card : row;
   };
   // Retry's attributes where the host notes its press (`retried`), spread over the ones it has on
   // every page.
@@ -449,7 +462,11 @@ export function ReferencedBy({
       {groups.length === 0 ? null : (
         <ul className="space-y-2">
           {groups.map((group) => (
-            <li className={`rounded-lg border p-3 ${tokens.row}`} key={group.key}>
+            <li
+              className={`rounded-lg border p-3 ${tokens.row}`}
+              data-reference-card={paged === undefined ? undefined : ""}
+              key={group.key}
+            >
               <div className={`text-xs font-medium ${tokens.line}`}>
                 {group.path === undefined ? (
                   <span>{group.label}</span>
@@ -514,14 +531,8 @@ export function ReferencedBy({
                       </div>
                       {deleted !== null ? (
                         <DeletedBody className="mt-1 block text-sm" deleted={deleted} />
-                      ) : page && edge.excerpt !== undefined ? (
-                        <p
-                          className={`mt-1 whitespace-pre-wrap text-sm [overflow-wrap:anywhere] ${tokens.excerpt}`}
-                        >
-                          {edge.excerpt.text}
-                        </p>
                       ) : edge.excerpt === undefined ? null : (
-                        <Excerpt text={edge.excerpt.text} tokens={tokens} />
+                        <Excerpt text={edge.excerpt.text} tokens={tokens} whole={page} />
                       )}
                     </li>
                   );
