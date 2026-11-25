@@ -1,5 +1,6 @@
 import { parseArgs } from "node:util";
 import { LIVE_SOCKET_MAX_AGE_CLOSE } from "../../../packages/contracts/src/dispatch-api";
+import { joinUrl } from "../../../packages/contracts/src/url-join";
 import { bodyForText } from "../../../packages/envoy-client/src/excerpt";
 
 const USAGE =
@@ -177,7 +178,7 @@ async function secretFrom(file: string, flag: string, what: string): Promise<str
  *  without one is named through `bodyForText`, one line with the credential sent redacted, since
  *  whatever answered can echo it back. */
 async function whoamiHead(options: Options): Promise<string> {
-  const response = await fetch(new URL("/auth/whoami", options.url), {
+  const response = await fetch(joinUrl(options.url.href, "/auth/whoami"), {
     headers: options.authorization,
   });
   const text = await response.text();
@@ -284,7 +285,7 @@ function write(line: object): void {
 }
 
 async function watch(options: Options): Promise<boolean> {
-  const socketURL = new URL("/ws/live", options.url);
+  const socketURL = joinUrl(options.url.href, "/ws/live");
   socketURL.protocol = options.url.protocol === "https:" ? "wss:" : "ws:";
   const done = Promise.withResolvers<boolean>();
   let attempt = 0;
