@@ -7144,33 +7144,51 @@ test("clear brush window pressed with the Window control scrolled out of sight s
         const windowSelect = listTrigger(header, "Window");
         await expect(clear, `${at}: the brush drew no clear brush window`).toBeVisible();
         await expect(page.getByTestId("delivery-chart")).toBeVisible();
-        // The page is drawn whole below the header, so it scrolls as far as the case needs: its
-        // height holds across two frames.
+        /** Marks the box the page scrolls in, as the reader's scroll finds it: from `xl` up the
+         *  page scrolls inside its own section where it overflows the window (main's #4631, the
+         *  section's `xl:overflow-y-auto` in DeliveryPage.tsx), else the document. Answers its
+         *  height, and whether it is the document. The reads below find the box by its mark. */
+        const markScrollBox = () =>
+          windowSelect.evaluate((node) => {
+            for (const marked of document.querySelectorAll("[data-case-scroller]")) {
+              marked.removeAttribute("data-case-scroller");
+            }
+            let scroller: Element = document.scrollingElement ?? document.documentElement;
+            for (let box = node.parentElement; box !== null; box = box.parentElement) {
+              const { overflowY } = getComputedStyle(box);
+              if (
+                (overflowY === "auto" || overflowY === "scroll") &&
+                box.scrollHeight > box.clientHeight
+              ) {
+                scroller = box;
+                break;
+              }
+            }
+            scroller.setAttribute("data-case-scroller", "");
+            return {
+              document: scroller === document.scrollingElement,
+              height: scroller.scrollHeight,
+            };
+          });
+        // The page is drawn whole below the header, so it scrolls as far as the case needs: the
+        // box it scrolls in, and that box's height, hold across two frames. The section overflows
+        // only once the chart below has drawn, so the box is found again each time.
         await expect
           .poll(async () => {
-            const height = await page.evaluate(() => document.documentElement.scrollHeight);
+            const was = await markScrollBox();
             await nextFrames(page);
-            return height === (await page.evaluate(() => document.documentElement.scrollHeight));
+            const now = await markScrollBox();
+            return was.document === now.document && was.height === now.height;
           })
           .toBe(true);
-        // The reader's own scroll, of the box the page scrolls in: from `xl` up the page scrolls
-        // inside its own section where it overflows the window (main's #4631, the section's
-        // `xl:overflow-y-auto` in DeliveryPage.tsx), else the document. The select's foot 2 px
-        // above that box's visible top, the button on the line under it wholly in sight; or the
-        // select's top 24 px under that top. The box is marked, so the reads below find it again.
+        // The reader's own scroll, of that box: the select's foot 2 px above the box's visible
+        // top, the button on the line under it wholly in sight; or the select's top 24 px under
+        // that top.
         const before = await windowSelect.evaluate((node, out) => {
-          let scroller: Element = document.scrollingElement ?? document.documentElement;
-          for (let box = node.parentElement; box !== null; box = box.parentElement) {
-            const { overflowY } = getComputedStyle(box);
-            if (
-              (overflowY === "auto" || overflowY === "scroll") &&
-              box.scrollHeight > box.clientHeight
-            ) {
-              scroller = box;
-              break;
-            }
-          }
-          scroller.setAttribute("data-case-scroller", "");
+          const scroller =
+            document.querySelector("[data-case-scroller]") ??
+            document.scrollingElement ??
+            document.documentElement;
           const sightTop =
             scroller === document.scrollingElement ? 0 : scroller.getBoundingClientRect().top;
           const box = node.getBoundingClientRect();
