@@ -316,7 +316,8 @@ func cutUntilReconnecting(t *testing.T, conn *nats.Conn) {
 	})
 }
 
-// waitForReconnect waits until nats.go has reconnected conn, with the reconnect counted past before.
+// waitForReconnect waits until nats.go has reconnected conn, with the reconnect counted past before,
+// bounded only by the test binary's deadline (testwait.Until).
 func waitForReconnect(t *testing.T, conn *nats.Conn, before uint64) {
 	t.Helper()
 	testwait.Until(t, "control: nats.go to reconnect after the cut, with the reconnect counted", func() (string, bool) {
