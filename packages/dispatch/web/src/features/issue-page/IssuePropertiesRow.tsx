@@ -42,7 +42,7 @@ import { statusGlyph, statusTone } from "./issue-status";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { StatusGlyph } from "./StatusGlyph";
-import { nodeIdOf as issueNodeIdOf } from "./tree-drafts";
+import { nodeIdOf as issueNodeIdOf } from "./statement-rules";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 import { issueCommentsQuery } from "./useIssueTree";
 import { type WaitingPress, waitingOnReader } from "./waiting";

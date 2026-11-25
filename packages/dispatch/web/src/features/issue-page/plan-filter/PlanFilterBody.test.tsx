@@ -52,7 +52,8 @@ import {
 import { ProvidersSlot } from "../slots/providers";
 import { ViewStage } from "../slots/stage";
 import { ViewPlanSlot } from "../slots/view-plan";
-import { blockNodeId, treeContext } from "../tree-drafts";
+import { blockNodeId } from "../statement-rules";
+import { treeContext } from "../tree-drafts";
 import { issueAsksQuery } from "../useIssueTree";
 import { PlanFilterBody, type PlanRead, type PlanReads } from "./PlanFilterBody";
 

@@ -1016,7 +1016,7 @@ export function longWords(lead: string, count: number): string {
   return paragraphs.join("\n\n");
 }
 
-/** The node id of block `block` of the document `slug` (`tree-drafts.ts`'s `blockNodeId`). */
+/** The node id of block `block` of the document `slug` (`statement-rules.ts`'s `blockNodeId`). */
 export function blockNode(slug: string, block: string): string {
   return `${slug}#b-${block}`;
 }

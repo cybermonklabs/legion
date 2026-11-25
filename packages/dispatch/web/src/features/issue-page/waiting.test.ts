@@ -14,7 +14,7 @@ import { anchorQuote, changeAnchor } from "../decision-card/change-anchor";
 import { wordsOf } from "../refs/tree-fragment";
 import { decisionChangeComments } from "./decision-review";
 import { buildIssueTree, type DocumentBlocks, isStatement, type TreeNode } from "./issue-tree";
-import { coverageStatements } from "./tree-drafts";
+import { coverageStatements } from "./statement-rules";
 import { nodesInOrder } from "./tree-keys";
 import { waitingOnReader } from "./waiting";
 

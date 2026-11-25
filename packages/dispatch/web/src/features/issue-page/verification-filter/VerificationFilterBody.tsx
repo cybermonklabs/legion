@@ -64,9 +64,9 @@ import {
 } from "../page-words";
 import { RowText } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
+import type { CheckReading } from "../statement-rules";
 import { moveToRow } from "../useTreeKeymap";
 import {
-  type CheckReading,
   STATEMENT_STATES,
   type StatementReading,
   shortCommit,

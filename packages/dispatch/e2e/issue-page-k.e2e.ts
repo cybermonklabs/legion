@@ -9,7 +9,7 @@ import {
   STATE_LINES,
   wordsIn,
 } from "../web/src/features/issue-page/page-words";
-import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
+import { blockNodeId } from "../web/src/features/issue-page/statement-rules";
 import { createComment, createNamedVersion, getArtifact, getIssue } from "./api";
 import {
   type PlanOrderSeed,

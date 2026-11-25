@@ -35,7 +35,7 @@
 //   Legion state gives, each its role and then its role words.
 
 import { DECLARED_WORDS, wordsIn } from "../web/src/features/issue-page/page-words";
-import { checkStanding } from "../web/src/features/issue-page/tree-drafts";
+import { checkStanding } from "../web/src/features/issue-page/statement-rules";
 import {
   getArtifact,
   getAsk,

@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import type { LegionIssueResponse } from "@legion/contracts";
 import type { LegionClaimState, LegionPhase } from "@legion/contracts/legion-api";
 import type { Actor } from "../web/src/api/types";
-import { checkStanding } from "../web/src/features/issue-page/tree-drafts";
+import { checkStanding } from "../web/src/features/issue-page/statement-rules";
 import { compareTimestamps } from "../web/src/lib/timestamps";
 import {
   answerAsk,

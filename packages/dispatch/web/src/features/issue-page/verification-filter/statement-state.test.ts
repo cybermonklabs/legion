@@ -4,7 +4,7 @@ import type { Artifact, ArtifactBlock, CheckBlock, IssueDetails } from "../../..
 import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { NODE_STATE_WORDS, RESULT_STANDS_WORDS } from "../page-words";
 import { filterSignals, presetView } from "../presets";
-import { blockNodeId } from "../tree-drafts";
+import { blockNodeId } from "../statement-rules";
 import { treeRows } from "../tree-fold";
 import {
   COMMIT_CHARACTERS,

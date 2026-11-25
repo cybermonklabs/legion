@@ -14,7 +14,7 @@ import {
 import { presetPath } from "../issue-address";
 import { TWO_THREADS } from "../outline-fixtures";
 import { STATE_LINES } from "../page-words";
-import { blockNodeId } from "../tree-drafts";
+import { blockNodeId } from "../statement-rules";
 import { check, VERIFICATION_SLUG } from "../verification-filter/verification-fixtures";
 import {
   commentGone,

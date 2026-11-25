@@ -5,7 +5,7 @@ import { buildIssuePath, type IssueRoute } from "../refs/routes";
 import { agentsOnlyIds } from "./agents-only";
 import type { TreeNode } from "./issue-tree";
 import type { Preset } from "./page-words";
-import { blockNodeId } from "./tree-drafts";
+import { blockNodeId } from "./statement-rules";
 
 /**
  * What one address of the issue page says.
@@ -24,7 +24,7 @@ import { blockNodeId } from "./tree-drafts";
 export type AddressTarget =
   /** One block, by the block id a `#b-` fragment or a route's block target holds, and the slug
    *  of the document holding it where the address names one: a block id is unique inside its
-   *  document alone, and an issue carries several (`tree-drafts.ts`'s `blockNodeId`). An
+   *  document alone, and an issue carries several (`statement-rules.ts`'s `blockNodeId`). An
    *  address that names no document - a `#b-` fragment on the issue's own address - leaves it
    *  undefined, and the first node carrying that block id answers. */
   | { readonly kind: "block"; readonly id: string; readonly document?: string }
@@ -235,7 +235,7 @@ function pathToNode(
  * first and by the `dispatch://` address of that item second.
  *
  * A block is looked up inside the document its address names, since a node's id is
- * `<slug>#b-<id>` (`tree-drafts.ts`'s `blockNodeId`) and a block id is the author's, unique
+ * `<slug>#b-<id>` (`statement-rules.ts`'s `blockNodeId`) and a block id is the author's, unique
  * inside one document alone: `/issues/KEY/artifacts/plan-md#b-t1` would otherwise land on the
  * spec's own `#b-t1`. An address naming no document - a `#b-` fragment on the issue's own
  * address - has only the block id to go on, and the first node carrying it answers. The

@@ -7,7 +7,7 @@ import type { DocumentBlocks, TreeNode } from "../issue-tree";
 import { NODE_TYPE_NAMES } from "../page-words";
 import { presetView } from "../presets";
 import { parentLinkWords } from "../projection-fixture";
-import { nodeIdOf as issueNodeIdOf } from "../tree-drafts";
+import { nodeIdOf as issueNodeIdOf } from "../statement-rules";
 import {
   AGENT,
   answeredAsk,
@@ -48,7 +48,7 @@ beforeAll(async () => {
   await warmMarkdownRenderer();
 });
 
-/** How this issue addresses a node, which is the page's own rule (`tree-drafts.ts`). */
+/** How this issue addresses a node, which is the page's own rule (`statement-rules.ts`). */
 const nodeIdOf = issueNodeIdOf(issueDetails());
 
 /** The decisions document's blocks as the blocks read answers them: each decision's own block,

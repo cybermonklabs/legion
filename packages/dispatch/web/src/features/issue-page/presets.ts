@@ -292,7 +292,7 @@ export function filterSignals(
   const verification = view("verification");
   const decisions = view("decisions");
   // A check's state is the page's one reading of it, as the server reads its results
-  // (`tree-drafts.ts`'s `checkStanding`), so this flag and the Verification body count the same
+  // (`statement-rules.ts`'s `checkStanding`), so this flag and the Verification body count the same
   // checks as failed.
   const failing = countOf(verification.root, "check", (node) => node.state === "failed");
   // The decisions of the review list (R35): an agent's decision that waits and that a link ties

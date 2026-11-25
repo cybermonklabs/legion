@@ -55,7 +55,7 @@ type ChangedDecision = Pick<
  * asked to change since it last changed (`changed`).
  * `isCoverageStatement` answers whether an address names a statement as the list reads one, a
  * requirement the coverage read holds: a caller passes `coverageStatements(issue, coverage)`
- * (`tree-drafts.ts`), not the rows' `isStatement` (`issue-tree.ts`).
+ * (`statement-rules.ts`), not the rows' `isStatement` (`issue-tree.ts`).
  *
  * It is the one rule that decides the list, so the count of what waits on the reader (R13), the
  * filter's "to review" signal and the node's own `waiting` read it too and cannot disagree with

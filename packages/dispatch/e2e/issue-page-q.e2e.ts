@@ -8,7 +8,7 @@ import {
   DECISIONS_WORDS,
   NODE_STATE_WORDS,
 } from "../web/src/features/issue-page/page-words";
-import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
+import { blockNodeId } from "../web/src/features/issue-page/statement-rules";
 import { getArtifact, getAsk, getIssueDecisions, listComments } from "./api";
 import { nextFrames } from "./frames";
 import { seedDecisionsFilter, seedReviewList } from "./issue-layout-seed";

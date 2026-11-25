@@ -316,7 +316,7 @@ export interface TreeNode {
   readonly source?: TextSource;
   /** How it stands, for a type the model gives a state: one of the states the page has a word
    *  for, so a row draws that word and never the token (`NodeState`, R21). A check reads it as
-   *  the server reads its results (`tree-drafts.ts`'s `checkStanding`); a `check` block of any
+   *  the server reads its results (`statement-rules.ts`'s `checkStanding`); a `check` block of any
    *  document but the issue's Verification document carries none, since it is no check and the
    *  results read never answers for it (`isCheck`). */
   readonly state?: NodeState;

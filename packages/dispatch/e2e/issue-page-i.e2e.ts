@@ -20,7 +20,7 @@ import {
   PRESET_ORDER,
   wordsIn,
 } from "../web/src/features/issue-page/page-words";
-import { blockNodeId, checkStanding } from "../web/src/features/issue-page/tree-drafts";
+import { blockNodeId, checkStanding } from "../web/src/features/issue-page/statement-rules";
 import { DRAWN_LEVELS } from "../web/src/features/issue-page/tree-fold";
 import { REF_PREVIEW_OPEN_DELAY_MS } from "../web/src/features/refs/ref-preview-timing";
 import { pageFocusedRow } from "../web/src/theme/classes";

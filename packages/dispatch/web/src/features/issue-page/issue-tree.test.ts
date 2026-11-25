@@ -58,7 +58,8 @@ import {
   publishingNames,
 } from "./projection-fixture";
 import { knownIssueKeys, rowReferences, rowReferenceWords } from "./row-references";
-import { blockNodeId, checkStanding, nodeIdOf, treeContext } from "./tree-drafts";
+import { blockNodeId, checkStanding, nodeIdOf } from "./statement-rules";
+import { treeContext } from "./tree-drafts";
 import { treeRows } from "./tree-fold";
 import { nodesInOrder } from "./tree-keys";
 import {
