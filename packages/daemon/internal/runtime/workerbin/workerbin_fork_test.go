@@ -13,18 +13,19 @@ import (
 // them by name off its PATH. Install's callers start no command beside it today: a tmux daemon
 // installs the scripts at its boot before it starts supervision, the NATS connection or its API,
 // and `legion controller start` while nothing else of it starts one. RunsBeside's forks stand in
-// for a process that does. Each install's three scripts are three runs: the first of each three
-// installs again, over the install before, and the three run newest first, so git, which Install
+// for a process that does. Each install's four scripts are four runs: the first of each four
+// installs again, over the install before, and the four run newest first, so jj, which Install
 // writes last, runs as soon as it returns. Run oldest first, legion's run came after the writes of
 // gh and git, and with programfile.Write's lock taken out the test met 13 refusals in one run of
-// its 450 and none in another.
+// its 450 and none in another. Once Install came to write jj after git, the first run, git's, no
+// longer followed its own write, and with the lock taken out the test met none in 450 again.
 func TestTheScriptsInstallWritesRunWhileTheProcessForks(t *testing.T) {
 	legion, err := exec.LookPath("true")
 	if err != nil {
 		t.Fatalf("no true command for the scripts to exec: %v", err)
 	}
 	root := t.TempDir()
-	names := []string{"git", "gh", "legion"}
+	names := []string{"jj", "git", "gh", "legion"}
 	const installs = 150
 	testexec.RunsBeside(t, len(names)*installs, func(i int) error {
 		if i%len(names) == 0 {
