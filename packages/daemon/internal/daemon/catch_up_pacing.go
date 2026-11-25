@@ -124,19 +124,16 @@ func (p *catchUpPacing) join(ctx context.Context, id int64, issue string) error 
 	p.mu.Unlock()
 
 	read, cancel := context.WithTimeout(store.ForConcurrentWorker(ctx), readyReleaseTimeout)
-	var held bool
-	err := p.pool.QueryRow(read, `select exists (select 1 from outbox where id = $1 and next_at = $2)`,
-		id, record.CatchUpHeldAt).Scan(&held)
+	held, err := store.ReadOnly(read, p.pool, "read whether a catch-up is still held", func(ctx context.Context, tx pgx.Tx) (bool, error) {
+		return record.CatchUpHeld(ctx, tx, id)
+	})
 	cancel()
 	p.mu.Lock()
 	_, joining := p.places[id]
 	if err != nil || !held || !joining {
 		delete(p.places, id)
 		p.mu.Unlock()
-		if err != nil {
-			return fmt.Errorf("read whether catch-up row %d of %s is still held: %w", id, issue, err)
-		}
-		return nil
+		return err
 	}
 	place := p.pacer.Join(wakepace.Second)
 	p.places[id] = place

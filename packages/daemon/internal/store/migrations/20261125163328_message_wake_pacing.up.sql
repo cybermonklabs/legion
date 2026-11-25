@@ -31,13 +31,18 @@
 -- later notice for the row's architect waits behind it. It decodes a notice strictly, so it
 -- refuses a row that carries paced_turns. The way back below makes every held catch-up due now,
 -- as a catch-up that was never paced, and takes paced_turns out of every catch-up that carries it.
--- Run it with every daemon that shares the database stopped, before the earlier release starts.
+-- It also clears every claim's mark: the earlier release clears none, so a mark left standing on
+-- a role that takes no turn under it would read, when this release is rolled forward again, as a
+-- message still waiting from before the rollback. It drops neither column and deletes no version
+-- row, so the roll forward finds both columns and applies nothing. Run it with every daemon that
+-- shares the database stopped, before the earlier release starts.
 --
 -- update outbox set next_at = now(), payload = payload - 'paced_at' - 'paced_from'
 -- where kind = 'notice' and payload->>'kind' = 'catch-up'
 --   and next_at = '2100-01-01 00:00:00+00'::timestamptz;
 -- update outbox set payload = payload - 'paced_turns'
 -- where kind = 'notice' and payload->>'kind' = 'catch-up' and payload ? 'paced_turns';
+-- update claims set message_mark_at = null where message_mark_at is not null;
 
 alter table claims add column message_mark_at timestamptz;
 alter table pod_resumes add column queued boolean not null default false;

@@ -904,16 +904,20 @@ waiting its turn. One wake has its session read its whole context again, which t
 as uncached input — a mean of 576,083 tokens, a median of 493,636 and a ninetieth percentile of
 1,327,888 — and the pacing is what spreads that over the minutes after a restart. A wave sustains
 about two thirds of the rate, about 5 a minute at the default, so a hundred claims take about
-twenty minutes. A restart forgets each waiting wake's moment. The launches it finds unfinished, a
+twenty minutes. A wake for a role that has an Envoy message waiting, and the relaunch of a role
+whose own process died, wait in a first queue that the pacing lets out ahead of the rest, which
+keep one turn in four ([legion.yaml](/legion/legion/running-legion/#legionyaml)). A restart
+forgets each waiting wake's place. The launches it finds unfinished, a
 claim launching with no process, and the relaunches of processes the previous daemon found dead go
-back into the pacing in one order, the order their tasks were queued, the oldest first, so among
-those a claim that waited before the restart goes ahead of work owed after it; the stale-plugin
-pass takes its turns as it reaches the gate, and while the project is paused the unfinished
-launches wait for the resume instead. A relaunch that reaches its gate an interval or more after
-the turn the boot gave it — its admission waits behind every other launch's — is reserved a turn
-afresh, at the back of the queue unless the pacing has drained, and the daemon logs `supervise:
-this launch reached the wake gate an interval or more after the turn its caller reserved` with the
-moment it is now `due`. Read what the pacing still holds before you act on anything below:
+back into the pacing's two queues, each queue in one order, the order their tasks were queued, the
+oldest first, so among those a claim that waited before the restart goes ahead of work owed after
+it; the stale-plugin pass takes its places as it reaches the gate, and while the project is paused
+the unfinished launches wait for the resume instead. A relaunch that reaches its gate an interval
+or more after the pacing let out the place the boot took for it — its admission waits behind every
+other launch's — joins its queue afresh, at the back unless the pacing has drained, and the daemon
+logs `supervise: this launch reached the wake gate an interval or more after the pacing let out the
+place its caller took` with the moment it is now `due`. Read what the pacing still holds before you
+act on anything below:
 
 ```sh
 legion state --config legion.yaml --json | jq '.wakesWaiting'
@@ -925,15 +929,17 @@ Each entry names the `claim`, its `issue` and `role`, the `kind` of wake (`launc
 process about to start; `plugin-refresh`, the relaunch of a session whose plugin speaks an
 earlier daemon contract, which the daemon replaces at that one wake and asks nothing of first;
 `catch-up`, the notice a start writes to an architect that is already running)
-and `dueAt`, the moment the pacing gave it, which is when it runs.
+and `dueAt`, the moment the pacing estimates it lets that wake out, which is when it runs. The
+estimate moves earlier when a wake ahead of it leaves, and later when a wake for a role with a
+message waiting goes ahead of it.
 An empty array says the wave has
 gone out; the last `dueAt` in it says when the last of the wave goes.
 A claim on that list needs
-nothing from you: its wake is reserved and it runs at the moment named.
+nothing from you: its wake holds a place and it runs when the pacing lets that place out.
 To run one now: `legion claims retry --claim <token>` runs the launch of a claim that runs no
 process, `legion claims resume` that of a suspended one, and a task you send runs the launch over
-a process the claim still records. Each takes the reserved wake back, and the wakes behind it keep
-their turns.
+a process the claim still records. Each takes the waiting wake out of its queue, and the wakes
+behind it move up.
 
 A claim whose process the daemon found dead before the restart is on that list as well.
 Its record says the death was charged, and the boot raises the relaunch that death raised again, in

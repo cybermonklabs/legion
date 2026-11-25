@@ -10,7 +10,8 @@ import (
 // before a release from before it starts, makes every held catch-up due as one that was never
 // paced and takes the turns out of every catch-up that carries them: that release publishes a
 // notice only once it is due, and refuses a notice with a field it does not know. A held notice of
-// another kind is none of this release's, and stays as it is.
+// another kind is none of this release's, and stays as it is. It clears every claim's mark, which
+// that release would leave standing for the roll forward to read as a message still waiting.
 func TestMessageWakePacingUpgradeAndWayBack(t *testing.T) {
 	const version = 20261125163328
 	ctx := t.Context()
@@ -42,6 +43,7 @@ func TestMessageWakePacingUpgradeAndWayBack(t *testing.T) {
 	if !read(`select message_mark_at is null from claims`) || read(`select queued from pod_resumes`) {
 		t.Fatal("the migration marked a claim it found, or stopped the clock of a resume it found")
 	}
+	exec(`update claims set message_mark_at = now()`)
 	exec(`insert into outbox (kind, issue, payload, attempts, next_at, last_error) values
 		('notice', 'LEGION-208', '{"kind":"catch-up", "paced_at":"2100-01-01T00:00:00Z", "paced_from":"2026-11-25T09:00:00Z"}', 0, '2100-01-01T00:00:00Z', ''),
 		('notice', 'LEGION-208', '{"kind":"catch-up", "paced_at":"2026-11-25T09:05:00Z", "paced_from":"2026-11-25T09:00:00Z", "paced_turns":3}', 0, now(), ''),
@@ -59,5 +61,8 @@ func TestMessageWakePacingUpgradeAndWayBack(t *testing.T) {
 	}
 	if !read(`select next_at = '2100-01-01T00:00:00Z' from outbox where payload->>'kind' = 'other'`) {
 		t.Fatal("the way back made a notice of another kind due")
+	}
+	if !read(`select message_mark_at is null from claims`) {
+		t.Fatal("the way back left a claim's message mark standing")
 	}
 }

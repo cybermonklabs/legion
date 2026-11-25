@@ -1,0 +1,22 @@
+kind: Changed
+body: |-
+    The wake pacing keeps two queues in front of its one token bucket. A paced wake for a role with
+    an Envoy message waiting, and the relaunch of a role whose own process died, wait in the first
+    queue. Every other paced wake waits in the second, which gets one turn in four while both hold
+    wakes. Before, every paced wake took the next turn of one queue, so after a restart a role with
+    a kept message could be woken more than an hour later, after Envoy had dropped the message. The
+    rate does not change, and no two wakes run in one turn.
+
+    The daemon stores the mark of a waiting message on the claim, so a restart keeps it. A waiting
+    wake holds a place and no moment: each `dueAt` of the state's `wakesWaiting` is the pacing's
+    estimate for that place, a resume's stuck clock stops while its launch waits, and a paced
+    catch-up waits in the outbox with no due moment until the pacing lets it out. The line
+    `supervise: wake ran` names the `queue` a paced wake came from and its `turnsWaited`, and is a
+    warning with `lateForMessage` for a message wake let out more than 45 minutes after its mark.
+
+    Store migration `20261125163328_message_wake_pacing` adds `claims.message_mark_at` and
+    `pod_resumes.queued`. A rollback to a release before it runs the way back in that migration's
+    header first, with every daemon of the database stopped.
+time: 2026-11-25T18:24:56Z
+custom:
+    Issue: message-wake-goes-ahead

@@ -3473,6 +3473,19 @@ func ReleaseHeldCatchUp(ctx context.Context, tx pgx.Tx, id int64, at time.Time, 
 	return tag.RowsAffected() != 0, nil
 }
 
+// CatchUpHeld is whether the catch-up row id still stands held, with no due moment
+// (CatchUpHeldAt): false for a row a newer catch-up dropped and for one the wake pacing has let
+// out. The daemon reads it before it gives a held row a place in the pacing's queue, so a row that
+// is gone takes none.
+func CatchUpHeld(ctx context.Context, tx pgx.Tx, id int64) (bool, error) {
+	var held bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where id = $1 and next_at = $2
+		and kind = 'notice' and payload->>'kind' = 'catch-up')`, id, CatchUpHeldAt).Scan(&held); err != nil {
+		return false, fmt.Errorf("read whether catch-up row %d is still held: %w", id, err)
+	}
+	return held, nil
+}
+
 func (s *Postgres) OutboxLeased(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) (bool, error) {
 	var leased bool
 	if err := tx.QueryRow(ctx, "select exists(select 1 from outbox where id = $1 and lease_token = $2)", id, leaseToken).Scan(&leased); err != nil {
