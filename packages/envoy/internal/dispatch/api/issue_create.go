@@ -489,10 +489,11 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// them in the store's order, each in the issue's project; what that write states waits for
 	// the issue.created event below (graphstore.QueueCaused). It is one of the create's inline
 	// writes, before the ledger's: the spec's version and block index run at Commit, and the
-	// index's projection rows name the spec's node. Both are nodes this write creates
-	// (graphstore.Created). The node write and the issue's row go to the server as one batch
-	// (store.WriteBatch), the node write first, as createStoredMessage writes a message's node and
-	// row: the node write adds no round trip while the create holds its transaction id (INFRA-636).
+	// index's projection rows name the spec's node. The node write and the issue's row go to the
+	// server as one batch (store.WriteBatch), the node write first, as createStoredMessage writes
+	// a message's node and row: the node write adds no round trip while the create holds its
+	// transaction id (INFRA-636).
+	// Both nodes are ones this write creates (graphstore.Created).
 	issueNodes := graphstore.PlanUncaused([]graphstore.Node{
 		graphstore.Created(graphstore.IssueNode(key, input.Project, actor, createdAt)),
 		graphstore.Created(graphstore.ArtifactNode(specRef, input.Project, "", actor, createdAt)),
