@@ -87,7 +87,8 @@ function runtime(
   claim: ClaimCapability = implementer,
   state: Record<string, unknown> = daemonFixture("state.json"),
   ratingRefusal?: DaemonRefusal,
-  report: HandoffReport = REPORT
+  report: HandoffReport = REPORT,
+  daemonContract: number | null = 297
 ) {
   const routes: string[] = [];
   const bytes: { readonly route: string; readonly bytes: number }[] = [];
@@ -101,6 +102,14 @@ function runtime(
   const stub = (async (input, init) => {
     const route = new URL(input.toString()).pathname;
     routes.push(route);
+    if (route === "/healthz") {
+      return Response.json(
+        {},
+        daemonContract === null
+          ? undefined
+          : { headers: { "Legion-Daemon-Contract": String(daemonContract) } }
+      );
+    }
     const body: Record<string, unknown> | undefined =
       typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
     if (body !== undefined) posted.push(body);
@@ -618,7 +627,7 @@ test("request_backward_move sends return_to as returnTo", async () => {
       return_to: 2,
     })
   ).resolves.toEqual({});
-  expect(routes).toEqual(["/legion/v1/grants", "/legion/v1/phase/backward"]);
+  expect(routes).toEqual(["/healthz", "/legion/v1/grants", "/legion/v1/phase/backward"]);
   expect(posted.at(-1)).toEqual({
     grantId: "grant-for-one-command",
     to: "step",
@@ -632,6 +641,31 @@ test("request_backward_move sends return_to as returnTo", async () => {
   ).rejects.toThrow(
     "request_backward_move's return_to is a whole number of 1 or more: the place of a step of your task, 1 for its first"
   );
+});
+
+test("request_backward_move does not send new fields to a daemon below contract 297", async () => {
+  const { ops, routes, posted } = runtime(implementer, stateAtPhase("testing"), undefined, REPORT, 296);
+  for (const move of [{ to: "step" }, { to: "implementing", return_to: 1 }]) {
+    await expect(
+      executePhaseOp(ops, { op: "request_backward_move", reason: "Red.", ...move })
+    ).rejects.toThrow("daemon contract 296");
+  }
+  expect(routes).toEqual(["/healthz", "/healthz"]);
+  expect(posted).toEqual([]);
+  routes.length = 0;
+
+  await executePhaseOp(ops, { op: "request_backward_move", to: "implementing", reason: "Red." });
+  expect(routes).toEqual(["/legion/v1/grants", "/legion/v1/phase/backward"]);
+  expect(posted.at(-1)).not.toHaveProperty("returnTo");
+});
+
+test("request_backward_move does not send a step target to a daemon that states no contract", async () => {
+  const { ops, routes, posted } = runtime(implementer, stateAtPhase("testing"), undefined, REPORT, null);
+  await expect(
+    executePhaseOp(ops, { op: "request_backward_move", to: "step", reason: "Red." })
+  ).rejects.toThrow("daemon stated no contract");
+  expect(routes).toEqual(["/healthz"]);
+  expect(posted).toEqual([]);
 });
 
 // Workers named their own issue on handoff_complete and left it off read_record, and both were

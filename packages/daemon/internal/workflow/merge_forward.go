@@ -309,7 +309,7 @@ func (e *Engine) mergeForwardWorker(issue record.Issue, at phase.Phase, step rec
 // a daemon restarted without, whose task is stopped (stopLostRole) and whose claim no message of a
 // merge forward reaches. Legion's own roles are never lost.
 func lostRole(role claim.Role, deployment plan.Deployment) bool {
-	return !claim.IsBuiltin(role) && !deployment.Defines(string(role))
+	return claim.IsDeploymentRole(role) && !deployment.Defines(string(role))
 }
 
 // MergeForwardAt reads in tx what a merge-forward message (record.MergeForwardMessage) of issue
@@ -418,19 +418,15 @@ func mergeForwardReviewOwed(pr record.PullRequest) bool {
 // that landed left, whose merge the role can read, and tells the role to do the phase's work at
 // the head the pull request stands at and complete again at it.
 //
-// Neither refusal sends the role to the head the pull request stands at while the record's ask of
-// that head has not landed and its hold was sent to that role - the head an earlier merge left
-// conflicts in its turn, its merge forward is asked in the phase the completion reports, and the
-// hold reaches the role that completes it (record.MergeForwardReaches) - since that hold tells
-// the role not to complete at that head (record.MergeForwardHold). Then the refusal names the
-// head the pull request stands at, says its merge forward is asked and has not landed, and tells
-// the role to wait for the daemon's landed message (record.MergeForwardLanded) and do the phase's
-// work at the head that message names (awaitedMergeForward). That wait is told only to a role the
-// ask's hold was sent to: every other completion is answered as above, at the head the pull
-// request stands at, since no hold told its role not to complete there. The implementer, whose
-// completion of retro is fenced, is sent no hold, the merge being its own to make; and an ask made
-// in implementing sends none, and stands into the next phase when the move there does not ask
-// again (mergeForwardOnEntry), as at a head the record no longer holds in a confirmed conflict.
+// Neither refusal sends the role to the head the pull request stands at while a merge forward of
+// that head is pending in the reported phase and the role is eligible for that phase's hold
+// (record.MergeForwardReaches). Instead it tells the role to wait for the landed message and work
+// at the head that message names (awaitedMergeForward). At step this includes the current role
+// even if it took over after the hold: mergeForwardLanded tells the step's role at landing, not
+// the role that first got the hold. Other completions are answered at the pull request's current
+// head. The implementer, whose completion of retro is fenced, gets no hold because it makes the
+// merge itself. An ask made in implementing sends no hold and can stand into the next phase if
+// the move does not ask again (mergeForwardOnEntry).
 //
 // A phase that ends with a handoff record is told to write it again, with its `head` set to the
 // head the role is told to complete at, since a completion naming the record it already named is
@@ -505,12 +501,9 @@ func mergedForwardRefusal(issue record.Issue, role claim.Role, reported phase.Ph
 	return refused("HANDOFF_HEAD_MERGED_FORWARD", fmt.Sprintf("the %s's completion of phase %s of %s %s. %s", role, reported, issue.Key, clause, next)), true
 }
 
-// awaitedMergeForward ends a refusal of mergedForwardRefusal while the record's ask is of the head
-// pr stands at, has not landed, and sent its hold to the role that completes, which tells that
-// role not to complete at that head (record.MergeForwardHold). It names that head, says the merge
-// of the ask's base forward onto it is asked and has not landed, and tells the role to wait for
-// the daemon's landed message (record.MergeForwardLanded), do the phase's work at the new head
-// that message names, and then complete at it as again says.
+// awaitedMergeForward ends a refusal when the merge forward of the current head is pending and
+// the completion's role is eligible to wait for it (mergedForwardRefusal). It names that head and
+// tells the role to work at the head in the daemon's landed message, then complete as again says.
 func awaitedMergeForward(pr *record.PullRequest, again string) string {
 	return fmt.Sprintf("Pull request #%d stands at head %s now, and the merge of %s forward onto head %s is asked and has not landed. Wait for the daemon's message that this merge landed, do the phase's work at the new head that message names, then %s; this completion changed nothing",
 		pr.Number, pr.HeadSHA, pr.MergeForward.Base, pr.HeadSHA, again)

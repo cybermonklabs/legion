@@ -371,10 +371,7 @@ func returnStep(issue record.Issue, w Walk, from stepSite, n int, act returnAct)
 		return record.TaskPlace{}, fmt.Sprintf("returnTo is %d, and %s has no plan of tasks in Legion's record, so it has no step to name; send %s again without returnTo; nothing was recorded",
 			n, issue.Key, act.Again)
 	}
-	at, ok := from.place, from.named
-	if !from.named {
-		at, ok = w.placeIn(from.at)
-	}
+	at, ok := w.resolveSite(from)
 	if _, step := w.planStepAt(at); !ok || !step {
 		return record.TaskPlace{}, fmt.Sprintf("returnTo is %d, and task %s of %s has no step that runs as %s now (its steps are %s), so %s names no step of the task to return to; send %s again without returnTo; nothing was recorded",
 			n, w.Task, issue.Key, from.at, strings.Join(plan.Words(namedSteps(w.Steps)), " "), act.This, act.Again)

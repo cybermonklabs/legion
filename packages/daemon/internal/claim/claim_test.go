@@ -315,6 +315,19 @@ func TestATokenOfADeploymentRole(t *testing.T) {
 	}
 }
 
+func TestIsDeploymentRoleDistinguishesTheIssueClaimRoles(t *testing.T) {
+	for _, role := range []Role{"checker", "code-checker", Role("c" + strings.Repeat("x", 31))} {
+		if !IsDeploymentRole(role) {
+			t.Errorf("IsDeploymentRole(%q) = false, want true", role)
+		}
+	}
+	for _, role := range append(slices.Clone(Roles), RoleController, "", "Checker", Role("c"+strings.Repeat("x", 32))) {
+		if IsDeploymentRole(role) {
+			t.Errorf("IsDeploymentRole(%q) = true, want false", role)
+		}
+	}
+}
+
 // A claim can be on one of Legion's six or on any name of the role grammar but the controller's;
 // IsBuiltin takes the six alone.
 func TestARoleIsLegionsOrANameOfTheRoleGrammar(t *testing.T) {

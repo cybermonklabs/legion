@@ -73,6 +73,10 @@ func IsRole(role Role) bool {
 // IsBuiltin reports whether role is one of Legion's six (Roles), and no role of the deployment.
 func IsBuiltin(role Role) bool { return slices.Contains(Roles, role) }
 
+// IsDeploymentRole reports whether role is a valid issue claim role outside Legion's six.
+// To check whether that role is configured, consult the deployment.
+func IsDeploymentRole(role Role) bool { return IsRole(role) && !IsBuiltin(role) }
+
 // NewToken is the token of the claim on issue's role: `legion-<project>-<issue project,
 // lowercased>-<number>-<role>`, byte for byte the shipped roleToken
 // (packages/contracts/src/legion-roles.ts:48-55). The token is the Envoy role the agent claims, so

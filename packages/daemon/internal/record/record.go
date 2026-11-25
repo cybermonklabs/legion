@@ -3056,6 +3056,21 @@ func (i Issue) HoldsQueued(role claim.Role, queuedFor phase.Phase) bool {
 	return i.Phase == queuedFor && i.StepIsOf(role)
 }
 
+// HoldsStart says whether the outbox's start row start is the work of the place the issue stands
+// at now. A start that hands its role work (HoldsQueued) is held to the role of the step at the
+// phase step; one that brings a role back and hands it nothing (SuperviseRequest.BringsBack) is
+// held to the phase it names alone, as every start was before the phase step: a role of the
+// member that ran another step of the task, or the member's own architect, comes back and is told
+// nothing wherever the member stands. The outbox asks it before it runs a start (daemon's
+// supervise); the supervisor's own judge of the same start (supervise.StartWork) is given none of
+// that start's phase at step, since PhaseHolds would refuse it again by the role.
+func (i Issue) HoldsStart(start SuperviseRequest) bool {
+	if start.BringsBack() {
+		return i.Phase == start.Phase
+	}
+	return i.HoldsQueued(start.Role, start.Phase)
+}
+
 // PhaseHolds says whether a task queued for role at phase queuedFor on run generation is still
 // the work of issue, the record of the issue its claim works: the issue holds the work
 // (HoldsQueued) and, for a task of a run (generation above 0), is on that run. An issue the record

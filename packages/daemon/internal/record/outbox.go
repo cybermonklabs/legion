@@ -1353,6 +1353,18 @@ type SuperviseRequest struct {
 
 func (SuperviseRequest) OutboxKind() OutboxKind { return OutboxKindSupervise }
 
+// BringsBack says whether the request is a start that brings a role back and hands it nothing: a
+// start that carries no task, no news, no entry, no production check's look and no wake's mark. It
+// is the start a re-admission's promotion writes for each role of a mid-phase member that has run
+// and is not the phase's own (admit's startMidPhaseMembers): the role comes back and is told
+// nothing. Such a start serves no work of the phase it names, which is the phase the member stood
+// in when it was queued, so it is held to that phase alone (Issue.HoldsStart) and not to the role
+// of the step: at the phase step the role is the running step's, and a role that ran another step
+// of the task is never that.
+func (r SuperviseRequest) BringsBack() bool {
+	return r.Op == "start" && r.Phase != "" && r.Task == "" && !r.News && r.Entry == 0 && r.CheckLook == 0 && r.WakeKind == ""
+}
+
 // GateSeed records the design document version that starts a gate, and the step whose row it
 // starts: the seed reads that document from Dispatch and applies what it finds there.
 type GateSeed struct {
@@ -1975,7 +1987,7 @@ var mergeForwardRoles = map[MergeForwardStep][]claim.Role{
 // (validateOutboxPayload). The hold and the landed also go to a role the deployment defines, the
 // worker of a step that runs as step, which reads the head as the tester and the reviewer do.
 func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
-	if (step == MergeForwardHold || step == MergeForwardLanded) && claim.IsRole(role) && !claim.IsBuiltin(role) {
+	if (step == MergeForwardHold || step == MergeForwardLanded) && claim.IsDeploymentRole(role) {
 		return true
 	}
 	return slices.Contains(mergeForwardRoles[step], role)

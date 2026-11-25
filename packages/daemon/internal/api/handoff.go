@@ -232,7 +232,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// fail and the commit it read, and with no handoff record (the phase step ends with none). The
 	// rules read the role, never the settings: a role outside Legion's six is a role of the
 	// deployment, and the claim's token was derived for it.
-	deploymentRole := !claim.IsBuiltin(grant.Role)
+	deploymentRole := claim.IsDeploymentRole(grant.Role)
 	if (grant.Role == claim.RoleImplementer || grant.Role == claim.RoleMerger || deploymentRole) && !s.requireFailureFields(w, r, field{"commit", req.Commit}) {
 		return
 	}

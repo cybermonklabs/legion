@@ -22,7 +22,7 @@ func IssueRoles(ctx context.Context, tx pgx.Tx, store Store, issue string) ([]cl
 	}
 	roles := append([]claim.Role{}, claim.Roles...)
 	for _, row := range rows {
-		if !claim.IsBuiltin(row.Role) {
+		if claim.IsDeploymentRole(row.Role) {
 			roles = append(roles, row.Role)
 		}
 	}

@@ -99,6 +99,17 @@ func placeNamed(place record.TaskPlace, at phase.Phase) stepSite {
 	return stepSite{at: at, place: place, named: true}
 }
 
+// resolveSite uses the named place on a stored walk. A legacy walk locates the phase on its line.
+func (w Walk) resolveSite(site stepSite) (record.TaskPlace, bool) {
+	if site == (stepSite{}) {
+		return record.TaskPlace{}, false
+	}
+	if site.named && w.Stored {
+		return site.place, true
+	}
+	return w.placeIn(site.at)
+}
+
 // stepAt is the one place that decides the step issue runs at site on w, the walk of its run, and
 // whether its runs are recorded (placeOnWalk), and false for no place and for a phase that runs no
 // step — admitted, awaiting a person, held, done, a phase the walk's line does not hold — or a
@@ -116,13 +127,7 @@ func stepAt(w Walk, issue record.Issue, site stepSite) (standing, bool) {
 // runs today's steps of the task default (todaysSteps), so an issue that ran before plan rows
 // keeps the ids of its records.
 func placeOnWalk(w Walk, site stepSite) (place record.StepPlace, role stepRole, typ plan.Type, ok bool) {
-	if site == (stepSite{}) {
-		return record.StepPlace{}, "", "", false
-	}
-	stands, ok := site.place, site.named
-	if !site.named || !w.Stored {
-		stands, ok = w.placeIn(site.at)
-	}
+	stands, ok := w.resolveSite(site)
 	if !ok {
 		return record.StepPlace{}, "", "", false
 	}

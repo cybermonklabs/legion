@@ -1763,10 +1763,9 @@ such a pass, read the commit the role reported:
 legion state --config legion.yaml --json | jq -r '.issues["<KEY>"].workers["<role>"].handoffCommit'
 ```
 
-In the issue's workspace, `git log -1 --format=%P <commit>` prints that commit's parents. When one
-of them is the `head` a `workflow: the merge forward landed` line names, the step judged the code
-before the merge. The role that works the issue's phase now sends the task back to that step with
-`request_backward_move`, its `returnTo` naming the step's place.
+In the issue's workspace, `git log -1 --format=%P <commit>` prints that commit's parents.
+If a parent is the `head` named by `workflow: the merge forward landed`, the step judged the code before the merge.
+The current phase's worker sends the task back to that step with `request_backward_move` and sets `return_to` to the step's place.
 
 The pull request's state as the daemon sees it:
 
