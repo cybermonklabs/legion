@@ -53,6 +53,7 @@ func managedIssueSpec(t *testing.T) runtime.SpawnSpec {
 // to. A directory grammar narrower than ghrepo's let the daemon admit such an issue and then
 // failed every role's launch on its own default.
 func TestAManagedUsersIssueLaunchesWithItsOwnersDirectory(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withOptions(servingManagedUser))
 	loc := g.spawn(managedIssueSpec(t))
 
@@ -81,6 +82,7 @@ func TestAManagedUsersIssueLaunchesWithItsOwnersDirectory(t *testing.T) {
 // nothing. Read back as any other name, the managed user's directory would be lacking at every
 // sweep and the pod replaced over it for ever.
 func TestAManagedUsersGhKeysReadBackAsItsDirectoryAndItsPodHasNotDrifted(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withOptions(servingManagedUser))
 	loc := g.spawn(managedIssueSpec(t))
 	pod := g.pod(loc.Sandbox.Name)

@@ -21,6 +21,7 @@ const launcherTermDialerEnv = "LEGION_LAUNCHER_TEST_TERM_DIALER"
 // it is ready it waits for SIGTERM, then opens a fresh connection to its generation's session socket
 // and records whether anything answered, as an agent's last write after its pool went idle would.
 func TestLauncherTermDialer(t *testing.T) {
+	// Not parallel: a helper child, run in a process of its own; here it returns at once.
 	if os.Getenv(launcherTermDialerEnv) != "1" {
 		return
 	}
@@ -55,6 +56,7 @@ func TestLauncherTermDialer(t *testing.T) {
 // still find the proxy serving; the old postgres store, which dials the database directly, never
 // lost its last writes this way (INFRA-271).
 func TestASessionDatabaseServesItsChildThroughTheChildsShutdownGrace(t *testing.T) {
+	t.Parallel()
 	for _, how := range []string{"daemon stop", "container shutdown"} {
 		t.Run(how, func(t *testing.T) {
 			dialer := &sessionDialer{addr: idleUpstream(t)}
