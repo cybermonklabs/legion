@@ -6501,9 +6501,9 @@ note "merged pull request #$pr_number holds $(gh api --paginate "repos/$repo/pul
 on_tree "$tree1" wait_for_phase "$tree1" "done" 900
 phase_change_logged "$tree1" merging "done" pull_request_merged ||
   fail "the daemon log has no \"workflow: phase changed\" line moving $tree1 from merging to done on pull_request_merged"
-merge_waits=$(log_lines "workflow: a merged issue's close waits for the issues beneath it" | jq -c --arg issue "$tree1" 'select(.issue == $issue)' | grep -c . || true)
-[ "$merge_waits" = 0 ] ||
-  fail "the daemon logged $tree1's merged close waiting for the issues beneath it $merge_waits times, with none of its tree in the workflow"
+waited=$(log_lines "workflow: a merged issue's close waits for the issues beneath it" | jq -c --arg issue "$tree1" 'select(.issue == $issue)' | grep -c . || true)
+[ "$waited" = 0 ] ||
+  fail "the daemon logged $tree1's merged close waiting for the issues beneath it $waited times, with none of its tree in the workflow"
 merged_notices=$(notice_deliveries "$tree1" architect "$(notice_needle pr-merged "$tree1")")
 [ "$merged_notices" = 0 ] ||
   fail "the merge that closed $tree1 told its architect pr-merged $merged_notices times, want none"

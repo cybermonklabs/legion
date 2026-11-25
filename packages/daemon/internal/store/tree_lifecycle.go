@@ -321,26 +321,29 @@ func (s *Store) IssueSandboxHome(ctx context.Context, project, issue string) (st
 // (lower(project) = project), as IssueSandboxHome reads it; an issue with no plan rows at its
 // generation, or no record, has none.
 func (s *Store) PlanAgents(ctx context.Context, project, issue string) (map[claim.Agent]claim.Role, error) {
-	rows, err := s.pool.Query(ctx, `select s.role, s.agent_key, s.agent
-		from plan_steps s join issues i on i.key = s.issue and i.generation = s.generation
-		where i.key = $2 and lower(i.project) = $1
-		order by s.task, s.position`, project, issue)
-	if err != nil {
-		return nil, fmt.Errorf("read the agents of the plan of %s: %w", issue, err)
-	}
-	defer rows.Close()
 	agents := map[claim.Agent]claim.Role{}
-	for rows.Next() {
-		var role, key, stored string
-		if err := rows.Scan(&role, &key, &stored); err != nil {
-			return nil, fmt.Errorf("read the agents of the plan of %s: %w", issue, err)
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `select s.role, s.agent_key, s.agent
+			from plan_steps s join issues i on i.key = s.issue and i.generation = s.generation
+			where i.key = $2 and lower(i.project) = $1
+			order by s.task, s.position`, project, issue)
+		if err != nil {
+			return err
 		}
-		name := claim.Agent(plan.StoredAgentName(key, stored))
-		if _, named := agents[name]; name != "" && !named {
-			agents[name] = claim.Role(role)
+		defer rows.Close()
+		for rows.Next() {
+			var role, key, stored string
+			if err := rows.Scan(&role, &key, &stored); err != nil {
+				return err
+			}
+			name := claim.Agent(plan.StoredAgentName(key, stored))
+			if _, named := agents[name]; name != "" && !named {
+				agents[name] = claim.Role(role)
+			}
 		}
-	}
-	if err := rows.Err(); err != nil {
+		return rows.Err()
+	})
+	if err != nil {
 		return nil, fmt.Errorf("read the agents of the plan of %s: %w", issue, err)
 	}
 	return agents, nil

@@ -204,7 +204,14 @@ checks.
 
 The table is the line of the **default steps**. Each architect of a tree, the root's or a
 sub-architect's, is an owner of each issue that stands in that tree now, and can give an issue a
-**plan** that picks which steps it runs and in what order. Its one task names the table's roles or roles the deployment defines. Its first `implementer` step comes after every other role of type implementation, since Legion's retro runs as the implementer. It comes before each `tester`, `reviewer` and `acceptance:owner` step, since each reads the pull request the implementer opens. A later `implementer` step may come after them.
+**plan** that picks which steps it runs and in what order.
+Its one task names the table's roles or roles the deployment defines,
+with `implementer` among them and before each `tester`, `reviewer` and `acceptance:owner` step,
+since each of those reads the pull request the implementer opens,
+and after each other step of the type implementation,
+since Legion's retro is done by the implementer,
+where these ordering rules apply to the first `implementer` step.
+A later `implementer` step may come after the steps that read the pull request.
 
 `acceptance:owner` is the architect's acceptance in `accepting`. Other steps can carry a key, as in `implementer:a tester:a`. Steps with one key run as one agent in one claim and one session. A role at two steps can use a single key, as in `implementer:a reviewer implementer:a`, or two agents. In `implementer reviewer implementer`, step 3 starts `implementer-2` with a fresh session. In `implementer reviewer:a implementer:a`, step 3 uses the agent that started as the reviewer.
 
