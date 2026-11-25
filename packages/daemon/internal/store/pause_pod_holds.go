@@ -32,10 +32,10 @@ import (
 // It is keyed on the issue as record.Postgres.ClaimRow keys an issue's lifecycle lane, but in
 // the two-key form, pg_advisory_xact_lock(int, int): Postgres keeps the two-key space apart from
 // the one-key space, where every other advisory lock of the daemon lives (ClaimRow's
-// 'legion.outbox.lifecycle:' and 'legion.outbox.catch-up:' keys, treelifecycle.Serialize, the
-// migrations' lock), so this lock can never be mistaken for one of those whatever the hashes
-// give. The first key names the lock and the second the issue; two issues whose keys hash alike
-// only serialize their pod holds.
+// 'legion.outbox.lifecycle:' and 'legion.outbox.catch-up:' keys, record's countIntakeGiveUp's
+// 'legion.intake_give_up_notice:' key, treelifecycle.Serialize, the migrations' lock), so this
+// lock can never be mistaken for one of those whatever the hashes give. The first key names the
+// lock and the second the issue; two issues whose keys hash alike only serialize their pod holds.
 func LockIssueForPause(ctx context.Context, tx pgx.Tx, issue string) error {
 	if !claim.IsIssueKey(issue) {
 		return fmt.Errorf("lock %q for its pod hold: not an issue key", issue)

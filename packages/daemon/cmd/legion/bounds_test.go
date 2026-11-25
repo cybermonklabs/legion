@@ -33,14 +33,12 @@ func testBinaryDeadline() (time.Time, bool) {
 	return time.Now().Add(timeout), true
 }
 
-// boundByTheDeadline gives every bound legion registers on a program it starts and waits for
-// (programbound: `legion gh`'s git reads, its read of gh's help and its answer to the shared
-// check's visibility read, the credential helper's fork read, the leak guard's gh read, the worker
-// shim's grace for its agent and for a CodeGraph warm-up) what is left of deadline less 30 s when
-// its wait starts, in this process and in each run of this binary as `legion` whose environment
-// is this process's own (testDeadlineEnv). Each product bound fits the real program, and none is
-// what a test here reads: each is all the time a stand-in has to start and answer, and a loaded
-// machine makes starts slow. At a box load of about 1,100 a git behind a one-line script ran out
+// boundByTheDeadline gives every bound legion registers with programbound, each beside its
+// declaration, what is left of deadline less 30 s when its wait starts, in this process and in
+// each run of this binary as `legion` whose environment is this process's own (testDeadlineEnv).
+// Each product bound fits the real program or service, and none is what a test here reads: each
+// is all the time a stand-in has to start and answer, and a loaded machine makes starts slow.
+// At a box load of about 1,100 a git behind a one-line script ran out
 // ghGitReadBound's 30 s in TestGhRepoGitConfigRefusalWithNoGitOrAnOldGit, and at a load average of
 // 744 a run of this binary as `legion gh` reached the stand-in gh after visibilityAnswerBound's
 // 15 s in TestLegionGhReadsOnlyWhatTheSharedCheckReadsAsARead. A program that never answers still

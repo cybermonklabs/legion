@@ -147,11 +147,12 @@ root `package.json`.
 
 ```sh
 bun install                                                  # every workspace
-bunx biome check .                                           # what CI's required lint job runs; `<package>/` for one package
+.github/scripts/check-biome-tree.sh                          # what CI's required lint job runs: `bunx biome check .`, failing on a file too large for Biome to read
+bunx biome check --diagnostic-level=warn --max-diagnostics=none <package>/  # one package, every warning and error printed, as CI's Biome steps print them
 (cd packages/<package> && bun run typecheck && bun run test) # the root has no tsconfig.json and no test script
 (cd packages/<package> && bun test <file> -t '<test name>')  # one test
 bun test scripts/<file or directory>                         # scripts/ is no workspace
-bunx tsc --noEmit -p scripts/dispatch                        # likewise each scripts/ directory with a tsconfig.json
+bun run --cwd packages/contracts gen:api && bunx tsc --noEmit -p scripts/dispatch  # likewise each scripts/ directory with a tsconfig.json
 go -C packages/daemon test ./...                             # the Legion daemon
 go -C packages/envoy test ./...                              # Envoy, Dispatch's server and the Secrets Broker
 go -C packages/daemon test ./internal/api -run '^TestName$'  # one test
@@ -195,8 +196,8 @@ entry.
 
 A package's own commands are in its `README.md` where it has one, and the `AGENTS.md` at the root
 and beside most packages holds the rules for working in that part; `skills/AGENTS.md` covers the
-skills. The documentation site's [contributing page](https://cybermonklabs.github.io/legion/contributing/)
-covers writing its pages.
+skills, and `CONTRIBUTING.md` the pull request process. The documentation site's
+[contributing page](https://cybermonklabs.github.io/legion/contributing/) covers writing its pages.
 
 ## License
 

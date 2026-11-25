@@ -201,6 +201,7 @@ func requireSameTitles(t *testing.T, what string, stored, old map[string]string)
 // none for a session that stamped none or for a person's actor, the first event of an instant on a
 // tie, and the newer of two events whichever was inserted first.
 func TestTheTriggerStoresTheTitleTheEventsReadAnswered(t *testing.T) {
+	t.Parallel()
 	store := migratedTitlesStore(t)
 	titled := writeTitlesFixture(t, store)
 	old := eventsReadTitles(t, store)
@@ -224,6 +225,7 @@ func TestTheTriggerStoresTheTitleTheEventsReadAnswered(t *testing.T) {
 // the progress row is gone, and a second fill reads one empty table. A fill run again over the
 // filled table writes no row.
 func TestTheFillStoresTheTitleTheEventsReadAnswered(t *testing.T) {
+	t.Parallel()
 	store := migratedTitlesStore(t)
 	ctx := context.Background()
 	// The events below are stored as a database holds them before 20261117100015 applied.

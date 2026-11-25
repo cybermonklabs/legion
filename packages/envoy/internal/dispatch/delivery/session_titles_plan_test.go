@@ -76,6 +76,7 @@ func newSessionTitlesPlanFixture(t *testing.T) (*store.Pool, context.Context) {
 // answers the titled session alone: no row for a session that never stamped a title, none for one
 // the events table never heard of, and nothing from a person's actor that shares a session's id.
 func TestTheSessionTitlesReadReadsNoEvents(t *testing.T) {
+	t.Parallel()
 	pool, ctx := newSessionTitlesPlanFixture(t)
 	plan, raw := explaintest.AnalyzedPlan(t, ctx, pool, resolveSessionTitlesQuery, sessionTitlePlanSessions)
 	if read := scannedRelations(t, plan); !slices.Equal(read, []string{"session_titles"}) {
@@ -103,6 +104,7 @@ func TestTheSessionTitlesReadReadsNoEvents(t *testing.T) {
 // and a transaction that appends a retitle and rolls back leaves the title as it was. The events
 // go through events.Broker.Append, the one server path that inserts an event.
 func TestARetitleChangesTheStoredTitleInTheEventsOwnTransaction(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	const session = "ses_retitled_in_its_transaction"
 	seedTitlesIssue(t, ctx, pool)

@@ -1,5 +1,7 @@
 package api
 
+//ci:reads packages/contracts/fixtures/daemon-api/* TestPauseRouteGoldens (path from goldenPath, declared)
+
 import (
 	"bytes"
 	"context"
@@ -8,11 +10,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -239,30 +243,37 @@ func populatedState(t *testing.T) State {
 	// opened, so it holds none and queues for one. A member that holds none writes `holdsSlot`
 	// false rather than leaving it out, which is what the pointer behind that field is for.
 	heldSlot, noSlot := true, false
+	// The two line members' own Dispatch priorities: LEGION-212 is P0 and LEGION-211 is P1, each
+	// its own tree root. Every other recorded issue has none of its own, and each member's line
+	// priority is the one record.PriorityOf gives it (both set at the end of this function).
+	p0, p1, noPriority := PriorityView(record.P0), PriorityView(record.P1), PriorityView(record.NoPriority)
 	// LEGION-208's architect's handshake, which is the pair of times a tree's own root carries in
 	// every phase it stands in (internal/projection): the task of the architect's last entry was
 	// queued to its claim, and a turn of it confirmed that task.
 	entryQueued := time.Date(2026, 9, 22, 8, 58, 14, 0, time.UTC)
 	entryConfirmed := time.Date(2026, 9, 22, 8, 58, 51, 0, time.UTC)
+	// When the latest launch into a pod built before dispatch_token_broker sent its start with the
+	// transition token (DispatchCredentialView.LastTransitionLaunchAt).
+	lastTransitionLaunch := time.Date(2026, 9, 22, 9, 17, 3, 0, time.UTC)
 	// What the two reviewing issues' rounds wait on from GitHub (api.MergeWaitView). LEGION-218's
 	// head went up minutes ago and no read of the pull request has answered for it yet, so all
 	// the daemon knows of its age is the `updated_at` GitHub gave the pull request itself;
 	// LEGION-219's head has stood two days, and every read since the first after its approval has
-	// answered `blocked`, the last of them a minute before this state.
+	// answered `behind`, the last of them a minute before this state.
 	waitingHeadUpdatedAt := time.Date(2026, 9, 22, 8, 58, 40, 0, time.UTC)
 	stuckHeadUpdatedAt := time.Date(2026, 9, 20, 14, 5, 33, 0, time.UTC)
 	stuckStateReadAt := time.Date(2026, 9, 22, 9, 16, 12, 0, time.UTC)
 	// The movements of those two roots (Issue.MovedAt, which the quiet time reads below). Each
 	// reviewer completed its round after the head it approved went up, and a completion is a
 	// movement (workflow's handoff completion marks the issue). LEGION-218 has had nothing since.
-	// LEGION-219's first read after the approval took its merge state from unread to `blocked`,
+	// LEGION-219's first read after the approval took its merge state from unread to `behind`,
 	// which is news of the pull request and a movement too (workflow's pullRequestNews); every
-	// read after it confirmed `blocked` and moved only the read stamp, and telling the architect
+	// read after it confirmed `behind` and moved only the read stamp, and telling the architect
 	// and the reviewer of the stuck round writes a notice and the told marks, neither of which
 	// is a movement.
 	waitingApprovedAt := time.Date(2026, 9, 22, 9, 7, 21, 0, time.UTC)
 	stuckApprovedAt := time.Date(2026, 9, 20, 16, 42, 10, 0, time.UTC)
-	stuckFirstBlockedAt := time.Date(2026, 9, 20, 16, 42, 58, 0, time.UTC)
+	stuckFirstBehindAt := time.Date(2026, 9, 20, 16, 42, 58, 0, time.UTC)
 	// What the daemon last saw two of the fixture's agents do (supervise.StepRecord): the
 	// architect's last call ended, so it is in none, and the implementer's `bash` call has a
 	// start and no end, which is the shape a stalled turn leaves behind. Neither carries the
@@ -287,12 +298,16 @@ func populatedState(t *testing.T) State {
 		StartedAt:     time.Date(2026, 9, 22, 9, 17, 12, 0, time.UTC),
 	}
 	// What the daemon last saw of the architect's turns and of its launches (contract 86): the
-	// turn it began and ended, the ready that dates the two causes beside them, the cause its
-	// process was last found gone under, and the failure its last start reported. One claim view
-	// of the fixture carries all five, so every record describes each key.
+	// turn it began and ended, the ready, the cause its process was last found gone under, and the
+	// failure of a start since that ready, with the time the daemon recorded each of the two
+	// causes (causeTimesContract): LastDeathAt dates the death, before the ready, so the running
+	// agent survived it. One claim view of the fixture carries all seven, so every record
+	// describes each key.
 	architectTurnStart := time.Date(2026, 9, 22, 9, 16, 40, 0, time.UTC)
 	architectTurnEnd := time.Date(2026, 9, 22, 9, 16, 58, 0, time.UTC)
 	architectReady := time.Date(2026, 9, 22, 9, 15, 44, 0, time.UTC)
+	architectDied := time.Date(2026, 9, 22, 9, 15, 21, 0, time.UTC)
+	architectStartFailed := time.Date(2026, 9, 22, 9, 15, 50, 0, time.UTC)
 	state := State{
 		Daemon: DaemonInfo{
 			Project:       "legion",
@@ -365,14 +380,18 @@ func populatedState(t *testing.T) State {
 					UpdateState: UpdateStateNone,
 					Step:        StepViewOf(architectStep),
 					Wake:        &WakeView{Kind: supervise.WakeCatchUp, DueAt: time.Date(2026, 9, 22, 9, 18, 3, 0, time.UTC)},
-					// The turns this agent began and ended, the ready that dates what follows,
-					// and the two causes a start of it reported before the one running now
-					// (contract 86).
-					LastTurnStart:    &architectTurnStart,
-					LastTurnEnd:      &architectTurnEnd,
-					LastReady:        &architectReady,
-					LastDeathCause:   "the pane's process was gone at the daemon's read",
-					LastStartFailure: "the pod was not ready within the worker boot timeout",
+					// The turns this agent began and ended, its ready, and the two causes with
+					// the time each was recorded, LastDeathAt dating the death (contracts 86 and
+					// 256). This view carries every key so each record describes it: a live claim
+					// carries a start failure only while its agent has not been ready since, which
+					// a ready claim never is.
+					LastTurnStart:      &architectTurnStart,
+					LastTurnEnd:        &architectTurnEnd,
+					LastReady:          &architectReady,
+					LastDeathCause:     "the pane's process was gone at the daemon's read",
+					LastDeathAt:        &architectDied,
+					LastStartFailure:   "the pod was not ready within the worker boot timeout",
+					LastStartFailureAt: &architectStartFailed,
 				},
 				Workers: map[claim.Role]PhaseView{
 					claim.RolePlanner: {
@@ -617,16 +636,19 @@ func populatedState(t *testing.T) State {
 					ApprovedVersion: &lineApproval,
 					Status:          GatedStepApproved,
 				}},
-				// The second part's only member, standing behind the whole of the first: its
-				// place in the line, its place within its own part, the ranks that placed it
-				// there and no `since` at all, since its work never started.
+				// The line's last member, P1 of its own and so behind LEGION-212's P0 band. Within
+				// its band it is the only member of the part that has not started, and its band has
+				// no member whose work came back, so its sentence names nothing ahead of it. It
+				// carries the ranks that placed it within its band and no `since` at all, since its
+				// work never started.
+				Priority: &p1,
 				WaitingLine: &WaitingLineView{
 					Place: 2, Length: 2,
 					Part: record.PartStarting.String(), Kind: record.LineQueuedRoot.String(),
 					PartPlace: 1, PartLength: 1, HoldsSlot: &noSlot,
 					RootRank: "00011", OwnRank: "00011", RootKey: "LEGION-211",
-					Reason: "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, " +
-						"and 1 issue whose work came back stands ahead of all of them.",
+					Reason: "It has not started. It waits at P1, its own priority. " +
+						"It is 1st of 1 issue at P1 that has not started, by its own Dispatch rank.",
 				},
 				// A release suspended its implementer and the wake never brought that pod back,
 				// and a stopped claim is read before the line is: the one answer it carries is
@@ -651,18 +673,19 @@ func populatedState(t *testing.T) State {
 				Repo:          "acme/widgets",
 				DefaultBranch: "main",
 				Workers:       map[claim.Role]PhaseView{},
-				// The first part's only member, at the front of the whole line: its place, its
-				// place within its own part, the moment its work came back and no rank at all,
-				// since the returned part is ordered by that moment. It holds a slot, so its
-				// sentence ends in the holder's clause: telling such a member that it queues for
-				// a free slot is the fault this whole answer exists to stop.
+				// The line's first member, P0 of its own and the only member of the P0 band: its
+				// place, its place within its band's returned part, the moment its work came back
+				// and no rank at all, since the returned part is ordered by that moment. It holds a
+				// slot, so its sentence ends in the holder's clause: telling such a member that it
+				// queues for a free slot is the fault this whole answer exists to stop.
+				Priority: &p0,
 				WaitingLine: &WaitingLineView{
 					Place: 1, Length: 2,
 					Part: record.PartReturned.String(), Kind: record.LineAnswered.String(),
 					PartPlace: 1, PartLength: 1, HoldsSlot: &heldSlot, Since: &answeredAt,
 					Reason: "A person answered it, and its work came back at 2026-09-22T09:21:00Z. " +
-						"It is 1st of 1 issue whose work came back. It already holds its admission slot, " +
-						"so it resumes at the next pass whatever the cap says.",
+						"It waits at P0, its own priority. It is 1st of 1 issue at P0 whose work came back. " +
+						"It already holds its admission slot, so it resumes at the next pass whatever the cap says.",
 				},
 				// A tester of its tree retired while the issue stood in its phase, and the
 				// stopped claim is read before the line: that is the one answer it carries.
@@ -771,8 +794,9 @@ func populatedState(t *testing.T) State {
 			// (classify.RoundWaitsOnMergeState, the one rule the engine reads to decide whether to
 			// read GitHub for a round), so each carries a `mergeWait`. They are the two readings
 			// the object was added for: a round GitHub has answered nothing about yet, and a
-			// round GitHub has held on `blocked` for days, whose architect and reviewer have been
-			// told of it.
+			// round GitHub has held `behind` its base for days, whose architect and reviewer have
+			// been told of it. A head whose `blocked` answer ends the round carries none
+			// (classify.MergeOutcomeOf).
 			"LEGION-218": {
 				Key:           "LEGION-218",
 				Generation:    1,
@@ -846,25 +870,25 @@ func populatedState(t *testing.T) State {
 					Number:         642,
 					Head:           "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
 					State:          "open",
-					MergeState:     "blocked",
+					MergeState:     "behind",
 					ReviewDecision: "approved",
 				},
-				// The stuck round: the approval stands on a head GitHub has held on `blocked` since
-				// the first read after the approval, two days ago, and again at the read a minute
-				// before this state; the head itself has stood since the push before that approval,
-				// and two of the fence's runs are stamped with the head, so the wait is not a head
-				// GitHub has seen no run for. The told marks name the head and the state the
+				// The stuck round: the approval stands on a head GitHub has held `behind` its base
+				// since the first read after the approval, two days ago, and again at the read a
+				// minute before this state; the head itself has stood since the push before that
+				// approval, and two of the fence's runs are stamped with the head, so the wait is not
+				// a head GitHub has seen no run for. The told marks name the head and the state the
 				// architect and the reviewer were told of (workflow's tellStuckMergeState), which
 				// is what tells this round from LEGION-218's: both wait on GitHub's next answer
 				// about the same head, and only this one has been reported.
 				MergeWait: &MergeWaitView{
 					WaitsOn:       "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
-					MergeState:    "blocked",
+					MergeState:    "behind",
 					StateReadAt:   &stuckStateReadAt,
 					HeadUpdatedAt: &stuckHeadUpdatedAt,
 					CheckRuns:     2,
 					ToldHead:      "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
-					ToldState:     "blocked",
+					ToldState:     "behind",
 				},
 				GatedSteps: []GatedStepView{{
 					Step:            record.DesignStepSpec,
@@ -873,6 +897,16 @@ func populatedState(t *testing.T) State {
 					ApprovedVersion: &stuckApproval,
 					Status:          GatedStepApproved,
 				}},
+				// Its pod is quiet and kept: its reviewer's last report named an async job still
+				// running, so every pass of the idle rule since the evening before has held the pod
+				// for background work, the last of them a minute before this state. That streak is
+				// the pod's standing hold (contract 246), with the kind the report named.
+				PodHold: &PodHoldView{
+					Reason:  "background_work",
+					FirstAt: time.Date(2026, 9, 21, 22, 4, 0, 0, time.UTC),
+					At:      time.Date(2026, 9, 22, 9, 17, 0, 0, time.UTC),
+					Detail:  "async-job",
+				},
 			},
 		},
 		// LEGION-208's lifecycle lane is running row 801; the supervise row queued after it came due
@@ -944,6 +978,13 @@ func populatedState(t *testing.T) State {
 			RegisteredAt: time.Date(2026, 9, 22, 9, 16, 40, 0, time.UTC),
 		},
 		AgentSecretsLogin: &AgentSecretsLoginView{State: "issued"},
+		// A deployment under dispatch_token_broker in its move (contract 275): two launches since
+		// this boot kept pods built before the setting and carried the transition token, and three
+		// live generations still hold a Dispatch token, one of them started before this boot.
+		DispatchCredential: &DispatchCredentialView{
+			Session: "legion-daemon:LEGION", TransitionLaunches: 2, LastTransitionLaunchAt: &lastTransitionLaunch,
+			LiveLaunchesWithDispatchToken: 3,
+		},
 		// A kubernetes deployment whose image passed the probe, with the broker gap decided and
 		// one role unreserved, and no session's report yet, so the fixture carries a decided row and
 		// an open row beside the present, unchecked and withheld ones, rendered by the report
@@ -1023,7 +1064,9 @@ func populatedState(t *testing.T) State {
 	// tree on its own, so a root and its child stand in different arms of one experiment; and,
 	// on the root LEGION-210, a row a hand-over settled at no arm at all — an empty variant, an
 	// empty mode and no instant — which is how a reader tells a unit settled at no arm from a
-	// unit never drawn, which carries no row.
+	// unit never drawn, which carries no row; and, on the child LEGION-209, the row of an
+	// experiment that sets how its issues are done, `planning`, which carries the group its arm set
+	// at the draw (`plan`), here `default`.
 	memoryDrawn := AssignmentView{Experiment: "memory", Variant: "memory", Mode: string(config.ExperimentRandom), DrawnAt: &memoryDrawnAt}
 	root := state.Issues["LEGION-208"]
 	root.Assignments = []AssignmentView{
@@ -1048,6 +1091,7 @@ func populatedState(t *testing.T) State {
 		Assignments: []AssignmentView{
 			memoryDrawn,
 			{Experiment: "plan-length", Variant: "long", Mode: string(config.ExperimentRandom), DrawnAt: &planDrawnAt},
+			{Experiment: "planning", Variant: "b", Mode: string(config.ExperimentRandom), DrawnAt: &planDrawnAt, Plan: string(config.PlanGroupDefault)},
 		},
 		// The child the workflow holds at `admitted`: it stands in no line, and the Dispatch
 		// links `admission.blocked` names are what hold it where it stands, which is the
@@ -1081,7 +1125,7 @@ func populatedState(t *testing.T) State {
 	// reading, so the fixture showed a pair no daemon would serve, which is why the movement of
 	// that tree is the step record itself. The other trees hold no claim with a step, so each of
 	// them moves at a time of its own. Each reviewing root moved last at the newest of its own
-	// movements named above: LEGION-218 at its approval, and LEGION-219 at its first `blocked`
+	// movements named above: LEGION-218 at its approval, and LEGION-219 at its first `behind`
 	// read. LEGION-219's head was read again a minute before this state, and that read only
 	// confirmed what the record held, which moves no tree (workflow's pullRequestNews), so its
 	// tree has been still for more than a day although its read stamp is a minute old.
@@ -1092,7 +1136,7 @@ func populatedState(t *testing.T) State {
 		"LEGION-211": time.Date(2026, 9, 21, 9, 18, 0, 0, time.UTC),
 		"LEGION-212": time.Date(2026, 9, 22, 9, 3, 0, 0, time.UTC),
 		"LEGION-218": waitingApprovedAt,
-		"LEGION-219": newest(stuckApprovedAt, stuckFirstBlockedAt),
+		"LEGION-219": newest(stuckApprovedAt, stuckFirstBehindAt),
 	}
 	for key, issue := range state.Issues {
 		movedAt, measured := quietMoved[issue.Tree]
@@ -1102,6 +1146,57 @@ func populatedState(t *testing.T) State {
 		hours := quietReadAt.Sub(movedAt).Hours()
 		issue.TreeMovedAt, issue.QuietHours = &movedAt, &hours
 		state.Issues[key] = issue
+	}
+	// Every issue the workflow records carries its own Dispatch priority, null for none: the line's
+	// two members carry theirs where they are written above, and every other recorded issue has
+	// none. A member's line priority is then the one the projection gives it, record.PriorityOf of
+	// its own and its tree root's, so the fixture holds no pair the daemon could not serve.
+	for key, issue := range state.Issues {
+		if issue.Phase == Unrecorded || issue.Priority != nil {
+			continue
+		}
+		issue.Priority = &noPriority
+		state.Issues[key] = issue
+	}
+	for key, issue := range state.Issues {
+		if issue.WaitingLine == nil {
+			continue
+		}
+		root := state.Issues[issue.Tree]
+		if issue.Priority == nil || root.Priority == nil {
+			t.Fatalf("%s waits in the line without its own or its tree root's priority", key)
+		}
+		placed := PriorityView(record.PriorityOf(record.Issue{Priority: record.Priority(*issue.Priority)},
+			record.Issue{Priority: record.Priority(*root.Priority)}))
+		line := *issue.WaitingLine
+		line.Priority = &placed
+		issue.WaitingLine = &line
+		state.Issues[key] = issue
+	}
+	// The intake's open give-ups (contract 228): the Dispatch consumer has two, a decoded event
+	// given up at its bound and a newer message that did not decode, which carries no event id;
+	// the GitHub consumer has one, which the sweep gave up once its durable was made again past it.
+	// Each consumer's newest sequence is the `throughSeq` of a bulk replay or discard of all of
+	// its records.
+	state.IntakeGiveUps = IntakeGiveUpsView{
+		Consumers: []IntakeGiveUpCountView{
+			{Name: "legion-go-LEGION-dispatch", Open: 2, NewestSeq: 6044896},
+			{Name: "legion-go-LEGION-github", Open: 1, NewestSeq: 812004},
+		},
+		Newest: []IntakeGiveUpView{
+			{ID: 43, Consumer: "legion-go-LEGION-dispatch", Subject: "notifications.dispatch.issue.LEGION-214.issue.updated",
+				StreamSeq: 6044896, StoredAt: time.Date(2026, 9, 22, 8, 40, 12, 0, time.UTC), Deliveries: 1,
+				GaveUpAt: time.Date(2026, 9, 22, 8, 40, 13, 0, time.UTC), Reason: "undecodable",
+				LastError: "decode Envoy envelope: unexpected end of JSON input"},
+			{ID: 42, Consumer: "legion-go-LEGION-github", Subject: "notifications.github.acme.widgets.pr.17.review",
+				StreamSeq: 812004, StoredAt: time.Date(2026, 9, 22, 6, 2, 0, 0, time.UTC), EventID: new("github-9b2c71e0"), Deliveries: 3,
+				GaveUpAt: time.Date(2026, 9, 22, 7, 55, 0, 0, time.UTC), Reason: "consumer moved past",
+				LastError: "the consumer moved past it without delivering it again"},
+			{ID: 41, Consumer: "legion-go-LEGION-dispatch", Subject: "notifications.dispatch.issue.LEGION-213.issue.updated",
+				StreamSeq: 6044801, StoredAt: time.Date(2026, 9, 22, 6, 30, 0, 0, time.UTC), EventID: new("dispatch-6044801"), Deliveries: 21,
+				GaveUpAt: time.Date(2026, 9, 22, 7, 31, 4, 0, time.UTC), Reason: "bound",
+				LastError: "apply the issue event: read LEGION-213 from Dispatch: context deadline exceeded"},
+		},
 	}
 	return state
 }
@@ -1118,33 +1213,148 @@ func newest(times ...time.Time) time.Time {
 	return latest
 }
 
-// The state golden is the body the route serves a caller at this daemon's own contract: the
-// source answers no mark and the route writes one (shaping's stateFor), so the fixture carries
-// the two numbers of `contract` and the plugin's schema is held to them. A caller below the
-// contract that added it is served no such key, which TestANarrowedBodySaysSo holds.
+// The state golden is the body the route serves a caller at this daemon's own contract, marked as
+// the route marks it (shaping's stateFor), with each mark that names this daemon's own contract
+// taken out before the golden is compared or written: both of them here. That number is L plus
+// the build's count of entries, which an entry moves, so a golden that held it would be an edit of
+// every contract change. The marks themselves are held to that number here instead, and the
+// plugin's schema reads them (`legionContract` takes both as optional). A caller below the contract
+// that added the mark is served no such key, which TestANarrowedBodySaysSo holds.
 func TestStateGolden(t *testing.T) {
-	state := populatedState(t)
-	state.Contract = &ContractView{Daemon: DaemonAPIVersion, Caller: DaemonAPIVersion}
-	golden(t, "state.json", state)
+	encoded, err := json.Marshal(stateFor(populatedState(t), DaemonAPIVersion(), DaemonAPIVersion(), nil))
+	if err != nil {
+		t.Fatalf("marshal the state: %v", err)
+	}
+	body, taken := withoutOwnContractMarks(t, encoded)
+	if want := map[string]int{"daemon": DaemonAPIVersion(), "caller": DaemonAPIVersion()}; !maps.Equal(taken, want) {
+		t.Errorf("the state served at this daemon's own contract is marked %v, want both marks at %d, this daemon's own contract", taken, DaemonAPIVersion())
+	}
+	golden(t, "state.json", body)
 }
 
 // The state route's body for a caller whose plugin is at the contract before
 // repositoriesLiveContract, asking from a pod whose claims record it and stating it in
 // `Legion-Plugin-Contract`, as every plugin from shapedAnswersContract on does: the state golden's
 // own state, asked through the route itself. The caller is served at the recorded contract at or
-// below the one it states (recordedContractAtOrBelow), which the mark names: its `repositories`
-// block in the shape contract 152 gave it, written from the same entries
-// (withoutRepositoriesLive), and every other key as a caller at shapedAnswersContract is served
-// it, since no other row of stateNarrowings stands between shapedAnswersContract and
+// below the one it states (recordedContractAtOrBelow), which the mark's `caller` names: its
+// `repositories` block in the shape contract 152 gave it, written from the same entries
+// (withoutRepositoriesLive), each assignment without its `plan`, since assignmentPlanContract's
+// row stands above that contract too, no `intakeGiveUps` (withoutIntakeGiveUps), since
+// intakeGiveUpsContract's row does as well, no issue's `podHold` (withoutPodHold), since
+// podHoldContract's row does too, and every other key as a caller at shapedAnswersContract is
+// served it, since no other row of stateNarrowings stands between shapedAnswersContract and
 // repositoriesLiveContract. shapedAnswersContract's row and pauseContract's stand at or below the
 // contract it is served at, which is why the golden carries `lowestPluginContract`, each claim
-// view's `updateState` and `paused`. `packages/contracts/src/legion-api.test.ts` parses it with a
-// copy of contract 152's schema of the block, so the narrowing is held to the reader it is written
-// for, and its drift gate holds every key of the file to that copy.
+// view's `updateState` and `paused`. The mark's `daemon` names this daemon's own contract, which
+// an entry moves, so it is taken out before the golden is compared or written and held to that
+// number here, as TestStateGolden takes out its marks; the `caller` is 199, which no entry moves,
+// and stays.
+// `packages/contracts/src/legion-api.test.ts` parses it with a copy of contract 152's schema of
+// the block, so the narrowing is held to the reader it is written for, and its drift gate holds
+// every key of the file to that copy.
 func TestStateNarrowedRepositoriesGolden(t *testing.T) {
 	server := stateServer(t, populatedState(t), podClaims(repositoriesLiveContract-1))
-	body := stateStating(t, server, statePodAddr+":41000", repositoriesLiveContract-1)
-	golden(t, "state-narrowed-repositories.json", json.RawMessage(body))
+	body, taken := withoutOwnContractMarks(t, stateStating(t, server, statePodAddr+":41000", repositoriesLiveContract-1))
+	if want := map[string]int{"daemon": DaemonAPIVersion()}; !maps.Equal(taken, want) {
+		t.Errorf("the state served below repositoriesLiveContract has the marks %v naming this daemon's own contract, want its daemon mark alone at %d", taken, DaemonAPIVersion())
+	}
+	golden(t, "state-narrowed-repositories.json", body)
+}
+
+// withoutOwnContractMarks is body, the JSON of a state, with each mark of its `contract` that names
+// this daemon's own contract taken out, and `contract` itself where that leaves it empty, every
+// other key in its place and every other byte as it stands; and the marks it took out, by name.
+func withoutOwnContractMarks(t *testing.T, body []byte) (json.RawMessage, map[string]int) {
+	t.Helper()
+	var state jsonObject
+	if err := json.Unmarshal(body, &state); err != nil {
+		t.Fatalf("decode the state: %v", err)
+	}
+	taken := map[string]int{}
+	at := slices.IndexFunc(state, func(member jsonMember) bool { return member.key == "contract" })
+	if at < 0 {
+		return body, taken
+	}
+	var marks jsonObject
+	if err := json.Unmarshal(state[at].value, &marks); err != nil {
+		t.Fatalf("decode the state's contract mark: %v", err)
+	}
+	marks = slices.DeleteFunc(marks, func(member jsonMember) bool {
+		var contract int
+		if json.Unmarshal(member.value, &contract) != nil || contract != DaemonAPIVersion() {
+			return false
+		}
+		taken[member.key] = contract
+		return true
+	})
+	if len(marks) == 0 {
+		state = slices.Delete(state, at, at+1)
+	} else {
+		encoded, err := json.Marshal(marks)
+		if err != nil {
+			t.Fatalf("encode the state's contract mark: %v", err)
+		}
+		state[at].value = encoded
+	}
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("encode the state: %v", err)
+	}
+	return encoded, taken
+}
+
+// jsonMember is one member of a JSON object: its key and its value as written.
+type jsonMember struct {
+	key   string
+	value json.RawMessage
+}
+
+// jsonObject is a JSON object as its members, in the order they are written, so a member can be
+// taken out of a golden and every other key stays where the writer put it.
+type jsonObject []jsonMember
+
+func (o *jsonObject) UnmarshalJSON(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if open, err := decoder.Token(); err != nil || open != json.Delim('{') {
+		return fmt.Errorf("a JSON object begins with {, not %v (%v)", open, err)
+	}
+	members := jsonObject{}
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		key, isKey := token.(string)
+		if !isKey {
+			return fmt.Errorf("a JSON object's key is a string, not %v", token)
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return err
+		}
+		members = append(members, jsonMember{key: key, value: value})
+	}
+	*o = members
+	return nil
+}
+
+func (o jsonObject) MarshalJSON() ([]byte, error) {
+	var encoded bytes.Buffer
+	encoded.WriteByte('{')
+	for i, member := range o {
+		if i > 0 {
+			encoded.WriteByte(',')
+		}
+		key, err := json.Marshal(member.key)
+		if err != nil {
+			return nil, err
+		}
+		encoded.Write(key)
+		encoded.WriteByte(':')
+		encoded.Write(member.value)
+	}
+	encoded.WriteByte('}')
+	return encoded.Bytes(), nil
 }
 
 // One issue's record, what `GET /legion/v1/issues/{key}/record` answers: the very `api.Issue`
@@ -1431,6 +1641,26 @@ func golden(t *testing.T, name string, value any) {
 	}
 }
 
+// frozenGolden holds the frozen fixture name, the records of the numbered entries, to value in
+// golden's form, and writes it under no flag: `-update` writes an entry's fixture, never a frozen
+// record (TestEntryFixtures). A frozen record changes only as a correction of a record that was
+// wrong, which is a hand edit the contract check refuses without a `Correction:` paragraph in the
+// entry's text.
+func frozenGolden(t *testing.T, name string, value any) {
+	t.Helper()
+	encoded, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal %s: %v", name, err)
+	}
+	want, err := os.ReadFile(goldenPath(name))
+	if err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+	if !bytes.Equal(append(encoded, '\n'), want) {
+		t.Fatalf("%s is not in the order and form its records are written in (by contract, then by its answer or route, indented by two spaces); no flag writes it, so put it back in that form by hand", name)
+	}
+}
+
 // The register response is what the plugin reads its claim, its secret and the task agents its
 // role's prompts dispatch from.
 func TestRegisterResponseGolden(t *testing.T) {
@@ -1489,7 +1719,7 @@ func TestReadyForUpdateRequestGolden(t *testing.T) {
 //
 // Two rows of each list, because one row of each pins less than the shape, and a third resume:
 //   - the releases are a release that suspended two roles and saved a bundle, and one whose
-//     stops suspended no claim and whose workspace held nothing unpushed (recordPodRelease
+//     stops suspended no claim and whose workspace the check read clean (recordPodRelease
 //     counts only the claims this release's own stops suspended, and the store reads an empty
 //     `roles` column back as none): `roles` is `[]` and never `null`, and `bundleBytes` is 0
 //     rather than absent;
@@ -1789,26 +2019,31 @@ func TestOwnerPlanRouteGoldens(t *testing.T) {
 
 // The table of answers a plugin parses (answers.go): one row per response schema, the routes
 // that answer it, and the contract that answer arrived at. No route answers this fixture. It is
-// written out so that the plugin's own side reads the same rows the daemon shapes by.
+// written out so that the plugin's own side reads the same rows the daemon shapes by. It holds the
+// numbered entries' rows alone (frozenAnswers): the rows an entry adds are in that entry's fixture
+// (entryFixture's answerRows), so two entries edit no line of it, and TestEntryFixtures holds
+// this file and those rows to the build's Answers().
 func TestAnswersGolden(t *testing.T) {
-	golden(t, "answers.json", Answers)
+	golden(t, "answers.json", frozenAnswers)
 }
 
 // The table of enumerated fields a plugin parses strictly (answers.go): one row per field, with
 // each value and the contract it arrived at. No route answers this fixture either. It is
 // written out beside answers.json so that the plugin's own side holds its enumerations to the
-// daemon's: `packages/contracts/src/legion-api.test.ts` reads this file, holds each row's values
-// equal to the members of the `z.enum` it reads at that row's key path, and fails a `z.enum` it
-// reads at a path no row declares. A value added on one side and not the other is red rather
-// than silent.
+// daemon's: `packages/contracts/src/legion-api.test.ts` reads this file with the rows of the entry
+// fixtures added (`daemon-api-records.ts`), holds each row's values equal to the members of the
+// `z.enum` it reads at that row's key path, and fails a `z.enum` it reads at a path no row
+// declares. A value added on one side and not the other is red rather than silent. It holds the
+// numbered entries' rows alone (enumeratedFields()), as answers.json does, and TestEntryFixtures
+// holds it and the entries' rows to the build's EnumeratedFields().
 func TestEnumeratedFieldsGolden(t *testing.T) {
-	golden(t, "enumerated-fields.json", EnumeratedFields)
+	golden(t, "enumerated-fields.json", enumeratedFields())
 }
 
 // The turn outcome's answer is what a producer's report of one turn comes back as: the run of
-// refused turns the claim's reports now end with, and whether this report took that run to the
-// launch failure limit and failed the claim. It is a golden because `@legion/contracts` reads it
-// (LegionTurnOutcomeResponse), and every answer schema that module exports is held to one.
+// refused turns the claim's reports now end with, and `failed` (claim.TurnOutcomeResponse says
+// what it holds). It is a golden because `@legion/contracts` reads it (LegionTurnOutcomeResponse),
+// and every answer schema that module exports is held to one.
 func TestTurnOutcomeResponseGolden(t *testing.T) {
-	golden(t, "turn-outcome.json", claim.TurnOutcomeResponse{RefusedRun: 3, Failed: true})
+	golden(t, "turn-outcome.json", claim.TurnOutcomeResponse{RefusedRun: 3})
 }

@@ -77,6 +77,8 @@ var sessionTitlesSliceVersions = []int{20261117100008, 20261117100010, 202611171
 // every number its verdict rests on, on standard output, so a reader of the Job's log judges the
 // run from that line.
 func TestSessionTitlesBootScale(t *testing.T) {
+	// Not parallel: it holds the boot's migrations and fill to a wall-clock bound
+	// (sessionTitlesScaleBound, 60 s), which the load of the package's parallel tests would distort.
 	server := os.Getenv(sessionTitlesScaleURLEnv)
 	if server == "" {
 		t.Skip(sessionTitlesScaleURLEnv + " is unset: it must name a Postgres server this test may create and drop " +

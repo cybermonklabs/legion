@@ -38,6 +38,8 @@
 
 package main
 
+//ci:reads packages/envoy/internal/cipher/store/migrations/* countMigrations globs ../../internal/cipher/store/migrations/*.up.sql
+
 import (
 	"context"
 	"encoding/json"

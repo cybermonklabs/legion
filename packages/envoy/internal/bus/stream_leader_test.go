@@ -8,6 +8,7 @@ package bus
 
 import (
 	"context"
+	"log/slog"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -33,6 +34,7 @@ const createdBucketSendWait = 2 * time.Second
 // first send is answered; the row that holds the slow election is this one run against a server
 // that holds the stream's first election (the issue's verification).
 func TestEnsureKeyValueCreatesAThreeCopyBucketWhoseFirstElectionIsSlow(t *testing.T) {
+	t.Parallel()
 	cluster := testnats.StartCluster(t, 3)
 	conn := testnats.Connect(t, cluster.Servers[0].URL())
 	t.Cleanup(conn.Close)
@@ -61,6 +63,7 @@ func TestEnsureKeyValueCreatesAThreeCopyBucketWhoseFirstElectionIsSlow(t *testin
 // cluster that elects at once this row passes either way; the run that holds it is this row against
 // a server that holds the stream's first election (the issue's verification).
 func TestAStartThatCreatesTheStreamAtThreeCopiesServesItsFirstPublish(t *testing.T) {
+	t.Parallel()
 	cluster := testnats.StartCluster(t, 3)
 	client := startOnCluster(t, cluster, WithReplicas(3))
 	if err := client.Publish(contracts.Envelope{
@@ -78,6 +81,7 @@ func TestAStartThatCreatesTheStreamAtThreeCopiesServesItsFirstPublish(t *testing
 // took the raise's answer as the stream's left its first publish to fail at its 5 s bound, with no
 // election held.
 func TestAStartThatRaisesTheStreamToThreeCopiesServesItsFirstPublish(t *testing.T) {
+	t.Parallel()
 	cluster := testnats.StartCluster(t, 3)
 	startOnCluster(t, cluster, WithReplicas(1)).Close()
 	client := startOnCluster(t, cluster, WithReplicas(3))
@@ -106,13 +110,14 @@ func hasLeader(t *testing.T, js nats.JetStreamContext, stream string) bool {
 // leaderless, so a start that took the stream as it found it handed its caller a bucket whose first
 // put drew no answer.
 func TestAStartThatFindsAJustRaisedBucketAnswersOnceItHasALeader(t *testing.T) {
+	t.Parallel()
 	cluster := testnats.StartCluster(t, 3)
 	conn, js := memberJetStream(t, cluster, 0)
 	const bucket = "envoy_found_raised_test"
 	if _, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1}); err != nil {
 		t.Fatalf("create the one-copy bucket: %v", err)
 	}
-	if _, err := raiseReplicas(t.Context(), js, bucket, 3); err != nil {
+	if _, err := raiseReplicas(t.Context(), slog.Default(), js, bucket, 3); err != nil {
 		t.Fatalf("another program's raise: %v", err)
 	}
 	kv, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3})
@@ -132,13 +137,14 @@ func TestAStartThatFindsAJustRaisedBucketAnswersOnceItHasALeader(t *testing.T) {
 // side by side while a deployment raises the setting, and the start at one copy raises nothing,
 // so the read of the stream it makes is for the leader alone.
 func TestAStartAtOneCopyThatFindsAJustRaisedBucketAnswersOnceItHasALeader(t *testing.T) {
+	t.Parallel()
 	cluster := testnats.StartCluster(t, 3)
 	conn, js := memberJetStream(t, cluster, 0)
 	const bucket = "envoy_found_raised_one_copy_test"
 	if _, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1}); err != nil {
 		t.Fatalf("create the one-copy bucket: %v", err)
 	}
-	if _, err := raiseReplicas(t.Context(), js, bucket, 3); err != nil {
+	if _, err := raiseReplicas(t.Context(), slog.Default(), js, bucket, 3); err != nil {
 		t.Fatalf("another program's raise: %v", err)
 	}
 	kv, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1})
@@ -185,6 +191,7 @@ func (js *missingOnceJetStream) KeyValue(bucket string) (nats.KeyValue, error) {
 // it reads from the same assignments the create checks (jetstream_api.go:1828 and
 // jetstream_cluster.go:11053), before this start looks for the bucket.
 func TestAStartAtOneCopyWhoseCreateMeetsAnotherStartsCreateAnswersOnceItHasALeader(t *testing.T) {
+	t.Parallel()
 	cluster := testnats.StartCluster(t, 3)
 	conn, js := memberJetStream(t, cluster, 0)
 	const bucket = "envoy_created_elsewhere_test"
@@ -242,6 +249,7 @@ func TestAStartAtOneCopyWhoseCreateMeetsAnotherStartsCreateAnswersOnceItHasALead
 // leader too, for the same reason: the raise was answered at once, and a publish sent while the
 // stream has no leader draws no answer.
 func TestAStartThatFindsAJustRaisedStreamAnswersOnceItHasALeader(t *testing.T) {
+	t.Parallel()
 	cluster, js := startClusterJetStream(t)
 	startOnCluster(t, cluster, WithReplicas(1)).Close()
 	info, err := js.StreamInfo(Stream)
@@ -287,10 +295,11 @@ func (js *earlyAnswerJetStream) AddStream(cfg *nats.StreamConfig, opts ...nats.J
 // A start whose create of the stream at three copies is answered before the stream's first
 // election ends answers only once the stream has a leader.
 func TestAStartWhoseStreamCreateIsAnsweredEarlyAnswersOnceItHasALeader(t *testing.T) {
+	t.Parallel()
 	cluster, js := startClusterJetStream(t)
 	cfg := parseConnectOptions([]ConnectOption{WithReplicas(3)}).streamConfig()
 	early := &earlyAnswerJetStream{JetStreamContext: js}
-	if _, err := ensureStreamWithConfig(t.Context(), early, &cfg, capsAnUnsetStream, atStart); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), slog.Default(), early, &cfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("a start whose create's first answer was lost: %v", err)
 	}
 	if early.sent < 2 {

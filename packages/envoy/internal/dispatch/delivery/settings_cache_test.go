@@ -127,12 +127,13 @@ func TestTheIntakesReadNoSettingsWhileNothingChanges(t *testing.T) {
 // Ten job events of a tracked deploy run are checked against the cached settings: none of them
 // reads delivery_settings, and they still schedule the run's read.
 func TestJobEventsReadNoSettings(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedRunningDeployRun(t, ctx, pool)
 	counted, counter := countedDeliveryPool(t, pool)
 	clock := newFakeJobClock()
-	jobs := newJobIntake(nil, counted, nil, newJobsFake(t).newTestClient(), clock, loadedSettingsCache(t, ctx, counted))
+	jobs := newJobIntake(tuningFor(t), nil, counted, nil, newJobsFake(t).newTestClient(), clock, loadedSettingsCache(t, ctx, counted))
 
 	before := counter.reads.Load()
 	for range 10 {
@@ -150,8 +151,9 @@ func TestJobEventsReadNoSettings(t *testing.T) {
 // written are stored and close the channel Changed handed out before them; a later read whose
 // deploy repository is malformed keeps the settings before it.
 func TestTheSettingsCacheKeepsTheLastValidSettings(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
-	cache := newSettingsCache(pool, nil)
+	cache := newSettingsCache(pool, nil, nil)
 	changed := cache.Changed()
 	if !cache.reload(ctx) || cache.Load() != nil {
 		t.Fatalf("a read with no row = %+v, want nothing held", cache.Load())

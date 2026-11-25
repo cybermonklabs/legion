@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -61,6 +62,7 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/principal"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/listenfd"
@@ -86,6 +88,14 @@ type bootConfig struct {
 	// AgentTokens is DISPATCH_AGENT_TOKEN parsed: every value the API accepts as the shared agent
 	// token, the first the current one.
 	AgentTokens *auth.SharedAgentTokens
+	// ProjectOwnerFallback is DISPATCH_PROJECT_OWNER_FALLBACK, a lowercase email: the full member
+	// the boot makes the owner of every project with no owner (store.EnsureProjectOwners); empty
+	// gives none, and the boot then refuses to serve while a project has no owner.
+	ProjectOwnerFallback string
+	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE=on: main runs R25's one-time fix at boot
+	// (api.RunParentStatusFixAtBoot), and the server it builds refuses a write that leaves a
+	// parent's status out of line with its children's. Unset or off is false.
+	ParentStatusRule bool
 	// NewIssueLabel and NewIssueSession are DISPATCH_NEW_ISSUE_LABEL and
 	// DISPATCH_NEW_ISSUE_SESSION: the label an issue the search bar files from a person's typed
 	// words carries, and the session that issue is routed to and its first message is sent to.
@@ -98,7 +108,12 @@ type bootConfig struct {
 	// ReviewerAppID is DISPATCH_REVIEWER_APP_ID, the id of the App whose `tester` and `architect`
 	// check runs are Legion's verdicts, as the text of the number GitHub's own objects carry it
 	// as. Empty means the CI reconcile pass records no verdict check at all.
-	ReviewerAppID  string
+	ReviewerAppID string
+	// VerdictAppID is DISPATCH_VERDICT_APP_ID, the id of the App that writes `legion-verdict`, as
+	// the text of the number GitHub's own objects carry it as. The CI reconcile pass leaves that
+	// App's check suites out of the record, as the listener does (ENVOY_VERDICT_APP_ID). Empty
+	// means the pass records every App's completed suite.
+	VerdictAppID   string
 	IdentityHeader string
 	// IAPAudience is DISPATCH_IAP_AUDIENCE under DISPATCH_IDENTITY=iap: the audience
 	// Identity-Aware Proxy signs each request's assertion for, which the assertion's aud must
@@ -203,6 +218,16 @@ type bootConfig struct {
 	// by the broker client on each call, never here: a projected token rotates.
 	AgentSecretsURL       string
 	AgentSecretsTokenFile string
+	// LegionStatusScope is DISPATCH_LEGION_STATUS_SCOPE=on. It turns on the refusal of three
+	// writes of a Legion issue from a credential that holds neither the person scope nor
+	// legion-status: a write of its status, the removal of its legion label, and a move that
+	// leaves it under no labelled issue, but for the status write of the architect of an issue
+	// above (api's legion_status_scope.go). Unset or off, it is false (api.Deps.LegionStatusScope).
+	LegionStatusScope bool
+	// ProofOrigins is DISPATCH_PROOF_ORIGINS read (proofOriginEntries): the origins Dispatch is
+	// reached at beside DISPATCH_SERVER_URL's, each written scheme://host, which a broker token's
+	// proof may name in its 'htu' (proofOrigins). Empty, unset, adds none.
+	ProofOrigins []string
 	// FileStoreBucket is DISPATCH_FILE_STORE_BUCKET: the bucket uploaded files are stored in,
 	// gs://<bucket> for Cloud Storage or an S3 bucket's name (files.Open). Empty keeps them in
 	// Postgres.
@@ -637,12 +662,6 @@ func main() {
 	if brokerTokens != nil {
 		slog.Info("dispatch: deciding access tokens the secrets broker issued", "broker", redact.URL(boot.AgentSecretsURL))
 	}
-	appCtx, err := routes.BuildAppContext(appContextOptions(boot, built))
-
-	if err != nil {
-		slog.Error("dispatch: build app context", "error", err)
-		os.Exit(1)
-	}
 
 	// Two or more envoy-dispatch processes serve one Postgres and one NATS, so each background
 	// loop below either runs once overall or is deliberately per-process. The ones that must run
@@ -652,7 +671,7 @@ func main() {
 	// whose loops would each run everywhere, so it ends here.
 	//
 	// The loops come in these shapes, so that a database nobody writes costs them nothing except
-	// where GitHub gives them nothing to wake on, and the five timers of the last shape:
+	// where GitHub gives them nothing to wake on, and the seven timers of the last shape:
 	//   - woken loops, which run a pass at start and then only when a Postgres notification on the
 	//     shared listener below says their work may have changed, or when a due time their last
 	//     pass asked for comes round: the embedding queue (embedqueue.WakeChannel), the reference
@@ -688,15 +707,17 @@ func main() {
 	//     never refuses a lone process's tick. Two tickers started minutes apart almost never
 	//     meet inside a pass, so the lease alone would exclude nothing.
 	//   - timers that poll the database: the block-index reconciliation (every 30 s, 2 s while a
-	//     batch is full), the repair of closed and reopened issues' asks (api.RunIssueAskRepair,
-	//     every 10 minutes on a plain ticker, after the boot's own unleased pass), the prune of
-	//     the server process registry (processes.RunPrune, every minute, which joinRegistry starts
-	//     below), the keyed writes' maintenance sweep (api.RunMaintenanceSweep, every minute), the
-	//     document compaction sweep (docs.Service.RunCompactionSweep, every hour from a tick at
-	//     start, with or without NATS) and the display tree fill (texttreefill.Run, every hour
-	//     from a tick at start, whose first pass of a display parser version runs until every
-	//     stored text has a tree at it), each recording its passes in duty_passes like the timers
-	//     above; each tick sends its statements whether or not anything is owed.
+	//     batch is full), the reference forms drain (docs.Service.RunRefsFormsReconciliation, at
+	//     the same pace under a lease of its own), the repair of closed and reopened issues' asks
+	//     (api.RunIssueAskRepair, every 10 minutes on a plain ticker, after the boot's own
+	//     unleased pass), the prune of the server process registry (processes.RunPrune, every
+	//     minute, which joinRegistry starts below), the keyed writes' maintenance sweep
+	//     (api.RunMaintenanceSweep, every minute), the document compaction sweep
+	//     (docs.Service.RunCompactionSweep, every hour from a tick at start, with or without NATS)
+	//     and the display tree fill (texttreefill.Run, every hour from a tick at start, whose
+	//     first pass of a display parser version runs until every stored text has a tree at it),
+	//     each recording its passes in duty_passes like the timers above; each tick sends its
+	//     statements whether or not anything is owed.
 	//
 	// The shared listener is one pglisten.Hub per process, on one held connection of the store's
 	// listener pool, carrying every woken loop's channel and the document rooms' room-sync
@@ -768,6 +789,10 @@ func main() {
 	documentCompactionLeases := reserve("document compaction")
 	editNoticesLeases := reserve("edit notices")
 	blockIndexLeases := reserve("block index")
+	// The reference forms drain's, a caller of its own beside the block index's: the two passes
+	// run on their own goroutines under their own leases, so each can hold a connection while the
+	// other does.
+	refsFormsLeases := reserve("refs forms")
 	issueAskRepairLeases := reserve("issue ask repair")
 	// The webhook redelivery sweep's and the CI reconcile pass's, reserved whether or not this
 	// configuration runs them, as every caller's here is: the count the pool is sized for is the
@@ -794,6 +819,10 @@ func main() {
 	// The Legion sampler (legion.RunSampler): a leased loop like the rest, reserved here so that
 	// this process's count is the same whether or not any project names a daemon.
 	legionSamplerLeases := reserve("Legion sampler")
+	// R25's one-time fix of parents' statuses at boot (api.RunParentStatusFixAtBoot, below): it
+	// takes its lease only with DISPATCH_PARENT_STATUS_RULE on, and is reserved here so that this
+	// process's count is the same with the setting off.
+	parentStatusFixLeases := reserve("parent status fix")
 	// The intakes' six callers - a consumer lease, a hold and the hold's renewal per durable -
 	// whether or not this configuration starts them (delivery.ReserveIntakeLeases).
 	intakeLeases, err := delivery.ReserveIntakeLeases(leaseCallers)
@@ -816,6 +845,43 @@ func main() {
 	// has started yet - no loop, no intake, no listener - so this exit has nothing to stop.
 	if err := leaseCallers.Complete(); err != nil {
 		slog.Error("dispatch: the lease pool's callers are not its connections", "error", err)
+		os.Exit(1)
+	}
+
+	// R25's one-time fix, with DISPATCH_PARENT_STATUS_RULE on (api.RunParentStatusFixAtBoot): one
+	// process unlinks each open issue from its done parent and moves each not-started ancestor of an
+	// issue in work to in_progress, under the lease parent-status-fix, and then records that it ran.
+	// A process that finds the lease held waits for that record. The fix runs here, before the
+	// outbox, every loop and the listen, so the server takes no write and no loop writes until it is
+	// over. With the setting off it reads and writes nothing. A stop during the wait is a clean stop,
+	// as one during the registry's admission wait below is; a step that fails ends the boot with no
+	// record, and the next boot plans again from what stands.
+	parentStatusRule, err := api.RunParentStatusFixAtBoot(store.WithTransactionTracking(ctx),
+		api.Deps{Store: database, Docs: documentService, Events: broker}, parentStatusFixLeases, boot.ParentStatusRule)
+	if err != nil {
+		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
+			slog.Info("dispatch: stopped while waiting for the parent status fix")
+			return
+		}
+		slog.Error("dispatch: run the parent status fix", "error", err)
+		os.Exit(1)
+	}
+	// Every project has an owner: a project the access migration left with none is given to
+	// DISPATCH_PROJECT_OWNER_FALLBACK's full member, recorded as an operator's grant is
+	// (giveOwnerlessProject), and while one still has none the boot refuses, naming each and both
+	// repairs. The grant appends events, so it runs after every step of the boot that takes the copy
+	// lock (restoreDecidedWordings above, the parent status fix just before it), and before the
+	// outbox, every loop and the listen, so the server serves no project without an owner.
+	if err := store.EnsureProjectOwners(store.WithTransactionTracking(ctx), database.Pool, boot.ProjectOwnerFallback, giveOwnerlessProject); err != nil {
+		slog.Error("dispatch: give every project an owner", "error", err)
+		os.Exit(1)
+	}
+	// The app context is built only now, so the rule the fix answered reaches the server
+	// (api.DepsInput through appContextOptions). Nothing above reads it.
+	built.ParentStatusRule = parentStatusRule
+	appCtx, err := routes.BuildAppContext(appContextOptions(boot, built))
+	if err != nil {
+		slog.Error("dispatch: build app context", "error", err)
 		os.Exit(1)
 	}
 
@@ -1019,6 +1085,13 @@ func main() {
 	// rebuild-refs marks - and each comment, ask and issue message citing a block (`#b-`) that such
 	// a build indexed without the block grammar.
 	go documentService.RunBlockIndexReconciliation(ctx, blockIndexLeases)
+	// The reference forms drain: each comment, ask, issue message and document a build that
+	// predates an issue's tab addresses and a document's dashboard URLs indexed without them
+	// (refs_forms_owed). A loop of its own under a lease of its own, on the block index's
+	// interval: a period a process of the previous release served under the block index's lease
+	// would otherwise drain none of it, and a document's row is settled only by this build's own
+	// index of the document.
+	go documentService.RunRefsFormsReconciliation(ctx, refsFormsLeases)
 	// The asks a process older than the withdrawal leaves on an issue it closes or
 	// reopens during a roll are withdrawn or restored every interval after the boot's own pass.
 	go api.RunIssueAskRepair(ctx, issueAskRepairDeps, issueAskRepairLeases)
@@ -1072,7 +1145,7 @@ func main() {
 	// ciInstance is filled in once this process is registered, below, and each pass records its
 	// counts in ci_reconcile_passes under the id it then holds.
 	ciInstance := &registeredInstance{}
-	reconciler, err := ciReconciler(natsClient, database, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID, ciReconcileInterval, ciInstance, renames)
+	reconciler, err := ciReconciler(natsClient, database, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID, boot.VerdictAppID, ciReconcileInterval, ciInstance, renames)
 	if err != nil {
 		slog.Error("dispatch: open the CI reconcile pass", "error", err)
 		os.Exit(1)
@@ -1081,6 +1154,9 @@ func main() {
 		slog.Info("dispatch: reconciling the CI records GitHub's webhook never delivered", "client_id", appCfg.ClientID, "interval", ciReconcileInterval)
 		if boot.ReviewerAppID == "" {
 			slog.Info("dispatch: the CI reconcile pass records no tester or architect check run: DISPATCH_REVIEWER_APP_ID is unset, so no App's verdict checks are trusted")
+		}
+		if boot.VerdictAppID == "" {
+			slog.Info("dispatch: the CI reconcile pass leaves no App's check suites out: DISPATCH_VERDICT_APP_ID is unset; give it the listener's ENVOY_VERDICT_APP_ID")
 		}
 		reconciler.GitHubReads = recordGitHubRead
 		// The period argument is what makes one process serve each period (duty_passes): the
@@ -1455,6 +1531,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	}
 	boot := bootConfig{
 		DatabaseURL:           strings.TrimSpace(env.get("DATABASE_URL")),
+		ProjectOwnerFallback:  strings.TrimSpace(env.get("DISPATCH_PROJECT_OWNER_FALLBACK")),
 		NewIssueLabel:         strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_LABEL")),
 		NewIssueSession:       strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_SESSION")),
 		GitHubAPIBase:         strings.TrimSpace(env.get("DISPATCH_GITHUB_API_BASE")),
@@ -1475,6 +1552,11 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	}
 	if boot.DatabaseURL == "" {
 		return bootConfig{}, errors.New("DATABASE_URL required")
+	}
+	if fallback := boot.ProjectOwnerFallback; fallback != "" {
+		if err := principal.CheckPersonLogin(fallback); err != nil {
+			return bootConfig{}, fmt.Errorf("DISPATCH_PROJECT_OWNER_FALLBACK must be a lowercase email, the one a full member signed in with; got a value of %d characters", len(fallback))
+		}
 	}
 	if boot.EnvoyAccountTokenFile != "" && boot.EnvoyGoogleAudience != "" {
 		return bootConfig{}, errors.New("ENVOY_ACCOUNT_TOKEN_FILE and ENVOY_ACCOUNT_GOOGLE_AUDIENCE each name Dispatch's identity at the Envoy listener; set one of them")
@@ -1545,6 +1627,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if boot.ReviewerAppID, err = reviewerAppID(env); err != nil {
 		return bootConfig{}, err
 	}
+	if boot.VerdictAppID, err = verdictAppID(env); err != nil {
+		return bootConfig{}, err
+	}
 	for _, setting := range []struct {
 		name   string
 		target *bool
@@ -1557,6 +1642,13 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		if err := testHookBool(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
 		}
+	}
+	switch rule := env.get("DISPATCH_PARENT_STATUS_RULE"); rule {
+	case "", "off":
+	case "on":
+		boot.ParentStatusRule = true
+	default:
+		return bootConfig{}, fmt.Errorf("DISPATCH_PARENT_STATUS_RULE=%q (expected on, off or unset)", rule)
 	}
 	identityMode := strings.TrimSpace(env.get("DISPATCH_IDENTITY"))
 	if err := checkSignInSettings(boot, identityMode); err != nil {
@@ -1635,6 +1727,19 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		if boot.AgentSecretsTokenFile == "" {
 			return bootConfig{}, errors.New("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE is required when DISPATCH_AGENT_SECRETS_URL is set: Dispatch calls the broker with its own projected Kubernetes ServiceAccount token")
 		}
+	}
+	// The value is strict, as DISPATCH_DEV_SIGNIN's is: a misspelt `on` must refuse the boot, not
+	// leave a deployment that meant to refuse these writes taking them.
+	switch value := env.get("DISPATCH_LEGION_STATUS_SCOPE"); value {
+	case "", "off":
+	case "on":
+		boot.LegionStatusScope = true
+	default:
+		return bootConfig{}, fmt.Errorf("DISPATCH_LEGION_STATUS_SCOPE=%q (expected on, off or unset)", value)
+	}
+	boot.ProofOrigins, err = proofOriginEntries(env.get("DISPATCH_PROOF_ORIGINS"))
+	if err != nil {
+		return bootConfig{}, err
 	}
 	boot.Embedder, err = resolveEmbedder(env)
 	if err != nil {
@@ -2008,6 +2113,7 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.GitHubAPIBase = boot.GitHubAPIBase
 	built.AgentSecretsURL = boot.AgentSecretsURL
 	built.AgentSecretsTokenFile = boot.AgentSecretsTokenFile
+	built.LegionStatusScope = boot.LegionStatusScope
 	built.TestHooksEnabled = boot.TestHooksEnabled
 	built.RouteRosterTTL = boot.RouteRosterTTL
 	built.ListenerTakeoverWindow = boot.ListenerTakeoverWindow
@@ -2299,17 +2405,19 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 }
 
 // brokerTokenVerifier decides callers presenting an access token the secrets broker issued, under
-// the RFC 9449 DPoP scheme. It is built from the settings Dispatch already has and needs none of
-// its own: the broker DISPATCH_AGENT_SECRETS_URL names, which the approval relays already call,
-// Dispatch's own projected ServiceAccount token from DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE,
-// which it already presents there, and DISPATCH_SERVER_URL as the origin a proof's 'htu' is
-// checked against. Spent proofs are recorded in Dispatch's own database (store.DPoPProofs), which
-// the maintenance pass sweeps.
+// the RFC 9449 DPoP scheme. It is built from the broker DISPATCH_AGENT_SECRETS_URL names, which
+// the approval relays already call, Dispatch's own projected ServiceAccount token from
+// DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE, which it already presents there, and the origins a
+// proof's 'htu' may name (proofOrigins): DISPATCH_SERVER_URL's, and each one
+// DISPATCH_PROOF_ORIGINS adds, which is the one setting of its own, since a pod or a daemon calls
+// Dispatch at an in-cluster address and signs the URL it calls. Spent proofs are recorded in
+// Dispatch's own database (store.DPoPProofs), which the maintenance pass sweeps.
 //
-// It serves a read-only token (ciphertoken.Options.ServesReadOnly): the scope read alone, which
-// the broker mints from a read entry. Dispatch is the one service that asks for it, because its
-// route table holds the read list such a token may call (readScopeRoutes in internal/dispatch/api)
-// and every other route answers it 403 READ_ONLY_TOKEN before anything of the route runs.
+// It serves a read-only token (ciphertoken.Options.ServesReadOnly): one that holds read, which
+// the broker mints from a read entry or narrows when a trade asks for read. Dispatch is the one
+// service that asks for it, because its route table classes the GET rows such a token may call
+// (the read class, readClasses in internal/dispatch/api), and every other route answers it
+// 403 READ_ONLY_TOKEN before anything of the route runs.
 //
 // A deployment with no broker gets nil: Dispatch then has no such credential kind, and a DPoP
 // presentation is refused as any non-bearer Authorization header has always been
@@ -2321,16 +2429,58 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 	return ciphertoken.New(ciphertoken.Options{
 		BrokerURL: boot.AgentSecretsURL,
 		Account:   ciphertoken.NewAccountToken(boot.AgentSecretsTokenFile),
-		Origin:    strings.TrimSuffix(serverURL, "/"),
+		Origins:   proofOrigins(serverURL, boot.ProofOrigins),
 		Replay:    store.NewDPoPProofs(database.Pool),
 		// Dispatch's own rule for which address a request came from, the one its access log and
 		// its other buckets read; the check itself has none, so this says whose proxy header is
 		// trusted here (auth.ForwardedAddress).
 		Address: auth.ForwardedAddress,
-		// The read list and its gate are Dispatch's own (internal/dispatch/api), so a read-only
-		// token reaches the routes that list names and no other.
+		// The read class and its gate are Dispatch's own (internal/dispatch/api), so a read-only
+		// token reaches the reads of that class and no other route.
 		ServesReadOnly: true,
 	})
+}
+
+// proofOriginEntries reads DISPATCH_PROOF_ORIGINS: each comma-separated entry as the bare origin
+// it is, written scheme://host. A value of nothing but whitespace is unset. An entry that is not a
+// bare origin - empty, a scheme other than http or https, no host, a path, a query, a fragment or
+// user info - refuses the start, naming the entry by its position and by its value where
+// redact.URL prints it, as the DISPATCH_AGENT_SECRETS_URL refusal names its value.
+func proofOriginEntries(value string) ([]string, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	entries := strings.Split(value, ",")
+	origins := make([]string, 0, len(entries))
+	for i, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			return nil, fmt.Errorf("DISPATCH_PROOF_ORIGINS entry %d of %d is empty", i+1, len(entries))
+		}
+		parsed, err := url.Parse(entry)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" ||
+			parsed.Path != "" || parsed.User != nil || strings.ContainsAny(entry, "?#") {
+			return nil, fmt.Errorf("DISPATCH_PROOF_ORIGINS entry %d of %d is %q (expected an origin: an absolute http(s) URL with no path, query, fragment or user)",
+				i+1, len(entries), redact.URL(entry))
+		}
+		origins = append(origins, parsed.Scheme+"://"+parsed.Host)
+	}
+	return origins, nil
+}
+
+// proofOrigins is every origin a broker token's proof may name in its 'htu': DISPATCH_SERVER_URL's
+// first, the one a proof naming none of them is checked against, then each origin added names. An
+// origin equal to one before it, compared without case as an origin's scheme and host are, is
+// taken once rather than refused: a deployment lists the public origin again beside the
+// in-cluster one.
+func proofOrigins(serverURL string, added []string) []string {
+	origins := append(make([]string, 0, 1+len(added)), strings.TrimSuffix(serverURL, "/"))
+	for _, origin := range added {
+		if !slices.ContainsFunc(origins, func(taken string) bool { return strings.EqualFold(taken, origin) }) {
+			origins = append(origins, origin)
+		}
+	}
+	return origins
 }
 
 // healthzHandler answers the readiness probe: 200 while this process can serve requests, which is

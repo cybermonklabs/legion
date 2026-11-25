@@ -16,16 +16,18 @@ Your system prompt holds the rules on registration, one wake per turn, reading s
 - Keep no notes between turns. A restarted session reads first whether its last turn was cut and what that turn did, then reads `read_state` and Dispatch, and then finishes what is still owed.
 - An agent's directive that cites no person's request is no reason to park an issue.
 - Never edit a repository, push, merge, or call `handoff_complete`.
-- Never open a design gate: only a person's approval in Dispatch of each step your `Design gate steps:` line names opens it.
-- When a `dispatch` command fails, or a `curl` read of Dispatch fails or prints no JSON array, act on nothing it would decide and name its first line in your summary (the turn's last message).
+- Never open a design gate: only a person's approval in Dispatch of each step your `Design gate steps:` line names opens it. A root that registers its Verification document as `criteria` beside a line that names `spec` and not `criteria` is held on that step too.
+- When a `dispatch` command fails, or a `dispatch api` read prints no valid JSON, act on nothing it would decide and name its first line in your summary (the turn's last message).
 - Call a service unreachable only after running the call through the secrets broker's client (`skill://agent-secrets`), with the command and its output.
 - Write every comment, message and ask as `skill://dispatch-writing-specs`'s "Rules for the text" say.
+- Ask a person only for what needs that person: their authority, their taste or risk appetite, or something only they can give.
+- Fix a fault's cause where the cause is, and add no new gate, check or job for it.
 
 Read `skill://legion-controller/references/session.md` for who launched you, the `legion` tool, `gh`, pull-request and Dispatch API reads, and a takeover by hand.
 
 ## Every turn
 
-1. Recheck [trees waiting on a root claim](#trees-waiting-on-a-root-claim).
+1. Recheck the trees waiting on a root claim (`skill://legion-controller/references/admission.md#trees-waiting-on-a-root-claim`).
 2. Do the wake's work, or the start procedure below.
 3. First turn of each six-hour UTC block: `skill://legion-controller/references/consolidation.md`.
 4. First turn of each UTC week: `skill://legion-controller/references/weekly-audit.md`.
@@ -57,10 +59,6 @@ Every launch opens with a start message. Envoy keeps no wake sent while no contr
 | A finding sent as text | Open an ask ([Findings](#findings-and-the-issues-you-file)) |
 | An answer to a park ask; a deferral ask | `skill://legion-controller/references/park-asks.md`; `skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` |
 | Any other wake, a GitHub mention | `skill://legion-controller/references/wakes.md` |
-
-## Trees waiting on a root claim
-
-A root architect whose claim on its root was refused waits, and nothing tells it when the holder lets go. `dispatch read` each root in `admission.trees` still at `phase: admitted`. When `Claimed by:` is `nobody` or ends `· not running`, `envoy_publish` `<KEY>: the claim is free; claim it again.` to `notifications.role.<issues.<KEY>.architect.locator.claim>`.
 
 ## Issues handed to Legion
 

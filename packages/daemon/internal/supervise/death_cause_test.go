@@ -15,8 +15,9 @@ import (
 )
 
 // The claim keeps the runtime's own account of the death it last suffered, the agent's first
-// prompt after the restart names that account and what the death took with it, and the claim's
-// last ready time dates both.
+// prompt after the restart names that account and what the death took with it, and the claim
+// records the ready of the agent that came up after it: LastDeathAt dates the death, and a
+// LastDeathAt before LastReady is a death the running agent survived.
 func TestADeadWorkerIsRestartedInItsSessionAndToldWhyItDied(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
@@ -160,6 +161,128 @@ func TestAFailedStartIsKeptBesideTheLastDeathsCause(t *testing.T) {
 	if stored := h.store.load(testToken); stored.LastDeathCause != c.LastDeathCause || stored.LastStartFailure != c.LastStartFailure {
 		t.Errorf("stored causes %q / %q, want them persisted as %q / %q",
 			stored.LastDeathCause, stored.LastStartFailure, c.LastDeathCause, c.LastStartFailure)
+	}
+}
+
+// A failed start's cause goes with the launch failures it names once the agent comes up: the
+// claim then holds no start failure, so a reader who finds the claim launching again later is not
+// shown a refusal from before the agent last ran as the reason it is not running now
+// (dispatch://INFRA-5463). The death's cause stays, since the record of that death names it.
+func TestAFailedStartsCauseGoesWhenTheAgentComesUp(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Generation: 5})
+	h.must(StreamTurnStart{Claim: testToken})
+	h.rt.ScriptResume(fake.SpawnResult{Err: errBoom})
+	h.observe(runtime.Gone)
+	if got := h.claim().LastStartFailure; !strings.Contains(got, errBoom.Error()) {
+		t.Fatalf("the claim records the failed start as %q, want the runtime's refusal %q", got, errBoom)
+	}
+	death := h.claim().LastDeathCause
+
+	h.advance(time.Minute)
+	h.relaunched()
+
+	h.wantState(StateReady)
+	for name, got := range map[string]Claim{"the machine's claim": h.claim(), "the stored claim": h.store.load(testToken)} {
+		if got.LastStartFailure != "" {
+			t.Errorf("%s still records the start failure %q after its agent came up, want none", name, got.LastStartFailure)
+		}
+		if death == "" || got.LastDeathCause != death {
+			t.Errorf("%s records the death as %q, want the cause it died of, %q", name, got.LastDeathCause, death)
+		}
+	}
+}
+
+// Each cause carries the time the daemon recorded it, and that time moves each time the daemon
+// records a cause of that kind, one whose text is the same as the cause it replaces included, and
+// when the cause is dropped, and at no other time (#5349): a death of an hour ago
+// and one of days ago read the same text, and only the time tells them apart. Here the claim's
+// process dies and its relaunch is refused, twice, a minute apart, with the same death and the same
+// refusal, and no ready between; then its agent comes up, which drops the start failure and its
+// time and leaves the death's, and a turn and some minutes after that move neither. The stored
+// claim holds what the machine holds at every step.
+func TestAClaimCauseTimeIsRecordedAgainForTheSameText(t *testing.T) {
+	h := newBareHarness(t)
+	// Two deaths and two refused starts with no ready between them charge four launch failures,
+	// more than the harness's limit of three allows.
+	h.deps.Limits = Limits{LaunchFailures: 10, PromptFailures: 3, PromptRetires: 2}
+	if err := h.store.PutClaim(h.ctx, queuedClaim()); err != nil {
+		t.Fatal(err)
+	}
+	h.start(queuedClaim())
+	h.reach(StateReady)
+	const detail = "pod legion-legion-209 (uid 8fdd52cc) ended: init container workspace-init exited 1"
+	died := func() {
+		t.Helper()
+		h.rt.ScriptResume(fake.SpawnResult{Err: errBoom})
+		h.must(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now().Add(-time.Minute), Detail: detail}})
+		h.wantState(StateLaunching)
+	}
+	want := func(what string, death, startFailure time.Time) {
+		t.Helper()
+		for name, got := range map[string]Claim{"the machine's claim": h.claim(), "the stored claim": h.store.load(testToken)} {
+			if !got.LastDeathAt.Equal(death) {
+				t.Errorf("%s %s records its death %q at %s, want %s", name, what, got.LastDeathCause, got.LastDeathAt, death)
+			}
+			if !got.LastStartFailureAt.Equal(startFailure) {
+				t.Errorf("%s %s records its start failure %q at %s, want %s", name, what, got.LastStartFailure, got.LastStartFailureAt, startFailure)
+			}
+		}
+	}
+
+	first := h.clock.Now()
+	died()
+	death, refusal := h.claim().LastDeathCause, h.claim().LastStartFailure
+	if !strings.Contains(death, detail) || !strings.Contains(refusal, errBoom.Error()) {
+		t.Fatalf("the claim records the death %q and the start failure %q, want the runtime's account %q and its refusal %q", death, refusal, detail, errBoom)
+	}
+	want("after the death whose relaunch was refused", first, first)
+
+	h.advance(time.Minute)
+	want("a minute on, with no cause recorded since", first, first)
+
+	second := h.clock.Now()
+	died()
+	if got := h.claim(); got.LastDeathCause != death || got.LastStartFailure != refusal {
+		t.Fatalf("the second death and refusal read %q and %q, want the same text as the first, %q and %q",
+			got.LastDeathCause, got.LastStartFailure, death, refusal)
+	}
+	want("after the same death and the same refusal a minute later", second, second)
+
+	h.advance(time.Minute)
+	h.relaunched()
+	want("after its agent came up", second, time.Time{})
+
+	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Generation: 5})
+	h.must(StreamTurnStart{Claim: testToken})
+	h.must(StreamTurnEnd{Claim: testToken})
+	h.advance(10 * time.Minute)
+	want("after a turn and ten minutes", second, time.Time{})
+}
+
+// The boot's clear of a start failure an earlier release kept past its agent's ready drops the
+// failure's time with it, and leaves a claim whose agent has not been ready since as it stands,
+// time and all (DropStaleStartFailure, #5349).
+func TestTheBootsClearOfAStaleStartFailureTakesItsTime(t *testing.T) {
+	for _, tc := range []struct {
+		state   ClaimState
+		dropped bool
+	}{{StateReady, true}, {StateWorking, true}, {StateIdle, true}, {StateLaunching, false}, {StateSuspended, false}} {
+		c := Claim{State: tc.state, LastStartFailure: "the launcher refused the start", LastStartFailureAt: epoch,
+			LastDeathCause: "gone: OOMKilled", LastDeathAt: epoch}
+		if got := DropStaleStartFailure(&c); got != tc.dropped {
+			t.Errorf("DropStaleStartFailure of a %s claim = %v, want %v", tc.state, got, tc.dropped)
+		}
+		if tc.dropped && (c.LastStartFailure != "" || !c.LastStartFailureAt.IsZero()) {
+			t.Errorf("a %s claim kept the start failure %q at %v after the clear, want neither", tc.state, c.LastStartFailure, c.LastStartFailureAt)
+		}
+		if !tc.dropped && (c.LastStartFailure == "" || !c.LastStartFailureAt.Equal(epoch)) {
+			t.Errorf("a %s claim holds the start failure %q at %v after the boot, want it kept at %v", tc.state, c.LastStartFailure, c.LastStartFailureAt, epoch)
+		}
+		if !c.LastDeathAt.Equal(epoch) {
+			t.Errorf("a %s claim's death time is %v after the boot, want it kept at %v", tc.state, c.LastDeathAt, epoch)
+		}
 	}
 }
 

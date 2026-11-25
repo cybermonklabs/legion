@@ -1,6 +1,6 @@
 name: CI job tool-fallback-arm
 
-# The steps of ci.yaml's `tool-fallback-arm` job, in a file of its own.
+# The steps of `.github/workflows/ci.yaml#tool-fallback-arm` job, in a file of its own.
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: [changes, ci-images]`
 # and the whole `if:` that decides whether these steps run, so this file carries no `if:` of its
 # own. .github/ci-notes/ci.md#the-arm64-half-of-the-tool-fallback-proof, which that job's `# why:`
@@ -17,13 +17,13 @@ name: CI job tool-fallback-arm
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
@@ -47,8 +47,8 @@ jobs:
     # 43 s, 45 s and 50 s (jobs 129726973920, 129733754662, 129745140461, 129743510021 and
     # 129721254112), where the tool-fallback job took 1,611 s to 2,007 s in those same five runs.
     # The reason is the shape of this job's faulted install. It reads ci_tools_fetch_fallback
-    # (.github/actions/setup-bun/action.yml line 174), which reads the second source alone and
-    # tries no primary (.github/scripts/ci-tools.sh lines 1259 to 1268), and the primary it does
+    # (`.github/actions/setup-bun/action.yml#ci_tools_fetch_fallback "$row"`), which reads the second source alone and
+    # tries no primary (`.github/scripts/ci-tools.sh#ci_tools_fetch_fallback()`), and the primary it does
     # not try is fetched by oven-sh/setup-bun, a Node action that calls no curl. The one fetch
     # the helper makes here is of npm, which answers. In the step list of job 129743510021 one
     # step alone is above 3 s: the faulted setup-bun at 32 s, which is the 107 MB npm download.

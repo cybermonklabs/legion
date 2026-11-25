@@ -39,6 +39,7 @@ type unownedSeed struct {
 }
 
 func TestListUnownedP0(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	p0, p1 := 0, 1
 	route := "role:dora"
@@ -90,6 +91,7 @@ func TestListUnownedP0(t *testing.T) {
 // count is 1: the rule of ListUnownedP0, which the delivery measures' P0 card answers, and of
 // CountUnownedP0, which the unowned-p0 eval records (dispatch://INFRA-2916, R13).
 func TestOfFourP0IssuesOnlyTheOneNeitherDoneClaimedNorRoutedIsUnowned(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	p0 := 0
 	route := "role:dora"
@@ -122,6 +124,7 @@ func TestOfFourP0IssuesOnlyTheOneNeitherDoneClaimedNorRoutedIsUnowned(t *testing
 // project's in number order through issues_project_key_number_key, filtering each, as cheaply as
 // it reads the partial index and sorts, which says nothing about the statement.
 func TestTheUnownedP0ReadsReadTheirPartialIndex(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	p0, p2 := 0, 2
 	seeds := []unownedSeed{{key: "PINDEX-1", number: 1, title: "unowned", status: "todo", priority: &p0}}
@@ -160,6 +163,7 @@ func TestTheUnownedP0ReadsReadTheirPartialIndex(t *testing.T) {
 // and a done one among them, and issues is analyzed first, as TestTheUnownedP0ReadsReadTheirPartialIndex
 // says why. The keys it answers are the two open ones.
 func TestTheOpenP0KeysReadReadsTheOpenP0Index(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	p0, p2 := 0, 2
 	seeds := []unownedSeed{

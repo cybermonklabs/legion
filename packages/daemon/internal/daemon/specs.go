@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/experiment"
@@ -34,9 +36,15 @@ var _ supervise.Specs = specs{}
 // provisions workspaces itself (a Sandbox pod's init containers) provisions the issue's workspace
 // from them, and under any other the daemon makes sure the workspace is on its own host first.
 type specs struct {
-	stateDir     string
-	project      string
+	stateDir string
+	project  string
+	// instructions is the path of the daemon's copy of the deployment's instructions, "" when the
+	// configuration names none, and copies every copy of an instructions file, which SpawnSpec
+	// reads again before it builds a launch (instructionsCopies.refresh), so an edited file
+	// reaches the next launch. Boot always sets copies; it is nil only in a test whose specs
+	// literal leaves it out, and such a specs launches on whatever the copies hold.
 	instructions string
+	copies       *instructionsCopies
 	secrets      map[string]string
 	prompts      *prompts.Composer
 	// variants is every arm of a declared experiment the claim's unit was drawn into and that
@@ -70,9 +78,18 @@ type specs struct {
 	same func(a, b string) bool
 	// identity is the role's App bot identity every pane commits as, minted for the owner whose
 	// installation holds the repository the launch works — the record's name over a transfer, the
-	// mint's owner its serving one (workflowRuntime.identity); nil for a daemon with no GitHub
-	// Apps.
+	// mint's owner its serving one (workflowRuntime.identity). A worker's launch asks it for its
+	// own role, and for one role of the other App when knownIdentity knows none of that App's, so
+	// one call per App, its own first (roleIdentities). nil for a daemon with no GitHub Apps.
 	identity func(ctx context.Context, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error)
+	// knownIdentity is the bot identity of role's App that the daemon already holds, read with no
+	// mint (workflowRuntime.knownIdentity), which a worker's launch reads for the other App's roles
+	// before it asks identity; nil for a daemon with no workflow and in a test whose specs literal
+	// leaves it out, whose launches read every identity through identity.
+	knownIdentity func(role claim.Role) (runtime.GitIdentity, bool)
+	// log is where a launch says what it carries less of than it would (roleIdentities); nil logs
+	// to slog.Default, as a test's specs literal does.
+	log *slog.Logger
 	// repository is the repository an issue works and its default branch, as every launch reads it
 	// (workflowRuntime.launchRepository: its record's, or, for an issue the workflow does not
 	// record, the one Dispatch resolves it to, read and prepared at its first launch and kept while
@@ -137,7 +154,8 @@ func (s specs) ownersOf(role claim.Role) []string {
 
 // SpawnSpec is the launch's secrets (launchSecrets: the Envoy bearer and the NATS nkey seed, each
 // when the daemon has one), its prompt — the role prompt parts, the addressing sentence, the
-// deployment instructions and the instructions of each arm the claim's unit was drawn into
+// deployment instructions and the instructions of each arm the claim's unit was drawn into, each
+// file read again first (copies), so a launch carries what the operator's files hold now
 // — and its repository with that repository's default branch, whose workspace is on the daemon's
 // host by then when the runtime leaves workspaces to the daemon
 // (ensureWorkspace). The controller's launch (controllerSpawnSpec) is its own. Both name the
@@ -148,6 +166,7 @@ func (s specs) ownersOf(role claim.Role) []string {
 // Env carries the stall limits the daemon's own environment holds, merged after the fork
 // (stallLimitVariables), so the controller's launch is told them exactly as a worker's is.
 func (s specs) SpawnSpec(ctx context.Context, c supervise.Claim) (runtime.SpawnSpec, error) {
+	s.copies.refresh(ctx)
 	var spec runtime.SpawnSpec
 	var err error
 	if c.Role == claim.RoleController {
@@ -254,18 +273,88 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 		}
 		spec.Variants, spec.Prompt.VariantInstructionsPaths = arms.Variants, arms.Instructions
 	}
+	// The claim's own identity is the six variables its commits carry (GitIdentity.Env), and a
+	// failed mint of it fails the launch. Every role's of claim.Roles is the table the push step of
+	// `legion jj` reads to set the author of a commit a push sends from the role its Legion-Role
+	// trailer names, where the step's rules let it (runtime.RoleIdentitiesVariable): an issue's
+	// roles share one working copy, so a commit's author may be another role's App. The table is
+	// built with the claim's own identity for its own App's roles and with one resolution of the
+	// other App's (roleIdentities); when the other App's identity cannot be resolved, the launch
+	// goes on with a table of its own App's roles alone, and a commit whose trailer names a role
+	// left out keeps its author. A launch whose context ended during that resolution fails, as one
+	// whose context ended during the claim's own mint does: that is no failure of the other App.
+	// The controller's launch (controllerSpawnSpec) asks for no identity and carries no table.
 	if s.identity != nil {
 		id, err := s.identity(ctx, c.Role, spec.Repository)
 		if err != nil {
 			return runtime.SpawnSpec{}, fmt.Errorf("the git identity of %s: %w", c.Token, err)
 		}
+		identities, err := s.roleIdentities(ctx, c, spec.Repository, id)
+		if err != nil {
+			return runtime.SpawnSpec{}, fmt.Errorf("the role identities of %s: %w", c.Token, err)
+		}
 		spec.Env = id.Env()
+		spec.Env[runtime.RoleIdentitiesVariable] = runtime.RoleIdentities(identities)
 	}
 	// After the git identity, which replaces spec.Env rather than merging into it: the refusal
 	// cooldowns are merged into whatever map the launch holds by then. The stall limits are
 	// merged after the fork, onto every launch (SpawnSpec).
 	passthrough(spec.Env, refusalCooldownVariables...)
 	return spec, nil
+}
+
+// roleIdentities is the table of every role's identity a launch of c carries
+// (runtime.RoleIdentitiesVariable), given own, c's own identity. A role of c's own App takes own,
+// since one App commits as one identity, and asks nothing more. The other App's roles take that
+// App's identity, resolved once for all of them (otherAppIdentity). When it cannot be resolved,
+// the table leaves them out and the daemon logs one warning naming c, that App and the error, so
+// a failed mint of one App's lease fails no launch of the other App's role, and the push step
+// leaves the author of a commit whose trailer names a role left out as it is. A resolution that
+// failed once ctx had ended is the launch's own end rather than the other App's failure: it is
+// the error, and nothing is logged.
+func (s specs) roleIdentities(ctx context.Context, c supervise.Claim, repository ghrepo.Repository, own runtime.GitIdentity) (map[claim.Role]runtime.GitIdentity, error) {
+	app := appauth.AppRoleFor(c.Role)
+	identities := make(map[claim.Role]runtime.GitIdentity, len(claim.Roles))
+	var others []claim.Role
+	for _, role := range claim.Roles {
+		if appauth.AppRoleFor(role) == app {
+			identities[role] = own
+		} else {
+			others = append(others, role)
+		}
+	}
+	if len(others) == 0 {
+		return identities, nil
+	}
+	other, err := s.otherAppIdentity(ctx, others[0], repository)
+	switch {
+	case err == nil:
+		for _, role := range others {
+			identities[role] = other
+		}
+	case ctx.Err() != nil:
+		return nil, fmt.Errorf("the git identity of the %s App: %w", appauth.AppRoleFor(others[0]), err)
+	default:
+		log := s.log
+		if log == nil {
+			log = slog.Default()
+		}
+		log.Warn("legion launch carries no identity of the other App's roles: its role identities hold its own App's roles alone",
+			"claim", c.Token, "app", appauth.AppRoleFor(others[0]), "error", err)
+	}
+	return identities, nil
+}
+
+// otherAppIdentity is the identity of role's App, the App other than the claim's own: first the
+// one the daemon already holds (knownIdentity), which costs no mint, and only when it holds none
+// a lease's (identity, which reuses that App's cached lease: workflowRuntime.identity).
+func (s specs) otherAppIdentity(ctx context.Context, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error) {
+	if s.knownIdentity != nil {
+		if id, known := s.knownIdentity(role); known {
+			return id, nil
+		}
+	}
+	return s.identity(ctx, role, repository)
 }
 
 // ownerOf is the architect c's addressing names (addressingFragment), read again at each launch:
@@ -405,7 +494,7 @@ func (s specs) stalePluginInstall(c supervise.Claim, backend runtime.Backend) *r
 	if runtime.Of(backend) == runtime.BackendClaude {
 		return nil
 	}
-	if s.runtimeName != "kubernetes" || c.Session == "" || c.PluginContract == api.DaemonAPIVersion || s.plugins == nil {
+	if s.runtimeName != "kubernetes" || c.Session == "" || c.PluginContract == api.DaemonAPIVersion() || s.plugins == nil {
 		return nil
 	}
 	install := *s.plugins
@@ -423,8 +512,9 @@ func (s specs) stalePluginInstall(c supervise.Claim, backend runtime.Backend) *r
 // (sandbox.Options.ControllerSlackChannels), which compares them with the list a running
 // controller was launched under and relaunches it when they change; a spec cannot set that
 // variable.
-// It has no repository and no git identity: the controller works Dispatch, never a checkout, and
-// commits nothing, so it stamps no issue key into one either (runtime.SpawnSpec.IssueTrailer,
+// It has no repository and no git identity, nor the table of every role's identity
+// (runtime.RoleIdentitiesVariable): the controller works Dispatch, never a checkout, and commits
+// and pushes nothing, so it stamps no issue key into a commit either (runtime.SpawnSpec.IssueTrailer,
 // which validateControllerShape refuses on a controller's spec). It runs in no experiment and is
 // told no variant instructions whatever the modes are: an experiment's unit is a tree or an
 // issue of one, and the controller runs in neither.

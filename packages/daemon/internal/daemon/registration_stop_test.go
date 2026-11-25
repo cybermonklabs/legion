@@ -108,6 +108,10 @@ func (r renewingRegistrar) KeepPodSession(ctx context.Context, s supervise.PodSe
 	})
 }
 
+func (r renewingRegistrar) ReleasePodSessions(ctx context.Context, names []string) error {
+	return r.client.ReleasePodSessions(ctx, names)
+}
+
 // TestAStopDoesNotWaitOutTheRPCTimeoutWhileTheShimIsAskedForItsToken drives the stop of a
 // registration (stopRegistration, from the decision that lets the process go) while the
 // registration's renewal is reading the pod's token over the real worker stream (stream.Conn's
@@ -185,7 +189,7 @@ func TestAStopDoesNotWaitOutTheRPCTimeoutWhileTheShimIsAskedForItsToken(t *testi
 		Runtime: rt, Conns: listener, Store: &outboxClaimStore{}, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
 		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:       supervise.Timeouts{Boot: time.Minute, RegistrationIntervals: 2, RPC: rpc, Probe: time.Hour, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract: api.DaemonAPIVersion,
+		PluginContract: api.DaemonAPIVersion(),
 		Secrets:        enrollsEveryPod{},
 		Registrar: renewingRegistrar{
 			client:   &cipher.Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile, Log: quietLogger()},
@@ -304,7 +308,7 @@ func TestAStopDoesNotWaitOutTheRPCTimeoutWhileTheShimIsAskedForItsToken(t *testi
 		t.Fatal("the shim's hello never reached the machine")
 	}
 	for _, ev := range []supervise.Event{
-		supervise.RequestRegister{Claim: token, Generation: 1, Session: session, SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion},
+		supervise.RequestRegister{Claim: token, Generation: 1, Session: session, SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion()},
 		supervise.RequestReady{Claim: token, Generation: 1, Session: session},
 	} {
 		if err := machine.Handle(ctx, ev); err != nil {

@@ -103,6 +103,7 @@ func nextWithin(t *testing.T, ctx context.Context, pull *SessionPull) SessionMes
 // a relay restarts its run at the ack floor on it, so any connection that can publish into the
 // inbox could restart a session's relay as often as it liked.
 func TestAPullDropsAMessageItsConsumerDidNotDeliver(t *testing.T) {
+	t.Parallel()
 	owner, consumers, logs := sessionConsumersLogging(t)
 	ctx := context.Background()
 	const session = "ses_inboxed"
@@ -183,6 +184,7 @@ func TestAPullDropsAMessageItsConsumerDidNotDeliver(t *testing.T) {
 // the half the pull's own check stands for: without it, Next returned the message and its Ack
 // acknowledged session two's.
 func TestAMessageInAPullsInboxNamingAnotherConsumersAckIsNotDeliveredAndAcksNothing(t *testing.T) {
+	t.Parallel()
 	owner, consumers, logs := sessionConsumersLogging(t)
 	ctx := context.Background()
 	const one, two = "ses_forging", "ses_forged"

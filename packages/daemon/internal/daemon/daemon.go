@@ -25,6 +25,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/cipherclient"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
@@ -66,7 +68,7 @@ const (
 	// load for as long as that lasts (pluginGate) — nor are the store's open, the GitHub Apps'
 	// logins and key proof, and the image probe, which wait out a connection error the next attempt
 	// can clear, GitHub's transient trouble and the cluster's within retries of their own
-	// (storeOpenRetry, appMintRetry, imageProbeRetry); the work after each has a budget anew.
+	// (storeOpenRetry, appCallBounds.retry, imageProbeRetry); the work after each has a budget anew.
 	bootTimeout = 30 * time.Second
 	// storeOpenAttempt bounds one attempt to open the store (storeOpenRetry). With no
 	// connect_timeout in the DSN, pgxpool bounds a connection it opens at two minutes, so without
@@ -180,6 +182,9 @@ type overrides struct {
 	environ []string
 	// orphanSweep is how often orphans are reconciled; zero is orphanSweepInterval.
 	orphanSweep time.Duration
+	// outboxSweep is how often the outbox sweeps its lanes (outbox.sweepEvery, which attach hands
+	// it); zero is outboxLease.
+	outboxSweep time.Duration
 	// controllerRetry is the first wait before a failed daemon-launched controller is retried; zero
 	// is controllerRetryFirst.
 	controllerRetry time.Duration
@@ -199,6 +204,17 @@ type overrides struct {
 	// production mergeStateLadderWait. A whole-daemon test of those reads shortens it, so it waits
 	// out its own wait rather than half a minute a read.
 	mergeStateRetry time.Duration
+	// catchUpRetry is the wait between two reads of one root the boot's catch-up makes after
+	// Dispatch refused it with an error it may stop giving (workflowRuntime.catchUpRetryDelay);
+	// zero is the production catchUpRetryDelay. A whole-daemon test whose Dispatch stand-in refuses
+	// the catch-up's reads shortens it, so each of its boots does not wait out two seconds a read.
+	catchUpRetry time.Duration
+	// appCalls are the bounds of the start's App calls (appCallBounds): their attempt, the retry
+	// between attempts that failed transiently, the rate-limit policy, and the clock every wait of
+	// theirs reads and waits on; nil is productionAppCalls. A test of the boot's App calls shortens
+	// them, or puts their waits on a clock of its own, for the daemons it boots alone, so it runs
+	// beside every other test.
+	appCalls *appCallBounds
 	// entrySweep is how often the daemon converges the phase entries with no fact arriving
 	// (workflowRuntime.entrySweep); zero is the production minute, entrySweepInterval. A test of
 	// the sweep shortens it, so it waits out its own period rather than the daemon's.
@@ -225,6 +241,11 @@ type overrides struct {
 	// serves the socket `legion start` inherited from LEGION_LISTEN_FD (handed); a test's hands
 	// over a listener it holds.
 	listen func(network, address string) (net.Listener, error)
+	// streamListen takes the worker stream's listener for the address the stream binds
+	// (stream.Options.Listen); nil, in production, binds it. A test whose two daemons must listen
+	// on one worker_stream_port hands over a socket it holds across both, so the port is never free
+	// between its pick and a bind (controllerSandboxRig).
+	streamListen func(network, address string) (net.Listener, error)
 	// strandedReported runs once the boot's report of the claims nothing will wake has finished,
 	// whether it logged or not (reportStranded); nil, in production, is nothing. The report runs
 	// beside the API, so a test that asserts on its line waits for this rather than for /healthz.
@@ -269,19 +290,27 @@ type overrides struct {
 	// the decision would hold the machine's lock, which an agent's request waits on at its grant
 	// check (supervise.Machine.Claim).
 	beforeDecision func(claim.Token, supervise.Event)
+	// experimentSource is the random source admission and the workflow draw every `random`
+	// experiment with: admission's draw of each tree and issue it records, and the workflow's of
+	// each child it records (experiment.Draw). nil, in production, is experiment.CryptoSource; a
+	// test that compares a run's draws with a seed's hands in a source of that seed. The API's draw
+	// at an operator's spawn keeps its own: it draws only the tree-unit experiments, and an
+	// experiment that sets how an issue is done draws for each issue (config's checkExperimentPlans).
+	experimentSource func(uint64) (uint64, error)
 }
 
 // Run is the daemon. It refuses what it cannot run on before it touches anything — the
 // configuration first, then, under tmux, the plugin gate, which holds the Oh My Pi plugin every
-// pane will load to this daemon's contract — then opens the store (trying again a connection error
-// the next attempt can clear, and refusing by the host it could not reach), migrates, takes its
-// API listener and its worker stream, builds the runtime (under kubernetes, once Agent Sandbox's
-// install check passes), proves the worker image under kubernetes, records the boot, supervises
-// every claim the store holds, serves the API, and blocks until ctx is done. Then it stops: it
-// says so, cancels the decisions it makes itself, drains the API and the decisions its routes
-// asked for, ends the workflow and supervision, stamps the boot's end and closes the pool, in that
-// order, because the stamp needs the pool. The waits before the stamp share one budget, which a
-// boot that has not finished supervising its claims shares too (stopBudget).
+// pane will load to this daemon's contract, then the credential its Dispatch client presents
+// (dispatchCredential) — then opens the store (trying again a connection error the next attempt
+// can clear, and refusing by the host it could not reach), migrates, takes its API listener and
+// its worker stream, builds the runtime (under kubernetes, once Agent Sandbox's install check
+// passes), proves the worker image under kubernetes, records the boot, supervises every claim the
+// store holds, serves the API, and blocks until ctx is done. Then it stops: it says so, cancels
+// the decisions it makes itself, drains the API and the decisions its routes asked for, ends the
+// workflow and supervision, stamps the boot's end and closes the pool, in that order, because the
+// stamp needs the pool. The waits before the stamp share one budget, which a boot that has not
+// finished supervising its claims shares too (stopBudget).
 //
 // Everything that can refuse comes before the boot record: a recorded boot is a boot that
 // served, and a daemon whose port, socket, tmux, cluster, or image refused it never ran.
@@ -289,9 +318,9 @@ type overrides struct {
 // ctx decides one thing: how long the daemon serves. The boot record and its stamp are the
 // daemon's own bookkeeping and run on a context the shutdown did not cancel, so a signal that
 // arrives once the store is open still leaves a recorded, stamped boot rather than a row with no
-// end. A signal that arrives while the plugin gate, the store's attempts to open, the GitHub Apps'
-// logins and key proof, or the image probe waits ends the daemon there, cleanly: it has served
-// nothing and records nothing.
+// end. A signal that arrives while the plugin gate, the Dispatch credential's trade or read, the
+// store's attempts to open, the GitHub Apps' logins and key proof, or the image probe waits ends
+// the daemon there, cleanly: it has served nothing and records nothing.
 //
 // listener, when not nil, is the API listener the daemon serves on in place of binding cfg's bind
 // and port: the socket `legion start` inherited (LEGION_LISTEN_FD), which it checked names both.
@@ -347,6 +376,22 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 			}
 			return err
 		}
+	}
+	// The credential every Dispatch call of the daemon's presents: the bearer dispatch_token_file
+	// names, or, under dispatch_token_broker, the daemon's own pod identity traded at the secrets
+	// broker, whose first trade and Dispatch's reading of it wait out a broker or a Dispatch that
+	// does not answer, which the boot budget does not bound, as it does not bound the plugin gate.
+	environ := o.environment()
+	dispatchTransport, err := dispatchCredential(ctx, cfg, plan.dispatchToken, func(name string) string {
+		value, _ := envValue(environ, name)
+		return value
+	}, log)
+	if err != nil {
+		if ctx.Err() != nil {
+			log.Info("legion daemon stopped before it settled its Dispatch credential", "project", cfg.Project)
+			return nil
+		}
+		return err
 	}
 
 	// The cluster's refusals run before the store opens, so before any schema write, image probe or
@@ -419,10 +464,15 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// would let their wakes out on the same instants, and the organization they share would see
 	// both bursts in one minute. A rate of zero is the pacing off, and each lane is handed no
 	// Reserve at all rather than one that paces nothing, which is how both read the pacing off
-	// (workflow.Config.Reserve, supervise.WakePace.Reserve).
-	var reserveWake func(time.Time) time.Time
+	// (workflow.Config.Reserve, supervise.WakePace.Reserve). wakeInterval is what one wake of it
+	// costs, which the gate reads a launch's lateness by (supervise.WakePace.Interval).
+	var (
+		reserveWake  func(time.Time) time.Time
+		wakeInterval time.Duration
+	)
 	if cfg.WorkerWakesPerMinute > 0 {
-		reserveWake = wakepace.New(cfg.WorkerWakesPerMinute, cfg.WorkerWakeBurst, rand.N[time.Duration]).Reserve
+		limiter := wakepace.New(cfg.WorkerWakesPerMinute, cfg.WorkerWakeBurst, rand.N[time.Duration])
+		reserveWake, wakeInterval = limiter.Reserve, limiter.Interval()
 	}
 	// The one gate of the stale-plugin refresh lane, built here because K is that same rate: the
 	// lane may hold one minute of the pacing at a time, and the sweep a minute later admits the
@@ -431,13 +481,13 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// gate to hand the machines and the refresh pass, and one place that reads a rate of zero.
 	refreshGate := supervise.NewRefreshGate(cfg.WorkerWakesPerMinute)
 	// The Apps' logins and the proof of each App's key wait out GitHub's transient failures within
-	// appMintRetry and its rate limit until the time GitHub names, within the start's own bound
-	// (startRateLimits), and the boot budget bounds neither, as it does not bound the plugin gate
+	// the start's retry and its rate limit until the time GitHub names, within the start's own bound
+	// (appCallBounds), and the boot budget bounds neither, as it does not bound the plugin gate
 	// or the image probe: the work after them has a budget of its own. The key proof under the
 	// App's JWT mints no token for an owner (proveAppKeys); every other step of the boot that reads
 	// GitHub or writes a cache's credential mints the token that step needs. The fill of a record
 	// that lacks its repository columns (backfillRepositories) makes one read per such record,
-	// bounded by installReadAttempt, and a read that fails leaves the record for the refresher
+	// bounded by the read attempt bound (repositoryReadBounds.attempt), and a read that fails leaves the record for the refresher
 	// rather than refusing the boot. The one-time rename pass (renameAtBoot, below) reads GitHub for
 	// a configured pair only while a stored row still names the pair's `from` (renamePass.run). The
 	// refresher prepares the records' repositories once the API serves (prepareAtStart), beside
@@ -445,7 +495,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// The workflow reads the machines' clock (overrides.clock, the wall clock in production), so a
 	// test clock moves the engine's deadlines and the idle, wake and stuck passes with the
 	// machines (dispatch://INFRA-3759).
-	workflow, err := openWorkflow(ctx, cfg, st, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, plan.installed, log, o.workflowTokens, o.githubAPI, reserveWake, plan.clock.Now)
+	workflow, err := openWorkflow(ctx, cfg, st, plan.project, dispatchTransport, plan.hookPrompts, plan.repositories, plan.installed, log, o.workflowTokens, o.githubAPI, reserveWake, plan.clock.Now, o.experimentSource, o.appCalls)
 	if err != nil {
 		st.Close()
 		if ctx.Err() != nil {
@@ -461,7 +511,10 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		boot, cancelAfterMint = bootBudget(ctx)
 		defer cancelAfterMint()
 		workflow.controllerFirstWake, workflow.idleTick, workflow.mergeStateRetry, workflow.entrySweep = o.controllerFirstWake, o.idleTick, o.mergeStateRetry, o.entrySweep
+		workflow.outboxSweep = o.outboxSweep
+		workflow.catchUpRetryDelay = o.catchUpRetry
 		plan.identity = workflow.identity
+		plan.knownIdentity = workflow.knownIdentity
 		plan.repository, plan.launchRepository = workflow.issueRepository, workflow.launchRepository
 		plan.ensureWorkspace = workflow.ensureWorkspace
 		plan.owner = workflow.owningArchitect
@@ -548,7 +601,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	if workflow != nil {
 		apps, pauses = workflow.apps, workflow.pauses
 	}
-	s, err := openSupervision(boot, cfg, log, plan, st, apps, reserveWake, refreshGate, pauses)
+	s, err := openSupervision(boot, cfg, log, plan, st, apps, reserveWake, wakeInterval, refreshGate, pauses)
 	if err != nil {
 		listener.Close()
 		workflow.stop()
@@ -840,12 +893,188 @@ func closeStore(st *store.Store, log *slog.Logger) {
 	}
 }
 
+// dispatchCredentialLine is the boot's one line naming the credential the daemon's Dispatch client
+// presents (dispatchCredential): credential=broker and the session its token names, or
+// credential=file and the file, beside transitionFile where the configuration names one. It names
+// no token.
+const dispatchCredentialLine = "legion daemon's Dispatch credential"
+
+// dispatchCredential settles, at boot and before anything opens (run), the credential every
+// Dispatch call of the daemon's presents, as the transport openWorkflow's client sends through.
+// Without dispatch_url there is none, and it logs nothing.
+//
+// Without dispatch_token_broker the transport presents dispatchToken, the bearer
+// dispatch_token_file names (readBoot), as the client always has (dispatch.BearerTransport). With
+// it, the daemon's own pod identity, which getenv names as it does for every machine client of the
+// broker (daemonBrokerClient), is traded at the secrets broker for a token of the session
+// legion-daemon:<PROJECT> (dispatch.DaemonSession), presented as `Authorization: DPoP` beside a
+// proof of the request's own URL (cipherclient.NewTokenTransport), and renewed ahead of its expiry
+// with no restart by the client's own renewal loop, off the request path, for as long as ctx lives
+// (renewDispatchCredential). Those reads and the first trade are boot's alone, never
+// `legion config check`'s (readBoot; dispatch://INFRA-4425 R1).
+//
+// The first trade runs here, at the boot gate's pacing (readinessRetry): a refusal no retry cures
+// (cipherclient.RefusedError.Permanent) refuses the boot in the broker's words, and any other
+// failure is logged and tried again. Then Dispatch's reading of the token, GET /api/v1/whoami,
+// waited out as the boot waits out a Dispatch that does not answer (dispatch.Unreachable), must
+// name the daemon's session, its project and a person (checkDaemonCaller). After boot, a failed
+// trade is a failed Dispatch call that sent nothing (dispatch.TransientError), which the outbox
+// waits out as it waits out a Dispatch outage.
+//
+// The transition token dispatch_token_transition_file holds (sandbox.DispatchCredential.Transition)
+// is never this credential: it is the sandbox runtime's alone, for a launch into a pod built before
+// the setting.
+func dispatchCredential(ctx context.Context, cfg config.Config, dispatchToken string, getenv func(string) string, log *slog.Logger) (http.RoundTripper, error) {
+	switch {
+	case cfg.DispatchURL == "":
+		return nil, nil
+	case !cfg.DispatchTokenBroker:
+		log.Info(dispatchCredentialLine, "credential", "file", "file", cfg.DispatchTokenFile)
+		return dispatch.BearerTransport(dispatchToken, http.DefaultTransport), nil
+	}
+	client, broker, err := daemonBrokerClient(cfg, getenv, log)
+	if err != nil {
+		return nil, err
+	}
+	session := dispatch.DaemonSession(cfg.Project)
+	var held *cipherclient.Token
+	err = bootprobe.Run(ctx, "daemon's Dispatch credential trade", readinessRetry, log, readinessAttempt(func(ctx context.Context) error {
+		var err error
+		held, err = client.Token(ctx)
+		return err
+	}, bootTimeout, tradeTransient))
+	if err != nil {
+		return nil, fmt.Errorf("dispatch_token_broker: the daemon's Dispatch credential, a token of the session %s, cannot be traded at %s: %w", session, broker, err)
+	}
+	transport := cipherclient.NewTokenTransport(client, http.DefaultTransport)
+	daemonDispatch := dispatch.New(cfg.DispatchURL, transport)
+	var caller dispatch.Caller
+	err = bootprobe.Run(ctx, "Dispatch whoami of the daemon's credential", readinessRetry, log, readinessAttempt(func(ctx context.Context) error {
+		var err error
+		caller, err = daemonDispatch.Whoami(ctx)
+		return err
+	}, bootTimeout, dispatch.Unreachable))
+	if err != nil {
+		return nil, err
+	}
+	if err := checkDaemonCaller(caller, cfg.Project); err != nil {
+		return nil, err
+	}
+	go renewDispatchCredential(ctx, client, held, session, log)
+	attrs := []any{"credential", "broker", "session", session}
+	if cfg.DispatchTokenTransitionFile != "" {
+		attrs = append(attrs, "transitionFile", cfg.DispatchTokenTransitionFile)
+	}
+	log.Info(dispatchCredentialLine, attrs...)
+	return transport, nil
+}
+
+// renewDispatchCredential renews the daemon's Dispatch token off the request path until ctx ends,
+// so a Dispatch call presents the token in hand while it is still good, without trading for the
+// next one or waiting on that trade (cipherclient.NewTokenTransport). Boot has just traded for
+// held, so the loop starts when held comes due for renewal (cipherclient.Client.RenewalAt) rather
+// than trade again at once. The loop is the client's own (cipherclient.Client.Run): it trades
+// RenewBefore ahead of each token's expiry, and waits out a broker that does not answer from 15 s
+// doubling to 5 minutes. A refusal no retry cures ends it, logged once at Error; the transport then
+// trades on the call that finds no token still good, as it would with no loop, and that call
+// answers the refusal.
+func renewDispatchCredential(ctx context.Context, client *cipherclient.Client, held *cipherclient.Token, session string, log *slog.Logger) {
+	due := time.NewTimer(time.Until(client.RenewalAt(held)))
+	defer due.Stop()
+	select {
+	case <-ctx.Done():
+		return
+	case <-due.C:
+	}
+	if err := client.Run(ctx, func(context.Context, *cipherclient.Token) error { return nil }); err != nil {
+		log.Error("legion daemon's Dispatch credential renewal stopped", "session", session, "error", err)
+	}
+}
+
+// daemonBrokerClient is the broker client of the daemon's own pod identity, and the broker it
+// trades at: the identity getenv names as it does for every machine client of the broker
+// (cipherclient.MachineIdentity), at the broker AGENT_SECRETS_URL names, proving
+// cipherclient.MachineKey's key, under the daemon's session (dispatch.DaemonSession), and declining
+// the launcher credential, since the daemon enrols nothing with this identity. A variable the
+// identity needs and does not have is refused by name: AGENT_SECRETS_MACHINE_IDENTITY, the
+// variables the identity it names reads (MachineIdentity's own words), and AGENT_SECRETS_URL.
+func daemonBrokerClient(cfg config.Config, getenv func(string) string, log *slog.Logger) (*cipherclient.Client, cipheraddr.Address, error) {
+	identity, err := cipherclient.MachineIdentity(getenv)
+	if err != nil {
+		return nil, cipheraddr.Address{}, fmt.Errorf("dispatch_token_broker is set, so the daemon trades its own pod identity for its Dispatch credential: %w", err)
+	}
+	if identity == nil {
+		return nil, cipheraddr.Address{}, fmt.Errorf("dispatch_token_broker is set, so the daemon's Dispatch credential is its own pod identity traded at the secrets broker, and %s names none: a daemon pod sets it to %s, with %s naming its projected service-account token",
+			cipherclient.IdentityVar, cipherclient.IdentityKubernetes, cipherclient.MachineTokenFileVar)
+	}
+	broker := cipheraddr.New(strings.TrimSpace(getenv(cipherclient.BrokerURLVar)))
+	if broker.Empty() {
+		return nil, cipheraddr.Address{}, fmt.Errorf("dispatch_token_broker is set, so the daemon trades its own pod identity for its Dispatch credential, and %s names no secrets broker to trade it at",
+			cipherclient.BrokerURLVar)
+	}
+	key, err := cipherclient.MachineKey(getenv)
+	if err != nil {
+		return nil, cipheraddr.Address{}, fmt.Errorf("dispatch_token_broker: the key the daemon's trade proves: %w", err)
+	}
+	client, err := cipherclient.New(cipherclient.Config{
+		BrokerURL: broker, Key: key, Subject: identity, Session: dispatch.DaemonSession(cfg.Project),
+		NoLauncherCredential: true, HTTP: cipherclient.HTTPClient(), Log: log,
+	})
+	if err != nil {
+		return nil, cipheraddr.Address{}, fmt.Errorf("dispatch_token_broker: %w", err)
+	}
+	return client, broker, nil
+}
+
+// tradeTransient is every failed trade but a refusal no retry cures
+// (cipherclient.RefusedError.Permanent): a broker that did not answer or answered 5xx, a 408 or its
+// 429, a DPoP refusal, a pod session it holds no registration for yet, and an identity this pod
+// could not read yet, such as a projected token the kubelet has not written.
+func tradeTransient(err error) bool {
+	var refused *cipherclient.RefusedError
+	return !(errors.As(err, &refused) && refused.Permanent())
+}
+
+// checkDaemonCaller refuses a broker token Dispatch takes for a caller whose every write it would
+// refuse: another session than the daemon's (403 ACTOR_SESSION_MISMATCH, every write of the
+// daemon's naming its own session as the actor), another project than the daemon's (403
+// PROJECT_SCOPE) or no person (SIGN_IN_REQUIRED). The outbox reads a 401 and a 403 as an outage
+// (dispatch.PermanentRefusal), so it would wait on each such write for ever; each is a fault of
+// the secrets broker's exchange entry for the daemon's own account, which the refusal names.
+func checkDaemonCaller(caller dispatch.Caller, project string) error {
+	session := dispatch.DaemonSession(project)
+	const entry = "the deployment must fix the secrets broker's exchange entry for the daemon's own account (BROKER_EXCHANGE_ACCOUNTS)"
+	switch {
+	case caller.Session == nil || *caller.Session != session:
+		return fmt.Errorf("GET /api/v1/whoami answers the session %s for the daemon's broker token, not %s, and Dispatch refuses every write the daemon makes as %s with it (403 ACTOR_SESSION_MISMATCH): %s so that it fixes the session %s",
+			whoamiValue(caller.Session), session, session, entry, session)
+	case caller.Project == nil || *caller.Project != project:
+		return fmt.Errorf("GET /api/v1/whoami answers the project %s for the daemon's broker token, not %s, and Dispatch refuses every write of the daemon's to %s with it (403 PROJECT_SCOPE): %s so that it names the project %s",
+			whoamiValue(caller.Project), project, project, entry, project)
+	case caller.Owner == nil:
+		return fmt.Errorf("GET /api/v1/whoami answers the owner null for the daemon's broker token, and Dispatch refuses every write of a token that acts for no person (SIGN_IN_REQUIRED): %s so that it names the person the daemon acts for",
+			entry)
+	}
+	return nil
+}
+
+// whoamiValue is a field of GET /api/v1/whoami's answer as a refusal quotes it: quoted, or null.
+func whoamiValue(value *string) string {
+	if value == nil {
+		return "null"
+	}
+	return strconv.Quote(*value)
+}
+
 // plan is what the daemon resolved from its configuration before touching anything.
 type plan struct {
 	// identity is the role's App bot identity for the owner whose installation holds the
 	// repository it works, from the workflow's token source (workflowRuntime.identity, which maps
 	// the record's repository to the one GitHub serves); nil without one.
 	identity func(ctx context.Context, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error)
+	// knownIdentity is the bot identity of a role's App that the workflow's token source already
+	// holds, read with no mint (workflowRuntime.knownIdentity); nil without a workflow.
+	knownIdentity func(role claim.Role) (runtime.GitIdentity, bool)
 	// repository is the repository an issue works and its default branch
 	// (workflowRuntime.issueRepository: its record's, or, for an issue the workflow does not
 	// record, the one Dispatch resolves it to, read at the first launch and kept while the issue
@@ -936,9 +1165,14 @@ type plan struct {
 	secrets       map[string]string
 	// nats is the user the daemon's own NATS connection authenticates as (natsConnection); no launch
 	// carries its seed unless it is the pane seed.
-	nats         natsConnection
-	instructions string
-	// dispatchToken is the Dispatch bearer dispatch_token_file names; "" without Dispatch.
+	nats natsConnection
+	// instructions is the path of the daemon's copy of the deployment's instructions, "" when the
+	// configuration names none, and instructionsCopies every copy of an instructions file, which
+	// each launch reads again first (writeInstructionsCopies).
+	instructions       string
+	instructionsCopies *instructionsCopies
+	// dispatchToken is the Dispatch bearer dispatch_token_file names; "" without Dispatch, and
+	// under dispatch_token_broker, whose credential is the daemon's own (dispatchCredential).
 	dispatchToken string
 	// hookPrompts are the words boot read for each hook whose `prompt_file` names a file, by
 	// hook name (readBoot): the engine is given words and never a path (engineConfig).
@@ -1011,6 +1245,8 @@ type plan struct {
 	streamWaitBegan func(claim.Token)
 	// beforeDecision is overrides.beforeDecision; nil runs nothing.
 	beforeDecision func(claim.Token, supervise.Event)
+	// streamListen is overrides.streamListen; nil binds the worker stream's address.
+	streamListen func(network, address string) (net.Listener, error)
 }
 
 // appOwners is, for a daemon of runtimeName, the owner accounts the addressing of every launch
@@ -1099,22 +1335,9 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		return plan{}, fmt.Errorf("construct role prompts: %w", err)
 	}
 
-	instructions := ""
-	if reads.instructions != nil {
-		if instructions, err = config.WriteDeploymentInstructions(reads.instructions, cfg.StateDir, cfg.Project); err != nil {
-			return plan{}, err
-		}
-	}
-
-	// One copy per declared variant that names an instructions file, each under its experiment's
-	// own directory, since two names may hold `-` and neither may hold `/`, and the `memory`
-	// block's arm at the block's own `memory-instructions.md` (config.VariantInstructionsFile,
-	// which is where a launch's arms read the copies back from: experiment.Launch). Boot writes
-	// them before the first pane opens.
-	for _, read := range reads.variantInstructions {
-		if err := config.WriteVariantInstructions(read.contents, cfg.StateDir, cfg.Project, read.experiment, read.variant); err != nil {
-			return plan{}, err
-		}
+	copies, instructions, err := writeInstructionsCopies(cfg, reads, log)
+	if err != nil {
+		return plan{}, err
 	}
 
 	clock := o.clock
@@ -1141,13 +1364,13 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 	}
 	p := plan{
 		repositories: newRepositories(cfg.Project, cfg.RepositoryRenames), installed: appauth.NewInstalled(), left: appauth.NewLeftOut(),
-		project: reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, nats: reads.nats, instructions: instructions,
+		project: reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, nats: reads.nats, instructions: instructions, instructionsCopies: copies,
 		dispatchToken: reads.dispatchToken, hookPrompts: reads.hookPrompts, prompts: composer, roleReferences: prompts.RoleReferences(),
 		tools: reads.tmux.tools, clock: clock, orphanSweep: orphanSweep, controllerRetry: controllerRetry, stopBudget: stop,
 		secretsEnroller: secretsEnroller, secretsRegistrar: secretsRegistrar, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
-		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision,
+		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision, streamListen: o.streamListen,
 	}
 	if cfg.Runtime.Name == "kubernetes" {
 		err = prepareSandbox(cfg, o, reads.sandbox, &p)
@@ -1206,7 +1429,7 @@ func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, dispatchToken
 			prefix:         cfg.OmpLaunchPrefix,
 			timeout:        cfg.SlowCommandTimeout,
 			retry:          bootprobe.Daemon,
-			contract:       api.DaemonAPIVersion,
+			contract:       api.DaemonAPIVersion(),
 			roleReferences: p.roleReferences,
 			log:            log,
 		}
@@ -1573,9 +1796,10 @@ type supervision struct {
 	// round (endPodUpdates), where the hook writes one of another round of the issue, and at the
 	// first sweep that finds no claim of the issue that has not retired (forgetLaunchRounds).
 	// Nothing of it is in the store: a restart forgets it, and the sweep then reads a pod a launch
-	// replaced as a pod gone, whose message names the same members. A mutex of its own, never held
-	// across a runtime call, because the hook runs on a launching machine's goroutine beside the
-	// sweep.
+	// replaced as a pod gone, whose message names the members by the same rule (lostClaims), where
+	// each machine built over its stored claim reads its set of pods as unknown wherever the stored
+	// claim shows a session (supervise's bootRegisteredPods). A mutex of its own, never held across
+	// a runtime call, because the hook runs on a launching machine's goroutine beside the sweep.
 	podUpdateLaunchMu       sync.Mutex
 	podUpdateLaunchReplaced map[string]*launchRound
 	// reportStore persists each report as it arrives (store.Store), so a restart renders the
@@ -1733,8 +1957,9 @@ func pacedCatchUps(ctx context.Context, tx pgx.Tx, records record.Store, project
 // reserve is the daemon's one wake limiter as the machines reach it (run builds it, before the
 // workflow, which reserves from the same one): the moment each launch may run, and nil while the
 // operator paces nothing, which is the gate's reading of the pacing off (supervise's
-// reserveWake). The rate and the burst go with it for the line every wake writes, never for that
-// decision (supervise.WakePace).
+// reserveWake). interval is that limiter's Interval, and it must come from the same limiter: the
+// gate reads how late a launch whose turn the boot reserved may run by it (supervise.WakePace). The
+// rate and the burst go with them for the line every wake writes, never for that decision.
 //
 // refreshGate is the daemon's one stale-plugin refresh gate, threaded exactly as reserve is and
 // from the same place (run builds both, from the one rate): it goes on the machines' Deps, so
@@ -1746,7 +1971,8 @@ func pacedCatchUps(ctx context.Context, tx pgx.Tx, records record.Store, project
 // (Deps.Paused, the service's one atomic load), write a pause's stop through its stop transaction
 // (Deps.PauseStopped) and stamp each paced launch's let-out moment through it (Deps.WakeLetOut);
 // it reads the machines this supervisor holds for its catch-up and its resume.
-func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, p plan, st *store.Store, apps appauth.Source, reserve func(time.Time) time.Time, refreshGate supervise.RefreshAdmitter, pauses *projectPause) (*supervision, error) {
+func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, p plan, st *store.Store, apps appauth.Source,
+	reserve func(time.Time) time.Time, interval time.Duration, refreshGate supervise.RefreshAdmitter, pauses *projectPause) (*supervision, error) {
 	claims, err := st.Claims(boot)
 	if err != nil {
 		return nil, err
@@ -1763,7 +1989,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	sup := newSupervisor(supervising, st, p.project, cfg.StateDir, log)
 	sup.beforeDecision = p.beforeDecision
 	listener, err := stream.Listen(draining, p.stream,
-		sup.helloResolver(tokens, cfg.WorkerRPCTimeout), stream.Options{RPCTimeout: cfg.WorkerRPCTimeout, Log: log})
+		sup.helloResolver(tokens, cfg.WorkerRPCTimeout), stream.Options{RPCTimeout: cfg.WorkerRPCTimeout, Log: log, Listen: p.streamListen})
 	if err != nil {
 		cancel()
 		endDrain()
@@ -1794,8 +2020,8 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Conns:   listener,
 		Store:   pruning(gateLaunch(tokens.Recording(st), p.checkLaunch), runtime.SecretsDir(cfg.StateDir), log),
 		Specs: specs{
-			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, secrets: p.secrets, prompts: p.prompts,
-			identity: p.identity, repository: p.launchRepository, owner: p.owner,
+			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, copies: p.instructionsCopies, secrets: p.secrets, prompts: p.prompts,
+			identity: p.identity, knownIdentity: p.knownIdentity, repository: p.launchRepository, owner: p.owner, log: log,
 			appOwners:   p.appOwners(cfg.Runtime.Name),
 			designSteps: cfg.Gates.Steps(), productionCheck: cfg.Projects[cfg.Project].ProductionCheck, slackChannels: cfg.Projects[cfg.Project].SlackChannels,
 			runtimeName: cfg.Runtime.Name, plugins: p.plugins,
@@ -1825,6 +2051,10 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		// A timer that fires and a prompt's send each apply their decision on a goroutine of
 		// their own, beside the machine's feeding goroutine, so each takes a hold mark of its own.
 		Worker: store.ForConcurrentWorker,
+		// A claim write's bound counts from its connection: a boot relaunches every unfinished
+		// claim at once through the one pool, and a bound that counted the queue for it cut the
+		// last writes for the writes ahead of them (supervise.Deps.BoundWrite).
+		BoundWrite: store.BoundAfterAcquire,
 		Limits: supervise.Limits{
 			LaunchFailures: cfg.LaunchFailureLimit,
 			PromptFailures: cfg.PromptFailureLimit,
@@ -1839,13 +2069,14 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			LaunchBackoff:         launchBackoffFirst,
 		},
 		WakePace: supervise.WakePace{
-			Reserve: reserve,
-			Rate:    cfg.WorkerWakesPerMinute,
-			Burst:   cfg.WorkerWakeBurst,
+			Reserve:  reserve,
+			Interval: interval,
+			Rate:     cfg.WorkerWakesPerMinute,
+			Burst:    cfg.WorkerWakeBurst,
 		},
 		RefreshGate:        refreshGate,
 		PodStarts:          podStarts(cfg, p.clock),
-		PluginContract:     api.DaemonAPIVersion,
+		PluginContract:     api.DaemonAPIVersion(),
 		PluginRelaunchable: p.pluginRelaunchable,
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
 	}
@@ -1925,6 +2156,17 @@ func cleanSessionStop(inFlight *sessionStopsInFlight, envoyURL, token string, lo
 	}
 }
 
+// roleHolderLookup is the supervisor's read of a role's holder at the Envoy listener
+// (supervise.Deps.RoleHolder, notify.HTTPPublisher.RoleHolder), which a forget of a session its
+// claim does not hold asks before it clears anything (supervise's mayForget). With no listener
+// configured it is nil, and nothing is asked.
+func roleHolderLookup(envoyURL, token string) func(ctx context.Context, role string) (holder, state string, err error) {
+	if envoyURL == "" {
+		return nil
+	}
+	return notify.New(envoyURL, token).RoleHolder
+}
+
 // sessionStopsInFlight counts the clean stops of session registrations in flight
 // (cleanSessionStop), which no decision waits for and the halt does not end. The daemon's stop
 // waits for them last, in a final wait (supervision.stop), and that wait is for every clean stop
@@ -1987,17 +2229,6 @@ func (s *sessionStopsInFlight) wait() {
 	drained := s.drained
 	s.mu.Unlock()
 	<-drained
-}
-
-// roleHolderLookup is the supervisor's read of a role's holder at the Envoy listener
-// (supervise.Deps.RoleHolder, notify.HTTPPublisher.RoleHolder), which a forget of a session its
-// claim does not hold asks before it clears anything (supervise's mayForget). With no listener
-// configured it is nil, and nothing is asked.
-func roleHolderLookup(envoyURL, token string) func(ctx context.Context, role string) (holder, state string, err error) {
-	if envoyURL == "" {
-		return nil
-	}
-	return notify.New(envoyURL, token).RoleHolder
 }
 
 // sessionStop sends this daemon's clean stops, one call of send each; cleanSessionStop says when a
@@ -2093,8 +2324,10 @@ func (s sessionStop) send(session string, goneAt time.Time) {
 // launch_uncertain until the bounded retry succeeds. The relaunches run after hellos are
 // resolved, on a goroutine of their own, so start returns, and the API serves, without waiting for
 // any (relaunchUnfinished): every re-adopted claim on another plugin contract is posted its boot
-// stale-plugin relaunch first (refreshStalePlugins), over every one before any of them is
-// relaunched; a claim a refused attempt leaves stale is retried at the orphan sweep's own cadence
+// stale-plugin relaunch (refreshStalePlugins) before any claim is relaunched, but for one whose
+// record says its process died (recordedDeaths), which is relaunched for that death in the
+// unfinished launches' own pass and order, on this daemon's contract; a claim a refused attempt
+// leaves stale is retried at the orphan sweep's own cadence
 // from then on (reconcileOrphans), not just at this boot pass. A daemon that leaves the controller
 // to its operator first stops the controller's claim an earlier
 // boot under `controller: daemon` left (stopLaunchedController), which leaves it absent or
@@ -2186,9 +2419,19 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 		s.reconcileOrphans(store.ForConcurrentWorker(s.supervisor.ctx))
 	}()
 	s.endPluginRounds(s.claims)
-	s.refreshStalePlugins(s.claims, "boot")
-	if len(unfinished) > 0 {
-		s.relaunchUnfinished(unfinished, reconciled)
+	// A claim whose record says its process died is relaunched for that death in the boot's pass
+	// over the unfinished launches, in their order (relaunchUnfinished), and that launch is on this
+	// daemon's contract; a stale-plugin relaunch posted to it first would raise its launch outside
+	// that order and leave the turn the pass reserves it spent. The orphan sweep's own stale-plugin
+	// posts pass over a claim whose relaunch waits (parkedWakes), so this is the one post to skip.
+	deaths := recordedDeaths(s.claims)
+	s.refreshStalePlugins(slices.DeleteFunc(slices.Clone(s.claims), func(c supervise.Claim) bool { return slices.Contains(deaths, c.Token) }), "boot")
+	if len(deaths) > 0 {
+		s.log.Info("supervise: the previous daemon found these claims' processes dead and their relaunches waiting; this boot raises each relaunch again",
+			"claims", len(deaths))
+	}
+	if len(unfinished) > 0 || len(deaths) > 0 {
+		s.relaunchUnfinished(unfinished, deaths, reconciled)
 	}
 	return nil
 }
@@ -2211,9 +2454,11 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 // It runs before the stale-plugin pass rather than after it, and one machine's inbox is FIFO
 // (supervisor.inbox: "unbounded … and in order, so a claim sees its events as its sources
 // reported them"), so the StalePlugin that pass posts a moment later is decided behind this
-// end. That is what makes the order right: the refresh reads a claim already out of its round,
-// and the pass's own skip is by round kind for the same reason (refreshStalePlugins), since the
-// claims both passes walk are the boot's own reading, where the round still stands.
+// end. That is what makes the order right: the refresh's own decision reads a claim already out
+// of its round. The pass's skip is by round kind for the same reason (refreshStalePlugins): this
+// pass walks the boot's own reading, where the round still stands, and the refresh pass reads each
+// claim as its machine last published it, which still shows the round until the machine has
+// decided this end, so either pass can find the round standing.
 //
 // A retired claim is posted nothing it needs: its round went with it (supervise's retire calls
 // clearUpdate), and the end is ignored in that state anyway. A worker that answers such a round
@@ -2318,13 +2563,25 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // turn as the wave drains, and the last idle stragglers would wait sweeps behind credits that
 // raised nothing.
 //
-// The skip is as imperfect as the one above it, and costs exactly what that one costs. This
-// pass reads the claims of a snapshot, and the machine decides the post as the claim stands
-// then: a claim read idle can have started a turn by the time its post is decided, and one read
-// working can have ended it. The first is posted a credit the machine gives straight back
-// (refreshPlugin, endRefreshLane) and is relaunched at that turn's end or at a later sweep; the
-// second is posted none, and raises its relaunch at the next sweep, which is one minute. One
-// sweep is what an imperfect skip costs here, as it is for the wake the parked skip reads.
+// Every term of the lane is read of each claim as its machine last published it
+// (supervise.Machine.Published), not as claims holds it: claims says which claims to walk. A
+// sweep reads them before its orphan reconciliation, which under Kubernetes lists every Sandbox,
+// so by the time this pass walks them a claim can have been suspended, failed or retired, had its
+// relaunch start, started a turn, or registered this daemon's contract. A credit posted to such a
+// claim comes back only as its machine decides the post, which a machine deciding something else
+// first holds until that decision ends — a relaunch waits minutes for its pod — and until then the
+// gate counts it out and this pass refuses every claim after it: the lane spends the credit on
+// nothing for a sweep or more (dispatch://INFRA-3904). The published claim is the one the machine
+// decides the post against unless a decision lands in between, so what is left of that window is
+// one decision long rather than a reconciliation long.
+//
+// The skip of a claim in a turn is as imperfect as the parked skip above, and costs what that one
+// costs. The machine decides the post as the claim stands when the post reaches it: a claim read
+// idle can have started a turn by then, and one read working can have ended it. The first is
+// posted a credit the machine gives straight back (refreshPlugin, endRefreshLane) and is
+// relaunched at that turn's end or at a later sweep; the second is posted none, and its machine
+// asks the gate for a credit of its own as it decides the post (refreshPlugin's guard), so it is
+// relaunched then if a credit is free and at the next sweep otherwise.
 //
 // One line is written for the refusals of a pass, naming how many claims are left for a later
 // sweep, rather than one per claim: a boot over a fleet of several hundred refuses hundreds at
@@ -2343,13 +2600,16 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 	s.refreshGate.Correct(refreshes)
 	refused := 0
 	for _, c := range claims {
+		if m, supervised := s.supervisor.Machine(c.Token); supervised {
+			c = m.Published()
+		}
 		if !staleForTheLane(c, noInstall) {
 			continue
 		}
 		if !s.plan.pluginRelaunchable {
 			if trigger == "boot" {
 				s.log.Error(supervise.NoPluginSourceMessage,
-					"claim", c.Token, "incarnation", c.Locator.Incarnation, "pluginContract", c.PluginContract, "daemonApiVersion", api.DaemonAPIVersion)
+					"claim", c.Token, "incarnation", c.Locator.Incarnation, "pluginContract", c.PluginContract, "daemonApiVersion", api.DaemonAPIVersion())
 			}
 			continue
 		}
@@ -2398,23 +2658,25 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 // A claim in a plugin round is in the set, and the term is by round kind for that reason. The
 // boot's own de-round pass has posted such a claim its end a moment before the refresh pass
 // runs (endPluginRounds), and one machine's inbox is FIFO, so that end is decided ahead of the
-// post and the machine sees a claim in no round at all. What that pass reads is the claims the
-// boot restored, where the round still stands, so a term of "in any round" would pass over
-// exactly the claims the de-round pass has just freed and leave each of them a sweep — a whole
-// minute, and a credit of the gate each — behind the rest of the fleet, and would have the
-// count hide that work at the one moment it exists to be read: a boot over a fleet an earlier
-// daemon left mid-round. A claim whose plugin round is somehow still standing when its machine
-// takes the post is decided nothing wrong by it either: refreshPlugin relaunches it, and no
-// plugin round holds a relaunch back, since the ask that did was deleted with the round. A
-// claim that left its round at a registration speaking this daemon's contract (supervise's
-// endCurrentPluginRound) is no longer stale at all, and the contract term above passes over it.
+// post and the machine sees a claim in no round at all. What that pass reads is each claim as its
+// machine last published it, which still shows the round until the machine has decided that end,
+// and the count reads the claims the store holds, where the round stands until that end's own
+// write. So a term of "in any round" would pass over exactly the claims the de-round pass has just
+// freed and leave each of them a sweep — a whole minute, and a credit of the gate each — behind
+// the rest of the fleet, and would have the count hide that work at the one moment it exists to
+// be read: a boot over a fleet an earlier daemon left mid-round. A claim whose plugin round is
+// somehow still standing when its machine takes the post is decided nothing wrong by it either:
+// refreshPlugin relaunches it, and no plugin round holds a relaunch back, since the ask that did
+// was deleted with the round. A claim that left its round at a registration speaking this
+// daemon's contract (supervise's endCurrentPluginRound) is no longer stale at all, and the
+// contract term above passes over it.
 //
 // noPluginInstall nil is every launch installing a plugin, which only a source a test builds by
 // hand holds: serve gives the state's source the rule over this deployment's configuration and
 // the lane's own pass builds a closure of it at every sweep, so no daemon reads this term as
 // nil, a tmux daemon included (noPluginInstall, serve, refreshStalePlugins).
 func staleForTheLane(c supervise.Claim, noPluginInstall func(supervise.Claim) bool) bool {
-	if c.Session == "" || c.PluginContract == api.DaemonAPIVersion || !supervise.HoldsCapability(c.State) || c.InPodRound() {
+	if c.Session == "" || c.PluginContract == api.DaemonAPIVersion() || !supervise.HoldsCapability(c.State) || c.InPodRound() {
 		return false
 	}
 	return noPluginInstall == nil || !noPluginInstall(c)
@@ -2547,109 +2809,6 @@ func (s *supervision) reconcileBootOrphans(ctx context.Context) bool {
 		}
 	}
 	return false
-}
-
-// launchUnfinished starts only claims that remain queued with no locator, each on a goroutine of
-// its own, and returns once every one has: one relaunch never waits out another's launch, which
-// under a Sandbox can take minutes. A still-live old pane can reconnect while reconciliation was
-// uncertain; its hello changes the state before a later retry, and it must never be joined by a
-// second pane. It returns the claims whose release the store did not take, outside the daemon's
-// stop: each is still launch_uncertain, in memory as in the store, and nothing else in this boot
-// releases it, so the caller retries it (relaunchUnfinished). ctx is the relaunches' context; each
-// relaunch derives a context of its own from it.
-func (s *supervision) launchUnfinished(ctx context.Context, tokens []claim.Token) []claim.Token {
-	refused := make([]bool, len(tokens))
-	var launching sync.WaitGroup
-	for i, token := range tokens {
-		m, ok := s.supervisor.Machine(token)
-		if !ok {
-			continue
-		}
-		launching.Add(1)
-		go func() {
-			defer launching.Done()
-			// Each relaunch runs on a goroutine of its own beside the others, so each takes a
-			// hold mark of its own rather than ctx's.
-			refused[i] = s.launchUnfinishedClaim(store.ForConcurrentWorker(ctx), token, m)
-		}()
-	}
-	launching.Wait()
-	var failed []claim.Token
-	for i, token := range tokens {
-		if refused[i] {
-			failed = append(failed, token)
-		}
-	}
-	return failed
-}
-
-// launchUnfinishedClaim releases one unfinished launch and launches it again, both on ctx, and
-// reports whether the store refused the release (launchUnfinished).
-func (s *supervision) launchUnfinishedClaim(ctx context.Context, token claim.Token, m *supervise.Machine) bool {
-	released, err := m.ReleaseUncertainLaunch(ctx)
-	if err != nil {
-		return s.supervisor.decisionFailed(token, "release of an uncertain launch", err,
-			"supervise: release an uncertain launch; retrying at the next orphan sweep")
-	}
-	c := m.Claim()
-	if !released || c.State != supervise.StateQueued || c.Locator != nil {
-		s.log.Info("supervise: unrecorded launch settled without relaunch", "claim", token, "state", c.State)
-		return false
-	}
-	s.log.Warn("supervise: launching again a launch the previous daemon did not finish", "claim", token)
-	spawn := supervise.RequestSpawn{Claim: token}
-	if err := m.Handle(ctx, spawn); err != nil {
-		s.supervisor.decisionFailed(token, fmt.Sprintf("%T", spawn), err, "supervise: launch an unfinished launch again")
-	}
-	return false
-}
-
-// relaunchUnfinished launches tokens' unfinished launches on a goroutine of its own, never on the
-// boot: at once when the boot reconciliation succeeded (reconciled), then on the normal orphan-sweep
-// cadence, until none is left or the daemon stops. A relaunched worker reaches the daemon only once
-// the daemon is up — a Sandbox pod's launcher dials it through its Service, which routes only to a
-// pod whose probes pass, so only once the API answers /healthz, and a shim's hello is resolved only
-// once restoration has closed — so a relaunch the boot waited on could not register: it spent its
-// whole launch budget, launch_failure_limit × worker_boot_timeout_seconds, with the API unanswered.
-//
-// The pre-restart process of such a launch, when one still runs, may now say hello before its
-// relaunch writes the next generation, and be admitted: its claim, launch_uncertain or queued until
-// then, ignores the hello and refuses its registration, and at the next generation the fence drops
-// it. Its connection holds the claim's stream slot only while that process lives, and the relaunch
-// ends it before it starts the next generation: a tmux boot's reconciliation kills every pane no
-// claim records, and a Sandbox relaunch stops its launcher's earlier generation first. Once the next
-// generation is written, the old process's boot token resolves stale.
-//
-// Until the boot reconciliation has succeeded, each sweep retries it first — each reconciliation
-// has the bounded retry above, and only a success releases these claims to launch; once it has, a
-// sweep retries only the releases the store did not take (launchUnfinished), since the
-// reconciliation's proof that no predecessor runs still holds.
-func (s *supervision) relaunchUnfinished(tokens []claim.Token, reconciled bool) {
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
-		// The relaunches run on a goroutine of their own beside the machines and the orphan sweep,
-		// so this goroutine takes a hold mark of its own.
-		relaunching := store.ForConcurrentWorker(s.supervisor.ctx)
-		if reconciled {
-			tokens = s.launchUnfinished(relaunching, tokens)
-		}
-		ticker := time.NewTicker(s.plan.orphanSweep)
-		defer ticker.Stop()
-		for len(tokens) > 0 {
-			select {
-			case <-s.supervisor.ctx.Done():
-				return
-			case <-ticker.C:
-			}
-			if !reconciled {
-				if reconciled = s.reconcileBootOrphans(relaunching); !reconciled {
-					continue
-				}
-			}
-			tokens = s.launchUnfinished(relaunching, tokens)
-		}
-	}()
 }
 
 // reconcileOrphans ends, every sweep interval, whatever the runtime holds that belongs to none of
@@ -2811,6 +2970,10 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	// daemon without one leaves pauses the nil interface, which the API reads as no pause service
 	// and answers every pause and resume PAUSE_UNAVAILABLE.
 	var pauses api.PauseService
+	// The replay and the discard of the intake's give-ups, which a daemon with no workflow runs
+	// no intake for: the API answers their routes 503 then. It is left a nil interface rather than
+	// a nil *intake.GiveUps, which the API would read as an intake.
+	var giveUps api.GiveUps
 	if workflow != nil {
 		records, handlers, client, tokens, grants = workflow.records, workflow.handlers, workflow.dispatch, workflow.apps, workflow.grants
 		claimReady, prepare, unread, await = workflow.claimReady, workflow.prepareObserved, workflow.repositoryUnread, workflow.awaitRecovery
@@ -2820,6 +2983,13 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		consumerLag = workflow.consumers.Lag
 		pauses = workflow.pauses.service
 		architectStalls = workflow.admission.ArchitectStallArms
+		// A replay applies a stored message through the handlers a live delivery runs, on the
+		// consumers' pool and spec, so it is judged as the same message delivered now would be.
+		replays, err := intake.NewGiveUps(workflow.consumers.Records(), workflow.handlers...)
+		if err != nil {
+			return fmt.Errorf("build the replay of the intake's give-ups: %w", err)
+		}
+		giveUps = replays
 	}
 	// Under `controller: daemon` the keeper launches and keeps the project's controller, and takes
 	// its ready. The liveness sweep runs beside it under either mode, never behind it.
@@ -2855,8 +3025,13 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			// and the NoPluginInstall option three lines below).
 			noPluginInstall: func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
 			architectStalls: architectStalls,
+			// Under dispatch_token_broker alone: without it the state carries no
+			// `dispatchCredential` (dispatchTokensOf).
+			dispatchSession: dispatch.DaemonSession(cfg.Project),
+			dispatchTokens:  dispatchTokensOf(cfg, s.runtime),
 		},
 		ConsumerLag:        consumerLag,
+		Intake:             giveUps,
 		CallerPod:          callerPodOf(s.runtime),
 		Ready:              ready.serving,
 		Supervisor:         s.supervisor,
@@ -3009,6 +3184,13 @@ type source struct {
 	// secretsLogin is the daemon's own agent-secrets token login client (newSecretsLogin), read
 	// through LoginStatus for the state route; nil when the deployment enrolls no pod.
 	secretsLogin *cipher.Client
+	// dispatchSession is the session the daemon's own Dispatch calls run under
+	// (dispatch.DaemonSession), and dispatchTokens the Sandbox runtime's counts of the Dispatch
+	// tokens its launches hand out (sandbox.Runtime.DispatchTokens), which State serves together
+	// as `dispatchCredential`. dispatchTokens is nil without dispatch_token_broker
+	// (dispatchTokensOf), and the state then carries no such key.
+	dispatchSession string
+	dispatchTokens  func() sandbox.DispatchTokens
 	// deployment is the deployment's capabilities as this boot knows them with the repository
 	// caches it is handed (supervision.deploymentWith), whose report the state carries.
 	deployment func([]sandbox.CacheStatus) capabilities.Deployment
@@ -3097,10 +3279,11 @@ type source struct {
 //
 // And it is where the refresher learns that the live records may have changed: each write that can
 // add a record to the live set or take one out of it — PutIssue, which writes an issue's phase and
-// status, and ReleaseSlot and ReleaseSlotForWait, which take an issue's slot away, the tree's
-// close among them — asks for one read of the live records once its transaction commits (live,
-// the workflow's wakeLive, which holds one request at most), so the repository caches and legion
-// state follow the records without a timer. live is nil where no refresher runs.
+// status, and ReleaseSlot, ReleaseSlotForWait and ReleaseTreeSlots, which take slots away, the
+// tree's close and its root's re-admission among them — asks for one read of the live records once
+// its transaction commits (live, the workflow's wakeLive, which holds one request at most), so the
+// repository caches and legion state follow the records without a timer. live is nil where no
+// refresher runs.
 type projectRecords struct {
 	record.Store
 	project string
@@ -3133,6 +3316,15 @@ func (s projectRecords) ReleaseSlotForWait(ctx context.Context, tx pgx.Tx, issue
 	}
 	s.liveOnCommit(ctx)
 	return nil
+}
+
+func (s projectRecords) ReleaseTreeSlots(ctx context.Context, tx pgx.Tx, tree string) ([]string, error) {
+	released, err := s.Store.ReleaseTreeSlots(ctx, tx, tree)
+	if err != nil {
+		return nil, err
+	}
+	s.liveOnCommit(ctx)
+	return released, nil
 }
 
 // liveOnCommit asks for a read of the live records once the transaction that wrote one commits
@@ -3317,6 +3509,13 @@ func (s projectRecords) DropCatchUps(ctx context.Context, tx pgx.Tx, issue strin
 	return s.Store.DropCatchUps(ctx, tx, issue, now)
 }
 
+func (s projectRecords) DropUnfencedCheckWakes(ctx context.Context, tx pgx.Tx, issue string) error {
+	if !s.ownsKey(record.OutboxKindCheckWake, issue) {
+		return nil
+	}
+	return s.Store.DropUnfencedCheckWakes(ctx, tx, issue)
+}
+
 func (s projectRecords) DropStatusWrites(ctx context.Context, tx pgx.Tx, issue string) error {
 	if !s.ownsKey(record.OutboxKindDispatchStatus, issue) {
 		return nil
@@ -3473,6 +3672,21 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 			}
 		}
 	}
+	// The standing hold of each issue's pod, read from pod_holds in the same snapshot, one
+	// statement for the whole project. The idle rule writes it to that table alone, so this is the
+	// one surface that says why a quiet pod still runs. pod_holds is
+	// keyed on the claim token's spelling of the project, as the idle pass writes it
+	// (releaseUnownedPods says why the two spellings differ).
+	holds, err := s.store.StandingPodHoldsTx(ctx, tx, s.projectToken)
+	if err != nil {
+		return api.State{}, nil, err
+	}
+	for key, hold := range holds {
+		if view, shown := state.Issues[key]; shown {
+			view.PodHold = api.PodHoldViewOf(hold)
+			state.Issues[key] = view
+		}
+	}
 	state.ClaimsToRefresh = claimsToRefresh(claims, s.noPluginInstall)
 	// The project's pause, read through tx as every other durable fact here (api.PauseStateTx):
 	// `paused` with the roles it waits on and the rows it holds while the project is paused, and
@@ -3496,6 +3710,18 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	state.ControllerLocator = api.ControllerLocatorOf(s.runtime, controller)
 	if s.secretsLogin != nil {
 		state.AgentSecretsLogin = &api.AgentSecretsLoginView{State: s.secretsLogin.LoginStatus().State}
+	}
+	if s.dispatchTokens != nil {
+		tokens := s.dispatchTokens()
+		credential := &api.DispatchCredentialView{
+			Session: s.dispatchSession, TransitionLaunches: tokens.TransitionLaunches,
+			LiveLaunchesWithDispatchToken: tokens.LiveLaunches,
+		}
+		if !tokens.LastTransitionLaunch.IsZero() {
+			at := tokens.LastTransitionLaunch.UTC()
+			credential.LastTransitionLaunchAt = &at
+		}
+		state.DispatchCredential = credential
 	}
 	var caches []sandbox.CacheStatus
 	if s.caches != nil {
@@ -3543,6 +3769,17 @@ func adoptIdentity(identity func(context.Context, claim.Role, ghrepo.Repository)
 func repositoryCachesOf(rt runtime.Runtime) func() []sandbox.CacheStatus {
 	if keeper, ok := rt.(*sandbox.Runtime); ok {
 		return keeper.RepositoryCaches
+	}
+	return nil
+}
+
+// dispatchTokensOf is rt's counts of the Dispatch tokens its launches hand out
+// (sandbox.Runtime.DispatchTokens) when the deployment runs under dispatch_token_broker and rt is
+// the Sandbox runtime, the one runtime the loader takes that setting under, and nil otherwise, as
+// repositoryCachesOf is: a deployment without the setting serves no `dispatchCredential`.
+func dispatchTokensOf(cfg config.Config, rt runtime.Runtime) func() sandbox.DispatchTokens {
+	if counter, ok := rt.(*sandbox.Runtime); ok && cfg.DispatchTokenBroker {
+		return counter.DispatchTokens
 	}
 	return nil
 }

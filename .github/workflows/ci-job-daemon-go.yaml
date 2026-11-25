@@ -1,15 +1,18 @@
 name: CI job daemon-go
 
-# The steps of ci.yaml's `daemon-go` job, in a file of its own.
+# The steps of `.github/workflows/ci.yaml#daemon-go` job, in a file of its own.
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
-# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+# whole `if:` that decides whether these steps run, so no `if:` here selects the suite: the ones
+# this file carries run the steps no leg splits in plain leg 2 alone (`matrix.leg == 2`), and let
+# the jobs daemon-go and daemon-go-race report a failed leg (`!cancelled()`).
 #
 # What runs here is the Go daemon's own tests — the plain step over every package of
 # packages/daemon but the five concurrent ones and the text checks, less the two pure table
 # pins of internal/supervise, which the text-check job runs by name and this step skips by name,
-# the race step over those five packages, the forced-order step over the daemon's TestForcedOrder
+# the shape gate of internal/api a second time, stamped with HEAD's merge order, the race step
+# over those five packages, the forced-order step over the daemon's TestForcedOrder
 # tests on a hooked nats-server, and the Stage 1 live proof, which builds ./cmd/legion
-# and boots it against this job's Postgres. They left ci.yaml's `test` job, which runs
+# and boots it against this job's Postgres. They left `.github/workflows/ci.yaml#test` job, which runs
 # the shell-script harnesses and a handful of Bun suites behind one filter: that filter
 # had to cover everything the daemon's Go closure reads, so a change to a shell script or to
 # packages/claude-envoy ran
@@ -19,21 +22,29 @@ name: CI job daemon-go
 # Go closure (`daemon_go_tests`, which already stood for exactly this set and gated nothing),
 # and the `test` job's is what its remaining steps read.
 #
-# Two jobs, which run at the same time: daemon-go-race runs the race step, and daemon-go runs the
-# rest. The two steps share no package, so nothing orders them.
-# why: .github/ci-notes/ci-job-daemon-go.md#why-the-race-step-is-a-job-of-its-own
+# Each step runs in legs, all at the same time: daemon-go-legs runs the plain step, the race-
+# impossible step, the forced-order tests and Stage 1, and daemon-go-race-legs the race step. Each
+# leg runs its step over the packages .github/go-legs.yaml lists for it, with the step's one text,
+# so every leg of a kind runs in the same mode, and .github/scripts/go_legs.py fails the step when
+# that file does not run each package of the module exactly once. The two steps share no package,
+# so nothing orders the legs. The jobs daemon-go and daemon-go-race wait for their kind's legs and
+# pass only when every leg passed: they carry the check-run names, `daemon-go / daemon-go` and
+# `daemon-go / daemon-go-race`, that the two steps' jobs had before the legs.
+# why: .github/ci-notes/ci-job-daemon-go.md#why-the-daemons-tests-run-in-legs
 #
-# Everything here is what those steps need and nothing else, each job taking its own part:
-#   * the Postgres service in both, for LEGION_TEST_PG_DSN, the daemon's unit tests' store; and,
-#     in daemon-go, BROKER_TEST_DATABASE_URL and LEGION_E2E_PG_DSN, the broker rig its cipher
-#     contract tests drive and Stage 1's;
+# Everything here is what those steps need and nothing else, each kind of leg taking its own part,
+# and every leg of a kind all of its kind's:
+#   * the Postgres service in both, for LEGION_TEST_PG_DSN, the daemon's unit tests' store, and for
+#     BROKER_TEST_DATABASE_URL, the broker rig of internal/cipher's and internal/dispatch's contract
+#     tests in daemon-go-legs and of internal/daemon's broker tests in daemon-go-race-legs; and, in
+#     daemon-go-legs, LEGION_E2E_PG_DSN, Stage 1's;
 #   * TESTCONTAINERS_RYUK_DISABLED in both, read by the testcontainers-backed NATS tests;
-#     LEGION_RUN_FUZZ_ITERS in daemon-go, read by classify's fuzz tests; and
-#     LEGION_KEPT_PROPERTY_RUNS in daemon-go-race, read by internal/daemon's keptPropertyEnv;
-#   * tmux, jj and Oh My Pi in both, and uv in daemon-go, each refused-without by a test the
+#     LEGION_RUN_FUZZ_ITERS in daemon-go-legs, read by classify's fuzz tests; and
+#     LEGION_KEPT_PROPERTY_RUNS in daemon-go-race-legs, read by internal/daemon's keptPropertyEnv;
+#   * tmux, jj and Oh My Pi in both, and uv in daemon-go-legs, each refused-without by a test the
 #     job runs (the comment on each step says which), and the NATS images those tests start;
 #   * the user-namespace sysctl internal/launcher's role-namespace tests need, in
-#     daemon-go-race, which runs them;
+#     daemon-go-race-legs, which runs them;
 #   * setup-go and the go-daemon cache restore in both, this module's build cache. The `test`
 #     job keeps a setup-go of its own — its held-port, CI-filter and build-tag-lister steps still
 #     run go — but no restore: the entry holds what compiling packages/daemon leaves behind, and
@@ -51,14 +62,14 @@ name: CI job daemon-go
 # Each job's last step reports ci-ok for the caller: when that job's own result decides a
 # merge-group run at the front of the queue, it posts the failing ci-ok at once
 # (.github/actions/ci-ok-report, which says when it posts nothing), as every job of ci.yaml ends,
-# so a failure of either job does not wait for the other to end.
-# `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# so a failure of one leg does not wait for the others to end.
+# `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
@@ -73,16 +84,28 @@ env:
   GOPROXY: https://proxy.golang.org|direct
 
 jobs:
-  daemon-go:
+  # The plain step's legs, each over its share of .github/go-legs.yaml's daemon-go packages; the
+  # last also runs the steps no leg splits.
+  # why: .github/ci-notes/ci-job-daemon-go.md#why-the-daemons-tests-run-in-legs
+  daemon-go-legs:
+    name: daemon-go (leg ${{ matrix.leg }})
     runs-on: ubuntu-24.04
+    strategy:
+      # One leg's failure leaves the others running, so each reports its own packages.
+      fail-fast: false
+      matrix:
+        leg: [1, 2]
     # Each go test step's -timeout must fire before the runner cancels the job, so a hung test
     # prints the goroutine dump that names it. A step's worst case is therefore its largest
     # measured green duration plus its own -timeout. Over the 158 green daemon-go jobs that
     # ci-job-daemon-go.md#why-the-race-step-is-a-job-of-its-own counts: the setup's 1.7 min at
     # most, the plain step's 15.0 and its 15 minutes, the race-impossible step's 0.5 and its 10,
-    # then Stage 1's 0.2 and the report. That is under 43 minutes. The forced-order step adds its
-    # compile of a hooked nats-server under the detector, up to 5 minutes, and forced-order.sh's
-    # 10-minute -timeout, so 60.
+    # then Stage 1's 0.2 and the report. The stamped shape gate, new since, adds its fetch and its
+    # link, under 1 minute (a whole blobless clone of this repository from GitHub took about 30 s
+    # on 2026-11-24), and its 1-minute -timeout. That is under 45 minutes. The forced-order step
+    # adds its compile of a hooked nats-server under the detector, up to 5 minutes, and
+    # forced-order.sh's 10-minute -timeout, so 60. A leg runs a share of the plain step, so no leg
+    # needs more.
     timeout-minutes: 60
     services:
       postgres:
@@ -134,6 +157,7 @@ jobs:
           cache: false
 
       # go-daemon, shared with typecheck and pi-legion.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -144,7 +168,7 @@ jobs:
 
       # The tmux runtime's tests drive a real tmux server and skip without one, and the daemon
       # supervises under tmux and refuses to start without it, which is also what the Stage 1
-      # proof's boot needs (scripts/e2e/stage1-skeleton.sh:173-176).
+      # proof's boot needs (`scripts/e2e/stage1-skeleton.sh#tmux is required`).
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
 
@@ -166,21 +190,29 @@ jobs:
 
       # The NATS tests of the plain step's packages (internal/admit, internal/natsauth,
       # internal/workflow and the testnats package itself) start testnats.Image, the hub's 2.15.1,
-      # pulled first for the reason the action gives. The two other images the module's tests
-      # start are the race packages' (daemon-go-race below).
-      - name: Pull the NATS test container images
+      # and internal/ompsessions' TestEveryPoolPinsItsSearchPath starts PoolImage, PgBouncer
+      # 1.25.2, with docker; each is pulled first for the reason the action gives. The two other
+      # NATS images the module's tests start are the race packages' (daemon-go-race-legs below).
+      - name: Pull the NATS and PgBouncer test container images
         uses: ./.github/actions/pull-test-images
         with:
           consts: |
             packages/daemon/internal/testnats/nats.go Image
+            packages/daemon/internal/ompsessions/searchpath_test.go PoolImage
 
-      # The step runs every package of the module except the five daemon-go-race's race step tests
-      # and internal/textcheck, whose tests are the text-check job's: so each of the five runs once
-      # per run of the router, under the detector, and the text checks run once too, in a job with
-      # no database. `set -o pipefail` is what makes a failed go list, or a pattern
-      # that matches every package, fail the step rather than pass it with nothing tested. The
-      # pattern is built in .github/scripts/ci_job_reads.py from the race step's own package
-      # list and that one package name, so the two steps cannot name different sets.
+      # No commit, checkpoint or database copy here waits for the runner's disk: why every
+      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
+      - name: Turn crash safety off on the service
+        timeout-minutes: 2
+        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
+
+      # Each leg runs the packages .github/go-legs.yaml lists for its number under daemon-go: every
+      # package of the module but the five the race legs test and internal/textcheck, whose tests
+      # are the text-check job's, so each of the five runs once per run of the router, under the
+      # detector, and the text checks run once too, in a job with no database. go_legs.py prints
+      # the leg's packages only once `go list ./...` and the file agree, every package in one
+      # place, so a package the file does not name fails every leg rather than run in none, and
+      # `set -o pipefail` is what fails the step then rather than test what xargs got.
       #
       # The -skip is the text-check job's two tests of internal/supervise, the pure table pins
       # ci_job_reads.py's SUPERVISE_TABLE_TESTS names: they read that package's own source and
@@ -194,7 +226,39 @@ jobs:
       - name: Test the Go daemon
         run: |
           set -o pipefail
-          go list ./... | grep -Ev '/(internal/daemon|internal/sessionproxy|internal/launcher|internal/intake|internal/shimwire|internal/textcheck)$' | xargs go test -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
+          python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go ${{ matrix.leg }} ${{ strategy.job-total }} | xargs go test -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
+        working-directory: packages/daemon
+
+      # The shape gate of internal/api again, stamped with HEAD's contract entries in main's merge
+      # order (scripts/daemon-contract-order.sh), as every build of main that production runs is
+      # stamped: the plain step of the leg that runs internal/api (go-legs.yaml's leg 2) runs it
+      # unstamped, which numbers the entries by id, so these two steps run in that leg alone. On a
+      # pull request the stamp is main's order with the branch's entries after it, the order main
+      # takes if the branch merges next; in a merge group it is the order main takes. So the
+      # order a production build numbers its entries in is tested before it reaches main. The
+      # checkout is one commit deep, and the order needs HEAD's history back to main's
+      # first-parent line and main's own, so the first step fetches both, with no blob (the script
+      # reads commits and trees alone), and hands the stamp to the second as its output. The second
+      # is one go test line, which go-test-step-expansion.py's step reader reads: that reader
+      # refuses a step whose $(…) call is not of go-tagged-tests.sh, and its test, which the
+      # merge queue's test job runs, reads every go test step. The plain step compiled this test
+      # binary already, so the gate's run is the link and the two tests, which took 2 s past the
+      # fetch on 2026-11-24; the 1-minute -timeout is its share of the job's timeout-minutes, and
+      # the step's own duration in the job's log is how long the gate took.
+      - name: Stamp HEAD's contract entries in main's merge order
+        if: matrix.leg == 2
+        id: contract-order
+        run: |
+          head=$(git rev-parse HEAD)
+          git fetch --filter=blob:none --unshallow origin "$head" refs/heads/main:refs/remotes/origin/main
+          stamp=$(bash ../../scripts/daemon-contract-order.sh --stamp HEAD)
+          echo "$stamp"
+          echo "stamp=$stamp" >> "$GITHUB_OUTPUT"
+        working-directory: packages/daemon
+
+      - name: Test the shape gate in main's merge order
+        if: matrix.leg == 2
+        run: go test -count=1 -timeout 1m ./internal/api/ "-ldflags=-X=github.com/sjawhar/legion/daemon/internal/api.contractOrder=${{ steps.contract-order.outputs.stamp }}" -run '^(TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes|TestTheRecordSetIsOneRecordPerAnswerPerContract)$'
         working-directory: packages/daemon
 
       # What the race step's packages hold that the race build cannot run, run plain by name, one
@@ -202,8 +266,10 @@ jobs:
       # package list and the source, so the two cannot drift). The first is internal/launcher's
       # call-graph walk, under `//go:build !race`: it loads the launcher's whole program from source
       # and builds its call graph twice, which without the detector took about a minute at a 2.3 GB
-      # peak, and the detector multiplies both.
+      # peak, and the detector multiplies both. It, the forced-order tests and the Stage 1 proof run
+      # in the last leg alone, which go-legs.yaml gives the plain packages that end soonest.
       - name: Test what the race build cannot run
+        if: matrix.leg == 2
         run: |
           go test -count=1 -timeout 10m -run '^(TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt)$' ./internal/launcher
         working-directory: packages/daemon
@@ -217,10 +283,11 @@ jobs:
       # and the step fails until the hooks are ported; it also fails a package that declares no
       # such test. The daemon refuses nats:2.10's server (envoy's natsversion.Refusal), so it has
       # no v2.10.29 run here. The step sets no environment variable: check-ci-filters.sh reduces no
-      # go command of a job one of whose steps sets a GO* name. It runs in this job, not
-      # daemon-go-race: this job ends well before the race job, so the step adds nothing to the
-      # wall time there.
+      # go command of a job one of whose steps sets a GO* name. It runs in a plain leg, not a race
+      # one: the plain legs end well before the race legs, so the step adds nothing to the wall
+      # time there.
       - name: Forced-order tests of the daemon on the hooked nats-server the module links
+        if: matrix.leg == 2
         run: packages/envoy/scripts/forced-order.sh -C packages/daemon ./internal/testnats/
 
       # The proof builds the daemon's ./cmd/legion and boots it against the Postgres above, so it
@@ -228,6 +295,7 @@ jobs:
       # code under test, and leaving it behind would keep the service and the Go build in the job
       # this split exists to shrink.
       - name: Stage 1 live proof
+        if: matrix.leg == 2
         run: bash scripts/e2e/stage1-skeleton.sh
 
       - name: Report ci-ok when this job decides a merge-group run
@@ -238,19 +306,67 @@ jobs:
           changes: ${{ inputs.ci-ok-changes }}
           job-status: ${{ job.status }}
 
-  # The race step, in a job of its own beside daemon-go.
-  # why: .github/ci-notes/ci-job-daemon-go.md#why-the-race-step-is-a-job-of-its-own
-  # Its setup is daemon-go's, less what only the plain step and Stage 1 read: no uv
-  # (internal/runtime/sandbox's), no BROKER_TEST_DATABASE_URL (internal/cipher's), no
-  # LEGION_E2E_PG_DSN (Stage 1's) and no LEGION_RUN_FUZZ_ITERS (internal/classify's). The comment
-  # on each step of daemon-go's says why it is there; the ones below say what of the five
-  # packages reads it.
-  daemon-go-race:
+  # The check run `daemon-go / daemon-go`, which the plain step's job carried before it ran in legs:
+  # it waits for every leg and passes only when all passed, so ci-ok, the merge queue and every
+  # reader of that name read what they read before. A leg's own failure has already posted its
+  # early ci-ok from the leg.
+  # why: .github/ci-notes/ci-job-daemon-go.md#why-the-daemons-tests-run-in-legs
+  daemon-go:
+    needs: daemon-go-legs
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      JOB_TIMEOUT_MINUTES: 5 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+    steps:
+      # The ci-ok report below is an action of this repository's .github.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+
+      # The result is written into the run: rather than set in an env:, which check-ci-filters.sh
+      # reads as able to move what the legs' go commands compile. The error says this job restates
+      # its legs' result, in the words `.github/scripts/runner-shutdown.sh#RUNNER_SHUTDOWN_RESTATED`
+      # holds, so a leg the platform killed still reads as a runner shutdown: this job's failure
+      # only follows the leg's, and read as its own it would hide the leg's.
+      - name: Pass only when every leg passed
+        run: |
+          if [ "${{ needs.daemon-go-legs.result }}" != success ]; then
+            echo "::error::daemon-go's legs ended ${{ needs.daemon-go-legs.result }}, and this job restates its legs' result: each leg's own check run says why it did not pass"
+            exit 1
+          fi
+          echo "daemon-go's legs ended success"
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: daemon-go
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  # The race step's legs, each over its share of .github/go-legs.yaml's daemon-go-race packages,
+  # beside the plain legs.
+  # why: .github/ci-notes/ci-job-daemon-go.md#why-the-race-step-is-a-job-of-its-own
+  # Its setup is the plain legs', less what only the plain step and Stage 1 read: no uv
+  # (internal/runtime/sandbox's), no LEGION_E2E_PG_DSN (Stage 1's) and no LEGION_RUN_FUZZ_ITERS
+  # (internal/classify's). The comment
+  # on each step of daemon-go-legs' says why it is there; the ones below say what of the five
+  # packages reads it.
+  daemon-go-race-legs:
+    name: daemon-go-race (leg ${{ matrix.leg }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [1, 2]
     # A step's worst case is its largest measured green duration plus its own -timeout, as
     # daemon-go's says: over the same 158 green daemon-go jobs, the setup's 1.7 min
-    # at most, then the race step's 36.3 and its 30 minutes, then the report. That is under 69
-    # minutes, and 70 is the limit.
+    # at most, then the Postgres sizing step's 19 s (its cold build of the connections command
+    # and the service's restart, as envoy-go-race's job 137890840698 took them), then the race
+    # step's 36.3 and its 30 minutes, then the report. That is under 69 minutes, and 70 is the
+    # limit.
     timeout-minutes: 70
     services:
       postgres:
@@ -268,6 +384,10 @@ jobs:
       JOB_TIMEOUT_MINUTES: 70 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # internal/daemon's, internal/launcher's and internal/intake's store (testpg).
       LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      # internal/daemon's broker tests (release_broker_test.go, dispatchcredential_test.go) drive
+      # ciphertest's broker rig on this same service, and fail rather than skip on GitHub Actions
+      # without it.
+      BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       TESTCONTAINERS_RYUK_DISABLED: "true"
       # internal/daemon's kept-decision property count follows the lane, as daemon-go's fuzz count
       # does and for the same reason: a pull-request run takes 8 seeds, every other lane the
@@ -289,6 +409,7 @@ jobs:
           cache: false
 
       # go-daemon, which holds the race build of these five packages too (ci-caches.yaml).
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -296,6 +417,24 @@ jobs:
             ~/.cache/go-build
           key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
+
+      # internal/daemon's scratch-Dispatch tests (startScratchDispatchOn) start the real Dispatch
+      # server on a database of this service, and one Dispatch process opens up to
+      # store.ConnectionsPerProcess connections (118): more than PostgreSQL's default
+      # max_connections of 100 allows, before the five packages' own pools. A run holding several
+      # at once had a scratch Dispatch refused with 53300 "sorry, too many clients already" and
+      # exit before it was ready (job 137919658889). So the service is raised to what a Dispatch
+      # test lane needs, as every lane that starts a Dispatch process raises its own. The go run of
+      # the script builds envoy's internal/dispatch/store/cmd/connections, after the cache restore
+      # so that it reads the restored module cache.
+      - name: Size the service for this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+
+      # No commit, checkpoint or database copy here waits for the runner's disk: why every
+      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
+      - name: Turn crash safety off on the service
+        timeout-minutes: 2
+        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
 
       # internal/daemon's tests boot the daemon on the tmux runtime, which resolves tmux.
       - name: Install tmux
@@ -330,6 +469,17 @@ jobs:
         run: |
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           unshare --user --map-root-user true
+
+      # internal/daemon's tests run in parallel, its scratch-Dispatch tests each with a Dispatch
+      # process and a database of their own, beside the step's other packages, so this samples the
+      # service's client connections every 2 s while the next step runs and the step after it prints
+      # the peak against max_connections: a change that makes the tests open more at once shows here
+      # before it shows as a 53300 refusal. Postgres's own background processes are not counted. The
+      # loop runs in the background past its own step, until the runner ends the job.
+      - name: Sample the service's connections while the race tests run
+        run: |
+          # shellcheck disable=SC2016 # $1 and $2 are the inner bash's arguments, expanded there
+          nohup bash -c 'while :; do docker exec "$1" psql -U postgres -Atc "select count(*) from pg_stat_activity where backend_type = '"'"'client backend'"'"'" >> "$2" 2>/dev/null; sleep 2; done' _ "${{ job.services.postgres.id }}" "$RUNNER_TEMP/pg-connections.txt" >/dev/null 2>&1 &
 
       # The outbox's lane registry, lease renewal and held clock are the daemon's first goroutines
       # that share state with the intake's commit hooks and the API, so the packages the lanes
@@ -371,8 +521,60 @@ jobs:
       # other job's from the one list and holds each step to it, so the skip and the run cannot
       # come to name different tests.
       - name: Test the concurrent packages under the race detector
-        run: go test -count=1 -race -timeout 30m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/ ./internal/intake/ ./internal/shimwire/
+        run: |
+          set -o pipefail
+          python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go-race ${{ matrix.leg }} ${{ strategy.job-total }} | xargs go test -count=1 -race -timeout 30m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$'
         working-directory: packages/daemon
+
+      - name: Report the service's peak connections
+        if: always()
+        run: |
+          allowed=$(docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "show max_connections")
+          if [ -s "$RUNNER_TEMP/pg-connections.txt" ]; then
+            echo "pg connections: the peak of $(sort -n "$RUNNER_TEMP/pg-connections.txt" | tail -n 1) over $(wc -l < "$RUNNER_TEMP/pg-connections.txt") samples, max_connections ${allowed}"
+          else
+            echo "pg connections: UNKNOWN, no sample was taken (max_connections ${allowed})"
+          fi
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: daemon-go
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  # The check run `daemon-go / daemon-go-race`, which the race step's job carried before it ran in legs:
+  # it waits for every leg and passes only when all passed, so ci-ok, the merge queue and every
+  # reader of that name read what they read before. A leg's own failure has already posted its
+  # early ci-ok from the leg.
+  # why: .github/ci-notes/ci-job-daemon-go.md#why-the-daemons-tests-run-in-legs
+  daemon-go-race:
+    needs: daemon-go-race-legs
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      JOB_TIMEOUT_MINUTES: 5 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+    steps:
+      # The ci-ok report below is an action of this repository's .github.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+
+      # The result is written into the run: rather than set in an env:, which check-ci-filters.sh
+      # reads as able to move what the legs' go commands compile. The error says this job restates
+      # its legs' result, in the words `.github/scripts/runner-shutdown.sh#RUNNER_SHUTDOWN_RESTATED`
+      # holds, so a leg the platform killed still reads as a runner shutdown: this job's failure
+      # only follows the leg's, and read as its own it would hide the leg's.
+      - name: Pass only when every leg passed
+        run: |
+          if [ "${{ needs.daemon-go-race-legs.result }}" != success ]; then
+            echo "::error::daemon-go-race's legs ended ${{ needs.daemon-go-race-legs.result }}, and this job restates its legs' result: each leg's own check run says why it did not pass"
+            exit 1
+          fi
+          echo "daemon-go-race's legs ended success"
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

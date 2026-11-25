@@ -50,7 +50,7 @@ var routes = []route{
 	{
 		name: "github",
 		handler: func(secret string, publisher Publisher, bodies *BodyBudget) http.Handler {
-			return GitHubHandler(secret, "@legion", "", publisher, &mockRecorder{}, bodies)
+			return GitHubHandler(secret, "@legion", "", "", publisher, &mockRecorder{}, bodies)
 		},
 		request: func(secret string, body io.Reader, size int) *http.Request {
 			data, signed := readSigned(body, secret != "")
@@ -173,7 +173,7 @@ func TestSlackAndGhostWisprBodiesDrawFromTheBudgetGitHubBodiesDo(t *testing.T) {
 	)
 	bodies := NewBodyBudget(DefaultBodyBudget, nil)
 	pub := &mockPublisher{}
-	github := GitHubHandler(secret, "@legion", "", pub, &mockRecorder{}, bodies)
+	github := GitHubHandler(secret, "@legion", "", "", pub, &mockRecorder{}, bodies)
 	stall := make(chan struct{})
 	var senders []*testBody
 	for _, n := range []int{sent, sent, sent, 0} {
@@ -257,7 +257,7 @@ func TestADeliveryThatFindsNoRoomIsAnswered503AfterItsRoomWait(t *testing.T) {
 	stall := make(chan struct{})
 	stallOnce := sync.OnceFunc(func() { close(stall) })
 	defer stallOnce()
-	holder := GitHubHandler(secret, "@legion", "", pub, &mockRecorder{}, bodies)
+	holder := GitHubHandler(secret, "@legion", "", "", pub, &mockRecorder{}, bodies)
 	codes, done := serveUnsigned(t, holder, []*testBody{{remaining: githubMaxBody, stallAfter: 2 * budget, stall: stall}}, 0)
 	awaitBudget(t, bodies, 4*budget, true)
 

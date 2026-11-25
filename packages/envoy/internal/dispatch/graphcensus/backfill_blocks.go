@@ -21,6 +21,9 @@ type blockRow struct {
 	address, refKey     string
 	createdAt           time.Time
 	event               int64
+	// project is the document's project, and session its conversation's, which the block's node
+	// carries as its project or its party (refs' blockNode).
+	project, session string
 }
 
 // backfillBlocks writes a node and an in_document tuple for every block row that names none,
@@ -30,7 +33,8 @@ type blockRow struct {
 // store holds. A block whose address is past refs.MaxBlockNodeBytes is no node of the store by
 // design, so it is neither written nor counted as skipped: the writers leave it unprojected too.
 // A row a version write deleted after its batch was read is not written either
-// (writeBlockBatch), and is counted nowhere: it is no row of the database any more.
+// (writeBlockBatch), and is counted nowhere: it is no row of the database any more. A row whose
+// document is between a party graphstore.PartiesValue refuses is skipped (partiesRefused).
 func backfillBlocks(ctx context.Context, database *store.Store, rule int) (KindBackfill, error) {
 	done := KindBackfill{Kind: refs.BlockNodeKind}
 	// The documents the run marked, each once however many of its batches marked it.
@@ -45,7 +49,15 @@ func backfillBlocks(ctx context.Context, database *store.Store, rule int) (KindB
 			break
 		}
 		after = rows[len(rows)-1].address
-		written, tuples, err := writeBlockBatch(ctx, database, rows, rule)
+		writable := make([]blockRow, 0, len(rows))
+		for _, row := range rows {
+			if _, parties := graphstore.SessionScope(row.project, row.session); partiesRefused(parties) {
+				done.Skipped++
+				continue
+			}
+			writable = append(writable, row)
+		}
+		written, tuples, err := writeBlockBatch(ctx, database, writable, rule)
 		if err != nil {
 			return done, err
 		}
@@ -90,7 +102,7 @@ func readBlockRows(ctx context.Context, database *store.Store, after string) ([]
 	for rows.Next() {
 		var row blockRow
 		if err := rows.Scan(&row.artifactID, &row.blockID, &row.address, &row.refKey,
-			&row.createdAt, &row.event); err != nil {
+			&row.createdAt, &row.event, &row.project, &row.session); err != nil {
 			return nil, fmt.Errorf("read a block naming no node: %w", err)
 		}
 		batch = append(batch, row)
@@ -100,19 +112,34 @@ func readBlockRows(ctx context.Context, database *store.Store, after string) ([]
 
 // BlockRowsStatement is readBlockRows' selection: at most $2 of the block rows naming no node
 // whose address fits the store's bound, past the address $1, in address order, each with its
-// document's ref_key, when it was written, and the event that recorded the version it was last
-// written at, or $3, the store's sentinel, where none is found. The documents of the rows it
-// selects are the ones the block batch marks (writeBlockBatch), so it is one of the statements
-// that decide what this build marks, and it is named so the test that holds the marking rule to
-// them reads it (refs.BlockIndexMarkingRule).
+// document's ref_key, when it was written, the event that recorded the version it was last
+// written at, or $3, the store's sentinel, where none is found, and its document's project and
+// its conversation's session. The documents of the rows it selects are the ones the block batch
+// marks (writeBlockBatch), so it is one of the statements that decide what this build marks, and
+// it is named so the test that holds the marking rule to them reads it
+// (refs.BlockIndexMarkingRule).
+//
+// Each batch reads document_blocks_naming_no_node (migration 20261119020900) from the address $1
+// on: that index holds the rows this walk reads, keyed in its order, and its predicate is the
+// walk's own two clauses. node_id's own index is a hash, which keeps no order, so with no other
+// index each batch read every row still naming no node and sorted them, and a run took time
+// growing with the square of the rows (TestTheBackfillsWalksReadOnlyTheirBatch).
 //
 // The event is resolved once per (document, changed version) of the batch and joined back to
-// the rows, not once per row: every block of one version of one document shares that pair and
-// would otherwise run the same unindexed lookup over events up to backfillBatch times.
+// the rows, not once per row: every block of one version of one document shares that pair. The
+// pairs' lookups are a materialized CTE, so the plan runs them once per batch: inlined, the
+// generic plan a prepared statement settles on reran them for each row of the batch, 7,200
+// lookups for a batch of 120 rows and 60 pairs. The word `materialized` changes the plan and not
+// the rows (TestTheBlockBatchAnswersTheSameRowsWithItsLookupsMaterializedOrNot), so the marking
+// rule stays, with its digest recorded anew (docs' markingStatementDigests). Each lookup probes
+// events_artifact_version_number (migration 20261119020700) by the document and the version, whose
+// expressions it compares as that index writes them, and whose predicate its own type clause
+// proves: with no index to serve it, each one read the whole of events, so a run took time growing
+// with the square of the data (TestTheBackfillsEventReadsProbeTheirIndexes).
 var BlockRowsStatement = `
 		with batch as (
 			select d.artifact_id, d.block_id, d.node_id, d.created_at, d.changed_version,
-			       a.ref_key, a.issue_key, a.project_key
+			       a.ref_key, a.issue_key, a.project_key, a.session_id
 			from document_blocks d
 			join artifacts a on a.id = d.artifact_id
 			where d.node_kind is null and octet_length(d.node_id) <= ` + addressBound + `
@@ -120,7 +147,7 @@ var BlockRowsStatement = `
 			order by d.node_id
 			limit $2
 		),
-		caused as (
+		caused as materialized (
 			select version.artifact_id, version.changed_version, found.id
 			from (
 				select distinct artifact_id, issue_key, project_key, changed_version
@@ -137,7 +164,7 @@ var BlockRowsStatement = `
 			) found on true
 		)
 		select batch.artifact_id::text, batch.block_id, batch.node_id, batch.ref_key,
-		       batch.created_at, coalesce(caused.id, $3)
+		       batch.created_at, coalesce(caused.id, $3), coalesce(batch.project_key, ''), coalesce(batch.session_id, '')
 		from batch
 		left join caused on caused.artifact_id = batch.artifact_id
 			and caused.changed_version is not distinct from batch.changed_version
@@ -173,9 +200,10 @@ var BlockRowsStatement = `
 // document_block_versions rows are the ones lockBlockDocuments already holds, so the mark takes no
 // lock out of the store's order.
 //
-// The count is this batch's own tuples and the two base attributes graphstore.Write states
-// for each node its insert makes, which this batch does not state itself: every node here is
-// new, since a row that already names one is never written.
+// The count is this batch's own tuples and the base attributes graphstore.Write states for each
+// node its insert makes, which this batch does not state itself - its visibility and its state,
+// and its project or its parties where its document has one (statedOf): every node here is new,
+// since a row that already names one is never written.
 func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRow, rule int) ([]blockRow, int64, error) {
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -202,7 +230,9 @@ func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRo
 	blockIDs := make([]string, 0, len(held))
 	artifacts := make([]string, 0, len(held))
 	for _, row := range held {
-		node, member, fits := refs.BlockInDocument(row.refKey, row.blockID, backfillActor, row.createdAt, row.event)
+		project, parties := graphstore.SessionScope(row.project, row.session)
+		record := refs.IndexedVersion{RefKey: row.refKey, Writer: backfillActor, Project: project, Parties: parties}
+		node, member, fits := refs.BlockInDocument(record, row.blockID, row.createdAt, row.event)
 		if !fits {
 			// BlockRowsStatement reads no row whose address is past the store's bound, so a row
 			// refs holds past it is one the two disagree on, and the batch writes nothing.
@@ -234,7 +264,7 @@ func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRo
 	if err := tx.Commit(ctx); err != nil {
 		return nil, 0, fmt.Errorf("commit a block batch: %w", err)
 	}
-	return held, int64(len(tuples)) + 2*int64(len(nodes)), nil
+	return held, int64(len(tuples)) + statedOf(nodes), nil
 }
 
 // BlockBatchMarkStatement is writeBlockBatch's mark of the documents $1, the documents of a block
