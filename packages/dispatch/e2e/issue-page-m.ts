@@ -220,8 +220,9 @@ export async function focusedRowFacts(page: Page, id: string): Promise<Locator> 
   return facts;
 }
 
-/** The facts of the ask `askId`, focused through the outline (`rowFacts`): its hand-on control
- *  and who it is asked of are there. */
+/** The facts of the ask `askId`, focused through the outline (`rowFacts`): its hand-on control,
+ *  who it is asked of, its edit history, who its answer reaches and its asker's copy handles
+ *  are there. */
 export function askFacts(page: Page, issueKey: string, askId: string): Promise<Locator> {
   return rowFacts(page, issueKey, askId);
 }

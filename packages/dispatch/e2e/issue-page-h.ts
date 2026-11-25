@@ -112,11 +112,10 @@ export const QUESTION = "Which width does Details open at?";
 export const PINNED_FIRST_LINE = "The pinned comment's first line.";
 /** The reason bob gave for the changes he asked of THREE's spec. */
 export const CHANGES_REASON = "Name the limits";
-/** How many entries Details draws of a list before the Show more under them. */
-export const FOLD_AFTER = LIST_PAGE;
+export { LIST_PAGE };
 /** How many issues wait on ONE, and how many documents ONE holds: one more than Details draws
- *  before the Show more under a list. */
-export const ONE_PAST_FOLD = FOLD_AFTER + 1;
+ *  of a list before the Show more under it (`LIST_PAGE`). */
+export const ONE_PAST_PAGE = LIST_PAGE + 1;
 
 export interface DetailsSeed {
   /** Every key `seedDetailsIssue` names, by its part in the rows. */
@@ -138,11 +137,11 @@ export interface DetailsSeed {
  * `main`'s helpers.
  *
  * - **ONE** has a parent, the twenty labels, a repository, a pull request and one other link, a
- *   component, the planner's claim, the route `role:architect`, an advanced priority, eleven
- *   documents, eleven issues it blocks, a spec approval request handed on to bob and a task list
- *   of two items, one checked, an unpinned comment, a question waiting on alice, a pinned
- *   comment whose first line starts with a mark and a pinned line of its history, and it is
- *   blocked by THREE.
+ *   component, the planner's claim, the route `role:architect`, an advanced priority,
+ *   twenty-one documents (its spec and twenty more), twenty-one issues it blocks, a spec
+ *   approval request handed on to bob and a task list of two items, one checked, an unpinned
+ *   comment, a question waiting on alice, a pinned comment whose first line starts with a mark
+ *   and a pinned line of its history, and it is blocked by THREE.
  * - **TWO** has no parent, route, label, blocker or priority, and an approval request waiting on
  *   alice, the project's default assignee.
  * - **THREE**'s spec carries bob's request for changes with the reason `CHANGES_REASON`.
@@ -208,8 +207,8 @@ export async function seedDetailsIssue(): Promise<DetailsSeed> {
     route: "role:architect",
   });
   await claimIssue(one.key, asPlanner);
-  // The spec and `FOLD_AFTER` documents more: `ONE_PAST_FOLD`.
-  for (let index = 1; index < ONE_PAST_FOLD; index += 1) {
+  // The spec and `LIST_PAGE` documents more: `ONE_PAST_PAGE`.
+  for (let index = 1; index < ONE_PAST_PAGE; index += 1) {
     await createIssueArtifact(one.key, {
       content: `Notes ${index} of ONE.\n`,
       name: `notes-${String(index).padStart(2, "0")}.md`,
@@ -217,7 +216,7 @@ export async function seedDetailsIssue(): Promise<DetailsSeed> {
   }
   const blocks: string[] = [];
   const blockTitles: string[] = [];
-  for (let index = 1; index <= ONE_PAST_FOLD; index += 1) {
+  for (let index = 1; index <= ONE_PAST_PAGE; index += 1) {
     const waiter = await createIssue({
       force: true,
       project: PROJECT,

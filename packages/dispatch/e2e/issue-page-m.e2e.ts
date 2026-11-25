@@ -9,12 +9,15 @@ import { join } from "node:path";
 import { type LegionRole, roleToken } from "@legion/contracts";
 
 import type { DispatchEvent, IssueSteps } from "../web/src/api/types";
+import { conversationItemId, pinnedItemMarker } from "../web/src/features/issue/pins";
 import { KEY_REPORTS, PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
 import {
   ANSWER_LINES,
   CONTROL_LABELS,
   DELIVERY_STATE_WORDS,
   NODE_REFERENCES_WORDS,
+  NODE_TYPE_NAMES,
+  sentenceCase,
 } from "../web/src/features/issue-page/page-words";
 import {
   agentRow,
@@ -40,19 +43,25 @@ import {
   createProjectDocument,
   deleteMessage,
   editArtifact,
+  editAsk,
   editComment,
+  followAsk,
   getAsk,
   getIssue,
   getIssueEvents,
+  getMyState,
   patchIssue,
+  putArchitectureSource,
   putIssueState,
   putStep,
   resolveAsk,
   resolveComment,
+  syncArchitectureSource,
   uploadIssueFile,
 } from "./api";
 import { runDispatch } from "./dispatch-cli";
 import { documentEditor, indexedBlockAsk, needsYouCards } from "./editor";
+import { seedFakeGithub } from "./fake-github-helpers";
 import { nextFrames } from "./frames";
 import {
   historyScrollRange,
@@ -88,7 +97,14 @@ import {
   tree,
   unfoldEveryBranch,
 } from "./issue-page-g";
-import { detailsRow, marginSectionDisclosure, pinsList } from "./issue-page-h";
+import {
+  detailsRow,
+  filesList,
+  LIST_PAGE,
+  marginSection,
+  marginSectionDisclosure,
+  pinsList,
+} from "./issue-page-h";
 import { focusedNodeId, focusInside, openEveryDeeperBranch } from "./issue-page-i";
 import {
   askFacts,
@@ -1072,10 +1088,11 @@ const attentionSession = {
 };
 
 /**
- * The issue's history, in Details: where the threads the Legion daemon began and the comments
- * agents wrote outside every thread a person wrote in are read, newest first, each thread one
- * entry carrying its own id in `data-history-entry`. The history holds the reader's place in the
- * box Details scrolls in (`IssueHistory.tsx`'s `ViewportAnchor`), and these rows read that.
+ * The issue's history, in Details: where the threads the Legion daemon began, whoever wrote in
+ * them, and the agents' posts - comment threads tied to no text that no person wrote in - are
+ * read, newest first, each thread one entry carrying its own id in `data-history-entry`. The
+ * history holds the reader's place in the box Details scrolls in (`IssueHistory.tsx`'s
+ * `ViewportAnchor`), and these rows read that.
  */
 const HISTORY = '[data-testid="issue-history"]';
 
@@ -2706,7 +2723,7 @@ test("open-asks names the person each ask waits on, before and after a hand-on",
 });
 
 // ---------------------------------------------------------------------------------------------
-// c-people-facts (5) to (9): new rows.
+// c-people-facts (5) to (11): new rows.
 // ---------------------------------------------------------------------------------------------
 
 /** The session the People row counts and unsubscribes. */
@@ -2770,10 +2787,24 @@ test("the People section counts the subscribed agents and unsubscribes one after
   );
 });
 
+/** The facts `facts` draws, each as its name and its value (`FocusedNodeFacts.tsx`'s `Fact`), in
+ *  the order it draws them. */
+function drawnFacts(facts: Locator): Promise<[string, string][]> {
+  return facts
+    .locator("dl > div")
+    .evaluateAll((all) =>
+      all.map((fact): [string, string] => [
+        fact.querySelector("dt")?.textContent ?? "",
+        fact.querySelector("dd")?.textContent ?? "",
+      ])
+    );
+}
+
 // With Details shut the page reads neither the history's log,
 // nor the collaborators, nor a row's references; opened, Details draws the facts and the history
-// once each, inside it; the facts follow the focus; and Details closed and opened again keeps the
-// facts of the row the reader was on.
+// once each, inside it; the facts name the focused row's kind and who wrote it, and draw no line
+// of its words, which the row beside them draws whole; the facts follow the focus; and Details
+// closed and opened again keeps the facts of the row the reader was on.
 test("the focused node's facts follow the focus, and Details reads nothing more until it opens", async ({
   browser,
 }) => {
@@ -2832,7 +2863,14 @@ test("the focused node's facts follow the focus, and Details reads nothing more 
         "data-focused-node",
         seeded.first
       );
-      await expect(facts).toContainText("The first row's words.");
+      const kind = [`${CONTROL_LABELS.node_kind}:`, sentenceCase(NODE_TYPE_NAMES.comment)];
+      const author = [`${CONTROL_LABELS.written_by}:`, "bob"];
+      await expect
+        .poll(() => drawnFacts(facts), "the facts do not name the row's kind and who wrote it")
+        .toEqual(expect.arrayContaining([kind, author]));
+      await expect(facts, "the facts drew the row's first line").not.toContainText(
+        "The first row's words."
+      );
       // The collaborators are read only once their list opens, and Details opens with it
       // shut. The history's log, read as Details opens, says Details' reads have gone out.
       const collaboratorsRead = `/api/v1/issues/${seeded.key}/collaborators`;
@@ -2857,7 +2895,12 @@ test("the focused node's facts follow the focus, and Details reads nothing more 
         "data-focused-node",
         seeded.second
       );
-      await expect(facts).toContainText("The second row's words.");
+      await expect
+        .poll(() => drawnFacts(facts), "the facts of the next node do not name its kind and author")
+        .toEqual(expect.arrayContaining([kind, author]));
+      await expect(facts, "the facts drew the next row's first line").not.toContainText(
+        "The second row's words."
+      );
 
       // Closed and opened again, Details keeps the facts of the row the reader was on.
       await closeDetails(page);
@@ -2871,9 +2914,10 @@ test("the focused node's facts follow the focus, and Details reads nothing more 
 });
 
 /** An issue with an agents' thread, a thread the Legion daemon began that no person wrote in,
- *  dated a day back with its event, so it stands in a day before today, among the daemon's notes,
- *  each a thread of its own: its id, the time it is dated to (`messageAt`), and the newest of the
- *  notes after it (`newest`). */
+ *  dated a day back with its event, so it stands in a day before today, below each of the
+ *  daemon's 24 notes of today, each a thread of its own, and past the history's first 20
+ *  entries: its id, the time it is dated to (`messageAt`), and the newest of the notes after it
+ *  (`newest`). */
 async function seedAgentsThread(): Promise<{
   key: string;
   message: string;
@@ -2910,12 +2954,18 @@ async function seedAgentsThread(): Promise<{
 // `t v` opens `/activity` with the history's heading in view and the
 // focus in the history, and a Close there is the later word; `/collaborators` and `t o` open the
 // People section the reader closed, with the collaborators' list open and the focus on its
-// control; the address of an agents' turn opens Details at that turn, its folded day open, marked
-// and on screen, once per following of the address, and a turn that arrives while the history's
-// log is held is reached at once; and Keys lists both keys.
+// control; and Keys lists both keys. The address of a turn of the daemon's thread, a person's
+// reply in it included, opens Details at that turn, the history drawn down to it past its first
+// 20 entries, marked and on screen, once per following of the address: Pinned's link to the
+// turn, followed again while Details is open, brings it on screen again, and the reader's Close
+// is the later word. A turn that arrives while the history's log is held is reached at once. The
+// address of an agent's note to the issue's people, or of a message between agents, opens no
+// Details: neither is a turn of a thread the history holds.
 test("t v and t o open Details at the history and at the collaborators, and an agents' turn's address marks it", async ({
   browser,
 }) => {
+  // One seed and ten loads of the issue, each address's landing waited for.
+  test.setTimeout(120_000);
   await phase(browser, seedAgentsThread, async (page, seeded) => {
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expect(tree(page)).toBeVisible();
@@ -2999,32 +3049,111 @@ test("t v and t o open Details at the history and at the collaborators, and an a
     await page.keyboard.press("Escape");
     await expect(keys).toBeHidden();
 
-    // An agents' turn's own address, on a fresh load, opens Details there: the day before today
-    // the turn is in open, the turn marked and on screen. A press on that day's line folds it.
-    // The day is named as the page names the turn's own date.
+    // The turn is pinned, so Pinned links its address (`IssuePins.tsx`).
+    const dismissed = (await getMyState("alice"))[seeded.key]?.dismissed ?? [];
+    await putIssueState(seeded.key, {
+      dismissed: [...dismissed, pinnedItemMarker(conversationItemId("message", seeded.message))],
+    });
+
+    // The turn's own address, on a fresh load, opens Details there: the history drawn down to the
+    // turn, past its first 20 entries, the turn marked and on screen in its day before today.
     await gotoIssue(page, `/issues/${seeded.key}/messages/${seeded.message}`);
     await expect(marginShell(page), "the turn's address did not open Details").toBeVisible();
     const turn = historyItem(page, seeded.message);
-    const turnDay = await historyDayOf(page, seeded.messageAt);
-    const dayBefore = historyPanel(page)
-      .locator(`[data-history-day="${turnDay.date}"]`)
-      .getByRole("button", { name: `${turnDay.label} · ` });
-    await expect(dayBefore, "the turn's address left its day folded").toHaveAttribute(
-      "aria-expanded",
+    await expect(turn, "the turn's address did not mark it").toHaveAttribute(
+      "aria-current",
       "true"
     );
-    await expect(turn).toHaveAttribute("aria-current", "true");
-    await expect(turn).toBeInViewport();
-    await dayBefore.click();
-    await expect(dayBefore, "a press on the opened day's line left it open").toHaveAttribute(
-      "aria-expanded",
-      "false"
+    await expect(turn, "the turn's address left it off screen").toBeInViewport();
+    await seededHistoryEntry(page, turn, seeded.messageAt);
+    const place = await historyEntries(page).evaluateAll(
+      (entries, id) =>
+        entries.findIndex((entry) => entry.querySelector(`[data-history-item="${id}"]`) !== null),
+      seeded.message
     );
-    await expect(turn).toHaveCount(0);
+    expect(
+      place,
+      `the turn is entry ${place} of the history, among its first ${HISTORY_DRAWS}, so the row proves nothing`
+    ).toBeGreaterThanOrEqual(HISTORY_DRAWS);
+
+    // Pinned's link to the turn, followed again while Details is open, brings the turn back on
+    // screen from where the reader scrolled to Pinned, above the history.
+    const pinned = pinsList(page)
+      .locator(`[data-pin="message:${seeded.message}"]`)
+      .getByRole("link");
+    await expect(pinned, "Pinned does not link the turn's address").toHaveAttribute(
+      "href",
+      `/issues/${seeded.key}/messages/${seeded.message}`
+    );
+    await pinned.scrollIntoViewIfNeeded();
+    await detailsStandStill(page, "the scroll to Pinned");
+    await expect(
+      turn,
+      "the scroll to Pinned left the turn on screen, so the row proves nothing"
+    ).not.toBeInViewport();
+    await pinned.click();
+    await expect(
+      turn,
+      "Pinned's link to the turn did not bring it on screen again"
+    ).toBeInViewport();
+    await expect(turn).toHaveAttribute("aria-current", "true");
+    await expect(marginShell(page)).toBeVisible();
     // Once per following of the address: the reader's Close is the later word.
     await closeDetails(page);
     await nextFrames(page);
     await expect(marginShell(page), "Details opened again after the reader closed it").toBeHidden();
+
+    // A person's reply in the daemon's thread is a turn of it, and its address opens Details at
+    // it the same way, once.
+    const personReply = await createMessage(
+      seeded.key,
+      { body: "A person answers in the daemon's thread.", in_reply_to: seeded.message },
+      { login: "bob" }
+    );
+    await gotoIssue(page, `/issues/${seeded.key}/messages/${personReply.id}`);
+    await expect(
+      marginShell(page),
+      "the address of a person's reply in the daemon's thread did not open Details"
+    ).toBeVisible();
+    const reply = historyItem(page, personReply.id);
+    await expect(reply, "the person's reply's address did not mark it").toHaveAttribute(
+      "aria-current",
+      "true"
+    );
+    await expect(reply).toBeInViewport();
+    await closeDetails(page);
+    await nextFrames(page);
+    await expect(
+      marginShell(page),
+      "Details opened again at the person's reply after the reader closed it"
+    ).toBeHidden();
+
+    // An agent's note to the issue's people, and a message between agents, are no turn of a
+    // thread the history holds: the outline lands on each one's own row, and Details stays shut.
+    const note = await createMessage(
+      seeded.key,
+      { body: "A note to the issue's people from an agent." },
+      attentionSession
+    );
+    const betweenAgents = await createMessage(
+      seeded.key,
+      { body: "Reviewer, the second task waits on you.", delivery: "btw", target: "role:reviewer" },
+      attentionSession
+    );
+    for (const [id, what] of [
+      [note.id, "an agent's note to the issue's people"],
+      [betweenAgents.id, "a message between agents"],
+    ] as const) {
+      await gotoIssue(page, `/issues/${seeded.key}/messages/${id}`);
+      await expect
+        .poll(
+          () => focusedNodeId(page),
+          `the address of ${what} landed the outline on no row of it`
+        )
+        .toBe(id);
+      await nextFrames(page);
+      await expect(marginShell(page), `the address of ${what} opened Details`).toBeHidden();
+    }
 
     // A turn that arrives while the history's log is held in the app is reached at once: the
     // history reads the log at `/activity`, Details closes, the turn arrives, and a person's
@@ -3040,7 +3169,7 @@ test("t v and t o open Details at the history and at the collaborators, and an a
     const arrived = await createMessage(
       seeded.key,
       { body: "A turn that arrived while the log was held." },
-      attentionSession
+      asDaemon
     );
     const citing = await createComment(
       seeded.key,
@@ -3072,7 +3201,7 @@ test("t v and t o open Details at the history and at the collaborators, and an a
   });
 });
 
-/** An issue whose one row is a person's comment, with a thread only an agent wrote in: one
+/** An issue whose one row is a person's comment, with a thread the Legion daemon began: one
  *  message, which the outline draws no row for and the history draws (`agents-only.ts`). */
 async function seedPinnedAgentsTurn(): Promise<{
   comment: string;
@@ -3087,20 +3216,20 @@ async function seedPinnedAgentsTurn(): Promise<{
   const message = await createMessage(
     issue.key,
     { body: "The agents' turn the reader pinned." },
-    attentionSession
+    asDaemon
   );
   return { comment: comment.id, key: issue.key, message: message.id };
 }
 
-// A pin's link to a turn of a thread only agents wrote in. The new page gives such a turn no Pin
-// of its own: the outline draws no row for it, so no row's facts hold its Pin, and the history's
-// Pin on a line of it pins that line's event, whose link in Pinned opens `/activity` and names no
-// turn. Today's page pins it - its Conversation card's Pin, under the thread's own
-// `message:<id>` - and Pinned on the new page links that pin to the turn's address
+// A pin's link to a turn of a thread the history holds, the daemon's here. The new page gives
+// such a turn no Pin of its own: the outline draws no row for it, so no row's facts hold its Pin,
+// and the history's Pin on a line of it pins that line's event, whose link in Pinned opens
+// `/activity` and names no turn. Today's page pins it - its Conversation card's Pin, under the
+// thread's own `message:<id>` - and Pinned on the new page links that pin to the turn's address
 // (`IssuePins.tsx`). Followed, the address lands the outline on the turn's nearest drawn
 // ancestor - the issue here, which is no row, so the outline's tab stop, the person's comment -
-// with the note that the thread is the agents' alone, and opens Details at the history with the
-// turn marked, by one decision (`address-target.ts`'s `useAddressFallback`).
+// with the note that the thread is in the history, in Details, and opens Details at the history
+// with the turn marked, by one decision (`address-target.ts`'s `useAddressFallback`).
 test("a pin's link to an agents' turn lands the outline on its nearest drawn ancestor with the note and opens Details at the turn marked", async ({
   browser,
 }) => {
@@ -3139,21 +3268,23 @@ test("a pin's link to an agents' turn lands the outline on its nearest drawn anc
     await link.click();
     await expect(page).toHaveURL(new RegExp(`${address}$`));
 
-    // The outline lands on the tab stop and says there that the thread is the agents' alone.
+    // The outline lands on the tab stop and says there that the thread is in the history.
     await expect
       .poll(() => focusedNodeId(page), "the pin's link landed the outline on no row")
       .toBe(seeded.comment);
     await expect(
       nodeRow(page, seeded.comment).first().locator("[data-row-report]"),
-      "the outline's landing did not say at its row that the thread is the agents' alone"
+      "the outline's landing did not say at its row that the thread is in the history"
     ).toHaveText(KEY_REPORTS.agents_thread);
     // Read once the outline has landed for this address, so it has drawn its rows for it.
-    await expect(nodeRow(page, seeded.message), "the outline drew the agents' turn").toHaveCount(0);
+    await expect(nodeRow(page, seeded.message), "the outline drew the daemon's turn").toHaveCount(
+      0
+    );
 
     // Details, left open by the link, is at the history with the turn marked and on screen.
     await expect(marginShell(page), "the pin's link closed Details").toBeVisible();
     const turn = historyItem(page, seeded.message);
-    await expect(turn, "the pin's link did not mark the agents' turn").toHaveAttribute(
+    await expect(turn, "the pin's link did not mark the daemon's turn").toHaveAttribute(
       "aria-current",
       "true"
     );
@@ -3852,7 +3983,7 @@ async function keyAfterReadingDown(
 }
 
 // A load of `/collaborators` opens Details with the collaborators' list open, the Collaborators
-// control focused; the reader then reads the history down to its end, pressing Load older by
+// control focused; the reader then reads the history down to its end, pressing Show more by
 // Enter until it goes, and presses `t o`. Details brings the collaborators' row into its view by
 // the least scroll (`useOpenDetailsAt`), and the row, its list open, is taller than the view:
 // coming from below, that scroll shows the row's foot, and the control at its head stayed above
@@ -3862,7 +3993,7 @@ async function keyAfterReadingDown(
 // key, and `t o` opens it again (`readyForPageKey`). Found by the tester on a running build with a
 // copy of a large real issue, Details' box scrolled to 43,854 px: the control 151 px above
 // Details' view at 1440 px and 435 px above it at 390, in two runs of two.
-test("t o after the history is read down by Load older leaves the focused Collaborators control wholly in Details' view, though its open list makes its row taller than the view", async ({
+test("t o after the history is read down by Show more leaves the focused Collaborators control wholly in Details' view, though its open list makes its row taller than the view", async ({
   browser,
 }) => {
   test.setTimeout(240_000);
@@ -4268,9 +4399,20 @@ test("on a phone a link of the history and Reply close Details", async ({ browse
   );
 });
 
+/** The lines of the long comment the references row's seed writes, its first citing the
+ *  statement at `reference`: eight paragraphs, far more than five lines in Details. */
+function longCitingLines(reference: string): string[] {
+  return Array.from({ length: 8 }, (_, index) =>
+    index === 0
+      ? `Bob's long note cites ${reference} first.`
+      : `Line ${index + 1} of Bob's long note on the statement, which runs on past five lines.`
+  );
+}
+
 // "What references this row" is read only when pressed, with
-// Details open, and lists the comment that cites the focused statement by the page's word for a
-// comment and the comment's first line, a link that focuses the comment's row; no row is named by
+// Details open, and lists each comment that cites the focused statement by the page's word for a
+// comment and the comment's words whole - a comment longer than five lines whole too, with no
+// clamp and no control that cuts it - a link that focuses the comment's row; no row is named by
 // an address, a slug or "spec block"; the issue draws no control; the focus moving closes the
 // list; and a failed read says so, with Retry, after at most three requests.
 test("what references the focused row opens from its facts, and each row leads to the citing node", async ({
@@ -4288,6 +4430,11 @@ test("what references the focused row opens from its facts, and each row leads t
       const comment = await createComment(
         issue.key,
         { body: `Bob checks dispatch://${issue.key}/spec#b-r-cited against the page.` },
+        { login: "bob" }
+      );
+      await createComment(
+        issue.key,
+        { body: longCitingLines(`dispatch://${issue.key}/spec#b-r-cited`).join("\n\n") },
         { login: "bob" }
       );
       const spec = ((await getIssue(issue.key)).artifacts ?? []).find(
@@ -4337,19 +4484,43 @@ test("what references the focused row opens from its facts, and each row leads t
       await control.click();
       await expect(control).toHaveAttribute("aria-expanded", "true");
       const rows = facts.locator("[data-node-references] li");
-      await expect(rows).toHaveCount(1);
+      await expect(rows).toHaveCount(2);
       expect(references, "the references were not read once").toHaveLength(1);
-      await expect(rows.first()).toContainText(NODE_REFERENCES_WORDS.kinds.comment);
-      // The comment's first line, from its tree, with the reference it writes named as the
-      // outline names it: by the statement's own words.
-      await expect(rows.first()).toContainText(
+      // Each comment's words, from its tree, with the reference it writes named as the outline
+      // names it: by the statement's own words.
+      const short = rows.filter({ hasText: "Bob checks" });
+      await expect(short).toContainText(NODE_REFERENCES_WORDS.kinds.comment);
+      await expect(short).toContainText(
         "Bob checks The history is drawn in Details. against the page."
       );
-      const text = (await rows.first().textContent()) ?? "";
-      for (const name of ["dispatch://", seeded.specSlug, "spec block", "#b-"]) {
-        expect(text, `a row of what references the statement names it by "${name}"`).not.toContain(
-          name
-        );
+      const long = rows.filter({ hasText: "Bob's long note" });
+      await expect(long).toContainText(NODE_REFERENCES_WORDS.kinds.comment);
+      await expect(long, "the long comment's row does not draw its words whole").toContainText(
+        longCitingLines("The history is drawn in Details.").join(" ")
+      );
+      // Whole on the screen too: more than five lines drawn, nothing hidden under a clamp, and no
+      // control that cuts it.
+      const drawn = await long.getByRole("link").evaluate((words) => {
+        const style = getComputedStyle(words);
+        return {
+          clamp: style.webkitLineClamp,
+          hidden: words.scrollHeight - words.clientHeight,
+          lines: words.getBoundingClientRect().height / Number.parseFloat(style.lineHeight),
+        };
+      });
+      expect(drawn.lines, "the long comment's row draws five lines or fewer").toBeGreaterThan(5);
+      expect(drawn.clamp, "the long comment's row is clamped").toBe("none");
+      expect(drawn.hidden, "the long comment's row hides some of its words").toBeLessThanOrEqual(1);
+      await expect(rows.getByRole("button"), "a row draws a control that cuts it").toHaveCount(0);
+      // The list's rows are drawn and settled: their count and the long comment's words were read
+      // above, so one read of their text is the state the row means to check.
+      for (const text of await rows.allTextContents()) {
+        for (const name of ["dispatch://", seeded.specSlug, "spec block", "#b-"]) {
+          expect(
+            text,
+            `a row of what references the statement names it by "${name}"`
+          ).not.toContain(name);
+        }
       }
 
       // The focus moving to another row closes the list.
@@ -4365,7 +4536,7 @@ test("what references the focused row opens from its facts, and each row leads t
 
       // The row's link focuses the citing comment's row.
       await control.click();
-      await rows.first().getByRole("link").click();
+      await short.getByRole("link").click();
       await expect.poll(() => focusedNodeId(page)).toBe(seeded.comment);
 
       // A read that fails says so, with Retry, after at most three requests.
@@ -4395,6 +4566,362 @@ test("what references the focused row opens from its facts, and each row leads t
   );
 });
 
+/** The agent session that asks the question of the row below, with the title and the tmux target
+ *  its writes stamp, which its copy handles hold. */
+const factsAsker = {
+  actor: {
+    id: "e2e-facts-asker",
+    kind: "session" as const,
+    origin: { session_title: "Facts asker (e2e)", tmux: "facts:2.1" },
+  },
+  as: "agent" as const,
+};
+
+/** The agent session that follows the question of the row below. */
+const factsFollower = { id: "e2e-facts-follower", kind: "session" as const };
+
+// The facts of a question the reader is on hold what the ask card draws around it: its edit
+// history, as `AskEditHistory` draws it, the earlier wording behind its own disclosure; who a
+// person's answer reaches, as `AskRecipients` draws it, its asker and the agent that follows it;
+// and, behind the asker's name, which a press opens, the session's ID, its title and its tmux
+// target, each with its copy control. The question's thread is its own read, which the page sends
+// only once Details is open, and once: the page holds no read of the issue's questions with their
+// threads.
+// SLOW(>=2s): a question written, reworded and followed, and two loads of the issue.
+test("the facts of a focused ask hold its edit history, its recipients and its copy handles", async ({
+  browser,
+}) => {
+  await phase(
+    browser,
+    async () => {
+      await createProject({ key: "CORE", name: "Core" });
+      const issue = await createIssue({ project: "CORE", title: "A question reworded once" });
+      const ask = await createAsk(
+        issue.key,
+        { question: "Which store holds the drafts?" },
+        factsAsker
+      );
+      await editAsk(ask.id, { question: "Which store holds a reply's drafts?" }, factsAsker);
+      await followAsk(ask.id, factsFollower.id, factsFollower);
+      await setLiveSessions([
+        { session_id: factsAsker.actor.id, title: "Facts asker (e2e)" },
+        { session_id: factsFollower.id, title: "Facts follower (e2e)" },
+      ]);
+      return { ask: ask.id, key: issue.key };
+    },
+    async (page, seeded) => {
+      const askReads: string[] = [];
+      page.on("request", (request) => {
+        const url = new URL(request.url());
+        if (request.method() === "GET" && url.pathname === `/api/v1/asks/${seeded.ask}`) {
+          askReads.push(url.pathname);
+        }
+      });
+
+      // With Details shut, the question focused, the page reads nothing of the question's own.
+      const shut = watchApiRequests(page);
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expect(tree(page)).toBeVisible();
+      await expectLoadSettled(shut);
+      await focusRow(page, seeded.ask);
+      await expect.poll(() => focusedNodeId(page)).toBe(seeded.ask);
+      await expect(marginShell(page)).toBeHidden();
+      await expectLoadSettled(shut);
+      expect(askReads, "the facts read the question with Details shut").toEqual([]);
+
+      // Opened at the question's facts, the page reads the question once.
+      const opened = watchApiRequests(page);
+      const facts = await askFacts(page, seeded.key, seeded.ask);
+      await expect(facts.getByText(/^Edited /), "the ask's edit is not in its facts").toBeVisible();
+      await facts.getByText("Show 1 previous version", { exact: true }).click();
+      await expect(facts.getByText("Which store holds the drafts?", { exact: true })).toBeVisible();
+      await expect(facts.getByText(/^Reworded by /)).toBeVisible();
+
+      const recipients = facts.getByRole("region", { name: "Recipients" });
+      await expect(recipients, "the question's recipients are not in its facts").toContainText(
+        "Reaches 2"
+      );
+      await recipients.getByRole("button", { name: /^Reaches/ }).click();
+      const followers = recipients.getByRole("list", { name: "Followers" });
+      await expect(followers).toContainText("Facts asker (e2e)");
+      await expect(followers).toContainText("Facts follower (e2e)");
+
+      // The asker's name opens its copy handles.
+      const writtenBy = facts
+        .locator("dl > div")
+        .filter({ has: page.getByText(`${CONTROL_LABELS.written_by}:`, { exact: true }) });
+      const handles = [
+        `Copy session ID ${factsAsker.actor.id}`,
+        "Copy session title Facts asker (e2e)",
+        "Copy tmux target facts:2.1",
+      ];
+      for (const name of handles) {
+        await expect(facts.getByRole("button", { exact: true, name })).toHaveCount(0);
+      }
+      await writtenBy.getByRole("button", { expanded: false }).click();
+      for (const name of handles) {
+        await expect(
+          writtenBy.getByRole("button", { exact: true, name }),
+          `the asker's handles hold no "${name}"`
+        ).toBeVisible();
+      }
+
+      await expectLoadSettled(opened);
+      expect(askReads, "Details read the question other than once").toHaveLength(1);
+    }
+  );
+});
+
+/** The architecture repository of the row below, whose model holds `MANY_COMPONENTS`. */
+const LISTS_ARCHITECTURE = "acme/lists-architecture";
+
+/** How many entries each list of the row below holds: five past the 20 Details draws at first. */
+const LONG_LIST = 25;
+
+/** The ids of the components of the row below's model, one file each: `part-01` and on. */
+const MANY_COMPONENTS = Array.from(
+  { length: LONG_LIST },
+  (_, index) => `part-${String(index + 1).padStart(2, "0")}`
+);
+
+/** The lines of the comment `number` of another issue that cites the issue `key`: seven, so the
+ *  comment runs past five lines wherever it is drawn whole. */
+function citingNoteLines(key: string, number: number): string[] {
+  const note = String(number).padStart(2, "0");
+  return [
+    `Note ${note} of the other issue cites dispatch://${key}.`,
+    ...Array.from({ length: 6 }, (_, line) => `Line ${line + 2} of note ${note}.`),
+  ];
+}
+
+/**
+ * An issue whose lists of unbounded length in Details each hold `LONG_LIST` entries: the issues
+ * it blocks, its components, its files and documents (its spec and 24 more), the comments that
+ * cite its statement, and the comments of another issue that cite it, which its Referenced by
+ * lists after the issues it blocks. Its labels, its priorities and its blockers are left out: the
+ * server holds no more than 20 of each.
+ */
+async function seedLongLists() {
+  await createProject({ key: "CORE", name: "Core" });
+  await seedFakeGithub({
+    [LISTS_ARCHITECTURE]: {
+      contents: "read",
+      files: Object.fromEntries(
+        MANY_COMPONENTS.map((id) => [`${id}.md`, `---\ntitle: Component ${id}\n---\nA part.\n`])
+      ),
+      installation_id: 421,
+    },
+  });
+  await putArchitectureSource("CORE", { branch: "main", repo: LISTS_ARCHITECTURE });
+  const source = await syncArchitectureSource("CORE", LISTS_ARCHITECTURE);
+  if (source.last_error !== null) {
+    throw new Error(`the component model did not import: ${source.last_error}`);
+  }
+  const issue = await createIssue({
+    project: "CORE",
+    spec: ":::requirement{#r-cited}\nEvery list draws 20 entries at a time.\n:::\n",
+    title: "An issue whose lists run past 20",
+  });
+  await patchIssue(issue.key, { components: { ids: MANY_COMPONENTS, mode: "explicit" } });
+  for (let index = 1; index < LONG_LIST; index += 1) {
+    await createIssueArtifact(issue.key, {
+      content: `Notes ${index}.\n`,
+      name: `notes-${String(index).padStart(2, "0")}.md`,
+    });
+  }
+  for (let index = 1; index <= LONG_LIST; index += 1) {
+    // `force`: the titles are alike on purpose, and the duplicate check would refuse them.
+    const waiter = await createIssue({
+      force: true,
+      project: "CORE",
+      title: `Waits on the issue (${index})`,
+    });
+    await patchIssue(waiter.key, { blocked_by: [issue.key] });
+  }
+  for (let index = 1; index <= LONG_LIST; index += 1) {
+    await createComment(
+      issue.key,
+      { body: `Citing comment ${index} reads dispatch://${issue.key}/spec#b-r-cited.` },
+      { login: "bob" }
+    );
+  }
+  const other = await createIssue({
+    force: true,
+    project: "CORE",
+    title: "Another issue, whose comments cite the first",
+  });
+  for (let index = 1; index <= LONG_LIST; index += 1) {
+    await createComment(
+      other.key,
+      { body: citingNoteLines(issue.key, index).join("\n") },
+      { login: "bob" }
+    );
+  }
+  const spec = ((await getIssue(issue.key)).artifacts ?? []).find((artifact) => artifact.primary);
+  if (spec === undefined) throw new Error(`${issue.key} holds no spec`);
+  return { key: issue.key, statement: blockNode(spec.slug, "r-cited") };
+}
+
+/**
+ * Presses `more`, the Show more under a list of Details of `total` entries, until it goes: each
+ * press keeps the entries drawn and draws the next 20, or the rest, and moves the focus to the
+ * first entry it drew, which `focused(index)` finds by its place in the list. Before each press
+ * the list draws the entries drawn so far, and `more` says how many are left.
+ */
+async function showEveryEntry(
+  entries: Locator,
+  more: Locator,
+  total: number,
+  focused: (index: number) => Promise<boolean>,
+  what: string
+): Promise<void> {
+  for (let drawn = LIST_PAGE; drawn < total; drawn += LIST_PAGE) {
+    await expect(entries, `${what} drew another count than ${drawn}`).toHaveCount(drawn);
+    await expect(more, `${what}'s Show more does not say ${total - drawn} are left`).toHaveText(
+      `${CONTROL_LABELS.show_more} (${total - drawn} ${CONTROL_LABELS.show_more_left})`
+    );
+    await more.click();
+    await expect(entries, `${what}'s Show more did not draw the next entries`).toHaveCount(
+      Math.min(drawn + LIST_PAGE, total)
+    );
+    await expect
+      .poll(() => focused(drawn), `${what}'s Show more left the focus off the first entry it drew`)
+      .toBe(true);
+  }
+  await expect(more, `${what}'s Show more stayed with every entry drawn`).toHaveCount(0);
+}
+
+/** Whether the focus is on `entry` or inside it. */
+function focusOnOrIn(entry: Locator): Promise<boolean> {
+  return entry.evaluate((element) => element.contains(document.activeElement));
+}
+
+// Each list of unbounded length that Details draws shows its first 20 entries and, under them,
+// Show more, which says how many are left; a press draws the next 20, the control goes once
+// every entry is drawn, and the focus goes to the first entry the press drew: the issues the
+// issue blocks, its components, its files and documents, what references its statement, and its
+// own Referenced by, which lists the issues it blocks and then the comments of another issue
+// that cite it, each comment whole with no clamp and no Show more of its own. The server holds
+// no more than 20 labels, priorities or blockers on an issue, so those lists never page.
+// SLOW(>=2s): an architecture model, 25 issues, 24 documents and 50 comments written, and one
+// load of the issue whose lists are read down.
+test("each list of Details shows 20 entries and a control for the next 20", async ({ browser }) => {
+  test.setTimeout(180_000);
+  await phase(browser, seedLongLists, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await openDetails(page);
+
+    const blocks = detailsRow(page, PROPERTY_LABELS.blocks);
+    const blocking = blocks.getByRole("link");
+    await expect(blocking, "Blocks drew 10 entries, not 20").toHaveCount(LIST_PAGE);
+    await showEveryEntry(
+      blocking,
+      blocks.getByRole("button", { name: CONTROL_LABELS.show_more }),
+      LONG_LIST,
+      (index) => focusOnOrIn(blocking.nth(index)),
+      "Blocks"
+    );
+
+    // Components past the first 20 stand in the page hidden, so the chips counted are the ones
+    // drawn, each named by its title once the model is read.
+    const components = detailsRow(page, PROPERTY_LABELS.components);
+    await expect(components).toContainText(`Component ${MANY_COMPONENTS[0]}`);
+    const chips = components
+      .locator('[data-testid="issue-components"] > *')
+      .filter({ hasText: /^Component part-\d+$/ })
+      .filter({ visible: true });
+    await showEveryEntry(
+      chips,
+      components.getByRole("button", { name: CONTROL_LABELS.show_more }),
+      LONG_LIST,
+      (index) => focusOnOrIn(chips.nth(index)),
+      "Components"
+    );
+
+    const documents = filesList(page).getByRole("link");
+    await showEveryEntry(
+      documents,
+      filesList(page).locator("xpath=..").getByRole("button", { name: CONTROL_LABELS.show_more }),
+      LONG_LIST,
+      (index) => focusOnOrIn(documents.nth(index)),
+      "Files and documents"
+    );
+
+    // Referenced by, once read, counts every row of its list: the issues the issue blocks, then
+    // the other issue's comments.
+    const referencedBy = marginSection(page, "references").getByRole("button", {
+      name: /^Referenced by/,
+    });
+    await referencedBy.click();
+    await expect(referencedBy).toHaveAttribute("aria-expanded", "true");
+    const panel = page.locator(`[id="${await referencedBy.getAttribute("aria-controls")}"]`);
+    const referenceRows = panel.locator("[data-reference-rows]");
+    await expect(referencedBy).toHaveText(/^Referenced by \(\d+\)$/);
+    const listed = Number(/\((\d+)\)/.exec((await referencedBy.textContent()) ?? "")?.[1]);
+    expect(
+      listed,
+      "Referenced by does not count the issues the issue blocks and the comments that cite it"
+    ).toBeGreaterThanOrEqual(LONG_LIST * 2);
+    await showEveryEntry(
+      referenceRows,
+      panel.getByRole("button", { name: CONTROL_LABELS.show_more }),
+      listed,
+      // The first row a press drew takes the focus, or, where it is the first row of its card,
+      // the card does, whose link names its source.
+      (index) =>
+        referenceRows.nth(index).evaluate((row) => {
+          const card =
+            row.parentElement?.firstElementChild === row ? row.parentElement?.parentElement : row;
+          return card?.contains(document.activeElement) === true;
+        }),
+      "Referenced by"
+    );
+    for (let number = 1; number <= LONG_LIST; number += 1) {
+      const lines = citingNoteLines(seeded.key, number);
+      const excerpt = panel.locator("p", { hasText: lines[1] ?? "" });
+      await expect(excerpt, `Referenced by draws no citing comment ${number}`).toHaveCount(1);
+      for (const line of [(lines[0] ?? "").replace(/ dispatch:.*$/u, ""), ...lines.slice(1)]) {
+        await expect(excerpt, `Referenced by cut citing comment ${number}`).toContainText(line);
+      }
+      const drawn = await excerpt.evaluate((words) => {
+        const style = getComputedStyle(words);
+        return {
+          clamp: style.webkitLineClamp,
+          hidden: words.scrollHeight - words.clientHeight,
+          lines: words.getBoundingClientRect().height / Number.parseFloat(style.lineHeight),
+        };
+      });
+      expect(drawn.clamp, `citing comment ${number} is clamped`).toBe("none");
+      expect(drawn.hidden, `citing comment ${number} hides some of its words`).toBeLessThanOrEqual(
+        1
+      );
+      expect(
+        drawn.lines,
+        `citing comment ${number} is drawn in five lines or fewer`
+      ).toBeGreaterThan(5);
+    }
+    await expect(
+      panel.getByRole("button", { exact: true, name: CONTROL_LABELS.show_more }),
+      "a citing comment in Referenced by is cut behind a Show more of its own"
+    ).toHaveCount(0);
+
+    // What references the statement, from its facts.
+    const facts = await focusedRowFacts(page, seeded.statement);
+    const references = facts.locator("[data-node-references]");
+    await references
+      .getByRole("button", { exact: true, name: NODE_REFERENCES_WORDS.what_references })
+      .click();
+    const rows = references.locator("li");
+    await showEveryEntry(
+      rows,
+      references.getByRole("button", { name: CONTROL_LABELS.show_more }),
+      LONG_LIST,
+      (index) => focusOnOrIn(rows.nth(index)),
+      "What references the statement"
+    );
+  });
+});
+
 // The history's anchor keeps the place of the entry the reader's pointer rests on in Details' box
 // (`ViewportAnchor.tsx`), as the browser's own scroll anchoring would, with that anchoring off
 // there while it does, and only an act of the reader's records another place. A hand that comes
@@ -4405,12 +4932,13 @@ test("what references the focused row opens from its facts, and each row leads t
 // observes the growth only after them. The rows below hold that.
 
 /** An issue whose Blocked by names five issues with titles long enough to wrap
- *  (`seedHeldRows`), and whose history holds thirty notes of the agents', so Details scrolls past
- *  every one of its sections to the history's entries. */
+ *  (`seedHeldRows`), and whose history holds thirty of the Legion daemon's notes, each a thread
+ *  the history holds, so Details scrolls past every one of its sections to the history's
+ *  entries. */
 async function seedHeldHistory(): Promise<string> {
   const key = await seedHeldRows({ waiting: false });
   for (let index = 0; index < 30; index += 1) {
-    await createMessage(key, { body: `A note of the agents' ${index}.` }, attentionSession);
+    await createMessage(key, { body: `A note of the daemon's ${index}.` }, asDaemon);
   }
   return key;
 }

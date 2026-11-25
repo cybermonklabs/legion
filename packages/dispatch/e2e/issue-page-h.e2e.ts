@@ -38,12 +38,12 @@ import {
   CHANGES_REASON,
   COMPONENT_TITLE,
   detailsRow,
-  FOLD_AFTER,
   filesList,
+  LIST_PAGE,
   marginSection,
   marginSectionDisclosure,
   marginSlot,
-  ONE_PAST_FOLD,
+  ONE_PAST_PAGE,
   OTHER_LINK,
   PINNED_FIRST_LINE,
   PLANNER,
@@ -386,18 +386,14 @@ test("Details opens on the properties and holds no conversation @phone", async (
       await expect(
         marginShell(page).getByRole("tab", { name: /^(Comments|Pinned)\b/ })
       ).toHaveCount(0);
-      // The facts of the row the reader is on quote that row, which may be the issue's
-      // question or a comment, by design; nothing else of Details draws the conversation.
-      const outsideFacts = (text: string) =>
-        marginShell(page)
-          .getByText(text, { exact: false })
-          .evaluateAll(
-            (found) =>
-              found.filter((one) => one.closest('[data-testid="focused-node-facts"]') === null)
-                .length
-          );
-      expect(await outsideFacts(UNPINNED_COMMENT), "Details draws a comment of the issue").toBe(0);
-      expect(await outsideFacts(QUESTION), "Details draws a question of the issue").toBe(0);
+      await expect(
+        marginShell(page).getByText(UNPINNED_COMMENT, { exact: false }),
+        "Details draws a comment of the issue"
+      ).toHaveCount(0);
+      await expect(
+        marginShell(page).getByText(QUESTION, { exact: false }),
+        "Details draws a question of the issue"
+      ).toHaveCount(0);
       await expect(
         marginShell(page).locator("[title]"),
         "an element of Details carries a title"
@@ -801,17 +797,16 @@ test("every property with a value is visible in Details at every width @phone", 
       await closeDetails(page);
     }
 
-    // (6) Blocks, and Files and documents, fold after ten behind Show all with the count, read on
-    // a phone.
+    // (6) Blocks, and Files and documents, draw their first `LIST_PAGE` entries and under them
+    // Show more, which says how many are left, read on a phone.
     await page.setViewportSize(viewportAt(390));
     await gotoIssue(page, `/issues/${one}`);
     await openDetails(page);
+    const oneLeft = `${CONTROL_LABELS.show_more} (${ONE_PAST_PAGE - LIST_PAGE} ${CONTROL_LABELS.show_more_left})`;
     const blocking = detailsRow(page, PROPERTY_LABELS.blocks).getByRole("link");
-    await expect(blocking).toHaveCount(FOLD_AFTER);
-    await detailsRow(page, PROPERTY_LABELS.blocks)
-      .getByRole("button", { name: `${CONTROL_LABELS.show_all} ${ONE_PAST_FOLD}` })
-      .click();
-    await expect(blocking).toHaveCount(ONE_PAST_FOLD);
+    await expect(blocking).toHaveCount(LIST_PAGE);
+    await detailsRow(page, PROPERTY_LABELS.blocks).getByRole("button", { name: oneLeft }).click();
+    await expect(blocking).toHaveCount(ONE_PAST_PAGE);
     expect(
       await blocking.evaluateAll((links) =>
         links
@@ -832,20 +827,20 @@ test("every property with a value is visible in Details at every width @phone", 
         `Blocks draws ${key} without its title`
       ).toHaveText(seeded.titles.blocks[index] ?? "");
     }
-    // Show all is read as it is drawn, with the space before its count: below 1280 px every
+    // Show more is read as it is drawn, with the space before its count: below 1280 px every
     // button is a flex box (`styles.css`), which drops a space between two of its children.
-    const showAllFiles = marginSection(page, "references").getByRole("button", {
-      name: `${CONTROL_LABELS.show_all} ${ONE_PAST_FOLD}`,
+    const showMoreFiles = marginSection(page, "references").getByRole("button", {
+      name: oneLeft,
     });
     await expect
-      .poll(() => showAllFiles.evaluate((button) => (button as HTMLElement).innerText), {
-        message: "Files and documents' Show all is drawn without the space before its count",
+      .poll(() => showMoreFiles.evaluate((button) => (button as HTMLElement).innerText), {
+        message: "Files and documents' Show more is drawn without the space before its count",
       })
-      .toBe(`${CONTROL_LABELS.show_all} ${ONE_PAST_FOLD}`);
+      .toBe(oneLeft);
     const documents = filesList(page).getByRole("link");
-    await expect(documents).toHaveCount(FOLD_AFTER);
-    await showAllFiles.click();
-    await expect(documents).toHaveCount(ONE_PAST_FOLD);
+    await expect(documents).toHaveCount(LIST_PAGE);
+    await showMoreFiles.click();
+    await expect(documents).toHaveCount(ONE_PAST_PAGE);
     const firstDocument = (await getIssue(one)).artifacts?.[0];
     expect(firstDocument, `${one} holds no document`).toBeDefined();
     await expect(documents.first()).toHaveAttribute(
@@ -983,7 +978,7 @@ test("every property with a value is visible in Details at every width @phone", 
         entries.map((entry) => getComputedStyle(entry).textDecorationLine)
       ),
       "a document's entry in Details is underlined"
-    ).toEqual(Array.from({ length: FOLD_AFTER }, () => "none"));
+    ).toEqual(Array.from({ length: LIST_PAGE }, () => "none"));
     const approve = detailsRow(page, PROPERTY_LABELS.approval).getByRole("button", {
       exact: true,
       name: "Approve",
