@@ -1,8 +1,8 @@
 # Fixtures of the step-models comparator's tests
 
-These files are the inputs of `scripts/e2e/step-models-check.sh` in its tests. Each data file was copied unchanged into `scripts/e2e/lib/testdata/step-models/`, and the test rows read them there. The section "Which test row reads which file" below names the row that reads each file.
+These files are the inputs of `scripts/e2e/step-models-check.sh` in its tests, which read them in `scripts/e2e/lib/testdata/step-models/`. The section "Which test row reads which file" below names the row that reads each file.
 
-Every file is cut down to the fields that the comparator reads. No file holds message text, a path of this machine, a key or a private name. Each issue key is `LEGION-<n>`, and each claim is `legion-legion-legion-<n>-<role>`.
+Every transcript is cut down to the fields that the comparator reads, and holds no message text. No file holds a path of this machine, a key or a private name. Each issue key is `LEGION-<n>`, and each claim is `legion-legion-legion-<n>-<role>`, except in the captured files. Those keep the keys and claims of the test that captured them.
 
 The clock was read with `date -u` at 2026-11-23T20:59:25Z before the first capture, and at 2026-11-23T21:03:19Z before the `dispatch steps` capture.
 
@@ -25,23 +25,104 @@ What the real files settle:
 - `dispatch steps` prints a start with at most six fraction digits and trailing zeros cut (`18:44:47.53359Z`), and an end with nine digits (`23:38:54.063900605Z`).
 - The daemon's JSON log writes `time` with nine fraction digits and trailing zeros cut, and numbers and booleans as JSON values.
 
-## Files made for the comparator: MADE, no real source yet
+## Files made for the comparator: MADE
 
-Each file in this section is **made**, not captured. These shapes do not exist until the change is built. Each file uses the real values above. This copy in the repository keeps this section and these marks. A later change adds a real capture of each shape beside it and keeps the made file as a made case.
+Each file in this section is **made**, not captured. These shapes did not exist until the change was built. Each file uses the real values above. This copy in the repository keeps this section and these marks. The section "Files captured from the whole-chain test in CI" holds a real capture of each shape, and each made file stays a made case.
 
 | File | Shape | How it was made | Where the real one comes from |
 |---|---|---|---|
-| `printed-steps-16.txt` (**made**) | `dispatch steps` of this release: 16 words a line, ending in `set <model or -> answered <value>` | The first 12 words follow `printed-steps-main.txt`. The last four follow the printer's rule (`packages/contracts/src/step-answers.ts`). The times and counts match `omp-session-fallback.jsonl`, the two Claude Code streams and `daemon-log-reads.jsonl`. | A later capture run keeps the real output of issue A as `dispatch-steps-A.txt`, and a later change adds it as `printed-steps-16-captured-A.txt`. Row 17 of the comparator's tests also renders each record through the real `dispatch_steps` printer (`executeDispatchTool`), as `step-records-read.test.ts` renders `dispatch plans`. |
-| `printed-steps-16-b.txt` (**made**) | The same shape for a second issue, `LEGION-3551`: its tester's records C1b and C3b, under the claim `legion-legion-legion-3551-tester` | C1b has C1's task, place, kind and start, so a log join that leaves out the issue finds C1's lines for it too. C1b's own end read is earlier, at 09:01:45, and it answers 2 calls where C1 answers 3. C3b starts at 09:01:46, so it matches no line of the first issue. | A later capture run keeps the real output of issue B as `dispatch-steps-B.txt`, and a later change adds it as `printed-steps-16-captured-B.txt`. |
-| `daemon-log-reads.jsonl` (**made**) | The daemon's log line of a read, `workflow: a step used a read of its agent's calls`, in the envelope of `daemon-log-envelope.jsonl`. Each end line carries `endedBy`. It also holds the lines of C1b and C3b, under issue `LEGION-3551`, after all lines of `LEGION-3550`. | The keys of that line, with `counts` as a JSON array of `{model, calls}` | A later capture run keeps the daemon's JSON log as `daemon.jsonl`. A later change adds the read lines of issues A and B as `daemon-log-captured.jsonl`. |
-| `agents.json` (**made**) | The comparator's list of agents: each claim's harness, transcript file and the model its settings give | By hand, from the definition of `--agents` in `scripts/e2e/README.md`. It names the implementer and the tester of `LEGION-3550`, and the tester of `LEGION-3551`. | The person who runs the check writes it from the deployment's settings. A later whole-chain test writes its own from the settings it gave its panes. |
+| `printed-steps-16.txt` (**made**) | `dispatch steps` of this release: 16 words a line, ending in `set <model or -> answered <value>` | The first 12 words follow `printed-steps-main.txt`. The last four follow the printer's rule (`packages/contracts/src/step-answers.ts`). The times and counts match `omp-session-fallback.jsonl`, the two Claude Code streams and `daemon-log-reads.jsonl`. | `printed-steps-16-captured-A.txt`, the real output of issue A of the whole-chain test. Row 17 of the comparator's tests also renders each record through the real `dispatch_steps` printer (`executeDispatchTool`), as `step-records-read.test.ts` renders `dispatch plans`. |
+| `printed-steps-16-b.txt` (**made**) | The same shape for a second issue, `LEGION-3551`: its tester's records C1b and C3b, under the claim `legion-legion-legion-3551-tester` | C1b has C1's task, place, kind and start, so a log join that leaves out the issue finds C1's lines for it too. C1b's own end read is earlier, at 09:01:45, and it answers 2 calls where C1 answers 3. C3b starts at 09:01:46, so it matches no line of the first issue. | `printed-steps-16-captured-B.txt`, the real output of issue B of the whole-chain test. |
+| `daemon-log-reads.jsonl` (**made**) | The daemon's log line of a read, `workflow: a step used a read of its agent's calls`, in the envelope of `daemon-log-envelope.jsonl`. Each end line carries `endedBy`. It also holds the lines of C1b and C3b, under issue `LEGION-3551`, after all lines of `LEGION-3550`. | The keys of that line, with `counts` as a JSON array of `{model, calls}` | `daemon-log-captured.jsonl`, the read lines of issues A and B in the daemon's log of the whole-chain test. |
+| `agents.json` (**made**) | The comparator's list of agents: each claim's harness, transcript file and the model its settings give | By hand, from the definition of `--agents` in `scripts/e2e/README.md`. It names the implementer and the tester of `LEGION-3550`, and the tester of `LEGION-3551`. | The person who runs the check writes it from the deployment's settings. The whole-chain test writes its own from the settings it gave its panes: `agents-captured.json`. |
 
 The records of `printed-steps-16.txt` are other cases over one transcript, so some overlap in time. Each test row prints only the records it names.
 
-## Shapes with no real source on this box
+## Shapes that no file on this box holds
 
-1. **The Claude Code session transcript** (`<CLAUDE_CONFIG_DIR>/projects/<dir>/<session>.jsonl`), which `c-real` names as the Claude Code input. This box holds no Claude Code transcript: `~/.claude/projects` does not exist. The repository's `packages/daemon/internal/runtime/tmux/testdata/claude-transcript.jsonl` is made by hand (its ids are `msg_01` and `aaaaaaaa-…`, its model `claude-test`), so it is no capture. Which entries a real transcript holds, and how it marks a subagent's line, is not known here. A later capture run takes one transcript of the pinned Claude Code (`.claude-code-pin`, 2.1.311). Its session has a response of two content blocks and one `Task` subagent call. A later change adds it to these fixtures.
-2. **A Claude Code subagent's assistant line**, in either form. No capture on this box holds one. The bridge's `packages/daemon/internal/claudebridge/testdata/subagent-turn.jsonl` is **made** by hand. A later capture run takes the real `stream-json` output of the same session, and a later change puts it in place of that made file.
+1. **The Claude Code session transcript** (`<CLAUDE_CONFIG_DIR>/projects/<dir>/<session>.jsonl`), which `c-real` names as the Claude Code input. This box holds no Claude Code transcript: `~/.claude/projects` does not exist. The repository's `packages/daemon/internal/runtime/tmux/testdata/claude-transcript.jsonl` is made by hand (its ids are `msg_01` and `aaaaaaaa-…`, its model `claude-test`), so it is no capture. The whole-chain test captured real ones in CI, which the next section names.
+2. **A Claude Code subagent's assistant line**, in either form. No capture on this box holds one. The whole-chain test captured both forms in CI. The bridge's `packages/daemon/internal/claudebridge/testdata/subagent-turn.jsonl` is now that capture's whole `stream-json` output.
+
+## Files captured from the whole-chain test in CI
+
+Each file in this section comes from run 45566065020 of this repository's `ci.yaml`, attempt 1, at commit `068d9d4242e18a6c154509d0a3c64731df2a4720`. Its job `step-models-chain` ran this command in `packages/daemon`:
+
+```
+go test -tags e2e -count=1 -timeout 40m -v -run '^(TestStepModelsLive|TestTheStandInGivesEachResponseItsOwnID)$' ./internal/daemon/
+```
+
+The test wrote its evidence to one directory, and the job uploaded it as the artifact `step-models-evidence-1`. GitHub records the artifact at 2026-11-25T07:19:33Z. It was read with `gh run download 45566065020 --name step-models-evidence-1 --dir <dir>`. Every model endpoint of the run was a stand-in of the test's own, so no file holds a model credential.
+
+The test ran two issues of its own, A (`SM7DBA47-1`) and B (`SM7DBA47-2`). Then it ran one capture attempt, `capture-differ`: the pinned Claude Code 2.1.311 alone, in print mode. Its stand-in served `claude-served-model` for every response, where Claude Code asked for `claude-model`. The attempt wrote its result line, so the second attempt, `capture-same`, did not run. Claude Code exited 0. Its stderr held one line, `[claude-code:unrecognized_model] {"model":"claude-model","query_source":"sdk"}`.
+
+| File | From the evidence file | How it was taken |
+|---|---|---|
+| `printed-steps-16-captured-A.txt` | `dispatch-steps-A.txt`: what `dispatch steps --issue SM7DBA47-1` printed | Copied as it is |
+| `printed-steps-16-captured-B.txt` | `dispatch-steps-B.txt`: the same for `SM7DBA47-2` | Copied as it is |
+| `daemon-log-captured.jsonl` | `daemon.jsonl`, the daemon's JSON log | Its 14 read lines, of both issues, copied as they are |
+| `omp-session-chain-A-implementer.jsonl` | `transcript-legion-sm7dba47-sm7dba47-1-implementer.jsonl`, the session of A's implementer | The Oh My Pi filter below |
+| `claude-session-chain-A-tester.jsonl` | `transcript-legion-sm7dba47-sm7dba47-1-tester.jsonl`, the transcript of A's tester | The Claude Code filter below |
+| `omp-session-chain-B-implementer.jsonl` | `transcript-legion-sm7dba47-sm7dba47-2-implementer.jsonl`, the session of B's implementer | The Oh My Pi filter |
+| `claude-session-chain-B-tester.jsonl` | `transcript-legion-sm7dba47-sm7dba47-2-tester.jsonl`, the transcript of B's tester | The Claude Code filter |
+| `agents-captured.json` | `agents.json`, which the test wrote from the settings it gave its panes | Each `transcript` renamed to its file here |
+| `compare-captured.txt` | `compare.txt`, the comparator's whole output for both issues at that commit | Copied as it is. That comparator answered `c-real: UNKNOWN`. Each step that its agent ended had its completion's response within 2 s of its end read. |
+| `claude-session-capture-differ.jsonl` | `capture-differ-projects/<dir>/<session>.jsonl`, the session transcript of `capture-differ` | The Claude Code filter |
+| `claude-session-capture-differ-subagent.jsonl` | `capture-differ-projects/<dir>/<session>/subagents/agent-<id>.jsonl`, the transcript of its one subagent | The Claude Code filter |
+| `capture-differ-served.json` | The same name: the stand-in's list of each response it served, with the model asked for and the model served | Copied as it is. Its `turn` field quotes the start of what each request sent. |
+
+The bridge's `subagent-turn.jsonl` is `capture-differ-stream.jsonl`, the attempt's stdout, copied whole.
+
+The read lines were taken with jq 1.7:
+
+```
+jq -R -r 'select((try fromjson catch null | objects | .msg) == "workflow: a step used a read of its agent'\''s calls")' daemon.jsonl
+```
+
+Each transcript was cut with `jq -c -f <filter> <file>`, jq 1.7. The filters keep what the comparator reads, as the cuts of the files with a real source do. Beyond those cuts, they keep each content block's `type` and `name`, and the `op` of a `legion` call. Such a call is how an agent ends its step. The Claude Code filter also keeps `isSidechain` and `agentId`, which mark a subagent's line in a transcript. It keeps `requestedModel` too, the model Claude Code asked for.
+
+The Oh My Pi filter:
+
+```jq
+def keep($names): . as $o | reduce $names[] as $k ({}; if $o | has($k) then . + {($k): $o[$k]} else . end);
+def block: keep(["type", "name"]) + (if .type == "toolCall" and .name == "legion" then {arguments: {op: .arguments.op}} else {} end);
+keep(["type", "timestamp"])
++ if .type == "message" then
+    {message: (.message | keep(["role"])
+      + if .role == "assistant" then keep(["provider", "model", "stopReason"]) + {content: [.content[]? | block]} else {} end)}
+  elif .type == "model_change" then keep(["model", "role", "resolvedModelIsFallback"])
+  elif .type == "model_usage" then keep(["purpose", "provider", "model", "stopReason"])
+  elif .type == "session" then keep(["version"])
+  else {} end
+```
+
+The Claude Code filter:
+
+```jq
+def keep($names): . as $o | reduce $names[] as $k ({}; if $o | has($k) then . + {($k): $o[$k]} else . end);
+def block: keep(["type", "name"]) + (if .type == "tool_use" and .name == "mcp__legion__legion" then {input: {op: .input.op}} else {} end);
+keep(["type"])
++ if .type == "assistant" then
+    {message: (.message | keep(["id", "role", "model"]) + {content: [.content[]? | block]})}
+    + keep(["parent_tool_use_id", "isSidechain", "agentId", "requestedModel", "timestamp"])
+  elif .type == "system" and .subtype == "init" then keep(["subtype", "model"])
+  elif .type == "user" then keep(["parent_tool_use_id", "isSidechain", "agentId", "timestamp"])
+  else keep(["subtype", "isSidechain", "agentId"]) end
+```
+
+What the captures settle:
+
+- A Claude Code session transcript holds no `system` `init` line. Each assistant line names the model Claude Code asked for, as `requestedModel`. Where the set model never answered, no other kept key names it. The uncut transcript also names it in a `model` attachment and in the `params.model` of each `api-request` line.
+- A transcript writes a subagent's lines to a file of their own, under `<session>/subagents/`. Each line there has `isSidechain: true` and the subagent's `agentId`. The main transcript holds none of them.
+- The `stream-json` output marks a subagent's assistant line with a string `parent_tool_use_id`, beside `agent_id`.
+- In both forms, the lines of one response share its `message.id`. `msg_standin_81` has a text line, then a line of a `Bash` call.
+- The stream holds a second `init` line and a second `result` line. Claude Code started that turn by itself when its background subagent ended.
+
+### Rows on the captured files
+
+| Row | Input | Expected | Does the input hold what the verdict needs? |
+|---|---|---|---|
+| a captured Claude Code session counts each main response once and no subagent response | `claude-session-capture-differ.jsonl`, its subagent's file and `capture-differ-served.json` | `transcriptResponses` gives one counted response of `anthropic/claude-served-model` for each of the list's 4 main ids. It gives none for the subagent's file. | Yes. The transcript holds the list's 4 main ids, `msg_standin_81` on two lines. The subagent's file holds the list's one subagent id, marked `isSidechain`. |
+| a captured session holds its set model | `claude-session-capture-differ.jsonl` and `capture-differ-served.json` | `heldModels` holds `anthropic/claude-model`, which no response of the transcript names | Yes. The list shows that each main response asked for `claude-model` and was served `claude-served-model`. Each assistant line's `requestedModel` is `claude-model`. |
 
 ## Which test row reads which file
 

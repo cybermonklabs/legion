@@ -7,6 +7,7 @@ import { bearerCredential } from "../../../packages/envoy-client/src/bearer";
 import { executeDispatchTool } from "../../../packages/envoy-client/src/dispatch-execute";
 import { fakeDispatchFetch } from "../../../packages/envoy-client/test/fake-dispatch";
 import { fakeDispatchRead } from "./fake-dispatch-command";
+import { heldModels, transcriptResponses } from "./step-models-check";
 
 // step-models-check.sh against the fake `dispatch` of lib/fake-dispatch-command.ts, first on PATH.
 // The fake answers `dispatch steps --issue <KEY>` with that issue's records, lines of
@@ -113,6 +114,16 @@ function check(
   );
   return { ...run, verdicts: run.stdout.trimEnd().split("\n").slice(-2) };
 }
+
+// One session of Claude Code captured against a stand-in endpoint, its subagent's transcript, and
+// the endpoint's own list of each response it served. Claude Code asked for claude-model, and the
+// endpoint served claude-served-model each time. The README says which run captured them.
+const captured = "claude-session-capture-differ.jsonl";
+const capturedSubagent = "claude-session-capture-differ-subagent.jsonl";
+const served: Array<{ id: string; subagent: boolean; asked: string; model: string }> = JSON.parse(
+  readFileSync(join(data, "capture-differ-served.json"), "utf8")
+);
+const servedMain = served.filter((response) => !response.subagent);
 
 describe("step-models-check.sh", () => {
   test("an Oh My Pi step that its agent ended equals its transcript", () => {
@@ -484,5 +495,38 @@ describe("step-models-check.sh", () => {
     expect(run.code).toBe(0);
     // Each issue is read once, with `dispatch steps --issue <KEY>`, in the order given.
     expect(run.calls).toBe(`steps --issue ${A}\nsteps --issue ${B}\n`);
+  });
+
+  test("a captured Claude Code session counts each main response once and no subagent response", () => {
+    // The input holds what the row needs. One response has two lines, and the main ids are the
+    // list's. The subagent's file holds the one line of the list's subagent response.
+    const [mainLines, subagentLines] = [captured, capturedSubagent].map((name) =>
+      lines(name)
+        .map((line) => JSON.parse(line))
+        .filter((entry) => entry.type === "assistant")
+    );
+    const ids = mainLines.map((entry) => entry.message.id);
+    expect(ids.length).toBeGreaterThan(new Set(ids).size);
+    expect([...new Set(ids)].sort()).toEqual(servedMain.map((response) => response.id).sort());
+    expect(subagentLines.map((entry) => [entry.message.id, entry.isSidechain])).toEqual(
+      served.filter((response) => response.subagent).map((response) => [response.id, true])
+    );
+    const counted = transcriptResponses(join(data, captured), "claude");
+    expect(counted.map(({ model, counts }) => ({ model, counts }))).toEqual(
+      servedMain.map((response) => ({ model: `anthropic/${response.model}`, counts: true }))
+    );
+    expect(transcriptResponses(join(data, capturedSubagent), "claude")).toEqual([]);
+  });
+
+  test("a captured session holds its set model", () => {
+    // The input holds what the row needs: Claude Code asked for claude-model, which never answered.
+    expect(servedMain.length).toBeGreaterThan(0);
+    for (const response of servedMain) {
+      expect(response).toMatchObject({ asked: "claude-model", model: "claude-served-model" });
+    }
+    const transcript = join(data, captured);
+    const answered = transcriptResponses(transcript, "claude").map((response) => response.model);
+    expect(answered).not.toContain("anthropic/claude-model");
+    expect([...heldModels(transcript, "claude")]).toContain("anthropic/claude-model");
   });
 });

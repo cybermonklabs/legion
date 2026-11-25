@@ -5607,6 +5607,7 @@ Each item below names what it reads, then how.
 
 - A transcript holds the model of each response, counted or not.
   It also holds the model of each `model_change` entry (Oh My Pi) and `system` `init` line (Claude Code).
+  A Claude Code transcript also holds the `requestedModel` of each assistant line of the agent's own conversation: the model Claude Code asked for.
 
 - Each read has two gaps: the seconds since the last response before it, and the seconds to the next response after it.
   Every response counts here, error and synthetic ones too.

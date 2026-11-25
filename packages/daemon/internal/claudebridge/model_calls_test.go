@@ -116,17 +116,27 @@ func TestARefusalTurnEndsOnlyTheResponseAModelWrote(t *testing.T) {
 	}
 }
 
-// subagent-turn.jsonl is made by hand, not captured from Claude Code. A captured Claude Code line of
-// a subagent will replace it. Its one assistant line is a subagent's, on another model than the
-// launch's. A subagent's line names the tool call it serves in parent_tool_use_id. It is no answer
-// of the agent's own conversation, so it ends no response. The init line still names the set model.
+// subagent-turn.jsonl is captured, not made: the stdout of the pinned Claude Code (2.1.311) in one
+// print-mode session against a stand-in endpoint. Its init lines name the set model, claude-model.
+// The endpoint served claude-served-model for every response, so the set model never answered. Its
+// list of what it served is scripts/e2e/lib/testdata/step-models/capture-differ-served.json. It
+// names four responses of the main conversation, msg_standin_81 to 83 and msg_standin_85. Two
+// assistant lines carry msg_standin_81. It also names msg_standin_84, the response of a subagent.
+// That line names the tool call it serves in parent_tool_use_id. A subagent's line is no answer
+// of the agent's own conversation, so it ends no response. So the shim is told of four answers.
 func TestASubagentLineEndsNoResponse(t *testing.T) {
 	r := newRig(t, "-p", "--resume", sessionID)
 	r.prompt("p1", "replay subagent-turn.jsonl")
 	frames := framesThrough(r, 1, "prompt_result")
-	holdsSetModel(t, frames, "anthropic/claude-sonnet-4-5")
-	if answers := answersOf(frames); len(answers) != 0 {
-		t.Errorf("the message_end frames name %q, want none: a subagent's line is no answer of the agent's", answers)
+	holdsSetModel(t, frames, "anthropic/claude-model")
+	answers := answersOf(frames)
+	if len(answers) != 4 {
+		t.Errorf("%d message_end frames name a model, want 4, one for each response of the main conversation and none for the subagent's: %q", len(answers), answers)
+	}
+	for _, model := range answers {
+		if model != "anthropic/claude-served-model" {
+			t.Errorf("a message_end names %s, want anthropic/claude-served-model, the model that served each response", model)
+		}
 	}
 }
 

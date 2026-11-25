@@ -132,8 +132,10 @@ function ompTranscript(path: string): Transcript {
 /**
  * A Claude Code transcript or `stream-json` output. Each assistant line belongs to one response,
  * once by its `message.id`, named `anthropic/<model>`, at the time of its last line. It counts
- * unless its model is `<synthetic>`. A `system` `init` line holds its model too. A line whose
- * `parent_tool_use_id` is a string, or whose `isSidechain` is true, is a subagent's and holds none.
+ * unless its model is `<synthetic>`. A `system` `init` line holds its model too. So does an
+ * assistant line's `requestedModel`, the model Claude Code asked for, which a session transcript
+ * writes in place of an `init` line. A line whose `parent_tool_use_id` is a string, or whose
+ * `isSidechain` is true, is a subagent's and holds none.
  */
 function claudeTranscript(path: string): Transcript {
   const what = "the Claude Code transcript";
@@ -175,6 +177,7 @@ function claudeTranscript(path: string): Transcript {
       counts: message.model !== "<synthetic>",
     });
     held.add(model);
+    if (typeof entry.requestedModel === "string") held.add(`anthropic/${entry.requestedModel}`);
   }
   return { responses: [...responses.values()], held };
 }
@@ -191,7 +194,10 @@ export function transcriptResponses(path: string, harness: Harness): Response[] 
   return transcriptOf(path, harness).responses;
 }
 
-/** Each model the transcript at `path` holds: each response's, and each model change's or init line's. */
+/**
+ * Each model the transcript at `path` holds: each response's, each model change's or init line's,
+ * and each model a Claude Code line asked for.
+ */
 export function heldModels(path: string, harness: Harness): Set<string> {
   return transcriptOf(path, harness).held;
 }
