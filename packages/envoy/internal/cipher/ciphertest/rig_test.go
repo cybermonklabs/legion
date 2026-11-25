@@ -39,7 +39,7 @@ func TestNewRigConnectsAndServesHealthz(t *testing.T) {
 
 // TestTheRigsPersonAccessCountsTheExchangeEntriesNamingAPerson: the rig's broker answers GET
 // /v1/person-access from the exchange entries its token exchange trades on, as cmd/cipherd gives the
-// API the one set it gives the OAuth provider. ExchangePerson is named by the two account entries
+// API the one set it gives the OAuth provider. ExchangePerson is named by the four account entries
 // and the workflow entry, with or without the Google entry a rig taking person trades adds, which
 // names no person; a person no entry names counts none.
 func TestTheRigsPersonAccessCountsTheExchangeEntriesNamingAPerson(t *testing.T) {
@@ -51,7 +51,7 @@ func TestTheRigsPersonAccessCountsTheExchangeEntriesNamingAPerson(t *testing.T) 
 		{"a rig taking Google person trades", []Option{WithPersonSignIns(oidctest.New(t), "leaver-machine@example.iam.gserviceaccount.com")}},
 	} {
 		rig := NewRig(t, c.options...)
-		for person, want := range map[string]int{ExchangePerson: 3, "bob@example.com": 0} {
+		for person, want := range map[string]int{ExchangePerson: 5, "bob@example.com": 0} {
 			status, body := rig.Req(t, http.MethodGet, "/v1/person-access?person="+url.QueryEscape(person), map[string]string{"Authorization": "Bearer " + rig.UIToken}, nil)
 			var answer wire.PersonAccessResponse
 			if err := json.Unmarshal(body, &answer); err != nil || status != http.StatusOK || answer.Person != person || answer.ExchangeEntries != want {
