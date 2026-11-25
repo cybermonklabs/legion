@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 )

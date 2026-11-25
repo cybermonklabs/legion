@@ -886,6 +886,7 @@ type parityGitHub struct {
 	compare    func(base, head string) (int, string)
 	limited    map[int]bool
 	runs       map[string][]map[string]any
+	details    map[int]string
 	linked     *parityLinked
 }
 
@@ -1131,11 +1132,19 @@ func parityStandIn(t *testing.T, script *parityGitHub, calls *parityCalls) strin
 		}
 		number, _ := strconv.Atoi(r.PathValue("number"))
 		state := ""
+	detail := ""
 		script.mu.Lock()
+		if repoOf(r) == parityRepo {
+			detail = script.details[number]
+		}
 		if repoOf(r) == parityLinkedRepo {
 			state = script.linked.states[number]
 		}
 		script.mu.Unlock()
+		if detail != "" {
+			fmt.Fprint(w, detail)
+			return
+		}
 		switch state {
 		case "open":
 			fmt.Fprintf(w, `{"number":%d,"state":"open","merged":false,"merged_at":null}`, number)
