@@ -31,12 +31,12 @@ import (
 //
 //   - a settlement that opens the ask of a block whose `shaped` pointer names a block of the same
 //     document, and writes no version: the ask's node and its asker's, the ask's row, the ties'
-//     block_refs rows, which name the ask's node (writeOpenedAskTies), the ask.opened, the
-//     follows' facts under it (causeFollows), and then the ties' tuples (causeOpenedAskTies);
+//     block_refs rows, which name the ask's node (writeOpenedAskTies), the ask.opened, and then,
+//     under it, the follows' facts and the ties' tuples, in that order (causedByEvent);
 //   - a settlement that retracts the ask of a block a person deleted, and writes the version
 //     without it: the ask's row (asks.Settle, held for its event), the version's block index, the
 //     artifact.version and what the index stated under it, then the ask.resolved and the
-//     retraction's facts under it (causeSettledAnswers);
+//     retraction's facts under it (causedByEvent);
 //   - the settlement of a second document holding a copy of another document's ask block, which
 //     writes no version: the copy's copied_from, stated as a claim at the sentinel (claimCopies);
 //   - a settlement that versions an ask block whose question a person emptied: the block index, the
@@ -78,13 +78,13 @@ var coreIssue = "CORE-1"
 // version (editAsVersion), whose `shaped` pointer names the requirement block of the same
 // document. A version written while the block had no ask stated none of its shaped ties, so the
 // settlement, which writes no version, states them beside the ask's row (writeOpenedAskTies): the
-// block_refs rows first, naming the ask's node, and their tuples held for the ask.opened, appended
-// once the follows' facts are (causeOpenedAskTies). The ties' rows are the settlement's first
-// write of block_refs, so the table is held; the ties' tuples come after the follows' and are
-// held by their gate.
+// block_refs rows first, naming the ask's node, and their tuples held for the ask.opened, which
+// appendEvents states under it right after the follows' facts (causedByEvent). The ties' rows are
+// the settlement's first write of block_refs, so the table is held; the ties' tuples come after
+// the follows' and are held by their gate.
 func (r *docsWriterRig) settledAskTies() docsWriter {
 	return docsWriter{
-		name: "causeOpenedAskTies",
+		name: "the opened ask's ties under its ask.opened",
 		steps: []docsStep{
 			r.ownerStep(), settlementFenceStep(), askNodeStep(), askerNodeStep(), askRowStep(),
 			{
@@ -134,7 +134,7 @@ func (r *docsWriterRig) tiesCaused(ctx context.Context, document, block string) 
 		return fmt.Errorf("read the ties of the ask of block %s: %w", block, err)
 	}
 	if ties == 0 {
-		return fmt.Errorf("the ask of block %s holds no shaped tie caused by its ask.opened: causeOpenedAskTies appended none", block)
+		return fmt.Errorf("the ask of block %s holds no shaped tie caused by its ask.opened: the settlement stated none under that event", block)
 	}
 	return nil
 }
@@ -144,15 +144,15 @@ func (r *docsWriterRig) tiesCaused(ctx context.Context, document, block string) 
 // writer of an ask's answer state (asks.Settle), its facts held for the ask.resolved, and writes
 // the ask's row before the version; the block index then states the block's node gone and deletes
 // its row, the artifact.version is appended with what the index stated under it, and then the
-// ask.resolved and the retraction's facts under it (causeSettledAnswers). The ask's row, the
-// block's node and row, the version's event and its tuples are the first writes of their tables,
-// so each is held as its table; the ask.resolved and the retraction's facts come after a write of
-// theirs and are held by their gates.
+// ask.resolved and the retraction's facts under it (causedByEvent). The ask's row, the block's
+// node and row, the version's event and its tuples are the first writes of their tables, so each
+// is held as its table; the ask.resolved and the retraction's facts come after a write of theirs
+// and are held by their gates.
 func (r *docsWriterRig) settledRetraction() docsWriter {
 	// ask is the ask the run under way retracts, which its ready opens and its gate names.
 	var ask string
 	return docsWriter{
-		name: "causeSettledAnswers",
+		name: "the settled answer's facts under its event",
 		steps: []docsStep{
 			r.ownerStep(), settlementFenceStep(),
 			docsAskRowWriteStep("the retracted ask's row", holdDocsTableWrites("asks")),

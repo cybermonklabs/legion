@@ -321,11 +321,11 @@ var entryFactKinds = []string{
 // documents (artifacts.issue_key), each document through its own rows. A document the block
 // index has indexed lists its decisions in its document_blocks rows (type `decision`); one that
 // owes that index (document_block_versions.version null) lists them as well in the nodes the
-// typed-node pass placed in it in the write's own transaction (refs.IndexDecisionNodes): the
-// current part_of tuples into the document's own node, through graph_tuples_as_of_in, and the
-// nodes its block_refs rows name (a decision's decided_by, shaped and from_ask), keyed by the
-// document. Each candidate is then read by its own key, the live nodes of the `decision`
-// supertag kept.
+// typed-node pass placed in it in the write's own transaction (refs.PlanDecisionNodes, written
+// by refs.DecisionIndexing.Queue): the current part_of tuples into the document's own node,
+// through graph_tuples_as_of_in, and the nodes its block_refs rows name (a decision's
+// decided_by, shaped and from_ask), keyed by the document. Each candidate is then read by its
+// own key, the live nodes of the `decision` supertag kept.
 func decisionEntriesRead() string {
 	return `
 		with documents as (
