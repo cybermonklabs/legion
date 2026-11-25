@@ -890,8 +890,9 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		// The document service admits a socket by its sign-in cookie alone, so its heartbeat
 		// re-checks that cookie and nothing the request carries beside it (signInStillResolves).
 		const pattern = "/ws/doc/{room}"
-		mux.Handle("GET "+pattern, accesslog.Handler(pattern, s.whileCallerResolves(s.signInStillResolves,
-			trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP)))))
+		readclass.Handle(mux, []readclass.Class{readclass.Project}, "GET "+pattern,
+			accesslog.Handler(pattern, s.whileCallerResolves(s.signInStillResolves,
+				trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP)))))
 	}
 	readclass.Handle(mux, []readclass.Class{readclass.Project, readclass.People, readclass.Deployment}, "GET "+liveSocketPattern,
 		s.liveSocketHandler(s.serveLiveSocket))

@@ -166,7 +166,7 @@ var treeIssuesQuery = `
 		       ` + issueComponentsColumns + `
 		from issues i
 		` + issueComponentsJoin + `
-		where i.project_key = $1
+		where i.project_key = $1 and ` + access.ProjectClause("i.project_key", "$2") + `
 		order by ` + issueStatusCase + `, i.rank asc, i.created_at asc
 	`
 
@@ -174,7 +174,7 @@ var treeIssuesQuery = `
 // effective attachment resolved, in the issue list's order (lifecycle status, then rank), seen
 // being the reader's visibility argument.
 func loadTreeIssues(ctx context.Context, q queryer, seen any, project string) ([]treeIssue, error) {
-	rows, err := q.Query(ctx, treeIssuesQuery, project)
+	rows, err := q.Query(ctx, treeIssuesQuery, project, seen)
 	if err != nil {
 		return nil, err
 	}
