@@ -93,7 +93,7 @@ func TestTheControllersStaleRelaunchDuringACompactionWaitsForTheReport(t *testin
 	h.takesTurnEndsWithItsReportToCome()
 	number, stops := h.pending().Number, len(h.calls("Suspend"))
 	release, compacted := h.compactHeld()
-	h.deps.PluginContract, h.m.deps.PluginContract = TaskTakeContract+1, TaskTakeContract+1
+	h.deps.PluginContract, h.m.deps.PluginContract = testTakeContract+1, testTakeContract+1
 
 	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
 
@@ -162,7 +162,7 @@ func TestTakeOfAMigratedWorkerFinishesBeforeTheStaleRelaunchACompactionEndFinds(
 // there and began to wait for the report a second time, writing the line twice.
 func TestTakesReportWaitIsLoggedOnceForAStaleRelaunchAcrossACompaction(t *testing.T) {
 	stale := func(h *harness) {
-		h.deps.PluginContract, h.m.deps.PluginContract, h.m.deps.PluginRelaunchable = TaskTakeContract+1, TaskTakeContract+1, true
+		h.deps.PluginContract, h.m.deps.PluginContract, h.m.deps.PluginRelaunchable = testTakeContract+1, testTakeContract+1, true
 		h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
 	}
 	for _, tc := range []struct {

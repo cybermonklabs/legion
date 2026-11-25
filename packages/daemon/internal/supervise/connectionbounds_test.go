@@ -626,7 +626,7 @@ func TestTakeWhoseOwnTurnRanAfterAnEndNeverSeenBegunIsInNoTurnCutOffAtADeath(t *
 // staleToTheDaemon makes the claim's recorded plugin contract an earlier one than this daemon's,
 // which can relaunch onto its own: the stale-plugin lane's case (refreshPlugin).
 func staleToTheDaemon(h *harness) {
-	h.deps.PluginContract, h.m.deps.PluginContract, h.m.deps.PluginRelaunchable = TaskTakeContract+1, TaskTakeContract+1, true
+	h.deps.PluginContract, h.m.deps.PluginContract, h.m.deps.PluginRelaunchable = testTakeContract+1, testTakeContract+1, true
 }
 
 // Row 29: a claim on a stale plugin holding a take, whose connection closed since the agent's last

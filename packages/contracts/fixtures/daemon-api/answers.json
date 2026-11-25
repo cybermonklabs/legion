@@ -60,8 +60,7 @@
       "POST /legion/v1/claims/ready",
       "POST /legion/v1/claims/ready-for-update",
       "POST /legion/v1/claims/exit",
-      "POST /legion/v1/claims/activity",
-      "POST /legion/v1/claims/task-seen"
+      "POST /legion/v1/claims/activity"
     ],
     "since": 46,
     "noBody": true
@@ -181,22 +180,6 @@
       "POST /legion/v1/intake/discard"
     ],
     "since": 228,
-    "noBody": false
-  },
-  {
-    "id": "task",
-    "routes": [
-      "POST /legion/v1/claims/task"
-    ],
-    "since": 306,
-    "noBody": false
-  },
-  {
-    "id": "take",
-    "routes": [
-      "POST /legion/v1/claims/take"
-    ],
-    "since": 306,
     "noBody": false
   }
 ]

@@ -252,7 +252,7 @@ func TestTakeRouteAnswersAStaleClaimRefusedStalePluginRatherThan409(t *testing.T
 	h := newHarness(t)
 	c := h.readyClaim("LEGION-209", claim.RoleImplementer)
 	value := h.deliverTask(supervise.RequestDeliver{Claim: c.token, Task: "the task"})
-	h.makeStale(t, c.token, c.session, c.secret, DaemonAPIVersion-1)
+	h.makeStale(t, c.token, c.session, c.secret, DaemonAPIVersion()-1)
 
 	// The control: the same claim, as the claim routes read it, is stale.
 	ready := h.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
@@ -297,8 +297,8 @@ func TestTurnOutcomeOfAStaleClaimNamingItsTakeFinishesTheTask(t *testing.T) {
 	recorder, answer := h.postTake(takeOf(c, value))
 	wantAccepted(t, recorder, answer, "the task")
 	h.startAndEndTurn(c.token)
-	stale := DaemonAPIVersion + 1
-	if supervise.TakesNoTask(stale) {
+	stale := DaemonAPIVersion() + 1
+	if supervise.TakesNoTask(stale, TaskTakeContract()) {
 		t.Fatalf("contract %d takes no task: this test proves nothing, since the end frame finishes such a claim's task", stale)
 	}
 	h.makeStale(t, c.token, c.session, c.secret, stale)
@@ -311,7 +311,7 @@ func TestTurnOutcomeOfAStaleClaimNamingItsTakeFinishesTheTask(t *testing.T) {
 	ready := h.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
 		ClaimToken: c.token, SessionID: c.session, Secret: c.secret, Generation: c.generation,
 	}, nil)
-	wantRefusal(t, ready, http.StatusConflict, claim.StalePluginContract(stale, DaemonAPIVersion).Message)
+	wantRefusal(t, ready, http.StatusConflict, claim.StalePluginContract(stale, DaemonAPIVersion()).Message)
 
 	outcome, _ := h.turnOutcome(claim.TurnOutcomeRequest{AgentCaller: c.agent(), Generation: c.generation, Sequence: 1,
 		Outcome: claim.TurnClean, Task: value.Number})

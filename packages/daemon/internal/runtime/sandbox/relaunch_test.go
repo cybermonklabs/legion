@@ -2136,14 +2136,21 @@ func loggedSandboxMachine(
 		Timeouts: supervise.Timeouts{
 			Boot: time.Hour, RegistrationIntervals: 1, RPC: time.Hour, Probe: time.Hour, Stop: time.Hour, LaunchBackoff: time.Millisecond,
 		},
-		PluginContract: 24,
-		RefreshGate:    supervise.NewRefreshGate(0),
+		PluginContract:   24,
+		TaskTakeContract: testTakeContract,
+		RefreshGate:      supervise.NewRefreshGate(0),
 	}, c)
 	if err != nil {
 		t.Fatalf("new Machine: %v", err)
 	}
 	return machine, store, specs
 }
+
+// testTakeContract is the take contract this package's machines are handed
+// (supervise.Deps.TaskTakeContract): any number above 275, internal/api's LastNumberedContract,
+// will do, since only api's registry knows the number a build gives the task-take entry, and
+// every build gives it one above 275.
+const testTakeContract = 276
 
 type sandboxMachineSpecs struct {
 	spec runtime.SpawnSpec

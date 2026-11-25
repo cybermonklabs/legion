@@ -1710,7 +1710,7 @@ func TestForgetSessionRechecksItsSessionInsideTheMachine(t *testing.T) {
 	generation := machine.Claim().Generation
 	if err := machine.Handle(h.ctx, supervise.RequestRegister{
 		Claim: architectToken, Generation: generation, Session: "ses_replacement", SessionFile: "/sessions/ses_replacement.jsonl",
-		PluginContract: DaemonAPIVersion,
+		PluginContract: DaemonAPIVersion(),
 	}); err != nil {
 		t.Fatalf("register replacement session: %v", err)
 	}

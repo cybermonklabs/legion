@@ -69,7 +69,7 @@ func newBootRigEdited(t *testing.T, n int, store supervise.Store, edit func([]su
 			t.Fatal(err)
 		}
 		r.claims = append(r.claims, supervise.Claim{Token: token, Project: project, Tree: issue, Issue: issue, Role: claim.RoleTester,
-			Generation: 1, State: supervise.StateLaunching, PluginContract: api.DaemonAPIVersion,
+			Generation: 1, State: supervise.StateLaunching, PluginContract: api.DaemonAPIVersion(),
 			Pending: &supervise.Delivery{ID: fmt.Sprintf("row-%d", i+1), Task: "test the change", QueuedAt: r.start.Add(-time.Duration(i+1) * time.Minute)}})
 	}
 	if edit != nil {
@@ -79,11 +79,12 @@ func newBootRigEdited(t *testing.T, n int, store supervise.Store, edit func([]su
 	r.sup = newSupervisor(context.Background(), nil, "legion", t.TempDir(), quietLogger())
 	r.sup.deps = supervise.Deps{
 		Runtime: r.rt, Conns: fake.NewConns(), Store: store, Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
-		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
-		Timeouts:       supervise.Timeouts{Boot: time.Hour, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Hour, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract: api.DaemonAPIVersion,
-		RefreshGate:    supervise.NewRefreshGate(0),
-		WakePace:       wakePaceOf(r.limiter),
+		Limits:           supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
+		Timeouts:         supervise.Timeouts{Boot: time.Hour, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Hour, Stop: time.Second, LaunchBackoff: time.Millisecond},
+		PluginContract:   api.DaemonAPIVersion(),
+		TaskTakeContract: api.TaskTakeContract(),
+		RefreshGate:      supervise.NewRefreshGate(0),
+		WakePace:         wakePaceOf(r.limiter),
 	}
 	t.Cleanup(r.sup.stop)
 	unfinished, err := r.sup.restore(context.Background(), r.claims)
@@ -228,7 +229,7 @@ func recordedDeathOwed(t *testing.T, owed time.Time) supervise.Claim {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := liveClaim(90, token, api.DaemonAPIVersion)
+	c := liveClaim(90, token, api.DaemonAPIVersion())
 	c.Token, c.Project, c.Tree, c.Issue, c.Role = token, project, "LEGION-90", "LEGION-90", claim.RoleImplementer
 	c.DeathCharged, c.Budgets.Deaths, c.LastDeathCause = true, 1, "gone: pane %90 is gone"
 	c.Pending = &supervise.Delivery{ID: "row-90", Task: "implement the change", QueuedAt: owed, ConfirmedAt: owed, Interrupted: true}

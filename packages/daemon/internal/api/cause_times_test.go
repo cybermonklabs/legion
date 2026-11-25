@@ -222,8 +222,9 @@ func TestALastStartFailureCarriesItsTimeUntilReady(t *testing.T) {
 // implementer, so the band is read on a worker's view as well as the architect's (it narrows
 // each through withEachClaimView). The worker is given it here rather than in the golden state:
 // a worker's lastDeathCause there would be a key no record of a contract below this one holds.
-// The daemon's log names what the narrowed body lost: the cause times' row, and the row of
-// supervise.TaskTakeContract above it, which the caller below causeTimesContract stands below too.
+// The daemon's log names what the narrowed body lost: the cause times' row, the Dispatch
+// credential's above it, and each entry's band above both, which the caller below
+// causeTimesContract stands below too.
 func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 	state := populatedState(t)
 	architect := state.Issues[recordGoldenIssue].Architect
@@ -291,14 +292,17 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 		})
 	}
 
-	// A caller below causeTimesContract is below dispatchCredentialContract and
-	// supervise.TaskTakeContract too, the two rows above it, so it is told of all three rows, in the
-	// table's order.
-	_, narrowings := stateNarrowedStating(t, populatedState(t), statePodAddr+":41000", podClaims(0), causeTimesContract-1)
+	// A caller below causeTimesContract is below dispatchCredentialContract and every entry's band
+	// too, the rows above it, so it is told of each of them, in the table's order: the two frozen
+	// rows first, and then the lines narrowingsExpected counts for the entries, whatever their
+	// number (R4 of dispatch://INFRA-1569).
+	carried := carriedState(t)
+	_, narrowings := stateNarrowedStating(t, carried, statePodAddr+":41000", podClaims(0), causeTimesContract-1)
 	const dropped = "the claim views' lastDeathAt and lastStartFailureAt"
-	if len(narrowings) != 3 || narrowings[0].Dropped != dropped || narrowings[1].Dropped != "dispatchCredential" ||
-		narrowings[2].Dropped != "unseenTaskValues" {
-		t.Errorf("the daemon wrote the narrowing lines %+v for a caller stating %d, want one that dropped %q, one that dropped %q and the unseen task values' line after them",
-			narrowings, causeTimesContract-1, dropped, "dispatchCredential")
+	want := narrowingsExpected(carried, causeTimesContract-1)
+	if len(want) < 2 || want[0] != dropped || want[1] != "dispatchCredential" {
+		t.Fatalf("a caller stating %d expects the lines %v, want one that dropped %q and one that dropped %q first",
+			causeTimesContract-1, want, dropped, "dispatchCredential")
 	}
+	wantNarrowings(t, narrowings, causeTimesContract-1, want)
 }

@@ -104,7 +104,7 @@ func TestAnOldPluginsRetroCompletesWithNoRatingAcrossTheDeploy(t *testing.T) {
 	if status, body := r.complete(implementer, r.retroCompletion(nil)); status != http.StatusOK {
 		t.Fatalf("the old plugin's retro completion with no rating = %d %s, want 200", status, body)
 	}
-	// The old plugin is below supervise.TaskTakeContract too, so no report of it names the task's
+	// The old plugin is below api.TaskTakeContract() too, so no report of it names the task's
 	// number: its turn ends with the agent_end alone, which finishes the task (supervise's
 	// TakesNoTask).
 	implementer.endTurnUnreported()

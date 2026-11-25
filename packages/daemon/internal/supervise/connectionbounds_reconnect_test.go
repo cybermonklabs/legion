@@ -322,10 +322,10 @@ func TestTakeFinishedWhileItsConnectionIsClosedTakesTheReconnectDeadlineWithIt(t
 func restoredWorking(t *testing.T, change func(*Claim)) *harness {
 	t.Helper()
 	h := newBareHarness(t)
-	h.deps.PluginContract = TaskTakeContract
+	h.deps.PluginContract = testTakeContract
 	h.manualTakes()
 	restored := fixture(StateWorking)
-	restored.PluginContract = TaskTakeContract
+	restored.PluginContract = testTakeContract
 	if change != nil {
 		change(&restored)
 	}

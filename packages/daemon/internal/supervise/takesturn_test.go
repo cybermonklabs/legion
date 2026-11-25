@@ -17,10 +17,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
+// testTakeContract is the take contract this package's tests hand a machine (Deps.TaskTakeContract):
+// any number above 275, internal/api's LastNumberedContract, will do, since only api's registry
+// knows the number a build gives the task-take entry, and every build gives it one above 275.
+const testTakeContract = 276
+
 // currentPlugin is a harness whose worker's plugin names its task's number in every turn's
-// report: the daemon's own contract is TaskTakeContract, which the harness's registration records
-// for the claim (register).
-func currentPlugin(d *Deps) { d.PluginContract = TaskTakeContract }
+// report: the daemon's own contract is the take contract (Deps.TaskTakeContract), which the
+// harness's registration records for the claim (register).
+func currentPlugin(d *Deps) { d.PluginContract = d.TaskTakeContract }
 
 // wantFinishedOnce holds that the claim's task was finished once, by by (finishedLine's "by").
 func (h *harness) wantFinishedOnce(by string) {

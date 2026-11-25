@@ -22,24 +22,20 @@ import (
 // plugin names no number, by the end of that turn when no report comes (finishTask,
 // TakesNoTask).
 
-// TaskTakeContract is the plugin contract at which a worker takes its task rather than being
-// sent it (dispatch://INFRA-2811): the contract whose entry in internal/api's version.go brings
-// the take, task and task-seen routes, and the one whose state body first carries
-// `unseenTaskValues` (R5's claims whose value nobody reported seeing). internal/api serves a
-// caller below it the state without that key and with `never_reconnected` served as
-// `never_registered`, and the registration without `task` and `finished` (shaping.go's
-// stateNarrowings, valueStrips and shapeAnswer), and a claim whose plugin declares a contract
-// below it cannot take a task at all.
-//
-// It lives here rather than beside DaemonAPIVersion because internal/api imports this package,
-// as PodUpdateContract does, and internal/api's own test pins the two to one number
-// (TestTaskTakeContractIsTheContractThatIntroducedTheTake): a merge that renumbers this change
-// moves both together.
-const TaskTakeContract = 306
-
 // TakesNoTask is whether a plugin that declared contract takes no task: it is below
-// TaskTakeContract, so its worker waits for a prompt this daemon never sends and never asks to
-// take the task its claim is owed. A claim that recorded no contract at all (0) is one of them.
+// takeContract, the plugin contract at which a worker takes its task rather than being sent it
+// (dispatch://INFRA-2811), so its worker waits for a prompt this daemon never sends and never asks
+// to take the task its claim is owed. A claim that recorded no contract at all (0) is one of them.
+//
+// takeContract is the number internal/api's build gives the task-take entry
+// (`contract_<id>_task-take.go`, api.TaskTakeContract), which brings the take, task and task-seen
+// routes and is the first contract whose state body carries `unseenTaskValues` (R5's claims whose
+// value nobody reported seeing). No source line holds it, since a build numbers its contract
+// entries by their order, and this package cannot import internal/api, which imports it; so a
+// machine reads it from its Deps (Deps.TaskTakeContract), and every other caller passes the one
+// internal/api derives. internal/api serves a caller below it the state without that key and with
+// `never_reconnected` served as `never_registered`, and the registration without `task` and
+// `finished` (shaping.go's stateNarrowings, valueStrips and shapeAnswer).
 //
 // Three rules read it. Two would each leave such a worker taking nothing at the rollout that moves
 // the daemon and the worker image together, which opens an update round over every issue pod
@@ -57,7 +53,7 @@ const TaskTakeContract = 306
 // the end of a run says nothing of whose run it was, since the daemon gives a take the first run
 // that starts after it and the worker may run its text in the run after that (decision 8 of
 // dispatch://INFRA-2811; notTheTakesTurn).
-func TakesNoTask(contract int) bool { return contract < TaskTakeContract }
+func TakesNoTask(contract, takeContract int) bool { return contract < takeContract }
 
 // The origins of a task: the source that queued it (Delivery.Origin). A request names its own
 // (RequestDeliver.Origin); one that names none is read as originOf says. OriginSilence is the

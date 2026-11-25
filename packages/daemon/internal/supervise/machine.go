@@ -1262,6 +1262,12 @@ type Deps struct {
 	// cannot import api), compared against each claim's recorded PluginContract to decide whether a
 	// registration or a restored claim is stale.
 	PluginContract int
+	// TaskTakeContract is the plugin contract at which a worker takes its task rather than being
+	// prompted with it: the number the daemon's build gives the task-take entry
+	// (api.TaskTakeContract; supervise cannot import api). A claim whose plugin declares a contract
+	// below it takes no task (TakesNoTask). Construction refuses zero, as it refuses a
+	// PluginContract of zero, so no machine reads it unset.
+	TaskTakeContract int
 	// PluginRelaunchable is whether this daemon can relaunch a stale process onto a plugin at all:
 	// true under tmux always (the pane resumes on the host's own plugin, which the boot gate holds
 	// to this daemon's contract), and under Kubernetes iff a plugin pair to install is known. False
@@ -1428,6 +1434,7 @@ func (d Deps) check() error {
 		{"Limits.PromptRetires", d.Limits.PromptRetires},
 		{"Timeouts.RegistrationIntervals", d.Timeouts.RegistrationIntervals},
 		{"PluginContract", d.PluginContract},
+		{"TaskTakeContract", d.TaskTakeContract},
 	} {
 		if bound.value < 1 {
 			return fmt.Errorf("supervise: %s must be at least 1, got %d", bound.name, bound.value)
@@ -2234,7 +2241,7 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 		// again to this daemon, and the time no daemon served it is no time it had to do so
 		// (dispatch://INFRA-2811). A plugin that names its task's number has its task finished
 		// by that report alone.
-		if p := c.Pending; p != nil && p.startRecorded() && TakesNoTask(m.claim.PluginContract) {
+		if p := c.Pending; p != nil && p.startRecorded() && TakesNoTask(m.claim.PluginContract, m.deps.TaskTakeContract) {
 			m.finishAtAct = true
 		}
 		// A claim holding a take that the stale-plugin lane will relaunch waits for its agent's

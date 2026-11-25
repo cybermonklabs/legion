@@ -4,7 +4,7 @@ package daemon
 // together (dispatch://INFRA-2811, decision 18 and departure 3). That rollout changes the image,
 // so an update round opens over every issue pod, and a round serves a claim on its old contract
 // until the round ends, on which a worker whose plugin declared a contract below
-// supervise.TaskTakeContract takes no task. Two rules keep such a worker from taking nothing until
+// api.TaskTakeContract() takes no task. Two rules keep such a worker from taking nothing until
 // its round ends. A claim whose launch installs a plugin is relaunched onto the current one inside
 // the round as outside it (staleForTheLane, supervise.StaleRefusesCalls). A Claude Code role in a
 // pod, whose plugin is the image's own and which no relaunch moves, has its pod released onto the
@@ -30,8 +30,8 @@ import (
 )
 
 // oldContract is the plugin contract of a worker the rollout found running: the one just below
-// the contract that takes tasks.
-const oldContract = supervise.TaskTakeContract - 1
+// the contract that takes tasks, the number this build gives the task-take entry.
+func oldContract() int { return api.TaskTakeContract() - 1 }
 
 // configuredImage is the worker image the rig's configuration names, which the error a pod
 // already on it logs for an old plugin names.
@@ -48,8 +48,8 @@ const configuredImage = "ghcr.io/sjawhar/legion-worker@sha256:2f6c0e1a"
 func TestStalePluginBelowTheTakeContractIsRelaunchedInsideAPodRound(t *testing.T) {
 	t.Parallel()
 	rig := newPodUpdateRig(t,
-		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true, contract: oldContract},
-		podUpdateRole{role: claim.RoleTester, state: supervise.StateReady, session: true, inPod: true, contract: api.DaemonAPIVersion + 1},
+		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true, contract: oldContract()},
+		podUpdateRole{role: claim.RoleTester, state: supervise.StateReady, session: true, inPod: true, contract: api.DaemonAPIVersion() + 1},
 	)
 	rig.drifts(podUpdateDrift)
 	rig.tick()
@@ -68,7 +68,7 @@ func TestStalePluginBelowTheTakeContractIsRelaunchedInsideAPodRound(t *testing.T
 	}
 	for _, c := range claims {
 		want := c.Role == claim.RoleImplementer
-		if refused := supervise.StaleRefusesCalls(c, api.DaemonAPIVersion, true, noInstall); refused != want {
+		if refused := supervise.StaleRefusesCalls(c, api.DaemonAPIVersion(), api.TaskTakeContract(), true, noInstall); refused != want {
 			t.Errorf("the %s at contract %d in round %q is refused its calls = %v, want %v",
 				c.Role, c.PluginContract, c.UpdateRound, refused, want)
 		}
@@ -98,9 +98,9 @@ func TestStalePluginBelowTheTakeContractIsRelaunchedInsideAPodRound(t *testing.T
 	rig.conns.Register(token, conn)
 	rig.workers[claim.RoleImplementer] = conn
 	rig.registerInto(claim.RoleImplementer, podUpdatePod)
-	if c := rig.claimOf(claim.RoleImplementer); c.UpdateRound != podUpdateRound || c.PluginContract != api.DaemonAPIVersion {
+	if c := rig.claimOf(claim.RoleImplementer); c.UpdateRound != podUpdateRound || c.PluginContract != api.DaemonAPIVersion() {
 		t.Fatalf("the relaunched claim records round %q at contract %d, want round %q kept on this daemon's contract %d",
-			c.UpdateRound, c.PluginContract, podUpdateRound, api.DaemonAPIVersion)
+			c.UpdateRound, c.PluginContract, podUpdateRound, api.DaemonAPIVersion())
 	}
 	rig.handle(claim.RoleImplementer, supervise.RequestDeliver{Claim: token, Task: "implement the plan"})
 	if answer := rig.take(claim.RoleImplementer); answer.Outcome != supervise.TakeOutcomeAccepted {
@@ -127,10 +127,10 @@ func TestContractBelowTheTakeContractIsRelaunchedOntoTheCurrentPlugin(t *testing
 
 	err := m.Handle(rig.ctx, supervise.RequestRegister{
 		Claim: before.Token, Generation: before.Generation, Session: before.Session, SessionFile: before.SessionFile,
-		CapabilityHash: []byte(claim.RoleImplementer), PluginContract: oldContract,
+		CapabilityHash: []byte(claim.RoleImplementer), PluginContract: oldContract(),
 	})
-	if !errors.Is(err, claim.StalePluginContract(oldContract, api.DaemonAPIVersion)) {
-		t.Fatalf("a registration on contract %d = %v, want it refused as a stale plugin naming both contracts", oldContract, err)
+	if !errors.Is(err, claim.StalePluginContract(oldContract(), api.DaemonAPIVersion())) {
+		t.Fatalf("a registration on contract %d = %v, want it refused as a stale plugin naming both contracts", oldContract(), err)
 	}
 	relaunched := rig.awaitClaim(claim.RoleImplementer, "the worker below the take contract to be relaunched",
 		func(c supervise.Claim) bool { return c.State == supervise.StateLaunching })
@@ -147,8 +147,8 @@ func TestContractBelowTheTakeContractIsRelaunchedOntoTheCurrentPlugin(t *testing
 	rig.conns.Register(token, conn)
 	rig.workers[claim.RoleImplementer] = conn
 	rig.registerInto(claim.RoleImplementer, podUpdatePod)
-	if after := rig.claimOf(claim.RoleImplementer); after.PluginContract != api.DaemonAPIVersion || supervise.TakesNoTask(after.PluginContract) {
-		t.Fatalf("the claim after its relaunch records contract %d, want %d, which takes tasks", after.PluginContract, api.DaemonAPIVersion)
+	if after := rig.claimOf(claim.RoleImplementer); after.PluginContract != api.DaemonAPIVersion() || supervise.TakesNoTask(after.PluginContract, api.TaskTakeContract()) {
+		t.Fatalf("the claim after its relaunch records contract %d, want %d, which takes tasks", after.PluginContract, api.DaemonAPIVersion())
 	}
 }
 
@@ -160,7 +160,7 @@ func TestContractBelowTheTakeContractIsRelaunchedOntoTheCurrentPlugin(t *testing
 func oldPluginRig(t *testing.T) (*idleRig, *syncBuffer) {
 	t.Helper()
 	rig := newIdleRig(t, func(c *supervise.Claim) {
-		c.PluginContract = oldContract
+		c.PluginContract = oldContract()
 		c.UpdateRound, c.UpdateReasons = supervise.PodRound(releasedPodUID), "image"
 	})
 	rig.rt.onImage = false
@@ -322,7 +322,7 @@ func TestStalePluginClaudeRoleOnTheConfiguredImageIsNotReleased(t *testing.T) {
 	if len(errorsLogged) != 1 {
 		t.Fatalf("the two passes logged %d errors, want one: %q", len(errorsLogged), errorsLogged)
 	}
-	for _, want := range []string{string(rig.token), `"pluginContract":` + fmtContract(oldContract), configuredImage} {
+	for _, want := range []string{string(rig.token), `"pluginContract":` + fmtContract(oldContract()), configuredImage} {
 		if !strings.Contains(errorsLogged[0], want) {
 			t.Errorf("the error %s does not name %s", errorsLogged[0], want)
 		}

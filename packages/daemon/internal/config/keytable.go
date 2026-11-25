@@ -409,7 +409,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "worker_rpc_timeout_seconds", RequiredBy: "no",
-			Description: "How long each request on the worker stream waits for its answer, the one reconnect that judges a dead worker among them; it also bounds how long the end of a task's turn waits for the worker's report of it before the end frame finishes the task, for a worker whose plugin is below daemon API contract 306 and names no task in its reports (a current worker's task is finished by its report alone), how long a finish the store refused waits before it is made again, and how long an issue pod's start reads which role works the issue's phase (a read that fails puts the start in the roles' order); and it sizes how long the intake gives one fact's handling.",
+			Description: "How long each request on the worker stream waits for its answer, the one reconnect that judges a dead worker among them; it also bounds how long the end of a task's turn waits for the worker's report of it before the end frame finishes the task, for a worker whose plugin is below the daemon API contract of the task-take entry and names no task in its reports (a current worker's task is finished by its report alone), how long a finish the store refused waits before it is made again, and how long an issue pod's start reads which role works the issue's phase (a read that fails puts the start in the roles' order); and it sizes how long the intake gives one fact's handling.",
 			Positive:    &positiveKey{Value: 5, Duration: func(c *Config) *time.Duration { return &c.WorkerRPCTimeout }},
 		},
 		{

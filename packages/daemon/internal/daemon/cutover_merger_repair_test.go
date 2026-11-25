@@ -889,7 +889,7 @@ func (r *cutoverRig) connect(t *testing.T, issue cutoverIssue) {
 	})
 	held := r.daemon.claim(issue.merger)
 	status, body := r.daemon.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{BootToken: launch.BootToken,
-		SessionID: held.Session, OmpSessionFile: held.SessionFile, AgentID: "agent-" + issue.key, PluginContract: api.DaemonAPIVersion}, false)
+		SessionID: held.Session, OmpSessionFile: held.SessionFile, AgentID: "agent-" + issue.key, PluginContract: api.DaemonAPIVersion()}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register %s's merger = %d; body %s", issue.key, status, body)
 	}

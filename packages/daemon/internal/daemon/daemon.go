@@ -1562,7 +1562,7 @@ func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, dispatchToken
 			prefix:         cfg.OmpLaunchPrefix,
 			timeout:        cfg.SlowCommandTimeout,
 			retry:          bootprobe.Daemon,
-			contract:       api.DaemonAPIVersion,
+			contract:       api.DaemonAPIVersion(),
 			roleReferences: p.roleReferences,
 			log:            log,
 		}
@@ -2239,7 +2239,8 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		},
 		RefreshGate:        refreshGate,
 		PodStarts:          podStarts(cfg, p.clock),
-		PluginContract:     api.DaemonAPIVersion,
+		PluginContract:     api.DaemonAPIVersion(),
+		TaskTakeContract:   api.TaskTakeContract(),
 		PluginRelaunchable: p.pluginRelaunchable,
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c.Role) },
 	}
@@ -2775,7 +2776,7 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 		if !s.plan.pluginRelaunchable {
 			if trigger == "boot" {
 				s.log.Error(supervise.NoPluginSourceMessage,
-					"claim", c.Token, "incarnation", c.Locator.Incarnation, "pluginContract", c.PluginContract, "daemonApiVersion", api.DaemonAPIVersion)
+					"claim", c.Token, "incarnation", c.Locator.Incarnation, "pluginContract", c.PluginContract, "daemonApiVersion", api.DaemonAPIVersion())
 			}
 			continue
 		}
@@ -2822,7 +2823,7 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 // pod's replacement its answer; the count says the same, because a claim the pass will not
 // post is not work the lane has left.
 //
-// A claim whose plugin declares a contract below supervise.TaskTakeContract takes no task at
+// A claim whose plugin declares a contract below api.TaskTakeContract() takes no task at
 // all (supervise.TakesNoTask), so the rule that a round serves a claim on its old contract is
 // reversed for these claims alone: such a claim is in the set inside a pod round as outside one,
 // and is relaunched onto the current plugin there, whose process takes its tasks. Left to the
@@ -2854,8 +2855,8 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 // the lane's own pass builds a closure of it at every sweep, so no daemon reads this term as
 // nil, a tmux daemon included (noPluginInstall, serve, refreshStalePlugins).
 func staleForTheLane(c supervise.Claim, noPluginInstall func(supervise.Claim) bool) bool {
-	if c.Session == "" || c.PluginContract == api.DaemonAPIVersion || !supervise.HoldsCapability(c.State) ||
-		(c.InPodRound() && !supervise.TakesNoTask(c.PluginContract)) {
+	if c.Session == "" || c.PluginContract == api.DaemonAPIVersion() || !supervise.HoldsCapability(c.State) ||
+		(c.InPodRound() && !supervise.TakesNoTask(c.PluginContract, api.TaskTakeContract())) {
 		return false
 	}
 	return noPluginInstall == nil || !noPluginInstall(c)
@@ -3703,6 +3704,13 @@ func (s projectRecords) DropCatchUps(ctx context.Context, tx pgx.Tx, issue strin
 		return nil
 	}
 	return s.Store.DropCatchUps(ctx, tx, issue, now)
+}
+
+func (s projectRecords) DropUnfencedCheckWakes(ctx context.Context, tx pgx.Tx, issue string) error {
+	if !s.ownsKey(record.OutboxKindCheckWake, issue) {
+		return nil
+	}
+	return s.Store.DropUnfencedCheckWakes(ctx, tx, issue)
 }
 
 func (s projectRecords) DropStatusWrites(ctx context.Context, tx pgx.Tx, issue string) error {

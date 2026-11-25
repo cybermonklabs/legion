@@ -48,6 +48,22 @@ func TestNewMachineRefusesADepsWithAnUnsetBound(t *testing.T) {
 	}
 }
 
+// NewMachine refuses a Deps whose take contract is unset (Deps.TaskTakeContract): the daemon
+// hands it api.TaskTakeContract(), the number its build gives the task-take entry, and a machine
+// built over zero would read every plugin as one that takes its task, since no contract is below
+// zero, and so wait on reports no plugin below the take contract sends. The control is the same
+// Deps with the number set, which builds.
+func TestNewMachineRefusesZeroTaskTakeContract(t *testing.T) {
+	deps := newBareHarness(t).deps
+	if _, err := NewMachine(context.Background(), deps, fixture(StateQueued)); err != nil {
+		t.Fatalf("new machine over take contract %d = %v, want it built", deps.TaskTakeContract, err)
+	}
+	deps.TaskTakeContract = 0
+	if _, err := NewMachine(context.Background(), deps, fixture(StateQueued)); err == nil || !strings.Contains(err.Error(), "TaskTakeContract") {
+		t.Fatalf("new machine over a zero TaskTakeContract = %v, want a refusal naming it", err)
+	}
+}
+
 func TestSpawnPersistsTheBootTokenHashBeforeItLaunches(t *testing.T) {
 	h := newHarness(t)
 	var spawnsAtPut []int

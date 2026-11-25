@@ -14,10 +14,10 @@
 # is a `git archive` of the base commit, so this run's EXIT trap is that subshell's and the script
 # goes on to read the run's proof.log.
 #
-# live_daemon_proof LABEL SLUG TEST EVIDENCE [TIMEOUT [DRIVER [SERVICES]]] runs four checks, each
-# printing `== <check>`, what it observed and `ok <check> (<s>s)`; the first that fails prints
-# `FAIL <check>: <why>` and ends the run non-zero. Exit 2 is an input of the caller's the run
-# refuses. Exit 1 is every other failure.
+# live_daemon_proof LABEL SLUG TEST EVIDENCE [TIMEOUT [DRIVER [STAMP [SERVICES]]]] runs four
+# checks, each printing `== <check>`, what it observed and `ok <check> (<s>s)`; the first that
+# fails prints `FAIL <check>: <why>` and ends the run non-zero. Exit 2 is an input of the caller's
+# the run refuses. Exit 1 is every other failure.
 # prerequisites wants LEGION_TEST_PG_DSN, the PostgreSQL the daemon migrates and runs on, which
 # nothing here starts or prints, go, awk and python3, the libpq lib/loopback-dsn.py loads, and a
 # nats-server: LEGION_E2E_NATS_BIN's, or the pinned one installed with `go install`. It refuses
@@ -34,14 +34,16 @@
 # built that way before the run: the check then notes DRIVER and builds nothing. proof runs the
 # one test TEST against them and holds that it passed, under the test binary's own deadline
 # TIMEOUT (a Go duration; 20m when the caller gives none, or gives it empty):
-# approved-version-news.sh's part two runs real model sessions for longer than that.
+# approved-version-news.sh's part two runs real model sessions for longer than that. The driver
+# check builds with STAMP when the caller gives one (build_daemon_driver's second argument), and
+# owner-steps-client.sh alone gives one; a handed DRIVER was stamped, or not, by its caller.
 #
-# SERVICES, when the caller names one, is a function of the entry script's that starts what its
-# driver needs beside the broker: the run calls it between broker and driver, with the broker's
-# port in port_nats and the run's work and evidence directories in work and evidence, and it makes
-# checks of its own with begin, note, pass and fail, exports what the driver reads, and adds the
-# pid of each process it starts to service_pids, which every exit stops before the broker.
-# task-take.sh's starts the Envoy listener it builds.
+# SERVICES, the eighth argument, when the caller names one, is a function of the entry script's
+# that starts what its driver needs beside the broker: the run calls it between broker and driver,
+# with the broker's port in port_nats and the run's work and evidence directories in work and
+# evidence, and it makes checks of its own with begin, note, pass and fail, exports what the driver
+# reads, and adds the pid of each process it starts to service_pids, which every exit stops before
+# the broker. task-take.sh's starts the Envoy listener it builds.
 #
 # SLUG names the run's own files: the work directory legion-e2e-SLUG.<pid>.* under TMPDIR (or /tmp
 # when it is unset), which holds the broker's store and the driver binary SLUG.test, where the
@@ -115,11 +117,17 @@ pass() { echo "ok $check ($((SECONDS - check_started))s)"; }
 refuse() { echo "FAIL $check: $*" >&2; exit 2; }
 fail() { echo "FAIL $check: $*" >&2; exit 1; }
 
-# build_daemon_driver OUT builds every proof's driver, the daemon package's `-tags e2e` test
-# binary, from root's packages/daemon into OUT. The driver check builds with it, and so does a
-# caller that builds the driver before the run and hands it over as DRIVER.
+# build_daemon_driver OUT [STAMP] builds every proof's driver, the daemon package's `-tags e2e`
+# test binary, from root's packages/daemon into OUT. The driver check builds with it, and so does
+# a caller that builds the driver before the run and hands it over as DRIVER. STAMP, when given
+# and not empty, is the merge order `scripts/daemon-contract-order.sh --stamp` printed, which the
+# build writes into the binary (`-X` of api.contractOrder). With none, the binary numbers its
+# entries by id, as every driver but owner-steps-client.sh's does: that one alone pairs this
+# daemon with the plugin of another commit, whose number names the entries of main's order.
 build_daemon_driver() {
-  go -C "$root/packages/daemon" test -c -tags e2e -o "$1" ./internal/daemon
+  local ldflags=()
+  [ -z "${2:-}" ] || ldflags=(-ldflags "-X github.com/sjawhar/legion/daemon/internal/api.contractOrder=$2")
+  go -C "$root/packages/daemon" test -c -tags e2e "${ldflags[@]}" -o "$1" ./internal/daemon
 }
 
 cleanup() {
@@ -139,7 +147,7 @@ cleanup() {
 }
 
 live_daemon_proof() {
-  local slug=$2 test_name=$3 timeout=${5:-20m} handed=${6:-} services=${7:-} tool nats_bin db_host
+  local slug=$2 test_name=$3 timeout=${5:-20m} handed=${6:-} stamp=${7:-} services=${8:-} tool nats_bin db_host
   proof_label=$1
   evidence=${4:-$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-$slug-evidence.XXXXXXXX")}
   mkdir -p "$evidence"
@@ -211,8 +219,12 @@ live_daemon_proof() {
   # leaves the EXIT trap that test's status 0, as in any other check, so the last line says the
   # run stopped before its end (lib/run-verdict.sh).
   if [ -z "$handed" ]; then
-    build_daemon_driver "$driver" || fail "the driver did not build"
-    note "built $(basename "$driver") from $root/packages/daemon with -tags e2e"
+    build_daemon_driver "$driver" "$stamp" || fail "the driver did not build"
+    if [ -n "$stamp" ]; then
+      note "built $(basename "$driver") from $root/packages/daemon with -tags e2e and the merge order $stamp"
+    else
+      note "built $(basename "$driver") from $root/packages/daemon with -tags e2e"
+    fi
   else
     note "the caller built $driver with -tags e2e and handed it over; this check builds nothing"
   fi

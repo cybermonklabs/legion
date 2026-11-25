@@ -1481,7 +1481,7 @@ func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool)
 		return err
 	}
 	if m.takesTurnRan() && !inTurn {
-		if TakesNoTask(m.claim.PluginContract) {
+		if TakesNoTask(m.claim.PluginContract, m.deps.TaskTakeContract) {
 			return m.finishTask(ctx, finishedByEndFrame)
 		}
 		inTurn = true

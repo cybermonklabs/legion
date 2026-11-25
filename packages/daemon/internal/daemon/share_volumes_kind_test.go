@@ -111,7 +111,7 @@ func TestTheShareKindProofBuildsItsRuntimesFromItsConfigurations(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, _, err := burstableLiveRuntime(ctx, cfg, rc, listener, quietLogger()); err != nil {
+			if _, _, err := burstableLiveRuntime(ctx, cfg, rc, listener, quietLogger(), burstableLiveRepository); err != nil {
 				t.Fatalf("the proof's runtime: %v", err)
 			}
 			project, err := claim.ProjectToken(cfg.Project)

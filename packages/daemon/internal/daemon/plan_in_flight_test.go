@@ -436,7 +436,7 @@ func (r *inFlightRig) resume(issue *inFlightIssue, role claim.Role) *stepClaiman
 	c := &stepClaimant{r: r.stepRecordsRig, token: token, issue: issue.key, tree: issue.key, role: role, session: kept.id, model: stepRecordsModel,
 		bootToken: launch.BootToken, sh: dialShim(t, address, launch.BootToken)}
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
-		BootToken: launch.BootToken, SessionID: kept.id, OmpSessionFile: kept.file, AgentID: kept.id, PluginContract: api.DaemonAPIVersion,
+		BootToken: launch.BootToken, SessionID: kept.id, OmpSessionFile: kept.file, AgentID: kept.id, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register %s in its session %s = %d %s, want 200", token, kept.id, status, body)

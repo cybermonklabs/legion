@@ -17,7 +17,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -138,7 +137,7 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 		var err error
 		marked, err = w.idleStore.ReleaseIdleIssue(ctx, w.projectID, issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
 			view.PodUID = podUID
-			decision = workflow.IdleRelease(view, now, w.idlePeriod, onConfiguredImage, api.DaemonAPIVersion, w.idleFixedPlugin)
+			decision = workflow.IdleRelease(view, now, w.idlePeriod, onConfiguredImage, api.DaemonAPIVersion(), api.TaskTakeContract(), w.idleFixedPlugin)
 			since, found := view.QuietSince()
 			quiet = found && now.Sub(since) >= w.idlePeriod
 			holding = view.Holding
@@ -161,7 +160,7 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 			if old != nil {
 				w.log.Info("idle release: releasing an issue's pod whose Claude Code role runs a plugin that takes no task, so the role comes back on the configured image",
 					"issue", issue, "claim", old.Token, "pluginContract", old.PluginContract,
-					"taskTakeContract", supervise.TaskTakeContract, "roles", roles)
+					"taskTakeContract", api.TaskTakeContract(), "roles", roles)
 			} else {
 				w.log.Info("idle release: releasing an issue's pod, which has had no turn in progress and no turn due for the idle period",
 					"issue", issue, "idle", w.idlePeriod.String(), "roles", roles)
@@ -201,7 +200,7 @@ func (w *workflowRuntime) tellOldPluginOnImage(issue string, old pods.IdleClaim)
 	w.oldPluginTold[old.Token] = old.PluginContract
 	w.log.Error("idle release: a Claude Code role runs a plugin that takes no task, and its pod already runs the configured image, so no release can bring it one that does; move the worker image",
 		"issue", issue, "claim", old.Token, "pluginContract", old.PluginContract,
-		"taskTakeContract", supervise.TaskTakeContract, "image", w.idleImage)
+		"taskTakeContract", api.TaskTakeContract(), "image", w.idleImage)
 }
 
 // releaseUnownedPods decides each pod of the project that no claim of its issue can use: an

@@ -12,20 +12,20 @@ import (
 )
 
 // restoreStaleTake is a daemon start over a claim restored ready on a plugin that names its task's
-// number (TaskTakeContract), which this daemon's later contract makes stale, holding a take the
+// number (testTakeContract), which this daemon's later contract makes stale, holding a take the
 // daemon before accepted and whose turn has not started: the boot's pass has posted the claim its
 // relaunch, which waits for the agent's word on whether it is in a turn (askTurn). set changes the
 // daemon's deps before the start.
 func restoreStaleTake(t *testing.T, set ...func(*Deps)) *harness {
 	t.Helper()
 	h := newBareHarness(t)
-	h.deps.PluginContract, h.deps.PluginRelaunchable = TaskTakeContract+1, true
+	h.deps.PluginContract, h.deps.PluginRelaunchable = testTakeContract+1, true
 	for _, change := range set {
 		change(&h.deps)
 	}
 	h.manualTakes()
 	c := fixture(StateReady)
-	c.PluginContract = TaskTakeContract
+	c.PluginContract = testTakeContract
 	c.Pending.ConfirmedAt, c.Pending.TakenText, c.TaskTaken = epoch, c.Pending.Task, 1
 	h.restore(c)
 	h.must(StalePlugin{Claim: h.token, Trigger: "boot"})
@@ -75,9 +75,9 @@ func TestAReconnectDeadlineLeavesAHeldSuspensionToTheTakesTurnAndReport(t *testi
 	})
 	t.Run("no hello", func(t *testing.T) {
 		h := newBareHarness(t)
-		h.deps.PluginContract = TaskTakeContract
+		h.deps.PluginContract = testTakeContract
 		restored := fixture(StateWorking)
-		restored.PluginContract = TaskTakeContract
+		restored.PluginContract = testTakeContract
 		h.restore(restored)
 		if err := h.handle(daemonSuspension(h)); !errors.Is(err, ErrSuspendHeld) {
 			t.Fatalf("the daemon's suspension of the restored working claim answered %v, want it held", err)

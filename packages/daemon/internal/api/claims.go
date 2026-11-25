@@ -807,7 +807,7 @@ func (s *server) readRegisterBody(w http.ResponseWriter, r *http.Request, into *
 // serves the claim on its previous contract — grants, handoff_complete and every other
 // grant-bearing route, as well as the claim routes — and the end of the round is what relaunches
 // the process onto the current plugin. A claim whose plugin declares a contract below
-// supervise.TaskTakeContract is the one exception (supervise.TakesNoTask): the round's question
+// TaskTakeContract, the task-take entry's, is the one exception (supervise.TakesNoTask): the round's question
 // is a task it cannot take, so it is refused inside a round as outside one, and the stale-plugin
 // lane relaunches it onto the current plugin there (internal/daemon's staleForTheLane).
 //
@@ -827,7 +827,7 @@ func (s *server) readRegisterBody(w http.ResponseWriter, r *http.Request, into *
 // asked has answered it already: a pending task is given by no take to a claim that is not ready
 // or idle (supervise's staleRefusesClaim, claimHold).
 func (s *server) staleClaim(c supervise.Claim) (int, bool) {
-	return c.PluginContract, supervise.StaleRefusesCalls(c, DaemonAPIVersion, s.pluginRelaunchable, s.noPluginInstall) &&
+	return c.PluginContract, supervise.StaleRefusesCalls(c, DaemonAPIVersion(), TaskTakeContract(), s.pluginRelaunchable, s.noPluginInstall) &&
 		c.State != supervise.StateWorking
 }
 
@@ -835,7 +835,7 @@ func (s *server) staleClaim(c supervise.Claim) (int, bool) {
 // never a secret.
 func (s *server) logStaleRefusal(r *http.Request, identityKey, identityValue string, got int) {
 	s.log.Warn("api: refused a call from a process on another plugin contract",
-		"route", r.URL.Path, identityKey, identityValue, "pluginContract", got, "daemonApiVersion", DaemonAPIVersion)
+		"route", r.URL.Path, identityKey, identityValue, "pluginContract", got, "daemonApiVersion", DaemonAPIVersion())
 }
 
 // refuseIfStaleClaim is the claim-route refusal shape (ready, exit): the sentence-only refusal
@@ -847,7 +847,7 @@ func (s *server) refuseIfStaleClaim(w http.ResponseWriter, r *http.Request, c su
 		return false
 	}
 	s.logStaleRefusal(r, "claim", string(c.Token), got)
-	refusal := claim.StalePluginContract(got, DaemonAPIVersion)
+	refusal := claim.StalePluginContract(got, DaemonAPIVersion())
 	s.writeAnswer(w, r, AnswerRefusal, refusal.Status, refusal)
 	return true
 }
@@ -860,7 +860,7 @@ func (s *server) refuseIfStaleClaimFailure(w http.ResponseWriter, r *http.Reques
 		return false
 	}
 	s.logStaleRefusal(r, "claim", string(c.Token), got)
-	s.writeFailure(w, r, http.StatusConflict, "STALE_PLUGIN_CONTRACT", claim.StalePluginContract(got, DaemonAPIVersion).Message)
+	s.writeFailure(w, r, http.StatusConflict, "STALE_PLUGIN_CONTRACT", claim.StalePluginContract(got, DaemonAPIVersion()).Message)
 	return true
 }
 

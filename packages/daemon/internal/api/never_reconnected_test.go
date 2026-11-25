@@ -13,18 +13,18 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// neverReconnectedIssue is an issue whose two claims carry the failure cause
-// supervise.TaskTakeContract added: its architect failed under it, the relaunches after a daemon
-// start whose shim never said hello having run out, and its implementer is relaunching after one
-// such process (pendingCause).
+// neverReconnectedIssue is an issue whose two claims carry the failure cause the task-take
+// entry (`contract_20261125171504_task-take.go`) added: its architect failed under it, the
+// relaunches after a daemon start whose shim never said hello having run out, and its implementer
+// is relaunching after one such process (pendingCause).
 func neverReconnectedIssue() Issue {
 	failedAt := time.Date(2026, 11, 17, 9, 14, 3, 0, time.UTC)
 	return Issue{Key: "LEGION-214", Phase: phase.Implementing, Status: "in_progress",
-		Architect: &ClaimView{Session: "ses_architect", State: string(supervise.StateFailed), PluginContract: supervise.TaskTakeContract,
+		Architect: &ClaimView{Session: "ses_architect", State: string(supervise.StateFailed), PluginContract: TaskTakeContract(),
 			Failure: &ClaimFailureView{Cause: supervise.CauseNeverReconnected, Detail: "launch failures ran out", At: &failedAt,
 				Attempts: BudgetsView{LaunchFailures: 3}}},
 		Workers: map[claim.Role]PhaseView{claim.RoleImplementer: {Claim: ClaimView{Session: "ses_implementer",
-			State: string(supervise.StateQueued), PluginContract: supervise.TaskTakeContract,
+			State: string(supervise.StateQueued), PluginContract: TaskTakeContract(),
 			PendingCause: supervise.CauseNeverReconnected}, Rounds: 1}}}
 }
 
@@ -53,8 +53,8 @@ func neverReconnectedCauses(t *testing.T, body []byte) (failure, pending string)
 	return issue.Architect.Failure.Cause, issue.Workers[string(claim.RoleImplementer)].Claim.PendingCause
 }
 
-// A plugin below supervise.TaskTakeContract reads `failure.cause` and `pendingCause` through a
-// strict enum of the causes it was built with, so never_reconnected, the word that contract added,
+// A plugin below TaskTakeContract reads `failure.cause` and `pendingCause` through a
+// strict enum of the causes it was built with, so never_reconnected, the word that entry added,
 // would refuse the whole state body at it, every claim of the project included. Such a caller is
 // served never_registered in its place in both keys — the nearest cause it knows, a process that
 // never said hello — by the value strip of the failure cause (shaping.go's withoutNeverReconnected),
@@ -71,11 +71,11 @@ func TestNeverReconnectedIsServedAsNeverRegisteredBelowItsContract(t *testing.T)
 	const podBelow = shapedAnswersContract - 1
 
 	below, narrowings := stateNarrowed(t, state, statePodAddr+":41000", podClaims(podBelow))
-	stated := stateStating(t, shapedServer(t, state, podClaims(podBelow), &bytes.Buffer{}, true), "192.0.2.1:41000", supervise.TaskTakeContract-1)
+	stated := stateStating(t, shapedServer(t, state, podClaims(podBelow), &bytes.Buffer{}, true), "192.0.2.1:41000", TaskTakeContract()-1)
 	for _, served := range []struct {
 		caller string
 		body   []byte
-	}{{"a pod at " + strconv.Itoa(podBelow), below}, {"a caller stating " + strconv.Itoa(supervise.TaskTakeContract-1), stated}} {
+	}{{"a pod at " + strconv.Itoa(podBelow), below}, {"a caller stating " + strconv.Itoa(TaskTakeContract()-1), stated}} {
 		if failure, pending := neverReconnectedCauses(t, served.body); failure != string(supervise.CauseNeverRegistered) ||
 			pending != string(supervise.CauseNeverRegistered) {
 			t.Errorf("%s is served failure.cause %q and pendingCause %q, want %q in both: its plugin's enum names no %q",
@@ -91,10 +91,10 @@ func TestNeverReconnectedIsServedAsNeverRegisteredBelowItsContract(t *testing.T)
 		t.Errorf("the daemon wrote %+v for a pod at %d, want a value line saying it dropped %q", narrowings, podBelow, droppedFailureCause)
 	}
 
-	at := stateStating(t, shapedServer(t, state, podClaims(podBelow), &bytes.Buffer{}, true), "192.0.2.1:41000", supervise.TaskTakeContract)
+	at := stateStating(t, shapedServer(t, state, podClaims(podBelow), &bytes.Buffer{}, true), "192.0.2.1:41000", TaskTakeContract())
 	if failure, pending := neverReconnectedCauses(t, at); failure != string(supervise.CauseNeverReconnected) ||
 		pending != string(supervise.CauseNeverReconnected) {
-		t.Errorf("a caller at %d is served failure.cause %q and pendingCause %q, want %q in both", supervise.TaskTakeContract,
+		t.Errorf("a caller at %d is served failure.cause %q and pendingCause %q, want %q in both", TaskTakeContract(),
 			failure, pending, supervise.CauseNeverReconnected)
 	}
 	source := state.Issues["LEGION-214"]

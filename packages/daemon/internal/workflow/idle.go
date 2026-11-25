@@ -301,7 +301,7 @@ type IdleDecision struct {
 // before.
 //
 // One claim changes the rule: a live claim whose registered process runs a plugin that takes no
-// task (supervise.TakesNoTask, a contract below supervise.TaskTakeContract) and whose launch
+// task (supervise.TakesNoTask, a contract below takeContract) and whose launch
 // installs no plugin (fixedPlugin: a Claude Code role in a pod, whose plugin is the image's own
 // claude-envoy), the old plugin (oldPlugin). No relaunch brings such a worker a plugin that
 // takes, so it waits for a prompt this daemon never sends, and the update round a new image
@@ -322,8 +322,11 @@ type IdleDecision struct {
 // the pod that replaced it would bring the same plugin back, and a deployment that has not moved
 // its image would release it again at every tick. Either decision names the claim (OldPlugin),
 // and the second is what the daemon logs as an error. fixedPlugin nil is no role's launch
-// installing no plugin, which is every daemon whose runtime is not Kubernetes.
-func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfiguredImage bool, contract int, fixedPlugin func(claim.Role) bool) IdleDecision {
+// installing no plugin, which is every daemon whose runtime is not Kubernetes. takeContract is
+// the contract at which a worker takes its task (the daemon's api.TaskTakeContract), passed apart
+// from contract, the daemon's own: a later contract entry raises the daemon's contract and leaves
+// the take contract where it is.
+func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfiguredImage bool, contract, takeContract int, fixedPlugin func(claim.Role) bool) IdleDecision {
 	if !view.Found {
 		return IdleDecision{Hold: IdleHoldNoPod}
 	}
@@ -352,7 +355,7 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 	if len(roles) == 0 {
 		return IdleDecision{Hold: IdleHoldNoLiveClaim}
 	}
-	old := oldPlugin(view, fixedPlugin)
+	old := oldPlugin(view, takeContract, fixedPlugin)
 	switch {
 	case old != nil && onConfiguredImage:
 		return IdleDecision{Hold: IdleHoldPluginContract, OldPlugin: old}
@@ -426,17 +429,17 @@ func behindHold(view pods.IdleView, onConfiguredImage bool, contract int) IdleHo
 }
 
 // oldPlugin is the first live claim of the pod whose registered process runs a plugin that takes
-// no task (supervise.TakesNoTask) and whose role's launch installs no plugin (fixedPlugin), nil
+// no task (supervise.TakesNoTask, below takeContract) and whose role's launch installs no plugin (fixedPlugin), nil
 // where the pod holds none (IdleRelease). The contract is read only off a claim whose process
 // holds a capability (supervise.HoldsCapability): a claim still launching records the contract
 // of the process before it, and the pod a release has just replaced would otherwise be read as
 // one that came back on the old plugin before its new process had registered at all.
-func oldPlugin(view pods.IdleView, fixedPlugin func(claim.Role) bool) *pods.IdleClaim {
+func oldPlugin(view pods.IdleView, takeContract int, fixedPlugin func(claim.Role) bool) *pods.IdleClaim {
 	if fixedPlugin == nil {
 		return nil
 	}
 	for _, c := range view.Claims {
-		if c.Live() && supervise.HoldsCapability(c.State) && supervise.TakesNoTask(c.PluginContract) && fixedPlugin(c.Role) {
+		if c.Live() && supervise.HoldsCapability(c.State) && supervise.TakesNoTask(c.PluginContract, takeContract) && fixedPlugin(c.Role) {
 			return &c
 		}
 	}

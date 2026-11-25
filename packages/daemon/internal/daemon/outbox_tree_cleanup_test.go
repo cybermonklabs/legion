@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -74,10 +75,11 @@ func TestAReservedTreeCloseFinishesItsCleanupAfterReadmission(t *testing.T) {
 			sup := newSupervisor(ctx, nil, "legion", t.TempDir(), quietLogger())
 			sup.deps = supervise.Deps{
 				Runtime: rt, Conns: fake.NewConns(), Store: st, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
-				Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
-				Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
-				PluginContract: 24,
-				RefreshGate:    supervise.NewRefreshGate(0),
+				Limits:           supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
+				Timeouts:         supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
+				PluginContract:   24,
+				TaskTakeContract: api.TaskTakeContract(),
+				RefreshGate:      supervise.NewRefreshGate(0),
 			}
 			t.Cleanup(sup.stop)
 			runner := &outbox{log: quietLogger(),
@@ -194,10 +196,11 @@ func TestAnOrphansClaimsLeaveTheirOldTreeAndStartInTheirOwn(t *testing.T) {
 			sup := newSupervisor(ctx, st, "legion", t.TempDir(), quietLogger())
 			sup.deps = supervise.Deps{
 				Runtime: rt, Conns: fake.NewConns(), Store: st, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
-				Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
-				Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
-				PluginContract: 24,
-				RefreshGate:    supervise.NewRefreshGate(0),
+				Limits:           supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
+				Timeouts:         supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
+				PluginContract:   24,
+				TaskTakeContract: api.TaskTakeContract(),
+				RefreshGate:      supervise.NewRefreshGate(0),
 			}
 			t.Cleanup(sup.stop)
 			token, err := claim.NewToken("legion", child.Key, claim.RolePlanner)
@@ -267,10 +270,11 @@ func TestANeverOpenedTreesLingerClosesFinishWithoutRetrying(t *testing.T) {
 	sup := newSupervisor(ctx, nil, "legion", t.TempDir(), quietLogger())
 	sup.deps = supervise.Deps{
 		Runtime: fake.NewRuntime(), Conns: fake.NewConns(), Store: st, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
-		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
-		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract: 24,
-		RefreshGate:    supervise.NewRefreshGate(0),
+		Limits:           supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
+		Timeouts:         supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
+		PluginContract:   24,
+		TaskTakeContract: api.TaskTakeContract(),
+		RefreshGate:      supervise.NewRefreshGate(0),
 	}
 	t.Cleanup(sup.stop)
 	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())

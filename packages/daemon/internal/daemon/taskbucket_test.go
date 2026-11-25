@@ -279,7 +279,7 @@ func (r *bucketRig) spawn(issue, task string) *bucketWorker {
 	})
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: w.bootToken, SessionID: w.session, OmpSessionFile: "/sessions/" + string(token) + ".jsonl",
-		AgentID: "agent", PluginContract: api.DaemonAPIVersion,
+		AgentID: "agent", PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		r.t.Fatalf("register %s = %d; body %s", token, status, body)

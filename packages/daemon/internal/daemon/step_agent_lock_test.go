@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -36,10 +37,11 @@ func TestTheReadOfAStepsAgentWaitsOnNoCreateThatWaitsOnTheFactLock(t *testing.T)
 	sup := newSupervisor(ctx, st, "legion", t.TempDir(), quietLogger())
 	sup.deps = supervise.Deps{
 		Runtime: fake.NewRuntime(), Conns: fake.NewConns(), Store: st, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
-		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
-		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract: 24,
-		RefreshGate:    supervise.NewRefreshGate(0),
+		Limits:           supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
+		Timeouts:         supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
+		PluginContract:   24,
+		TaskTakeContract: api.TaskTakeContract(),
+		RefreshGate:      supervise.NewRefreshGate(0),
 	}
 	t.Cleanup(sup.stop)
 	w := &workflowRuntime{log: quietLogger()}
@@ -125,10 +127,11 @@ func stepAgentRig(t *testing.T) (*store.Pool, *store.Store, *supervisor, *workfl
 	sup := newSupervisor(ctx, st, "legion", t.TempDir(), quietLogger())
 	sup.deps = supervise.Deps{
 		Runtime: fake.NewRuntime(), Conns: fake.NewConns(), Store: counted, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
-		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
-		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract: 24,
-		RefreshGate:    supervise.NewRefreshGate(0),
+		Limits:           supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
+		Timeouts:         supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
+		PluginContract:   24,
+		TaskTakeContract: api.TaskTakeContract(),
+		RefreshGate:      supervise.NewRefreshGate(0),
 	}
 	t.Cleanup(sup.stop)
 	w := &workflowRuntime{log: quietLogger()}

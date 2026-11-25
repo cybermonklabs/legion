@@ -123,7 +123,7 @@ func (m *Machine) overTurnFinish() (by string, finishes bool) {
 	switch {
 	case m.takePhase() == waitFinish:
 		return finishedByReport, true
-	case TakesNoTask(m.claim.PluginContract):
+	case TakesNoTask(m.claim.PluginContract, m.deps.TaskTakeContract):
 		return finishedByEndFrame, true
 	}
 	return "", false

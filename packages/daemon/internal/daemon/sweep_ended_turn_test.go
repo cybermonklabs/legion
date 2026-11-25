@@ -50,7 +50,7 @@ func TestASweepEndedTurnReleasesTheIssuesHeldTake(t *testing.T) {
 	rig.conns.Register(implementer, implementerConn)
 	if _, err := rig.sup.restore(rig.ctx, []supervise.Claim{{Token: implementer, Project: rig.project, Tree: "LEGION-208",
 		Issue: "LEGION-209", Role: claim.RoleImplementer, Generation: 1, State: supervise.StateWorking, Locator: &locator,
-		Session: "ses-implementer", SessionFile: "/sessions/implementer.jsonl", PluginContract: api.DaemonAPIVersion}}); err != nil {
+		Session: "ses-implementer", SessionFile: "/sessions/implementer.jsonl", PluginContract: api.DaemonAPIVersion()}}); err != nil {
 		t.Fatalf("restore the working implementer: %v", err)
 	}
 	writing, found := rig.sup.Machine(implementer)

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
@@ -450,7 +451,7 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := IdleRelease(tc.view, idleNow, idlePeriod, tc.image, idleContract, nil)
+			got := IdleRelease(tc.view, idleNow, idlePeriod, tc.image, idleContract, api.TaskTakeContract(), nil)
 			if got.OldPlugin != nil {
 				t.Fatalf("the decision names the old plugin %+v, want none where no role's launch installs no plugin", *got.OldPlugin)
 			}
@@ -480,7 +481,7 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 // each row below changes exactly one thing about it.
 func oldPluginChild() pods.IdleView {
 	v := idleChild()
-	v.Claims[0].PluginContract = supervise.TaskTakeContract - 1
+	v.Claims[0].PluginContract = api.TaskTakeContract() - 1
 	v.Claims[0].UpdateRound = supervise.PodRound(idlePod)
 	v.Claims[0].UpdatedAt = idleNow.Add(-time.Minute)
 	v.Claims[0].ActivityAt = idleNow.Add(-time.Minute)
@@ -500,7 +501,7 @@ func claudeImplementer(role claim.Role) bool { return role == claim.RoleImplemen
 // Claude Code role at the contract that takes tasks, and one still launching, whose recorded
 // contract is its last process's, are each held as any pod behind its image is.
 func TestTheIdleRuleReleasesAnOldPluginsPodOntoTheConfiguredImage(t *testing.T) {
-	old := pods.IdleClaim{Role: claim.RoleImplementer, PluginContract: supervise.TaskTakeContract - 1}
+	old := pods.IdleClaim{Role: claim.RoleImplementer, PluginContract: api.TaskTakeContract() - 1}
 	for _, tc := range []struct {
 		name  string
 		view  pods.IdleView
@@ -563,7 +564,7 @@ func TestTheIdleRuleReleasesAnOldPluginsPodOntoTheConfiguredImage(t *testing.T) 
 			name: "a Claude Code role at the contract that takes tasks",
 			view: func() pods.IdleView {
 				v := oldPluginChild()
-				v.Claims[0].PluginContract = supervise.TaskTakeContract
+				v.Claims[0].PluginContract = api.TaskTakeContract()
 				return v
 			}(),
 			fixed: claudeImplementer, want: IdleHoldImage,
@@ -575,7 +576,7 @@ func TestTheIdleRuleReleasesAnOldPluginsPodOntoTheConfiguredImage(t *testing.T) 
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := IdleRelease(tc.view, idleNow, idlePeriod, tc.image, supervise.TaskTakeContract, tc.fixed)
+			got := IdleRelease(tc.view, idleNow, idlePeriod, tc.image, api.TaskTakeContract(), api.TaskTakeContract(), tc.fixed)
 			if got.Hold != tc.want {
 				t.Fatalf("hold = %s, want %s", got.Hold, tc.want)
 			}
@@ -1045,7 +1046,7 @@ func TestTheIdleRuleReleasesNoPodOfAnIssueAnotherProjectRecords(t *testing.T) {
 
 	var decided IdleDecision
 	marked, err := st.ReleaseIdleIssue(ctx, "legion", issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
-		decided = IdleRelease(view, now, idlePeriod, true, idleContract, nil)
+		decided = IdleRelease(view, now, idlePeriod, true, idleContract, api.TaskTakeContract(), nil)
 		if !decided.Release {
 			return store.IdleReleaseMark{}, nil
 		}

@@ -185,7 +185,7 @@ func TestStoredClaimClearsEveryFieldTheMachineOverlays(t *testing.T) {
 	// number: the report of the take's turn is owed (ReportOwed).
 	pending, contract := h.m.claim.Pending, h.m.claim.PluginContract
 	h.m.claim.Pending = &Delivery{ID: "dlv-owed", Task: "the task whose report is owed", Number: 1, ConfirmedAt: epoch, TurnStarted: true}
-	h.m.claim.PluginContract = TaskTakeContract
+	h.m.claim.PluginContract = testTakeContract
 	reported, held := h.m.current(), copyClaim(h.m.claim)
 	h.m.held, h.m.compacting, h.m.processGone, h.m.awaitsPod = nil, nil, false, nil
 	h.m.claim.Pending, h.m.claim.PluginContract = pending, contract

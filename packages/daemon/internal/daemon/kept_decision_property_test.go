@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -1031,12 +1032,13 @@ func (r *keptRun) restart() {
 		Runtime: r.rt, Conns: fake.NewConns(), Store: r.claims, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
 		// The daemon's own readings of whether a root architect's task may be sent and of what that
 		// task says now (workflowRuntime.rootHears, rootTask), over this run's pool and store.
-		RootHears:      (&workflowRuntime{pool: r.pool, records: r.records}).rootHears,
-		RootTask:       (&workflowRuntime{pool: r.pool, records: r.records}).rootTask,
-		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
-		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract: 24,
-		RefreshGate:    supervise.NewRefreshGate(0),
+		RootHears:        (&workflowRuntime{pool: r.pool, records: r.records}).rootHears,
+		RootTask:         (&workflowRuntime{pool: r.pool, records: r.records}).rootTask,
+		Limits:           supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
+		Timeouts:         supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
+		PluginContract:   24,
+		TaskTakeContract: api.TaskTakeContract(),
+		RefreshGate:      supervise.NewRefreshGate(0),
 		// The supervisor runs on the run's own mark (r.ctx), and each goroutine a machine starts —
 		// a timer's firing, a prompt's send, whose outcome is a delivery write — takes a mark of its
 		// own, as the daemon gives it (daemon.go's supervise.Deps). Without it every such goroutine

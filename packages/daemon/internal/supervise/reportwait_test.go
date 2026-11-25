@@ -380,7 +380,7 @@ func TestAStalePluginRelaunchWaitsForTheReportOfItsTakesTurn(t *testing.T) {
 		h.reach(StateReady)
 		h.takesTurnEndsWithItsReportToCome()
 		number, stops := h.pending().Number, len(h.calls("Suspend"))
-		h.deps.PluginContract, h.m.deps.PluginContract = TaskTakeContract+1, TaskTakeContract+1
+		h.deps.PluginContract, h.m.deps.PluginContract = testTakeContract+1, testTakeContract+1
 		h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
 		h.wantStillAwaitingItsReport(number, stops)
 		return h, number, stops
@@ -445,7 +445,7 @@ var (
 		name: "the stale-plugin relaunch held",
 		hold: func(h *harness) {
 			h.t.Helper()
-			h.deps.PluginContract, h.m.deps.PluginContract = TaskTakeContract+1, TaskTakeContract+1
+			h.deps.PluginContract, h.m.deps.PluginContract = testTakeContract+1, testTakeContract+1
 			h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
 			if h.m.staleRelaunch == nil {
 				h.t.Fatal("no relaunch is held for the run given the take")

@@ -89,7 +89,7 @@ type State struct {
 	// to its worker failed, so the daemon charges nobody and writes the value again once per
 	// bound, and this is where an operator reads that it does (supervise.ClaimView.UnseenTask,
 	// UnseenTaskValuesOf). Never null; empty while every owed value was seen, which is every
-	// moment the listeners relay (contract supervise.TaskTakeContract).
+	// moment the listeners relay (the task-take entry, `contract_20261125171504_task-take.go`).
 	UnseenTaskValues []UnseenTaskValue `json:"unseenTaskValues"`
 	// Paused is the project's open pause while the project is paused (dispatch://INFRA-3759,
 	// decision 25): who paused, since when and why, the claims whose stop it still waits on, and
@@ -167,7 +167,7 @@ type State struct {
 	// below shaping.go's intakeGiveUpsContract (api's withoutIntakeGiveUps).
 	intakeGiveUpsHidden bool
 	// unseenTaskValuesHidden is the same for UnseenTaskValues, set on the copy the route serves a
-	// caller below supervise.TaskTakeContract (shaping.go's withoutUnseenTaskValues): a strict reader
+	// caller below TaskTakeContract (shaping.go's withoutUnseenTaskValues): a strict reader
 	// before that contract refuses the key empty as surely as filled.
 	unseenTaskValuesHidden bool
 }
@@ -581,7 +581,7 @@ type DispatchCredentialView struct {
 // `omitempty` drops, so the pointer is what lets one type serve every key — each field set when
 // its key is not hidden and left nil when it is — rather than a struct per set of flags. The
 // bands compose, so a caller below wakesWaitingContract (53) is below claimsToRefreshContract
-// (73), intakeGiveUpsContract (228) and supervise.TaskTakeContract as well and is served none of
+// (73), intakeGiveUpsContract (228) and TaskTakeContract as well and is served none of
 // the four.
 //
 // A body that hides none of them is marshaled through the embedded value alone. The shadow's own

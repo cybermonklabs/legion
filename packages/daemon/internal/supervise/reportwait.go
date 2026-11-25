@@ -253,7 +253,7 @@ func (m *Machine) takePhase() waitPhase {
 		return waitNone
 	case m.finishOwed:
 		return waitFinish
-	case TakesNoTask(m.claim.PluginContract):
+	case TakesNoTask(m.claim.PluginContract, m.deps.TaskTakeContract):
 		return waitNone
 	case p.awaitsStart():
 		return waitTake

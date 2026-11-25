@@ -319,10 +319,10 @@ func staleClaimsListed(t *testing.T, d *daemon) int {
 	t.Helper()
 	left := 0
 	for _, c := range d.claims() {
-		if c.Session == "" || c.PluginContract == api.DaemonAPIVersion || !supervise.HoldsCapability(supervise.ClaimState(c.State)) {
+		if c.Session == "" || c.PluginContract == api.DaemonAPIVersion() || !supervise.HoldsCapability(supervise.ClaimState(c.State)) {
 			continue
 		}
-		if (supervise.IsPodRound(c.UpdateRound) && !supervise.TakesNoTask(c.PluginContract)) || c.Role == refreshNoInstallRole {
+		if (supervise.IsPodRound(c.UpdateRound) && !supervise.TakesNoTask(c.PluginContract, api.TaskTakeContract())) || c.Role == refreshNoInstallRole {
 			continue
 		}
 		left++
@@ -466,7 +466,7 @@ func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *t
 			c.BootTokenHash = supervise.HashBootToken(bootTokenOf(i))
 		case i == refreshWaveRounded:
 			c.UpdateRound = supervise.PodRound(fmt.Sprintf("pod-of-%s-%d", cfg.Project, i))
-			c.PluginContract = api.DaemonAPIVersion + 1
+			c.PluginContract = api.DaemonAPIVersion() + 1
 		}
 		return c
 	})
@@ -704,7 +704,7 @@ func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *t
 		contract int
 		why      string
 	}{
-		{rounded, api.DaemonAPIVersion + 1, "its pod update round is carrying it"},
+		{rounded, api.DaemonAPIVersion() + 1, "its pod update round is carrying it"},
 		{noInstall, supervise.PodUpdateContract - 1, "no install of this daemon's reaches its plugin"},
 	} {
 		if got := rt.launchesOf(each.token); got != 0 {

@@ -216,7 +216,8 @@ func startCrossDaemon(t *testing.T, set ...func(*supervise.Deps)) *crossDaemon {
 		Timeouts: supervise.Timeouts{
 			Boot: time.Minute, RegistrationIntervals: 3, RPC: 5 * time.Second, Probe: 45 * time.Second, Stop: 10 * time.Second, LaunchBackoff: time.Millisecond,
 		},
-		PluginContract:     api.DaemonAPIVersion,
+		PluginContract:     api.DaemonAPIVersion(),
+		TaskTakeContract:   api.TaskTakeContract(),
 		PluginRelaunchable: true,
 		RefreshGate:        supervise.NewRefreshGate(0),
 		TaskValues:         values,
@@ -274,7 +275,7 @@ func (d *crossDaemon) register(boot string) claim.RegisterResponse {
 	var registered claim.RegisterResponse
 	d.post("/legion/v1/claims/register", claim.RegisterRequest{BootToken: boot, SessionID: crossSession,
 		OmpSessionFile: "/claude/projects/-work/" + crossSession + ".jsonl", AgentID: crossSession,
-		PluginContract: api.DaemonAPIVersion}, http.StatusOK, &registered)
+		PluginContract: api.DaemonAPIVersion()}, http.StatusOK, &registered)
 	return registered
 }
 

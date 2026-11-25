@@ -2,6 +2,7 @@ import { readdir, stat } from "node:fs/promises"
 import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { SESSION_LIVE_WINDOW_MS } from "@legion/contracts"
+import { daemonContract } from "@legion/contracts/daemon-contract"
 import type { LegionTask } from "@legion/contracts/legion-api"
 import { messageFor } from "@legion/envoy-client/errors"
 import type { RelayTaskValue } from "@legion/envoy-client/relay-frame"
@@ -10,7 +11,7 @@ import type { EnvoyClient } from "@legion/envoy-client/transport"
 import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import { bootLegionClaim, type LegionClaimBoot } from "@legion/pi-shared/legion-claim-core"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
-import { legion } from "../package.json" with { type: "json" }
+import pkg from "../package.json" with { type: "json" }
 import { configuredValue } from "./claude-session"
 import type { ChannelSession } from "./envoy-channel-server"
 import type { InboxTaskValue } from "./legion-inbox"
@@ -21,6 +22,12 @@ import type { InboxTaskValue } from "./legion-inbox"
  * every harness shares (`@legion/pi-shared/legion-claim-core`). The daemon launches the pane with
  * its boot token (`LEGION_BOOT_TOKEN_FILE`) and its address (`LEGION_DAEMON_URL`).
  */
+
+/** The daemon API contract this build speaks, read once as the module loads (`daemonContract`):
+ * the manifest of the module this process loaded names it once a pack or `scripts/build.ts --out`
+ * has written it, and a checkout's own fixtures decide it for code run from the checkout. A
+ * bundle installed with neither refuses to load here rather than speak a number it guessed. */
+const PLUGIN_CONTRACT = daemonContract(pkg, import.meta.dir)
 
 /** What the daemon put on a Legion pane: its address, the boot token the registration spends, the
  * claim's own Claude Code directory (`CLAUDE_CONFIG_DIR`), which holds the transcript, and whether
@@ -63,13 +70,12 @@ export async function legionPane(env: NodeJS.ProcessEnv): Promise<LegionPane | u
 }
 
 /**
- * The pane's client for the daemon. It states this build's own `legion.daemonApiVersion` on
- * every request, read from the manifest of the module this process loaded, as the claim's
- * registration below reads it: the daemon serves each answer in the shape the contract the
- * caller states describes, so a pane an older or newer daemon answers still reads its answers.
+ * The pane's client for the daemon. It states this build's own contract on every request, as the
+ * claim's registration below states it: the daemon serves each answer in the shape the contract
+ * the caller states describes, so a pane an older or newer daemon answers still reads its answers.
  */
 export function paneDaemonClient(daemonUrl: string): LegionDaemonClient {
-  return createLegionDaemonClient(daemonUrl, { pluginContract: legion.daemonApiVersion })
+  return createLegionDaemonClient(daemonUrl, { pluginContract: PLUGIN_CONTRACT })
 }
 
 /** Writes one line to the pane's log, the server's stderr. */
@@ -207,7 +213,7 @@ export interface LegionClaim {
  * Boots the pane's claim in the background of the server (`bootLegionClaim`): waits for the
  * transcript, and in a pod whose launcher keeps it (`launcherSaves`) for the launcher's first save
  * of it too, registers with it as the session file (`agentId` is the session id,
- * `pluginContract` this package's `legion.daemonApiVersion`), sends `claims/ready` with no
+ * `pluginContract` this build's own contract), sends `claims/ready` with no
  * capability report, and claims the claim token's Envoy role soft right after it, recording it
  * with the channel session, whose heartbeat re-asserts it. A failure the core stops on ends the
  * pane through `stop`; a failure before a registration is logged and leaves the pane to the
@@ -305,7 +311,7 @@ export function startLegionClaim(deps: {
         sessionId: sessionID,
         ompSessionFile: transcript,
         agentId: sessionID,
-        pluginContract: legion.daemonApiVersion,
+        pluginContract: PLUGIN_CONTRACT,
       },
       afterRegister: async (registered) => read(registered),
       taskValue: read,

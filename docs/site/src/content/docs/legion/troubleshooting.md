@@ -651,8 +651,9 @@ failure under the cause word `provider_error`, with the same sentence as its `de
 
 **A turn that was not the take's** — a phase reminder the plugin starts itself, an Envoy message, a
 background job's result — names no task in the plugin's turn-outcome report, so the daemon judges
-it from that report alone, by the HTTP status in its provider error (a plugin from before daemon
-API contract 306 says the same with `unprompted` and `httpStatus`). The same rule holds: a status
+it from that report alone, by the HTTP status in its provider error (a plugin from before the
+task-take entry, `contract_20261125171504_task-take.go`, says the same with `unprompted` and
+`httpStatus`). The same rule holds: a status
 that cannot clear fails the claim at once, with `why` reading
 `a provider error that cannot clear ended a turn of this claim's agent that ran none of the daemon's tasks: <cause>`,
 holds the issue under the cause word `provider_error`, and so ends the plugin's reminders. Any
@@ -1715,7 +1716,7 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   delivery of the daemon's own tells its agent what the relaunch ended`): a numbered task of
   origin `notice`, whose delivery id starts `relaunch:`, which the worker takes and which the
   report naming its number finishes as any task, or the end of its turn for a worker whose plugin
-  is below contract 306 and names no task in its reports. A newer task replaces
+  is below the task-take entry's contract and names no task in its reports. A newer task replaces
   it while no take of it is accepted, and carries the sentence in front of itself instead. The
   same task is given when the claim's held task is dropped rather than taken: the issue left the
   task's phase, the task is an ask an older daemon queued for an update round, or a root

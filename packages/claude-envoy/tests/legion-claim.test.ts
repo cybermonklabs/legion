@@ -3,11 +3,12 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { SESSION_HEARTBEAT_MS, SESSION_LIVE_WINDOW_MS } from "@legion/contracts"
+import { daemonContract } from "@legion/contracts/daemon-contract"
 import type { SetRoleInput, SetRoleResult } from "@legion/envoy-client/transport"
 import { createLegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard"
-import { legion } from "../package.json" with { type: "json" }
+import pkg from "../package.json" with { type: "json" }
 import type { RoleRegainHook } from "../src/envoy-channel-server"
 import {
   legionPane,
@@ -20,6 +21,10 @@ import {
 } from "../src/legion-claim"
 import type { InboxTaskValue } from "../src/legion-inbox"
 import { waitFor } from "./channel-session-harness"
+
+/** The contract this build speaks, as `legion-claim.ts` reads it (`daemonContract`): this
+ * checkout's. */
+const PLUGIN_CONTRACT = daemonContract(pkg, import.meta.dir)
 
 // The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
 // is a hang guard, not a verdict, for every row of this file that states none of its own.
@@ -154,7 +159,7 @@ test("registers once the transcript exists, hands the bridge the registration's 
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
     daemon: createLegionDaemonClient("http://daemon.test", {
-      pluginContract: legion.daemonApiVersion,
+      pluginContract: PLUGIN_CONTRACT,
       fetch,
     }),
     clientInstanceID: INSTANCE,
@@ -216,7 +221,7 @@ test("registers once the transcript exists, hands the bridge the registration's 
         sessionId: SESSION,
         ompSessionFile: transcript,
         agentId: SESSION,
-        pluginContract: legion.daemonApiVersion,
+        pluginContract: PLUGIN_CONTRACT,
       },
     },
     { path: "/legion/v1/claims/ready", body: caller },
@@ -298,7 +303,7 @@ test("a read of the claim's value after the ready that fails is logged and write
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
     daemon: createLegionDaemonClient("http://daemon.test", {
-      pluginContract: legion.daemonApiVersion,
+      pluginContract: PLUGIN_CONTRACT,
       fetch,
     }),
     clientInstanceID: INSTANCE,
@@ -365,7 +370,7 @@ test("hands the bridge every value as it is handed it — each one relayed for i
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
     daemon: createLegionDaemonClient("http://daemon.test", {
-      pluginContract: legion.daemonApiVersion,
+      pluginContract: PLUGIN_CONTRACT,
       fetch: stub,
     }),
     clientInstanceID: INSTANCE,
@@ -440,7 +445,7 @@ test("a registration the daemon refuses logs the refusal, stops the pane, and cl
     pane: { daemonUrl: "http://daemon.test", bootToken: "spent", configDir, launcherSaves: false },
     sessionID: SESSION,
     daemon: createLegionDaemonClient("http://daemon.test", {
-      pluginContract: legion.daemonApiVersion,
+      pluginContract: PLUGIN_CONTRACT,
       fetch,
     }),
     clientInstanceID: INSTANCE,
@@ -483,7 +488,7 @@ test("a role another live session holds stops the pane after it has said it is r
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
     daemon: createLegionDaemonClient("http://daemon.test", {
-      pluginContract: legion.daemonApiVersion,
+      pluginContract: PLUGIN_CONTRACT,
       fetch,
     }),
     clientInstanceID: INSTANCE,
@@ -536,7 +541,7 @@ test("a claim refused by a standing claim under this session's own id is asked a
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
     daemon: createLegionDaemonClient("http://daemon.test", {
-      pluginContract: legion.daemonApiVersion,
+      pluginContract: PLUGIN_CONTRACT,
       fetch,
     }),
     clientInstanceID: INSTANCE,
@@ -623,7 +628,7 @@ test("the wait asks on its own interval until the live window passes, and the gr
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
     daemon: createLegionDaemonClient("http://daemon.test", {
-      pluginContract: legion.daemonApiVersion,
+      pluginContract: PLUGIN_CONTRACT,
       fetch,
     }),
     clientInstanceID: INSTANCE,
@@ -702,7 +707,7 @@ test("a claim under this session's own id that is never granted stops the pane o
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
     daemon: createLegionDaemonClient("http://daemon.test", {
-      pluginContract: legion.daemonApiVersion,
+      pluginContract: PLUGIN_CONTRACT,
       fetch,
     }),
     clientInstanceID: INSTANCE,
@@ -753,7 +758,7 @@ test("a registration the daemon failed (5xx) is logged and leaves the pane to th
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
     daemon: createLegionDaemonClient("http://daemon.test", {
-      pluginContract: legion.daemonApiVersion,
+      pluginContract: PLUGIN_CONTRACT,
       fetch,
     }),
     clientInstanceID: INSTANCE,
@@ -806,7 +811,7 @@ async function bootOn(env: Record<string, string>): Promise<{
     pane,
     sessionID: SESSION,
     daemon: createLegionDaemonClient("http://daemon.test", {
-      pluginContract: legion.daemonApiVersion,
+      pluginContract: PLUGIN_CONTRACT,
       fetch,
     }),
     clientInstanceID: INSTANCE,
@@ -875,5 +880,5 @@ test("the pane's daemon client states this build's own daemon API contract on ev
     globalThis.fetch = live
   }
 
-  expect(stated).toEqual([String(legion.daemonApiVersion), String(legion.daemonApiVersion)])
+  expect(stated).toEqual([String(PLUGIN_CONTRACT), String(PLUGIN_CONTRACT)])
 })

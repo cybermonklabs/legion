@@ -60,7 +60,7 @@ on:
       - 'packages/daemon/go.sum'
       - 'packages/daemon/cmd/legion/*'
       - 'packages/daemon/internal/admit/**'
-      - 'packages/daemon/internal/api/**'
+      - 'packages/daemon/internal/api/*'
       - 'packages/daemon/internal/appauth/**'
       - 'packages/daemon/internal/backoff/**'
       - 'packages/daemon/internal/blockers/**'

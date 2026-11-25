@@ -78,14 +78,14 @@ func refreshCountState(t *testing.T, cfg config.Config, st *store.Store, view *s
 // has taken such a claim out of that round a moment before, and one machine's inbox is FIFO, so
 // the relaunch is the lane's work and a count that left it out would hide that work at the one
 // boot it exists to be read over (endPluginRounds, staleForTheLane). So is a claim in a pod round
-// whose plugin takes no task, below supervise.TaskTakeContract: the round asks it a task it
+// whose plugin takes no task, below api.TaskTakeContract(): the round asks it a task it
 // cannot take, so the pass relaunches it inside the round (staleForTheLane).
 // The count is read a second time with every claim brought onto this contract, because 0 is the
 // answer an operator reads a drained wave by and a count that can only rise says nothing.
 func TestTheStateCountsTheClaimsTheStalePluginLaneHasLeftToRefresh(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig(t)
-	stale := api.DaemonAPIVersion - 1
+	stale := api.DaemonAPIVersion() - 1
 
 	type seeded struct {
 		issue   string
@@ -100,15 +100,15 @@ func TestTheStateCountsTheClaimsTheStalePluginLaneHasLeftToRefresh(t *testing.T)
 		{issue: cfg.Project + "-3", role: claim.RoleImplementer, state: supervise.StateWorking, counted: true},
 		{issue: cfg.Project + "-4", role: claim.RoleImplementer, state: supervise.StateRegistered, counted: true},
 		{issue: cfg.Project + "-5", role: claim.RoleImplementer, state: supervise.StateIdle,
-			shape: func(c *supervise.Claim) { c.PluginContract = api.DaemonAPIVersion }},
+			shape: func(c *supervise.Claim) { c.PluginContract = api.DaemonAPIVersion() }},
 		{issue: cfg.Project + "-6", role: claim.RoleImplementer, state: supervise.StateSuspended},
 		{issue: cfg.Project + "-7", role: claim.RoleImplementer, state: supervise.StateIdle, counted: true,
 			shape: func(c *supervise.Claim) {
-				c.UpdateRound = supervise.PluginRoundPrefix + strconv.Itoa(api.DaemonAPIVersion)
+				c.UpdateRound = supervise.PluginRoundPrefix + strconv.Itoa(api.DaemonAPIVersion())
 			}},
 		{issue: cfg.Project + "-8", role: claim.RoleImplementer, state: supervise.StateIdle,
 			shape: func(c *supervise.Claim) {
-				c.PluginContract = api.DaemonAPIVersion + 1
+				c.PluginContract = api.DaemonAPIVersion() + 1
 				c.UpdateRound = supervise.PodRound("6f1c0c2a-1d1e-4a44-9d2c-0b7c1f3a9e55")
 			}},
 		{issue: cfg.Project + "-11", role: claim.RoleImplementer, state: supervise.StateIdle, counted: true,
@@ -152,7 +152,7 @@ func TestTheStateCountsTheClaimsTheStalePluginLaneHasLeftToRefresh(t *testing.T)
 	// Every claim relaunched onto this daemon's plugin: the lane has nothing left, and the count
 	// says so rather than going quiet.
 	for _, c := range run.claims {
-		c.PluginContract = api.DaemonAPIVersion
+		c.PluginContract = api.DaemonAPIVersion()
 		if err := st.PutClaim(ctx, c); err != nil {
 			t.Fatalf("bring %s onto this daemon's contract: %v", c.Token, err)
 		}

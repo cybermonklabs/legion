@@ -593,7 +593,7 @@ const takesTurnMovedLine = "supervise: a turn's report names no task of the take
 // delivery unsaved, and settle writes it again.
 func (m *Machine) notTheTakesTurn(ctx context.Context, r RequestTurnOutcome) error {
 	p := m.claim.Pending
-	if p == nil || !p.taken() || p.TakenText == "" || r.Generation != m.claim.Generation || TakesNoTask(m.claim.PluginContract) {
+	if p == nil || !p.taken() || p.TakenText == "" || r.Generation != m.claim.Generation || TakesNoTask(m.claim.PluginContract, m.deps.TaskTakeContract) {
 		return nil
 	}
 	count := m.counted()

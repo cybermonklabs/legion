@@ -613,7 +613,8 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 // Refused there, such a worker would wait on a replacement process that is never started.
 //
 // The round term holds for a claim whose plugin can take a task and for no other. A claim whose
-// plugin declares a contract below TaskTakeContract (TakesNoTask) takes no task at all, so the
+// plugin declares a contract below takeContract, the contract at which a worker takes its task
+// (TakesNoTask; the daemon's api.TaskTakeContract), takes no task at all, so the
 // rule that a round serves a claim on its old contract is reversed for these claims alone: such a
 // claim is refused inside a round as outside one, and internal/daemon's stale-plugin lane
 // relaunches it onto the current plugin there (staleForTheLane), whose process then takes its
@@ -631,11 +632,11 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 // for a relaunch nothing is making; drift the other and a task reaches a claim whose every
 // `legion` call is refused, which buys a model turn the worker can do nothing in and puts the
 // claim in a turn, postponing the very relaunch it is waiting for.
-func StaleRefusesCalls(c Claim, daemonContract int, pluginRelaunchable bool, noPluginInstall func(Claim) bool) bool {
+func StaleRefusesCalls(c Claim, daemonContract, takeContract int, pluginRelaunchable bool, noPluginInstall func(Claim) bool) bool {
 	if noPluginInstall != nil && noPluginInstall(c) {
 		return false
 	}
-	return pluginRelaunchable && c.PluginContract != daemonContract && (c.UpdateRound == "" || TakesNoTask(c.PluginContract))
+	return pluginRelaunchable && c.PluginContract != daemonContract && (c.UpdateRound == "" || TakesNoTask(c.PluginContract, takeContract))
 }
 
 // staleRefusesClaim is whether this daemon would refuse the claim's own `legion` calls because
@@ -652,7 +653,7 @@ func StaleRefusesCalls(c Claim, daemonContract int, pluginRelaunchable bool, noP
 // claimHold refuses a take of a claim that is not ready or idle first, so every claim that reaches
 // this is out of a turn, which is the claim staleClaim refuses.
 func (m *Machine) staleRefusesClaim() bool {
-	return StaleRefusesCalls(m.claim, m.deps.PluginContract, m.deps.PluginRelaunchable, m.deps.NoPluginInstall)
+	return StaleRefusesCalls(m.claim, m.deps.PluginContract, m.deps.TaskTakeContract, m.deps.PluginRelaunchable, m.deps.NoPluginInstall)
 }
 
 // NoPluginSourceMessage is logged whenever a daemon that can relaunch nothing onto a plugin

@@ -46,7 +46,7 @@ func registeredLaunch(t *testing.T, d *daemon, record *built, launch runtime.Spa
 	})
 	status, body := d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl",
-		AgentID: session, PluginContract: api.DaemonAPIVersion,
+		AgentID: session, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register the controller's launch as %s = %d; body %s", session, status, body)
@@ -82,7 +82,7 @@ func TestTheDaemonLaunchesItsControllerAndHandsItTheStartMessage(t *testing.T) {
 		t.Fatalf("the controller was launched as %+v, want the controller role on no issue, no repository, with a boot token", launch)
 	}
 
-	status, body := d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion}, true)
+	status, body := d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion()}, true)
 	if status != http.StatusConflict || !strings.Contains(string(body), "controller: daemon") {
 		t.Fatalf("the operator's controller secret = %d %s, want 409 naming controller: daemon", status, body)
 	}
@@ -93,7 +93,7 @@ func TestTheDaemonLaunchesItsControllerAndHandsItTheStartMessage(t *testing.T) {
 	})
 	status, body = d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: "ses_controller", OmpSessionFile: "/sessions/controller.jsonl",
-		AgentID: "ses_controller", PluginContract: api.DaemonAPIVersion,
+		AgentID: "ses_controller", PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register the controller with its boot token = %d; body %s", status, body)
@@ -150,7 +150,7 @@ func TestTheOperatorsDaemonLaunchesNoController(t *testing.T) {
 	cfg := testConfig(t)
 	rt := fake.NewRuntime()
 	d := startDaemon(t, cfg, fakeRuntime(rt, &built{}))
-	if status, body := d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion}, true); status != http.StatusOK {
+	if status, body := d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion()}, true); status != http.StatusOK {
 		t.Fatalf("the operator's controller secret = %d %s, want 200", status, body)
 	}
 	for _, call := range rt.CallsOf("Spawn") {
@@ -428,11 +428,11 @@ func TestADaemonSwitchedBackToTheOperatorStopsItsControllersClaim(t *testing.T) 
 	}
 	if status, body := d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: "ses_pod", OmpSessionFile: "/sessions/pod.jsonl",
-		AgentID: "ses_pod", PluginContract: api.DaemonAPIVersion,
+		AgentID: "ses_pod", PluginContract: api.DaemonAPIVersion(),
 	}, false); status == http.StatusOK {
 		t.Fatalf("the stopped controller's launch registered = %d; body %s", status, body)
 	}
-	if status, body := d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion}, true); status != http.StatusOK {
+	if status, body := d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion()}, true); status != http.StatusOK {
 		t.Fatalf("the operator's controller secret = %d %s, want 200", status, body)
 	}
 }
@@ -464,7 +464,7 @@ func TestASwitchedBackDaemonRegistersNoEarlierLaunchOfItsController(t *testing.T
 	})
 	if status, body := d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: first.BootToken, SessionID: "ses_first", OmpSessionFile: "/sessions/controller.jsonl",
-		AgentID: "ses_first", PluginContract: api.DaemonAPIVersion,
+		AgentID: "ses_first", PluginContract: api.DaemonAPIVersion(),
 	}, false); status != http.StatusOK {
 		t.Fatalf("register the controller's first launch = %d; body %s", status, body)
 	}
@@ -488,7 +488,7 @@ func TestASwitchedBackDaemonRegistersNoEarlierLaunchOfItsController(t *testing.T
 	}
 	status, body := d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: first.BootToken, SessionID: "ses_stale", OmpSessionFile: "/sessions/stale.jsonl",
-		AgentID: "ses_stale", PluginContract: api.DaemonAPIVersion,
+		AgentID: "ses_stale", PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != claim.InvalidBootToken.Status || !strings.Contains(string(body), claim.InvalidBootToken.Message) {
 		t.Fatalf("the first launch's boot token registered on the operator's daemon = %d %s, want %d %q",
@@ -594,7 +594,7 @@ func TestASwitchedBackDaemonEndsOnlyItsStoppedControllersRegistration(t *testing
 		api.GrantRequest{SessionID: "ses_pod", Secret: registration.Secret}, false); status != http.StatusForbidden {
 		t.Errorf("the stopped controller's grant = %d %s, want 403", status, body)
 	}
-	status, body := d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion}, true)
+	status, body := d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion()}, true)
 	if status != http.StatusOK {
 		t.Fatalf("the operator's controller secret = %d %s, want 200", status, body)
 	}
@@ -604,7 +604,7 @@ func TestASwitchedBackDaemonEndsOnlyItsStoppedControllersRegistration(t *testing
 	}
 	if status, body := d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: secret.Secret, SessionID: "ses_operator", OmpSessionFile: "/sessions/operator.jsonl",
-		AgentID: "ses_operator", PluginContract: api.DaemonAPIVersion,
+		AgentID: "ses_operator", PluginContract: api.DaemonAPIVersion(),
 	}, false); status != http.StatusOK {
 		t.Fatalf("register the operator's controller = %d; body %s", status, body)
 	}
@@ -645,7 +645,7 @@ func TestASwitchedBackDaemonLeavesAnOperatorsUnregisteredCapability(t *testing.T
 	if c := d.claim(token); c.State != string(supervise.StateRetired) || c.Session != "" {
 		t.Fatalf("the never-registered controller's claim is %s with session %q, want retired with none", c.State, c.Session)
 	}
-	status, body := d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion}, true)
+	status, body := d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion()}, true)
 	if status != http.StatusOK {
 		t.Fatalf("the operator's controller secret = %d %s, want 200", status, body)
 	}
@@ -659,7 +659,7 @@ func TestASwitchedBackDaemonLeavesAnOperatorsUnregisteredCapability(t *testing.T
 	d = startDaemon(t, cfg, o)
 	if status, body := d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: secret.Secret, SessionID: "ses_operator", OmpSessionFile: "/sessions/operator.jsonl",
-		AgentID: "ses_operator", PluginContract: api.DaemonAPIVersion,
+		AgentID: "ses_operator", PluginContract: api.DaemonAPIVersion(),
 	}, false); status != http.StatusOK {
 		t.Fatalf("the operator's controller registering with the capability minted before the restart = %d %s, want 200", status, body)
 	}

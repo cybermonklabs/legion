@@ -13,6 +13,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/resource"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -171,8 +172,8 @@ func newCarriedCleanup(t *testing.T, opened bool) *carriedCleanup {
 	}
 	// The child's Sandbox, left Running by its old tree, and the old root's own.
 	rootSandbox, childSandbox := "legion-legion-legion-207", "legion-legion-legion-208"
-	api := newIssueSandboxAPI(issueSandbox(rootSandbox, "sandbox-uid-root", rootKey, rootKey), issueSandbox(childSandbox, "sandbox-uid-child", rootKey, childKey))
-	server := httptest.NewServer(api)
+	sandboxAPI := newIssueSandboxAPI(issueSandbox(rootSandbox, "sandbox-uid-root", rootKey, rootKey), issueSandbox(childSandbox, "sandbox-uid-child", rootKey, childKey))
+	server := httptest.NewServer(sandboxAPI)
 	t.Cleanup(func() { cancel(); server.Close() })
 	logs := &syncBuffer{}
 	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -204,10 +205,11 @@ func newCarriedCleanup(t *testing.T, opened bool) *carriedCleanup {
 	sup := newSupervisor(runtimeCtx, st, "legion", t.TempDir(), logger)
 	sup.deps = supervise.Deps{
 		Runtime: rt, Conns: fake.NewConns(), Store: st, Specs: issueLaunchSpecs{prompt: prompt}, Clock: stillClock{}, Log: logger,
-		Limits:         supervise.Limits{LaunchFailures: 1, PromptFailures: 2, PromptRetires: 2},
-		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract: 24,
-		RefreshGate:    supervise.NewRefreshGate(0),
+		Limits:           supervise.Limits{LaunchFailures: 1, PromptFailures: 2, PromptRetires: 2},
+		Timeouts:         supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
+		PluginContract:   24,
+		TaskTakeContract: api.TaskTakeContract(),
+		RefreshGate:      supervise.NewRefreshGate(0),
 	}
 	t.Cleanup(sup.stop)
 	architect := supervise.Claim{Token: "legion-legion-legion-207-architect", Project: "legion", Tree: rootKey, TreeEpoch: 1, Issue: rootKey,
@@ -223,7 +225,7 @@ func newCarriedCleanup(t *testing.T, opened bool) *carriedCleanup {
 	if _, err := sup.restore(ctx, []supervise.Claim{implementer}); err != nil {
 		t.Fatal(err)
 	}
-	return &carriedCleanup{t: t, ctx: ctx, pool: pool, st: st, records: records, api: api, rt: rt, newRuntime: newRuntime, sup: sup, logs: logs,
+	return &carriedCleanup{t: t, ctx: ctx, pool: pool, st: st, records: records, api: sandboxAPI, rt: rt, newRuntime: newRuntime, sup: sup, logs: logs,
 		logger: logger, lifecycle: lifecycle, rootKey: rootKey, childKey: childKey, rootSandbox: rootSandbox, childSandbox: childSandbox,
 		child: child, implementer: implementer}
 }

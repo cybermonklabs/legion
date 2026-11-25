@@ -29,6 +29,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -248,7 +249,7 @@ func TestReadyWorkerTaskWritesNothingForAFinishedClaim(t *testing.T) {
 		{name: "a stale-plugin relaunch", relaunch: func(t *testing.T, pool *pgxpool.Pool) uint64 {
 			// The relaunch moves the claim onto the current plugin, its session resumed.
 			rec := finishedTester()
-			rec.mark = fmt.Sprintf("plugin_contract = %d", supervise.TaskTakeContract)
+			rec.mark = fmt.Sprintf("plugin_contract = %d", api.TaskTakeContract())
 			seedTester(t, pool, rec)
 			return rec.generation
 		}},

@@ -57,12 +57,12 @@ func TestPodUpdateEndsARoundOverAPodItsClaimsNoLongerRecord(t *testing.T) {
 		// The member the end never reached: it answered the round before the round's own
 		// replacement, and its relaunch came up in the pod that replaced the round's own, which
 		// it records, leaving the round as that pod left it (supervise's leftPodRoundAt).
-		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion,
+		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion(),
 			pod: podUpdateReplacementPod, round: podUpdateRound, reasons: podUpdateDrift, signalled: true, left: podUpdateRound},
 		// The members the end did reach: in no round, and in that same pod.
-		podUpdateRole{role: claim.RoleTester, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion,
+		podUpdateRole{role: claim.RoleTester, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion(),
 			pod: podUpdateReplacementPod},
-		podUpdateRole{role: claim.RoleReviewer, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion,
+		podUpdateRole{role: claim.RoleReviewer, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion(),
 			pod: podUpdateReplacementPod},
 	)
 	// The pod in the place of the round's own was built before the change the round was opened
@@ -328,7 +328,7 @@ func (r *podUpdateRig) driftingIssue(key, pod string) claim.Token {
 		Generation: 1, Status: "in_progress", HandedOver: true, Rank: "U",
 	}, supervise.Claim{
 		Token: token, Project: podUpdateProject, Tree: key, Issue: key, Role: claim.RoleImplementer,
-		Generation: 1, State: supervise.StateReady, PluginContract: api.DaemonAPIVersion,
+		Generation: 1, State: supervise.StateReady, PluginContract: api.DaemonAPIVersion(),
 		Session: "ses_" + key, SessionFile: "/sessions/" + key + ".jsonl",
 		Locator: podUpdateLocator(token, key, pod),
 	})

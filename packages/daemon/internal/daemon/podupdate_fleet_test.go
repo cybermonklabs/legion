@@ -166,7 +166,7 @@ func newWiredFleetRig(t *testing.T, wire fleetWiring, issues ...fleetIssue) *fle
 			tokens[fleetClaim{issue: issue.key, role: role}] = token
 			seeded := supervise.Claim{
 				Token: token, Project: podUpdateProject, Tree: issue.key, Issue: issue.key, Role: role,
-				Generation: 1, State: supervise.StateReady, PluginContract: api.DaemonAPIVersion,
+				Generation: 1, State: supervise.StateReady, PluginContract: api.DaemonAPIVersion(),
 				Session: "ses_" + issue.key + "_" + string(role), SessionFile: "/sessions/" + issue.key + "-" + string(role) + ".jsonl",
 				CapabilityHash: []byte(issue.key + ":" + string(role)), ServingGeneration: 1,
 				Locator: podUpdateLocator(token, issue.key, issue.pod),
@@ -199,10 +199,11 @@ func newWiredFleetRig(t *testing.T, wire fleetWiring, issues ...fleetIssue) *fle
 	sup := newSupervisor(ctx, st, podUpdateProject, t.TempDir(), quietLogger())
 	sup.deps = supervise.Deps{
 		Runtime: rt, Conns: conns, Store: st, Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
-		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
-		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract: api.DaemonAPIVersion,
-		RefreshGate:    supervise.NewRefreshGate(0),
+		Limits:           supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
+		Timeouts:         supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
+		PluginContract:   api.DaemonAPIVersion(),
+		TaskTakeContract: api.TaskTakeContract(),
+		RefreshGate:      supervise.NewRefreshGate(0),
 		// Each goroutine a machine starts — a timer's firing, a prompt's send — takes a mark of its
 		// own, as the daemon gives it (daemon.go's supervise.Deps). A restart copies these Deps
 		// onto a supervisor built on the rig's own mark (restart), where a machine without it would
@@ -832,7 +833,7 @@ func TestPodUpdateReplacesEachIssuesPodOnlyAfterItsOwnWorkersAnswer(t *testing.T
 // This daemon's contract is the one that takes tasks, so the worker on another contract whose
 // plugin takes them is one ahead of it.
 //
-// A worker whose plugin takes no task, on a contract below supervise.TaskTakeContract, is refused
+// A worker whose plugin takes no task, on a contract below api.TaskTakeContract(), is refused
 // inside the round as outside it: on its old contract it takes none of its tasks, so the
 // stale-plugin lane relaunches it onto the current plugin there rather than leave it waiting out
 // the round (supervise.StaleRefusesCalls, staleForTheLane), and its completion meets the 409 that
@@ -845,8 +846,8 @@ func TestPodUpdateRoundServesAWorkerOnAnotherContractWhosePluginTakesTasks(t *te
 		// served is whether the completion inside the round is served.
 		served bool
 	}{
-		{name: "a plugin that takes tasks", contract: api.DaemonAPIVersion + 1, served: true},
-		{name: "a plugin that takes no task", contract: supervise.TaskTakeContract - 1},
+		{name: "a plugin that takes tasks", contract: api.DaemonAPIVersion() + 1, served: true},
+		{name: "a plugin that takes no task", contract: api.TaskTakeContract() - 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newFleetRig(t,

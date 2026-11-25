@@ -3840,7 +3840,7 @@ func unwaitedOnThePod(group []supervise.Claim, round string, earlierWork bool) [
 // reportingClaims is every claim of the group whose take's turn ended with the report naming its
 // task's number still owed, by role, as its machine published it (supervise.Claim.ReportOwed,
 // read off the view by roundGroup; the store never holds it). It is the take's waitReport alone:
-// in waitFinish and below supervise.TaskTakeContract the daemon's end-frame bound makes the
+// in waitFinish and below api.TaskTakeContract() the daemon's end-frame bound makes the
 // finish, in waitTake no turn of the task's text ran, and a take in waitTurn is a claim stored
 // working, which workingClaims names. A claim stored working whose report is owed too — during a
 // compaction with no turn under it, for one — is named by workingClaims alone, whose wait covers

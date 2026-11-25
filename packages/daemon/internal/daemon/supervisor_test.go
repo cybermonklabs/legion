@@ -388,10 +388,11 @@ func TestARegistrationInFlightWhenTheStopCutsItsLaunchShortIsRestoredAsAnUnfinis
 		sup := newSupervisor(context.Background(), nil, "legion", t.TempDir(), quietLogger())
 		sup.deps = supervise.Deps{
 			Runtime: rt, Conns: fake.NewConns(), Store: store, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
-			Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
-			Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
-			PluginContract: api.DaemonAPIVersion,
-			RefreshGate:    supervise.NewRefreshGate(0),
+			Limits:           supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
+			Timeouts:         supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
+			PluginContract:   api.DaemonAPIVersion(),
+			TaskTakeContract: api.TaskTakeContract(),
+			RefreshGate:      supervise.NewRefreshGate(0),
 		}
 		if launches != nil {
 			sup.deps.Runtime = launches
@@ -419,7 +420,7 @@ func TestARegistrationInFlightWhenTheStopCutsItsLaunchShortIsRestoredAsAnUnfinis
 	go func() {
 		registered <- m.Handle(context.Background(), supervise.RequestRegister{
 			Claim: token, Generation: 1, Session: "ses_late", SessionFile: "/sessions/late.jsonl",
-			CapabilityHash: []byte("late"), PluginContract: api.DaemonAPIVersion,
+			CapabilityHash: []byte("late"), PluginContract: api.DaemonAPIVersion(),
 		})
 	}()
 	stop()
@@ -472,16 +473,17 @@ func TestALiveClaimStoredWithNoProcessIsRestoredAsAnUnfinishedLaunchAndRelaunche
 			rt := fake.NewRuntime()
 			sup.deps = supervise.Deps{
 				Runtime: rt, Conns: fake.NewConns(), Store: store, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
-				Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
-				Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
-				PluginContract: api.DaemonAPIVersion,
-				Secrets:        enroller,
-				RefreshGate:    supervise.NewRefreshGate(0),
+				Limits:           supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
+				Timeouts:         supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
+				PluginContract:   api.DaemonAPIVersion(),
+				TaskTakeContract: api.TaskTakeContract(),
+				Secrets:          enroller,
+				RefreshGate:      supervise.NewRefreshGate(0),
 			}
 			t.Cleanup(sup.stop)
 			enrollment := supervise.Enrollment{ID: "enr-" + string(state), Incarnation: "pod-" + string(state)}
 			stored := supervise.Claim{Token: token, Project: project, Tree: "LEGION-1", Issue: "LEGION-1", Role: claim.RoleImplementer,
-				Generation: 1, State: state, Session: "ses_impl", SessionFile: "/sessions/impl.jsonl", PluginContract: api.DaemonAPIVersion,
+				Generation: 1, State: state, Session: "ses_impl", SessionFile: "/sessions/impl.jsonl", PluginContract: api.DaemonAPIVersion(),
 				CapabilityHash: []byte("known-registration-secret"), Enrollment: &enrollment}
 			claims := []supervise.Claim{stored}
 
@@ -582,9 +584,10 @@ func newIssueRig(t *testing.T) *issueRig {
 	sup := newSupervisor(ctx, nil, "legion", t.TempDir(), quietLogger())
 	sup.deps = supervise.Deps{
 		Runtime: rt, Conns: conns, Store: &outboxClaimStore{}, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
-		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
-		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract: api.DaemonAPIVersion,
+		Limits:           supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
+		Timeouts:         supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
+		PluginContract:   api.DaemonAPIVersion(),
+		TaskTakeContract: api.TaskTakeContract(),
 		Identity: func(_ context.Context, role claim.Role, _ string) (runtime.GitIdentity, error) {
 			return runtime.GitIdentity{Name: "legion-" + string(role) + "[bot]", Email: string(role) + "@example.invalid"}, nil
 		},
@@ -614,7 +617,7 @@ func (r *issueRig) ready(role claim.Role, conn runtime.Conn) (claim.Token, *supe
 	generation := machine.Claim().Generation
 	for _, ev := range []supervise.Event{
 		supervise.RequestRegister{Claim: token, Generation: generation, Session: "ses-" + string(role),
-			SessionFile: "/sessions/" + string(role) + ".jsonl", PluginContract: api.DaemonAPIVersion},
+			SessionFile: "/sessions/" + string(role) + ".jsonl", PluginContract: api.DaemonAPIVersion()},
 		supervise.RequestReady{Claim: token, Generation: generation, Session: "ses-" + string(role)},
 	} {
 		if err := machine.Handle(r.ctx, ev); err != nil {

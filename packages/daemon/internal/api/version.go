@@ -1,7 +1,8 @@
 package api
 
-// DaemonAPIVersion is the contract this daemon speaks with the Legion plugin (@sjawhar/pi-legion):
-// the claim, credential, workflow, controller and state shapes the plugin's client parses
+// This file is the history of DaemonAPIVersion (contracts.go), the contract this daemon speaks
+// with the Legion plugin (@sjawhar/pi-legion): the claim, credential, workflow, controller and
+// state shapes the plugin's client parses
 // (`packages/pi-shared/src/daemon-client.ts`, through
 // `packages/contracts/src/legion-api.ts`), the pane environment it reads — every variable
 // the tmux runtime sets on a pane (`internal/runtime/tmux/spawn.go`'s `panePairs`) and the Sandbox
@@ -11,29 +12,35 @@ package api
 // and the command line of a pod's `legion launcher` container (each pod kind's
 // `launcherContainer` in `internal/runtime/sandbox/podkind.go`, and `sessionProxyFlags`), both of
 // which the image's own `legion` reads. The installed plugin declares the
-// number it was built against as `legion.daemonApiVersion` in its `package.json`, and the boot
-// gate (`internal/daemon/bootgate.go`) refuses to start unless the two are equal.
+// number it was built against as `legion.daemonApiVersion` in the `package.json` its pack writes,
+// and the boot gate (`internal/daemon/bootgate.go`) refuses to start unless the two are equal.
 //
-// Bump rule: a change to any of these surfaces raises this constant above the number its base
-// carries. The same commit writes the number in every other file that holds it:
-// `legion.daemonApiVersion` in `packages/pi-legion/package.json` and
-// `packages/claude-envoy/package.json`, and the two fixtures
-// that this package's golden tests write, `packages/contracts/fixtures/daemon-api/version.json`
-// and `packages/contracts/fixtures/daemon-api/state.json`. In `packages/daemon`,
-// `go test ./internal/api -run '^(TestDaemonAPIVersionGolden|TestStateGolden)$' -update` writes
-// the two fixtures. The plugin's test reads `version.json`, so that fixture holds this constant
-// and the plugin's field together. The bump's history is its numbered entry in this file, below.
-// `.github/scripts/check-daemon-api-contract.sh` refuses a change in which one of those files
-// disagrees with this constant, and, naming a free number, a change that touches the contract
-// below (that script's header says which edits do) and declares no number above its base's.
+// Entry rule: a change to any of these surfaces adds one entry, and edits no number by hand.
+// `scripts/daemon-contract-entry.sh <slug>` writes the entry's file in this package,
+// `contract_<id>_<slug>.go`, whose id is the UTC second it was made; the author writes the
+// entry's text there, what the change does to the contract and why, with every row the change
+// adds to a table the daemon serves from, each naming the entry by its constant. In
+// `packages/daemon`, `go test ./internal/api -update` then writes the entry's fixture,
+// `packages/contracts/fixtures/daemon-api/contracts/<id>_<slug>.json`. The numbered entries below
+// end at LastNumberedContract, and no change adds one or moves one: each build numbers its new
+// entries LastNumberedContract plus their rank in the order main's first-parent history merged
+// them, which the release and worker-image builds stamp into the binary (contracts.go), so no
+// committed file holds a new entry's number. `legion version --contracts` prints each entry's
+// number in a build. `.github/scripts/check-daemon-api-contract.sh` refuses six changes: a
+// numbered entry added to this file or renumbered in it; an entry's file or fixture deleted or
+// renamed; an entry with no fixture, or a fixture with no entry; `legion.daemonApiVersion` in a
+// manifest, a `version.json`, or a `daemon` mark in a state golden; a changelog fragment that
+// names a number above LastNumberedContract; and an edit of an entry's fixture or of a frozen
+// record with no paragraph starting `Correction:` in that entry's text.
 //
 // Serving rule: a change that moves the shape of an answer a plugin parses serves the old shape to
-// each contract of `SupportedContracts` below this constant, through shaping.go's `shapeAnswer`: a
-// band takes off a key the change adds (`stateNarrowings`), a stand-in writes back a key it removes
-// (`withFixAttempts` is one), and a value strip holds back a value newer than that contract's
-// enumeration (`valueStrips`, which reads answers.go's `EnumeratedFields`). The shape gate in this
-// package's tests (`contract_shapes_test.go`) refuses a change that does not, and a record of an
-// earlier contract changed with the serving-down that produces it passes, which a reviewer reads.
+// each contract of `SupportedContracts` below DaemonAPIVersion, through shaping.go's
+// `shapeAnswer`: a band takes off a key the change adds (`stateNarrowings`), a stand-in writes
+// back a key it removes (`standIns`), and a value strip holds back a value newer than that
+// contract's enumeration (`valueStrips`, which reads answers.go's `EnumeratedFields`). The shape
+// gate in this package's tests (`contract_shapes_test.go`) refuses a change that does not, and a
+// record of an earlier contract changed with the serving-down that produces it passes, which a
+// reviewer reads.
 // Under `settings` the rule covers only the top-level keys a supported reader types (answers.go's
 // `typedSettings`): a settings key no reader types needs no band, stand-in or contract number,
 // only its row in settings_test.go's classification and the fixture values the field walk asks for.
@@ -3738,225 +3745,16 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 306: INFRA-2811 -- a claim's task is a value its worker takes, not a prompt the daemon pushes.
-// The daemon writes a claim's value, `{"task": <number>}` under the claim's token in the
-// `legion_tasks` bucket, which the listener relays to the session holding that role, and the
-// worker asks to take the number once its host is idle: `POST /legion/v1/claims/take`
-// `{…caller, generation, number, epoch, revision}` answers 200 with `{outcome: "accepted", text}`,
-// `{outcome: "refused", hold}` or `{outcome: "dropped"}`, the caller being either form
-// `claims/turn-outcome` takes (`{claimToken, sessionId, secret}`, or `{bootToken}`, held to its
-// launch's generation); `POST /legion/v1/claims/task-seen`, the same body, reports the value the
-// worker was handed and answers 204; and `POST /legion/v1/claims/task` `{…caller, generation}`
-// answers `{task: {number, epoch, revision} | null, finished}`, the value the bucket holds and
-// the number of the last task the claim finished. The register answer carries the same two keys,
-// so a worker holds its value before its ready. `claims/turn-outcome` takes `task`, the number of
-// the take whose turn it reports, which finishes that task, `providerError`
-// (`{status, provider, model, message, retryable}`), which keeps the task under its number and
-// starts the wait before its value is written again, and `held`, the number of the accepted take
-// whose text had not run when the turn ended — the producer held it for a turn of its own, or
-// began the turn with it and the agent never took it — which puts that take back to await its own
-// turn also where the daemon has lost its count of the process's turns (a daemon restarted under
-// it, or a hello that does not say its backlog is whole); each is optional, and a report without
-// `held` is read as before. A plugin before this contract reports as 232 says, with `httpStatus`
-// and `unprompted`, and this daemon reads both: a status in `providerError` is read before
-// `httpStatus`, which is read where `providerError` names none, and a report marked `unprompted`
-// is read as one naming no task, whatever its `task` says, so its refusal is judged as the turn
-// that was not the take's that it is and it finishes nothing. A plugin at this contract sends
-// neither: the report of a turn that was not the take's names no task, and a refusal's status
-// rides in `providerError`. The worker shim's `hello2` carries `backlogWhole`, true where the
-// backlog the shim holds for a daemon that is not connected dropped no frame since its last
-// connection took it (shimwire.Hello2.BacklogWhole), and left out when false; a hello without it,
-// from a shim that dropped frames or one built before the member, is read as a backlog that may
-// have dropped them, with every effect supervise's readBacklog lists, and a daemon built before the
-// member ignores it. The three task routes refuse in the coded shape (`{code, error}`), so a
-// worker that sends a take or a seen report again on a 502, 503 or 504 naming no code never reads
-// a refusal of the daemon's own as an outage; and none of them refuses a stale plugin with the
-// stale-contract 409: a stale claim's take is refused with the hold `stale-plugin`, and its read
-// and its seen report are answered as any claim's. Nor does
-// `claims/turn-outcome` refuse one: a report naming a take's number is the only thing that
-// finishes that task for a plugin at this contract or above it, so a stale claim's report is
-// applied, and the stale-plugin lane relaunches the claim behind the finish. A claim
-// whose plugin declared a contract below this one is refused the stale-contract 409 inside an
-// update round as outside one (supervise.StaleRefusesCalls): on its old contract it takes no
-// task, so the stale-plugin lane relaunches it onto the current plugin inside the round rather
-// than the round serving it on that contract until the round ends.
-// The prompt frames are gone: the daemon sends no task over the worker stream, so `claims/ready`
-// sends nothing, a shim's prompt answer is no frame of the stream, and a plugin before this
-// contract, which waits on a prompt, can take no task (supervise.TaskTakeContract). The operator
-// claim view's delivery loses `deliveredAt`, since no prompt is acknowledged; the failure causes
-// gain `never_reconnected`, a claim whose shim never said hello within the reconnect deadline (the
-// registration deadline's bound) while its process lived, after a daemon restart restored it or
-// after its connection closed over a pending task; and `GET /legion/v1/state` carries
-// `unseenTaskValues`, every running claim whose value nobody reported seeing for a whole first
-// bound (`{claim, issue, role, task, writtenAt}`). Its settings
-// carry `worker_take_timeout_seconds` and `worker_turn_start_timeout_seconds`, keys of legion.yaml
-// that no reader types, which move no contract of their own (answers.go's typedSettings).
-// This daemon serves each of these down through the shaping 193 brought, to a caller whose header
-// states a contract below 306 or, stating none, whose pod's claims record one. The state is served
-// without `unseenTaskValues` (the last row of shaping.go's stateNarrowings, withoutUnseenTaskValues,
-// which follows the pod's highest contract as every band does). `never_reconnected` is declared at
-// 306 in answers.go's failureCauses, beside the seven words recorded at 75, and the value strip
-// withoutNeverReconnected (a row of shaping.go's valueStrips, which follows the pod's lowest
-// contract) serves it as `never_registered` in `failure.cause` and `pendingCause`, since a plugin
-// from 75 up to 306 reads both through a strict enum and refuses the whole body for a word it does
-// not name; the word is rewritten rather than its key dropped, because a key gone would say the
-// claim's failure has no cause or that nothing failed its relaunching process, and
-// `never_registered` is the nearest cause such a reader knows. The registration's answer is served
-// without `task` and `finished` (shaping.go's withoutTaskReading, the registration's row of
-// shapeAnswer, which placedByPod places by the caller's pod). The task read's and the take's
-// answers are rows of answers.go's Answers from 306 (`task` and `take`), and `claims/task-seen`
-// answers the 204 every claim report answers (`no-content`); the take answer's `outcome` is the
-// discriminator of a union of literals and so no enumerated field. The three task routes' bodies
-// and the turn outcome's `task`, `providerError` and `held` are in the request records from 306
-// (`packages/contracts/fixtures/daemon-api/request-shapes.json`). This change carried its own two
-// rows of the state's narrowing table before 193 moved that table into shaping.go, and keeps none
-// of its own now: the band and the value strip above are those two rows in 193's tables, so the
-// state is shaped in one place.
-// (This change took 106 against the branch's base, which declared 98: by the census this
-// change's orchestrator read on 2026-11-13, main declared 104 at b601d25b and the open pull
-// requests declared 105, 107, 108 and 110 through 114. It took 120 at the forward merge of
-// 2026-11-14 that brought main in at 5f07e312237f1a02972e4a49de6a4838bd62e875, which landed
-// #3573's INFRA-2560 at 111: 106 was no longer above it, and the reading of
-// `const DaemonAPIVersion` at refs/pull/<n>/head at 2026-11-14T01:59Z gave above the base's 111:
-// 112 through 119. It took 130 at the forward merge of 2026-11-14 that brought main in at
-// 7df0a64ca5efe495a951cad66f54787fc08d897d, which landed #3793's INFRA-3146 at 123: 120 was no
-// longer above it, and the reading of the 149 open pull requests at 2026-11-14T14:34Z gave above
-// the base's 123: 124 (#4021), 125 (#4030), 126 (#2230 and #4017), 127 (#3519 and #3659), 128
-// (#3730 and #4035) and 129 (#3937). It took 138 at the forward merge of 2026-11-15 that brought
-// main in at d0c0090acea2e44d677aa0da6e4e93a28b0b9fe9, which landed #3715's INFRA-3036 at 132:
-// 130 was no longer above it, and the reading of the 154 open pull requests at 2026-11-15T03:13Z
-// gave above the base's 132: 133 (#3711 and #3937), 134 (#4017 and #4021), 135 (#3659), 136
-// (#3575 and #3730) and 137 (#3712 and #4046). It took 139 at the forward merge of 2026-11-15
-// that brought main in at 2e546572f2b871e3665b32ef7262cf7f474e3c69, which landed #3937's
-// INFRA-3027 at 133, then the entry right above and the number the base then carried.
-// `const DaemonAPIVersion` was read at refs/pull/<n>/head at 2026-11-15T04:05Z-04:08Z for every
-// one of the 153 open pull requests, which gave above the base's 133: 133 (#2827, #3711 and
-// #3983), 134 (#4017 and #4021), 135 (#3659), 136 (#3575 and #3730), 137 (#4046) and 138 (#3712,
-// which had moved up to it from 137, and this change's own head), so 138 was no longer this
-// change's alone and 139 was the lowest number above the base's that no open head declared. It
-// took 156 at the forward merge of 2026-11-17 that brought main in at
-// 3dd0705c5789a687a5c69259c89bab8c839182ea, which carried 146, cybermonklabs/legion#3711's
-// INFRA-2614, then the entry right above and the number the base then carried: a reading of
-// `const DaemonAPIVersion` at refs/pull/<n>/head for every one of the 171 open pull requests at
-// 2026-11-17T05:13Z found 155 (#4273), so 156 was the lowest number above the base's that no open
-// head declared. It took 157 at the forward merge of 2026-11-17 that brought main in at
-// d9299f7af5c040f49b18bd094a72e8d1e229c9cd, which carried 151, cybermonklabs/legion#4106's
-// INFRA-3729, then the entry right above and the number the base then carried: a reading of
-// `const DaemonAPIVersion` at refs/pull/<n>/head for every one of the 193 open pull requests at
-// 2026-11-17T11:34Z found 152 (#3730), 153 (#4115), 154 (#3659), 155 (#4273) and 156, which both
-// this change (#3993) and #4065 declared, so 157 was the lowest number above the base's 151 that
-// no other open pull request declared. It kept 157 at the forward merge of 2026-11-18 that
-// brought main in at a5348c75fa42c05f5581df45abaf33877c9ce90b, which carried 152,
-// cybermonklabs/legion#3730's INFRA-2543, then the number the base carried: 157 was still above
-// it. It took 168 at the forward merge of 2026-11-19 that brought main in at
-// c70a80228d85f42e6f70c6f6d0d18b10c827ddb3, which carried 160, cybermonklabs/legion#3519's
-// INFRA-2009, then the entry right above and the number the base then carried: 157 was no longer
-// above it, and a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull
-// request on 2026-11-19 found 161 through 167 declared by other open pull requests, so 168 was the
-// lowest number above the base's 160 that no other open pull request declared. It took 174 at the
-// forward merge of 2026-11-19 that brought main in at a16c218ee39a294f22ffd785ab0b5fd300b1e3b7,
-// which carried 168, cybermonklabs/legion#4488, then the number the base then carried: the
-// contract check's reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull
-// request on 2026-11-19 found 169 (#3831 and #4065), 170 (#2230, #4030, #4173, #4180 and #4193),
-// 171 (#4115, #4485 and #4495), 172 (#3659) and 173 (#4493) declared by open pull requests, so 174
-// was the lowest number above 168 that none declared. It took 187 at the forward merge of
-// 2026-11-20 that brought main in at c980d91b540ece46364256983f24a3f5a63b3841, which carried 178,
-// cybermonklabs/legion#4115's INFRA-3759, then the entry right above and the number the base then
-// carried: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request
-// on 2026-11-20 found 179 (#4540), 180 (#4049), 181 (#3831 and #4273), 182 (#4173, #4180, #4193,
-// #4392 and #4493), 183 (#2230, #3712, #4030, #4432 and #4539), 184 (#3659, #4065 and #4553), 185
-// (#4175 and #4543) and 186 (#4495 and #4573) declared by open pull requests, so 187 was the
-// lowest number above 178 that none declared. It took 192 at the forward merge of 2026-11-20 that
-// brought main in at 1c7c8253678fedad99b5142defc5824e2c57b9a8, which carried 188,
-// cybermonklabs/legion#4543, then the number the base then carried: a reading
-// of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request on 2026-11-20
-// found 189 (#3831, #4592 and #4596), 190 (#4493 and #4578) and 191 (#4495) declared by open pull
-// requests, so 192 was the lowest number above 188 that none declared. It took 196 at the forward
-// merge of 2026-11-20 that brought main in at a4cd4949fce7e9ce6d135abeb6ed7815f2fcfc9c, which
-// carried 189, cybermonklabs/legion#4581, then the number the base then carried: a reading of
-// `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request
-// on 2026-11-20 found 189 (#4592, #4596 and #4611), 190 (#4578), 191 (#2230, #4049, #4495 and
-// #4573), 192 (#4173, #4175, #4182, #4193, #4273, #4392 and #4580), 193 (#3659, #3712, #4065,
-// #4432, #4539 and #4553), 194 (#3831 and #4030) and 195 (#4493 and #4590) declared by open pull
-// requests, so 196 was the lowest number above 189 that none declared. It took 203 at the forward
-// merge of 2026-11-21 that brought main in at 81cf5a79383edba5ba0e68dcdff4618bd0922a39, which
-// carried 193, cybermonklabs/legion#3659's INFRA-2694, and 199, cybermonklabs/legion#4495's
-// INFRA-4605, two entries above and the number the base then carried: a reading of
-// `const DaemonAPIVersion` at refs/pull/<n>/head for every one of the 315 open pull requests at
-// that merge found 199 to 202 taken, so 203 was the lowest number above 199 that none declared.
-// It took 207 at the forward merge of 2026-11-21 that brought main in at
-// 1cdf5b9ceba6b5c5e2c73fa748234d8b73be6596, which carried 202, cybermonklabs/legion#4493's
-// INFRA-4401, two entries above and the number the base then carried: a reading of
-// `const DaemonAPIVersion` at refs/pull/<n>/head for every one of the 343 open pull requests at
-// that merge found 203 (declared by seven of them) and 204 to 206 taken, so 207 was the lowest
-// number above 202 that none declared. It kept 207 at the forward merge of 2026-11-21 that brought
-// main in at a155b5a33a4a9e086f135162ede386b74e3d4849, which carried 205,
-// cybermonklabs/legion#4573's INFRA-3178, then the entry right above and the number the base then
-// carried: 207 was still above it. It took 221 at the forward merge of 2026-11-22 that brought
-// main in at 83b91235c5ead2fb3246bc10ba6898db758f9e77, which carried 213,
-// cybermonklabs/legion#4553's INFRA-4036, then the entry right above and the number the base then
-// carried: 207 was no longer above it, and a reading of `const DaemonAPIVersion` at
-// refs/pull/<n>/head for each of the 444 open pull requests, made between 2026-11-22T11:28:05Z
-// and 11:32:46Z, found 214 declared by #4592 and #4918, 215 by #4065 and #4596, 216 by #4173,
-// #4180, #4182, #4193, #4251, #4259, #4261, #4269, #4290, #4932 and #4984, 217 by #4273, #4590
-// and #4771, 218 by #3831, 219 by #4611, #4902 and #4948, 220 by #4930, 223 by #4805 and 224 by
-// #4960, and no open head declaring 221, so 221 was the lowest number above 213 that none
-// declared. It took 232 at the forward merge of 2026-11-23 that brought main in at
-// 8f332682865955d5d11143285102225491547882, which carries 217, cybermonklabs/legion#4273's
-// INFRA-3531 and INFRA-4567, the entry right above and the number the base now carries: 221 was
-// still above it, but a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the
-// 525 open pull requests, made between 2026-11-23T01:15:21Z and 01:27:03Z, found 218 declared by
-// #3831, 219 by #4611, #4902 and #4948, 220 by #4930 and #5014, 221 by #4049, #4392, #4432, #4682,
-// #4771, #4940 and #4942 as well as by this change's own head before this merge, 222 by #4661,
-// 223 by #4805, 224 by #4960, 225 by #3712 and #4539, 226 by #4175 and #5017, 227 by #4065, 228
-// by #4590, 229 by #2230, 230 by #4580 and 231 by #4540, and no open head declaring 232, so 232
-// was the lowest number above 217 that no other open pull request declared. It took 223 at the
-// forward merge of 2026-11-23 that brought main in at 77eac01e35d094a36b2419a16a0c52dc5a1d6c47,
-// which still carries 217: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each
-// of the 502 open pull requests, made between 2026-11-23T02:28:04Z and 02:36:58Z with none left
-// unread, found 218 declared by #3831, 219 by #4611, #4902, #4948 and #5161, 220 by #4930 and
-// #5014, 221 by #4049, #4392, #4432, #4682, #4771, #4940, #4942 and #5164 as well as by this
-// change's pushed head, 222 by #4661, #5156, #5157, #5158 and #5160, 224 by #4960 and #5165, 225
-// by #3712 and #4539, 226 by #4175 and #5017, 227 by #4065 and #5162, 228 by #4590, 229 by #2230,
-// 230 by #4580, 231 by #4540 and 232 by #4173 and #4592, so 232 was no longer this change's alone,
-// and no open head declared 223 (#4805, which declared it, is closed), so 223 was the lowest
-// number above 217 that no open pull request declared.
-// It kept 223 at the forward merge of 2026-11-23 that brought main in at
-// 7cb1f229367c76d42b3097ad6a15bb576b178344, which carried 219, cybermonklabs/legion#4611's owner
-// plan, then the number the base carried: 223 was still above it.
-// It kept 223 at the forward merges of 2026-11-23 and 2026-11-24 that brought main in at
-// e9645ebfd1c4a64be3d00086db6e2f94677e65dd, at f77fee3c6990ad4be8d688478b937d723c50e417, which
-// carried 220, cybermonklabs/legion#4930's assignment plans, and at
-// b83f99e784d560ca06e9ad045f4a4960c91bcc57: 223 was still above it.
-// The forward merge of 2026-11-24 that brought in 7ccabcbade brought main's 228 (#4590,
-// INFRA-1575's entry above). A reading of every open pull request at that merge, which ended at
-// 2026-11-24T10:10:41Z, found 228 (#3512, #5294 and #5354), 229 (#2230), 230 (#4580), 231
-// (#4540), 232 (#5271), 233 (#4173, #4180, #4182, #4193 and #4932), 234 (#4065), 235 (#5204), 236
-// (#4984), 237 (#5168 and #5169), 238 (#5285), 239 (#4592), 241 (#4771 and #5307), 242 (#4596),
-// 243 (#5349) and 244 (#3831) declared, so this entry moved to 240, the lowest number above
-// main's 228 that no other open pull request declares. The forward merge of 2026-11-24 that
-// brought in 9a4e7a14e1 brought main's 232 (#5271, INFRA-4508's entry above). A reading of every
-// open pull request at that merge, which ended at 2026-11-24T13:54:12Z, found 233 (#4173, #4180,
-// #4182, #4193 and #4932), 234 (#4065), 235 (#5204), 236 (#4984), 237 (#5168 and #5169), 238
-// (#5285), 239 (#4592), 240 (#3712 and #4771), 241 (#4049 and #4392), 242 (#4596), 243 (#5349),
-// 244 (#3831), 245 (#5158), 246 (#4960) and 247 (#4580) declared, so this entry moved to 248, the
-// lowest number above main's 232 that no other open pull request declares. The forward merge of
-// 2026-11-24 that brought in 69fcd649a6 brought main's 246 (#4960, the entry above). Until
-// cybermonklabs/legion#5399 (INFRA-1569) merges, INFRA's controller has INFRA-3118's architect give
-// each clashing or too-low number of an open pull request its own, and keep the list on
-// dispatch://INFRA-3118 (the controller's ruling of 2026-11-24 at 18:27Z, confirmed at 18:29:56Z);
-// this entry, which declared 248 beside #4049, #4065 and #4392 and below main's 250 after #5365,
-// was given 274.
-// The forward merge of 2026-11-24 that brought in c227d04661 brought main's 250 (#5365) and 256
-// (#5349, the entries above); this entry keeps the 274 it was given. The forward merge of
-// 2026-11-25 that brought in ac1c9a33 brought main's 275 (#4392, dispatch://INFRA-4425's entry
-// above), above 274, so this entry moved to 291, which a census of the number each open pull
-// request declares found no other change declaring. The ledger of daemon API contract numbers
-// (dispatch://INFRA-3118/artifact/open-items-md) had already reserved 291 for another branch,
-// which a census of open heads cannot see, so this entry moved to 306, the number that ledger
-// gives it.
-// Read the base's own number and every open pull request again at the next merge rather than from
-// this line, as
-// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
-// says.)
-const DaemonAPIVersion = 306
+// Each change after LastNumberedContract is an entry of its own file, and takes no number here
+// (contracts.go).
+
+/*
+The line below is no Go and no contract number of this build. Main's contract check from before
+this change reads every open pull request's head for `const\s+DaemonAPIVersion\s*=\s*(\d+)` and
+fails each pull request it checks while one open head declares none, so this head keeps a line it
+reads, at the number main declared when the line was written. Its tab keeps it out of every reader
+of the number after the cutover (legion-pins, scripts/daemon-contract.sh and
+scripts/daemon-contract-convert.sh), which read `const DaemonAPIVersion = <n>` with one space, and
+the check of this change reads no open pull request.
+const	DaemonAPIVersion = 275
+*/

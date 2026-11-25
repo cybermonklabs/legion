@@ -245,7 +245,7 @@ func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
 		t.Fatalf("seed the listener's report: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `update claims set plugin_contract = $1, activity_at = now(),
-		activity_background = false, activity_kinds = '', activity_next_reminder_at = null`, api.DaemonAPIVersion); err != nil {
+		activity_background = false, activity_kinds = '', activity_next_reminder_at = null`, api.DaemonAPIVersion()); err != nil {
 		t.Fatalf("report what the pods are doing: %v", err)
 	}
 	idle := &workflowRuntime{pool: pool, projectID: "legion", log: quietLogger(), idleStore: trees,

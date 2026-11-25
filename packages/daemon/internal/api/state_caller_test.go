@@ -90,7 +90,7 @@ func podClaims(contract int) []supervise.Claim {
 	return []supervise.Claim{
 		claimInPod("legion-legion-legion-208-planner", statePodUID, contract),
 		claimInPod("legion-legion-legion-208-implementer", statePodUID, contract),
-		claimInPod("legion-legion-legion-210-planner", "4b8e1d60-3c92-4f7a-ae15-8d0c2b5f6a34", DaemonAPIVersion),
+		claimInPod("legion-legion-legion-210-planner", "4b8e1d60-3c92-4f7a-ae15-8d0c2b5f6a34", DaemonAPIVersion()),
 	}
 }
 
@@ -429,7 +429,7 @@ func withoutHeldKey(t *testing.T, body []byte) []byte {
 }
 
 // withoutUnseenKey is a state body with no `unseenTaskValues`, which is what a caller below
-// supervise.TaskTakeContract is served of a state (api's withoutUnseenTaskValues). It serves the
+// TaskTakeContract is served of a state (api's withoutUnseenTaskValues). It serves the
 // table below as withoutQuietKeys does: a row's baseline is the full state with exactly the keys
 // that row's own contract holds back taken out of it.
 func withoutUnseenKey(t *testing.T, body []byte) []byte {
@@ -730,7 +730,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// is served the key and every older pod is not.
 		pause bool
 		// unseen is whether the caller is served `unseenTaskValues`, the claims whose task value
-		// nobody reported seeing, the list supervise.TaskTakeContract added, which is this
+		// nobody reported seeing, the list the task-take entry added, which is this
 		// daemon's own, so the only pod served the key is one at it.
 		unseen bool
 		// repos is whether the caller is served the repositories block this contract writes,
@@ -771,7 +771,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// phaseEntriesContract, heldContract, quietTimeContract, mergeWaitContract,
 		// assignmentsContract, entryTimesContract, repositoryAppsContract, pauseContract,
 		// shapedAnswersContract, repositoriesLiveContract, assignmentPlanContract,
-		// intakeGiveUpsContract, podHoldContract, priorityContract and supervise.TaskTakeContract,
+		// intakeGiveUpsContract, podHoldContract, priorityContract and TaskTakeContract,
 		// the seventeen bands above it that these rows compare, so the issues it is served carry no
 		// answer, no entry number, no tree quiet time, no `mergeWait`, no assignments (so no
 		// assignment's `plan` either), no entry times, no architect-stalled arms, no `podHold` and
@@ -852,7 +852,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// writes, which is served in contract 152's shape, each assignment's `plan`, the state's
 		// `intakeGiveUps` of contract 228, each issue's `podHold` (podHoldContract), each issue's
 		// `priority` (priorityContract) and the state's `unseenTaskValues`
-		// (supervise.TaskTakeContract) are the seven bands left above it. The repository caches'
+		// (TaskTakeContract) are the seven bands left above it. The repository caches'
 		// row is served without its `source` here as in every band below, the value
 		// cachesSourceContract added.
 		{name: "a pod at pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: pauseContract, assigned: true, times: true, apps: true, pause: true},
@@ -866,9 +866,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// shapedAnswersContract has landed, so the two are no longer equal. A caller at 193 is
 		// served the state without `intakeGiveUps` where it states its contract in the header
 		// (TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps).
-		{name: "a pod at the first contract whose builds state it", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, unseen: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, credential: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, unseen: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, credential: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, unseen: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, credential: true},
+		{name: "a pod at the first contract whose builds state it", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion(), assigned: true, times: true, apps: true, pause: true, unseen: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, credential: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion(), assigned: true, times: true, apps: true, pause: true, unseen: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, credential: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion(), assigned: true, times: true, apps: true, pause: true, unseen: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, credential: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -1037,7 +1037,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// gone, the give-ups intakeGiveUpsContract added (withoutIntakeGiveUps), with
 			// `dispatchCredential` gone, the key dispatchCredentialContract added
 			// (withoutDispatchCredential), and with `unseenTaskValues` gone, the list
-			// supervise.TaskTakeContract added (withoutUnseenTaskValues).
+			// the task-take entry added (withoutUnseenTaskValues).
 			// Every row that reaches here is below all of them, so every one of them goes whatever
 			// the row is; contract 132's strip takes a word of the line's `kind` and no key, and
 			// this fixture stands no member of that kind.
@@ -1318,7 +1318,7 @@ func TestTheStateRouteServesAPodItsPluginContractsStrandedClaims(t *testing.T) {
 		{name: "a pod whose plugin is the contract before this one", remote: statePodAddr + ":41000", claims: podClaims(retiredStrandedContract - 1)},
 		{name: "a pod below PodUpdateContract, below every one of them", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(retiredStrandedContract - 1)},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), retired: true},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion()), retired: true},
 		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), retired: true},
 		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(retiredStrandedContract - 1), retired: true},
 	} {
@@ -1349,9 +1349,9 @@ func TestTheRetiredStrandedContractIsTheContractThatAddedTheState(t *testing.T) 
 		t.Fatalf("retiredStrandedContract = %d, want %d, the contract whose entry in version.go added `retired` to a stranded claim's state",
 			retiredStrandedContract, addedRetiredStranded)
 	}
-	if retiredStrandedContract > DaemonAPIVersion {
+	if retiredStrandedContract > DaemonAPIVersion() {
 		t.Fatalf("retiredStrandedContract = %d, above DaemonAPIVersion %d: no caller could be served a retired claim",
-			retiredStrandedContract, DaemonAPIVersion)
+			retiredStrandedContract, DaemonAPIVersion())
 	}
 }
 
@@ -1488,7 +1488,7 @@ func TestTheRepositoriesBlockIsNarrowedBelowItsContract(t *testing.T) {
 		apps bool
 	}{
 		{name: "a pod whose plugin is the contract before this one", remote: statePodAddr + ":41000", claims: podClaims(repositoriesLiveContract - 1), stated: repositoriesLiveContract - 1, apps: true},
-		{name: "a caller in no pod stating the contract before this one", remote: "192.0.2.1:41000", claims: podClaims(DaemonAPIVersion), stated: repositoriesLiveContract - 1, apps: true},
+		{name: "a caller in no pod stating the contract before this one", remote: "192.0.2.1:41000", claims: podClaims(DaemonAPIVersion()), stated: repositoriesLiveContract - 1, apps: true},
 		{name: "a pod at contract 152, whose schema of the block this one replaced", remote: statePodAddr + ":41000", claims: podClaims(152), apps: true},
 		{name: "a pod below PodUpdateContract, below every one of them", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod at 152 asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(152), apps: true},
@@ -1582,8 +1582,8 @@ func TestTheRepositoriesContractIsTheContractThatChangedTheBlock(t *testing.T) {
 		t.Fatalf("repositoriesLiveContract = %d, want %d, the contract whose entry in version.go made the block `live`, `caches` and `withoutWebhookApp`",
 			repositoriesLiveContract, changedTheBlock)
 	}
-	if repositoriesLiveContract > DaemonAPIVersion {
+	if repositoriesLiveContract > DaemonAPIVersion() {
 		t.Fatalf("repositoriesLiveContract = %d, above DaemonAPIVersion %d: no caller could be served `live`",
-			repositoriesLiveContract, DaemonAPIVersion)
+			repositoriesLiveContract, DaemonAPIVersion())
 	}
 }

@@ -942,6 +942,10 @@ func newBareHarness(t *testing.T) *harness {
 		// helper below records for every claim it brings up: a test exercising plugin staleness
 		// overrides it (or posts a RequestRegister naming a different one) itself.
 		PluginContract: 24,
+		// The contract at which a worker takes its task, which the daemon reads off api's registry
+		// (api.TaskTakeContract); the harness's own plugin (24) is below it, so a harness claim takes
+		// no task until a test moves its contract (currentPlugin).
+		TaskTakeContract: testTakeContract,
 		// The gate of a daemon that paces nothing, which grants every refresh: every Deps carries
 		// one and none is nil, and a test that wants the lane bounded builds its own
 		// (NewRefreshGate, gatedHarness).

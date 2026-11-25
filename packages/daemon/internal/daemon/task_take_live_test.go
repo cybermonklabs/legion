@@ -1047,7 +1047,7 @@ func (r *taskTakeLive) start(launch runtime.SpawnSpec) *taskWorker {
 	w.subscribe()
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: r.session, OmpSessionFile: r.sessionFile, AgentID: "task-take-live",
-		PluginContract: api.DaemonAPIVersion,
+		PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register process %d of %s = %d %s, want 200", w.n, r.token, status, body)

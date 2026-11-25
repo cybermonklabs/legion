@@ -90,7 +90,7 @@ func entryTimesServed(t *testing.T, body []byte) map[string]struct {
 func TestTheStateRouteServesARootsArchitectHandshake(t *testing.T) {
 	queued := time.Date(2026, 11, 12, 9, 15, 0, 0, time.UTC)
 	confirmed := queued.Add(41 * time.Second)
-	body := stateFrom(t, architectHandshakeState(queued, confirmed), "10.1.24.9:4100", podClaims(DaemonAPIVersion))
+	body := stateFrom(t, architectHandshakeState(queued, confirmed), "10.1.24.9:4100", podClaims(DaemonAPIVersion()))
 
 	entries := phaseEntriesServed(t, body)
 	times := entryTimesServed(t, body)
@@ -185,8 +185,8 @@ func TestTheArchitectHandshakeTimesContractIsTheOneThatAddedThem(t *testing.T) {
 		t.Fatalf("entryTimesContract = %d, want %d, the contract whose entry in version.go added the issues' entry queued and confirmed times",
 			entryTimesContract, addedEntryTimes)
 	}
-	if entryTimesContract > DaemonAPIVersion {
+	if entryTimesContract > DaemonAPIVersion() {
 		t.Fatalf("entryTimesContract = %d, above DaemonAPIVersion %d: no caller could be served the two times",
-			entryTimesContract, DaemonAPIVersion)
+			entryTimesContract, DaemonAPIVersion())
 	}
 }
