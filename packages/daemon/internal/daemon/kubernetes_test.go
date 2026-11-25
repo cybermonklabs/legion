@@ -599,7 +599,7 @@ func TestOpenSupervisionAdvertisesAdvertiseHostNotTheWildcardBind(t *testing.T) 
 	cfg := workflowConfig(t, workflowNATS(t))
 	cfg.Runtime = kubernetesConfig(t, "https://127.0.0.1:1").Runtime
 	cfg.Bind, cfg.AdvertiseHost = "0.0.0.0", "legion-daemon-legsmoke.legion.svc"
-	cfg.Port = holdPort(t, "0.0.0.0", 0)
+	cfg.Port = holdPortOn(t, "0.0.0.0")
 	cfg.DaemonURL = "http://127.0.0.1:" + strconv.Itoa(cfg.Port)
 	record := &built{}
 	o := fakeRuntime(fake.NewRuntime(), record)

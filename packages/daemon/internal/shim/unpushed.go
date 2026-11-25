@@ -19,15 +19,13 @@ import (
 // unpushedCandidates is every commit that can be unpushed work: each visible commit that no remote
 // branch and no tag holds, less the root commit and each commit with no change and no description.
 // A commit a remote bookmark or a tag reaches is pushed already; tags are subtracted beside remote
-// bookmarks because a clone of this repository holds thousands of them, jj makes each tagged commit
-// a visible head, and the release commits they point at are reachable from no remote bookmark,
-// though every one of them is on the remote. A commit with no change and no description carries
-// nothing a deletion can lose: each working copy left so, and the parent a bare `jj new` leaves
-// (workspaceWorkRevset). Every such working copy is subtracted, not only this workspace's own: a
-// pod's shared clone has a workspace of its own, `default`, whose working copy is an empty commit
-// on the default branch that no remote holds (workspace's feedClone abandons the clone's first
-// snapshot), so a read that subtracted only `@` would count one commit in every pod. A working copy
-// with a change, whichever workspace's, stays in.
+// bookmarks for the reason workspaceWorkRevset subtracts them. A commit with no change and no
+// description carries nothing a deletion can lose: each working copy left so, and the parent a bare
+// `jj new` leaves (workspaceWorkRevset). Every such working copy is subtracted, not only this
+// workspace's own: a pod's shared clone has a workspace of its own, `default`, whose working copy
+// is an empty commit on the default branch that no remote holds (workspace's feedClone abandons the
+// clone's first snapshot), so a read that subtracted only `@` would count one commit in every pod.
+// A working copy with a change, whichever workspace's, stays in.
 const unpushedCandidates = `~::(remote_bookmarks() | tags()) ~ root() ~ (empty() & description(exact:""))`
 
 // unpushedRevset is the commits of the issue's unpushed work as read asks for them, the term
@@ -40,10 +38,10 @@ const unpushedCandidates = `~::(remote_bookmarks() | tags()) ~ root() ~ (empty()
 //
 // No other visible head is counted, because a pod's clone keeps every head visible
 // (git.abandon-unreachable-commits = false, workspace's ensureFetchConfiguration): after any role's
-// `jj git fetch` the commits of each branch origin deleted or rewrote, with no bookmark. The spec
-// cites INFRA-3582's pod, which held 19 such heads, each with another issue's trailer or none: a
-// read of every head would name them as this issue's work, and the release would ask the pod's
-// roles about work that is not theirs.
+// `jj git fetch`, the commits of each branch origin deleted or rewrote stay visible with no
+// bookmark. The spec cites INFRA-3582's pod, which held 19 such heads, each with another issue's
+// trailer or none: a read of every head would name them as this issue's work, and the release would
+// ask the pod's roles about work that is not theirs.
 //
 // The trailers tell the issue's own side heads from those. A role's commits carry
 // `Omp-Session: <id>` (cmd/legion's gitTrailers, and jj's commit_trailers that

@@ -36,10 +36,11 @@ type operatorCall struct {
 	stdout, stderr io.Writer
 	// wait is the --wait flag, when the command takes one (withWait), and waited the bound the
 	// whole call runs under: the flag's value, or defaultWait when the flag is left unset. until
-	// is the moment that bound expires: fixed when check reads the call, or set and moved by a
-	// command that bounds its call otherwise (`legion project release`, waitUntil). Every request
-	// the command makes is bounded by that one moment, so a command that reads the claims in a
-	// loop is bounded by its --wait and not by --wait per request.
+	// is the moment the call's bound expires: waited from when check reads the call, or set and
+	// moved by a command that bounds its call otherwise (`legion project release`, waitUntil),
+	// which leaves waited zero. Every request the command makes is bounded by that one moment, so
+	// a command that reads the claims in a loop is bounded by its --wait and not by --wait per
+	// request.
 	wait   *time.Duration
 	waited time.Duration
 	until  time.Time

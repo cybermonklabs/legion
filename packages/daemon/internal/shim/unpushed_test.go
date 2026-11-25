@@ -406,8 +406,9 @@ func shimAnswer[T shimwire.Frame](t *testing.T, p *peer, id string) (T, []byte) 
 }
 
 // recordingGit puts first on the test process's PATH a git that writes each command it is given
-// to the record it answers, then runs the git that was first before it. The shim looks up the git
-// it bundles with on that PATH, so the record holds every git the shim starts.
+// to the record it answers, then runs the git that was first before it. Any git the read starts,
+// itself or through the jj it runs, is found on that PATH, so the record holds every git the read
+// starts.
 func recordingGit(t *testing.T) string {
 	t.Helper()
 	real, err := exec.LookPath("git")

@@ -114,7 +114,7 @@ const projectReleaseErrorInFull = "project release: an error in full; the result
 // and the session names each claim of an issue holds and whether the record holds the issue's pull
 // request merged, which the read of the issue's workspace carries to the shim (unpushedRead); and
 // the end of a deleted pod's hold streaks, which the idle pass the mark holds would otherwise end
-// only after the next boot (takePod).
+// only after the next boot (stopAndDelete).
 type projectReleaseStore interface {
 	PauseRefusesProjectRelease(ctx context.Context, project string) error
 	StartProjectRelease(ctx context.Context, project string, now func() time.Time, bound time.Duration) (store.ProjectRelease, []store.TakenOverIdleRelease, []store.ProjectReleaseClaim, error)

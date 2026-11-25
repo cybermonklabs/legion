@@ -181,7 +181,7 @@ func newProjectReleaseCommand(stdout, stderr io.Writer) *cobra.Command {
 	c := newProjectCall(cmd, stdout, stderr)
 	bound := c.flags.Duration("bound", 0, "how long the release waits for the roles it asks before it deletes every pod still waiting (default the daemon's pod_update_grace_minutes)")
 	wait := c.flags.Duration("wait", 0, "how long the whole command may take before it ends, saying the release goes on (default the release's bound plus 30m)")
-	dryRun := c.flags.Bool("dry-run", false, "print what a release would do now: read each pod's workspace, and ask, stop and save nothing")
+	dryRun := c.flags.Bool("dry-run", false, "print what a release would do now: read each pod's workspace, and ask, stop and delete nothing")
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
 		return runProjectRelease(ctx, c.operatorCall, *bound, *wait, *dryRun, *c.asJSON)
 	})

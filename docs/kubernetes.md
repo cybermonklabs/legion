@@ -8140,8 +8140,8 @@ It carries one more line for each pass that decided at least one pod, naming how
 
 Each issue of `GET /legion/v1/state` carries the standing hold of its pod as `podHold`, so a reader of the state learns why a quiet pod still runs without the pod's records or the database.
 It is `{reason, firstAt, at, detail}`: the rule's name for the hold, as the hold records spell it; the first pass of the hold's streak; the newest pass; and the hold's detail, cut to its first 200 characters and absent when the record holds none.
-A streak stands until a later pass of its pod ends it, so a hold whose `at` is long past is one that no pass has read since.
-The key is absent when no hold stands on the pod: a pod the rule has not held, a pod it released, a pod whose streak a later pass ended, and a pod held for a reason the daemon writes to no record.
+A streak stands until a later pass of its pod ends it, or until a project release deletes the pod ([Releasing a project's pods](#releasing-a-projects-pods)), so a hold whose `at` is long past is one that no pass has read since.
+The key is absent when no hold stands on the pod: a pod the rule has not held, a pod it released, a pod whose streak a later pass ended, a pod a project release deleted, and a pod held for a reason the daemon writes to no record.
 The daemon reads the holds from `pod_holds` in the state's own transaction, in one statement for the whole project.
 A caller whose plugin declares a contract below 246 is served every issue without the key (`withoutPodHold` in `internal/api/shaping.go`).
 
@@ -8319,6 +8319,7 @@ The release does five things, in this order:
    A claim held by the daemon's own suspension keeps it, since that source ranks above `project_release`, and the next boot does not start that claim.
    Then it deletes the pod's Sandbox, with the pod and its disk.
    A kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)) is a volume claim the Sandbox owns, so it goes with the Sandbox too, as at a suspension of the issue (`SuspendIssue`).
+   Then it ends the pod's hold streaks; when it cannot end them, it logs the error and goes on, and the streaks stand until the idle pass reads the issue after the next boot.
    A pod it asked nothing is deleted as soon as its last read and its stop are done.
    A turn the bound cuts can write between the last read and the stop, and that write goes with the pod with no line that names it.
    The daemon pushes nothing for a role.

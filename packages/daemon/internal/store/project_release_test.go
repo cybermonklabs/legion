@@ -117,14 +117,13 @@ func faultedStore(t *testing.T, st *Store) (*Store, *testdb.CommitFault) {
 // The record: the release's id, its project, its start and its bound, unfinished and unended,
 // with the empty result.
 //
-// The take-over of every idle release of the project in flight: each
-// mark goes, and the rows of that release still queued — the save, the role stops and the
-// teardown — are finished without acting, while a delivery the issue holds inside the mark's range
-// and a start queued after it stand, and a claim the idle release had already suspended stays
-// `released`. The answer names each release with its issue, its generation, its kind (a quiet
-// pod's, or one no role can use) and the roles it had stopped. The queued workspace check of a
-// left pod's close, which writes no mark, is finished too. Another project's idle release and
-// close check are none of this release's.
+// The take-over of every idle release of the project in flight: each mark goes, and the rows of
+// that release still queued — the workspace check, the role stops and the teardown — are finished
+// without acting, while a delivery the issue holds inside the mark's range and a start queued after
+// it stand, and a claim the idle release had already suspended stays `released`. The answer names
+// each release with its issue, its generation, its kind (a quiet pod's, or one no role can use) and
+// the roles it had stopped. The queued workspace check of a left pod's close, which writes no mark,
+// is finished too. Another project's idle release and close check are none of this release's.
 //
 // The stop set: every claim of the project stored in a state whose process is up or coming up,
 // launching through idle, the controller's among them, with its tree, issue, role, session and
@@ -163,15 +162,15 @@ func TestStartProjectReleaseTakesOverTheIdleReleasesAndAnswersItsStopSet(t *test
 	seedProjectClaim(t, st, "legion", "LEGION-211", claim.RoleArchitect, supervise.StateSuspended, supervise.SuspendedByOperator)
 	seedProjectClaim(t, st, "other", "OTHER-1", claim.RoleImplementer, supervise.StateWorking, "")
 
-	// An idle release of LEGION-209 whose stop of the reviewer has run: its save, the reviewer's
-	// stop, a notice another transaction numbered inside its range, the tester's stop and the
-	// teardown. A start of LEGION-209 queued after it is none of its rows.
-	save := queueReleaseRow(t, st, "LEGION-209", "issue_bundle", `{"tree":"LEGION-208","generation":3,"treeGeneration":1,"role":"tester"}`)
+	// An idle release of LEGION-209 whose stop of the reviewer has run: its workspace check, the
+	// reviewer's stop, a notice another transaction numbered inside its range, the tester's stop
+	// and the teardown. A start of LEGION-209 queued after it is none of its rows.
+	check := queueReleaseRow(t, st, "LEGION-209", "issue_bundle", `{"tree":"LEGION-208","generation":3,"treeGeneration":1,"role":"tester"}`)
 	stopReviewer := queueReleaseRow(t, st, "LEGION-209", "supervise", `{"op":"release","tree":"LEGION-208","role":"reviewer","generation":3}`)
 	notice := queueReleaseRow(t, st, "LEGION-209", "notice", `{}`)
 	stopTester := queueReleaseRow(t, st, "LEGION-209", "supervise", `{"op":"release","tree":"LEGION-208","role":"tester","generation":3}`)
 	teardown := queueReleaseRow(t, st, "LEGION-209", "issue_release", `{"tree":"LEGION-208","generation":3,"treeGeneration":1}`)
-	markIdleRelease(t, st, "legion", "LEGION-209", releaseKindIdle, save, teardown, "reviewer")
+	markIdleRelease(t, st, "legion", "LEGION-209", releaseKindIdle, check, teardown, "reviewer")
 	start := queueReleaseRow(t, st, "LEGION-209", "supervise", `{"op":"start","tree":"LEGION-208","role":"tester","generation":3}`)
 	// The release of LEGION-210's pod, which no role can use: its teardown alone.
 	unowned := queueReleaseRow(t, st, "LEGION-210", "issue_release", `{"tree":"LEGION-208","generation":3,"treeGeneration":1}`)
@@ -236,7 +235,7 @@ func TestStartProjectReleaseTakesOverTheIdleReleasesAndAnswersItsStopSet(t *test
 		}
 		if got, wantIDs := outboxIDs(t, st), []int64{notice, start, otherRow, otherClose}; !slices.Equal(got, wantIDs) {
 			t.Fatalf("outbox rows after the take-over = %v, want the notice %d, the later start %d and the other project's rows %d and %d (the release's rows %d, %d, %d, %d and %d and the close check %d gone)",
-				got, notice, start, otherRow, otherClose, save, stopReviewer, stopTester, teardown, unowned, closeCheck)
+				got, notice, start, otherRow, otherClose, check, stopReviewer, stopTester, teardown, unowned, closeCheck)
 		}
 		var by string
 		if err := st.Pool().QueryRow(ctx, `select suspended_by from claims where token = $1`, string(released)).Scan(&by); err != nil || by != "released" {

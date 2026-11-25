@@ -117,7 +117,7 @@ func testConfig(t *testing.T) config.Config {
 	// for it. zero is a value config.Load refuses (config.go:871-874, "worker_stream_port must be a
 	// positive integer"): it is a fixture, never a configuration. The derivation from a real port
 	// is pinned by TestPrepareDerivesTheWorkerStreamAddressFromWorkerStreamPort.
-	port := holdPort(t, "127.0.0.1", 0)
+	port := holdPortOn(t, "127.0.0.1")
 	return config.Config{
 		Project:                                 "TEST" + randomSuffix(t),
 		Port:                                    port,
@@ -206,20 +206,24 @@ func TestThePortsHandedToADaemonCannotBeTakenBeforeItBinds(t *testing.T) {
 	}
 }
 
-// heldPorts are the listeners holdPort holds, by address, until a daemon takes one (heldListen).
+// heldPorts are the listeners holdPortAt holds, by address, until a daemon takes one (heldListen).
 var heldPorts = struct {
 	sync.Mutex
 	byAddress map[string]net.Listener
 }{byAddress: map[string]net.Listener{}}
 
-// holdPort listens on port of host, a free one when port is 0, and returns the port it holds,
-// failing t when it cannot bind. The listener is held until a daemon takes it through heldListen,
-// or t ends. T's cleanup drops the listener from heldPorts only while it is still the one held for
-// its address, so it never drops a later hold of the same port. It is held under net.JoinHostPort(host, port), the address the daemon builds from bind,
-// not the listener's Addr(): Go reports a 0.0.0.0 listener as [::]:<port>, the dual-stack
-// wildcard. A port a stopped daemon served binds again at once, since that daemon closed its
-// listener.
-func holdPort(t *testing.T, host string, port int) int {
+// holdPortOn listens on a free port of host for t and returns it (holdPortAt).
+func holdPortOn(t *testing.T, host string) int {
+	t.Helper()
+	return holdPortAt(t, host, 0)
+}
+
+// holdPortAt listens on port of host for t, a free one where port is 0, and returns the port it
+// holds. The listener is held until a daemon of t's takes it through heldListen, or t ends, whose
+// cleanup drops it only while it is still the one held for its address. It is held under
+// net.JoinHostPort(host, port), the address the daemon builds from bind, not the listener's
+// Addr(): Go reports a 0.0.0.0 listener as [::]:<port>, the dual-stack wildcard.
+func holdPortAt(t *testing.T, host string, port int) int {
 	t.Helper()
 	listener, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
@@ -271,7 +275,7 @@ func heldSocket(t *testing.T) (*os.File, int) {
 	return file, port
 }
 
-// takeHeldSocket takes the listener holdPort holds for address (heldListen) and returns a
+// takeHeldSocket takes the listener holdPortAt holds for address (heldListen) and returns a
 // descriptor of its own for that listening socket, closed when t ends: the descriptor is taken
 // before the listener closes, so the port is held throughout, and a test can hand it to one daemon
 // after another (heldSocketListen).
@@ -312,13 +316,13 @@ func heldSocketListen(socket *os.File, port int) func(network, address string) (
 // rebinding: it is always port 0, resolved fresh on every bind.
 func rebindHeldPorts(t *testing.T, cfg *config.Config) {
 	t.Helper()
-	cfg.Port = holdPort(t, "127.0.0.1", 0)
+	cfg.Port = holdPortOn(t, "127.0.0.1")
 	cfg.DaemonURL = "http://127.0.0.1:" + strconv.Itoa(cfg.Port)
 }
 
-// heldListen is the daemon's listen under test: the listener holdPort holds for address, handed
+// heldListen is the daemon's listen under test: the listener holdPortOn holds for address, handed
 // over once. An address nothing holds is refused rather than bound, since a port found free and
-// bound later is the race holdPort closes: a test that starts a daemon again on one config calls
+// bound later is the race holdPortOn closes: a test that starts a daemon again on one config calls
 // rebindHeldPorts first.
 func heldListen(network, address string) (net.Listener, error) {
 	heldPorts.Lock()
@@ -331,7 +335,7 @@ func heldListen(network, address string) (net.Listener, error) {
 	return listener, nil
 }
 
-// pollClient bounds each poll of a daemon's port: holdPort's listener queues a connection until a
+// pollClient bounds each poll of a daemon's port: holdPortOn's listener queues a connection until a
 // daemon takes the listener and serves it, and a daemon that exits before then never answers it.
 var pollClient = &http.Client{Timeout: time.Second}
 
