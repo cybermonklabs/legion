@@ -340,12 +340,14 @@ func TestGitRefusalReadsAsRefused(t *testing.T) {
 // the payload.
 func pktLine(payload string) string { return fmt.Sprintf("%04x%s", len(payload)+4, payload) }
 
-// controlClass runs liveSetupControlClass alone on a control's exit status and stderr, and returns
-// its git_without_helper and git_without_helper_error.
-func controlClass(t *testing.T, status int, stderr string) (string, string) {
+// controlClass runs liveSetupControlClass alone on a control's exit status and stderr, with env
+// added to the test's environment, and returns its git_without_helper and git_without_helper_error.
+func controlClass(t *testing.T, status int, stderr string, env ...string) (string, string) {
 	t.Helper()
 	script := "status=$1\ncontrol=$2\n" + liveSetupControlClass + `printf '%s\n%s\n' "$git_without_helper" "$git_without_helper_error"`
-	out, err := exec.Command("/bin/sh", "-c", script, "control-class", strconv.Itoa(status), strings.TrimRight(stderr, "\n")).Output()
+	cmd := exec.Command("/bin/sh", "-c", script, "control-class", strconv.Itoa(status), strings.TrimRight(stderr, "\n"))
+	cmd.Env = append(os.Environ(), env...)
+	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("run liveSetupControlClass: %v", err)
 	}
@@ -415,6 +417,52 @@ func TestLiveSetupControlErrorIsRedacted(t *testing.T) {
 func compactJWT(header, claims, signature string) string {
 	encode := base64.RawURLEncoding.EncodeToString
 	return encode([]byte(header)) + "." + encode([]byte(claims)) + "." + encode([]byte(signature))
+}
+
+// The setup runs under the role's locale, and in a UTF-8 locale a bracket expression matches more
+// than ASCII: GNU grep's [A-Za-z] takes é into a candidate run, whose decode then fails at every
+// offset, and GNU sed's [:space:] holds an em space, which stops the user-info match short of its
+// `@`. So each row's error, read under each locale, is the one the C locale gives. A locale this
+// machine lacks reads as C, and the row then cannot see the fault there: the test logs each such
+// locale, and needs one that sees it.
+func TestLiveSetupControlErrorIsRedactedInEveryLocale(t *testing.T) {
+	emSpace := "\u2003"
+	rows := map[string]struct{ stderr, want string }{
+		"a JWT behind letters outside ASCII": {
+			stderr: "fatal: bearer éééé" + compactJWT(`{"alg":"none"}`, `{}`, "") + " refused",
+			want:   "exit 128: fatal: bearer éééé*** refused",
+		},
+		"user info that holds an em space": {
+			stderr: "fatal: unable to access 'https://x-access-token:s3" + emSpace + "cret@github.com/x/': Could not resolve host: github.com",
+			want:   "exit 128: fatal: unable to access 'https://***@github.com/x/': Could not resolve host: github.com",
+		},
+	}
+	seen := 0
+	for _, locale := range []string{"C", "C.UTF-8", "en_US.UTF-8"} {
+		// The fault's own mechanism, read in this locale: [:space:] holding an em space.
+		probe := exec.Command("/bin/sh", "-c", `printf 'a%sb@\n' "$1" | sed -E 's/[^@[:space:]]+@/x/'`, "probe", emSpace)
+		probe.Env = append(os.Environ(), "LC_ALL="+locale)
+		out, err := probe.Output()
+		if err != nil {
+			t.Fatalf("probe %s: %v", locale, err)
+		}
+		if strings.TrimSpace(string(out)) == "x" {
+			t.Logf("LC_ALL=%s classes an em space as no space, as C does: its rows cannot see the fault here", locale)
+		} else {
+			seen++
+		}
+		for name, tc := range rows {
+			t.Run(locale+"/"+name, func(t *testing.T) {
+				class, detail := controlClass(t, 128, tc.stderr, "LC_ALL="+locale)
+				if class != "failed" || detail != tc.want {
+					t.Errorf("control under LC_ALL=%s = %q, %q; want failed, %q", locale, class, detail, tc.want)
+				}
+			})
+		}
+	}
+	if seen == 0 {
+		t.Fatal("no locale this test reads classes an em space as a space, so none of its rows can fail for the locale fault")
+	}
 }
 
 // setupMarkerLeak finds a JWT in any field of a record but its two paths: in the control's error
