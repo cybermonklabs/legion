@@ -8,10 +8,9 @@ import (
 )
 
 // TestTheFakeSecretsFilesFaultsAreNamedFromTheirType pins what each fault of
-// BROKER_FAKE_SECRETS_FILE is refused as, now that each is read from the error's own type rather
-// than from the words of a message: a member the file does not name, by that member and where it
-// starts; a value of another type than its member takes, by the member's path; text that is not
-// JSON, by the byte at fault. None of them quotes the file
+// BROKER_FAKE_SECRETS_FILE is refused as: a member the file does not name, by that member and
+// where it starts; a value of another type than its member takes, by the member's path; text that
+// is not JSON, by the byte at fault. None of them quotes the file
 // (TestLocalFromFileNeverQuotesTheFile).
 func TestTheFakeSecretsFilesFaultsAreNamedFromTheirType(t *testing.T) {
 	t.Parallel()

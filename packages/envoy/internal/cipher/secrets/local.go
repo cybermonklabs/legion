@@ -121,9 +121,8 @@ func LocalFromFile(path string) (*Local, error) {
 // options, so every file the broker served before is read as it was, and with a member the file
 // does not name refused, as DisallowUnknownFields refused one. Each fault is read from the error's
 // own type (policy's decodeProfiles reads a profiles file the same way): encoding/json's v1
-// decoder gives an unknown member as text alone, with no type to read and nothing wrapped, which
-// left this one fault read by the words of a message. No refusal quotes the file, whose every
-// value can be a secret.
+// decoder gives an unknown member as text alone, with no type to read and nothing wrapped. No
+// refusal quotes the file, whose every value can be a secret.
 func parseLocalFile(path string, data []byte) ([]LocalSecret, error) {
 	var f localFile
 	if err := jsonv2.Unmarshal(data, &f, json.DefaultOptionsV1(), jsonv2.RejectUnknownMembers(true),

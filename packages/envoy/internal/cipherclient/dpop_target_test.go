@@ -9,9 +9,8 @@ import (
 // TestADPoPProofNamesTheURLAsTheServerChecksIt: a DPoP proof's htu is the request's URL as the
 // server rebuilds it from its own scheme, host and the path it was asked (proof.TargetURI): no
 // query and no fragment, and none of the user information the URL carries, which the request
-// still sends as its Basic credentials (user-information). Before, the proof named the user name
-// and the password, so a broker at an address carrying them refused every proof, and every proof
-// carried the password. Control: a URL with none of the three is named whole (plain).
+// still sends as its Basic credentials (user-information). Control: a URL with none of the three
+// is named whole (plain).
 func TestADPoPProofNamesTheURLAsTheServerChecksIt(t *testing.T) {
 	type reached struct{ user, htu string }
 	asked := make(chan reached, 1)
