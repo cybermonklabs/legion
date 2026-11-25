@@ -7,6 +7,7 @@ import { type ReactNode, useLayoutEffect, useMemo, useState } from "react";
 import { Link, MemoryRouter, useLocation, useNavigate, useNavigationType } from "react-router-dom";
 
 import { type FakeDocumentRuntime, fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import { nextFrame } from "../../__tests__/frames";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { answerRequests } from "../../__tests__/network";
 import {
@@ -24,6 +25,7 @@ import { DocumentRuntime, type DocumentRuntimeValue } from "../doc/runtime";
 import { Margin } from "../margin/Margin";
 import { DESKTOP_WIDTH } from "../margin/margin-fixture";
 import { buildIssuePath, parseIssuePath } from "../refs/routes";
+import { DOCUMENT_OPEN_ATTRIBUTE, DOCUMENTS_LIST_ATTRIBUTE } from "./DocumentsList";
 import {
   artifact,
   issueDetails,
@@ -39,6 +41,7 @@ import {
   MarginSlotProvider,
 } from "./margin-slot";
 import { TWO_THREADS } from "./outline-fixtures";
+import { CONTROL_LABELS } from "./page-words";
 import { useFollowing } from "./slots/following";
 import { ProvidersSlot } from "./slots/providers";
 import { StageSlot } from "./slots/stage";
@@ -86,6 +89,30 @@ const WORDS = "plan";
 /** The outline's own address, every view off, which Conversation, `t c` and Escape open. */
 const CONVERSATION = presetPath(KEY, "conversation");
 
+/** Documents' list's own address (part N's R2). */
+const DOCUMENTS = buildIssuePath({ key: KEY, kind: "issue-documents" });
+
+/** The notes' own address, which its row of Documents' list and a chip that names it open. */
+const NOTES_ADDRESS = buildIssuePath({ key: KEY, kind: "artifact", slug: NOTES.slug });
+
+/** The chip that names the notes in a row's words, as the row draws it (`RowText.tsx`). */
+const NOTES_CHIP = `a[href="${NOTES_ADDRESS}"]`;
+
+/** The issue's two threads, the second a head with no reply, which cites the notes: a row that is
+ *  no folded thread draws its words whole, the notes as a chip. */
+const CHIP_THREADS = TWO_THREADS.flatMap((comment) =>
+  comment.id === "reply-b"
+    ? []
+    : comment.id === "head-b"
+      ? [
+          {
+            ...comment,
+            body: `The words of head-b cite dispatch://${KEY}/artifact/${NOTES.slug} too`,
+          },
+        ]
+      : [comment]
+);
+
 /** One typed block of a document as the blocks read answers it, with the statement it serves. */
 function typedBlock(id: string, type: string, serves?: string): ArtifactBlock {
   return {
@@ -106,9 +133,9 @@ const BLOCKS: Readonly<Record<string, readonly ArtifactBlock[]>> = {
 };
 
 /** Where the router is: the address, how it got there, the location's state and the following;
- *  Back; a link to a comment of the issue; and a link that opens the notes with the address it
- *  is pressed at as the outline a document goes back to (the location's `outline`, which a
- *  document's opener hands over). */
+ *  Back; a link to a comment of the issue; and a link that opens Documents' list with the address
+ *  it is pressed at as the address the list goes back to (the location's `outline`, which the
+ *  control that opens the list hands over). */
 function Where(): ReactNode {
   const { pathname, search, state } = useLocation();
   const navigate = useNavigate();
@@ -126,11 +153,8 @@ function Where(): ReactNode {
         Back
       </button>
       <Link to={`/issues/${KEY}/conversation?comment=head-b`}>The second thread</Link>
-      <Link
-        state={{ outline: `${pathname}${search}` }}
-        to={buildIssuePath({ key: KEY, kind: "artifact", slug: NOTES.slug })}
-      >
-        Open the notes
+      <Link state={{ outline: `${pathname}${search}` }} to={DOCUMENTS}>
+        Open Documents
       </Link>
     </>
   );
@@ -150,18 +174,20 @@ function PaintProbe(): null {
 }
 
 /** The view row over the stage at the address the router holds, under the page's own
- *  providers, as the page's root draws them. */
+ *  providers, inside the page's root, as the page's root draws them. */
 function Page(): ReactNode {
   const { pathname, search } = useLocation();
   const route = parseIssuePath(pathname, search);
   if (route === undefined) throw new Error(`${pathname} names no route`);
   return (
-    <ProvidersSlot issue={ISSUE} route={route}>
-      <ViewRowSlot issue={ISSUE} route={route} />
-      <StageSlot issue={ISSUE} route={route} />
-      <PaintProbe />
-      <Where />
-    </ProvidersSlot>
+    <div data-issue-page="">
+      <ProvidersSlot issue={ISSUE} route={route}>
+        <ViewRowSlot issue={ISSUE} route={route} />
+        <StageSlot issue={ISSUE} route={route} />
+        <PaintProbe />
+        <Where />
+      </ProvidersSlot>
+    </div>
   );
 }
 
@@ -396,22 +422,199 @@ test("a caret in a row's editor: one Escape leaves the caret for its row, and th
   }
 });
 
-test("a document open, no caret: one Escape closes it, back to the outline address it was opened from", async () => {
+/** The second thread's head cites the notes, so its row draws them as a chip (`RowText.tsx`). */
+function chipInHeadB(): void {
+  restoreReads.push(spyOn(api, "listComments").mockResolvedValue([...CHIP_THREADS]));
+}
+
+/** The chip that names the notes in the outline's row of the second thread's head, once the
+ *  outline draws it. */
+async function chipOf(view: RenderResult): Promise<HTMLElement> {
+  const row = await rowOf(view, "[data-issue-body]", "head-b");
+  return waitFor(() => {
+    const chip = row.querySelector<HTMLElement>(NOTES_CHIP);
+    if (chip === null) throw new Error("the second thread's head draws no chip of the notes");
+    return chip;
+  });
+}
+
+/** Each row of Documents' list, by its link to its document. */
+const LIST_ROWS = `[${DOCUMENTS_LIST_ATTRIBUTE}] [${DOCUMENT_OPEN_ATTRIBUTE}]`;
+
+/** The rows of Documents' list, by each row's link to its document, once the list draws them. */
+async function listLinks(): Promise<HTMLElement[]> {
+  return waitFor(() => {
+    const links = [...document.querySelectorAll<HTMLElement>(LIST_ROWS)];
+    if (links.length === 0) throw new Error("Documents' list draws no row");
+    return links;
+  });
+}
+
+/** The opened document's own box, which holds the focus as no control of it does. */
+async function focusOpenedDocument(): Promise<void> {
+  const heading = await screen.findByRole("heading", { name: NOTES.name });
+  await focus(heading.closest<HTMLElement>('[tabindex="-1"]') ?? heading);
+}
+
+test("a document open that Documents' list opened: one Escape closes it, back to the list with the focus on the document's row", async () => {
   const user = userEvent.setup();
-  const view = drawPage(`/issues/${KEY}/spec?q=${WORDS}`);
+  const view = drawPage(DOCUMENTS);
   try {
-    await rowOf(view, "[data-spec-body]", STATEMENT_NODE);
-    await user.click(screen.getByRole("link", { name: "Open the notes" }));
-    await waitFor(() => expect(address()).toBe(`/issues/${KEY}/artifacts/${NOTES.slug}`));
-    const heading = await screen.findByRole("heading", { name: NOTES.name });
-    await focus(heading.closest<HTMLElement>('[tabindex="-1"]') ?? heading);
+    const notes = (await listLinks()).find((link) => link.textContent === NOTES.name);
+    if (notes === undefined) throw new Error("Documents' list draws no row of the notes");
+    await user.click(notes);
+    await waitFor(() => expect(address()).toBe(NOTES_ADDRESS));
+    await focusOpenedDocument();
     await user.keyboard("{Escape}");
-    await waitFor(() => expect(address()).toBe(`/issues/${KEY}/spec?q=${WORDS}`));
+    await waitFor(() => expect(address()).toBe(DOCUMENTS));
+    expect(where(), "the way back to the list is no push").toHaveAttribute("data-move", "PUSH");
     expect(screen.queryByRole("heading", { name: NOTES.name })).toBeNull();
-    // The outline it was opened from, its view and its words, all as they were.
+    await waitFor(() =>
+      expect(document.activeElement?.textContent, "the focus is not on the notes' row").toBe(
+        NOTES.name
+      )
+    );
+    expect(document.activeElement?.closest(`[${DOCUMENTS_LIST_ATTRIBUTE}]`)).not.toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a document open that a chip opened: one Escape closes it, back to the view and the row that hold the chip", async () => {
+  chipInHeadB();
+  const user = userEvent.setup();
+  const pressedAt = `/issues/${KEY}/conversation?comment=head-b`;
+  const view = drawPage(pressedAt);
+  try {
+    await user.click(await chipOf(view));
+    await waitFor(() => expect(address()).toBe(NOTES_ADDRESS));
+    await focusOpenedDocument();
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(address(), "the chip's document went back elsewhere").toBe(pressedAt)
+    );
+    expect(where()).toHaveAttribute("data-move", "PUSH");
+    expect(screen.queryByRole("heading", { name: NOTES.name })).toBeNull();
+    expect(pressed()).toBe("Conversation");
+    await chipOf(view);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Escape from a document a chip opened puts the focus on the chip drawn again", async () => {
+  chipInHeadB();
+  const user = userEvent.setup();
+  // The address names the chip's row, whose own landing comes as the outline is drawn again.
+  const view = drawPage(`/issues/${KEY}/conversation?comment=head-b`);
+  try {
+    const pressedChip = await chipOf(view);
+    await user.click(pressedChip);
+    await focusOpenedDocument();
+    await user.keyboard("{Escape}");
+    const drawnAgain = await waitFor(() => {
+      const active = document.activeElement as HTMLElement | null;
+      expect(active?.matches(NOTES_CHIP), "the focus is not on the chip").toBe(true);
+      return active as HTMLElement;
+    });
+    expect(drawnAgain, "the chip is the element the follow took off the page").not.toBe(
+      pressedChip
+    );
+    expect(drawnAgain.closest(nodeRowSelectorOf("head-b"))).not.toBeNull();
+    // The landing of the address the way back opened leaves it there.
+    for (let frame = 0; frame < 5; frame += 1) await act(nextFrame);
+    expect(document.activeElement, "a landing took the focus off the chip").toBe(drawnAgain);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a document open from its address on a cold load: one Escape closes it, back to Documents' list with the focus on its first row", async () => {
+  const user = userEvent.setup();
+  const view = drawPage(NOTES_ADDRESS);
+  try {
+    await focusOpenedDocument();
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(address()).toBe(DOCUMENTS));
+    const [first] = await listLinks();
+    await waitFor(() =>
+      expect(document.activeElement, "the focus is not on the list's first row").toBe(first ?? null)
+    );
+    // The issue's spec is the list's first row.
+    expect(first?.textContent).toBe(SPEC_SLUG);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("the focus in Filter files and documents, words in it: one Escape clears its words, and the list stays", async () => {
+  const user = userEvent.setup();
+  const view = drawPage(DOCUMENTS);
+  try {
+    await listLinks();
+    const filter = screen.getByRole("searchbox", { name: CONTROL_LABELS.filter_files });
+    await user.type(filter, NOTES.name);
+    await waitFor(() => expect(document.querySelectorAll(LIST_ROWS)).toHaveLength(1));
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(filter).toHaveValue(""));
+    expect(filter).toHaveFocus();
+    expect(await listLinks()).toHaveLength(ISSUE.artifacts?.length ?? 0);
+    expect(address(), "the Escape that cleared the words left the list too").toBe(DOCUMENTS);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Documents' list with an upload staged: one Escape cancels the upload, as Cancel does, and sends nothing", async () => {
+  const uploadArtifact = spyOn(api, "uploadArtifact");
+  restoreReads.push(uploadArtifact);
+  const user = userEvent.setup();
+  const view = drawPage(DOCUMENTS);
+  try {
+    await listLinks();
+    const staged = new File(["# Staged\n"], "staged.md", { type: "text/markdown" });
+    await user.upload(screen.getByLabelText(CONTROL_LABELS.upload_file), staged);
+    expect(screen.getByText("staged.md")).toBeInTheDocument();
+    // Upload's pick takes Upload away, and the focus with it.
+    await act(async () => (document.activeElement as HTMLElement | null)?.blur());
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByText("staged.md")).toBeNull());
+    expect(screen.queryByRole("textbox", { name: "Summary (optional)" })).toBeNull();
+    expect(uploadArtifact).not.toHaveBeenCalled();
+    expect(address(), "the Escape that cancelled the upload left the list too").toBe(DOCUMENTS);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Documents' list reached from another control: one Escape returns to that control at its address, the focus where it was", async () => {
+  const user = userEvent.setup();
+  const view = drawPage(`/issues/${KEY}/spec`);
+  try {
+    await focus(await rowOf(view, "[data-spec-body]", STATEMENT_NODE));
+    await user.click(screen.getByRole("link", { name: "Open Documents" }));
+    await waitFor(() => expect(address()).toBe(DOCUMENTS));
+    const [first] = await listLinks();
+    if (first !== undefined) await focus(first);
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(address()).toBe(`/issues/${KEY}/spec`));
     expect(pressed()).toBe("Spec");
-    expect(box()).toHaveValue(WORDS);
-    await rowOf(view, "[data-spec-body]", STATEMENT_NODE);
+    await waitFor(() => expect(focusedRow()).toBe(STATEMENT_NODE));
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Documents' list, the first view of the load: one Escape returns to Conversation", async () => {
+  const user = userEvent.setup();
+  const view = drawPage(DOCUMENTS);
+  try {
+    const [first] = await listLinks();
+    if (first !== undefined) await focus(first);
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(address()).toBe(CONVERSATION));
+    expect(pressed()).toBe("Conversation");
+    await rowOf(view, "[data-issue-body]", "head-a");
   } finally {
     view.unmount();
   }
@@ -682,15 +885,17 @@ test("Back to the outline address: the outline's place is put back", async () =>
     view.unmount();
     window.scrollTo({ top: 0 });
   }
-  // A document's way back to the outline address it was opened from, which names a node.
+  // The way back of a document a chip opened, to the address the chip was pressed at, which
+  // names a node.
+  chipInHeadB();
   const named = drawPage(`/issues/${KEY}/conversation?comment=head-b`);
   try {
     await waitFor(() => expect(focusedRow()).toBe("head-b"));
     scrollPage(480);
-    await user.click(screen.getByRole("link", { name: "Open the notes" }));
+    await user.click(await chipOf(named));
     await screen.findByRole("heading", { name: NOTES.name });
     scrollPage(0);
-    await user.click(screen.getByRole("button", { name: "Back to the conversation" }));
+    await user.keyboard("{Escape}");
     await waitFor(() => expect(address()).toBe(`/issues/${KEY}/conversation?comment=head-b`));
     expect(window.scrollY).toBe(480);
   } finally {

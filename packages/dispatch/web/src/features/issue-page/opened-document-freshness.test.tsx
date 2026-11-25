@@ -282,7 +282,6 @@ function opened(version?: number): ReactNode {
         onShowDiff={() => {}}
         onToolbarChange={() => {}}
         onVersionChange={() => {}}
-        outline={buildIssuePath({ key: "CORE-1", kind: "issue" })}
         showDiff={false}
       />
     </NoTooltips>

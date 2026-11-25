@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Fragment, type ReactNode, useState } from "react";
+import { Fragment, type ReactNode, useRef, useState } from "react";
 
 import { isText } from "../../api/artifact-version";
 import { api } from "../../api/client";
@@ -18,15 +18,10 @@ import {
 import { artifactVersionUrl, formatArtifactBytes } from "../artifacts/ArtifactHeader";
 import { ChangeView } from "../doc/ChangeView";
 import { AgentName } from "../refs/AgentName";
+import { useListPages } from "./details-leaves";
 import { shortDay } from "./node-time";
 import { authorText, pageChrome } from "./page-structure";
-import {
-  ANSWER_LINES,
-  CONTROL_LABELS,
-  EMPTY_STATE_LINES,
-  FILE_WORDS,
-  sentenceCase,
-} from "./page-words";
+import { ANSWER_LINES, CONTROL_LABELS, FILE_WORDS, sentenceCase } from "./page-words";
 
 /** The name of the checksum a file's version carries, written before it as the checksum's own
  *  notation, "SHA-256 9f86d0…", which today's version list draws: it is part of the file's own
@@ -82,12 +77,14 @@ function fileFacts(artifact: Artifact, version: Version): string[] {
 /**
  * The versions of a document or file opened in place of the outline, under its editor or its
  * picture (part N's R2): what today's version list and comparison carried, in the page's own
- * words and colours. The list shows the named versions, and "Show all versions" lists every one,
- * each by its name, or by its number, author and day where it has none, with its "Download
- * version N" and a file's size and checksum. The comparison of any two versions is folded under
- * "Show comparison": a document's as the change view, word by word, and a file's as each side's
- * size and checksum. The version control beside the views compares one version with the
- * document as it stands (R3); this compares any two.
+ * words and colours. The list draws every version, named or not, newest first, each by its name,
+ * or by its number, author and day where it has none, with its "Download version N" and a file's
+ * size and checksum: 20 at a time, with the control under them that says how many are left and
+ * draws the next 20 (part M's `useListPages`, root R40), and no control that hides the unnamed
+ * ones. The comparison of any two versions is folded under "Show comparison": a document's as the
+ * change view, word by word, and a file's as each side's size and checksum. The version control
+ * beside the views compares one version with the document as it stands (R3); this compares any
+ * two.
  *
  * `versions` is newest first: the versions the document's editor read, newer than the issue's
  * own read once a version is named here.
@@ -99,65 +96,47 @@ export function DocumentVersions({
   artifact: Artifact;
   versions: readonly Version[];
 }): ReactNode {
-  const [showAll, setShowAll] = useState(false);
-  const named = versions.filter((version) => version.named);
-  const listed = showAll ? versions : named;
+  const list = useRef<HTMLUListElement>(null);
+  const pages = useListPages();
   return (
     <div className="space-y-4">
       <section aria-label={`${FILE_WORDS.versions_for} ${artifact.name}`} className="space-y-2">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <h3 className={`text-sm font-semibold ${pageMutedText}`} {...pageChrome}>
-            {FILE_WORDS.versions}
-          </h3>
-          {versions.length > named.length ? (
-            <button
-              className={pageHeaderControl}
-              onClick={() => setShowAll((shown) => !shown)}
-              type="button"
-              {...pageChrome}
-            >
-              {showAll ? CONTROL_LABELS.show_named_versions : CONTROL_LABELS.show_all_versions}
-            </button>
-          ) : null}
-        </div>
-        {listed.length === 0 ? (
-          <p className={`text-sm ${pageQuietText}`} {...pageChrome}>
-            {EMPTY_STATE_LINES.no_named_versions}
-          </p>
-        ) : (
-          <ul className="space-y-1">
-            {listed.map((version) => {
-              const facts = fileFacts(artifact, version);
-              return (
-                <li
-                  className="flex flex-wrap items-center justify-between gap-x-2 text-sm"
-                  key={version.number}
-                >
-                  <span className={pageInkText} {...pageChrome}>
-                    {version.named && version.summary !== null ? (
-                      <span {...authorText}>{version.summary}</span>
-                    ) : (
-                      <VersionWords version={version} word={sentenceCase(FILE_WORDS.version)} />
-                    )}
-                  </span>
-                  <a
-                    className={`inline-flex min-h-6 items-center font-medium underline ${pageInkText} ${pageRowAct}`}
-                    download=""
-                    href={artifactVersionUrl(artifact.id, version.number, { download: true })}
-                  >
-                    <span {...pageChrome}>{CONTROL_LABELS.download_version}</span>{" "}
-                    <span {...authorText}>{version.number}</span>
-                  </a>
-                  {facts.length === 0 ? null : (
-                    <span className={`w-full break-all text-xs ${pageQuietText}`} {...authorText}>
-                      {facts.join(" · ")}
-                    </span>
+        <h3 className={`text-sm font-semibold ${pageMutedText}`} {...pageChrome}>
+          {FILE_WORDS.versions}
+        </h3>
+        <ul className="space-y-1" ref={list}>
+          {versions.slice(0, pages.drawn).map((version) => {
+            const facts = fileFacts(artifact, version);
+            return (
+              <li
+                className="flex flex-wrap items-center justify-between gap-x-2 text-sm"
+                key={version.number}
+              >
+                <span className={pageInkText} {...pageChrome}>
+                  {version.named && version.summary !== null ? (
+                    <span {...authorText}>{version.summary}</span>
+                  ) : (
+                    <VersionWords version={version} word={sentenceCase(FILE_WORDS.version)} />
                   )}
-                </li>
-              );
-            })}
-          </ul>
-        )}
+                </span>
+                <a
+                  className={`inline-flex min-h-6 items-center font-medium underline ${pageInkText} ${pageRowAct}`}
+                  download=""
+                  href={artifactVersionUrl(artifact.id, version.number, { download: true })}
+                >
+                  <span {...pageChrome}>{CONTROL_LABELS.download_version}</span>{" "}
+                  <span {...authorText}>{version.number}</span>
+                </a>
+                {facts.length === 0 ? null : (
+                  <span className={`w-full break-all text-xs ${pageQuietText}`} {...authorText}>
+                    {facts.join(" · ")}
+                  </span>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+        {pages.more(versions.length, (index) => list.current?.children[index])}
       </section>
       {versions.length >= 2 ? <VersionComparison artifact={artifact} versions={versions} /> : null}
     </div>

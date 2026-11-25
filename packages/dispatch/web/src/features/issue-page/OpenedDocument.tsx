@@ -1,5 +1,4 @@
 import { type ReactNode, useContext, useEffect, useMemo, useRef } from "react";
-import { useNavigate } from "react-router-dom";
 
 import type { Artifact } from "../../api/types";
 import { pageHeaderControl } from "../../theme/classes";
@@ -8,8 +7,8 @@ import type { DocumentToolbar } from "../doc/ProofDocument";
 import { DocumentRuntime, type DocumentRuntimeValue } from "../doc/runtime";
 import { EVENT_FRESH } from "../refs/reference-target";
 import type { IssueRoute } from "../refs/routes";
-import { useKeymap } from "../shell/keymap";
 import { ArtifactRoutePanel } from "./ArtifactRoutePanel";
+import { backToDocuments, useFollowWayBack } from "./document-address";
 import { DocumentStage, useDocumentStage } from "./document-stage";
 import { type FocusFallback, type FocusLoss, useFocusKeeper } from "./focus-keeper";
 import { pageChrome } from "./page-structure";
@@ -48,16 +47,20 @@ const DOCUMENT_FOCUS_FALLBACKS: readonly FocusFallback[] = [headingOf];
 /**
  * A document or file of the issue, opened in the main column in place of the outline
  * (dispatch://INFRA-1196 R3): what its own address `/issues/<key>/artifacts/<slug>` draws, and
- * what choosing it in Documents' list opens. A document is drawn with its editor, so the caret,
- * the collaborative cursors and the comment-on-selection chord work in it as they do anywhere a
- * document is edited; its versions, their downloads and what references it are drawn under it.
+ * what choosing it in Documents' list, or a chip that names it, opens. A document is drawn with
+ * its editor, so the caret, the collaborative cursors and the comment-on-selection chord work in
+ * it as they do anywhere a document is edited; its versions, their downloads, what it references
+ * and what references it are drawn under it.
  *
- * Escape returns to the outline, in the key table's order (the Design's keyboard table): a
- * caret in the document's text is left first, and the next Escape closes the document. The
- * editor takes Escape for itself before the page's keyboard registry sees it, so the caret is
- * left by a listener of this box's own in the capture phase, as a row of the outline leaves its
- * caret (`useNodeEditing.ts`); the close is the registry's, which a menu or a dialog that is
- * open over the page answers first.
+ * Its head's "Back to Documents" opens Documents' list at `/issues/<key>/documents` by a push, as
+ * a link does, so the browser's Back returns to the document, and the focus goes to the
+ * document's row there (part N's R2, `document-address.ts`' `backToDocuments`). Escape closes it
+ * in the key table's order (the Design's keyboard table): a caret in the document's text is left
+ * first, and the next Escape closes the document, back to the list, or to the row that holds the
+ * chip that opened it (`escape-order.ts`). The editor takes Escape for itself before the page's
+ * keyboard registry sees it, so the caret is left by a listener of this box's own in the capture
+ * phase, as a row of the outline leaves its caret (`useNodeEditing.ts`); the close is the
+ * registry's, which a menu or a dialog that is open over the page answers first.
  *
  * An ask or comment `?mark=` names is resolved to its whole id before this is drawn
  * (`slots/stage.tsx`), so the document's own landing reads it under that id and writes no
@@ -73,7 +76,6 @@ export function OpenedDocument({
   onShowDiff,
   onToolbarChange,
   onVersionChange,
-  outline,
   showDiff,
 }: {
   artifact: Artifact | undefined;
@@ -87,11 +89,9 @@ export function OpenedDocument({
   onShowDiff: (next: boolean) => void;
   onToolbarChange: (next: DocumentToolbar | undefined) => void;
   onVersionChange: (version: number | null) => void;
-  /** The address of the outline the reader returns to. */
-  outline: string;
   showDiff: boolean;
 }): ReactNode {
-  const navigate = useNavigate();
+  const followWayBack = useFollowWayBack();
   const box = useRef<HTMLDivElement>(null);
   // The region keeps the reader's place (R16): a control of the document that goes while it
   // holds the focus, as Rebuild does once the rebuilt document is drawn, hands it to the heading.
@@ -134,26 +134,16 @@ export function OpenedDocument({
     [runtime]
   );
 
-  useKeymap("issue", [
-    {
-      id: "close-document",
-      keys: "Escape",
-      label: CONTROL_LABELS.close_document,
-      palette: false,
-      run: () => navigate(outline),
-    },
-  ]);
-
   return (
     <div className="flex min-w-0 flex-col gap-3 outline-none" ref={box} tabIndex={-1}>
       <div>
         <button
           className={pageHeaderControl}
-          onClick={() => navigate(outline)}
+          onClick={() => followWayBack(backToDocuments(issueKey, artifactRoute.slug))}
           type="button"
           {...pageChrome}
         >
-          {CONTROL_LABELS.close_document}
+          {CONTROL_LABELS.back_to_documents}
         </button>
       </div>
       <ArtifactRoutePanel

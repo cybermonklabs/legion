@@ -737,8 +737,8 @@ test("IssuePage explains when an artifact slug does not exist", async () => {
     // The page's own line (part N's R2): not the slug, and not the old tab's word.
     await screen.findByText(EMPTY_STATE_LINES.document_missing);
     expect(screen.getByTestId("opened-artifact-missing")).not.toHaveTextContent("missing");
-    // Its way back is the opened document's own control, to the conversation.
-    expect(screen.getByRole("button", { name: "Back to the conversation" })).not.toBeNull();
+    // Its way back is the opened document's own control, to Documents' list.
+    expect(screen.getByRole("button", { name: "Back to Documents" })).not.toBeNull();
     await expectPreset("Conversation");
   } finally {
     view.unmount();

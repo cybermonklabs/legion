@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { type ReactNode, useRef } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
@@ -19,6 +19,7 @@ import {
   documentRoute,
   isAgentArtifact,
 } from "../refs/routes";
+import { useListPages } from "./details-leaves";
 
 function artifactPath(artifact: Artifact): string {
   // A conversation's picture has its own page, under its agent's session.
@@ -56,46 +57,46 @@ function ArtifactOwner({ artifact }: { artifact: Artifact }): ReactNode {
  * It was drawn at the head of the issue's Artifacts list; the spec gives it no home of its own
  * (dispatch://INFRA-1196, the Design's "Where each thing goes" moves an artifact's references to
  * the artifact's own page), so it stays with the issue's artifacts on each one's own page, read
- * only once one is opened. Collapsed by default: it is background context for the issue, not
- * something worth scrolling past.
+ * only once one is opened: what the opened document references (part N's R2). It is drawn open,
+ * as every list beside an opened document is, 20 members at a time, with the control under them
+ * that says how many are left and draws the next 20 (part M's `useListPages`, root R40).
  */
 export function IssueReferenceClosure({ issueKey }: { issueKey: string }): ReactNode {
   const references = useQuery({
     queryKey: ["issue", issueKey, "references"],
     queryFn: () => api.getIssueReferences(issueKey),
   });
+  const list = useRef<HTMLUListElement>(null);
+  const pages = useListPages();
   const members = references.data?.members ?? [];
   if (members.length === 0) {
     return null;
   }
 
   return (
-    <details className={`rounded-lg border p-3 ${borderDefault}`}>
-      <summary
-        className={`min-h-11 cursor-pointer text-sm font-semibold ${textSecondaryOnSurface}`}
-      >
+    <section aria-label="References" className={`space-y-2 rounded-lg border p-3 ${borderDefault}`}>
+      <h3 className={`text-sm font-semibold ${textSecondaryOnSurface}`}>
         References ({members.length})
-      </summary>
-      <section aria-label="References" className="mt-3 space-y-2">
-        <ul className="space-y-2">
-          {members.map(({ artifact, depth, via }) => (
-            <li className={`rounded-lg border p-3 text-sm ${borderDefault}`} key={artifact.id}>
-              <Link
-                className={`font-medium underline ${linkText} ${linkHoverText}`}
-                to={artifactPath(artifact)}
-              >
-                {artifact.name}
-              </Link>
-              <p className={textMutedOnSurface}>
-                <ArtifactOwner artifact={artifact} /> · via {via.kind} · depth {depth}
-              </p>
-            </li>
-          ))}
-        </ul>
-        {references.data?.truncated === true ? (
-          <p className={`text-sm ${textMutedOnSurface}`}>more references beyond 8 hops</p>
-        ) : null}
-      </section>
-    </details>
+      </h3>
+      <ul className="space-y-2" ref={list}>
+        {members.slice(0, pages.drawn).map(({ artifact, depth, via }) => (
+          <li className={`rounded-lg border p-3 text-sm ${borderDefault}`} key={artifact.id}>
+            <Link
+              className={`font-medium underline ${linkText} ${linkHoverText}`}
+              to={artifactPath(artifact)}
+            >
+              {artifact.name}
+            </Link>
+            <p className={textMutedOnSurface}>
+              <ArtifactOwner artifact={artifact} /> · via {via.kind} · depth {depth}
+            </p>
+          </li>
+        ))}
+      </ul>
+      {pages.more(members.length, (index) => list.current?.children[index])}
+      {references.data?.truncated === true ? (
+        <p className={`text-sm ${textMutedOnSurface}`}>more references beyond 8 hops</p>
+      ) : null}
+    </section>
   );
 }

@@ -19,9 +19,6 @@ export default {
       /** What a document's own address says where the issue holds no document or file at that
        *  address (part N's R2): never the slug the address wrote, and never the old tab's word. */
       document_missing: "This issue holds no document at this address.",
-      /** What the opened document's list of its versions says where none of them is named, until
-       *  the reader shows them all (part N's R2): today's version list's words. */
-      no_named_versions: "No named versions yet.",
     },
     ANSWER_LINES: {
       /** What the opened document's comparison of two versions says while it reads their text,
@@ -42,14 +39,20 @@ export default {
        *  the focus on its first row, where today's page has its Artifacts tab (part N's R4,
        *  `useIssueKeymap.ts`). */
       open_documents: "Open the issue's documents",
-      /** The opened document's versions under its editor or picture (part N's R2), today's version
-       *  list's controls: the press that lists every version where the list shows the named ones,
-       *  and back; the comparison of any two versions, the name its region takes before the
-       *  document's own name ("Compare versions for notes.md"), the press that opens it and closes
-       *  it, and its two pickers, "From" and "To", each named after the document as well
+      /** The opened document's way back to Documents' list, in its head (part N's R2): it opens
+       *  the list at `/issues/<key>/documents` with the focus on the document's row. */
+      back_to_documents: "Back to Documents",
+      /** What the list of keys says of Escape on an opened document, which closes it: back to
+       *  Documents' list, or to the row that holds the chip that opened it (part N's R1). */
+      close_opened_document: "Close the document",
+      /** What the list of keys says of Escape on Documents' list, which returns to the control
+       *  the reader opened it from, or to Conversation (part N's R1, R2). */
+      leave_documents: "Leave Documents",
+      /** The opened document's comparison of any two versions under its editor or picture (part
+       *  N's R2), today's comparison's words: its heading, the name its region takes before the
+       *  document's own name ("Compare versions for notes.md"), the press that opens it and
+       *  closes it, and its two pickers, "From" and "To", each named after the document as well
        *  ("Compare notes.md from"). */
-      show_all_versions: "Show all versions",
-      show_named_versions: "Show named versions",
       compare_versions: "Compare versions",
       compare_versions_for: "Compare versions for",
       show_comparison: "Show comparison",

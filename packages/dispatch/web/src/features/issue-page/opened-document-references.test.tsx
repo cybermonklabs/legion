@@ -1,7 +1,6 @@
 import { beforeEach, expect, test } from "bun:test";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { http } from "msw";
 import { MemoryRouter } from "react-router-dom";
 
@@ -20,7 +19,6 @@ import { MarginProvider } from "../margin/margin-context";
 import { buildIssuePath } from "../refs/routes";
 import { NoTooltips } from "./NoTooltips";
 import { OpenedDocument } from "./OpenedDocument";
-import { PROPERTY_LABELS } from "./page-structure";
 
 /**
  * What references a document opened in place of the outline (part N's R2): the outline, which
@@ -73,7 +71,6 @@ beforeEach(() => {
 });
 
 test("an opened document's Referenced by keeps the issue's own comment", async () => {
-  const user = userEvent.setup();
   const client = createQueryClient();
   client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
   const fake = fakeDocumentRuntime({ text: "The live document" });
@@ -95,7 +92,6 @@ test("an opened document's Referenced by keeps the issue's own comment", async (
                 onShowDiff={() => {}}
                 onToolbarChange={() => {}}
                 onVersionChange={() => {}}
-                outline={buildIssuePath({ key: "CORE-1", kind: "issue" })}
                 showDiff={false}
               />
             </NoTooltips>
@@ -106,9 +102,8 @@ test("an opened document's Referenced by keeps the issue's own comment", async (
   );
   try {
     const opened = screen.getByTestId("opened-artifact");
-    // The list is folded under its control until the reader opens it (R2).
-    expect(within(opened).queryByRole("region", { name: "Referenced by" })).toBeNull();
-    await user.click(within(opened).getByRole("button", { name: PROPERTY_LABELS.referenced_by }));
+    // The list is drawn open, with no control to press first (R2).
+    expect(within(opened).queryByRole("button", { name: /^Referenced by/ })).toBeNull();
     const list = within(opened).getByRole("region", { name: "Referenced by" });
     expect(
       await within(list).findByText(OWN_WORDS),

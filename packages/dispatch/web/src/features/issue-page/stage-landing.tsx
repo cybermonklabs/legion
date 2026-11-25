@@ -113,9 +113,10 @@ export function useStageLanding({ issue, route }: SlotProps): {
   useApprovalFocus(landing);
   useStepsAddress(route);
   useEscapeOrder({
-    documentOpen: opened !== undefined,
+    documents: address.documents && opened === undefined,
     filter: address.filter,
     issueKey: issue.key,
+    opened: opened?.route,
     viewOn: isFilter(address.preset),
   });
   useOutlinePlace(opened === undefined && !isFilter(address.preset), address.target !== undefined);
@@ -154,7 +155,7 @@ export function useStageLanding({ issue, route }: SlotProps): {
         onShowDiff={(next) => showDiff(openedId, next)}
         onToolbarChange={toolbarSink(openedId)}
         // A version picked in the document's own editor opens it at that version, keeping the
-        // outline it was opened from to go back to.
+        // outline it was opened from, which its way back reads.
         onVersionChange={(version) =>
           navigate(
             buildIssuePath({
@@ -166,7 +167,6 @@ export function useStageLanding({ issue, route }: SlotProps): {
             { state: { outline } }
           )
         }
-        outline={outline}
         showDiff={diffs.has(openedId)}
       />
     ),
@@ -449,16 +449,17 @@ function useStepsAddress(route: IssueRoute): void {
  * following it is drawn in (`useFollowing`), and kept while a view or a document is drawn in its
  * place. When the outline is drawn again it is put back before the browser paints: by Back, the
  * place of the following Back returns to; by Conversation, `t c` or Escape off a view - each an
- * address of the outline that names no node - or by a document's way back to the outline address
- * it was opened from, the outline's last place. A new address that names a node, a link to it,
- * puts nothing back: it lands by its own rules (`slots/body.tsx`). A scroll the browser makes as
- * a shorter view clamps the page lands after that view is drawn, so it is never the outline's.
+ * address of the outline that names no node - or by the way back of a document a chip opened, to
+ * the address the chip was pressed at (`document-address.ts`' `escapeWayBack`), the outline's last
+ * place. A new address that names a node, a link to it, puts nothing back: it lands by its own
+ * rules (`slots/body.tsx`). A scroll the browser makes as a shorter view clamps the page lands
+ * after that view is drawn, so it is never the outline's.
  */
 function useOutlinePlace(drawn: boolean, namesNode: boolean): void {
   const { pathname, search } = useLocation();
   const following = useFollowing();
   const move = useNavigationType();
-  // The address as a document's way back writes it (the location's `outline`).
+  // The address as the way back of a document a chip opened writes it, its fragment aside.
   const address = `${pathname}${search}`;
   const places = useRef(new Map<string, number>());
   const last = useRef<{ readonly address: string; readonly top: number } | undefined>(undefined);

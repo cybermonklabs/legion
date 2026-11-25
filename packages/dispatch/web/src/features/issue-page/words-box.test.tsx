@@ -400,7 +400,9 @@ test("open with words, opening a document draws the document and keeps the box a
     await waitFor(() => expect(where()).toHaveTextContent("/issues/CORE-1/artifacts/notes-md"));
     expect(await screen.findByRole("heading", { name: "notes-md" })).toBeVisible();
 
-    await user.click(screen.getByRole("button", { name: "Back to the conversation" }));
+    // The document was opened by a push, so the browser's Back returns to the view and its words
+    // (its own way back opens Documents' list, part N's R2).
+    await user.click(screen.getByRole("button", { name: "Back" }));
     await waitFor(() => expect(where()).toHaveTextContent("/issues/CORE-1/spec?q=ab"));
     expect(box()).toHaveValue("ab");
     expect(view.container.querySelector('[data-stand-in-view="spec"]')).toHaveAttribute(

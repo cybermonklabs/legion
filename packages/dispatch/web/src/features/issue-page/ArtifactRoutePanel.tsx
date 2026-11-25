@@ -1,13 +1,14 @@
-import { type ReactNode, useId, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useLayoutEffect, useRef } from "react";
 
 import type { Artifact, Version } from "../../api/types";
-import { dangerText, pageHeaderControl, pageQuietText } from "../../theme/classes";
+import { dangerText, pageQuietText } from "../../theme/classes";
 import { ArtifactBlobView, ArtifactHeader, versionsNewestFirst } from "../artifacts/ArtifactHeader";
 import { ReferencedBy } from "../refs/ReferencedBy";
 import { buildDispatchReference, type DispatchRoute, documentRoute } from "../refs/routes";
 import { DocumentVersions, VersionWords } from "./DocumentVersions";
+import { useListPages } from "./details-leaves";
 import { IssueReferenceClosure } from "./IssueReferenceClosure";
-import { AUTHOR_TEXT_ATTRIBUTE, PROPERTY_LABELS, pageChrome } from "./page-structure";
+import { AUTHOR_TEXT_ATTRIBUTE, pageChrome } from "./page-structure";
 import { EMPTY_STATE_LINES, FILE_WORDS } from "./page-words";
 
 /**
@@ -27,43 +28,30 @@ function VersionByline({ version }: { version: Version }): ReactNode {
 }
 
 /**
- * What references the opened document, folded under its control until the reader opens it
- * (part N's R2), as Details folds what references the issue. The list is `ReferencedBy` in the
- * page's shape, which keeps the issue's own questions, comments and messages here
+ * What references the opened document, drawn open (part N's R2): `ReferencedBy` in the page's
+ * shape, its own heading over it, 20 rows at a time with the control under them that says how
+ * many are left and draws the next 20 (part M's `useListPages`, root R40), as Documents' list
+ * draws its rows. It keeps the issue's own questions, comments and messages here
  * (`keepIssueItems`): beside an opened document no outline stands to hold them.
  */
 function DocumentReferences({ artifact }: { artifact: Artifact }): ReactNode {
-  const [open, setOpen] = useState(false);
-  const listId = useId();
+  const pages = useListPages();
   return (
-    <div className="space-y-2">
-      <button
-        aria-controls={open ? listId : undefined}
-        aria-expanded={open}
-        className={pageHeaderControl}
-        onClick={() => setOpen((shown) => !shown)}
-        type="button"
-        {...pageChrome}
-      >
-        {PROPERTY_LABELS.referenced_by}
-      </button>
-      {open ? (
-        <ReferencedBy
-          keepIssueItems
-          page
-          reference={buildDispatchReference(documentRoute(artifact))}
-          toggle={{ id: listId }}
-        />
-      ) : null}
-    </div>
+    <ReferencedBy
+      keepIssueItems
+      page
+      pages={pages}
+      reference={buildDispatchReference(documentRoute(artifact))}
+    />
   );
 }
 
 /**
  * One artifact of an issue, as its own address `/issues/<key>/artifacts/<slug>` opens it: drawn
  * in the issue page's main column in place of the outline (dispatch://INFRA-1196 R3), with its
- * header, its editor or its picture, its versions, their downloads and what references it, and
- * the issue's reference closure, which the Artifacts list it replaces drew at its head.
+ * header, its editor or its picture, its versions, their downloads, what references it and what
+ * it references - the issue's reference closure, which the Artifacts list it replaces drew at
+ * its head - each list drawn open, 20 entries at a time (part N's R2, root R40).
  *
  * A document's version control is the one beside the views, which reads the document opened
  * here (`VersionControl.tsx`), so its header draws none of its own: it is given no toolbar, and
@@ -148,8 +136,8 @@ export function ArtifactRoutePanel({
           <ArtifactBlobView artifact={artifact} version={artifactRoute.version} />
         )}
       </ArtifactHeader>
-      {/* Keyed by the artifact, as the header's own controls are: what the reader opened of one
-          document's versions and references is that document's alone. */}
+      {/* Keyed by the artifact, as the header's own controls are: the pages the reader drew of
+          one document's versions and references are that document's alone. */}
       <DocumentVersions artifact={artifact} key={`versions:${artifact.id}`} versions={listed} />
       <DocumentReferences artifact={artifact} key={`references:${artifact.id}`} />
       <IssueReferenceClosure issueKey={artifactRoute.key} />

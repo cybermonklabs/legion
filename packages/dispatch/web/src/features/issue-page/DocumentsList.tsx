@@ -33,6 +33,7 @@ import { useListPages } from "./details-leaves";
 import { shortDay } from "./node-time";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, EMPTY_STATE_LINES, FILE_WORDS } from "./page-words";
+import { inputMethodKey } from "./useNodeEditing";
 
 /** The mark Documents' list draws its box with, by which `t a` finds it (`useIssueKeymap.ts`). */
 export const DOCUMENTS_LIST_ATTRIBUTE = "data-documents-list";
@@ -62,6 +63,12 @@ export const DOCUMENT_OPEN_ATTRIBUTE = "data-document-open";
  * replaces. New document is `main`'s making of a document from a title (`useCreateDocument`),
  * which refuses a title the issue holds; its form takes the control's place, with the caret in its
  * Title. A closed issue refuses both, each control drawn refused with the reason inside it.
+ *
+ * Escape on the list is the list's own first (part N's R1, the plan's ST-2): in "Filter files and
+ * documents" with words in it, it clears them, as the box's own Escape does; else, with a file
+ * staged, it cancels the upload, as Cancel does, and sends nothing. Each takes the press from the
+ * page's keyboard registry, which hears it after this does; with neither, the page's own step
+ * leaves the list (`escape-order.ts`' `documents-leave`).
  *
  * Its rows are links and buttons, and no menu: nothing in it has a menu's role.
  */
@@ -110,6 +117,39 @@ export function DocumentsList({
   useEffect(() => {
     if (creation.open) titleForm.current?.querySelector("input")?.focus();
   }, [creation.open]);
+  const section = useRef<HTMLElement>(null);
+  const filterBox = useRef<HTMLInputElement>(null);
+  // What the list's own Escape reads as it is pressed: the filter's words, and the staged file's
+  // Cancel.
+  const escaped = useRef({ cancel: upload.cancel, filter, staged: upload.pendingFile !== null });
+  escaped.current = { cancel: upload.cancel, filter, staged: upload.pendingFile !== null };
+  // The list's own Escape, heard on the document, where it bubbles before it reaches the page's
+  // registry on the window: wherever the focus is in the list, or nowhere, as it is once Upload's
+  // pick has taken Upload away. New document's Title keeps its press, so a staged file is not
+  // dropped while a title is typed, and an input method's own key is no press of the list's
+  // (`inputMethodKey`).
+  useEffect(() => {
+    const press = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || inputMethodKey(event)) return;
+      const active = document.activeElement;
+      const { cancel, filter, staged } = escaped.current;
+      if (active !== null && active === filterBox.current && filter !== "") {
+        event.preventDefault();
+        setFilter("");
+        return;
+      }
+      const fromList =
+        active === null ||
+        active === document.body ||
+        (section.current?.contains(active) === true &&
+          !(active.matches("input") && titleForm.current?.contains(active) === true));
+      if (!staged || !fromList) return;
+      event.preventDefault();
+      cancel();
+    };
+    document.addEventListener("keydown", press);
+    return () => document.removeEventListener("keydown", press);
+  }, []);
 
   const control = `${pageHeaderControl} refused:cursor-not-allowed`;
   // A refused control stays where it is with `aria-disabled`, so a reader on the keyboard reaches
@@ -160,6 +200,7 @@ export function DocumentsList({
       onDragLeave={upload.dropTarget.onDragLeave}
       onDragOver={upload.dropTarget.onDragOver}
       onDrop={upload.dropTarget.onDrop}
+      ref={section}
       tabIndex={-1}
       {...{ [DOCUMENTS_LIST_ATTRIBUTE]: "" }}
     >
@@ -169,6 +210,7 @@ export function DocumentsList({
           className={`min-h-6 w-full min-w-0 rounded-[7px] border px-2 py-1 text-sm outline-none sm:w-72 ${pageField} ${focusVisibleRing}`}
           onChange={(event) => setFilter(event.target.value)}
           placeholder={CONTROL_LABELS.filter_files}
+          ref={filterBox}
           type="search"
           value={filter}
         />
