@@ -52,8 +52,9 @@ const (
 // that holds the scope write a Legion issue's status, so no other token may hold it. Each row
 // below is one other entry or trade. Some carry a daemon's session name, and some fix a daemon's
 // name for another project or for no project. Each of them mints a token that holds no scope. The
-// read entry's token holds read alone. A request that names legion-status in its scope parameter
-// is refused invalid_scope, and the broker mints nothing for it.
+// read entry's token holds read alone, and so does the daemon's own token when its trade asks for
+// read: a token narrowed to reading writes nothing. A request that names legion-status in its
+// scope parameter is refused invalid_scope, and the broker mints nothing for it.
 //
 // The broker's answer about each token then reaches a verifier built with the options Dispatch
 // gives it (cmd/dispatch, brokerTokenVerifier), through a stub of the broker's introspection
@@ -104,6 +105,15 @@ func TestTheBrokerGivesLegionStatusToTheDaemonAlone(t *testing.T) {
 			scope: legionStatusScope,
 			caller: ciphertoken.Caller{Session: daemonSession, Person: person, Projects: []string{project},
 				ProjectScope: ciphertoken.ProjectScopeNamed, LegionStatus: true}},
+		{name: "the daemon's entry, whose trade asks for read",
+			trade: func(t *testing.T, key *ecdsa.PrivateKey) string {
+				asked := exchangeForm(f.podTokenOf(t, daemonAccount, "pod-uid-daemon"), oauthwire.SubjectTokenTypeKubernetes, "")
+				asked.Set("scope", oauthwire.ScopeRead)
+				return f.exchanged(t, asked, key)
+			},
+			scope: oauthwire.ScopeRead,
+			caller: ciphertoken.Caller{Session: daemonSession, Person: person, Projects: []string{project},
+				ProjectScope: ciphertoken.ProjectScopeNamed, ReadOnly: true}},
 		{name: "the plain account entry, which fixes no session",
 			trade: func(t *testing.T, key *ecdsa.PrivateKey) string {
 				f.registers(t, account, "pod-uid-plain", "implementer-g1")
