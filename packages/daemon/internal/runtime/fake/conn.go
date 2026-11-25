@@ -24,12 +24,13 @@ type Prompt struct {
 }
 
 // Adoption is one working-copy adoption the daemon asked the agent's side to perform, with the
-// fix's commit and the task's move it named.
+// fix's commit, the fix's own branch and the task's move it named.
 type Adoption struct {
-	Identity runtime.GitIdentity
-	Timeout  time.Duration
-	FixFrom  string
-	MoveTo   string
+	Identity  runtime.GitIdentity
+	Timeout   time.Duration
+	FixFrom   string
+	MoveTo    string
+	FixBranch string
 }
 
 // Bundling is one workspace bundle the daemon asked the agent's side to build.
@@ -141,7 +142,7 @@ func (c *Conn) Shutdown(_ context.Context) error {
 func (c *Conn) AdoptWorkingCopy(_ context.Context, id runtime.GitIdentity, adoption runtime.Adoption, timeout time.Duration) (runtime.Adopted, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.adoptions = append(c.adoptions, Adoption{Identity: id, Timeout: timeout, FixFrom: adoption.FixFrom, MoveTo: adoption.MoveTo})
+	c.adoptions = append(c.adoptions, Adoption{Identity: id, Timeout: timeout, FixFrom: adoption.FixFrom, MoveTo: adoption.MoveTo, FixBranch: adoption.FixBranch})
 	if err := c.failures["AdoptWorkingCopy"]; err != nil {
 		return runtime.Adopted{}, err
 	}

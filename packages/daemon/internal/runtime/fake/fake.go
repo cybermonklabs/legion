@@ -719,10 +719,11 @@ func (r *Runtime) AdoptWorkingCopy(_ context.Context, loc runtime.Locator, id ru
 const FixDir = "/fake/workspace-fix"
 
 // Echo is the answer a shim of this release gives an adoption that went through: FixDir for a
-// fix's commit and the commit itself for a move, each only where the adoption named it.
+// fix's commit or its own branch and the commit itself for a move, each only where the adoption
+// named it.
 func Echo(adoption runtime.Adoption) runtime.Adopted {
 	var adopted runtime.Adopted
-	if adoption.FixFrom != "" {
+	if adoption.FixFrom != "" || adoption.FixBranch != "" {
 		adopted.FixDir = FixDir
 	}
 	adopted.MovedTo = adoption.MoveTo
