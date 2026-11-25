@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+  The generated API contract carries `own` on `GET /api/v1/issues`, which keeps, of the issues the
+  `advances` values answer, those whose own row names a matched priority no issue above them
+  carries, and the descriptions of that route and of `GET /api/v1/priorities` say the priority
+  work in backlog or icebox counts only those issues.

@@ -246,11 +246,12 @@ func newSenderLimitRig(t *testing.T) *senderLimitRig {
 }
 
 // newSenderLimitRigOnServer is a senderLimitRig on a server of its own, which the test can stop
-// answering under live connections (testnats.Server.Freeze).
-func newSenderLimitRigOnServer(t *testing.T) (*senderLimitRig, *testnats.Server) {
+// answering under live connections (testnats.Server.Freeze). options are added to the listener
+// connection's own (bus.WithReplicas(1)).
+func newSenderLimitRigOnServer(t *testing.T, options ...bus.ConnectOption) (*senderLimitRig, *testnats.Server) {
 	t.Helper()
 	server, url := testnats.Start(t)
-	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
+	client, err := bus.ConnectOwningStream([]string{url}, append([]bus.ConnectOption{bus.WithReplicas(1)}, options...)...)
 	if err != nil {
 		t.Fatalf("connect the listener: %v", err)
 	}
