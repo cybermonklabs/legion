@@ -3650,7 +3650,93 @@ package api
 // Read the base's own number and every open pull request again at the next merge rather than
 // from this line.)
 //
-// 269: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
+// 275: dispatch://INFRA-4425 -- under `dispatch_token_broker` a role trades its pod's exchange
+// identity at the secrets broker for a Dispatch token of its own session, and the daemon names
+// that session, which moves three surfaces this number names. The agent's argv: in a pod that
+// carries the exchange identity (sandbox's launch.trades) the daemon chooses each Oh My Pi role's
+// session id and starts it with `--session-id <id>`, or with `--resume <id>` when it resumes the
+// role by its recorded file, and no path (sandbox's agentArgv); a launch into a pod that carries no
+// exchange identity keeps `--resume=<file>`. A resume of a session the claim records with no file
+// keeps entry 189's one `--resume=<id>` in either pod, and a launch that trades runs under that
+// id. The worker environment: a role in a pod that carries the identity is told
+// `DISPATCH_TOKEN_BROKER=1` under the setting, which the image's Dispatch client reads as the
+// order to trade, and no `DISPATCH_TOKEN_FILE`, since its start carries no Dispatch token
+// (sandbox's mainEnvironment); a launch into a pod built before the identity carries the token of
+// `dispatch_token_transition_file` through `DISPATCH_TOKEN_FILE`, as every launch carried the
+// shared bearer before. The state: `GET /legion/v1/state` gains `dispatchCredential` under the
+// setting and nowhere else (api's DispatchCredentialView): the session the daemon's own Dispatch
+// calls run under, `legion-daemon:<project>`, the launches since the daemon's boot that carried the
+// transition token with the time of the last, and the live launches whose start carried a Dispatch
+// token, which a deployment waits to see at zero before it removes
+// `dispatch_token_transition_file`. The settings block's `dispatch_token_broker` is a key of the
+// block the plugin parses loosely (35 above), and moves no number.
+// A caller below 275 is served the state without the key, by its row of shaping.go's
+// stateNarrowings (withoutDispatchCredential, the band of dispatchCredentialContract): a plugin
+// built before sjawhar/legion#2788 reads the state with a strict schema and would refuse the whole
+// body for a key it does not name, and one built after strips the key, so the band keeps the body
+// each contract's record describes. A caller from 193 up states its contract and is placed by it,
+// and a caller placed by its pod is below 193 (podContracts), so the band reaches both. 275's
+// records are 256's under its own number with the key paths of `dispatchCredential` on the
+// state's. No other answer a plugin parses moves: the release-names route, which gains a 502 and a
+// 503 for the broker's answer to the release of a claim's session names, answers the `legion`
+// command, which states no contract.
+//
+// The skew is why the number moves. An Oh My Pi from before `--session-id` refuses a flag it does
+// not know and exits, and a Dispatch client from before `DISPATCH_TOKEN_BROKER` reads a role with
+// no `DISPATCH_TOKEN_FILE` as a role with no Dispatch credential at all, so the boot gate and
+// `legion probe-image` hold the daemon to an image built from this contract. A role in a kept pod
+// of an older image carries no exchange identity, so it keeps the argv and the credential it had,
+// and its pod's update round replaces the pod.
+// (This change keeps 275 at the merge that brought main in at c227d04661, which declares 256
+// (#5349's entry above), 275 being above it.)
+// (This change takes 275, the number INFRA-3118's architect allocated to it on 2026-11-24T18:27Z
+// under INFRA's controller's ruling that it allocates contract numbers until #5399 merges, at
+// the merge that brought main in at 5df00e2f13, which declares 250.)
+// (This change takes 248, the lowest number above main's 246 that no other open pull request
+// declares, at the merge that brought main in at 7e75126fae: a reading of `const
+// DaemonAPIVersion` at the head of each of the 473 open pull requests, from 2026-11-24T15:32:43Z
+// to 15:35:25Z, found 247 (#4580 and #5384), 250, 251, 252, 254 and 255 declared above 246, and
+// 248 by none.)
+// (This change keeps 241 at the merge that brought main in at acade9857d, which declares 232, 241
+// being above it.)
+// (This change takes 241, the lowest number above main's 228 that no other open pull request
+// declares, at the merge that brought main in at 1b636f3193: a reading of `const
+// DaemonAPIVersion` at the head of each of the 483 open pull requests, from 2026-11-24T11:35:12Z
+// to 11:37:54Z, found 228 declared by 22 of them, 229 to 240 and 242 to 245 declared by others,
+// and 241 by none.)
+// (This change keeps 221 at the merge that brought main in at 58251571dd, which declares 220
+// (the experiment group's entry above), 221 being above it. A reading of `const
+// DaemonAPIVersion` at the head of each of the 510 open pull requests, from 2026-11-23T23:30:41Z
+// to 23:36:15Z, found 221 declared also by #4049, #4432, #4682 (stacked on this branch), #4940,
+// #4942 and #5164: whichever of them merges after another renumbers.)
+// (This change keeps 221 at the merge that brought main in at c45a34b6ab, which declares 219
+// (#4611's entry above, the owner's plan), 221 being above it.)
+// (This change keeps 221 at the merge that brought main in at 5d483d8c61, which declares 217
+// (#4273's entry above, INFRA-3531's and INFRA-4567's), 221 being above it.)
+// (This change takes 221, the lowest number above main's 213 that no other open pull request
+// declared when the forward merge of 2026-11-22 brought main in at 83b91235c5, which declares 213
+// (INFRA-4036's entry above). It had declared 165, then 175 from the merge that brought main in at
+// a16c218ee3, then 179 from the merge that brought main in at 506395beea, then 182 from the merge
+// that brought main in at c7e1cbd532, then 192 from the merge that brought main in at 1c7c825367,
+// then 196 from the merge that brought main in at a4cd4949fc, then 199 from the merge that brought
+// main in at fcc746a383, then 202 from the merge that brought main in at f1d27d3a82, then 207 from
+// the merge that brought main in at 1cdf5b9ceb, then 212 from the merge that brought main in at
+// a155b5a33a, which declares 205 (INFRA-3178's entry above), and it kept 212 at the merges that
+// brought main in at da96e1db98 and at bad897aa9d, main still at 205. A reading of `const
+// DaemonAPIVersion` in packages/daemon/internal/api/version.go at the head of each of the 444 open
+// pull requests at the merge of 83b91235c5, which ran from 2026-11-22T11:21:28Z to
+// 2026-11-22T11:28:19Z, found 214, 215, 216, 217, 218, 219, 220, 223 and 224 declared by other
+// pull requests and 221 declared by none. The reading at the merge of a155b5a33a, which ran from
+// 2026-11-21T21:38:24Z to 2026-11-21T21:47:59Z, found 206 (#3712, #4539), 207 (#3993, #4432,
+// #4590), 208 (#4175), 209 (#4049, #4580), 210 (#4661), 211 (#4611, #4902), 213 (#4030, #4553),
+// 214 (#4592, #4596), 215 (#4065), 216 (#3831, #4173, #4259, #4540) and 217 (#2230, #4273, #4771)
+// declared by other pull requests; #4682 and #4723, stacked on this branch, and #4805, stacked on
+// #4723, declared this branch's 207. Read the base's own number and every open pull request again
+// at the next merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+//
+// 294: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
 // `GET /legion/v1/state` says so: an issue takes four keys, `repoBefore` and `repoCorrectedAt`,
 // the repository the issue left and the moment the daemon applied the correction, and
 // `repoChangePending` and `repoChangeReason`, a repository Dispatch has named that the daemon has
@@ -3665,9 +3751,9 @@ package api
 // caller: by the contract its `Legion-Plugin-Contract` header states, else by its pod's claims,
 // which count no claim at 193 or above, so a plugin of 193 meets the band by its header alone.
 // `packages/contracts/src/legion-api.ts` mirrors the four on `legionIssue`, each optional. A
-// caller at 269 is served what one at 256 is with the four keys beside it, so 269's records are
-// 256's under its own number with the four key paths added to the state's and the record's,
-// and with a record of the owed answer below, which no contract before 269 has.
+// caller at 294 is served what one at 275 is with the four keys beside it, so 294's records are
+// 275's under its own number with the four key paths added to the state's and the record's,
+// and with a record of the owed answer below, which no contract before 294 has.
 //
 // The same contract adds the claim route `POST /legion/v1/claims/owed` (`api.OwedRequest`, the
 // claim token, session and secret `claims/activity` carries), which answers `{"owes": bool,
@@ -3680,13 +3766,13 @@ package api
 // whose issue the workflow records, owed or not, and absent for an architect, the controller, a
 // failed claim and an unrecorded issue. The end-of-turn reminder renders that answer in both
 // harnesses and keeps no model of the phase of its own (dispatch://INFRA-2746), and its architect
-// notice and the stall watch's notice go to the architect it names. A plugin below 269 calls no
+// notice and the stall watch's notice go to the architect it names. A plugin below 294 calls no
 // such route, and nothing else of the claim wire changes; `packages/contracts/src/legion-api.ts`
 // mirrors the two bodies as `LegionOwedRequest` and `LegionOwedResponse`, and
 // `packages/contracts/fixtures/daemon-api/owed.json` is the answer's golden. The answer is the
-// row `AnswerOwed` of answers.go's Answers, which arrives with its route at 269 and is the
+// row `AnswerOwed` of answers.go's Answers, which arrives with its route at 294 and is the
 // identity at every contract that records it, and the request is a row of the request gate's
-// table (request_shapes_test.go's pluginRequests), so 269's request records hold its three
+// table (request_shapes_test.go's pluginRequests), so 294's request records hold its three
 // fields and a later type that stops reading one of them is red.
 //
 // The daemon ships four store migrations with it.
@@ -3722,12 +3808,12 @@ package api
 // leaves the column as it stood, the document of the earlier approval, which the rollback
 // docs/kubernetes.md gives under this contract clears.
 //
-// This release's image pins Oh My Pi v18.18.6-sami.20261123-024918 (`.omp-pin`), which main's
-// #5183 moved the pin to while this change was open. It carries all of
-// v18.18.6-sami.20261118-035823, the first fork release whose `prompt` refusal and `prompt_result`
-// carry `code: "session_busy"` when the agent is busy (dispatch://INFRA-3538;
+// This release's image pins Oh My Pi v18.18.6-sami.20261125-001804 (`.omp-pin`), which main's
+// #5473 moved the pin to while this change was open, after #5183's v18.18.6-sami.20261123-024918.
+// It carries all of v18.18.6-sami.20261118-035823, the first fork release whose `prompt` refusal
+// and `prompt_result` carry `code: "session_busy"` when the agent is busy (dispatch://INFRA-3538;
 // shimwire.CodeSessionBusy names the refusals that code covers). The daemon reads that code and
-// no words. A pod of the release before this one (contract 256) runs the same Oh My Pi and sends
+// no words. A pod of the release before this one (contract 275) runs the same Oh My Pi and sends
 // the code already. A pod still on an image before v18.18.6-sami.20261118-035823, until its update
 // round, sends its busy refusal with no code, and the daemon reads it as busy from its own record
 // of the claim working or from the agent's get_state (supervise's agentRefusalOutcome). While the
@@ -3798,9 +3884,11 @@ package api
 // this entry moved to 259. At 2026-11-25T03:51Z INFRA-3118's architect, who allocates the
 // numbers on this repository until #5399 merges, found 259 allocated to #5156, whose head declares
 // it, and assigned 269, free in a census of 485 open heads with main at 256, so this entry moved
-// to 269. The readings behind this change's earlier numbers are in its implement handoffs on
-// dispatch://INFRA-3136. The last number of answers.go's SupportedContracts was 256,
-// version.go's entry for #5349, `api.causeTimesContract`, until this entry added
+// to 269. The merge of main at ac1c9a33 brought main's 275 (#4392), above 269, and at
+// 2026-11-25T09:36Z INFRA-3118's architect, who allocates the numbers on this repository, assigned
+// 294, so this entry moved to 294. The readings behind this change's earlier numbers are in its
+// implement handoffs on dispatch://INFRA-3136. The last number of answers.go's SupportedContracts
+// was 256, version.go's entry for #5349, `api.causeTimesContract`, until this entry added
 // `api.repositoryCorrectionContract` after it. That was a reading and never the rule: read main's
 // own number and every open head again at the next forward merge rather than from this line.)
-const DaemonAPIVersion = 269
+const DaemonAPIVersion = 294

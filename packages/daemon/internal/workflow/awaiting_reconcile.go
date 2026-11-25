@@ -593,8 +593,8 @@ func (e *Engine) tellInPlace(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // send as this start's does. The text the entry holds is the record as it stands at this raise,
 // and is never sent again by this release: a person who approves the reviewed version after this
 // raise has answered the changes request it names. It is rendered and written all the same for its
-// one reader, a rollback to the release before contract 269: the rollback block in
-// docs/kubernetes.md (contract 269) marks each entry that holds a wait, and that release sends a
+// one reader, a rollback to the release before contract 294: the rollback block in
+// docs/kubernetes.md (contract 294) marks each entry that holds a wait, and that release sends a
 // marked entry's task as written (record.PhaseRow.EntryTask), so the render goes only with that
 // block. The root's own record cannot stand in for the kept wait, since it holds the wait no
 // longer once the root resumes (the promotion clears it, and tellInPlace never writes one). Both

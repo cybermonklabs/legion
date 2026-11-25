@@ -292,6 +292,9 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 		})
 	}
 
+	// A caller below causeTimesContract is below dispatchCredentialContract and
+	// repositoryCorrectionContract too, the two rows above it, so it is told of each of the three
+	// rows, in the table's order.
 	_, narrowings := stateNarrowedStating(t, populatedState(t), statePodAddr+":41000", podClaims(0), causeTimesContract-1)
 	const dropped = "the claim views' lastDeathAt and lastStartFailureAt"
 	if len(narrowings) == 0 || narrowings[0].Dropped != dropped || narrowings[0].PluginContract != causeTimesContract-1 {

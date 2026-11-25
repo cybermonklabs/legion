@@ -301,8 +301,10 @@ func (r *Runtime) ScriptKeptVolume(issue string, created time.Time) {
 }
 
 // ScriptLaunchSession makes every later LaunchSession of token's claim answer session, as the
-// Sandbox runtime answers the session it chose for a Claude Code role's launch. A claim no call
-// named has no session the runtime chose, which is an Oh My Pi role's case; "" clears it.
+// Sandbox runtime answers the session it chose for a Claude Code role's launch, and for an Oh My
+// Pi role's launch whose pod trades an exchange identity. A claim no call named has no session the
+// runtime chose, which is the case of an Oh My Pi launch that named no id (its agent mints one and
+// reports it at its registration); "" clears it.
 func (r *Runtime) ScriptLaunchSession(token claim.Token, session string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -17,5 +17,5 @@
 -- names each column of the table it reads and writes (record's UnclaimedKept and
 -- KeepReadmittedApproval), so it runs on this schema as before. Its keep of a pair over a row this
 -- release kept leaves the column as it stood, the document of the earlier approval, which the
--- contract 269 rollback of docs/kubernetes.md clears before the earlier image is pinned.
+-- contract 294 rollback of docs/kubernetes.md clears before the earlier image is pinned.
 alter table readmitted_approvals add column artifact text not null default '';
