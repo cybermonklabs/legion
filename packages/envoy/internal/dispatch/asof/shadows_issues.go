@@ -59,21 +59,6 @@ func issueStateAt(issue, cut string) string {
 			limit 1`
 }
 
-// issueStateAfter is the first whole-issue event of the issue aliased issue after the cut, by
-// seq: its seq and its payload, no row when there is none. As in issueStateAt, the seq is found
-// from events_issue_state alone, which includes created_at, and only the one event that holds it
-// is read from the table.
-func issueStateAfter(issue, cut string) string {
-	return `select e.seq, e.payload from public.events e
-			where e.issue_key = ` + issue + `.key and e.type in ` + issueStateList + `
-				and e.seq = (
-					select sx.seq from public.events sx
-					where sx.issue_key = ` + issue + `.key and sx.type in ` + issueStateList + `
-						and sx.created_at > ` + cut + `
-					order by sx.seq limit 1)
-			limit 1`
-}
-
 // issueClaimAt is the claim of the issue aliased issue at the cut, its newest state at the cut
 // being state: the claim of whichever is newer by seq, that state's payload or the issue's newest
 // issue.claimed or issue.released at the cut, which carries the claim alone; SQL null for no
@@ -121,18 +106,16 @@ func issueActivityAt(aggregate, cut string) string {
 //     and the planner, which takes an issue to hold a few events at an early cut, then read the
 //     state of a busy issue from it and sorted its events.
 //
-//   - closed_at: null where the newest payload at the cut carries none. Else the close the cut
-//     sees stamped the row again at its end (clock_timestamp(), api/issue_patch.go), after its
-//     events took the transaction's start, so its payload holds the first stamp and the row the
-//     second. A closed issue takes no other close before a reopen, and every write of it appends
-//     a whole-issue event read back from the row. So the first whole-issue event after the cut
-//     decides (issueStateAfter): with none, the row's closed_at, the same close's second stamp;
-//     one that carries a closed_at read the row after that stamp, so it carries the second stamp
-//     of the same close; one that carries none is a reopen, which nulled the row's stamp, and no
-//     record keeps the second stamp of a close that was undone, so the closed_at is the payload's.
-//     A rule that compared every later payload with the first stamp read a later rank move as
-//     another close, and the same cut then answered the second stamp before the move and the
-//     first one after it.
+//   - closed_at: the newest payload's alone, never the row's. The payload is the record of the
+//     close: a close's issue.closed carries the stamp that the row keeps, which the close takes
+//     after its asks' document writes (clock_timestamp(), api/issue_patch.go), and a later write
+//     of the issue, a reopen included, appends a payload of its own and changes no earlier one.
+//     A close written before INFRA-4620 holds the first stamp, the start of its transaction.
+//     That is earlier than the row's stamp by at most the length of the close's own transaction.
+//     Every read at a cut has that error already, since an event's created_at is the start of its
+//     transaction (a write that commits after the cut can read as made before it), so closed_at
+//     is not named absent. At a cut inside a close's own transaction, after its start and before
+//     its stamp, closed_at can be later than the cut.
 //
 //   - rank: the payload's, in the column's collation "C" (migration 0049): rank compares its
 //     base-62 digits as bytes, and a text read from a payload takes the database's default
@@ -161,12 +144,7 @@ func issuesShadow(cut string) string {
 			(select max(e.created_at) from public.events e
 				where e.issue_key = i.key and e.type in ` + issueStateList + ` and e.created_at <= ` + cut + `),
 			(s.payload->>'updated_at')::timestamptz) as updated_at,
-		case
-			when s.payload->>'closed_at' is null then null
-			else coalesce((
-				select coalesce(n.payload->>'closed_at', s.payload->>'closed_at')::timestamptz
-				from (` + issueStateAfter("i", cut) + `) n), i.closed_at, (s.payload->>'closed_at')::timestamptz)
-		end as closed_at,
+		(s.payload->>'closed_at')::timestamptz as closed_at,
 		greatest(s.seq, ` + issueActivityAt("max(e.seq)", cut) + `) as last_seq,
 		public.issue_search_vector(i.key, ` + title + `, (
 			select v.markdown from public.artifacts a join public.artifact_versions v on v.artifact_id = a.id

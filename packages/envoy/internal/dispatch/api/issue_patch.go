@@ -774,7 +774,9 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// queued, the asks' and the ones their document writes queued beside them alike, so the
 	// response's last_seq and the status event's payload are filled in from what those appends
 	// took (appendedIssueLastSeq, model.IssueEventPayload.WithOwnerLastSeq) rather than counted
-	// here.
+	// here. A close's closed_at is its first stamp here, the start of its transaction: the stamp
+	// queued before the status event below is the row's final one, which that event's insert and
+	// the response take.
 	after, err := s.loadIssue(ctx, tx, key)
 	if err != nil {
 		return issueWriteResult{}, err
@@ -824,6 +826,41 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 			logins = events.IssueLoginsOf(key, movedLogins(nil, movedAssignees...)...)
 		} else {
 			payload.ThreadLogins = movedLogins(nil, movedAssignees...)
+		}
+	}
+	if closing {
+		// The close stamps closed_at again, at the moment the statement runs (clock_timestamp()),
+		// over the start of the transaction (now()) that the update above wrote. The document
+		// append gate takes a browser's update the room observed no later than closeMargin after
+		// closed_at as one made while the issue was open (docs.closeMargin). The asks' withdrawal
+		// holds each document it writes locked until this commit, a flush to every process and the
+		// waits on other writers included. A keystroke that waited on that lock reaches the gate
+		// only after the commit, and was made while the issue was still open, however long the
+		// withdrawal ran. So the stamp must come after every document write of the close, and it
+		// does. The withdrawal queued its document writes in the read phase (prepareWithdrawal),
+		// and the asks' rows and events after them (recordWithdrawnAsksTx). No statement after this
+		// one writes a document: the events below, the call's comment, which has no anchor and
+		// names no artifact (queueIssueComment), a step's read of its events, the statements that
+		// Commit puts after the queue (the settlement credit's rows and the announcement of the
+		// documents appended to, docs.Ledger.commitWrites), and a keyed step's recovery point after
+		// the batch. They run in the moment between the stamp and the commit that closeMargin
+		// covers.
+		//
+		// The stamp is queued right before the status event, whose insert takes closed_at from the
+		// row (events.Broker.QueueAppend). So the stored issue.closed and its copy that is
+		// published after the commit carry this stamp, which is the closed_at that a read at a past
+		// time gives (asof's issuesShadow). So do the response, which the statement's own callback
+		// reads as the batch runs, and a keyed step's entry, which its point stores once the batch
+		// has run. The second write of closed_at fires migration 20261101181500's trigger again,
+		// whose notification Postgres folds into the first (same channel, same payload, one
+		// transaction).
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			b.Queue("", `
+				update issues set closed_at = clock_timestamp() where key = $1 and closed_at is not null returning closed_at
+			`, key).QueryRow(func(row pgx.Row) error { return row.Scan(&after.ClosedAt) })
+			return nil
+		}); err != nil {
+			return issueWriteResult{}, err
 		}
 	}
 	event, err := s.queueLoggedEvent(ledger, issueOwner(key).event(eventType, actor, payload), logins, "", "")
@@ -887,9 +924,9 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// not. A step of a keyed call reads them with the statement that writes the call's recovery
 	// point (queueStatusChangeStep), run right after the batch rather than on it
 	// (docs.Ledger.AfterWrites), with the issue as this write answers it - its last_seq the one its
-	// own events reached and a close's closed_at the restamp below - which are known only once the
-	// batch's callbacks have read them. A step that holds no lock of the named issue adds no ids,
-	// and an unkeyed step writes no point.
+	// own events reached and a close's closed_at the stamp queued before its status event - which
+	// are known only once the batch's callbacks have read them. A step that holds no lock of the
+	// named issue adds no ids, and an unkeyed step writes no point.
 	var namedEvents []int64
 	if step != nil {
 		switch {
@@ -915,30 +952,6 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 			}); err != nil {
 				return issueWriteResult{}, err
 			}
-		}
-	}
-	if closing {
-		// The close's last statement on its write phase's batch stamps closed_at again, at the
-		// moment it runs (clock_timestamp()), over the start of the transaction (now()) the update
-		// above wrote. It is queued last, so the write phase runs it after the asks' withdrawal,
-		// their document writes and every event queued above. The document append gate takes a
-		// browser's update the room observed no later than closeMargin after closed_at as one
-		// made while the issue was open (docs.closeMargin), and the asks' withdrawal holds each
-		// document it writes locked until this commit, a flush to every process and the waits on
-		// other writers included: a keystroke that waited on that lock reaches the gate only
-		// after the commit, and was made while the issue was still open however long the
-		// transaction ran. The second write of closed_at fires migration 20261101181500's trigger
-		// again, whose notification Postgres folds into the first (same channel, same payload,
-		// one transaction). The events appended above carry the first stamp; the response carries
-		// this one, the stored value, which the statement's own callback reads as the batch runs,
-		// and so does a keyed step's entry, which its point stores once the batch has run.
-		if err := ledger.Queue(func(b *store.WriteBatch) error {
-			b.Queue("", `
-				update issues set closed_at = clock_timestamp() where key = $1 and closed_at is not null returning closed_at
-			`, key).QueryRow(func(row pgx.Row) error { return row.Scan(&after.ClosedAt) })
-			return nil
-		}); err != nil {
-			return issueWriteResult{}, err
 		}
 	}
 	if err := ledger.Commit(ctx); err != nil {

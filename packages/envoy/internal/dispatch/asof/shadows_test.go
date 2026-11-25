@@ -690,13 +690,16 @@ func TestTheIssueShadowTakesTheNewestPayloadBySeqAtTheCut(t *testing.T) {
 	}
 }
 
-// The close stamps the issue's closed_at again as its transaction ends (clock_timestamp(),
-// api/issue_patch.go), after its events took the transaction's start. So at a cut that sees the
-// close the row holds, closed_at is the row's; a close the issue was reopened from since, or one
-// a later close replaced, is the closed_at its own payload carried. A closed issue's later rank
-// move appends an issue.updated read back from the row, which carries the second stamp: the
-// same cut answers that stamp before the move is written and after it.
-func TestTheShadowClosedAtIsTheRowsForTheSameClose(t *testing.T) {
+// closed_at at a cut is the newest payload's at the cut, whatever the row holds. A close's payload
+// is its record: a close written now carries the stamp the row keeps, and a close written before
+// this change (INFRA-4620) the start of its transaction, earlier than the row's stamp. Each close
+// here is of that older kind, so its payload and the row disagree, and the answer is the
+// payload's. A close the issue was reopened from since, or one a later close replaced, is the
+// closed_at its own payload carried too. A closed issue's later rank move appends an issue.updated
+// read back from the row, which carries the row's stamp: a cut after the move answers that stamp,
+// and a cut before it answers the close's payload, both before the move and the later reopen are
+// written and after.
+func TestTheShadowClosedAtIsTheNewestPayloadsWhateverTheRowHolds(t *testing.T) {
 	w := newWorld(t)
 	made := when(t, "2026-11-10T09:00:00Z")
 	closedAt := when(t, "2026-11-10T10:00:00Z")
@@ -761,8 +764,10 @@ func TestTheShadowClosedAtIsTheRowsForTheSameClose(t *testing.T) {
 		}
 		return got
 	}
-	if got := closedAtTheCut(t, "2026-11-10T11:00:00Z", "ASOF-4"); !sameTime(got, &stamped) {
-		t.Errorf("ASOF-4: closed_at = %v at the cut before its rank move is written, want the row's %v", got, stamped)
+	for _, key := range []string{"ASOF-4", "ASOF-5"} {
+		if got := closedAtTheCut(t, "2026-11-10T11:00:00Z", key); !sameTime(got, &closedAt) {
+			t.Errorf("%s: closed_at = %v at the cut before its rank move is written, want its close's payload's %v", key, got, closedAt)
+		}
 	}
 	for _, key := range []string{"ASOF-4", "ASOF-5"} {
 		rankMoved := laterIssues[key]
@@ -777,15 +782,15 @@ func TestTheShadowClosedAtIsTheRowsForTheSameClose(t *testing.T) {
 		cut, key, why string
 		want          *time.Time
 	}{
-		{"2026-11-10T11:00:00Z", "ASOF-1", "the close the row holds", &stamped},
+		{"2026-11-10T11:00:00Z", "ASOF-1", "the close's payload, not the row's stamp", &closedAt},
 		{"2026-11-10T11:00:00Z", "ASOF-2", "a close a later close replaced", &closedAt},
-		{"2026-11-10T14:00:00Z", "ASOF-2", "the later close, which the row holds", &stampedAgain},
+		{"2026-11-10T14:00:00Z", "ASOF-2", "the later close's payload, not the row's stamp", &closedAgain},
 		{"2026-11-10T11:00:00Z", "ASOF-3", "a close the issue was reopened from: the payload's stamp", &closedAt},
 		{"2026-11-10T12:30:00Z", "ASOF-3", "the reopen", nil},
 		{"2026-11-10T09:30:00Z", "ASOF-1", "before the close", nil},
-		{"2026-11-10T11:00:00Z", "ASOF-4", "a close a later rank move read back: the row's second stamp", &stamped},
-		{"2026-11-10T12:15:00Z", "ASOF-4", "the rank move, which carries the second stamp", &stamped},
-		{"2026-11-10T11:00:00Z", "ASOF-5", "a close whose first later write is a rank move, then reopened", &stamped},
+		{"2026-11-10T11:00:00Z", "ASOF-4", "a close a later rank move read back: the close's payload", &closedAt},
+		{"2026-11-10T12:15:00Z", "ASOF-4", "the rank move, which carries the row's stamp", &stamped},
+		{"2026-11-10T11:00:00Z", "ASOF-5", "a close whose first later write is a rank move, then reopened", &closedAt},
 		{"2026-11-10T12:15:00Z", "ASOF-5", "the rank move of a close later reopened", &stamped},
 		{"2026-11-10T12:45:00Z", "ASOF-5", "the reopen", nil},
 	} {

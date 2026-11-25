@@ -2442,6 +2442,15 @@ func (p IssueEventPayload) WithOwnerLastSeq(seq int) any {
 	return p
 }
 
+// WithOwnerClosedAt is the payload carrying closedAt as the issue's closed_at. A close stamps the
+// row's closed_at again after it read the row back (api/issue_patch.go), so the append of its
+// issue.closed takes closed_at from the row, as it takes last_seq (events.Broker.QueueAppend), and
+// the payload records the stamp that the row keeps.
+func (p IssueEventPayload) WithOwnerClosedAt(closedAt *time.Time) any {
+	p.ClosedAt = closedAt
+	return p
+}
+
 // AskEditEventPayload is the full edited ask plus its prior mutable content, the actor who made
 // the edit, and what the new question text moved in the reference graph.
 type AskEditEventPayload struct {
