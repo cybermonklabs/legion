@@ -11524,3 +11524,174 @@ test("Clear selection with the row marked last below the view and not drawn by t
     landings.map((landing) => landing.text).join("; ")
   ).toEqual(landings.map(() => true));
 });
+
+// INFRA-3135, round 27 (the tester's), by the architect's rulings of 2026-11-25 05:3xZ (every
+// landing of the selection bar's return takes the least scroll, and a landing partly in sight is
+// shown whole at its nearest edge) and 13:21Z, which counts this row. Measured at 7deb75af in
+// builds Jobs infra-3135-f-h1-qgpz2 and infra-3135-f-hx-dl7bw, and at 5ae79d88 in
+// infra-3135-f-b1-q7ttr and infra-3135-f-bx-hxjsw, in Chromium, Firefox and WebKit at 1440x900
+// (the window at its top) and 390x664: under the project List's Epic filter, with the mark of the
+// row marked last cut by 30% of its height at the table box's bottom edge or under its sticky
+// header, Take out of epic lands the focus on the checkbox of the row now at its place and shows
+// it whole at that edge (7deb75af; 5ae79d88 left it cut). Cut by 70%, the same row at the place
+// is passed over: at the bottom edge the focus goes to the checkbox of the row before it, and
+// under the header to the table itself, with no scroll. The hand-off takes a row's mark only
+// where the centre of the mark is in the window and what the page draws there is that row
+// (components/SelectionBar.tsx:341-343, `markShown`); the sticky header, or the box's clipped
+// edge, stands over the centre of a mark cut by 70%, so the row at the place is passed over for
+// the nearest row before it in sight (:278) and else the list's own stop (:155).
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-27 tester pinned (e2e/playwright.config.ts).
+// SLOW(>=2s): sixty seeded issues, and eight Take out of epic presses read once the box settles.
+test("Take out of epic with the row now at the place of the row marked last cut by 70% at the table box's bottom edge or under its sticky header hands the focus to that row's checkbox at its nearest edge, as a cut of 30% does, on the project List at 1440 and 390 @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await createProject({ key: "CUT", name: "Cut" });
+  const epic = await createIssue({ project: "CUT", title: "Cut epic" });
+  await patchIssue(epic.key, { labels: ["epic"] });
+  for (let index = 0; index < 60; index++) {
+    await createIssue({ parent: epic.key, project: "CUT", title: `Cut row ${index}` });
+  }
+  const view = `/projects/CUT/issues?f.epic=${encodeURIComponent(`${epic.key} · Cut epic`)}`;
+  const box = page.getByTestId("issues-table-scroll");
+  const rows = page.locator("[data-issue-row]");
+  const bar = page.getByRole("toolbar", { name: "Selected issues" });
+  const markOf = (key: string) =>
+    page.getByRole("checkbox", { exact: true, name: `Select ${key}` });
+  /** The issues the table draws, top to bottom, and of them those whose checkbox the reader sees
+   *  whole: inside the window and the box, below its sticky header. */
+  const drawn = () =>
+    page.evaluate(() => {
+      const scroller = document.querySelector('[data-testid="issues-table-scroll"]');
+      const frame = scroller?.getBoundingClientRect();
+      const head = scroller?.querySelector("thead th")?.getBoundingClientRect().bottom ?? 0;
+      const listed = [...document.querySelectorAll<HTMLElement>("[data-issue-row]")];
+      const topOf = (row: HTMLElement) => row.getBoundingClientRect().top;
+      listed.sort((one, other) => topOf(one) - topOf(other));
+      const seen = (row: HTMLElement) => {
+        const mark = row.querySelector('input[type="checkbox"]');
+        if (mark === null || frame === undefined) return false;
+        const own = mark.getBoundingClientRect();
+        return (
+          own.top >= Math.max(0, frame.top, head) &&
+          own.bottom <= Math.min(window.innerHeight, frame.bottom)
+        );
+      };
+      return {
+        order: listed.map((row) => row.getAttribute("data-issue-row") ?? ""),
+        shown: listed.filter(seen).map((row) => row.getAttribute("data-issue-row") ?? ""),
+      };
+    });
+  /** Where the focus is against the edge `edge` names: the checkbox of the row `key` names
+   *  shown whole with that edge of it at most 2 px from the same edge of the box's visible part
+   *  under its header (`ok`), and in words what holds the focus, its rect and that part. */
+  const landingOn = (key: string, edge: "bottom" | "header") =>
+    page.evaluate(
+      ([key, edge]) => {
+        const round = (value: number) => Math.round(value * 10) / 10;
+        const focused = document.activeElement;
+        const scroller = document.querySelector('[data-testid="issues-table-scroll"]');
+        if (!(focused instanceof HTMLElement) || focused === document.body || scroller === null) {
+          return { ok: false, text: "the focus is on the body" };
+        }
+        const own = focused.getBoundingClientRect();
+        const frame = scroller.getBoundingClientRect();
+        const head =
+          scroller.querySelector("thead th")?.getBoundingClientRect().bottom ?? frame.top;
+        const top = Math.max(0, frame.top, head);
+        const bottom = Math.min(window.innerHeight, frame.bottom);
+        const name = focused.getAttribute("aria-label") || focused.tagName.toLowerCase();
+        const whole = own.top >= top - 0.5 && own.bottom <= bottom + 0.5;
+        const gap = edge === "bottom" ? bottom - own.bottom : own.top - top;
+        return {
+          ok: name === `Select ${key}` && whole && gap <= 2,
+          text:
+            `the focus is on "${name}" at top ${round(own.top)} to bottom ${round(own.bottom)}, ` +
+            `in a visible part from ${round(top)} to ${round(bottom)}`,
+        };
+      },
+      [key, edge] as const
+    );
+  const landings: { ok: boolean; text: string }[] = [];
+  for (const size of [
+    { height: 900, lift: false, width: 1440 },
+    { height: 664, lift: true, width: 390 },
+  ]) {
+    await page.setViewportSize({ height: size.height, width: size.width });
+    for (const [edge, part] of [
+      ["bottom", 0.3],
+      ["bottom", 0.7],
+      ["header", 0.3],
+      ["header", 0.7],
+    ] as const) {
+      const where = `project List at ${size.width}x${size.height} with the mark of the row marked last cut by ${part * 100}% ${edge === "bottom" ? "at the box's bottom edge" : "under its sticky header"}`;
+      await page.goto(view);
+      await expect.poll(() => rows.count()).toBeGreaterThanOrEqual(12);
+      // At 390 the window brings the table's box to just below the app's header; at 1440 the box
+      // stands whole in the window, which stays at its top. The box scrolls half way down its rows.
+      await box.evaluate((node, lift) => {
+        if (lift) window.scrollBy(0, node.getBoundingClientRect().top - 60);
+        node.scrollTop = (node.scrollHeight - node.clientHeight) / 2;
+      }, size.lift);
+      await settledScrollTop(page);
+      await settledScrollTop(box);
+      await expect.poll(async () => (await drawn()).shown.length).toBeGreaterThanOrEqual(3);
+      // The rows read once the box has held still and the poll above found them in sight; they
+      // only name the two rows marked below, the middle one in sight and the one after it, and
+      // the row after those two, which takes their place once they have gone.
+      const { order, shown } = await drawn();
+      const at = order.indexOf(shown[Math.floor(shown.length / 2)] ?? "");
+      const upper = order[at] ?? "";
+      const lower = order[at + 1] ?? "";
+      const after = order[at + 2] ?? "";
+      // The lower row first, so the row marked last is the upper one, whose place the focus takes.
+      for (const key of [lower, upper]) {
+        await markOf(key).focus();
+        await page.keyboard.press("Space");
+        await expect(markOf(key)).toBeChecked();
+      }
+      await expect(bar).toContainText("2 selected");
+      await markOf(upper).evaluate(
+        (mark, [edge, part]) => {
+          const scroller = mark.closest<HTMLElement>('[data-testid="issues-table-scroll"]');
+          const own = mark.getBoundingClientRect();
+          const head = scroller?.querySelector("thead th")?.getBoundingClientRect().bottom ?? 0;
+          const bottom = Math.min(
+            window.innerHeight,
+            scroller?.getBoundingClientRect().bottom ?? 0
+          );
+          scroller?.scrollBy(
+            0,
+            edge === "bottom"
+              ? own.bottom - (bottom + own.height * part)
+              : own.top - (head - own.height * part)
+          );
+        },
+        [edge, part] as const
+      );
+      await settledScrollTop(box);
+      await bar.getByRole("button", { exact: true, name: "Take out of epic" }).focus();
+      await page.keyboard.press("Enter");
+      await expect(bar).toHaveCount(0);
+      await expect(markOf(upper)).toHaveCount(0);
+      // The bar's hand-off runs after the commit that took the bar away, and its scroll lands
+      // in the frames after it, so both are done once the box has held still.
+      await nextFrames(page);
+      await settledScrollTop(box);
+      // One read is the answer: the writes have landed, the bar has gone and every hand-off of the
+      // press has run, so nothing moves the focus or the box after this.
+      const landing = await landingOn(after, edge);
+      landings.push({
+        ok: landing.ok,
+        text: `${where}: ${landing.text}, want "Select ${after}" whole at that edge`,
+      });
+    }
+  }
+  // The row now at the place stands partly in the reader's sight; passing it over puts the focus
+  // on a row they did not mark the place of, or on the table with no row in hand.
+  expect(
+    landings.map((landing) => landing.ok),
+    landings.map((landing) => landing.text).join("; ")
+  ).toEqual(landings.map(() => true));
+});
