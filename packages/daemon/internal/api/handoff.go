@@ -884,14 +884,16 @@ func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Reques
 //   - CHECK_WAKE_UNEXPECTED: a wakeAt where no look follows it — on a pass or a fail, each of
 //     which closes the check, or on a pending on the check's last look, after which the check
 //     closes as not run.
+//   - CHECK_PHASE_FIELDS_UNEXPECTED: a commit, handoffId or handoffVersion, which only a phase
+//     completion carries.
 //   - PLAN_RATING_UNEXPECTED: a planRating or a planReason, whatever its form, which only the
 //     completion that ends the retro carries (intake.PlanRatingUnexpected).
 //
-// No commit is read: the look pushed nothing. No run is read either: the check fences itself on
-// the issue and the look, since the look's task is no phase's run and a woken session may hold an
-// older one. The look sent is the caller's own, not whichever look the check has reached, so a
-// report from a turn that outlived its look is held to the look it was given and the engine
-// refuses it (CHECK_LOOK_NOT_OPEN) rather than recording it as the current look's. The event is
+// A commit or handoff is refused: the look pushed nothing and completed no phase. No run is read:
+// the check fences itself on the issue and the look, since its task is no phase's run and a woken
+// session may hold an older one. The look sent is the caller's own, not whichever look the check
+// has reached, so a report from a turn that outlived its look is held to the look it was given and
+// the engine refuses it (CHECK_LOOK_NOT_OPEN) rather than recording it as the current look's. The event is
 // the issue, the check (record.ProductionCheck.ID: a later merge of the same issue replaces the
 // check and counts its looks from one again, and the rerun's report on look 1 is a new fact, not
 // the first check's), the look and the verdict: a retried report of the same look is the same

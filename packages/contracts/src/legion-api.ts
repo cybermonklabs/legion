@@ -2423,9 +2423,9 @@ export const LegionTaskStopRequest = z.strictObject({
 /** What plugin code takes the value of in one issue's record: `legion-phase-ops.ts` reads the
  * issue's phase for a fieldless `handoff_complete`; a named check report reads no record.
  * `phase-reminder.ts` and `pi-legion/src/stall-evidence.ts` read the architect's claim state.
- * The controller's `read_state` summary (`pi-legion/src/tools.ts`) reads each issue's status,
- * hold reason, slot,
- * design gate, and the state and both turn times of the architect's claim and of every worker's.
+ * The controller's `read_state` summary (`pi-legion/src/tools.ts`) reads each issue's status, hold
+ * reason, slot and design gate. It also reads the state and both turn times of the architect's
+ * claim and every worker's claim.
  * The record route and the state's `issues{}` answer the same node, so the read set below names
  * these paths at both, `LegionIssueRecordResponse` as they stand and `LegionStateResponse` under
  * the state's prefix. They are written once here because the two entries must say the same thing.
