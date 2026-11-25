@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Tests for `check-workflow-files.sh`: every file under .github/workflows is within 64,000 bytes,
 # parses as YAML, repeats no mapping key after upper-casing, calls at most 45 unique reusable
-# workflows, and sets JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES to the timeout-minutes they
-# stand for.
+# workflows, sets JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES to the timeout-minutes they
+# stand for, and runs pg-crash-safety-off.sh in every job with a Postgres service.
 #
 # Each case builds a miniature repository under a temporary directory and symlinks the real
 # script into it, so the script under test is the file CI runs.
@@ -317,7 +317,7 @@ check "exits 0" "$(is "$status" 0)"
 check "says what it read" \
   "$(contains "$out" '^all 46 workflow files under .github/workflows are within 64,000 bytes')"
 check "and what it held them to" \
-  "$(contains "$out" 'call at most 45 unique reusable workflows, and set JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for$')"
+  "$(contains "$out" 'call at most 45 unique reusable workflows, set JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for, and run pg-crash-safety-off.sh in every job with a Postgres service$')"
 
 echo "case: job ids and with: keys that differ only in case"
 root=$(fixture folded-elsewhere)
@@ -577,5 +577,55 @@ check "names the step whose script sources gh-read.sh by its bare name" \
   "$(contains "$out" "line=17::.github/workflows/ci.yaml${colon}17: step 4 of job build sets timeout-minutes 6 and reaches gh-read.sh (through bare.sh)")"
 check "not the step whose bash -c only echoes the path" "$(is "$(contains "$out" 'step 5 of job build')" false)"
 check "refuses those five and nothing else" "$(contains "$out" '^5 problem(s) across the 1 workflow file(s) under .github/workflows$')"
+
+echo "case: a job with a Postgres service and no step that runs pg-crash-safety-off.sh is refused, and one with it passes"
+root=$(fixture crash-safety)
+cat > "$root/.github/workflows/ci.yaml" <<'YAML'
+name: Build
+on: push
+jobs:
+  bare:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: ghcr.io/example/ci@sha256:aaaa
+    steps:
+      - run: echo .github/scripts/pg-crash-safety-off.sh
+      # .github/scripts/pg-crash-safety-off.sh
+      - run: go test ./...
+  by-image:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: pgvector/pgvector:pg17
+    steps:
+      - run: go test ./...
+  safe:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: ghcr.io/example/ci@sha256:aaaa
+    steps:
+      - run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
+      - run: go test ./...
+  nats-only:
+    runs-on: ubuntu-latest
+    services:
+      nats:
+        image: nats:2.15.1
+    steps:
+      - run: go test ./...
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the job whose step only echoes the script's path" \
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=7::.github/workflows/ci.yaml${colon}7: job bare runs the Postgres service 'postgres' and no step of it runs .github/scripts/pg-crash-safety-off.sh")"
+check "and the job whose service is Postgres by its image alone" \
+  "$(contains "$out" "line=16::.github/workflows/ci.yaml${colon}16: job by-image runs the Postgres service 'db'")"
+check "says which step to add, with the service's own id" \
+  "$(contains "$out" 'run: .github/scripts/pg-crash-safety-off.sh "\${{ job.services.db.id }}"')"
+check "not the job that runs the script" "$(is "$(contains "$out" 'job safe ')" false)"
+check "nor the job with no Postgres service" "$(is "$(contains "$out" 'job nats-only ')" false)"
+check "refuses those two and nothing else" "$(contains "$out" '^2 problem(s) across the 1 workflow file(s) under .github/workflows$')"
 
 summary "check-workflow-files.sh"

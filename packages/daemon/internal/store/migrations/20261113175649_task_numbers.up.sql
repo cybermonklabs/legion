@@ -308,7 +308,8 @@
 -- drops or writes back. The release before this one carries the other thirty-one: it is contract
 -- 275, the one whose internal/api/version.go carries the entry for dispatch://INFRA-4425,
 -- cybermonklabs/legion#4392's daemon that writes to Dispatch as itself under
--- dispatch_token_broker, as main releases it after #4392, its newest migration #4392's
+-- dispatch_token_broker, as main releases it after #5014, which names the experiment and the
+-- variant on each step record and adds no migration, its newest migration #4392's
 -- 20261124182040_issue_pod_disks, so the rollback to it runs 20261122160000's way back and this
 -- block and leaves the thirty-one standing. A rollback to contract 256, or to any release before
 -- it, crosses contract 275, which takes no step of its own beyond pinning the worker image with the
@@ -316,7 +317,9 @@
 -- legion.yaml sets either of its two keys, dispatch_token_broker and
 -- dispatch_token_transition_file: an earlier release refuses both as keys it does not know and
 -- requires dispatch_token_file beside dispatch_url, so take both out and name dispatch_token_file
--- again before the earlier image is pinned. A rollback to contract 246, or to any release before
+-- again before the earlier image is pinned. That rollback crosses #5014 too, so it also runs that
+-- release's block first (docs/kubernetes.md, "Rolling back the release that names the variant on
+-- each step record"). A rollback to contract 246, or to any release before
 -- it, also crosses contract 256 and #5365's contract 250, which take no step of their own beyond
 -- pinning the worker image with the daemon, since they add no legion.yaml key and their
 -- migrations, 20261124073512_claim_cause_times and 20261124060500_issue_priority, need nothing,

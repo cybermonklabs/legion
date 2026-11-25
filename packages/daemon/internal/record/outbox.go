@@ -1599,6 +1599,12 @@ type StepRecord struct {
 	// members are members of the payload itself, written together and left out together when it is
 	// nil (validateOutboxPayload holds a stored row to that).
 	*PlanRating
+	// StepExperiment is the experiment a draw put the record's issue in and the variant it drew
+	// there, nil for an issue that no such draw names. Dispatch takes it on the record's experiment
+	// route, after the write of the record itself (dispatch.HTTPClient.PutStepExperiment). It is
+	// embedded, as PlanRating is, so its two members are members of the payload, written together
+	// and left out together (validateOutboxPayload holds a stored row to that).
+	*StepExperiment
 }
 
 // PlanRating is a retro's rating of the plan its issue ran: Rating, on the scale
@@ -1610,6 +1616,16 @@ type StepRecord struct {
 type PlanRating struct {
 	Rating int    `json:"rating"`
 	Reason string `json:"rating_reason"`
+}
+
+// StepExperiment is the experiment a draw put an issue in and the variant it drew there. The two
+// are one value, so a step record names both or neither. It mirrors dispatch.StepExperiment, which
+// the publication converts it to (publishStepExperiment), as PlanRating mirrors
+// dispatch.PlanRating; internal/daemon's TestAStepRecordReachesDispatchWithEveryField holds the two
+// to the same fields.
+type StepExperiment struct {
+	Experiment string `json:"experiment"`
+	Variant    string `json:"variant"`
 }
 
 func (StepRecord) OutboxKind() OutboxKind { return OutboxKindStepRecord }
@@ -2730,7 +2746,8 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 	// workflow (rateRetro) writes the rating and its reason as one value, so a rating of 0 or an
 	// empty reason, which is what a stored row naming only one of the two reads as, is a defect of
 	// the daemon, refused where it is queued rather than found by a warning after the completion
-	// that carried it committed.
+	// that carried it committed. The experiment and the variant of the record's issue are held
+	// whole for the same reason: they are one value, which a row naming one of them alone breaks.
 	case StepRecord:
 		if _, err := uuid.Parse(value.ID); err != nil {
 			return fmt.Errorf("a step record names no uuid as its id; it names %q", value.ID)
@@ -2749,6 +2766,10 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.PlanRating != nil && (value.PlanRating.Rating == 0 || value.PlanRating.Reason == "") {
 			return fmt.Errorf("a step record carries the rating of the plan with its reason or neither; it carries the rating %d with the reason %q",
 				value.PlanRating.Rating, value.PlanRating.Reason)
+		}
+		if value.StepExperiment != nil && (value.StepExperiment.Experiment == "" || value.StepExperiment.Variant == "") {
+			return fmt.Errorf("a step record carries the experiment of its issue with its variant or neither; it carries the experiment %q with the variant %q",
+				value.StepExperiment.Experiment, value.StepExperiment.Variant)
 		}
 	// The rest of a plan Dispatch judges, as it judges a step record's; its id is held here for the
 	// same reason a step record's is.
