@@ -2,8 +2,9 @@
 # JSON document for each object it creates, never a List (kubectl 1.35.9's create.go flattens the
 # List it is given and prints each object it made), so review reads that output with -s: an array of
 # the documents, one SubjectAccessReview for each review asked. Each document must be a
-# SubjectAccessReview whose status is an object, or the answer cannot be read, and the error names
-# the first that is not. It gives a record per review of the principal, the right's label, allowed,
+# SubjectAccessReview whose status is an object with a boolean allowed, which a real API server
+# always writes (so `{}` or `"allowed": "true"` is no answer), or the answer cannot be read, and the
+# error names the first that is not. It gives a record per review of the principal, the right's label, allowed,
 # refused or error, the evaluation error and the API server's reason, matched to its question by the
 # subject and the attributes the answer echoes; or else one `short` record (the pairs answered, the
 # reviews asked, the documents) unless every principal and right pair asked is answered, each once,
@@ -14,9 +15,10 @@ one_array($principals; "the principals") as $principals | one_array($rights; "th
 | (($rights | map({(.key): .label}) | add) // {}) as $labels
 | (($principals | map({("\(.user)|\(.groups | join(","))"): .principal}) | add) // {}) as $names
 | (to_entries
-   | map(select((.value | type) != "object" or .value.kind != "SubjectAccessReview" or (.value.status | type) != "object"))
+   | map(select((.value | type) != "object" or .value.kind != "SubjectAccessReview" or (.value.status | type) != "object"
+               or (.value.status.allowed | type) != "boolean"))
    | first) as $bad
-| if $bad != null then error("document \($bad.key + 1) of the answer's \(length) is not a SubjectAccessReview with a status") else . end
+| if $bad != null then error("document \($bad.key + 1) of the answer's \(length) is not a SubjectAccessReview with a status that says allowed true or false") else . end
 | [.[]
    | (.spec.resourceAttributes // {}) as $a
    | ([$a.verb, $a.group, $a.resource, $a.subresource, $a.namespace, $a.name] | map(. // "") | join("|")) as $key
