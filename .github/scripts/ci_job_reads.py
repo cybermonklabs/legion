@@ -1135,12 +1135,13 @@ hold_plugin_pack_tests()
 # TestNoTwoEventTypesShareAKind, TestStatesIsEveryDeclaredStateOnce, which holds States() to the
 # ClaimState constants, and TestSuspendSourcesIsEveryDeclaredSourceOnce, which holds
 # SuspendSources() to the SuspendSource constants.
-# Each reads source and nothing else - packageSets reads the sealed sets through
-# `packages/daemon/internal/supervise/table_test.go#packageSets`, which parses every non-test .go file of the
-# directory, and the type-check of those files reads the source of every package they import too,
-# since `packages/daemon/internal/supervise/table_test.go#readSealedSet` builds the checker with
-# importer.ForCompiler(..., "source", ...), so the whole import closure is read from source: of this repository internal/claim, phase, runtime,
-# wait, treelifecycle and backoff and what those import, which packages/daemon/**/*.go carries, and
+# Each reads source and nothing else -
+# `packages/daemon/internal/supervise/table_test.go#packageSets` parses every non-test .go file of
+# the directory, and the type-check of those files reads the source of every package they import
+# too, since `packages/daemon/internal/supervise/table_test.go#readSealedSet` builds the checker
+# with importer.ForCompiler(..., "source", ...), so the whole import closure is read from source: of
+# this repository internal/claim, phase, runtime, wait, treelifecycle and backoff and what those
+# import, which packages/daemon/**/*.go carries, and
 # outside it the standard library and the module cache - and none starts a database, a container,
 # tmux or jj, so they are text-check work: they run in the text-checks job, where they wait behind
 # no fixture, and the daemon-go plain step, which runs their package, skips them by name, so each

@@ -3740,7 +3740,7 @@ package api
 // `read-unpushed-result` (shimwire.ReadUnpushedResult: `id`, `ok`, `commits`, `workingCopyChanged`,
 // `error`): how many commits of the issue's work the issue's workspace holds that no remote branch
 // or tag holds, and whether the reading role's working copy holds a change, read in the workspace
-// with no bundle built and no commit sent. Of the commits no remote branch or tag holds, less the
+// with no git run and no commit sent. Of the commits no remote branch or tag holds, less the
 // root and each with no change and no description, the issue's work is each under a working copy or
 // a local bookmark, each with a change and no description, and, while `merged` (whether the record
 // holds the issue's pull request merged) is false, each whose description has a line `Omp-Session:

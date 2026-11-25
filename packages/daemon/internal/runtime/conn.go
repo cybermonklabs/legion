@@ -68,7 +68,7 @@ var ErrTokenRefused = errors.New("runtime: the shim did not read its projected t
 // UnpushedReadTimeout is how long the agent's side is given to read the issue's unpushed work
 // for a project release (Conn.ReadUnpushed): jj reads, one of which snapshots the working copy;
 // nothing is packed or pushed. It is the runtimes' budget for the request, not a setting. It is
-// five minutes, the budget the idle release gave its bundle before main's #4869 took the bundle
+// five minutes, the budget the idle release gave its workspace save before main's #4869 took it
 // out, whose first read made the same snapshot: the release's read runs in no sweep but inside the
 // release's own bound, and a read that runs out of time is a read the shim refused, for which
 // the release asks the pod's roles rather than taking the pod as one with nothing unpushed.
@@ -133,7 +133,7 @@ type Conn interface {
 	WorkspaceWork(ctx context.Context, issue string, timeout time.Duration) (WorkspaceWork, error)
 	// ReadUnpushed has the agent's side read whether the workspace every role of read.Issue shares
 	// holds the issue's unpushed work, for a project release about to delete the pod with its
-	// disk. It builds no bundle and sends no commit. A shim that could not read the workspace, and
+	// disk. It runs no git and sends no commit. A shim that could not read the workspace, and
 	// one too old to know the read, are each a refusal carrying its words (RefusalReason), never
 	// an answer that nothing is unpushed; every other error is transport.
 	ReadUnpushed(ctx context.Context, read UnpushedRead, timeout time.Duration) (UnpushedWork, error)

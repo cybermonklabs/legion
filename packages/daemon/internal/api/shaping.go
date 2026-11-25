@@ -906,7 +906,7 @@ const shapedAnswersContract = 193
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract the key arrived at stays where it is. It moves only with this
-// change's own number, as the last number of answers.go's SupportedContracts does.
+// change's own number, and answers.go's SupportedContracts names the constant for that reason.
 const dispatchCredentialContract = 275
 
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
@@ -1136,7 +1136,7 @@ func withoutPriority(issue Issue) (Issue, bool) {
 // rows of stateNarrowings between the two are assignmentPlanContract's, which takes each
 // assignment's `plan` off below 220, intakeGiveUpsContract's, which takes `intakeGiveUps` off below
 // 228, podHoldContract's, which takes each issue's `podHold` off below 246, priorityContract's,
-// which takes each issue's `priority` and its waiting line's `priority` off below 250, and
+// which takes each issue's `priority` and its waiting line's `priority` off below 250,
 // causeTimesContract's, which takes each claim view's `lastDeathAt` and `lastStartFailureAt` off
 // below 256, and dispatchCredentialContract's, which takes the state's `dispatchCredential` off
 // below 275, so a caller at or above repositoriesLiveContract and below this contract, 202 to 294,
