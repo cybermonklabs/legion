@@ -1035,13 +1035,13 @@ func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testin
 	process := startDispatchProcess(t, relay.url)
 	process.waitHealthy(t)
 	process.call(t, http.MethodPost, "/api/v1/projects", `{"key":"STOP","name":"Shutdown"}`, http.StatusCreated)
-	// Creating a project seeds its evals and its `evals-md` document, which owes a settlement two
-	// seconds later, and that settlement loads the document's room, which stays resident for a
-	// minute after. The bound below assumes the document service has no room to visit: Shutdown
-	// reads whether each resident room owes a settlement, a read the frozen database never
-	// answers, which would spend the document service's whole drain budget. So wait, on the test's
-	// own pool rather than through the relay, for that settlement to commit, and then close the
-	// room with the quiesce hook (which would cancel a settlement still owed, hence the order).
+	// Creating a project seeds its evals and its `evals-md` document, whose tree a settlement has
+	// nothing to write into, so the create records no settlement owed and no settlement loads the
+	// document's room (docs.CreateDocument). The bound below assumes the document service has no
+	// room to visit: Shutdown reads whether each resident room owes a settlement, a read the frozen
+	// database never answers, which would spend the document service's whole drain budget. So
+	// check, on the test's own pool rather than through the relay, that the document owes nothing,
+	// and that the process holds no room.
 	var evalsDocument string
 	if err := database.Pool.QueryRow(ctx, `
 		select id::text from artifacts
@@ -1050,9 +1050,8 @@ func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testin
 		t.Fatalf("read the project's evals-md: %v", err)
 	}
 	waitForSettlementOwed(t, database, evalsDocument, false)
-	process.call(t, http.MethodPost, "/api/v1/artifacts/_test/quiesce", "", http.StatusOK)
 	if rooms := process.residentRooms(t); len(rooms) != 0 {
-		t.Fatalf("the process holds rooms %v after the quiesce, want none", rooms)
+		t.Fatalf("the process holds rooms %v after the project's create, want none", rooms)
 	}
 
 	// An issue create takes its number from the project's row, so it queues behind this lock.
