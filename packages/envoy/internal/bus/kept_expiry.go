@@ -42,7 +42,7 @@ const keptAttemptSeparator = ":attempt:"
 // event under, whose dedupe key is dedupeKey, on role's kept lane. The first keep is KeptMsgID,
 // the id the listener keeps the same message under, so the two writers of the lane still store one
 // copy of it. A later keep - the outbox keeping the event again after its copy's hour ended with
-// no session taking it (internal/dispatch/outbox, publishRoleCopyRetries) - adds the attempt,
+// no session taking it (internal/dispatch/outbox, keepExpiredCopiesAgain) - adds the attempt,
 // since the stream's duplicate window spans the whole retained lifetime of a message
 // (streamDuplicateWindow) and would otherwise take the new copy for the one it already holds and
 // store nothing. The copy's envelope keeps its own dedupe key, so a holder that already took an

@@ -33,10 +33,6 @@ type createMessageInput struct {
 	Delivery       *string      `json:"delivery"`
 	Urgency        *string      `json:"urgency"`
 	Actor          *model.Actor `json:"actor"`
-	// id is the id the message is stored under, chosen by a caller inside this process
-	// (postSystemMessage), so a repeat of that post finds the message it already wrote; empty
-	// for every request, whose message takes a fresh id. No request body sets it.
-	id string
 }
 
 // messageRead is one conversation as a route answers it: its root message and every message
@@ -74,7 +70,7 @@ func (s *server) createMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	issueKey := r.PathValue("key")
-	message, advice, err := s.createStoredMessage(r.Context(), &issueKey, input, delivery, false, actor)
+	message, advice, err := s.createStoredMessage(r.Context(), "", &issueKey, input, delivery, false, actor)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -124,7 +120,7 @@ func (s *server) createAgentMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	message, _, err := s.createStoredMessage(r.Context(), nil, messageInput, delivery, input.ConnectedOnly, actor)
+	message, _, err := s.createStoredMessage(r.Context(), "", nil, messageInput, delivery, input.ConnectedOnly, actor)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -316,9 +312,12 @@ func (s *server) owedMessageAttempts(ctx context.Context, messageIDs []string) (
 // recovery point (bindRequestKeyRecovery), so a repeat under the key is answered with this message
 // however this request ends, then sends a targeted message's first attempt. connectedOnly is the
 // request's connected_only, which only the agents route takes
-// (createAgentMessageInput.ConnectedOnly).
+// (createAgentMessageInput.ConnectedOnly). chosenID is the id the message is stored under: empty
+// for every request, whose message takes a fresh id, and the id a caller inside this process
+// chose for a post it may make again (postSystemMessage).
 func (s *server) createStoredMessage(
 	ctx context.Context,
+	chosenID string,
 	issueKey *string,
 	input createMessageInput,
 	delivery string,
@@ -398,7 +397,7 @@ func (s *server) createStoredMessage(
 	// (writeAdvice).
 	var messageID string
 	var createdAt time.Time
-	if err := tx.QueryRow(ctx, `select coalesce(nullif($1, ''), gen_random_uuid()::text), now()`, input.id).Scan(&messageID, &createdAt); err != nil {
+	if err := tx.QueryRow(ctx, `select coalesce(nullif($1, ''), gen_random_uuid()::text), now()`, chosenID).Scan(&messageID, &createdAt); err != nil {
 		return model.Message{}, nil, err
 	}
 	eventType := "message.created"

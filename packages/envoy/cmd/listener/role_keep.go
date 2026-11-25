@@ -1252,8 +1252,12 @@ func walkKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, 
 			result.ended++
 			judged.report()
 			continue
-		case keptCopyDeadLetter:
-			ended, unconfirmed, err := endKeptCopyWithDeadLetter(ctx, lane, kept, stored, judged)
+		case keptCopyDeadLetter, keptCopyExpiryNotice:
+			end := endKeptCopyWithDeadLetter
+			if judged.step == keptCopyExpiryNotice {
+				end = endKeptCopyWithExpiryNotice
+			}
+			ended, unconfirmed, err := end(ctx, lane, kept, stored, judged)
 			if ended {
 				kept = stored.Sequence
 				result.ended++
@@ -1498,6 +1502,11 @@ const (
 	// keptCopyDeadLetter: the walk ends the copy with a dead letter to its sender, in three
 	// cursor writes (endKeptCopyWithDeadLetter).
 	keptCopyDeadLetter
+	// keptCopyExpiryNotice: the walk ends a copy Dispatch's outbox kept, whose hour ended, with an
+	// expiry notice to Dispatch, in the same three cursor writes under the same expired claim a
+	// dead letter takes (endKeptCopyWithExpiryNotice), so a walk that takes the claim over judges
+	// the copy expired again and stores the notice again under the same message id.
+	keptCopyExpiryNotice
 	// keptCopyWait: the copy is inside its hour and the walk has no live holder to forward it to,
 	// so the walk stops at it.
 	keptCopyWait
@@ -1548,7 +1557,7 @@ type keptCopyVerdict struct {
 //     (keptRoleDrop.holder), since telling the sender no session held the role would be false;
 //     the dead letter of a copy whose forward may have reached the holder (below) says that
 //     instead. A copy Dispatch's outbox kept (isOutboxCopy) is owed an expiry notice to Dispatch
-//     in place of a dead letter (keptRoleDrop.outbox, endKeptCopyWithExpiryNotice), whatever its
+//     in place of a dead letter (keptCopyExpiryNotice, endKeptCopyWithExpiryNotice), whatever its
 //     age: Dispatch decides what becomes of the event, and a copy no walk reached for hours is
 //     the very one it must hear of, where a stale dead letter would tell a session of a message
 //     it sent hours ago.
@@ -1601,7 +1610,7 @@ func judgeKeptRoleCopy(cfg listenerDeliveryHandlerConfig, role, holder string, e
 		stale := claim.kind == keptCopyUnclaimed && age > roleKeepStaleAge
 		report := keptRoleDroppedReport(cfg, role, holder, stored, item, age, stale)
 		if isOutboxCopy(item) {
-			return deadLetter(report, keptRoleDrop{reason: deadLetterExpired, holder: holder, outbox: true})
+			return keptCopyVerdict{step: keptCopyExpiryNotice, item: item, at: at, report: report}
 		}
 		if !owed || stale {
 			return keptCopyVerdict{step: keptCopyEnd, item: item, report: report}
@@ -1649,7 +1658,7 @@ func keptRoleDroppedReport(cfg listenerDeliveryHandlerConfig, role, holder strin
 }
 
 // keptRoleDrop is why a walk drops a copy it ends with a dead letter, which the dead letter's text
-// says (keptRoleDeadLetter) and its line names, or with an expiry notice to Dispatch (outbox).
+// says (keptRoleDeadLetter) and its line names.
 type keptRoleDrop struct {
 	// reason is deadLetterExpired or deadLetterDeliveryMode.
 	reason deadLetterReason
@@ -1671,11 +1680,6 @@ type keptRoleDrop struct {
 	// unreadable is a copy whose delivery mode cannot be read unambiguously
 	// (forwardModeUnreadable).
 	unreadable bool
-	// outbox is an expired copy Dispatch's outbox kept (isOutboxCopy): the walk ends it with an
-	// expiry notice to Dispatch in place of a dead letter (endKeptCopyWithExpiryNotice), under
-	// the same claim an expired copy's dead letter takes, so a walk that takes the claim over
-	// judges the copy expired again and stores the notice again under the same message id.
-	outbox bool
 }
 
 // claimReason is the reason a walk writes into its claim of the copy it ends with a dead letter for
@@ -1903,13 +1907,7 @@ func deadLetterRefusal(sender string, letter contracts.Envelope) error {
 // (deadLetterRefusal) in the one write {kept: the copy's sequence}, since there is nothing to claim
 // the copy for - a plain write, which no claim of this walk's makes worth reading back - and one
 // the publish met (forwardRefused) after the claim it made.
-//
-// A copy Dispatch's outbox kept is ended the same way with an expiry notice to Dispatch in place
-// of the dead letter (keptRoleDrop.outbox, endKeptCopyWithExpiryNotice).
 func endKeptCopyWithDeadLetter(ctx context.Context, lane *roleKeepLaneCursor, kept uint64, stored bus.StoredMessage, judged keptCopyVerdict) (ended, unconfirmed bool, err error) {
-	if judged.drop.outbox {
-		return endKeptCopyWithExpiryNotice(ctx, lane, kept, stored, judged)
-	}
 	cfg, role, item := lane.cfg, lane.role, judged.item
 	letter, msgID := keptRoleDeadLetter(role, stored, item, judged.at, judged.drop)
 	if refusal := deadLetterRefusal(item.SourceSession, letter); refusal != nil {
@@ -1976,7 +1974,7 @@ func keptCopyExpiry(role string, stored bus.StoredMessage, item contracts.Envelo
 }
 
 // endKeptCopyWithExpiryNotice ends the copy stored at stored, an expired copy Dispatch's outbox
-// kept (keptRoleDrop.outbox), for a walk whose cursor stands at kept, as endKeptCopyWithDeadLetter
+// kept (keptCopyExpiryNotice), for a walk whose cursor stands at kept, as endKeptCopyWithDeadLetter
 // ends a copy owed a dead letter, and reports the same three things. The cursor is written to
 // {kept: unchanged, claiming: the copy's sequence, dead_letter: the expired claim}, the expiry
 // notice is stored on the role's expiry subject under the copy's own message id
@@ -1991,7 +1989,7 @@ func keptCopyExpiry(role string, stored bus.StoredMessage, item contracts.Envelo
 func endKeptCopyWithExpiryNotice(ctx context.Context, lane *roleKeepLaneCursor, kept uint64, stored bus.StoredMessage, judged keptCopyVerdict) (ended, unconfirmed bool, err error) {
 	cfg, role := lane.cfg, lane.role
 	notice := keptCopyExpiry(role, stored, judged.item, judged.at)
-	if err := lane.write(ctx, bus.KeptRoleCursor{Kept: kept, Claiming: stored.Sequence, DeadLetter: judged.drop.claimReason()}); err != nil {
+	if err := lane.write(ctx, bus.KeptRoleCursor{Kept: kept, Claiming: stored.Sequence, DeadLetter: string(deadLetterExpired)}); err != nil {
 		return false, false, err
 	}
 	published := cfg.client.PublishKeptCopyExpiry(ctx, notice)

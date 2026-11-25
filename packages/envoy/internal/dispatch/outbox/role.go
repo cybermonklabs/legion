@@ -803,7 +803,7 @@ func (f *roleForward) send(ctx context.Context, deps Deps, sender bus.Sender, it
 // subject stays there, and the next holder is forwarded the event under the same key the stream
 // and its host drop a repeat of, so it takes it once.
 func (f *roleForward) forward(deps Deps, sender bus.Sender, item contracts.Envelope) <-chan error {
-	if now := time.Now(); roles.ResolutionTooOld(f.resolvedAt, now) {
+	if now := deps.now(); roles.ResolutionTooOld(f.resolvedAt, now) {
 		age := now.Sub(f.resolvedAt)
 		stale := make(chan error, 1)
 		stale <- fmt.Errorf("forward to %s: %w (resolved %s ago)", f.holder, errStaleRoleResolution, age.Round(time.Second))

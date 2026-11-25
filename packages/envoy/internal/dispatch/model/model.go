@@ -1693,6 +1693,17 @@ type CheckResultRetractedEventPayload struct {
 // owner's history, and a session that follows the owner's topic is sent it.
 const RoleUndeliveredEventType = "role.undelivered"
 
+// SystemMessage is a message Dispatch itself writes on an issue, as one of its own system actors
+// (api.Background.PostSystemMessage): ID is the id it is stored under, which its writer chooses so
+// that a post made again writes no second message, IssueKey the issue it is posted on, and Body
+// its markdown. Dispatch's outbox posts the message that names the events a role did not take
+// with it.
+type SystemMessage struct {
+	ID       string
+	IssueKey string
+	Body     string
+}
+
 // The reasons a role.undelivered event gives (RoleUndeliveredEventPayload.Reason).
 const (
 	// RoleUndeliveredExpired: each of the copy's keeps ended its hour with no session taking it.

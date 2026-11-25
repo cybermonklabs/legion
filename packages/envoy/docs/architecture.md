@@ -713,9 +713,13 @@ read it: no consumer filter takes it, no session may register an interest reachi
 hold no stream read, and the publish route refuses it. A legacy host's sessions that share its
 `Host` user share that user's reach. Dispatch's outbox reads the notices from the stream every
 30 seconds, and after every scan,
-with the stored-message read it already holds (`readKeptExpiries`), and records each one in
-`outbox_role_copy_expiries`, keyed by the event, the role and the attempt, so a repeated notice
-reopens the event's delivery to that role once. It then keeps the event's copy again, read back
+with the stored-message read it already holds (`readKeptExpiries`). It passes over a notice whose
+role is no valid role name, that was stored on another role's expiry subject, or whose event was
+never routed to that role. It records each other notice in `outbox_role_copy_expiries`, keyed by
+the event, the role and the attempt, which is the outbox's own next attempt for that pair (the
+notice's own attempt is logged), so a repeated notice reopens the event's delivery to that role
+once. A keep NATS refuses for good ends the pair as a gone copy does. It then keeps the
+event's copy again, read back
 from the kept lane by its sequence, under the next attempt (`bus.KeptAttemptMsgID`), or forwards
 it to the session that holds the role by then (`keepExpiredCopiesAgain`); nothing else of the
 event is sent again. After the third keep (`maxRoleKeeps`) has expired, the outbox stops and
@@ -740,8 +744,10 @@ holds ends nothing while another copy of the event carries its delivery on, that
 another expiry of it is still owed a keep or was kept, forwarded or skipped after the gone one
 was recorded. Such a row is settled `gone`. Only the publisher hold's holder records a notice,
 claims an expiry or
-posts a window. Each record transaction locks the hold's row for share, so a takeover of the hold
-waits for that transaction to commit, and the new holder reads every write it made. An event of
+posts a window. Each record transaction reads the hold's row first and locks it for share only
+as its last statement before the commit, so a takeover of the hold waits for that commit and the
+new holder reads every write it made, while the hold's renewal never waits behind a record that
+is itself waiting on an issue's lock. An event of
 no issue and
 of no issue's document never has a copy kept for a role, since the route is read from the issue
 alone (`readBatchSQL`, `coalesce(i.route, ai.route)`), and such an expiry logs one Error line. An

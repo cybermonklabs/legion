@@ -819,7 +819,7 @@ func main() {
 	// events a role did not take with (outbox.Deps.PostIssueMessage). The outbox starts before the
 	// API server is registered (routes.New, below), so it reads the writer from here once that has
 	// happened, and a post before it fails and is tried again on the post's own back-off.
-	var postSystemMessage atomic.Pointer[func(context.Context, model.Actor, string, string, string) (string, error)]
+	var postSystemMessage atomic.Pointer[func(context.Context, model.Actor, model.SystemMessage) (string, error)]
 	outboxPublishFailures := met.NewCounter(
 		"envoy_dispatch_outbox_publish_failures_total",
 		"Destinations of an outbox publish attempt that were not reached, by reason: denied (the server refused the send under the connection's own publish permissions), refused (NATS refuses it however often it is retried), unanswered (NATS took the forward and the stream did not acknowledge the copy it stored, which is the whole of a forward's answer) or failed (every other failure)",
@@ -849,12 +849,12 @@ func main() {
 			RoleClaims: holders,
 			Sessions:   holders,
 			KeptLanes:  natsClient,
-			PostIssueMessage: func(ctx context.Context, actor model.Actor, messageID, issueKey, body string) (string, error) {
+			PostIssueMessage: func(ctx context.Context, actor model.Actor, message model.SystemMessage) (string, error) {
 				post := postSystemMessage.Load()
 				if post == nil {
 					return "", errors.New("the API server is not registered yet")
 				}
-				return (*post)(ctx, actor, messageID, issueKey, body)
+				return (*post)(ctx, actor, message)
 			},
 			PublishFailures:  outboxPublishFailures,
 			RoleForwardsHeld: outboxRoleForwardsHeld,

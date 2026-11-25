@@ -111,7 +111,7 @@ type Deps struct {
 	// (postUndeliveredNotes). A post made again under one id writes no second message.
 	// cmd/dispatch passes the API server's own writer of an issue message
 	// (api.Background.PostSystemMessage). A nil one posts nothing, and the windows wait.
-	PostIssueMessage func(ctx context.Context, actor model.Actor, messageID, issueKey, body string) (string, error)
+	PostIssueMessage func(ctx context.Context, actor model.Actor, message model.SystemMessage) (string, error)
 	// forwardAckWait is how long a role forward waits for the stream's acknowledgement of its
 	// stored copy, which is what counts the forward as reached, and zero is roleForwardAckTimeout,
 	// which is what cmd/dispatch runs. A test sets it longer than its own run so that a forward
