@@ -617,6 +617,28 @@ func TestAnAdoptionNamesTheFixAndTheMove(t *testing.T) {
 			t.Errorf("Validate of an adoption naming no commit = %v, want nil", err)
 		}
 	})
+	t.Run("the fix's own branch is taken only where it is a branch beside a fix", func(t *testing.T) {
+		const fixBranch = "legion-beside/INFRA-1/2/a/fix-1/implementer"
+		line := head + `,"fixFrom":"` + fixFrom + `","fixBranch":"` + fixBranch + `"}`
+		decoded, err := Decode([]byte(line))
+		if err != nil {
+			t.Fatalf("Decode(%s): %v", line, err)
+		}
+		if encoded, err := json.Marshal(decoded); err != nil || string(encoded) != line {
+			t.Errorf("%s decodes to %#v and encodes as %s (%v): the frame loses fixBranch", line, decoded, encoded, err)
+		}
+		if err := adoption(t, line).Validate(); err != nil {
+			t.Errorf("Validate(%s) = %v, want nil", line, err)
+		}
+		// The control: an issue's own branch, which a fix pushes to only at its end, is no
+		// branch of the fix's work in progress, and neither is any other name.
+		for _, branch := range []string{"legion/INFRA-1", "main", "legion-beside/INFRA-1/2/a b/fix-1/implementer", "legion-beside/INFRA-1/2/a/fix-1"} {
+			line := head + `,"fixFrom":"` + fixFrom + `","fixBranch":"` + branch + `"}`
+			if err := adoption(t, line).Validate(); !errors.Is(err, ErrMalformedFrame) {
+				t.Errorf("Validate(%s) = %v, want ErrMalformedFrame", line, err)
+			}
+		}
+	})
 }
 
 // A volume report may hold each of its four lists up to the list's cap and not one entry past
