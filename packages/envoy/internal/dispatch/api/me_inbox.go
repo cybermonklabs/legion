@@ -70,9 +70,10 @@ const (
 // nodes, the skip over their kinds and the walk out of them, so a generic plan of each can take
 // graph_tuples_current where that index is partial on leaving the delivery kind out: a column proves
 // nothing of that predicate, and this literal does. No delivery runs out of a person or a session,
-// so it leaves out nothing those reads would answer. Under a state the walk reads the relations out
-// of the person into each of the page's nodes by graph_tuples_as_of_in, and states none of it
-// (meInboxBuild).
+// so it leaves out nothing those reads would answer. Under state=dismissed the walk reads the
+// relations out of the person into each of the page's nodes by graph_tuples_as_of_in, and states
+// none of it; under state=inbox and state=unread it states it, so those reads can take
+// graph_tuples_current (meInboxBuild).
 const meInboxOutOfPerson = `t.kind <> '` + graphstore.TupleDeliveredTo + `'`
 
 // The kinds of row the page draws, as an entry's page column names them (meInboxPageRows).
@@ -1214,12 +1215,13 @@ func meInboxTextOf(shape meInboxShape) *meInboxText {
 // which every person node passes, so graph_tuples_as_of_in - keyed by the person, which read all
 // the person's tuples of a kind for each node it was asked about (the scale check, c-p99: 8,002
 // probes, 71 s of 74, for the person whose history is a hundred times the median) - and
-// graph_tuples_current, whose predicates need that test, are no index its plan can take. A
-// relation out of the person is read by graph_tuples_as_of_in into the node: the read tests the
-// person's end as an expression, each column concatenated with the empty string, so
-// graph_tuples_current and graph_tuples_as_of_out, the two indexes led by that end, are no index
-// its plan can take either (the Dismissed page below says what a plan led by the person read). So
-// the walk costs the state's rows and not the person's history:
+// graph_tuples_current, whose predicates need that test, are no index its plan can take. Under
+// state=inbox and state=unread a relation out of the person is read by graph_tuples_current on its
+// whole key, one index descent. Under state=dismissed it is read by graph_tuples_as_of_in into the
+// node: the read tests the person's end as an expression, each column concatenated with the empty
+// string, so graph_tuples_current and graph_tuples_as_of_out, the two indexes led by that end, are
+// no index its plan can take either (the Dismissed page below says what a plan led by the person
+// read). So the walk costs the state's rows and not the person's history:
 // every dismissal appends a dismissed tuple and every Mark all read a read_through tuple for each
 // thread it marks (api/read_marks.go), and a walk of every tuple read all of them for every state.
 // At 5,000 dismissed threads it read state=inbox in 71 ms and state=unread in 93 ms, against 12 ms
@@ -1246,8 +1248,8 @@ func meInboxTextOf(shape meInboxShape) *meInboxText {
 // two kinds for each of the page's 201 nodes: 1,244 ms for a page the other plan read in 50 ms, in a
 // pod. TestTheDismissedPageWalksFromThePagesOwnNodes holds the walk to the page's nodes.
 // state=inbox and state=unread answer every row of their state, whose count is the live rows' and
-// not the history's, so their page's nodes are every row of the state, walked by the same keyed
-// reads.
+// not the history's, so their page's nodes are every row of the state, walked by the keyed reads
+// above.
 //
 // Either way the page's rows and the walk's relations are put together by grouping the two by node
 // (sides) rather than by joining one to the other, so the read costs one pass over the walk and one
@@ -1298,11 +1300,19 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 		cross join page_nodes p`
 		inbound = `t.from_kind = p.node_kind and t.from_id = p.node_id and t.kind = k.kind
 				and t.to_kind = k.node_kind and t.to_id = k.node_id and ` + atHorizon
-		// The person's end is tested off every index (meInboxBuild's comment), so this read takes
-		// graph_tuples_as_of_in from the page's node and never an index led by the person.
-		outbound = `t.to_kind = p.node_kind and t.to_id = p.node_id and t.kind = k.kind
+		if shape.state == myRepliesStateDismissed {
+			// The person's end is tested off every index (meInboxBuild's comment), so this read
+			// takes graph_tuples_as_of_in from the page's node and never an index led by the person.
+			outbound = `t.to_kind = p.node_kind and t.to_id = p.node_id and t.kind = k.kind
 				and t.from_kind || '' = k.node_kind and t.from_id || '' = k.node_id
 				and t.to_kind <> '` + graphstore.KindValue + `' and ` + atHorizon
+		} else {
+			// The person's end and then the page's node bind graph_tuples_current's whole key, and
+			// meInboxOutOfPerson states that index's predicate, so this read is one index descent.
+			outbound = `t.from_kind = k.node_kind and t.from_id = k.node_id and t.kind = k.kind
+				and t.to_kind = p.node_kind and t.to_id = p.node_id
+				and t.to_kind <> '` + graphstore.KindValue + `' and ` + meInboxOutOfPerson + ` and ` + atHorizon
+		}
 	}
 
 	var statement strings.Builder
