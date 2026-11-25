@@ -24,6 +24,7 @@ import (
 // well, and the next start's refresh settles whether the login still stands; nothing else is
 // written under HOME.
 func TestNoCredentialAndExpiredCredentialBothNameTheLoginCommand(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv).
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	f := newFakeBroker(t)
@@ -83,6 +84,7 @@ func TestNoCredentialAndExpiredCredentialBothNameTheLoginCommand(t *testing.T) {
 // gets the broker's refusal rather than errNoCredential, since the helper holds a credential and
 // its retry can use it.
 func TestALateRejectionOfAnOldCredentialLeavesTheNewLoginAlone(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	b := loggedInBroker(t, f, "ada@example.com")
 	old := b.cred.Load()
@@ -115,6 +117,7 @@ func TestALateRejectionOfAnOldCredentialLeavesTheNewLoginAlone(t *testing.T) {
 // clear and the record; it waits up to 200 ms for that read, which returns at once unless the lock
 // holds it back until the refusal is recorded.
 func TestLoginStatusReadsARefusalWithTheClearThatCausedIt(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	b := loggedInBroker(t, f, "ada@example.com")
 	held := b.cred.Load()
@@ -149,6 +152,7 @@ func TestLoginStatusReadsARefusalWithTheClearThatCausedIt(t *testing.T) {
 // denied and no longer refused: its outcome is newer than the refusal, and `machine login`, which
 // reads the same answer, must tell the operator it was denied.
 func TestALoginPendingWhenTheCredentialIsRefusedReportsItsOwnOutcome(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	b := loggedInBroker(t, f, "ada@example.com")
 	held := b.cred.Load()

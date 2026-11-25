@@ -32,6 +32,7 @@ import (
 // either. The broker receives each call itself, once, with the client the helper is given and
 // with net/http's default alike.
 func TestTheHelpersBrokerCallsFollowNoRedirect(t *testing.T) {
+	t.Parallel()
 	for _, status := range []int{
 		http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
 		http.StatusTemporaryRedirect, http.StatusPermanentRedirect,
@@ -91,6 +92,7 @@ func TestTheHelpersBrokerCallsFollowNoRedirect(t *testing.T) {
 // of the error, holds any part of the credential. Beside a clean address the broker's own words
 // are what a person acts on, and the refusal still carries its code and its description whole.
 func TestALoginRefusalPrintsNoCredentialItsDescriptionRepeats(t *testing.T) {
+	t.Parallel()
 	var asked atomic.Int64
 	var description string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -169,6 +171,7 @@ func TestALoginRefusalPrintsNoCredentialItsDescriptionRepeats(t *testing.T) {
 // says: a clean broker whose words are cipheraddr.WordsNotPrinted itself is a clean broker still,
 // and its refusal of the renew names its code.
 func TestAnEnrollRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
+	t.Parallel()
 	var asked atomic.Int64
 	var words string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -310,6 +313,7 @@ func TestAnEnrollRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 // the same, so such a session enrols again rather than renewing an ended enrollment for ever. A
 // PROOF_INVALID that does not say it, a skewed clock's, stays a proof failure beside either.
 func TestAnOlderBrokersNotLiveVerdictHoldsBesideACredentialedAddress(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		words := "iat outside the proof skew"
 		if strings.HasPrefix(r.URL.Path, "/v1/enrollments/ended/") {

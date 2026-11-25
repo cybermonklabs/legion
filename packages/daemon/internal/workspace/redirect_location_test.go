@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/envoy/redirects/redirectstest"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
@@ -32,7 +33,7 @@ func TestACacheLocationThatDoesNotParseNamesNoRunOfTheCacheToken(t *testing.T) {
 		redirectstest.RequireEcho(t, request, token)
 	})
 	t.Run("tar-unparsed", func(t *testing.T) {
-		request := FetchRequest{Repo: repo, CacheURL: redirectstest.EchoBearer(t, redirectstest.Unparsed), CacheToken: token, Clock: WallClock{}}
+		request := FetchRequest{Repo: repo, CacheURL: redirectstest.EchoBearer(t, redirectstest.Unparsed), CacheToken: token, Clock: clock.Real()}
 		_, err := unpackCache(context.Background(), initOnly{}, request, filepath.Join(t.TempDir(), "staging"))
 		if err == nil {
 			t.Fatal("unpackCache answered no error")
@@ -48,7 +49,7 @@ func TestACacheLocationThatDoesNotParseNamesNoRunOfTheCacheToken(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		}))
 		defer server.Close()
-		response, err := askCache(context.Background(), FetchRequest{Repo: repo, CacheURL: server.URL, CacheToken: token, Clock: WallClock{}}, "/healthz", true)
+		response, err := askCache(context.Background(), FetchRequest{Repo: repo, CacheURL: server.URL, CacheToken: token, Clock: clock.Real()}, "/healthz", true)
 		if response != nil {
 			_ = response.Body.Close()
 		}

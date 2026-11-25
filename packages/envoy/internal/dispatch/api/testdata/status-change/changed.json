@@ -1,0 +1,185 @@
+{
+  "status": 200,
+  "body": {
+    "issue": {
+      "key": "ACME-2",
+      "project": "ACME",
+      "number": 2,
+      "title": "Issue started with its epic",
+      "status": "in_progress",
+      "priority": null,
+      "rank": "V",
+      "labels": [],
+      "parent": "ACME-1",
+      "blocked_by": [],
+      "advances": [],
+      "advances_revision": 0,
+      "assignee": "alice",
+      "claim": null,
+      "components": {
+        "mode": "inherit",
+        "ids": [],
+        "unknown": [],
+        "reason": null,
+        "inherited_from": null
+      },
+      "external_links": [],
+      "route": null,
+      "repo": null,
+      "resolved_repo": null,
+      "created_by": {
+        "kind": "user",
+        "id": "alice",
+        "proven": true
+      },
+      "created_at": "2026-01-01T00:00:01Z",
+      "updated_at": "2026-01-01T00:00:02Z",
+      "closed_at": null,
+      "primary_artifact_id": "00000000-0000-4000-8000-000000000001",
+      "verification_artifact_id": "",
+      "plan_artifact_id": "",
+      "decisions_artifact_id": "",
+      "last_seq": 5
+    },
+    "changed": [
+      {
+        "key": "ACME-1",
+        "status": "in_progress",
+        "parent": null,
+        "previous_last_seq": 3,
+        "issue": {
+          "key": "ACME-1",
+          "project": "ACME",
+          "number": 1,
+          "title": "Epic on the backlog",
+          "status": "in_progress",
+          "priority": null,
+          "rank": "U",
+          "labels": [],
+          "parent": null,
+          "blocked_by": [],
+          "advances": [],
+          "advances_revision": 0,
+          "assignee": "alice",
+          "claim": null,
+          "components": {
+            "mode": "inherit",
+            "ids": [],
+            "unknown": [],
+            "reason": null,
+            "inherited_from": null
+          },
+          "external_links": [],
+          "route": null,
+          "repo": null,
+          "resolved_repo": null,
+          "created_by": {
+            "kind": "user",
+            "id": "alice",
+            "proven": true
+          },
+          "created_at": "2026-01-01T00:00:03Z",
+          "updated_at": "2026-01-01T00:00:04Z",
+          "closed_at": null,
+          "primary_artifact_id": "00000000-0000-4000-8000-000000000002",
+          "verification_artifact_id": "",
+          "plan_artifact_id": "",
+          "decisions_artifact_id": "",
+          "last_seq": 5
+        }
+      },
+      {
+        "key": "ACME-3",
+        "status": "backlog",
+        "parent": null,
+        "previous_last_seq": 2,
+        "issue": {
+          "key": "ACME-3",
+          "project": "ACME",
+          "number": 3,
+          "title": "Child unlinked from the issue",
+          "status": "backlog",
+          "priority": null,
+          "rank": "W",
+          "labels": [],
+          "parent": null,
+          "blocked_by": [],
+          "advances": [],
+          "advances_revision": 0,
+          "assignee": "alice",
+          "claim": null,
+          "components": {
+            "mode": "inherit",
+            "ids": [],
+            "unknown": [],
+            "reason": null,
+            "inherited_from": null
+          },
+          "external_links": [],
+          "route": null,
+          "repo": null,
+          "resolved_repo": null,
+          "created_by": {
+            "kind": "user",
+            "id": "alice",
+            "proven": true
+          },
+          "created_at": "2026-01-01T00:00:05Z",
+          "updated_at": "2026-01-01T00:00:06Z",
+          "closed_at": null,
+          "primary_artifact_id": "00000000-0000-4000-8000-000000000003",
+          "verification_artifact_id": "",
+          "plan_artifact_id": "",
+          "decisions_artifact_id": "",
+          "last_seq": 4
+        }
+      },
+      {
+        "key": "ACME-2",
+        "status": "in_progress",
+        "parent": "ACME-1",
+        "previous_last_seq": 4,
+        "issue": {
+          "key": "ACME-2",
+          "project": "ACME",
+          "number": 2,
+          "title": "Issue started with its epic",
+          "status": "in_progress",
+          "priority": null,
+          "rank": "V",
+          "labels": [],
+          "parent": "ACME-1",
+          "blocked_by": [],
+          "advances": [],
+          "advances_revision": 0,
+          "assignee": "alice",
+          "claim": null,
+          "components": {
+            "mode": "inherit",
+            "ids": [],
+            "unknown": [],
+            "reason": null,
+            "inherited_from": null
+          },
+          "external_links": [],
+          "route": null,
+          "repo": null,
+          "resolved_repo": null,
+          "created_by": {
+            "kind": "user",
+            "id": "alice",
+            "proven": true
+          },
+          "created_at": "2026-01-01T00:00:01Z",
+          "updated_at": "2026-01-01T00:00:02Z",
+          "closed_at": null,
+          "primary_artifact_id": "00000000-0000-4000-8000-000000000001",
+          "verification_artifact_id": "",
+          "plan_artifact_id": "",
+          "decisions_artifact_id": "",
+          "last_seq": 5
+        }
+      }
+    ]
+  }
+}

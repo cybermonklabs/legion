@@ -28,6 +28,11 @@ import (
 	"github.com/sjawhar/envoy/ciphertest"
 )
 
+// TestMain runs the package's tests through ciphertest.Main, which drops the test binary's own
+// database every broker rig here makes its schema in. It lives in this file, which alone imports
+// from github.com/sjawhar/envoy/... (see above).
+func TestMain(m *testing.M) { os.Exit(ciphertest.Main(m)) }
+
 // newBrokerRig is ciphertest.NewRig, failing rather than skipping on GitHub Actions when
 // BROKER_TEST_DATABASE_URL is unset: ci.yaml's daemon-go job names its Postgres service
 // there, and a silent skip would let the contract tests stop running unnoticed.

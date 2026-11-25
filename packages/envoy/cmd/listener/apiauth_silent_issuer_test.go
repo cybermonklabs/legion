@@ -25,6 +25,7 @@ import (
 // caller that has gone. The route behind apiAuth reads no context, as /v1/sessions does, so only
 // apiAuth stands between the token and the data.
 func TestAHalfClosedRequestGetsNoAnswerFromAnOldKeySet(t *testing.T) {
+	t.Parallel()
 	issuer := oidctest.New(t)
 	signing := issuer.PublishKey(t, "key-a")
 	keys, err := oidc.NewKeys(context.Background(), issuer.URL())
@@ -219,6 +220,7 @@ func TestAProjectedTokenOfASlowIssuerIsAnsweredWithinTheWriteDeadline(t *testing
 // 503 at its own budget too, never the 401 of a signature no published key makes: no read has said
 // whether B is published. Once the read lands, a B token is admitted.
 func TestANewKeyIDDuringASlowReadIsAnswered503(t *testing.T) {
+	t.Parallel()
 	issuer := oidctest.New(t)
 	keyA := issuer.PublishKey(t, "rotation-key-a")
 	verifier := oidc.NewLazyVerifier(issuer.URL(), listenerTestAudience)

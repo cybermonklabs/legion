@@ -68,6 +68,7 @@ var stormMarks = []string{"strong", "emphasis", "inlineCode", "strike_through", 
 // noteChangedTypes, the replica's own record of what its document's transactions changed, not
 // from the test, which is what the pmdoc differential cannot reach.
 func TestRenderReuseARandomisedEditStorm(t *testing.T) {
+	t.Parallel()
 	seeds, edits := []uint64{1, 2, 3, 4, 5, 6, 7, 8}, 320
 	if raceEnabled || testing.Short() {
 		seeds, edits = []uint64{1, 2}, 80

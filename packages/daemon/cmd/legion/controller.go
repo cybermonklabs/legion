@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/omplaunch"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/redact"
@@ -501,7 +502,7 @@ func probeAndMint(ctx context.Context, daemonURL string, probe daemon.Controller
 // `owner/name`, each named by its member and never by its value, which is the daemon's word.
 func checkControllerRepositories(ctx context.Context, daemonURL string) error {
 	const route = "/legion/v1/state"
-	timed, cancel := context.WithTimeout(ctx, requestTimeout)
+	timed, cancel := context.WithTimeout(ctx, programbound.Of(&requestTimeout))
 	defer cancel()
 	daemon := operator{base: daemonURL}
 	answered, err := daemon.do(timed, http.MethodGet, route, nil)

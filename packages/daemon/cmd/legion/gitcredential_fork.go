@@ -24,6 +24,10 @@ import (
 // shorten it, and give it their own deadline otherwise (programbound).
 var forkReadBound = 10 * time.Second
 
+func init() {
+	programbound.Register(&forkReadBound)
+}
+
 // forkRepository is the repository the credential helper reads from GitHub after ghConfigDirFor
 // refused a request (forkUpstreamDir): owner, the path's owner already lowercased, and name, the
 // path's second segment already keyed as the bundle keys a repository (ghconfig.RepositoryName:

@@ -98,13 +98,15 @@ func TestTheStartsRateLimitRefusalNamesNoPathARedirectWrote(t *testing.T) {
 				return
 			}
 
-			now := time.Unix(1_800_000_000, 0)
-			waits := newStartWaits(rateLimitPolicy{Max: time.Hour, Bound: time.Second, NoTime: time.Minute}, func() time.Time { return now })
+			clock := &setClock{now: time.Unix(1_800_000_000, 0)}
+			calls := productionAppCalls()
+			calls.rateLimits, calls.clock = rateLimitPolicy{Max: time.Hour, Bound: time.Second, NoTime: time.Minute}, clock
+			waits := newStartWaits(calls)
 			const call = "GitHub App logins read"
 			if _, limited := limitOutcome(loginErr, waits, call); !limited {
 				t.Fatalf("the read's error is not GitHub's rate limit to the start (bootLimit): %v", loginErr)
 			}
-			now = now.Add(time.Minute)
+			clock.now = clock.now.Add(time.Minute)
 			outcome, limited := limitOutcome(loginErr, waits, call)
 			if !limited || outcome.Refusal == nil {
 				t.Fatalf("the start's waits did not end in a refusal: limited=%v outcome=%+v", limited, outcome)

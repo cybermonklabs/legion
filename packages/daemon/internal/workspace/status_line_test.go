@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/envoy/redirects/redirectstest"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
@@ -39,7 +40,7 @@ func TestACacheAnswerNamesItsStatusAndRepositoryAsTheRuleReadsThem(t *testing.T)
 	repo := ghrepo.MustParse("acme/widgets")
 	named := CacheRepositoryHeader + ": " + repo.String() + "\r\n"
 	request := func(base string) FetchRequest {
-		return FetchRequest{Repo: repo, CacheURL: base, CacheToken: "cache-token", Clock: WallClock{}}
+		return FetchRequest{Repo: repo, CacheURL: base, CacheToken: "cache-token", Clock: clock.Real()}
 	}
 	// moved is where a redirect below sends the pod: it answers 500 naming the cache's repository,
 	// and counts what it is asked, which unfollowed reads. unanswered is an address nothing listens at.

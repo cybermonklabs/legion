@@ -144,7 +144,7 @@ func (w *workflowRuntime) onceRecordedBranches(ctx context.Context) recordBranch
 
 // recordedBranches is the default branch the project's records hold for each repository a record
 // names (record.Issue.GitHubRepo, in GitHub's spelling, and DefaultBranch), keyed by that name
-// lowercased, read in one read-only transaction bounded by appMintAttempt. A repository several
+// lowercased, read in one read-only transaction bounded by the App-call attempt bound (callBounds). A repository several
 // records name takes the first record in the store's order, by key, and not the newest: a record
 // carries no time its repository and default branch were recorded at (both are written once, when
 // the issue is first recorded, and no column dates that), and a key's number says nothing reliable
@@ -153,7 +153,7 @@ func (w *workflowRuntime) onceRecordedBranches(ctx context.Context) recordBranch
 // GitHub answers a read of it again. A record from before the record carried its repository holds
 // nothing.
 func (w *workflowRuntime) recordedBranches(ctx context.Context) (map[string]ghbranch.Repository, error) {
-	read, cancel := context.WithTimeout(ctx, appMintAttempt)
+	read, cancel := context.WithTimeout(ctx, w.callBounds().attempt)
 	defer cancel()
 	var issues []record.Issue
 	if err := store.TransactWith(read, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
@@ -193,17 +193,17 @@ func limitAttributes(read limitedRead) []any {
 }
 
 // backfillRead is named's read of repo for the backfill of a record (fillRepositories,
-// nameRepositories): one read, bounded by installReadAttempt, answered from the read named keeps
+// nameRepositories): one read, bounded by attempt (repositoryReadBounds.attempt), answered from the read named keeps
 // within its ttl, or holds until a limit's reset, without asking GitHub (defaultBranches.Named).
 // A read that fails for any reason, GitHub's rate limit and a read GitHub does not answer among
 // them, is returned as the cause the backfill logs ("the read of <repo> from GitHub failed: …"),
 // for the caller to leave the record as it is and say so: a boot that waited on GitHub for a
 // record's repository would serve nothing meanwhile, and the refresher tries the record again on
-// installReadRetry (backfillLater), as the next boot does. No record's branch stands in for the
+// its retry (repositoryReadBounds.retry, backfillLater), as the next boot does. No record's branch stands in for the
 // read, since what the backfill reads GitHub for is GitHub's spelling of the repository the record
 // will carry.
-func backfillRead(ctx context.Context, named *defaultBranches, repo ghrepo.Repository) (ghbranch.Repository, error) {
-	read, cancel := context.WithTimeout(ctx, installReadAttempt)
+func backfillRead(ctx context.Context, named *defaultBranches, repo ghrepo.Repository, attempt time.Duration) (ghbranch.Repository, error) {
+	read, cancel := context.WithTimeout(ctx, attempt)
 	defer cancel()
 	branch, err := named.Named(read, repo)
 	if err != nil {

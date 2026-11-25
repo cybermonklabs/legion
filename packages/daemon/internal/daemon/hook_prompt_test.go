@@ -269,7 +269,7 @@ func parkedOverItsProcess(t *testing.T, sup *supervisor, issue string, role clai
 	// A machine takes its deps where it is built, so the clock and the pacing go in before the
 	// claim is created.
 	sup.deps.Clock = &heldClock{}
-	sup.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time { return now.Add(time.Hour) }}
+	sup.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Interval: time.Minute, Reserve: func(now time.Time) time.Time { return now.Add(time.Hour) }}
 	token := mustClaimToken(t, issue, role)
 	live := liveClaim(1, token, sup.deps.PluginContract-1)
 	live.Token, live.Project, live.Tree, live.Issue, live.Role, live.State = token, "legion", issue, issue, role, supervise.StateIdle
@@ -415,7 +415,7 @@ func parkTheWake(t *testing.T, payload record.OutboxPayload, role claim.Role) *p
 	// claim is created.
 	clock := &heldClock{}
 	sup.deps.Clock = clock
-	sup.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time { return now.Add(parkedTurn) }}
+	sup.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Interval: time.Minute, Reserve: func(now time.Time) time.Time { return now.Add(parkedTurn) }}
 	topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", role))
 	publisher.setAbsent(topic)
 	machine := releasedClaim(t, sup, role)
@@ -510,8 +510,8 @@ func keptAfterTheParkedWake(t *testing.T, payload record.OutboxPayload, role cla
 		t.Fatalf("the attempts while the wake waits published %d times, want none: the pod has not started, and a kept copy's hour runs from its publish", attempts)
 	}
 
-	// The wake's turn, the one timer armed for the pacing's wait: the resume launches.
-	if fired := p.clock.fire(parkedTurn); fired != 1 {
+	// The wake's turn, the one timer armed for the moment the pacing gave: the resume launches.
+	if fired := p.clock.fireAt(p.turn); fired != 1 {
 		t.Fatalf("fired %d timers for the wake's turn, want the one the pacing armed", fired)
 	}
 	if held := p.machine.View(); held.WakeWaiting != nil || held.Locator == nil {

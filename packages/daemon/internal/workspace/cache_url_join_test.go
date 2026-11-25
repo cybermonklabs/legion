@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
@@ -38,7 +39,7 @@ func TestACacheAskGoesToThePathJoinedOntoTheCacheURL(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			}))
 			defer cache.Close()
-			response, err := askCache(context.Background(), FetchRequest{Repo: repo, CacheURL: cache.URL + c.suffix, CacheToken: "cache-token", Clock: WallClock{}}, "/healthz", false)
+			response, err := askCache(context.Background(), FetchRequest{Repo: repo, CacheURL: cache.URL + c.suffix, CacheToken: "cache-token", Clock: clock.Real()}, "/healthz", false)
 			if response != nil {
 				_ = response.Body.Close()
 			}
@@ -76,7 +77,7 @@ func TestACacheURLThatDoesNotParsePrintsNoneOfIt(t *testing.T) {
 	unparsed := "http://" + user + ":" + password + "@127.0.0.1:1/cache%zz?sig=" + token
 	reparsed := "http://" + user + ":" + password + "@[::%25\xfd]/cache?sig=" + token
 	request := func(cacheURL string) FetchRequest {
-		return FetchRequest{Repo: repo, CacheURL: cacheURL, CacheToken: "cache-token", Clock: WallClock{}}
+		return FetchRequest{Repo: repo, CacheURL: cacheURL, CacheToken: "cache-token", Clock: clock.Real()}
 	}
 	holds := func(t *testing.T, text string) {
 		t.Helper()

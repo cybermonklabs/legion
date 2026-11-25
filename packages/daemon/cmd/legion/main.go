@@ -33,10 +33,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 const (
@@ -47,31 +49,38 @@ const (
 	// signal before then waits out the boot step under way first, each bounded by the boot's own
 	// 30 s (the daemon package's Run).
 	stopTimeout = 30 * time.Second
-	// requestTimeout bounds a CLI read of a daemon's HTTP API: one budget for every read these
-	// commands make, rather than one per route, because a budget sized for a small body and a
-	// second sized for a large one drift apart and nobody re-sizes either as the fleet grows.
-	//
-	// Sixty seconds, from a measurement rather than from a failure. Read on 2026-11-12 from an
-	// issue pod of the INFRA deployment (the test handoff of dispatch://INFRA-2554): six reads
-	// of `GET /legion/v1/state` of that daemon, 2368 issues and 610 of them waiting, answered in
-	// 7.05 s, 7.06 s and 7.30 s to the first byte and 7.07 s, 7.08 s and 7.32 s for the whole
-	// 4.0 MB body. That is a dated reading of one deployment and no property of the daemon: the
-	// body grows with the issues a project holds, and the issue that reading came from adds a
-	// sentence to every waiting issue and an answer to every issue that is not working. A reader
-	// who needs another number re-sizes from that measurement rather than from a guess, and
-	// takes a reading of the deployment in hand.
-	//
-	// What it buys and what it costs, both halves, since the second is the price of the first. A
-	// daemon that is merely slow is read instead of given up on, which is the common case, and a
-	// command that cannot run at all is the worse failure. A daemon that accepts a connection and
-	// then hangs now keeps an operator waiting a minute, where five seconds used to end it; a
-	// daemon that is down refuses the connection and still fails at once, so the minute is the
-	// hung case alone. The refusal names the route, how long the read took and this budget
-	// (get), so that minute reads as a budget passed rather than as a mystery.
-	requestTimeout = 60 * time.Second
 	// aliveInterval is how often a wait re-asks whether a process is gone.
 	aliveInterval = 20 * time.Millisecond
 )
+
+// requestTimeout bounds a CLI read of a daemon's HTTP API: one budget for every read these
+// commands make, rather than one per route, because a budget sized for a small body and a second
+// sized for a large one drift apart and nobody re-sizes either as the fleet grows.
+//
+// Sixty seconds, from a measurement rather than from a failure. Read on 2026-11-12 from an issue
+// pod of the INFRA deployment (the test handoff of dispatch://INFRA-2554): six reads of `GET
+// /legion/v1/state` of that daemon, 2368 issues and 610 of them waiting, answered in 7.05 s,
+// 7.06 s and 7.30 s to the first byte and 7.07 s, 7.08 s and 7.32 s for the whole 4.0 MB body.
+// That is a dated reading of one deployment and no property of the daemon: the body grows with
+// the issues a project holds, and the issue that reading came from adds a sentence to every
+// waiting issue and an answer to every issue that is not working. A reader who needs another
+// number re-sizes from that measurement rather than from a guess, and takes a reading of the
+// deployment in hand.
+//
+// What it buys and what it costs, both halves, since the second is the price of the first. A
+// daemon that is merely slow is read instead of given up on, which is the common case, and a
+// command that cannot run at all is the worse failure. A daemon that accepts a connection and then
+// hangs now keeps an operator waiting a minute, where five seconds used to end it; a daemon that
+// is down refuses the connection and still fails at once, so the minute is the hung case alone.
+// The refusal names the route, how long the read took and this budget (get), so that minute reads
+// as a budget passed rather than as a mystery. It is a variable so that this package's tests can
+// give it their own deadline (programbound): a stand-in daemon a loaded machine made slower than
+// the minute would be given up on, and the row would read the refusal.
+var requestTimeout = 60 * time.Second
+
+func init() {
+	programbound.Register(&requestTimeout)
+}
 
 // revision is the commit the binary was built from, linked in by the worker image's build
 // (packages/daemon/docker/worker.Dockerfile) and the legion release (.github/workflows/release.yaml)
@@ -956,7 +965,7 @@ func experimentLine(name string, counts map[armDraw]int) string {
 // what act it was answered.
 //
 // The second count reads the published line rather than judging the wait a second time. An
-// answered root stands in that line, among the issues whose work came back, oldest first
+// answered root stands in that line, within its priority, among the issues whose work came back, oldest first
 // (record.Waiting carries every answered root there, whatever its design gate
 // says), until the pass that resumes it. Two answered roots are in no line this summary reads:
 // one of another Dispatch project, whose line this daemon does not build, and every one of them
@@ -1234,17 +1243,19 @@ type claimCall struct {
 	step  api.StepView
 }
 
-// openCalls is every claim of the state whose agent is in a tool call the daemon has seen the
-// start of and no end of, by issue and then role. A call open is what claims.go's openCallWord
-// prints a word for and nothing else is, so that is the test here too: openCallsSummary names
-// each of these rows with that word. That is the shape a stalled turn leaves behind: the daemon
-// reads the same record to decide a turn has stopped moving, and this is where an operator reads
-// it. A controller's claim is in none of these — internal/projection puts it on no issue — and is
-// read with `legion claims list` instead.
+// openCalls is every working claim of the state whose agent is in a tool call the daemon has seen
+// the start of and no end of, by issue and then role: a working claim whose openCallWord is
+// non-empty. openCallsSummary names each of these rows with that word. That is the shape a stalled
+// turn leaves behind: the daemon reads the same record to decide a turn has stopped moving, and
+// this is where an operator reads it. Only a claim in state `working` has a turn in flight
+// (supervise.StateWorking): a retired or suspended claim keeps the step it was last in on its
+// record, on purpose, so a call open there is no agent in a call. A controller's claim is in none
+// of these — internal/projection puts it on no issue — and is read with `legion claims list`
+// instead.
 func openCalls(issues map[string]api.Issue) []claimCall {
 	var calls []claimCall
 	open := func(issue, role string, view api.ClaimView) {
-		if openCallWord(view.Step) == "" {
+		if view.State != string(supervise.StateWorking) || openCallWord(view.Step) == "" {
 			return
 		}
 		calls = append(calls, claimCall{issue: issue, role: role, step: *view.Step})
@@ -1455,7 +1466,7 @@ func strandedSuspenders(ctx context.Context, op operator, stranded []api.Strande
 	if len(stranded) == 0 || op.bearer == "" {
 		return nil
 	}
-	timed, cancel := context.WithTimeout(ctx, requestTimeout)
+	timed, cancel := context.WithTimeout(ctx, programbound.Of(&requestTimeout))
 	defer cancel()
 	answer, err := op.do(timed, http.MethodGet, claimsRoute, nil)
 	if err != nil || answer.Status()/100 != 2 {
@@ -1808,14 +1819,15 @@ func findLegion(team string) (registry.Entry, bool, error) {
 // answer names its failure through oauth2call.Unanswered, which names url again by its scheme,
 // host and path alone; and every error names url through the URL rule.
 func get(ctx context.Context, url string) (oauth2call.Answer, error) {
-	timed, cancel := context.WithTimeout(ctx, requestTimeout)
+	budget := programbound.Of(&requestTimeout)
+	timed, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	began := time.Now()
 	shown := redact.URLCredentials(url)
 	refuse := func(err error) error {
 		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
 			return fmt.Errorf("read %s: no answer in %s, past the %s this command allows one read of a daemon's API",
-				shown, time.Since(began).Round(time.Millisecond), requestTimeout)
+				shown, time.Since(began).Round(time.Millisecond), budget)
 		}
 		return fmt.Errorf("read %s: %w", shown, err)
 	}

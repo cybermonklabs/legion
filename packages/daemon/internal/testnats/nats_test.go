@@ -471,10 +471,10 @@ func TestCreateStreamRefusesAStreamThatIsNotEmpty(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			config := jetstream.StreamConfig{Name: row.stream, Subjects: []string{"full.>"}}
-			stream, err := js.CreateStream(t.Context(), config)
-			if err != nil {
-				t.Fatalf("create the stream: %v", err)
-			}
+			// The row before this one deleted its stream, the account's last, so this create can
+			// meet the store failure CreateStream retries (its doc says how): a direct create
+			// failed there with "err_code=10049 description=error creating store for stream".
+			stream := CreateStream(t, js, config)
 			t.Cleanup(func() {
 				if err := js.DeleteStream(context.Background(), row.stream); err != nil {
 					t.Errorf("delete the stream: %v", err)

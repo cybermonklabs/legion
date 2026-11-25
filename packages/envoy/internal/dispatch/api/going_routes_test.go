@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // fakeAnswerer is the model of these tests: it answers with the frames the test named, and, when
@@ -128,31 +129,29 @@ func (rig goingRoutesRig) streamUnder(t *testing.T, id, token string) *httptest.
 }
 
 // awaitTerminal waits for the run to have stored its ending and answers every frame it holds,
-// rendered "<sequence> <name> <data>" as going_test.go renders them.
+// rendered "<sequence> <name> <data>" as going_test.go renders them. Its one bound is the test
+// binary's deadline less testwait's margin; a run that never ends fails naming how many frames it
+// held.
 func (rig goingRoutesRig) awaitTerminal(t *testing.T, id string) []string {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		stored, _, err := rig.server.readGoingStream(context.Background(), id, 0)
+	var stored []goingEvent
+	testwait.UntilPolling(t, 20*time.Millisecond, "the run to store its ending (the frames it holds)", func() (int, bool) {
+		var err error
+		stored, _, err = rig.server.readGoingStream(context.Background(), id, 0)
 		if err != nil {
 			t.Fatalf("read the run's frames: %v", err)
 		}
-		if len(stored) > 0 && stored[len(stored)-1].Event.Terminal() {
-			rendered := make([]string, 0, len(stored))
-			for _, frame := range stored {
-				data, err := json.Marshal(frame.Event.Data)
-				if err != nil {
-					t.Fatalf("marshal frame %d: %v", frame.Sequence, err)
-				}
-				rendered = append(rendered, fmt.Sprintf("%d %s %s", frame.Sequence, frame.Event.Name, data))
-			}
-			return rendered
+		return len(stored), len(stored) > 0 && stored[len(stored)-1].Event.Terminal()
+	})
+	rendered := make([]string, 0, len(stored))
+	for _, frame := range stored {
+		data, err := json.Marshal(frame.Event.Data)
+		if err != nil {
+			t.Fatalf("marshal frame %d: %v", frame.Sequence, err)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the run stored no ending within 10s; it holds %d frames", len(stored))
-		}
-		time.Sleep(10 * time.Millisecond)
+		rendered = append(rendered, fmt.Sprintf("%d %s %s", frame.Sequence, frame.Event.Name, data))
 	}
+	return rendered
 }
 
 // seedGoingProject records a project and an issue the answer's search can find, and answers the
@@ -433,11 +432,7 @@ func TestGoingStreamCarriesAnEndingStoredBetweenItsTwoReads(t *testing.T) {
 		defer close(served)
 		rig.handler.ServeHTTP(sink, request)
 	}()
-	select {
-	case <-sink.flushed:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the stream wrote no headers within 30s")
-	}
+	testwait.Receive(t, "the stream's headers (its first flush)", sink.flushed)
 
 	ending, err := rig.database.Pool.Begin(ctx)
 	if err != nil {
@@ -453,7 +448,7 @@ func TestGoingStreamCarriesAnEndingStoredBetweenItsTwoReads(t *testing.T) {
 	`, run.ID, contracts.GoingEventEnd); err != nil {
 		t.Fatalf("store the ending: %v", err)
 	}
-	waitUntil(t, 30*time.Second, "the stream's state read waiting on going_requests", func() bool {
+	waitUntil(t, "the stream's state read waiting on going_requests", func() bool {
 		var waiting int
 		if err := rig.database.Pool.QueryRow(ctx, `
 			select count(*) from pg_locks where relation = 'going_requests'::regclass and not granted
@@ -463,15 +458,12 @@ func TestGoingStreamCarriesAnEndingStoredBetweenItsTwoReads(t *testing.T) {
 		}
 		return waiting > 0
 	})
+
 	if err := ending.Commit(ctx); err != nil {
 		t.Fatalf("commit the ending: %v", err)
 	}
 
-	select {
-	case <-served:
-	case <-time.After(60 * time.Second):
-		t.Fatal("the stream did not end within 60s of its run's ending")
-	}
+	testwait.Receive(t, "the stream's end once its run's ending committed", served)
 	want := "id: 3\nevent: " + contracts.GoingEventEnd + "\ndata: {\"items\":0,\"words\":2}\n\n"
 	if got := sink.text(); got != want {
 		t.Fatalf("the stream wrote %q, want the ending %q: the frame a run ended on reaches the reader waiting for it", got, want)
@@ -816,7 +808,7 @@ func TestGoingRequestGivesItsRunAConnectionMarkOfItsOwn(t *testing.T) {
 	}
 	run := decodeBody[askedRun](t, response)
 
-	<-answerer.opened
+	testwait.Receive(t, "the detached run to open its cursor", answerer.opened)
 	if answerer.failed != nil {
 		t.Fatalf("the detached run could not open a cursor: %v", answerer.failed)
 	}

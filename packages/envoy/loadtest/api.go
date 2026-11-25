@@ -55,6 +55,9 @@ type callResult struct {
 	body   []byte
 	// etag is the answer's ETag header, empty when it carries none.
 	etag string
+	// replayed is whether the answer carried contracts.IdempotencyReplayedHeader: Dispatch
+	// answered it from the first request under its key rather than running it again.
+	replayed bool
 	// start is when the client began the request; wrote is when the whole request was in the
 	// socket (httptrace WroteRequest), 0 when it never got there; end is when the response body
 	// was read.
@@ -85,11 +88,31 @@ func (r callResult) errorCode() redact.RemoteText {
 	if r.err != nil || r.status/100 == 2 {
 		return redact.RemoteText{}
 	}
-	var refusal struct {
+	return r.bodyCode()
+}
+
+// bodyCode is the code the answer's body names, whatever its status, held as errorCode holds it
+// (redact.Answer.Decode); empty for a body that names none or is not JSON at all.
+func (r callResult) bodyCode() redact.RemoteText {
+	var answered struct {
 		Code redact.RemoteText `json:"code"`
 	}
-	_ = r.answer.Decode(&refusal)
-	return refusal.Code
+	_ = r.answer.Decode(&answered)
+	return answered.Code
+}
+
+// landed says the keyed write this answers ran and Dispatch gives no copy of its answer: a 409
+// KEY_COMMITTED (it landed before its answer was lost) or a replayed 2xx whose body reads
+// ANSWER_NOT_KEPT (contracts.IdempotencyKeyCommitted, IdempotencyAnswerNotKept). What it made is
+// there, and is read back for anything its caller needs of it; it is no refusal.
+func (r callResult) landed() bool {
+	if r.err != nil {
+		return false
+	}
+	if r.status == http.StatusConflict {
+		return r.bodyCode().Equal(contracts.IdempotencyKeyCommitted)
+	}
+	return r.replayed && r.status/100 == 2 && r.bodyCode().Equal(contracts.IdempotencyAnswerNotKept)
 }
 
 // transient is a failure worth retrying: a transport error, 429 or 5xx.
@@ -183,6 +206,7 @@ func (a *api) callRawKeyed(ctx context.Context, method, path string, w who, cont
 	} else {
 		res.status = resp.StatusCode
 		res.etag = resp.Header.Get("ETag")
+		res.replayed = resp.Header.Get(contracts.IdempotencyReplayedHeader) == "?1"
 		res.answer, err = redact.ReadAnswer(resp, answerLimit)
 		_ = resp.Body.Close()
 		var body bytes.Buffer

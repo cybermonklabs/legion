@@ -329,7 +329,7 @@ func newWriterRig(t *testing.T, database ompsessions.Database, dialer *sessionDi
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(r.rolesDir, "tester", RoleLauncherDir, LauncherTokenFile), []byte(roleToken("tester")+"\n"), 0o400); err != nil {
+	if err := os.WriteFile(filepath.Join(r.rolesDir, "tester", RoleLauncherDir, LauncherTokenFile), []byte(ownToken("launcher-token-tester")+"\n"), 0o400); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(r.rolesDir, SessionWriterDirName), 0o755); err != nil {

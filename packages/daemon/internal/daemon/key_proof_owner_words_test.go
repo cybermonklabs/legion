@@ -73,7 +73,7 @@ func TestTheKeyProofLineNamesAListedOwnerOnlyInItsShape(t *testing.T) {
 			}
 			logs := &syncBuffer{}
 			installed := appauth.NewInstalled()
-			if err := proveAppKeys(ctx, apps, installed, newStartWaits(startRateLimits, time.Now),
+			if err := proveAppKeys(ctx, apps, installed, newStartWaits(productionAppCalls()),
 				slog.New(slog.NewJSONHandler(logs, redact.HandlerOptions(nil)))); err != nil {
 				t.Fatalf("the boot's proof of each App's key: %v", err)
 			}
