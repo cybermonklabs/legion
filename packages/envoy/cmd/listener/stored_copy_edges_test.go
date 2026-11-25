@@ -154,9 +154,9 @@ func awaitARepeatStoredOnceForgotten(t *testing.T, rig *senderLimitRig, sender, 
 	t.Helper()
 	// The wait is for a product time, the stream's duplicate window, and each caller has just cut
 	// it, so its failure says how long it has been since the cut, the window cut to and the window
-	// the stream reports now: a repeat still refused after many times the window is either a
-	// window that is not the one the row set or a server that has not pruned its duplicate table,
-	// and the two read differently here.
+	// the stream reports now. A repeat not yet stored as a new copy, refused or answered as a
+	// duplicate, after many times the window is either a window that is not the one the row set or
+	// a server that has not pruned its duplicate table, and the two read differently here.
 	var fresh heldAnswer
 	cutAt := time.Now()
 	if !testwait.Holds(listenerWaitBound(t), testwait.Poll, func() bool {
@@ -169,7 +169,7 @@ func awaitARepeatStoredOnceForgotten(t *testing.T, rig *senderLimitRig, sender, 
 		} else {
 			window = "unreadable: " + infoErr.Error()
 		}
-		t.Fatalf("a repeat was still refused %s after the duplicate window was cut to %s (the stream now reports %s): the last answer was %d, duplicate %t, %s; want a 200 that is no duplicate once the stream forgets the id",
+		t.Fatalf("a repeat was still not stored as a new copy %s after the duplicate window was cut to %s (the stream now reports %s): the last answer was %d, duplicate %t, %s; want a 200 that is no duplicate once the stream forgets the id",
 			time.Since(cutAt).Round(time.Millisecond), forgottenIdWindow, window, fresh.status, fresh.Duplicate, fresh.raw)
 	}
 	if fresh.envelope.EventID == first.envelope.EventID {
