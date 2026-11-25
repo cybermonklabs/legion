@@ -87,7 +87,7 @@ func writeJSONFile(path string, v any, mode os.FileMode, lg *log.Logger) {
 }
 
 // metaMode is meta.json's mode: owner only, since it records the step's command line and the
-// stack it ran against. Its tokens and URL passwords are redacted all the same (recordedArgs).
+// stack it ran against. Its tokens and URL credentials are redacted all the same (recordedArgs).
 const metaMode os.FileMode = 0o600
 
 // collector gathers the items that many goroutines record during a step.

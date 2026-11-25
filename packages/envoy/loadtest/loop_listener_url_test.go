@@ -41,7 +41,7 @@ func TestALoopListenerThatIsNoURLIsRefusedWithNoneOfIt(t *testing.T) {
 
 // TestTheLoopDriversLineNamesItsListenerWithNoCredential: the step's line about the loop's driver
 // session names the -loop-listeners endpoint it registered on without its user information and
-// its password parameter (redactURL), as every line of the load test names an endpoint, where it
+// its query (redactURL), as every line of the load test names an endpoint, where it
 // printed the endpoint as it was given. Captures loadtest.loop-listener-url/driver-line.
 func TestTheLoopDriversLineNamesItsListenerWithNoCredential(t *testing.T) {
 	fl := startFakeListener(t)

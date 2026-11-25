@@ -114,7 +114,7 @@ type runConfig struct {
 	xactInterval time.Duration
 	editors      editorConfig
 	// args are the run's flags as meta.json records them: the normalized flag list, the token
-	// values redacted and the URL passwords removed (recordedArgs).
+	// values redacted and each URL without its userinfo and its query (recordedArgs).
 	args []string
 	// copyMeta is the -copy-meta file's JSON object, which meta.json records under copy; nil
 	// without the flag.

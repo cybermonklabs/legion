@@ -471,18 +471,35 @@ func (e *bothCredentialFormsError) Error() string {
 // each URL without its credentials (recordedArgs, redactEndpoint); no flag holds a token.
 var urlFlags = []string{"-url", "-listener", "-nats", "-nats-mon", "-pprof", "-pg"}
 
-// redactURL is raw without its userinfo and without a password query parameter, for every place
-// that records or prints an HTTP endpoint (redactEndpoint does each -nats server the same way).
-// The whole userinfo goes, the user name too: nats.go takes a user name with no password as the
-// auth token. raw is read whole by url.Parse, as net/http reads it. A value that does not parse,
-// or names no scheme, is redacted whole, since no credential in it can be found for sure. A -pg
-// value is never read here (redactPG).
+// redactURL is raw as the URL rule names a URL a request asked (redact.AskedURL): its scheme, host
+// and path, with its user information, its query and its fragment removed, for every place that
+// records or prints an HTTP endpoint (redactEndpoint does each -nats server the same way). The
+// whole userinfo goes, the user name too: nats.go takes a user name with no password as the auth
+// token; and the whole query goes, since a value under any name can be a credential (an
+// access_token, a signature). A ws or wss URL, a socket the load test dials, is read as the http
+// or https URL it upgrades from and keeps its own scheme. raw is read whole by url.Parse, as
+// net/http reads it. A value that does not parse, or names no scheme, is redacted whole, since no
+// credential in it can be found for sure, and one the rule cannot read as clean is
+// redact.NotPrinted. A -pg value is never read here (redactPG).
 func redactURL(raw string) string {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || u.Scheme == "" {
 		return redacted
 	}
-	return withoutCredentials(u).String()
+	socket := strings.ToLower(u.Scheme)
+	switch socket {
+	case "ws":
+		u.Scheme = "http"
+	case "wss":
+		u.Scheme = "https"
+	default:
+		return redact.AskedURL(u)
+	}
+	shown := redact.AskedURL(u)
+	if shown == redact.NotPrinted {
+		return shown
+	}
+	return socket + strings.TrimPrefix(shown, u.Scheme)
 }
 
 // redactEndpoint is the value of endpoint flag flag as it is recorded or printed: a -nats value is
@@ -511,13 +528,13 @@ func redactEndpoint(flag, raw string) string {
 	return strings.Join(servers, ",")
 }
 
-// withoutCredentials is u with no userinfo and no password query parameter.
+// withoutCredentials is u, a NATS server's URL, with no userinfo, query or fragment: nats.go reads
+// a user, a password or a token from the userinfo, and a query or a fragment can carry a
+// credential under any name.
 func withoutCredentials(u *url.URL) *url.URL {
 	u.User = nil
-	if q := u.Query(); q.Has("password") {
-		q.Del("password")
-		u.RawQuery = q.Encode()
-	}
+	u.RawQuery, u.ForceQuery = "", false
+	u.Fragment, u.RawFragment = "", ""
 	return u
 }
 
