@@ -393,12 +393,13 @@ func shotAuthReads(served *server, cookies identity.CookieIdentity, cookie *http
 }
 
 // liveAnswer reads client's frames until sub's first answer - a delivery view's snapshot, the event
-// feed's start - and fails on a refusal of sub or on no answer within ten seconds.
+// feed's start - and fails on a refusal of sub. Each frame is waited for until the test binary's
+// deadline less testwait's margin (socketClient.next), so an answer a loaded machine sends late is
+// still read, and one that never comes fails the test by name.
 func liveAnswer(t *testing.T, client *socketClient, sub string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
 	for {
-		switch frame := client.next(t, time.Until(deadline), "the first answer of "+sub).(type) {
+		switch frame := client.next(t, "the first answer of "+sub).(type) {
 		case DeliveryLiveSnapshot:
 			if frame.Sub == sub {
 				return

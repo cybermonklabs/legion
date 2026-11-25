@@ -513,12 +513,38 @@ export async function postDispatchReply(
   delivery: DispatchDelivery,
   result: { readonly body?: string; readonly error?: string; readonly followUp?: boolean },
 ): Promise<void> {
-  const config = sessionDispatchSettings(configFile, process.env, {
-    cwd: identity.directory,
-    session: () => identity.id,
-  }).dispatch
+  const config = (
+    await sessionDispatchSettings(configFile, process.env, {
+      cwd: identity.directory,
+      session: () => identity.id,
+    })
+  ).dispatch
   if (!config.enabled) throw new Error(config.error ?? config.notice)
   await postDeliveryReply(config, identity.id, delivery, result)
+}
+
+/**
+ * The Dispatch client a person's message, command, pick or BTW is accepted and read through
+ * (`UserTurnRouterOptions.dispatch`), bounded to `ms`, or undefined while nothing configures
+ * Dispatch. It trades under this session's id, as `postDispatchReply` does: no pod sets
+ * `AGENT_SECRETS_SESSION`, so a trade that named no session would write under none.
+ */
+export async function userTurnDispatchClient(
+  identity: SessionIdentity,
+  configFile: SessionConfigFile,
+  ms: number,
+): Promise<DispatchClient | undefined> {
+  const active = activeDispatchSettings(
+    (
+      await sessionDispatchSettings(configFile, process.env, {
+        cwd: identity.directory,
+        session: () => identity.id,
+      })
+    ).dispatch,
+  )
+  return active === null
+    ? undefined
+    : new DispatchClient(active.url, active.credential, fetch, { deadlineMs: ms })
 }
 
 /**
@@ -2478,7 +2504,7 @@ function pluginStateDirectory(): string {
  * notifications (`./legion-inbox`). */
 export async function runEnvoyChannelServer(): Promise<void> {
   const directory = projectDirectory()
-  const pane = legionPane(process.env)
+  const pane = await legionPane(process.env)
   // The session's envoy.json, by Claude Code's rule (`$CLAUDE_CONFIG_DIR/envoy.json` when that is
   // set), worked out once as the server starts; Dispatch's URL and token are re-read from it on each
   // use, so a file that moved its server takes effect without a restart.
@@ -2486,7 +2512,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
   // The session this server drives, read at every broker trade: Claude Code mints a new id on
   // /clear and `identity` is set to it, so a token this session presents names this session.
   const currentSessionId = (): string => identity.id
-  const { dispatch, envoy, notice } = sessionSettings(configFile, process.env, {
+  const { dispatch, envoy, notice } = await sessionSettings(configFile, process.env, {
     cwd: directory,
     session: currentSessionId,
   })
@@ -2794,16 +2820,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
    */
   const router = (state: UserTurnState): UserTurnRouter => {
     const options: UserTurnRouterOptions = {
-      dispatch: (ms) => {
-        const active = activeDispatchSettings(
-          sessionDispatchSettings(configFile, process.env, { cwd: directory }).dispatch,
-        )
-        return active === null
-          ? undefined
-          : new DispatchClient(active.url, active.credential, fetch, {
-              deadlineMs: ms,
-            })
-      },
+      dispatch: (ms) => userTurnDispatchClient(identity, configFile, ms),
       effortPicked: (effort) => agentStream?.pickedEffort(effort),
       refreshSettings: () => agentStream?.refresh(),
       reply: (delivery, result) => postDispatchReply(identity, configFile, delivery, result),

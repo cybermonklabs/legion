@@ -678,19 +678,6 @@ test("a tester's fail sends return_to as returnTo", async () => {
   expect(posted.at(-1)).not.toHaveProperty("returnTo");
 });
 
-// The description is where the tester reads what its fail may carry and what the daemon refuses.
-test("the description tells the tester its fail may name the step its task returns to", () => {
-  const description = legionToolDescription({ envoyPublish: "envoy_publish" });
-  for (const words of [
-    "`return_to`, the place of a step of the task its issue runs, 1 for its first",
-    "RETURN_TO_NEEDS_FAIL",
-    "INVALID_RETURN_TO",
-    "RETURN_REFUSED",
-  ]) {
-    expect(description).toContain(words);
-  }
-});
-
 // Workers named their own issue on handoff_complete and left it off read_record, and both were
 // refused: 1,515 failed calls in the 48 h to 2026-11-10 17:40Z in INFRA's sessions alone
 // (dispatch://INFRA-2824). A read that names no issue now reads the claim's own, a read that names

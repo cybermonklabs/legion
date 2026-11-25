@@ -5,7 +5,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -15,7 +14,8 @@ import (
 // token a few seconds later, so the send settles failed on its first try instead of retrying the
 // registry read for the whole take-over window. Dispatch here presents its identity token, which
 // its client reads once more and presents again after a 401, as the kubelet may have rotated it
-// (envoy.Client.do): one try, two requests.
+// (envoy.Client.do): one try, two requests. The take-over wait asks the registry again, so the two
+// requests are the whole of what the send did, and no clock is read.
 func TestAListenerRefusingTheTokenSettlesTheSendAtOnce(t *testing.T) {
 	t.Parallel()
 	listener := startTakeOverListener(t)
@@ -28,10 +28,8 @@ func TestAListenerRefusingTheTokenSettlesTheSendAtOnce(t *testing.T) {
 	}
 	listener.play(script...)
 
-	started := time.Now()
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/agents/s1/messages",
 		map[string]any{"body": "Token refused", "delivery": "steer"}, "alice")
-	took := time.Since(started)
 	if response.Code != http.StatusCreated {
 		t.Fatalf("send: status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -44,11 +42,11 @@ func TestAListenerRefusingTheTokenSettlesTheSendAtOnce(t *testing.T) {
 		t.Fatalf("attempt = %#v, want failed with the listener's unauthorized answer", attempt)
 	}
 	tries := listener.requestsTo(takeOverRegistry)
-	if tries != 2 || took > 2*time.Second {
-		t.Fatalf("a listener answering 401 unauthorized was asked for the registry %d times over %v, want twice "+
+	if tries != 2 {
+		t.Fatalf("a listener answering 401 unauthorized was asked for the registry %d times, want twice "+
 			"(the identity token, then the same file read again) and settled at once: a refused token is the "+
 			"listener's answer, not a take-over to wait out (envoy Client.Session maps the 401 to ErrUnavailable, "+
-			"which the take-over wait retries)", tries, took)
+			"which the take-over wait retries)", tries)
 	}
 	if states := attemptStates(t, database, "message_deliveries", "message_id", message.ID); !slices.Equal(states, []string{"1:failed"}) {
 		t.Fatalf("attempts = %v, want attempt 1 alone, failed", states)

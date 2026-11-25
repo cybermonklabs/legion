@@ -912,6 +912,11 @@ func TestAConflictKeepsPhaseAndRefusesACompletionAtTheReplacedHead(t *testing.T)
 				}
 			}
 			refusedAt("at the replaced head", conflictHead, conflictHead, forwardHead)
+			// The refusal keeps the fact's key (intake.ApplyFact forgets only a refused check report's
+			// or an unspent fact's), so the same completion sent again is the one already received.
+			if again := applyFacts(t, pool, readsAfter(4*time.Minute))("at the replaced head", tc.complete(conflictHead, "handoff-1")); !again.Duplicate {
+				t.Fatalf("the completion at the replaced head sent again = %+v, want the fact already received", again)
+			}
 			refusedAt("naming no head", "", forwardHead)
 
 			applyRefusingNothing(t, pool, readsAfter(5*time.Minute), tc.complete(forwardHead, "handoff-2"))
