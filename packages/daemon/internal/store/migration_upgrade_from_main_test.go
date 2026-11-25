@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
@@ -284,5 +285,80 @@ func TestADatabaseTodaysMainMigratedTakesTheClaimSessionsMigrationBelowItsNewest
 	}
 	if version, err := store.SchemaVersion(ctx); err != nil || version != newest {
 		t.Errorf("after the upgrade the store reports version %d (%v), want the newest embedded, %d", version, err, newest)
+	}
+}
+
+// appliedLastOverMain are the versions of this branch's migrations that a database main migrated
+// has not recorded, though they sort below main's newest: here #5310's 20261124033010, below main's
+// 20261124060500 to 20261125000600.
+var appliedLastOverMain = []int{20261124033010}
+
+// A database main migrated records every embedded version but those of appliedLastOverMain, the
+// later ones included, and the upgrade then applies those last: Store.apply asks each migration
+// whether its own version is recorded. The two tests above apply this branch's migrations in
+// version order, before main's later ones, so neither sees a later migration of main's that takes a
+// name one of this branch's adds. Here the database holds every other embedded migration first:
+// the upgrade applies this branch's alone, records each once, and the store still reports the
+// newest version.
+//
+// The control (the pull request records the run): a planted migration that sorts above
+// 20261124033010 and adds issue_plans.earlier_givers if it is missing. Applied in version order it
+// changes nothing, and both tests above pass; applied first, as a deployed database applies it, it
+// takes the name, and the upgrade here fails with SQLSTATE 42701.
+func TestADatabaseMainMigratedTakesThisBranchsMigrationsLast(t *testing.T) {
+	if len(appliedLastOverMain) == 0 {
+		t.Skip("appliedLastOverMain names no version: this branch adds no migration that sorts below main's newest")
+	}
+	ctx := context.Background()
+	store := emptyStore(t)
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	last := map[int]bool{}
+	for _, version := range appliedLastOverMain {
+		last[version] = true
+	}
+	var mains []migrations.Migration
+	found, above, newest := 0, 0, 0
+	for _, migration := range all {
+		newest = max(newest, migration.Version)
+		if last[migration.Version] {
+			found++
+			continue
+		}
+		if migration.Version > slices.Min(appliedLastOverMain) {
+			above++
+		}
+		mains = append(mains, migration)
+	}
+	if found != len(last) {
+		t.Fatalf("appliedLastOverMain names %d versions and the embedded set holds %d of them", len(last), found)
+	}
+	if above == 0 {
+		t.Fatalf("no other embedded migration sorts above %v, so the upgrade applies them in version order and this test measures nothing", appliedLastOverMain)
+	}
+	if _, err := store.migrate(ctx, mains); err != nil {
+		t.Fatalf("migrate the database as main did, every version but %v: %v", appliedLastOverMain, err)
+	}
+
+	applied, err := store.Migrate(ctx)
+	if err != nil {
+		t.Fatalf("upgrade the database main migrated, with %d of its migrations above %v applied first: %v", above, appliedLastOverMain, err)
+	}
+	if applied != len(last) {
+		t.Errorf("the upgrade applied %d migrations, want this branch's %d alone", applied, len(last))
+	}
+	for version := range last {
+		var recorded int
+		if err := store.pool.QueryRow(ctx, `select count(*) from schema_version where version = $1::bigint`, version).Scan(&recorded); err != nil {
+			t.Fatalf("read whether the upgrade recorded %d: %v", version, err)
+		}
+		if recorded != 1 {
+			t.Errorf("the upgrade recorded %d %d times, want once", version, recorded)
+		}
+	}
+	if got, err := store.SchemaVersion(ctx); err != nil || got != newest {
+		t.Errorf("after the upgrade the store reports version %d (%v), want the newest embedded, %d", got, err, newest)
 	}
 }
