@@ -6,6 +6,16 @@ body: |-
   or load task whose rebuilt skill listing misses more than 10% of the names its session recorded
   is dropped, and so is one that adds more than 10% where the capture builds the listing from the
   profile. A capture refuses a cache entry that lost or changed a file it was made with.
+  The read count also reads the cluster transcript store, once for each session no Postgres store
+  holds, and reports each host's coverage, its gap days and the sessions the store adds. A case
+  never comes from a store-only session, and each behaviour report says how many of its skill's
+  counted sessions are store-only. A deployment-built Legion pod image takes the worker commit of
+  the stage its final stage copies the used packages from, once the image's version label names
+  it; a RUN step after the copy that a person read can be listed by its hash in the configuration.
+  A left-out dev-box skill pool is installed when the recorded listing names a namespaced copy of
+  one of its names that no earlier unit explains.
+  A capture of a Legion pane whose `pi-legion` extension sent no `legion` tool is made once more
+  and then dropped as `legion-tool-undefined`, with both attempts recorded.
 time: 2026-11-24T18:48:13Z
 custom:
     Issue: skill-cuts
