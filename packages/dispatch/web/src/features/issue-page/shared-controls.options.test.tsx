@@ -18,6 +18,7 @@ import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { rows as listRows, panelOf, pickNamed } from "../../__tests__/list-picks";
 import { artifact as specDocument } from "../../__tests__/proof-document";
+import { recordEscapes } from "../../__tests__/record-escapes";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type {
@@ -3411,17 +3412,6 @@ function EscapeSheet({
 }): ReactNode {
   const { containerRef } = useDialog<HTMLDivElement>({ onClose, open: true });
   return <div ref={containerRef}>{children}</div>;
-}
-
-/** Records each Escape pressed while it listens, from `document`'s capture phase, so a case can
- *  read once the press is over whether a handler marked it `defaultPrevented`. */
-function recordEscapes(): { readonly presses: KeyboardEvent[]; readonly stop: () => void } {
-  const presses: KeyboardEvent[] = [];
-  const record = (event: KeyboardEvent) => {
-    if (event.key === "Escape") presses.push(event);
-  };
-  document.addEventListener("keydown", record, true);
-  return { presses, stop: () => document.removeEventListener("keydown", record, true) };
 }
 
 /** The priority line of an issue that advances none on `surface`: today's header's line outside

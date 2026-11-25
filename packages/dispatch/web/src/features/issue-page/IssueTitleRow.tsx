@@ -1,6 +1,7 @@
 import { ISSUE_TITLE_MAX } from "@legion/contracts";
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 
+import { useFocusBack } from "../../hooks/useFocusBack";
 import { inputMethodKey } from "../../lib/input-method-key";
 import {
   bgTransparent,
@@ -78,11 +79,11 @@ export function IssueTitleRow({
   // as that press ends.
   const heldForPress = useRef(false);
   const heading = useRef<HTMLHeadingElement>(null);
-  const control = useRef<HTMLButtonElement>(null);
+  // The title's button (`control`), which a key that ends the edit gives the focus back to once
+  // the heading is drawn again (`useFocusBack`).
+  const focusBack = useFocusBack(editing);
+  const control = focusBack.opener;
   const editor = useRef<HTMLTextAreaElement | null>(null);
-  // Set by a key that ends the edit, and read once the heading is drawn again: the focus goes
-  // back to the title's button (`control`).
-  const returning = useRef(false);
   // The draft a switch or a hide of this edit sent or queued since the reader last changed it,
   // trimmed as it went, or null: a change the reader makes clears it (the editor's `onChange`),
   // and so does the next edit (`openEdit`). A draft goes once: once it has gone (`went`), neither
@@ -108,11 +109,6 @@ export function IssueTitleRow({
     setWritten(drafts.title);
     setEditing(true);
   };
-  useEffect(() => {
-    if (editing || !returning.current) return;
-    control.current?.focus({ preventScroll: true });
-    returning.current = false;
-  }, [editing]);
   // The editor takes the focus once, as the edit opens. Focused at every render, it took the
   // focus back from a control the page's code had moved it to while the reader was away, and the
   // edit then stayed open as they came back.
@@ -289,18 +285,18 @@ export function IssueTitleRow({
             if (inputMethodKey(event.nativeEvent)) return;
             if (event.key === "Escape") {
               // The press is the editor's: marked taken, so Details' own Escape and the key
-              // registry pass over it and a held Escape's repeats are kept from the page
-              // (`shell/keymap.ts`). Puts back the issue's title, or while a write is out the
-              // title it carries, which the issue is about to hold (decision 316).
+              // registry pass over it (`shell/keymap.ts`). Puts back the issue's title, or while a
+              // write is out the title it carries, which the issue is about to hold (decision
+              // 316). The focus goes back to the title's button (`useFocusBack`).
               event.preventDefault();
               drafts.discardTitle();
-              returning.current = true;
+              focusBack.handBack();
               setEditing(false);
               return;
             }
             if (event.key === "Enter") {
               event.preventDefault();
-              returning.current = true;
+              focusBack.handBack();
               event.currentTarget.blur();
             }
           }}

@@ -18,8 +18,7 @@ export interface PanelDismissOptions {
  * dismissed: Escape closes it wherever the focus is and puts the focus back on its trigger, and
  * a pointer press outside both the panel and its trigger closes it too. While the panel stands
  * open Escape is the panel's, not the view's behind it, so the handler marks the press taken
- * (`defaultPrevented`, which the key registry and a held Escape's repeats read) and stops it
- * there.
+ * (`defaultPrevented`, which the key registry reads) and stops it there.
  *
  * The listeners are only attached while `open`, so a closed panel costs nothing.
  */

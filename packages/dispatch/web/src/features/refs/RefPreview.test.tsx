@@ -428,9 +428,8 @@ test("Escape closes the open card", async () => {
 });
 
 // The card takes the Escape that closes it: it is the topmost layer, so the press is marked taken
-// (`defaultPrevented`) as it is stopped, for a listener on `document` that passes over a press
-// already taken and for the key registry, which keeps a held Escape's repeats from the page where
-// their press was taken (`keymap.ts`).
+// (`defaultPrevented`) as it is stopped. The mark lets the key registry (`keymap.ts`), and a
+// listener on `document` that reads it, pass over the press.
 test("the Escape that closes the open card is marked taken", () => {
   const getIssue = mockIssues();
   jest.useFakeTimers();

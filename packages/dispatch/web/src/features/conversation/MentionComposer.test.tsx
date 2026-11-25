@@ -18,6 +18,7 @@ import { graphNode } from "../../__tests__/graph-fixture";
 import { heldNotDisabled } from "../../__tests__/held-press";
 import { INPUT_METHOD_MARKS } from "../../__tests__/input-method-marks";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
+import { recordEscapes } from "../../__tests__/record-escapes";
 import { untilAttempted } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { AGENT_LIST_REFILLING, ApiError, api, NetworkError } from "../../api/client";
@@ -2069,9 +2070,7 @@ test.each(
 
 // Each Escape the comment box takes is marked taken (`defaultPrevented`) beside what it does: the
 // mention list's close, the reference picker's close and the `Discard draft?` over a draft. The
-// rest of the page and the key registry read the mark, which keeps a held Escape's repeats from the
-// page where their press was taken (`keymap.ts`): unmarked, each repeat of the press that closed
-// the list asked `Discard draft?`.
+// mark lets the key registry (`keymap.ts`) and the rest of the page pass over the press.
 test("the Escape that closes the mention list or the reference picker, or asks Discard draft?, is marked taken", async () => {
   const user = userEvent.setup();
   const getIssue = spyOn(api, "getIssue").mockResolvedValue({ project: "CORE" } as never);
@@ -2079,11 +2078,7 @@ test("the Escape that closes the mention list or the reference picker, or asks D
     { key: "CORE-1", title: "Core issue" },
   ] as never);
   const { view } = renderComposer({ agents: [planner, worker] });
-  const escapes: KeyboardEvent[] = [];
-  const record = (event: KeyboardEvent) => {
-    if (event.key === "Escape") escapes.push(event);
-  };
-  document.addEventListener("keydown", record, true);
+  const escapes = recordEscapes();
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
@@ -2104,9 +2099,9 @@ test("the Escape that closes the mention list or the reference picker, or asks D
     await user.keyboard("{Escape}");
     expect(screen.getByRole("button", { name: "Discard" }), "Discard draft?").toBeTruthy();
     expect(field).toHaveValue("a draft @");
-    expect(escapes.map((press) => press.defaultPrevented)).toEqual([true, true, true]);
+    expect(escapes.presses.map((press) => press.defaultPrevented)).toEqual([true, true, true]);
   } finally {
-    document.removeEventListener("keydown", record, true);
+    escapes.stop();
     view.unmount();
     getIssue.mockRestore();
     listIssues.mockRestore();

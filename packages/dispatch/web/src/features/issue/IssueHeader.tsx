@@ -4,7 +4,6 @@ import {
   type FormEvent,
   type KeyboardEvent,
   type ReactNode,
-  type RefObject,
   useEffect,
   useId,
   useRef,
@@ -32,6 +31,7 @@ import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useScrollEnds } from "../../components/useScrollEnds";
+import { useFocusBack } from "../../hooks/useFocusBack";
 import { useReleaseWhenLate, useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { inputMethodKey } from "../../lib/input-method-key";
 import {
@@ -128,33 +128,6 @@ function statusPickOnly(input: IssueUpdateInput | undefined): boolean {
 function issueUpdateLabel(key: string, input: IssueUpdateInput): string {
   const field = Object.keys(input)[0] ?? "field";
   return input.status === undefined ? `${key}: ${field} saved` : `${key} set to ${input.status}`;
-}
-
-/** The control that opened one of the header's editors - Edit title, the message route's, the
- *  parent's - and what gives it the focus back, as the new issue page's title row does
- *  (`IssueTitleRow`). A key or a button inside the editor that ends the edit calls `handBack`
- *  before it ends it: the editor leaves the page with the focus it held, and once the commit
- *  that ends the edit has drawn `opener` again, the focus goes to it with no scroll. An edit the
- *  reader ended by moving the focus elsewhere - a click, Tab - calls no `handBack`, so the focus
- *  stays where they put it, and a control the header does not draw, as a closed issue draws no
- *  Edit title, takes nothing. */
-function useFocusBack(editing: boolean): {
-  handBack: () => void;
-  opener: RefObject<HTMLButtonElement | null>;
-} {
-  const opener = useRef<HTMLButtonElement>(null);
-  const returning = useRef(false);
-  useEffect(() => {
-    if (editing || !returning.current) return;
-    returning.current = false;
-    opener.current?.focus({ preventScroll: true });
-  }, [editing]);
-  return {
-    handBack: () => {
-      returning.current = true;
-    },
-    opener,
-  };
 }
 
 export function IssueHeader({
@@ -631,8 +604,7 @@ export function IssueHeader({
                   if (inputMethodKey(event.nativeEvent)) return;
                   if (event.key === "Escape") {
                     // The press is the editor's: marked taken, so the key registry passes over it
-                    // and a held Escape's repeats are kept from the page (`shell/keymap.ts`). The
-                    // focus goes back to Edit title (`useFocusBack`).
+                    // (`shell/keymap.ts`). The focus goes back to Edit title (`useFocusBack`).
                     event.preventDefault();
                     titleFocus.handBack();
                     drafts.discardTitle();

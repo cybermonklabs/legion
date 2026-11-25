@@ -16,6 +16,7 @@ import {
   artifactRecordHandler,
   decisionsAndReadMarkHandlers,
 } from "../../__tests__/proof-document";
+import { recordEscapes } from "../../__tests__/record-escapes";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -1702,19 +1703,13 @@ test("the title's heading takes no Tab stop, and the button inside it, named by 
 });
 
 // The title's editor takes the Escape that ends the edit: the press puts the title back and gives
-// the focus to the title's button, and is marked taken (`defaultPrevented`). Details' own Escape
-// (`Margin.tsx`) passes over a press already taken, and the key registry keeps a held Escape's
-// repeats from the page where their press was taken (`keymap.ts`): unmarked, each repeat reached
-// Details on the button the press had focused, and closed it.
+// the focus to the title's button, and is marked taken (`defaultPrevented`). The mark lets the key
+// registry (`keymap.ts`) and Details' own Escape (`Margin.tsx`) pass over the press.
 test("the Escape that ends the title's edit is marked taken, puts the title back and gives the focus to its button", async () => {
   const user = userEvent.setup();
   const restore = stubHeader(issue);
   const view = renderHeader();
-  const escapes: KeyboardEvent[] = [];
-  const record = (event: KeyboardEvent) => {
-    if (event.key === "Escape") escapes.push(event);
-  };
-  document.addEventListener("keydown", record, true);
+  const escapes = recordEscapes();
 
   try {
     const { editor, heading } = await editTitle(user, "Review the plan");
@@ -1722,9 +1717,9 @@ test("the Escape that ends the title's edit is marked taken, puts the title back
     await waitFor(() => expect(titleButton(heading)).toHaveFocus());
     expect(editor).not.toBeInTheDocument();
     expect(heading).toHaveTextContent(issue.title);
-    expect(escapes.map((press) => press.defaultPrevented)).toEqual([true]);
+    expect(escapes.presses.map((press) => press.defaultPrevented)).toEqual([true]);
   } finally {
-    document.removeEventListener("keydown", record, true);
+    escapes.stop();
     view.unmount();
     restore();
   }

@@ -8251,14 +8251,12 @@ async function installReach(page: Page): Promise<void> {
       at: () => {
         const active = document.activeElement;
         const index = active === null ? -1 : listed.indexOf(active);
-        if (active === null || active === document.body || active === document.documentElement) {
-          return { back: false, index, others: others.size };
+        let back = false;
+        if (active !== null && active !== document.body && active !== document.documentElement) {
+          if (first === null) first = active;
+          else back = active === first;
         }
-        if (first === null) {
-          first = active;
-          return { back: false, index, others: others.size };
-        }
-        return { back: active === first, index, others: others.size };
+        return { back, index, others: others.size };
       },
       kept: () =>
         listed.flatMap((element, index) =>

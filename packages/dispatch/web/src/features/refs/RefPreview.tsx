@@ -746,9 +746,8 @@ export function RefPreviewHost(): ReactNode {
     const detachTriggers = attachTriggers();
     // Capture phase, ahead of `useDialog`'s Escape: while a card is open it is the topmost
     // layer, so Escape dismisses it alone and leaves the dialog beneath (the search palette)
-    // open. The card takes the press: marked taken as it is stopped, which the key registry and a
-    // held Escape's repeats read (`defaultPrevented`). With no open card the key passes through
-    // untouched.
+    // open. The card takes the press: marked taken as it is stopped, which the key registry reads
+    // (`defaultPrevented`). With no open card the key passes through untouched.
     const onKeyDown = (event: KeyboardEvent) => {
       // An Escape that ends an input method's composition is the input method's
       // (`inputMethodKey`), and the card stays open.

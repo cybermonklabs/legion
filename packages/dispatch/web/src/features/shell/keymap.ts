@@ -685,9 +685,9 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
    * run again the binding that steps (`KeyBinding.repeats`) which its press ran: that binding took
    * the press, and repeats by design. Any other repeat, of a key no binding names, is kept only
    * where it would act:
-   * - its press was taken - a binding ran on it, or a control's handler or a panel's Escape
-   *   (`AnchoredPanel`) took it - so that its repeat would act again, but for the Backspace, the
-   *   Delete and an editor's Enter of a field the press was made in, which repeat as typing does;
+   * - its press was taken - a binding ran on it, or a control's handler took it - so that its
+   *   repeat would act again, but for the Backspace, the Delete and an editor's Enter of a field
+   *   the press was made in, which repeat as typing does;
    * - its press moved the focus, or the page holds no press of it, and it would type or delete in
    *   the field it lands in (`editsText`);
    * - it is an Enter anywhere but a field of several lines or an editor, where it would press a

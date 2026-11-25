@@ -88,6 +88,9 @@ const read: IssueDecisions = {
 const DOCUMENT_TEXT =
   "# Decisions of CORE-1\n\n## One tree, five presets\n\nThe presets are queries over the one tree.";
 
+/** The path of the decisions document's text read, which the error of a read that failed names. */
+const TEXT_PATH = `/api/v1/artifacts/${document_.id}/text`;
+
 /** The spy on the decisions document's text read, which a Change's send makes. */
 type DocumentTextSpy = Mock<typeof api.getArtifactText>;
 
@@ -950,9 +953,6 @@ test("a document read the request deadline ended that then fails says why it fai
     createComment.mockRestore();
   }
 });
-
-/** The path of the decisions document's text read, which the error of a read that failed names. */
-const TEXT_PATH = `/api/v1/artifacts/${document_.id}/text`;
 
 // A document read Dispatch never answers fails at the API client's own deadline
 // (`REQUEST_DEADLINE_MS`), which the client sets as the read starts, before the send's bound

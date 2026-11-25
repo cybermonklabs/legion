@@ -58,9 +58,9 @@ test.each(
 });
 
 // The panel's Escape is the panel's alone while it stands open, so the press is marked taken
-// (`defaultPrevented`) as it is stopped: a listener beside it on `document` that passes over a
-// press already taken - Details' own Escape (`Margin.tsx`) - and a held Escape's repeats, which the
-// key registry keeps from the page where their press was taken (`keymap.ts`), read the mark.
+// (`defaultPrevented`) as it is stopped. The mark lets the key registry (`keymap.ts`), and a
+// listener beside the panel's on `document` that reads it - Details' own Escape (`Margin.tsx`) -
+// pass over the press.
 test("an Escape that closes the open panel is marked taken, closes it and puts the focus back on the trigger", () => {
   const trigger = document.createElement("button");
   const panel = document.createElement("div");

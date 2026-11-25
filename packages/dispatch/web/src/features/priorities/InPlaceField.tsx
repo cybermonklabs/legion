@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import { useFocusBack } from "../../hooks/useFocusBack";
 import { inputMethodKey } from "../../lib/input-method-key";
 import {
   bgTransparent,
@@ -263,11 +264,10 @@ export function InPlaceField({
   const [opened, setOpened] = useState(false);
   const box = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
   // The button a field drawn `closed` reads as while it is, the heading's or the chip's, which
-  // the reader opens the box from.
-  const opener = useRef<HTMLButtonElement>(null);
-  // Set by a key that ends the edit of a field drawn `closed`, and read once its button is drawn
-  // again: the focus goes back to that button (`opener`).
-  const returning = useRef(false);
+  // the reader opens the box from, and which a key that ends the edit gives the focus back to,
+  // with no scroll, once it is drawn in the box's place: the box took the focus with it as it
+  // went (`useFocusBack`).
+  const focusBack = useFocusBack(opened);
   // Where the field stands against the server's text (`FieldStand`): what the reader's text is
   // compared with, and the texts written that the server has not answered with yet, oldest first.
   const base = useRef(value);
@@ -348,14 +348,6 @@ export function InPlaceField({
     node.setSelectionRange(node.value.length, node.value.length);
   }, [opened]);
 
-  // Ended by a key, the box gives the focus back to the button it was opened from, with no
-  // scroll, once that button is drawn in its place: the box took the focus with it as it went.
-  useEffect(() => {
-    if (opened || !returning.current) return;
-    returning.current = false;
-    opener.current?.focus({ preventScroll: true });
-  }, [opened]);
-
   // A heading's box is as tall as the text it holds, so the title wraps in it as it does in the
   // heading, and what stands under it keeps its place as the field opens, closes or takes a line.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `draft` and `opened` are the triggers; the box is read as it stands
@@ -426,7 +418,7 @@ export function InPlaceField({
       if (event.key !== "Enter" && (event.key !== "Escape" || closed === undefined)) return;
       event.preventDefault();
       save();
-      returning.current = closed !== undefined;
+      if (closed !== undefined) focusBack.handBack();
       event.currentTarget.blur();
     },
     placeholder,
@@ -466,7 +458,7 @@ export function InPlaceField({
               // edge, since a layered utility wins over an unlayered rule only with `!`. The
               // heading draws the focus ring on its own box (`has-focus-visible`).
               className="block! min-w-0! -my-2 w-full cursor-text py-2 text-left outline-none xl:my-0 xl:py-0"
-              ref={opener}
+              ref={focusBack.opener}
               type="button"
             >
               {draft}
@@ -506,7 +498,7 @@ export function InPlaceField({
           aria-describedby={describedBy}
           className={`${FIELD_CHIP} ${textSecondaryHoverToPrimary} outline-none focus-visible:ring-2 ${focusVisibleRing}`}
           onClick={() => setOpened(true)}
-          ref={opener}
+          ref={focusBack.opener}
           type="button"
         >
           <span className="font-normal">{label}</span>

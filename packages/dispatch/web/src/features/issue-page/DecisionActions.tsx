@@ -310,12 +310,12 @@ function ChangeComposer({
   // press sends has answered.
   const [unsettled, keepUnsettled] = useUnsettledRead();
   // What the form says of the latest press's document read that failed, which left the change it
-  // sent no place: one that failed before its bound, and one the bound ended that failed after,
-  // which says so in the place of why it had not settled. The line is the press's own: it goes at
-  // the next press of Send change and with the form, and a refusal of the comment leaves it.
+  // sent no place, from the moment the read fails: before its bound, or after the bound ended it,
+  // in the place of why it had not settled. The line is the press's own: it goes at the next
+  // press of Send change and with the form, and a refusal of the comment leaves it.
   const [readFailed, setReadFailed] = useState<string>();
-  // How many presses of Send change read the document: a read that fails after its bound says
-  // so only while its press is still the latest.
+  // How many presses of Send change read the document: a read that fails says so only while its
+  // press is still the latest.
   const presses = useRef(0);
   // Whether this press has spent `SEND_DEADLINE_MS` across its document read and its comment
   // together: a read that runs to its own deadline followed by an offline comment must not hold
@@ -411,7 +411,10 @@ function ChangeComposer({
         // (`readFailed`): the client sets its own deadline (`REQUEST_DEADLINE_MS`) as the read
         // starts, before the bound, so a read Dispatch never answers fails as a timeout. A read
         // the bound ended adds why it has not settled, until it does (`unsettled`); if it then
-        // fails, the line says why it failed in that place (`readFailed`).
+        // fails, the line says why it failed in that place (`readFailed`). No press starts while
+        // `readingRef` holds, and only the bound's end clears it, so a read that fails before its
+        // bound is always the latest press's; one the bound ended says so only while its press is
+        // still the latest (`presses`).
         readingRef.current = true;
         setReading(true);
         setPressLate(false);
@@ -421,26 +424,23 @@ function ChangeComposer({
         clearTimeout(pressDeadline.current);
         pressDeadline.current = setTimeout(() => setPressLate(true), SEND_DEADLINE_MS);
         let tree: DisplayTree | undefined;
-        let failed: string | undefined;
-        let boundEnded = false;
         const read = api.getArtifactText(documentId).then(
           (text) => {
             tree = text.markdown_tree;
           },
           (error: unknown) => {
-            failed =
+            if (press !== presses.current) return;
+            setReadFailed(
               error instanceof RequestTimeoutError || error instanceof NetworkError
                 ? `${STATE_LINES.decisions_document_unreadable} ${error.message}.`
-                : STATE_LINES.decisions_document_unreadable;
-            if (boundEnded && press === presses.current) setReadFailed(failed);
+                : STATE_LINES.decisions_document_unreadable
+            );
           }
         );
         void readWithinBound(read).then((reason) => {
-          boundEnded = reason !== undefined;
           readingRef.current = false;
           setReading(false);
           keepUnsettled(read, reason);
-          setReadFailed(failed);
           const anchor = changeAnchor(
             decision,
             queryClient.getQueryData<IssueDecisions>(issueDecisionsQuery(issueKey, true).queryKey)
