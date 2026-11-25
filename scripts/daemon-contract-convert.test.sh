@@ -61,10 +61,13 @@
 # leaves the branch as it was: on the first branch, the first branch's base, a main from before the
 # cutover whose tree defines no registerEntry, and this change with no version.go, which it cannot
 # read; on the stacked branch, the first branch, a base branch that has not merged the cutover yet.
-# After the first branch is converted and its row moved, the script run on the stacked branch with
-# --base naming the first branch converts N+2 alone and merges the first branch, in a commit that
-# names it: the stacked branch then differs from the first branch by N+2's entry file and fixture,
-# so N+1, which the first branch converted, is not converted a second time under another id.
+# After the first branch is converted and its row moved, the stacked branch is refused, the same
+# way, over a main that took the first branch as a squash: over its merge base with that main the
+# stacked branch reads N+1 as its own, and the refusal names the entry file that main holds of it.
+# Then the script run on the stacked branch with --base naming the first branch converts N+2 alone
+# and merges the first branch, in a commit that names it: the stacked branch then differs from the
+# first branch by N+2's entry file and fixture, so N+1, which the first branch converted, is not
+# converted a second time under another id.
 #
 # Run from the repository root: bash scripts/daemon-contract-convert.test.sh [<base>]
 set -euo pipefail
@@ -461,6 +464,16 @@ DAEMON_API_CONTRACT_BASE=$this bash .github/scripts/check-daemon-api-contract.sh
   -run '^(TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes|TestTheRecordSetIsOneRecordPerAnswerPerContract|TestEntryFixtures)$' \
   >"$scratch/gate.txt" 2>&1) || { excerpt "$scratch/gate.txt"; fail "the shape gate fails on the converted branch"; }
 echo "PASS: entry $k converts to entry $id, merges this change with no conflict, and passes the contract check and the shape gate"
+
+step "a stacked branch whose base branch main took as a squash is refused"
+# main takes the first branch, converted, as a squash, and GitHub retargets the stacked branch to
+# main. Over its merge base with that main, from before the cutover, the stacked branch would read
+# entry $k as its own, though that main holds it as the first branch's entry file.
+cd "$repo_stacked"
+squash=$(git commit-tree "$branch^{tree}" -p "$this" -m "convert-test: the first branch, taken as a squash")
+refused "the conversion of the stacked branch over a main that took its base branch as a squash" \
+  "entry $k of this branch is $entry of $squash" "--base naming the base branch's last commit before the squash" \
+  -- --base "$squash"
 
 step "the conversion of the stacked branch over its base branch"
 cd "$repo_stacked"
