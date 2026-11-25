@@ -170,9 +170,9 @@ var priorityCountsQuery = `with recursive ` + priorityMemberTerms + `
 // hashed all of them under both plans.
 //
 // The probe runs once for each distinct member issue, inside a materialized CTE (member_event).
-// The CTE reads the distinct keys of `members` (member_issue), joins each to its issues row, and
+// The CTE reads the distinct keys of `members` (member_issue), reads the issues row of each, and
 // probes with that key (member_issue.key) as well as the issue (i.last_seq), so the probe can run
-// only on a key the dedupe answered; member_issue.key is i.key by the join. It answers the one
+// only on a key the dedupe answered; member_issue.key is i.key by that read. It answers the one
 // time of each member issue, which is then joined back to `members`, and the time of a priority
 // is the newest over its member issues. `materialized` is a fence: the planner plans the CTE on
 // its own, so the join to `members` cannot move below the probe, whatever join order it prefers.
@@ -182,6 +182,20 @@ var priorityCountsQuery = `with recursive ` + priorityMemberTerms + `
 // 6,362 member issues, and the statement's top plan node read 79,933 shared buffers under both
 // plans, against the 56,798 and 58,533 that main's text, which hashes every event of the table,
 // read under its two plans (TestStatementTimings, PostgreSQL 18.6, 2026-11-24).
+//
+// The issues row of each member issue is read by a lateral probe of issues_pkey on the key, which
+// `offset 0` keeps the planner from flattening into a join. As a join, under its default
+// settings the planner read every row of issues and joined each to a hash of the member keys,
+// since it plans 200 distinct keys of `members` whatever the walk answers, and 200 probes cost
+// more by its estimate than one read of the table: on the corpus of
+// TestPriorityNewestEventReadsOneEventOfEachMember it read all 1,029 issues in a Seq Scan for 29
+// member issues, under the generic plan and the plan made for the values alike, and priced the
+// join at 431 against 2,036 for the probes under the plan made for the values with no project
+// named (PostgreSQL 18.7, 2026-11-25). Such a read grows with every issue the deployment holds,
+// where the probes grow with the members alone. So every read of issues and of events beside the
+// walk over the members (priorityMemberTerms) is through an index. The walk is main's, which
+// hashes issues from one read of the table, and the plan test holds it to that one read and to
+// main's shared buffers (TestPriorityNewestEventReadsOneEventOfEachMember).
 //
 // The time can be earlier than the newest created_at over all the events of the members, but only
 // inside a bound. An event that Dispatch appends takes the start of its transaction as its
@@ -201,7 +215,9 @@ var priorityCountsQuery = `with recursive ` + priorityMemberTerms + `
 var priorityNewestEventQuery = `with recursive ` + priorityMemberTerms + `, member_event as materialized (
 		select member_issue.key, last_seq_event.created_at
 		from (select distinct key from members) member_issue
-		join issues i on i.key = member_issue.key
+		cross join lateral (
+			select i.last_seq, i.project_key from issues i where i.key = member_issue.key offset 0
+		) i
 		cross join lateral (
 			select last_seq_event.created_at
 			from events last_seq_event
