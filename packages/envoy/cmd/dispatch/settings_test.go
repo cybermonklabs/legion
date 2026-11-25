@@ -2092,6 +2092,18 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_HOLD_DECISIONS_STEP": "1"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_HOLD_ISSUE_ROOM_STEP": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1"}); boot.HoldIssueRoomStep {
+				t.Error("DISPATCH_TEST_HOLD_ISSUE_ROOM_STEP unset: HoldIssueRoomStep true")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HOLD_ISSUE_ROOM_STEP": "1"}); !boot.HoldIssueRoomStep {
+				t.Error("DISPATCH_TEST_HOLD_ISSUE_ROOM_STEP=1: HoldIssueRoomStep false")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HOLD_ISSUE_ROOM_STEP": "true"}); boot.HoldIssueRoomStep {
+				t.Error("DISPATCH_TEST_HOLD_ISSUE_ROOM_STEP=true: HoldIssueRoomStep true, want only 1 to set it")
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HOLD_ISSUE_ROOM_STEP": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
 		"DISPATCH_TEST_HOLD_BLOCK_INDEX": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1"}); boot.HoldBlockIndex {
 				t.Error("DISPATCH_TEST_HOLD_BLOCK_INDEX unset: HoldBlockIndex true")
