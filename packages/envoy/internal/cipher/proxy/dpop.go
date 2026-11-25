@@ -14,29 +14,30 @@ import (
 // mintedRefusal is the admission of a request to a host whose rules entry is of kind dpop, a
 // minted capability (requests.MintedKind, AirlockConnection for its grant's placeholder): the
 // code and the reason serveBound refuses it with, 403, or "" for a request whose grant's values
-// the proxy may read. Four rules, each read before any value is minted or any dial is made. An
-// upgrade is refused, since the bytes after its answer are no request the airlock reads. The
-// request carries the grant's placeholder as its one Authorization header, which the swap
-// replaces with the grant's token, so nothing else a command sends there - its own token, a second
-// header beside the placeholder - goes on to the service. The proxy holds a key to sign the proof
-// with. And the entry's rules allow the request: the grant's token is minted by the read of its
-// values (serveBound's valuesFor, the broker's mintedValues), so a request the entry refuses is
-// refused here, before that read, and mints nothing, and the token is minted on the grant's first
-// allowed call. That decision is proxyrules.Decide's with no value, every rule but the one that
-// reads the value (Carries reads no empty value); the swap takes the whole decision again with the
-// token.
-func (s *Server) mintedRefusal(r *http.Request, request *proxyrules.Request, chosen pair, held string, holdsPlaceholder bool) (code, reason string) {
+// the proxy may read. grant is the secret the request is handled for and its placeholder, the one
+// serveBound decides and swaps the request with after. Four rules, each read before any value is
+// minted or any dial is made. An upgrade is refused, since the bytes after its answer are no
+// request the airlock reads. The request carries the grant's placeholder as its one Authorization
+// header, which the swap replaces with the grant's token, so nothing else a command sends there -
+// its own token, a second header beside the placeholder - goes on to the service. The proxy holds
+// a key to sign the proof with. And the entry's rules allow the request: the grant's token is
+// minted by the read of its values (serveBound's valuesFor, the broker's mintedValues), so a
+// request the entry refuses is refused here, before that read, and mints nothing, and the token is
+// minted on the grant's first allowed call. That decision is proxyrules.Admit's, every rule of the
+// decision that reads no value, with the reason the decision gives; the swap takes the whole
+// decision again with the token.
+func (s *Server) mintedRefusal(r *http.Request, request *proxyrules.Request, grant proxyrules.Grant, holdsPlaceholder bool) (code, reason string) {
 	if len(r.Header.Values("Upgrade")) != 0 {
 		return codeProtocolSwitch, "a request to this host is never an upgrade: the airlock reads each request it carries there"
 	}
 	authorization := r.Header.Values("Authorization")
-	if !holdsPlaceholder || len(authorization) != 1 || authorization[0] != "DPoP "+held {
+	if !holdsPlaceholder || len(authorization) != 1 || authorization[0] != "DPoP "+grant.Placeholder {
 		return codeNoPlaceholder, "a request to this host carries the grant's placeholder as its one Authorization header, DPoP <placeholder>; this one does not, so nothing was sent"
 	}
 	if s.dpopKey == nil {
-		return codeNoValue, "the broker holds no DPoP key for " + chosen.name + ", so no proof can be made for this request and nothing was sent"
+		return codeNoValue, "the broker holds no DPoP key for " + grant.Secret + ", so no proof can be made for this request and nothing was sent"
 	}
-	if allowed, why := proxyrules.Decide(s.rules, proxyrules.Grant{Secret: chosen.name, Placeholder: held}, "", request); !allowed {
+	if _, why := proxyrules.Admit(s.rules, grant, request); why != "" {
 		return codeNotAllowed, why
 	}
 	return "", ""

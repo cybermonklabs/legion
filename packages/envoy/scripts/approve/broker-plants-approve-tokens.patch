@@ -49,7 +49,7 @@
  	"strings"
  
  	"github.com/sjawhar/envoy/internal/cipher/placeholder"
-@@ -42,6 +46,18 @@
+@@ -43,6 +47,18 @@
  	return "", ""
  }
  
@@ -68,7 +68,7 @@
  // mintedTransport is what a request to a host whose rules entry is of kind dpop leaves the proxy
  // through: a capability the broker mints for a grant and holds (requests.MintedKind), so that no
  // process of the command ever holds the access token or the key it is bound to. serveBound has
-@@ -91,6 +107,7 @@
+@@ -92,6 +108,7 @@
  		closeBody(r)
  		return nil, errNoDPoPKey
  	}

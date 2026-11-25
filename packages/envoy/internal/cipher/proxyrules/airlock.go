@@ -306,15 +306,22 @@ func hasDotSegment(path string) bool {
 	return false
 }
 
-// check is the one decision both Decide and Rewrite take: the entry the request may carry,
-// or the reason it may not. The reasons, and the order they are reported in, are the Lean
-// model's.
+// Admit is every rule of the decision that reads no value: the entry the request may carry, or
+// the reason it may not. It reads no value, which is what lets a caller ask it before the value
+// exists: the proxy port (internal/cipher/proxy) asks it of a request to a capability the broker
+// mints, whose value is minted by the read that fetches it, so a request the entry refuses is
+// refused before that read and mints nothing. check asks it first and reads the one rule left, a
+// header already carrying the value, after it, so a request Admit refuses is refused by Decide
+// and Rewrite for every value, with the same reason; a rule that reads the value belongs there,
+// after Admit, and never in it. The reasons, and the order they are reported in, are the Lean
+// model's, which has no function of its own for this part: it is check's rules up to the value,
+// unchanged by being split off.
 //
-// Two of the eleven refusals are about the request rather than about the entry. The CONNECT
-// port must be 443: every name the decision compares - the CONNECT host, the TLS name and
-// the Host header - carries no port, so 443 is the only port the rules speak about, and
-// another port of one name is another service. It is read above the two name comparisons
-// because the port is part of what the CONNECT named.
+// Two of the decision's eleven refusals are about the request rather than about the entry. The
+// CONNECT port must be 443: every name the decision compares - the CONNECT host, the TLS name and
+// the Host header - carries no port, so 443 is the only port the rules speak about, and another
+// port of one name is another service. It is read above the two name comparisons because the
+// port is part of what the CONNECT named.
 //
 // A path that holds a dot segment is refused whatever the entry's allow list says, an entry
 // with no allow list included: an entry's path prefix bounds the path the service will read,
@@ -335,7 +342,7 @@ func hasDotSegment(path string) bool {
 // takes nothing away from it and is not refused. It is read directly below the allow list,
 // for the same reason the dot segment is read directly above it: it is what makes that rule
 // mean what it says.
-func check(rules Rules, g Grant, value string, r *Request) (*SecretRule, string) {
+func Admit(rules Rules, g Grant, r *Request) (*SecretRule, string) {
 	if g.Placeholder == "" {
 		return nil, "empty placeholder"
 	}
@@ -359,6 +366,17 @@ func check(rules Rules, g Grant, value string, r *Request) (*SecretRule, string)
 		return nil, "not allowed by rule"
 	case sr.Allow != nil && hasMethodOverride(r):
 		return nil, "request carries a method override header"
+	}
+	return sr, ""
+}
+
+// check is the one decision both Decide and Rewrite take: the entry the request may carry,
+// or the reason it may not. It is Admit's rules and then the one rule that reads the value. The
+// reasons, and the order they are reported in, are the Lean model's.
+func check(rules Rules, g Grant, value string, r *Request) (*SecretRule, string) {
+	sr, why := Admit(rules, g, r)
+	if sr == nil {
+		return nil, why
 	}
 	// A request that already carries the real value learnt it somewhere other than this
 	// swap, so the airlock refuses it rather than forwarding it. The scan reads every

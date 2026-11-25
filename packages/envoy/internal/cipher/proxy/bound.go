@@ -39,7 +39,8 @@ const mintAgainBefore = 5 * time.Minute
 
 // grantValues is one grant's real values on this pod, read once and then held until a name's
 // own reread drops it (DropName), the policy version the read ran under stops being the live
-// one, or a minted value comes within mintAgainBefore of its expiry.
+// one, or a minted value comes within mintAgainBefore of its expiry; and, for a minted
+// capability's grant, the whole entry is dropped once the grant has ended (valuesFor).
 type grantValues struct {
 	// read is the read itself: two connections of one grant arriving together take it in turn,
 	// and the second reads what the first answered rather than running the release checks
@@ -63,6 +64,10 @@ type grantValues struct {
 	// names, which is what makes the next request read again - a read that began before a
 	// drop landed included, since such an answer is its own request's and no later one's.
 	drops, keptAt uint64
+	// ends is the end of a minted capability's grant, its connection's Expires, and zero for
+	// every other grant. It is set when the entry is made and never after, and read under the
+	// Server's valuesMu, which is what valuesFor drops an ended grant's entry under.
+	ends time.Time
 }
 
 // held is the grant's values when they may still be used, and the drop count the read that took
@@ -138,21 +143,41 @@ func (g *grantValues) drop(name string) {
 	g.drops++
 }
 
-// valuesFor is the grant's real values: AirlockValues once per grant per pod, as its own
-// contract asks, and the answer kept for every later connection and request of that grant until
-// something ends it - the reread of one of its names, a policy version that has moved since the
-// read, or a minted value coming within mintAgainBefore of its expiry.
+// valuesFor is the values of grant, the connection read of the grant a request is handled for:
+// AirlockValues once per grant per pod, as its own contract asks, and the answer kept for every
+// later connection and request of that grant until something ends it - the reread of one of its
+// names, a policy version that has moved since the read, or a minted value coming within
+// mintAgainBefore of its expiry.
 //
-// The map holds one entry per grant this pod has served. A grant's values are a handful of
-// strings and a pod is rolled by every deployment and by every change to the profiles file, so
-// nothing evicts them; what ends a grant's reach is the connection check, which refuses a
-// placeholder whose grant has ended whatever this map still holds.
-func (s *Server) valuesFor(ctx context.Context, grantID string) (map[string]requests.AirlockSecret, error) {
+// The map holds one entry per grant this pod serves. A grant released from a stored secret keeps
+// its entry until the pod is rolled, which every deployment and every change to the profiles file
+// does: its values are a handful of strings, and what ends its reach is the connection check,
+// which refuses a placeholder whose grant has ended whatever this map still holds. A minted
+// capability's grants come one per use - the approve capability's one per review - and each ends
+// at the end it was made with (grantValues.ends), so the read that adds a grant's entry first
+// drops the entry of every minted grant whose end this pod's clock has reached. The map then holds
+// the minted grants still live and those that ended since this pod last added a grant, never one
+// per use since the pod started. The drop reads nothing: a later request of a grant it dropped is
+// refused by the connection check, and one in flight keeps the values it was handed. A pod whose
+// clock runs ahead of the database's drops an entry a little early, which costs the grant's next
+// request one more read, a token minted again.
+func (s *Server) valuesFor(ctx context.Context, grant requests.AirlockConnection) (map[string]requests.AirlockSecret, error) {
+	// Read before the map's lock is taken, since a clock that panics would otherwise leave that
+	// lock held, and every later request of every grant behind it.
+	now := s.now()
 	s.valuesMu.Lock()
-	held, ok := s.values[grantID]
+	held, ok := s.values[grant.GrantID]
 	if !ok {
+		for id, other := range s.values {
+			if !other.ends.IsZero() && !now.Before(other.ends) {
+				delete(s.values, id)
+			}
+		}
 		held = &grantValues{}
-		s.values[grantID] = held
+		if grant.Minted && grant.Expires != nil {
+			held.ends = *grant.Expires
+		}
+		s.values[grant.GrantID] = held
 	}
 	s.valuesMu.Unlock()
 
@@ -162,7 +187,7 @@ func (s *Server) valuesFor(ctx context.Context, grantID string) (map[string]requ
 	// The common path, checked before the single-flight lock: the grant's values are held and
 	// still usable, so every parallel request of one grant answers from them at once. Taking
 	// read first would put them all in a queue behind a read that is not going to happen.
-	if values, _, fresh := held.held(s.now(), version, s.keepValues); fresh {
+	if values, _, fresh := held.held(now, version, s.keepValues); fresh {
 		return values, nil
 	}
 
@@ -172,7 +197,7 @@ func (s *Server) valuesFor(ctx context.Context, grantID string) (map[string]requ
 	if fresh {
 		return values, nil
 	}
-	values, readVersion, err := s.grants.AirlockValues(ctx, grantID)
+	values, readVersion, err := s.grants.AirlockValues(ctx, grant.GrantID)
 	if err != nil {
 		return nil, err
 	}
@@ -324,14 +349,6 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// would send the grant's token on with no proof and with the command's forwarding headers.
 		kind = ""
 	}
-	if kind == proxyrules.KindDPoP {
-		// A minted capability: its own admission, every rule of which is read before any value is
-		// minted or any dial is made (mintedRefusal, dpop.go).
-		if code, why := s.mintedRefusal(r, request, chosen, info.grant.Names[chosen.name].Slots[chosen.slot], holdsPlaceholder); code != "" {
-			s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, code, why)
-			return
-		}
-	}
 	exchange := kind == proxyrules.KindAzure && isTokenRequest(r)
 	if exchange {
 		// A token request carries the grant's placeholder in its form rather than in a header,
@@ -353,8 +370,20 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeFederatedSwap, "refusing to swap "+chosen.name+"'s federated token into a request that is no token request: that token leaves the broker only in an exchange at the token authority")
 		return
 	}
-	placeholder := info.grant.Names[chosen.name].Slots[chosen.slot]
-	values, err := s.valuesFor(r.Context(), info.grant.GrantID)
+	// The secret this request is handled for and the placeholder of its slot: what the decision
+	// and the swap below are over, and what a minted capability's admission decides first.
+	grant := proxyrules.Grant{Secret: chosen.name, Placeholder: info.grant.Names[chosen.name].Slots[chosen.slot]}
+	if kind == proxyrules.KindDPoP {
+		// A minted capability: its own admission, every rule of which is read before any value is
+		// minted or any dial is made (mintedRefusal, dpop.go). Neither azure branch above is taken
+		// for one: its kind is dpop, and a minted grant's one slot is SlotValue (requests'
+		// mintedConnection), never the federated one.
+		if code, why := s.mintedRefusal(r, request, grant, holdsPlaceholder); code != "" {
+			s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, code, why)
+			return
+		}
+	}
+	values, err := s.valuesFor(r.Context(), info.grant)
 	if err != nil {
 		// The same rule as the connection read above (grantRefusal), so that one answer does
 		// not say the grant has ended where the other says the broker could not read it: the
@@ -395,7 +424,6 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	grant := proxyrules.Grant{Secret: chosen.name, Placeholder: placeholder}
 	// refused answers a request the decision will not carry, and reports that it did. The
 	// reason and the status are proxyrules.Decide's own, as they were when every path through
 	// this function asked it first.
@@ -443,8 +471,8 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// Rewrite answers nil for exactly the requests Decide refuses: running it first costs
 		// an allowed swap - the commonest request the proxy serves - one decision rather than
 		// two, and leaves the refusal, the order its reasons are reported in and the 403
-		// exactly as they were. A dpop request has taken one decision more already, with no
-		// value, before its values were read (mintedRefusal).
+		// exactly as they were. A dpop request has had every rule of the decision but the value's
+		// read already, before its values were read (mintedRefusal, proxyrules.Admit).
 		rewritten := proxyrules.Rewrite(s.rules, grant, value, request)
 		if rewritten == nil {
 			if refused() {
@@ -809,7 +837,7 @@ func (s *Server) carryRefusal(ctx context.Context, info connInfo, chosen pair) *
 	if _, carried := grant.Names[chosen.name]; !carried {
 		return &cutCall{http.StatusForbidden, codeNoBoundName, chosen.name + " is no longer a name of this grant"}
 	}
-	values, err := s.valuesFor(ctx, grant.GrantID)
+	values, err := s.valuesFor(ctx, grant)
 	if err != nil {
 		return s.carryRead("values", err)
 	}

@@ -279,7 +279,8 @@ type Server struct {
 
 	// values is each grant's real values, read once per grant on this pod and held until the
 	// reread of one of its names drops it (DropName) or a minted value nears its expiry
-	// (grantValues, mintAgainBefore).
+	// (grantValues, mintAgainBefore); the entry of a minted capability's grant is dropped once
+	// that grant has ended, at the next new grant's read (valuesFor).
 	valuesMu sync.Mutex
 	values   map[string]*grantValues
 

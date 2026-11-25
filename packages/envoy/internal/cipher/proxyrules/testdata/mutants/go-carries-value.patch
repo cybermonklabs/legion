@@ -4,9 +4,9 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -284,14 +284,7 @@
- 	case sr.Allow != nil && hasMethodOverride(r):
- 		return nil, "request carries a method override header"
+@@ -378,14 +378,7 @@
+ 	if sr == nil {
+ 		return nil, why
  	}
 -	// A request that already carries the real value learnt it somewhere other than this
 -	// swap, so the airlock refuses it rather than forwarding it. The scan reads every

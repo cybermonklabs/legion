@@ -4,8 +4,7 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -226,10 +226,8 @@
- 	case !HostBound(sr.Hosts, r.ConnectHost):
+@@ -356,10 +356,8 @@
  		return nil, "host not bound"
  	case r.ConnectPort != 443:
  		return nil, "connect port is not 443"
@@ -17,3 +16,4 @@
 +	// target, so a request on one connection may carry the secret to another name.
  	case hasDotSegment(r.Path):
  		return nil, "path has a dot segment"
+ 	case !allowOK(sr.Allow, r):
