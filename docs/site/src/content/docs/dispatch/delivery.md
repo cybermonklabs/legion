@@ -109,11 +109,11 @@ contains it, whenever that pull request merged and whatever the filters.
 
 ## The targets
 
-Each target is the target of an eval of the project the deploy repository is mapped to
-(**Settings → Repositories → Projects**), so a change to that eval's target, to whether the
-target itself counts as met, or to the statistics it judges moves the card's verdict and its
-label. Until someone changes one, and where the deploy repository is mapped to no project or the
-project has no such eval yet, the targets are these:
+Each target is the target of an eval of the project whose default repository is the deploy
+repository (**Settings → Projects → Default repository**), so a change to that eval's target, to
+whether the target itself counts as met, or to the statistics it judges moves the card's verdict
+and its label. Until someone changes one, and where no project or more than one has the deploy
+repository as its default, or the project has no such eval yet, the targets are these:
 
 | Figure | Eval | Target |
 | --- | --- | --- |
@@ -371,9 +371,10 @@ its target exactly as it was set.
 **PR CI: slowest jobs** ranks the checks workflow's jobs by their seven-day median, slowest first,
 and shows five. A job needs a number of timed results in the seven days to be ranked, so a rarely
 run job cannot top the table on a handful of results: the `min_n` of the `job:*` series of the
-`pr-ci` eval in the project the deploy repository is mapped to (**Settings → Repositories →
-Projects**), which is 50 until someone changes it, and 50 where the deploy repository is mapped
-to no project or that project has no `pr-ci` eval yet. The page says the number it ranked by. The
+`pr-ci` eval in the project whose default repository is the deploy repository (**Settings →
+Projects → Default repository**), which is 50 until someone changes it, and 50 where no project
+or more than one has that default, or that project has no `pr-ci` eval yet. The page says the
+number it ranked by. The
 `pr-ci` eval's items sorted by median list every job ranked the same way. Only jobs of runs that
 ended in success or failure are counted.
 
