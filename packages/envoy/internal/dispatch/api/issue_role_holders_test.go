@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -290,8 +291,13 @@ func TestOnlyTheDaemonsSessionPublishesRoleHolders(t *testing.T) {
 
 		first := publish(t, shared, sharedPublication)
 		requireStoredRoleHolders(t, first, set, false)
-		// Each write is its own transaction, so a pair written again would take a later time.
-		time.Sleep(5 * time.Millisecond)
+		// A pair written again would take its transaction's time, so wait until the database's clock
+		// has passed the first publication's: a kept pair then shows by its unchanged time.
+		waitUntil(t, "the database's clock to pass the first publication's recorded_at", func() bool {
+			var passed bool
+			err := rig.database.Pool.QueryRow(context.Background(), `select clock_timestamp() > $1`, first[0].RecordedAt).Scan(&passed)
+			return err == nil && passed
+		})
 		rig.publishRoles(t, issue, set...)
 		marked := readStoredRoleHolders(t, rig.database, issue)
 		requireStoredRoleHolders(t, marked, set, true)
