@@ -11,7 +11,18 @@ import { installResizeObserver } from "../__tests__/scroll-box";
 import { NoTooltips } from "../features/issue-page/NoTooltips";
 import { type ListMarks, MultiSelect } from "./MultiSelect";
 
-function Host({ onCreate, options }: { onCreate?: (value: string) => void; options: string[] }) {
+/** A multi-select as a host draws one, closed until its trigger opens it. With `pickedFirst` it
+ *  lists the picked values first, in the order they were picked, and then the other options in
+ *  their own order, as the Delivery page's facets do (`DeliveryPage`'s `Facet`). */
+function Host({
+  onCreate,
+  options,
+  pickedFirst = false,
+}: {
+  onCreate?: (value: string) => void;
+  options: string[];
+  pickedFirst?: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
   return (
@@ -23,7 +34,7 @@ function Host({ onCreate, options }: { onCreate?: (value: string) => void; optio
         onCreate={onCreate}
         onOpenChange={setOpen}
         open={open}
-        options={options}
+        options={pickedFirst ? [...new Set([...selected, ...options])] : options}
         searchLabel="Search labels"
         selected={selected}
       />
@@ -185,12 +196,27 @@ test("the search narrows the rows and arrows, Enter and Escape drive them from t
   }
 });
 
+/** The open list's Clear foot, which it draws while its pick holds a value, or null. */
+function clearFoot(): HTMLElement | null {
+  return screen.queryByRole("button", { name: /^Clear / })?.parentElement ?? null;
+}
+
+/** Lays `foot`, the list's Clear foot, out as `layOutList` lays out the list: 61 px tall, stuck
+ *  to the bottom of what `box`, its panel, shows. */
+function layOutFoot(foot: Element, box: Element): void {
+  foot.getBoundingClientRect = () => {
+    const bottom = box.getBoundingClientRect().top + box.clientTop + box.clientHeight;
+    return new DOMRect(1, bottom - 61, 254, 61);
+  };
+}
+
 /**
  * Lays the open list out as a browser would, which happy-dom does not: its panel, the box that
  * scrolls, is 288 px tall at 100 px down the window inside a 1 px border, so it shows 286 px of
  * what it holds. The text box stands stuck to its top, 61 px tall, and so does the Clear foot to
- * its bottom while it is drawn; each option is 44 px tall, or as tall as `height` makes it as it
- * is measured, under the text box at its place among the options the list draws when it is
+ * its bottom while it is drawn (`layOutFoot`; a foot drawn after the layout is laid out by
+ * `layOutListsAsOpened`); each option is 44 px tall, or as tall as `height` makes it as it is
+ * measured, under the text box at its place among the options the list draws when it is
  * measured, moved up by the panel's `scrollTop`, which stops at both ends of the scroll, as a
  * browser's does. `trigger` stands above the panel, so the panel does not close as one hanging off
  * nothing (`AnchoredPanel`). Answers the panel.
@@ -203,7 +229,6 @@ function layOutList(
   const box = listbox.parentElement;
   const head = screen.getByRole("combobox").parentElement;
   if (box === null || head === null) throw new Error("the list is drawn outside its panel");
-  const foot = screen.queryByRole("button", { name: /^Clear / })?.parentElement ?? null;
   const drawn = () => [...listbox.querySelectorAll('[role="option"]')];
   const tall = (options: readonly Element[]) =>
     options.reduce((sum, option) => sum + height(option), 0);
@@ -216,7 +241,7 @@ function layOutList(
       configurable: true,
       get: () => scrolled,
       set: (value: number) => {
-        const end = 61 + tall(drawn()) + (foot === null ? 0 : 61) - shown;
+        const end = 61 + tall(drawn()) + (clearFoot() === null ? 0 : 61) - shown;
         scrolled = Math.min(Math.max(value, 0), Math.max(end, 0));
       },
     },
@@ -224,7 +249,8 @@ function layOutList(
   trigger.getBoundingClientRect = () => new DOMRect(0, 52, 120, 44);
   box.getBoundingClientRect = () => new DOMRect(0, 100, 256, 288);
   head.getBoundingClientRect = () => new DOMRect(1, 101, 254, 61);
-  if (foot !== null) foot.getBoundingClientRect = () => new DOMRect(1, 101 + shown - 61, 254, 61);
+  const foot = clearFoot();
+  if (foot !== null) layOutFoot(foot, box);
   for (const option of drawn()) {
     option.getBoundingClientRect = () => {
       const options = drawn();
@@ -333,8 +359,9 @@ test("the arrows scroll a multi-select's list the least that shows the option th
 /**
  * Lays each list an open draws out as `layOutList` does, its options as tall as `height` makes
  * them, the moment anything first measures it: the open measures its list in the commit that
- * draws it, before a case could lay it out after the open. Answers the box the last list scrolls
- * in, and what puts the measurements back.
+ * draws it, before a case could lay it out after the open. A Clear foot the list draws after
+ * that, as its first value is ticked, is laid out (`layOutFoot`) the moment anything first
+ * measures it too. Answers the box the last list scrolls in, and what puts the measurements back.
  */
 function layOutListsAsOpened(
   trigger: HTMLElement,
@@ -355,6 +382,10 @@ function layOutListsAsOpened(
       box = layOutList(trigger, height);
       // The element measured may be one the layout has just given a box of its own.
       if (Object.hasOwn(this, "getBoundingClientRect")) return this.getBoundingClientRect();
+    }
+    if (box !== null && this.parentElement === box && this === clearFoot()) {
+      layOutFoot(this, box);
+      return this.getBoundingClientRect();
     }
     return measure.call(this);
   });
@@ -554,6 +585,173 @@ test("a single pick keeps the option it opened on shown whole as its label chang
       "Testing on staging, waiting on its release"
     );
     expect([opened, lists.box()?.scrollTop]).toEqual([39, 51]);
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+    lists.restore();
+    view.unmount();
+  }
+});
+
+// INFRA-3135, round 27: a word typed in the text box marks the first option it leaves active, and
+// so does the word cleared, while the box stayed where the arrows had scrolled it: in the issue
+// header's Status, Triage stood 39 px above what the box showed after "e", and Enter took an
+// option the reader could not see. Each change of the search shows the option it marks active
+// whole below the text box, the list's own box alone scrolled.
+test("a word typed in a single pick's text box and the word cleared each scroll its list the least that shows the option they mark active whole", async () => {
+  const user = userEvent.setup();
+  const view = render(<SingleHost initial="Triage" options={STATUSES} />);
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    const trigger = screen.getByRole("button", { name: pickNamed("Epic") });
+    await user.click(trigger);
+    const box = layOutList(trigger);
+    const search = screen.getByRole("combobox", { name: "Search epics" });
+    // The option the list marks active and how far it has scrolled, after seven ArrowDown and
+    // after each key below: the box shows 61-286 px of its content.
+    await user.keyboard("{ArrowDown}".repeat(7));
+    const walked: [string, number][] = [[activeName(search), box.scrollTop]];
+    for (const key of ["e", "{ArrowUp}", "{Backspace}"]) {
+      await user.keyboard(key);
+      walked.push([activeName(search), box.scrollTop]);
+    }
+    expect(walked).toEqual([
+      // Retro, the last of the eight statuses, at 369-413.
+      ["Retro", 127],
+      // "e" leaves six statuses, Triage the first of them, at 61-105.
+      ["Triage", 0],
+      // ArrowUp wraps to the last of them, Retro, at 281-325.
+      ["Retro", 39],
+      // The word cleared, Triage is the first of all eight again.
+      ["Triage", 0],
+    ]);
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+    view.unmount();
+  }
+});
+
+/** The project List's Labels filter's twenty labels, in its order. */
+const LABELS = Array.from({ length: 20 }, (_, at) => `lab-${String(at + 1).padStart(2, "0")}`);
+
+// The same in a multi-select: in the project List's Labels filter, walked to its last label, "1"
+// left lab-01 the active option 259 px above what the box showed, and clearing the word left it
+// above the box too.
+test("a word typed in a multi-select's text box and the word cleared each scroll its list the least that shows the option they mark active whole", async () => {
+  const user = userEvent.setup();
+  const view = render(<Host options={LABELS} />);
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    const trigger = screen.getByRole("button", { name: "Labels" });
+    await user.click(trigger);
+    const box = layOutList(trigger);
+    const search = screen.getByRole("combobox", { name: "Search labels" });
+    // The option the list marks active and how far it has scrolled, after nineteen ArrowDown and
+    // after each key below: the box shows 61-286 px of its content.
+    await user.keyboard("{ArrowDown}".repeat(19));
+    const walked: [string, number][] = [[activeName(search), box.scrollTop]];
+    for (const key of ["1", "{ArrowUp}", "{Backspace}"]) {
+      await user.keyboard(key);
+      walked.push([activeName(search), box.scrollTop]);
+    }
+    expect(walked).toEqual([
+      // lab-20, the last of the twenty labels, at 897-941.
+      ["lab-20", 655],
+      // "1" leaves eleven labels, lab-01 the first of them, at 61-105.
+      ["lab-01", 0],
+      // ArrowUp wraps to the last of them, lab-19, at 501-545.
+      ["lab-19", 259],
+      // The word cleared, lab-01 is the first of all twenty again.
+      ["lab-01", 0],
+    ]);
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+    view.unmount();
+  }
+});
+
+// INFRA-3135, round 27: Enter on the option at the bottom of a multi-select's scrolled box ticked
+// it, the first value ticked, and the tick drew the Clear foot, stuck to the bottom of the box,
+// over it: lab-07 in the project List's Labels filter stood wholly under the foot. Once the host's
+// pick holds the value, the list shows the option it marks active whole above the foot, the
+// list's own box alone scrolled.
+test("Enter that ticks a multi-select's first value at the bottom of its box scrolls the list the least that shows it whole above the Clear foot the tick draws", async () => {
+  const user = userEvent.setup();
+  const labels = ["api", "docs", "frontend", "infra", "mobile", "ops", "qa", "web"];
+  const view = render(<Host options={labels} />);
+  const trigger = screen.getByRole("button", { name: "Labels" });
+  const lists = layOutListsAsOpened(trigger);
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    await user.click(trigger);
+    const search = screen.getByRole("combobox", { name: "Search labels" });
+    // The option the list marks active and how far it has scrolled, after five ArrowDown and
+    // after Enter.
+    await user.keyboard("{ArrowDown}".repeat(5));
+    const walked: [string, number | undefined][] = [[activeName(search), lists.box()?.scrollTop]];
+    await user.keyboard("{Enter}");
+    walked.push([activeName(search), lists.box()?.scrollTop]);
+    expect(screen.getByTestId("selected").textContent).toBe("ops");
+    expect(screen.getByRole("button", { name: "Clear labels" })).toBeTruthy();
+    expect(walked).toEqual([
+      // ops, the sixth option, at 281-325 px of the box's content: whole at the bottom of the
+      // 100-325 px the box shows.
+      ["ops", 39],
+      // The foot covers the box's last 61 px, so at 39 the box shows 100-264 px, and ops ends
+      // below that.
+      ["ops", 100],
+    ]);
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+    lists.restore();
+    view.unmount();
+  }
+});
+
+// INFRA-3135, round 27: the Delivery page lists a facet's picked values first, so Enter that
+// ticked acme/r06 took it to the top of its Repository list, above what the box the arrows had
+// scrolled showed, and Enter that unticked it took it back to its own place, below what the box
+// showed once it was back at its top. Once the host's pick holds the value otherwise, the list
+// shows the option it marks active whole in its new place, the list's own box alone scrolled.
+test("Enter in a multi-select whose host lists the picked values first scrolls the list to show the option it ticks whole at the top, and the option it unticks whole back in its place", async () => {
+  const user = userEvent.setup();
+  const labels = ["api", "docs", "frontend", "infra", "mobile", "ops", "qa", "web"];
+  const view = render(<Host options={labels} pickedFirst />);
+  const trigger = screen.getByRole("button", { name: "Labels" });
+  const lists = layOutListsAsOpened(trigger);
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    await user.click(trigger);
+    const search = screen.getByRole("combobox", { name: "Search labels" });
+    // The option the list marks active, its place among the options, what is picked and how far
+    // the list has scrolled, after seven ArrowDown and after each Enter.
+    const walked: [string, number, string | null, number | undefined][] = [];
+    const note = () => {
+      const active = search.getAttribute("aria-activedescendant");
+      walked.push([
+        activeName(search),
+        screen.getAllByRole("option").findIndex((option) => option.id === active),
+        screen.getByTestId("selected").textContent,
+        lists.box()?.scrollTop,
+      ]);
+    };
+    await user.keyboard("{ArrowDown}".repeat(7));
+    note();
+    for (let enter = 0; enter < 2; enter += 1) {
+      await user.keyboard("{Enter}");
+      note();
+    }
+    expect(walked).toEqual([
+      // web, the last option, at 369-413 px of the box's content, which shows 61-286 px of it.
+      ["web", 7, "", 127],
+      // Ticked, web is listed first, at 61-105.
+      ["web", 0, "web", 0],
+      // Unticked, web is back last, at 369-413, and the Clear foot is gone.
+      ["web", 7, "", 127],
+    ]);
     expect(scrolls).not.toHaveBeenCalled();
   } finally {
     scrolls.mockRestore();
