@@ -218,9 +218,10 @@ go-dispatch-browser, restored only: a family of this job's own, which
 job's runner, by running this job's go commands as this job runs them: the build step's two `go
 build`s over the same packages and the connections step's `go run`, each with CGO_ENABLED=0.
 That fill restores the family's newest entry, runs the commands on it, which compile only what
-changed since that entry was saved, and saves the result under this job's key followed by the
-commit (`-${{ github.sha }}`); ci-caches.yaml's refill-superseded job then deletes the entries
-the new one superseded, so the family keeps one. No entry carries this job's key itself, so
+changed since that entry was saved, keeps in the build cache only what they used, and saves the
+result under this job's key followed by the commit (`-${{ github.sha }}`); ci-caches.yaml's
+refill-superseded job then deletes the entries the new one superseded, so the family keeps one.
+No entry carries this job's key itself, so
 GitHub's matching, which takes the key as a prefix too, gives this job's restore the last fill's
 entry. The restore-keys, the key's `go-dispatch-browser-<os>-<arch>-` part, are what the
 restores of go-daemon, go-envoy and go-envoy-test in ci.yaml's jobs carry: after a Go bump and
@@ -257,8 +258,8 @@ further until the next Go bump. ci.yaml's own families showed where that ends: t
 go-envoy and go-envoy-test entries every job restored on 2026-11-22 had been saved on
 2026-11-18, and from them a job at main's e7381b7d4c9 had to compile again 573 of the envoy
 module's 618 packages
-(.github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs, its
-"Caches" paragraph). Main's #5141 made those families fill on every push, and this family
+(.github/ci-notes/ci-caches.md#why-each-fill-builds-on-the-newest-entry-of-its-family holds
+the record). Main's #5141 made those families fill on every push, and this family
 follows the same design, so the entry this job restores is the last push's, which is as near as
 an entry of main comes to the 5 s reading of one filled at the commit built.
 
@@ -313,11 +314,19 @@ job's go commands stay in its steps' own pinned text
 Nothing fails when the two drift apart - the binaries job just builds cold again - so a change to
 them there is a change here too.
 
-From the header, after its record of what a family filled once per Go version had to compile
-again: go-dispatch-browser was filled that way longer, on the ground that its build is small: the
+Its two steps around the build step, `.github/scripts/go-cache-working-set.sh begin` after the
+restore and `end` before the save, keep in the build cache only what these commands used, as
+every fill's pair does
+(.github/ci-notes/ci-caches.md#why-each-fill-keeps-only-what-its-own-build-used). Both run on
+the default GOCACHE, ~/.cache/go-build, which the build step uses and the restore and the save
+name.
+
+The record of what a family filled once per Go version had to compile again is
+.github/ci-notes/ci-caches.md#why-each-fill-builds-on-the-newest-entry-of-its-family.
+go-dispatch-browser was filled that way longer, on the ground that its build is small: the
 binaries job's commands, built as that job builds them, took 69 s on an empty build cache, 16 s
 on one filled with CGO_ENABLED=0 at main's 278138ea, and 5 s on one filled at the commit built
-(the dispatch-browser job below names the Jobs, and
+(all three in Job infra-1109-gobuild-894l9, which this section's second paragraph names, and
 .github/ci-notes/dispatch-browser.md#why-the-binaries-job-restores-go-dispatch-browser holds the
 readings). But 278138ea was 171 of main's commits older than 8a954068, the main commit the
 built one had merged, and an entry filled once per Go version only ages further until the next

@@ -1183,9 +1183,9 @@ older than the architecture in the key restores by go-notices-<os>-, which an <o
 starts with (ci-job-lint.yaml's restore step says what that did). go-daemon, go-notices,
 go-envoy, go-envoy-test, go-dispatch-browser and go-envoy-darwin-vet refill on every push to
 main: each fill builds on the newest matching entry and saves under the reader's key followed
-by the commit (`-${{ github.sha }}`). The
-[five non-browser Go refills](ci-caches.md#why-five-go-refills-keep-only-their-working-sets)
-prune the build cache before saving it. The
+by the commit (`-${{ github.sha }}`). Each fill
+[keeps in the build cache only what its own build used](ci-caches.md#why-each-fill-keeps-only-what-its-own-build-used)
+before it saves the entry. The
 [refill-superseded job](ci-caches.md#why-each-fill-builds-on-the-newest-entry-of-its-family)
 keeps only the new entry for the same family, runner, Go version and ref. These six families
 do not key on go.sum: a go.sum change fetches only the changed modules, and Go's build cache

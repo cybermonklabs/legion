@@ -8,16 +8,21 @@ job, here or in the notes for the workflow that restores the cache.
 
 This workflow fills seven Go families that ci.yaml or a workflow it calls restores directly.
 go-daemon, go-envoy, go-envoy-test and go-envoy-infra fill on ubuntu-24.04 and ubuntu-24.04-arm.
-go-notices fills only on ubuntu-24.04-arm, and go-envoy-darwin-vet only on ubuntu-24.04.
-See the [go-dispatch-browser fill](dispatch-browser.md#the-fill-of-go-dispatch-browser-in-ci-cachesyaml)
-for its runner and inputs.
+go-notices fills only on ubuntu-24.04-arm, and go-dispatch-browser and go-envoy-darwin-vet only
+on ubuntu-24.04. See the [go-dispatch-browser fill](dispatch-browser.md#the-fill-of-go-dispatch-browser-in-ci-cachesyaml)
+for its reader and inputs. The key carries `runner.arch` because Go's build cache holds the
+objects of the architecture that compiled them: an entry an x86_64 runner filled gives an arm64
+job its modules and none of its objects. So each family is filled on every architecture one of
+its readers runs on, one matrix leg per runner. A leg builds what that runner's readers build
+and no more: go-daemon's arm64 reader is typecheck alone, so its arm64 leg runs typecheck's vet
+and leaves the test and race builds to the x86_64 leg.
 
 Each key names the runner architecture and the Go version from the module its readers use.
-go-daemon and go-notices use the daemon module's go.mod. go-envoy, go-envoy-test and
-go-envoy-darwin-vet use the envoy module's go.mod. go-envoy-infra uses the infra module's
-go.mod and also keys on the workspace's module files. go-notices puts the architecture before
-the OS so an old OS-only restore prefix cannot match its architecture-specific go-licenses
-binary. The other six put it after the OS.
+go-daemon and go-notices use the daemon module's go.mod. go-envoy, go-envoy-test,
+go-dispatch-browser and go-envoy-darwin-vet use the envoy module's go.mod. go-envoy-infra uses
+the infra module's go.mod and also keys on the workspace's module files. go-notices puts the
+architecture before the OS so an old OS-only restore prefix cannot match its
+architecture-specific go-licenses binary. The other six put it after the OS.
 
 ## Which runners the readers of go-envoy and go-envoy-test run on
 
@@ -26,8 +31,9 @@ darwin vet fill also restores it for its module cache. envoy-go-claim-model and 
 browser workflow's re-record job restore go-envoy-test on that runner. The other CI readers
 of these two families run on ubuntu-24.04-arm, so the fill builds on both runner types.
 
-The [binaries job's restore](dispatch-browser.md#why-the-binaries-job-restores-go-dispatch-browser)
-no longer reads go-envoy-test.
+dispatch-browser.yaml's binaries job, on ubuntu-24.04, restores go-dispatch-browser and not
+go-envoy-test ([its restore's notes](dispatch-browser.md#why-the-binaries-job-restores-go-dispatch-browser)
+say why).
 
 ## Why each fill builds on the newest entry of its family
 
@@ -37,31 +43,37 @@ entries every job restored on 2026-11-22 had been saved on 2026-11-18 between 13
 (go-notices' on 2026-11-19), and at main's e7381b7d4c9 a job that restored them had to compile
 again 312 of the daemon module's 335 packages and 573 of the envoy module's 618 (`go list -test
 -deps -f {{.Stale}}`); from an entry filled five merges earlier, 135 and 321.
+go-dispatch-browser was filled that way longer, and
+[its fill's notes](dispatch-browser.md#the-fill-of-go-dispatch-browser-in-ci-cachesyaml) hold
+its own readings.
 
-The refill-superseded job keeps one entry per family, runner, Go version and ref. It deletes
-older commit-suffixed entries and any entry under the readers' bare key, which would otherwise
-win as an exact match. It deletes nothing until it finds the new key in that ref's list. Without
-this cleanup, old entries can pile up until GitHub evicts other families' live entries.
+The refill-superseded job keeps one entry per family, runner, Go version and ref: the one the
+fill just saved. It deletes the family's other entries of that runner and Go, those whose key is
+the readers' key followed by `-` and any entry under the readers' bare key, which would otherwise
+win every reader's restore as an exact match. An entry of another runner or another Go stays. It
+deletes nothing until it finds the new key in that ref's list, so a save that did not land leaves
+the old entries in place. Without this cleanup the entries would pile up: each fill saves a new
+one, GitHub drops an entry only after seven days unread, and over the repository's cache limit
+it evicts the least recently used entries, which can be another family's live one.
 A job downloading a deleted entry gets a cache miss. actions/cache/restore warns and the job
 goes on, compiling what the entry would have given it, so it is slower, not failed.
 
-## Why five Go refills keep only their working sets
+## Why each fill keeps only what its own build used
 
-The five non-browser Go refills use `.github/scripts/go-cache-working-set.sh`. Before the
-build, the helper marks every restored build-cache entry unused. The build marks what it reads
-or writes, and the helper deletes the rest. go-envoy-test also keeps the entries go-envoy's
-build used because its readers restore the combined cache. The browser fill does not call
-the helper.
-
-Without pruning, an entry grew with each fill. A build adds the objects of every package that
-changed and keeps the old ones. Go's own trim deletes only what no build has used for five days,
-and every fill was within that.
+Each fill keeps in the build cache only what its own build used: a step before the build marks
+every restored entry unused, the build marks what it reads or writes, and a step after it deletes
+the rest (.github/scripts/go-cache-working-set.sh), each with the GOCACHE the build uses, which
+for go-envoy-darwin-vet is the vet's own directory. The envoy job fills go-envoy-test on top of
+go-envoy, so go-envoy-test's pair also keeps the entries go-envoy's build used, and that entry
+holds both builds. Without that, an entry grew with each fill: a build adds the objects of every
+package that changed and nothing takes the replaced ones out, since Go's own trim deletes only
+what no build has used for five days and every fill was within that.
 go-envoy-test grew from 690 MB on 2026-11-22 to 2,039 MB by 19:18Z on 2026-11-23, and its restore
-in what was then dispatch-browser's binaries job from 15.5 s to 59 s at the median. The module
-cache keeps every module version it has downloaded (Go removes none by itself), so it grows only
-with a change to a module file, until a Go bump starts the family again: after a bump the fill
-finds no entry of the new Go (unless an older version's text starts with the new one's, as the
-workflow's prefix note says) and builds from nothing.
+in the binaries job of main's dispatch-browser.yaml, which restored go-envoy-test, from 15.5 s to
+59 s at the median. The module cache keeps every module version it has downloaded (Go removes
+none by itself), so it grows only with a change to a module file, until a Go bump starts the
+family again: after a bump the fill finds no entry of the new Go (unless an older version's text
+starts with the new one's, as the workflow's prefix note says) and builds from nothing.
 
 ## Why a lookup's save takes the lookup's key
 

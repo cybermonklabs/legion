@@ -17,25 +17,32 @@ name: CI caches
 # Seven Go families have direct restores in ci.yaml's run and fills here.
 # why: .github/ci-notes/ci-caches.md#the-seven-go-families-their-keys-and-the-runners-each-is-filled-on
 #
-# go-daemon, go-notices, go-envoy, go-envoy-test, go-dispatch-browser and go-envoy-darwin-vet
-# refill on every push to main. The fill restores the newest entry of its family, runs on it
-# the build the reader runs, and saves under the readers' key followed by the commit
-# (`-${{ github.sha }}`). The fill restores with the readers' key and a `-` as its restore-keys.
-# GitHub matches the key itself as a prefix too, so an entry of another Go version can match
-# when its version starts with this one's (go1.27.30 for go1.27.3). Go does not reuse build
-# objects compiled by that other toolchain. Readers find the last fill's entry by prefix.
+# go-daemon, go-notices, go-envoy, go-envoy-test, go-dispatch-browser and go-envoy-darwin-vet are
+# filled again on every push to main. The fill restores the newest entry of its family, runs on it
+# the build its readers run, which compiles only what changed since that entry was saved, and
+# saves the result under the key the readers restore followed by the commit
+# (`-${{ github.sha }}`). The fill's restore asks for the readers' key, with that key and a `-` as
+# its restore-keys. GitHub matches the key itself as a prefix too, so an entry of another Go
+# version is restored only when that version's text starts with this one's (go1.27.30 for
+# go1.27.3), and Go keys every object of its build cache on the toolchain that compiled it, so
+# such an entry costs only its download. No entry carries the readers' key itself, so GitHub's
+# matching gives a reader the newest entry whose key starts with it: the last fill's.
 # why: .github/ci-notes/ci-caches.md#why-each-fill-builds-on-the-newest-entry-of-its-family
-# The five non-browser Go refills prune the build cache with .github/scripts/go-cache-working-set.sh.
-# why: .github/ci-notes/ci-caches.md#why-five-go-refills-keep-only-their-working-sets
+# Each fill keeps in the build cache only what its own build used
+# (.github/scripts/go-cache-working-set.sh).
+# why: .github/ci-notes/ci-caches.md#why-each-fill-keeps-only-what-its-own-build-used
 #
 # go-envoy-infra and elan are still looked up first (`lookup-only`, and no `restore-keys`: the
 # question is whether that exact key exists, and the answer downloads nothing), and only a miss
-# runs the build and saves what it left. Each key carries a hash of the files that choose what
-# the entry holds. Each save takes the key its lookup computed
-# (`steps.<id>.outputs.cache-primary-key`), never a hashFiles() of its own.
+# runs the build and saves what it left. Each of their keys carries a hash of the files that
+# choose what the entry holds, and a run that finds its key builds nothing. Each save takes the
+# key its lookup computed (`steps.<id>.outputs.cache-primary-key`), never a hashFiles() of its
+# own.
 # why: .github/ci-notes/ci-caches.md#why-a-lookups-save-takes-the-lookups-key
-# Where a job fills two families, it fills the smaller one first, so only the larger entry
-# carries both builds' objects. A failed matrix leg leaves the others running (`fail-fast: false`).
+# Where a job fills two families it fills the smaller one first, so the entry that carries the
+# other's objects too is the one that was large already. A leg of a matrix that fails leaves the
+# other running (`fail-fast: false`): a cancelled leg saves nothing, and one architecture's fill
+# has no reason to cost the other's.
 #
 # Beside those seven, the architecture-check and spec-check jobs fill the families of the composite
 # actions .github/actions/architecture-check and .github/actions/spec-check, which restore and
@@ -54,9 +61,12 @@ name: CI caches
 
 # A push to main is what writes the default branch's cache scope; workflow_dispatch fills a family
 # by hand, after a Go bump, a move of the Lean toolchain or an eviction. No `paths:`: the six
-# per-push Go fills build code from across the workspace and use the restored entries to
-# recompile only what changed. The other fills look up their exact keys regardless of which
-# files the push touched.
+# families filled on every push hold the builds of commands and packages of the Go modules and of
+# the modules those import, so nearly any change to Go code is theirs, and a push that changes
+# none of it compiles nothing on the restored entry; the other keys hold a Go version, that
+# toolchain file's hash, the hash of packages/envoy/go.sum, a Dispatch release's commit or, for
+# go-envoy-infra, the hash of the infra workspace's module files, not a file list, so what the
+# push touched decides nothing for them.
 #
 # A release is tagged minutes after its push to main (release-envoy-listener.yaml builds first),
 # so the push's own fill resolves the release before it, and the pull requests and merge groups
@@ -442,12 +452,19 @@ jobs:
           key: go-dispatch-browser-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: go-dispatch-browser-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-
 
+      # As the daemon job's step of this name.
+      - name: Mark the restored build cache's entries unused until the builds use them
+        run: .github/scripts/go-cache-working-set.sh begin "$RUNNER_TEMP/go-dispatch-browser-working-set"
+
       - name: Build what the binaries job of dispatch-browser.yaml builds
         run: |
           CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed
           CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/broker" ./cmd/cipherd
           CGO_ENABLED=0 go run ./internal/dispatch/store/cmd/connections
         working-directory: packages/envoy
+
+      - name: Delete the build cache's entries the builds did not use
+        run: .github/scripts/go-cache-working-set.sh end "$RUNNER_TEMP/go-dispatch-browser-working-set"
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -548,10 +565,16 @@ jobs:
           KEY: ${{ steps.go-envoy-darwin-vet.outputs.cache-primary-key }}-${{ github.sha }}
         run: echo "go-envoy-darwin-vet-${RUNNER_ARCH,,}=$KEY" >>"$GITHUB_OUTPUT"
 
-  # Keep the new key for each family, runner, Go version and ref. Delete nothing if that key
-  # is not listed. A leg whose fill produced no key skips its steps. A failed fill does not stop
-  # the other legs. This job takes the permission to delete those entries and builds nothing.
+  # The entries of go-daemon, go-notices, go-envoy, go-envoy-test, go-dispatch-browser and
+  # go-envoy-darwin-vet that the fills above replaced, deleted once each fill has saved its new
+  # one. For each family and architecture this keeps one entry of this ref, the one the fill just
+  # saved, and deletes every other one of that family, runner and Go. An entry of another runner
+  # or another Go is no such entry and stays. None is deleted unless the new key is among this
+  # ref's entries. One leg per family and architecture; a leg whose fill saved nothing skips its
+  # steps, and the job runs when any fill failed, so one failed fill does not stop the others'
+  # deletes. A job of its own, so the token that may delete caches is in no job that builds code.
   # Cache keys are untrusted text: the list stays JSON and the step deletes only by numeric ID.
+  # Every leg runs on ubuntu-24.04-arm: gh and jq need nothing of an x64 machine.
   # why: .github/ci-notes/ci-caches.md#why-each-fill-builds-on-the-newest-entry-of-its-family
   refill-superseded:
     needs: [daemon, notices, envoy, dispatch-browser, envoy-darwin-vet]

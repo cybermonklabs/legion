@@ -10,7 +10,8 @@ name: Dispatch browser nightly
 # output), so the merge group runs it on the tree a change lands as. The full lane's jobs are
 # dispatch-browser.yaml's, whose notes name them and the machines they take
 # (.github/ci-notes/dispatch-browser.md#the-suite-its-two-lanes-and-the-budget-rule-every-job-follows);
-# they are seven jobs on eight machines, where the default branch's lane runs twelve, and
+# they are seven jobs on eight machines (full-lane run 44286153772, at c31857b8), where the
+# default branch's full lanes in the merge queue ran twelve jobs on 2026-11-24, and
 # .github/ci-notes/dispatch-browser.md#what-the-job-set-costs-and-the-machine-time-ceiling-the-run-holds-it-to
 # measures what both lanes cost.
 # This run covers a day with no merge group, and is what runs the full lane on main's tip
