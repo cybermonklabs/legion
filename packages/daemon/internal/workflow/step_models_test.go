@@ -1,12 +1,19 @@
 package workflow
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
@@ -95,6 +102,9 @@ func TestCountStepGivesEachRowsArithmetic(t *testing.T) {
 		{"totals that overflowed are not known", []launchSpan{{setModel: modelA, start: fromZero, end: overflowed}}, modelA, nil},
 		{"answers run most calls first, then by model", []launchSpan{{setModel: modelA, start: fromZero, end: totalsOf(modelA, calls(modelB, 2), calls(modelA, 2), calls("stand-in/model-c", 4))}},
 			modelA, answered(record.ModelCalls{Model: "stand-in/model-c", Calls: 4}, record.ModelCalls{Model: modelA, Calls: 2}, record.ModelCalls{Model: modelB, Calls: 2})},
+		{"a count list naming a model outside the form is not known", []launchSpan{{setModel: modelA, start: fromZero, end: totalsOf(modelA, calls("stand-in/model with space", 1))}},
+			modelA, nil},
+		{"a set model outside the form is none", []launchSpan{{setModel: "a b", start: fromZero, end: totalsOf("a b")}}, "", answered()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			setModel, answers := countStep(tc.spans)
@@ -103,6 +113,56 @@ func TestCountStepGivesEachRowsArithmetic(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A fact of a pull request names the issue its handlers apply it to, and reads that issue's
+// agents. Its pull request is found under a renamed repository's other name too. A pull request
+// whose issue is on another repository names no issue, since the fact applies to none.
+func TestAFactOfAPullRequestNamesTheIssueItsHandlersApplyItTo(t *testing.T) {
+	t.Parallel()
+	issueOf := func(t *testing.T, pool *pgxpool.Pool, engine *Engine, fact intake.Fact) string {
+		t.Helper()
+		var issue string
+		seedRecord(t, pool, func(tx pgx.Tx) error {
+			var err error
+			issue, err = engine.factIssue(context.Background(), tx, fact)
+			return err
+		})
+		return issue
+	}
+	t.Run("a pull request recorded under a renamed repository's old name", func(t *testing.T) {
+		t.Parallel()
+		pool := migratedPool(t)
+		seedRenamedTree(t, pool, "sjawhar/legion")
+		engine := renamedEngine(renamedLegion)
+		for _, fact := range []intake.Fact{
+			intake.PullRequestReview{Repo: "cybermonklabs/legion", Number: 42},
+			intake.Push{Repo: "cybermonklabs/legion", Branch: "legion/LEGION-209"},
+		} {
+			if got := issueOf(t, pool, engine, fact); got != "LEGION-209" {
+				t.Fatalf("%T naming cybermonklabs/legion names issue %q, want LEGION-209, whose pull request is recorded on sjawhar/legion", fact, got)
+			}
+		}
+	})
+	t.Run("a pull request whose issue is on another repository", func(t *testing.T) {
+		t.Parallel()
+		pool := migratedPool(t)
+		openTree(t, pool)
+		parent := "LEGION-208"
+		seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: "LEGION", Title: "child", Parent: &parent,
+			Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "V", LastDispatchSeq: 1})
+		seedPR(t, pool, record.PullRequest{Issue: "LEGION-209", Repo: "acme/other", Number: 42, Branch: "legion/LEGION-209", HeadSHA: "head",
+			HeadUpdatedAt: time.Date(2026, 10, 16, 11, 0, 0, 0, time.UTC), Failing: []string{}, Generation: 1, State: record.PullRequestOpen})
+		engine := testEngine(config.DesignGateRootIssues, nil)
+		for _, fact := range []intake.Fact{
+			intake.PullRequestReview{Repo: "acme/other", Number: 42},
+			intake.Push{Repo: "acme/other", Branch: "legion/LEGION-209"},
+		} {
+			if got := issueOf(t, pool, engine, fact); got != "" {
+				t.Fatalf("%T naming acme/other names issue %q, want none: the issue is on acme/widgets, so the fact applies to no issue", fact, got)
+			}
+		}
+	})
 }
 
 // shownAnswers is answers as a test failure names them: unknown for nil, else each model and its

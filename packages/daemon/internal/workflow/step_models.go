@@ -84,7 +84,10 @@ func (e *Engine) ReadFact(ctx context.Context, pool store.TxPool, fact intake.Fa
 }
 
 // factIssue is the issue fact names: its own, or the issue of the pull request it names by number
-// or by branch. It is "" for a fact that names none, or a pull request the store does not hold.
+// or by branch. That pull request is read as the fact's handlers read it (pullRequestRow,
+// pullRequestRowByBranch). So it is found under a renamed repository's other name too, and only
+// where its issue is on the fact's repository. It is "" for a fact that names none, or a pull
+// request the store does not hold.
 func (e *Engine) factIssue(ctx context.Context, tx pgx.Tx, fact intake.Fact) (string, error) {
 	if issue, ok := intake.IssueOf(fact); ok {
 		return issue, nil
@@ -92,9 +95,9 @@ func (e *Engine) factIssue(ctx context.Context, tx pgx.Tx, fact intake.Fact) (st
 	var pr *record.PullRequest
 	var err error
 	if push, ok := fact.(intake.Push); ok {
-		pr, err = e.store.PullRequestRowByBranch(ctx, tx, push.Repo, push.Branch)
+		pr, err = e.pullRequestRowByBranch(ctx, tx, push.Repo, push.Branch)
 	} else if repo, number, ok := pullRequestOf(fact); ok {
-		pr, err = e.store.PullRequestRowByNumber(ctx, tx, repo, number)
+		pr, err = e.pullRequestRow(ctx, tx, repo, number)
 	}
 	if err != nil || pr == nil {
 		return "", err

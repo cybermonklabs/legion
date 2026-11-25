@@ -136,16 +136,20 @@ func TestAStepRecordSaysWhenItDoesNotKnow(t *testing.T) {
 		r.waitModels(r.key, 2, 2, stepModels{result: "passed", setModel: stepRecordsModel, model: stepRecordsModel})
 	})
 	// The implementer's shim loses its connection in the second run while its process lives on.
-	// The architect's stop reads no totals of it, at once, with no bound fired.
+	// The architect's stop reads no totals of it, at once, with no bound fired. The stop answers
+	// although no bound ever fires on the held clock, and no bound stays armed after it.
 	t.Run("an agent with no connection when its step stops", func(t *testing.T) {
 		r := newStepRecordsRig(t, 1)
-		holdReadClock(r)
+		clock := holdReadClock(r)
 		implementer := implementAgain(r)
 		implementer.take()
 		implementer.disconnect()
 		stopTheTask(r)
+		if !testwait.Holds(stepRecordsWait, 20*time.Millisecond, func() bool { return readBoundsArmed(clock) == 0 }) {
+			t.Fatalf("%d bounds of a read stay armed after the stop, want none: a read of %s with no connection waits on no bound", readBoundsArmed(clock), implementer.token)
+		}
 		if read := r.waitEmptyRead(implementer.token, "no connection"); read.Waited != 0 {
-			t.Fatalf("the read of %s with no connection waited %s on the held clock, want 0: it failed at once", implementer.token, read.Waited)
+			t.Fatalf("the read of %s with no connection waited %s on the read's own held clock, want 0", implementer.token, read.Waited)
 		}
 		r.waitModels(r.key, 2, 2, stepModels{result: "stopped", setModel: stepRecordsModel, model: stepRecordsModel})
 	})
