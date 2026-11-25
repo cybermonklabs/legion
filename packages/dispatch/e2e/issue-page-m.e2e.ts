@@ -1,3 +1,7 @@
+/** the history reads the issue's event log and its live stream, the people rows read the fake
+ *  listener's subscriptions and Legion's record, and every row signs in for real with the new
+ *  page turned on by that login's stored preference */
+
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

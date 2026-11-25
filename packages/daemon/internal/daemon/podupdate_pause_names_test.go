@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -41,20 +40,17 @@ func holdInRuntime(t *testing.T) (hold func(context.Context) error, reached <-ch
 
 // heldStartUntilHeld runs the held start of role (heldStartRequest) where holdInRuntime's hold
 // stops the launch inside the runtime. The machine's handle of that start does not return while
-// the hold stands, so the start runs on its own goroutine, and its error is not read. It waits up
-// to 10 s for the launch to reach the runtime (reached, holdInRuntime's channel).
+// the hold stands, so the start runs on its own goroutine, and its error is not read. It waits for
+// the launch to reach the runtime (reached, holdInRuntime's channel) until the test binary's
+// deadline (testwait.Receive), so a launch a loaded machine makes slow is no failure.
 func (r *podUpdateRig) heldStartUntilHeld(role claim.Role, reached <-chan struct{}) {
 	r.t.Helper()
 	m, _ := r.sup.Machine(r.tokens[role])
 	start := r.heldStartRequest(role)
 	go func() {
-		_ = m.Handle(r.ctx, start)
+		_ = m.Handle(r.worker(), start)
 	}()
-	select {
-	case <-reached:
-	case <-time.After(10 * time.Second):
-		r.t.Fatalf("the %s's launch did not reach the runtime", role)
-	}
+	testwait.Receive(r.t, fmt.Sprintf("the %s's launch to reach the runtime", role), reached)
 }
 
 // scriptForgottenSession scripts the next launch of role to forget the role's session
