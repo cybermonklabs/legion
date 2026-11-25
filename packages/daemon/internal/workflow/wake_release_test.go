@@ -364,6 +364,85 @@ func TestAWakeDuringAReleaseIsAppliedAgain(t *testing.T) {
 		}
 	})
 
+	// (k2) The workspace check's first attempt fails, and the role stop of the same pass runs: the
+	// implementer's claim is suspended as `released` and recorded on the mark. A later attempt of
+	// the check declines the release, and the decline queues the stopped role's resume, as a
+	// cancel does (store.Store.DeclineIssueRelease). A wake report held while the release stood is
+	// applied at its next delivery after the decline: it counts the role as coming back on that
+	// queued start and takes no second start, as (c) does. One start in all. Its controls are the
+	// first delivery, made while the release stands, which is retried, and the first attempt's
+	// decline, which fails and leaves the mark standing, so the role stop still acts.
+	t.Run("(k2) a decline after a failed first check resumes the stopped role, and the wake it held takes no second start", func(t *testing.T) {
+		rig := newWakeRig(t)
+		st := releaseStore(t, rig.pool)
+		ctx := context.Background()
+		project := wakeProjectToken(t)
+		setClaimState(t, rig.pool, claim.RoleImplementer, "idle", "")
+		boundary := markRelease(t, st)
+
+		fact := intake.ListenerWake{Kind: intake.ListenerWakeAgent, Session: "session-implementer", At: wakeAt, Report: "report-agent"}
+		var later *intake.RetryLater
+		if err := applyWake(rig, "wake", fact); !errors.As(err, &later) {
+			t.Fatalf("applying the wake while the release stands = %v, want a retry", err)
+		}
+		resume := func(role claim.Role, generation uint64, _ store.DroppedWake) (store.IdleReleaseRow, error) {
+			row, err := record.NewOutboxRow("LEGION-208", record.SuperviseRequest{Op: "start", Tree: "LEGION-208",
+				Role: role, Generation: generation}, time.Now())
+			if err != nil {
+				return store.IdleReleaseRow{}, err
+			}
+			return store.IdleReleaseRow{Kind: string(row.Kind), Payload: row.Payload}, nil
+		}
+		decline := store.IdleReleaseDecline{At: time.Now(), Role: claim.RoleImplementer, Reason: pods.DeclineUnpushedWork,
+			Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", Commits: 1}
+
+		// The check's first attempt fails: its decline's transaction does not begin, so it writes
+		// nothing and the mark stands.
+		ended, cancel := context.WithCancel(ctx)
+		cancel()
+		if _, err := st.DeclineIssueRelease(ended, project, "LEGION-208", decline, resume, record.OutOfWorkflow,
+			store.ReleaseCancelPause{At: time.Now()}); err == nil {
+			t.Fatal("the first attempt's DeclineIssueRelease under an ended context = nil, want it to fail")
+		}
+		stop, err := st.IssueReleaseStop(ctx, project, "LEGION-208", boundary)
+		if err != nil || stop.Act != store.ReleaseActs {
+			t.Fatalf("the implementer's stop after the check's failed attempt = %s for %s, %v; want it to act: the mark stands",
+				stop.Act, stop.Cause, err)
+		}
+		stoppedByTheRelease(t, rig.pool, st, claim.RoleImplementer, boundary)
+
+		declined, err := st.DeclineIssueRelease(ctx, project, "LEGION-208", decline, resume, record.OutOfWorkflow,
+			store.ReleaseCancelPause{At: time.Now()})
+		if err != nil || !declined.Declined || !slices.Equal(declined.Resumed, []claim.Role{claim.RoleImplementer}) {
+			t.Fatalf("the later attempt's DeclineIssueRelease = %+v, %v; want the decline recorded and the stopped implementer's resume queued",
+				declined, err)
+		}
+		if starts := wakeStarts(t, rig.pool); len(starts) != 1 || starts[0] != (wakeStart{Role: claim.RoleImplementer}) {
+			t.Fatalf("supervise start rows after the decline = %+v, want the decline's one start of the implementer with no task", starts)
+		}
+
+		if err := applyWake(rig, "wake", fact); err != nil {
+			t.Fatalf("applying the held wake after the decline = %v, want it applied with no retry", err)
+		}
+		if !processedEvent(t, rig.pool, "wake") {
+			t.Fatal("the held wake is not recorded as applied after the decline, want it applied once")
+		}
+		if starts := wakeStarts(t, rig.pool); len(starts) != 1 || starts[0] != (wakeStart{Role: claim.RoleImplementer}) {
+			t.Fatalf("supervise start rows = %+v, want one start in all: the decline's start of the implementer with no task, and none of the wake", starts)
+		}
+		if resumes := wakeResumes(t, rig.pool); len(resumes) != 0 {
+			t.Fatalf("pod resumes = %v, want none: the pod never went away", resumes)
+		}
+		const coming = "wake: the role is coming back on a start already queued; this wake takes nothing"
+		if lines := loggedLines(rig, "INFO", coming); len(lines) != 1 || !strings.Contains(lines[0], "issue=LEGION-208") {
+			t.Fatalf("INFO lines %q = %q, want one naming LEGION-208; log:\n%s", coming, lines, rig.logged.String())
+		}
+		const dropped = "wake: a wake that came during a release was dropped"
+		if lines := loggedLines(rig, "WARN", dropped); len(lines) != 0 {
+			t.Fatalf("WARN lines %q = %q, want none: the decline ended the release, so the wake was not dropped", dropped, lines)
+		}
+	})
+
 	// (f) Fix B: a wake taken after the release recorded the implementer's claim as released,
 	// and before the release's teardown, does not cancel the release. The architect's stop and
 	// the teardown go on, the wake's start waits for the teardown in the issue's lifecycle lane,

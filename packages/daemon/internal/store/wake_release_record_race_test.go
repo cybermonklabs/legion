@@ -384,10 +384,10 @@ func TestADeliveryWakeTakesNothingWhileAReleaseMarkStands(t *testing.T) {
 }
 
 // A release's record of a wake that a project's pause holds (main's c7e1cbd5 in this pull
-// request). A pause starts no release, and a release that saved before the pause runs to its end
-// (IssueReleaseSave, decision 12 of dispatch://INFRA-3759). A wake of a role that release
-// recorded can then come while the project is paused, and it is a held wake of the pause
-// (PauseOfWake, decision 15), which pairs with no release
+// request). A pause starts no release, and a release whose workspace check ran before the pause
+// runs to its end (IssueReleaseCheck, decision 12 of dispatch://INFRA-3759). A wake of a role
+// that release recorded can then come while the project is paused, and it is a held wake of the
+// pause (PauseOfWake, decision 15), which pairs with no release
 // (pod_resumes_held_wake_pairs_with_no_release). The release's record points that wake at itself
 // as it points every wake taken under its mark, and keeps its release 0: its seen release becomes
 // the release, and its time and its stuck clock become the release's time. A record that set the

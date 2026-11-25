@@ -3609,8 +3609,10 @@ func (r *outbox) declineFor(issue string, role claim.Role, readAt time.Time, wor
 
 // declineRelease ends a release whose workspace check found work that no branch or tag on origin
 // holds on a working copy or a local bookmark (failed nil), or could not read the workspace
-// (failed, the read's error). The release is cancelled before any role stopped, so the pod stays
-// exactly as it was, and in the cancel's own transaction the store records the decline
+// (failed, the read's error). A decline at the check's first attempt cancels the release before any
+// role stopped, so the pod stays exactly as it was; where that attempt failed and the same pass's
+// role stop has run, a later attempt's decline queues each stopped role's resume, as a cancel does.
+// In the cancel's own transaction the store records the decline
 // (store.DeclineIssueRelease, declineFor), which the idle rule reads to keep the pod under that
 // reason with no new mark and no new read while it stands (pods.IdleDecline.Stands). So a pod that
 // keeps its work is asked once, and its role is told once: a read after a turn that finds the same

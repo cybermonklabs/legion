@@ -8050,7 +8050,7 @@ It waits in its outbox row, reads the role again every 30 seconds, and wakes the
 Such a message resumes the role inside the daemon, not through a start row, so nothing else keeps that resume out of the pod the teardown deletes.
 A wake of a role that the release did not stop still cancels the release, for example a role message to an architect that an earlier release left `released`.
 So do a phase start of any role of the pod and a claim of the pod that starts or holds a process again.
-A release can still be cancelled after such a wake, for another cause: a role stop that meets another role's start or a turn that started after the release's mark, or an issue that leaves the workflow.
+A release can still be cancelled after such a wake, for another cause: a role stop that meets another role's start or a turn that started after the release's mark, a later attempt of the workspace check that declines the release (below), or an issue that leaves the workflow.
 The pod then never goes away, so the cancel deletes the wake's resume and its queued start, and the role starts once, in the same pod.
 For a CI settlement or the backstop, that one start carries the wake's text under a preamble that says the release did not finish, because the role learns of either only from that text.
 For a message wake, the start carries no task, since the message itself reaches the session.
@@ -8062,6 +8062,9 @@ A wake report of the Envoy listener, for a role message or a session message, th
 The daemon applies such a report again every 30 seconds until the release ends, for at most 15 minutes after the report's own time.
 Once the release records the claim `released`, the report wakes the role.
 A report still waiting 15 minutes after its time is dropped with one warning, `wake: a wake that came during a release was dropped: the release did not end within 15 minutes of the report`.
+The workspace check's decline of the release (below) is a cancel, and it ends the release for this wait.
+A decline at the check's first attempt removes the mark before any role stops, so the held wake is applied at its next delivery, within 30 seconds, as a wake for a claim in no release, with no further retry and no drop line.
+When that first attempt fails and the same pass's role stop has already run, a later attempt that declines queues each stopped role's resume, as a cancel does, so the held wake counts that role as coming back and takes no second start.
 This wait and the wait of the daemon's own messages through a parked resume (the role topic bullet above) hold different things.
 A listener's report waits in the daemon's intake for a release that has not ended, and a message of the daemon's waits in its outbox row for a resume that the wake pacing holds, so no wake waits in both.
 Each woken role is given one task or message that names the wake, so an agent reads why its pod came back.
@@ -8085,7 +8088,7 @@ While a committed release has not finished, the whole workflow of its issue wait
 
 So a Kubernetes step that keeps failing after the commit, such as the delete of a role Secret or of the Sandbox, stops the issue.
 Fix the cluster first.
-When the runtime's step succeeds, the next attempt of the teardown finishes the release, the daemon logs `outbox: released the idle pod of an issue; its roles resume in the same sessions at the next wake`, and every row the release held runs.
+When the runtime's step succeeds, the next attempt of the teardown finishes the release, the daemon logs `outbox: released the idle pod of an issue, whose workspace held no unpushed commit on a working copy or a bookmark and no working-copy change; its roles resume in the same sessions at the next wake`, and every row the release held runs.
 A record of the release that the database keeps refusing stops the issue for at most 15 minutes after the mark, with no step by hand: the teardown then gives up on the record, logs the ERROR line that the steps of a release above name, and finishes.
 
 If the step cannot succeed, end the release by hand.
@@ -8137,11 +8140,13 @@ The wake task of a release and the plugin's recreated-workspace notice say so in
 The read's answer names the working-copy commit and the commits it found, and the daemon takes an answer only where each is 40 lowercase hexadecimal digits:
 the ids come from the pod's jj, and the daemon writes them into the hold record and the role's message.
 A read that finds work declines the release:
-the daemon cancels it before any role stops, so the pod stays as it was with the work in it, and the role the release read through
+the daemon cancels it, so the pod stays with the work in it, and the role the release read through
 — the worker of the issue's open phase where it is live, else the first live role
 — gets one Envoy message on its role topic naming the commits and the change and saying that the release waits for its push.
 The daemon pushes nothing on a role's behalf and keeps no copy of the workspace.
 A read that fails declines the release too, since it cannot show the workspace holds nothing, and tells nobody.
+A decline at the check's first attempt comes before any role stops.
+Where that attempt itself fails (the decline's write or the check's authorization does not complete), the role stop and the teardown of the same pass go on, the teardown waits until the check has left the outbox, and a later attempt that declines queues each stopped role's resume, as a cancel does (the wait of a listener's wake report, above).
 The decline is recorded in `idle_release_declines` in the cancel's own transaction, with the hold `unpushed_work` or `workspace_unread`, the work the read found and the pod it read.
 While it stands, every idle pass holds the pod under that reason and marks no release, writes no outbox row, asks no shim and sends no second message.
 It ends when a role of the issue starts a turn after the last read began (`claims.last_turn_start` against `checked_at`, so a turn that starts while the read runs counts), when a role process is started again, or when the runtime holds another pod for the issue than the one the read was made in (a relaunch that rebuilt the pod);

@@ -390,9 +390,12 @@ type Written struct {
 // or failed in any other way, deletes nothing, since what it sent can still land, and leaves its
 // chunks to the store's collection, as a crash does. head's other errors are returned as they are.
 // Each call waits no longer than ctx (bus.Bounded), and waits within it for kv's connection while
-// nats.go reconnects it, so a call ctx ends in that wait was never sent. now is the store's clock,
-// and WriteBound is read off its wall time, so a host that slept between the chunks and the head
-// counts the sleep.
+// nats.go reconnects it, so a call ctx ends in that wait was never sent. The read of the server's
+// max payload that lays the record out is one of those calls: it takes nats.go's connection lock
+// (bus.KeyValue.MaxPayload), which nats.go holds through a reconnect's handshake, so a write begun
+// during a handshake that ctx ends first sends nothing and answers the error Bounded gives, which
+// names the reconnect. now is the store's clock, and WriteBound is read off its wall time, so a
+// host that slept between the chunks and the head counts the sleep.
 // what names the record in the line a chunk left behind logs (Delete).
 //
 // view is the store's view of the record for a reader that does not join chunks - an earlier
@@ -405,7 +408,11 @@ func Write(ctx context.Context, kv bus.KeyValue, key string, record []byte, view
 	if IsChunkKey(key) {
 		return Written{}, ReservedKey(key)
 	}
-	value, layout, chunks, err := layOut(record, kv.MaxPayload(), view)
+	maxPayload, answered, err := bus.Bounded(ctx, kv.Conn(), func() (int, error) { return kv.MaxPayload(), nil })
+	if !answered {
+		return Written{}, fmt.Errorf("write the %s %s: read the server's max payload: %w", what, key, err)
+	}
+	value, layout, chunks, err := layOut(record, maxPayload, view)
 	if err != nil {
 		return Written{}, fmt.Errorf("write the %s %s of %d bytes: %w", what, key, len(record), err)
 	}

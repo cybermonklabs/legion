@@ -1252,9 +1252,10 @@ func rootClaim(t *testing.T, st *Store, role claim.Role, state supervise.ClaimSt
 }
 
 // releaseTwoRolesThroughTheStore marks a release of the root's pod as the idle tick does, over
-// two live roles: the save, the implementer's stop as the boundary, the architect's stop and the
-// teardown, in one transaction. The save has run, so its row is gone, as the lane deletes a row
-// it finished. It answers the boundary, the architect's stop and the teardown.
+// two live roles: the workspace check (its row's kind keeps the name issue_bundle), the
+// implementer's stop as the boundary, the architect's stop and the teardown, in one transaction.
+// The check has run, so its row is gone, as the lane deletes a row it finished. It answers the
+// boundary, the architect's stop and the teardown.
 func releaseTwoRolesThroughTheStore(t *testing.T, st *Store) (boundary, stop, last int64) {
 	t.Helper()
 	ctx := context.Background()
@@ -1278,7 +1279,7 @@ func releaseTwoRolesThroughTheStore(t *testing.T, st *Store) (boundary, stop, la
 		t.Fatalf("read the architect's stop: %v", err)
 	}
 	if _, err := st.Pool().Exec(ctx, `delete from outbox where issue = $1 and kind = 'issue_bundle'`, rootIssue); err != nil {
-		t.Fatalf("finish the release's save: %v", err)
+		t.Fatalf("finish the release's workspace check: %v", err)
 	}
 	return boundary, stop, last
 }

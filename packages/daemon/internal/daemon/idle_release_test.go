@@ -429,7 +429,7 @@ func (r *idleRig) releasedArchitect(t *testing.T) *supervise.Machine {
 }
 
 // A release's record tells a held wake the release's words (dispatch://INFRA-3589, R3). A release
-// that saved its workspace before the project's pause runs to its end. The CI settlement woke the
+// whose workspace check ran before the project's pause runs to its end. The CI settlement woke the
 // implementer while the project is paused, after the release recorded the claim, so the wake is a
 // held wake of the pause. Where the pause's stop of the role ran before the release's stop, the
 // wake reads the pause as what stopped the role, and its start carries the pause's words, which

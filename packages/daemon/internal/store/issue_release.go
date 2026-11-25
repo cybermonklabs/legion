@@ -259,7 +259,7 @@ func (m releaseMark) roles() []claim.Role {
 func (m releaseMark) suspendsNoRole() bool { return m.kind == releaseKindUnowned }
 
 // releaseOvertaken is whether the pod was woken or went on working after its release was marked,
-// which is what cancels the release. Four things say it was:
+// which is what cancels the release. Five things say it was:
 //
 //   - a wake of the pod taken since the mark for a role outside the mark's suspended set: a
 //     pod_resumes row above the mark's own (TakePodWake writes one in the wake's own transaction)
@@ -287,10 +287,10 @@ func (m releaseMark) suspendsNoRole() bool { return m.kind == releaseKindUnowned
 // runs to its end. The wake's `start` waits for the teardown (record's outboxInOrder) and starts
 // the role once, in the pod that comes back, and the release's record points the wake's resume
 // at this release (RecordPodRelease). The outbox's delivery wake takes no wake at all while the
-// mark stands, of a role in the set or of any other (TakeDeliveryWake). The three claims clauses
-// still read every role of the set, because a claim that started, holds a process or is no
-// longer suspended as `released` is a process that really runs — after an operator's resume,
-// for example — and the pod must not go from under it.
+// mark stands, of a role in the set or of any other (TakeDeliveryWake). The four claims clauses
+// still read every role of the set, because a claim that started, started a turn, holds a process
+// or is no longer suspended as `released` is a process that really runs — after an operator's
+// resume, for example — and the pod must not go from under it.
 //
 // A claim the release itself suspended and still holds is none of those, so the release's own
 // stops never read as work.
