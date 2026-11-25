@@ -30,7 +30,7 @@ import { type FailedRead, NO_FAILED_READS } from "./outline-reads";
 import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
 import { threadMarks } from "./outline-thread-read";
 import { conversationItem, useOutlineWriter } from "./outline-writer";
-import { authorText, pageChrome } from "./page-structure";
+import { authorText, KEY_REPORTS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, NODE_TYPE_NAMES, nodeStateWord } from "./page-words";
 import { type Press, trackPress, usePressFocus } from "./press-focus";
 import { FAILED_READ_RETRY, FailedReadLine } from "./slots/failed-read-line";
@@ -47,10 +47,10 @@ import {
   withNextPage,
   zoomBreadcrumb,
 } from "./tree-fold";
-import { nodesInOrder, rowKeyOf } from "./tree-keys";
-import type { OlderComments } from "./tree-read/tree-read";
+import { decisionBehind, nextQuestion, nodesInOrder, rowKeyOf } from "./tree-keys";
+import type { NextTreePage, OlderComments } from "./tree-read/tree-read";
 import { abortOnReaderAct, type OnEditing, useNodeEditing } from "./useNodeEditing";
-import { moveToRow, useTreeKeymap } from "./useTreeKeymap";
+import { moveToRow, type TreeSearch, useTreeKeymap } from "./useTreeKeymap";
 
 /**
  * The issue's body: one tree of its nodes, every node of it unfolded and whole (R11).
@@ -96,7 +96,8 @@ import { moveToRow, useTreeKeymap } from "./useTreeKeymap";
  * a link that zooms out to it, and `,` zooms back out one level. A node draws its first 50
  * children and a row that draws the next 50, and the node an address, the focus or a write names
  * is drawn with every child before it; while the outline read answers older comments, a control
- * above the first row under the issue reads the next page of them (R15, `older`).
+ * above the first row under the issue reads the next page of them, and while it answers a next
+ * page, a control after the last row reads that page (R15, `older`, `more`).
  */
 export function IssueTree({
   addressActs,
@@ -109,6 +110,7 @@ export function IssueTree({
   holdsEscape,
   isClosed,
   landingReport,
+  more,
   older,
   onEditing,
   readsHeld = true,
@@ -162,6 +164,11 @@ export function IssueTree({
    *  the address names is the agents' alone, where the outline draws no row for that turn and
    *  `reveal` is the chain to its nearest drawn ancestor (`slots/body.tsx`). */
   landingReport?: string;
+  /** The outline read's next page (`tree-read/tree-read.ts`' `useNextTreePage`): while its answer
+   *  names one, a control after the outline's last row says how many nodes the read holds after
+   *  the pages read and reads the next, and `j` or Down on the last row presses it, the focus going
+   *  to the first row it drew either way (R15). Absent for a tree that reads none. */
+  more?: NextTreePage;
   /** The outline read's older comments (`tree-read/tree-read.ts`' `useOlderComments`): while
    *  they remain, a control above the outline's first row under the issue reads the next page
    *  of them, and `k` or Up on that row presses it (R15). Absent for a tree that reads none, and
@@ -577,12 +584,13 @@ export function IssueTree({
   }, [unfoldedAll]);
 
   // The controls that draw more of the outline in place (R15): the row after a node's drawn
-  // children, and, while the outline read answers older comments and the tree is drawn from the
-  // issue, the control above its first row. A press of either replaces it with what it drew and
-  // moves no focus (`TreeRows.tsx`'s `PageControl`); a key's press leaves the focus on the first
-  // row it drew (`drawnFrom`). A page of children names that row at once. The older comments
-  // name the rows drawn before the press, and the first row a read draws after it that none of
-  // them is takes the focus, until the reader's next act (`olderActs`).
+  // children; while the outline read answers older comments and the tree is drawn from the
+  // issue, the control above its first row; and while it answers a next page, the control after
+  // its last row. A press of the first two replaces it with what it drew and moves no focus
+  // (`TreeRows.tsx`'s `PageControl`); a key's press, and any press of the last, leaves the focus
+  // on the first row it drew (`drawnFrom`). A page of children names that row at once. A read
+  // names the rows drawn before the press, and the first row it draws after it that none of them
+  // is takes the focus, until the reader's next act (`olderActs`).
   const olderAbove = older?.remain === true && zoomRoot === undefined ? older : undefined;
   const [drawnFrom, setDrawnFrom] = useState<
     { readonly key: string } | { readonly before: ReadonlySet<string> }
@@ -596,18 +604,27 @@ export function IssueTree({
     const trail = [...page.trail, page.of.id];
     setDrawnFrom({ key: rowKeyOf({ kind: "node", level: page.level, node: next, trail }) });
   };
+  // The rows drawn now, so the first row a read draws after them takes the focus.
+  const focusFirstRead = (): void => {
+    olderActs.current?.abort();
+    olderActs.current = abortOnReaderAct(() => setDrawnFrom(undefined));
+    setDrawnFrom({
+      before: new Set(rows.flatMap((row) => (row.kind === "node" ? [rowKeyOf(row)] : []))),
+    });
+  };
   const readOlder = (focus: boolean): void => {
     if (olderAbove === undefined) return;
-    if (focus) {
-      olderActs.current?.abort();
-      olderActs.current = abortOnReaderAct(() => setDrawnFrom(undefined));
-      setDrawnFrom({
-        before: new Set(rows.flatMap((row) => (row.kind === "node" ? [rowKeyOf(row)] : []))),
-      });
-    }
+    if (focus) focusFirstRead();
     // A refused page leaves the answer as it was, and the control stays for another press
     // (`readOlderComments`); the focus it was to give goes with the reader's next act.
     olderAbove.read().catch(() => undefined);
+  };
+  const readMore = (): void => {
+    if (more === undefined) return;
+    focusFirstRead();
+    // A refused page, or one that names a cursor the read asked for already, leaves the answer as
+    // it was (`readNextTreePage`); the focus it was to give goes with the reader's next act.
+    more.read().catch(() => undefined);
   };
   useEffect(() => {
     if (drawnFrom === undefined) return;
@@ -626,6 +643,44 @@ export function IssueTree({
     olderActs.current?.abort();
     if (row != null) moveToRow(row);
   }, [drawnFrom, rows]);
+
+  // A `q` or `w` press whose target no page read yet holds: reads the next pages until one brings
+  // it and lands on it, or reports none once no page is left (R15). The reader's next act ends it.
+  const [searching, setSearching] = useState<TreeSearch | undefined>(undefined);
+  const searchActs = useRef<AbortController | undefined>(undefined);
+  useEffect(() => () => searchActs.current?.abort(), []);
+  const startSearch = useCallback((search: TreeSearch) => {
+    searchActs.current?.abort();
+    searchActs.current = abortOnReaderAct(() => setSearching(undefined));
+    setSearching(search);
+  }, []);
+  useEffect(() => {
+    if (searching === undefined) return;
+    const found =
+      searching.kind === "question"
+        ? nextQuestion(root, searching.from)
+        : decisionBehind(root, searching.from);
+    if (found !== undefined) {
+      searchActs.current?.abort();
+      setSearching(undefined);
+      goToNode(found.id);
+      return;
+    }
+    if (more === undefined) {
+      searchActs.current?.abort();
+      setSearching(undefined);
+      if (readsHeld) {
+        reportHere(
+          searching.kind === "question" ? KEY_REPORTS.no_next_question : KEY_REPORTS.no_decision
+        );
+      }
+      return;
+    }
+    more.read().catch(() => {
+      searchActs.current?.abort();
+      setSearching(undefined);
+    });
+  }, [goToNode, more, readsHeld, reportHere, root, searching]);
 
   // The Contents list's asks, each acted on once. With Focus branch on, the outline is zoomed to
   // the node, which is then the tree's first row and takes the focus; turned off, the zoom is
@@ -671,10 +726,12 @@ export function IssueTree({
     onEdit: edit,
     onEditEnd: stopEditing,
     onFold: unfold,
+    ...(more === undefined ? {} : { onMore: readMore }),
     ...(olderAbove === undefined ? {} : { onOlder: () => readOlder(true) }),
     onPage: (page) => drawPage(page, true),
     onReport: reportHere,
     onReveal: goToNode,
+    ...(more === undefined ? {} : { onSearch: startSearch }),
     onZoom: zoomTo,
     readsHeld,
     rows,
@@ -1200,7 +1257,9 @@ export function IssueTree({
             context={context}
             editing={editing}
             focused={focused}
+            foldedMore={root.moreToRead === true}
             isClosed={isClosed}
+            {...(more === undefined ? {} : { more: { left: more.left, onPress: readMore } })}
             onFocus={(row, node) => press.focus({ node, row })}
             {...(olderAbove === undefined ? {} : { onOlder: () => readOlder(false) })}
             onPage={(page) => drawPage(page, false)}

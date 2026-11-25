@@ -71,6 +71,10 @@ export interface TreeKeyboard {
   readonly onEditEnd: () => void;
   /** Opens or closes one branch. */
   readonly onFold: (id: string, open: boolean) => void;
+  /** Reads the read's next page, as the control after the last row does, and puts the focus on
+   *  the first row it drew: what `j` and Down on the last row do while that control is drawn and
+   *  no row that pages a node's children follows that row. Undefined where it is not drawn. */
+  readonly onMore?: () => void;
   /** Reads the next page of the outline read's older comments, as the control above the first
    *  row does, and puts the focus on the first row it drew: what `k` and Up on the first row do
    *  while that control is drawn. Undefined where it is not. */
@@ -88,6 +92,10 @@ export interface TreeKeyboard {
   readonly onReport: (line: string) => void;
   /** Unfolds the path down to one node and puts the focus on it. */
   readonly onReveal: (id: string) => void;
+  /** Reads the read's next pages until a node `q` or `w` looks for is loaded, and lands on it, or
+   *  reports none once no page is left: called where the loaded pages hold no such node and the
+   *  read still names a next page. Undefined where no next page remains. */
+  readonly onSearch?: (search: TreeSearch) => void;
   /** Roots the tree at one node; the issue's own id is the whole tree. */
   readonly onZoom: (id: string) => void;
   /** Whether every read the tree is built from holds its answer (`slots/body.tsx`). Until then
@@ -107,6 +115,11 @@ export interface TreeKeyboard {
    *  undefined only for a tree drawn with no such provider above it. */
   readonly writer: OutlineWriter | undefined;
 }
+
+/** What `q` or `w` looks for past the pages loaded (`TreeKeyboard.onSearch`). */
+export type TreeSearch =
+  | { readonly from: string | undefined; readonly kind: "question" }
+  | { readonly from: string; readonly kind: "decision" };
 
 /** One row of the tree that stands for a node. The row that pages a node's children stands for
  *  no node and takes no focus: `j` and Down on the row above it press it (`tree-next`). */
@@ -334,6 +347,13 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         if (page !== undefined && tree.onPage !== undefined) {
           tree.onReport("");
           tree.onPage(page);
+          return;
+        }
+        // The control after the last row reads the read's next page from it: its rows are drawn
+        // where the read's order puts them, and the focus goes to the first row it drew.
+        if (on !== -1 && on === elements.length - 1 && tree.onMore !== undefined) {
+          tree.onReport("");
+          tree.onMore();
           return;
         }
         moveTo(on === -1 ? 0 : on + 1, KEY_REPORTS.last_row);
@@ -568,8 +588,14 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       keys: "q",
       label: "Move to the next open question",
       run: () => {
-        const question = nextQuestion(tree.root, focusedRow()?.node.id);
+        const from = focusedRow()?.node.id;
+        const question = nextQuestion(tree.root, from);
         if (question === undefined) {
+          if (tree.onSearch !== undefined) {
+            tree.onReport("");
+            tree.onSearch({ from, kind: "question" });
+            return;
+          }
           tree.onReport(tree.readsHeld ? KEY_REPORTS.no_next_question : "");
           return;
         }
@@ -585,6 +611,11 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         const node = focusedRow()?.node;
         const decision = node === undefined ? undefined : decisionBehind(tree.root, node.id);
         if (decision === undefined) {
+          if (node !== undefined && tree.onSearch !== undefined) {
+            tree.onReport("");
+            tree.onSearch({ from: node.id, kind: "decision" });
+            return;
+          }
           tree.onReport(tree.readsHeld ? KEY_REPORTS.no_decision : "");
           return;
         }

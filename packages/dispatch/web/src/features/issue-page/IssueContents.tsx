@@ -227,7 +227,9 @@ export function ContentsList({
   const box = useOneLineBox(list);
   // What each row draws of its entry - its words, their cut and its marks - read again only
   // when what they are read from changes: the list is drawn again on every move of the focus in
-  // the outline (`useFocusedNode`), and a cut measures its words on a canvas.
+  // the outline (`useFocusedNode`), and a cut measures its words on a canvas. Each mark's count is
+  // of the nodes loaded, and carries "+" while the read holds nodes no page read yet holds (R15).
+  const plus = root.moreToRead === true ? "+" : "";
   const drawn = useMemo(
     () =>
       rows.map(({ depth, entry }) => {
@@ -253,7 +255,7 @@ export function ContentsList({
                   (total === 0 ? ROW.gap : ROW.markGap) +
                   ROW.markGlyph +
                   ROW.markInner +
-                  box.widthOf(String(entry.marks[mark]), MARK_TEXT_REM, 600),
+                  box.widthOf(`${entry.marks[mark]}${plus}`, MARK_TEXT_REM, 600),
                 0
               );
         // Every other part of the row counts before the line and none after it: where they
@@ -277,7 +279,7 @@ export function ContentsList({
         const drawnWords = references.named(drawnLine(line));
         return { drawnWords, indent, isCurrent, line, marks, unnamed };
       }),
-    [box, current, nameOf, rows]
+    [box, current, nameOf, plus, rows]
   );
   // The list's one tab stop, always on a drawn row, so Tab never skips the list: the row the
   // reader last moved to, else the nearest drawn entry at or above the entry they are in - a
@@ -465,7 +467,10 @@ export function ContentsList({
                       <span aria-hidden="true" className="inline-flex">
                         <NodeGlyph className="size-3 shrink-0" token={glyph} />
                       </span>
-                      <span {...authorText}>{entry.marks[mark]}</span>
+                      <span {...authorText}>
+                        {entry.marks[mark]}
+                        {plus}
+                      </span>
                       <span className="sr-only" {...pageChrome}>
                         {CONTENTS_MARK_WORDS[mark]}
                       </span>

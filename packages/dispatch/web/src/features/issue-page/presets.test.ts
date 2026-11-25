@@ -306,6 +306,35 @@ test("each filter's signal is its count, with what of it asks something of the r
   expect(filterSignals(issue(), "b-t2").plan.count).toBe(1);
 });
 
+// R15: a count the page draws over the outline or a view counts the nodes loaded, and carries "+"
+// while the read it is read from names a next page, since the page's `remaining` is not split by
+// filter: a count read off the tree by the outline read's mark on the issue, and a held view's
+// count, and the root the view draws, by that view's own read, whatever the outline read says.
+// Once no page is left, no count carries it.
+test("a count carries + while a cursor remains", () => {
+  expect(filterSignals({ ...issue(), moreToRead: true }, "")).toEqual({
+    decisions: { count: 4, flag: { count: 1, word: "to_review" }, more: true },
+    plan: { count: 2, more: true, unit: "steps" },
+    spec: { count: 2, more: true },
+    verification: { count: 1, flag: { count: 1, word: "failing" }, more: true },
+  });
+  const paged = treeAnswer([viewNode("t1", "plan_task", "query")], [], {
+    converted: true,
+    cursor: "page-2",
+    view: "plan",
+  });
+  const whole: TreeAnswer = { ...paged, cursor: null };
+  const outlineDone = { ...issue(), views: { plan: paged } };
+  expect(filterSignals(outlineDone, "").plan).toEqual({ count: 1, more: true, unit: "steps" });
+  expect(filterSignals(outlineDone, "").spec).toEqual({ count: 2 });
+  expect(presetView(outlineDone, "plan", "").root.moreToRead).toBe(true);
+  const viewDone = { ...issue(), moreToRead: true as const, views: { plan: whole } };
+  expect(filterSignals(viewDone, "").plan).toEqual({ count: 1, unit: "steps" });
+  expect(presetView(viewDone, "plan", "").root.moreToRead).toBeUndefined();
+  expect(presetView(viewDone, "conversation", "").root.moreToRead).toBe(true);
+  expect(filterSignals(issue(), "").spec).toEqual({ count: 2 });
+});
+
 // R35: "to review" counts the review list alone. A decision that waits and is tied to no
 // statement keeps its state word and is in no count of what waits on the reader.
 test("a waiting decision outside the review list is not counted as to review", () => {

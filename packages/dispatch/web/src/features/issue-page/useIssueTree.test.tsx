@@ -75,6 +75,7 @@ import {
 } from "./reference-names";
 import { BodySlot } from "./slots/body";
 import { ProvidersSlot } from "./slots/providers";
+import { nodeRowSelectorOf } from "./tree-focus";
 import { nodesInOrder } from "./tree-keys";
 import {
   commentNode,
@@ -85,6 +86,7 @@ import {
 } from "./tree-read/tree-fixtures";
 import {
   dropViews,
+  readNextTreePage,
   readOlderComments,
   subscribeTreeFreshness,
   type TreeAnswer,
@@ -1401,45 +1403,52 @@ test("a remount after 30 s sends no read", async () => {
   }
 });
 
-// The tree read holds data once every page of it holds data - the pages are read in turn and
-// answered merged - so neither the tree nor a role's blocks are drawn from the first page alone;
-// and a refetch whose last page fails keeps every page held, and the plan's task on the second
-// page with them.
-test("blocksHeld holds while every page holds data", async () => {
-  const secondOut = Promise.withResolvers<void>();
+/** `page` as the server answers it where the read goes on past it: the `cursor` that names the
+ *  next page, and how many nodes the read holds after this one (`remaining`), which the server
+ *  answers beside the cursor and the generated contract does not name yet. */
+function pagedAnswer(page: TreeAnswer, cursor: string | null, remaining?: number): TreeAnswer {
+  const count = remaining === undefined ? {} : { remaining };
+  return { ...page, cursor, ...count };
+}
+
+// R5, R15: the tree read holds data once its first page does: the load reads that page alone,
+// though it names a next one, and the tree and a role's blocks are drawn from it. The reader's
+// press reads the next page, and a refetch then reads both pages again, so one whose second page
+// fails keeps both held, and the plan's task on the second page with them.
+test("blocksHeld holds once the first page holds data", async () => {
   const stubs = stubTreeReads(async (refs) => namedTargets(refs));
   // The tree read's two pages: the issue's own node, then the plan's task.
   const whole = treeAnswer([]);
-  const firstPage: TreeAnswer = {
-    ...whole,
-    cursor: "page-2",
-    nodes: (whole.nodes ?? []).slice(0, 1),
-  };
+  const firstPage = pagedAnswer({ ...whole, nodes: (whole.nodes ?? []).slice(0, 1) }, "page-2", 1);
   const secondPage: TreeAnswer = { ...whole, nodes: (whole.nodes ?? []).slice(1) };
-  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async (_key, query) => {
-    if (query?.cursor === undefined) return firstPage;
-    await secondOut.promise;
-    return secondPage;
-  });
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async (_key, query) =>
+    query?.cursor === undefined ? firstPage : secondPage
+  );
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
     <RoutedQueries client={client}>{children}</RoutedQueries>
   );
   try {
     const view = renderHook(() => useIssueTree(issue), { wrapper });
-    await waitFor(() => expect(api.getIssueTree).toHaveBeenCalledTimes(2));
-    expect(view.result.current.blocksHeld).toBe(false);
-    expect(view.result.current.blocksOf("plan").data).toBeUndefined();
-
-    await act(async () => {
-      secondOut.resolve();
-      await secondOut.promise;
-    });
     await waitFor(() => expect(view.result.current.blocksHeld).toBe(true));
     expect(view.result.current.blocksRead).toBe(true);
-    expect(view.result.current.blocksOf("plan").data?.map((block) => block.id)).toEqual(["t1"]);
+    expect(view.result.current.blocksOf("plan").data).toEqual([]);
+    expect(view.result.current.root.moreToRead).toBe(true);
+    await act(async () => {
+      await Bun.sleep(50);
+    });
+    expect(api.getIssueTree, "the load reads no next page").toHaveBeenCalledTimes(1);
 
-    // The tree is read again, and its second page fails.
+    // The reader's press reads the second page.
+    await act(async () => {
+      await readNextTreePage(client, KEY, "conversation");
+    });
+    await waitFor(() =>
+      expect(view.result.current.blocksOf("plan").data?.map((block) => block.id)).toEqual(["t1"])
+    );
+    expect(view.result.current.root.moreToRead).toBeUndefined();
+
+    // The tree is read again, with the page the press loaded, and its second page fails.
     (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async (_key, query) => {
       if (query?.cursor === undefined) return firstPage;
       throw new Error("the second page failed");
@@ -1448,20 +1457,28 @@ test("blocksHeld holds while every page holds data", async () => {
       await client.refetchQueries({ exact: true, queryKey: conversationTreeKey(KEY) });
     });
     await waitFor(() => expect(view.result.current.blocksRead).toBe(false));
+    expect(api.getIssueTree).toHaveBeenCalledTimes(4);
     expect(view.result.current.blocksHeld).toBe(true);
     expect(view.result.current.blocksOf("plan").data?.map((block) => block.id)).toEqual(["t1"]);
     view.unmount();
   } finally {
-    secondOut.resolve();
     for (const stub of stubs) stub.mockRestore();
   }
 });
 
-// A refresh whose walk meets a cursor the server named already fails, as one whose page fails
-// does (`readTree`), and never answers the pages it read as the whole tree: the outline that
-// holds an answer keeps it, and draws no failed-read line, which is for a read that holds none.
+// A refresh reads again the pages the reader loaded, and where its walk meets a cursor the server
+// named already it fails, as one whose page fails does (`readTree`), and never answers the pages
+// it read as the tree: the outline that holds an answer keeps it, and draws no failed-read line,
+// which is for a read that holds none.
 test("a refresh whose walk meets a cursor named twice keeps the answer the outline holds", async () => {
   const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  // The tree's first page, the issue and the task, names a second, the comment.
+  const whole = treeAnswer([comment]);
+  const nodes = whole.nodes ?? [];
+  const firstPage = pagedAnswer({ ...whole, nodes: nodes.slice(0, 2) }, "page-2", 1);
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async (_key, query) =>
+    query?.cursor === undefined ? firstPage : pagedAnswer({ ...whole, nodes: nodes.slice(2) }, null)
+  );
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
     <RoutedQueries client={client}>{children}</RoutedQueries>
@@ -1469,33 +1486,149 @@ test("a refresh whose walk meets a cursor named twice keeps the answer the outli
   try {
     const view = renderHook(() => useIssueTree(issue), { wrapper });
     await waitFor(() => expect(view.result.current.blocksRead).toBe(true));
-    expect(taskWords(view.result.current.root)).toBe(TASK_WORDS);
+    await act(async () => {
+      await readNextTreePage(client, KEY, "conversation");
+    });
+    await waitFor(() => expect(holdsComment(view.result.current.root)).toBe(true));
 
-    // The tree is read again: its first page, the issue and the task, names a second, the
-    // comment, and that page names the second page again.
-    const whole = treeAnswer([comment]);
-    const nodes = whole.nodes ?? [];
-    (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async (_key, query) => ({
-      ...whole,
-      cursor: "page-2",
-      nodes: query?.cursor === undefined ? nodes.slice(0, 2) : nodes.slice(2),
-    }));
+    // The tree is read again: its second page now names the second page again.
+    (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async (_key, query) =>
+      query?.cursor === undefined
+        ? firstPage
+        : pagedAnswer({ ...whole, nodes: nodes.slice(2) }, "page-2", 1)
+    );
     await act(async () => {
       await client.refetchQueries({ exact: true, queryKey: conversationTreeKey(KEY) });
     });
     await waitFor(() => expect(view.result.current.blocksRead).toBe(false));
-    expect(api.getIssueTree).toHaveBeenCalledTimes(3);
+    expect(api.getIssueTree).toHaveBeenCalledTimes(4);
     expect(client.getQueryState(conversationTreeKey(KEY))?.error?.message).toContain(
       'the cursor "page-2" twice'
     );
     expect(view.result.current.failed).toBe(false);
     expect(view.result.current.blocksHeld).toBe(true);
-    const rows = nodesInOrder(view.result.current.root);
     expect(taskWords(view.result.current.root)).toBe(TASK_WORDS);
-    expect(rows.some((node) => node.id === comment.id)).toBe(false);
+    expect(holdsComment(view.result.current.root)).toBe(true);
     view.unmount();
   } finally {
     for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+/** The outline's row of the node `id` the body draws, or null where it draws none. */
+function outlineRowOf(id: string): HTMLElement | null {
+  return document.body.querySelector<HTMLElement>(nodeRowSelectorOf(id));
+}
+
+/** The control after the outline's last row that reads the read's next page, or null. */
+function moreControl(): HTMLButtonElement | null {
+  return document.body.querySelector<HTMLButtonElement>("[data-tree-more] button");
+}
+
+// R15: while the outline read's answer names a next page, a control follows the outline's last
+// row and says how many nodes the read holds after the pages read, the page's `remaining`, by
+// its count and the words that agree with it. A press reads the next page, its rows are drawn
+// where the read's order puts them, and the focus goes to the first row it drew; once no page is
+// left the control goes.
+test("the more control says the page's remaining count", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const later: Comment = {
+    ...comment,
+    body: "A later turn of the conversation.",
+    created_at: "2026-11-06T00:00:00Z",
+    id: "comment-2",
+  };
+  const last: Comment = { ...later, created_at: "2026-11-07T00:00:00Z", id: "comment-3" };
+  const whole = treeAnswer([comment, later, last]);
+  const nodes = whole.nodes ?? [];
+  const pages: Readonly<Record<string, TreeAnswer>> = {
+    first: pagedAnswer({ ...whole, nodes: nodes.slice(0, 3) }, "page-2", 1240),
+    "page-2": pagedAnswer({ ...whole, nodes: nodes.slice(3, 4) }, "page-3", 1),
+    "page-3": pagedAnswer({ ...whole, nodes: nodes.slice(4) }, null),
+  };
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(
+    async (_key, query) => pages[query?.cursor ?? "first"] ?? pages.first
+  );
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    const view = renderHook(() => useIssueTree(issue), { wrapper: bodyWrapper(client) });
+    await waitFor(() => expect(moreControl()?.textContent).toBe("1,240 more rows to load"));
+    expect(moreControl()?.textContent).toBe(`1,240 ${CONTROL_LABELS.tree_page_rows}`);
+    expect(outlineRowOf(later.id)).toBeNull();
+
+    await act(async () => {
+      moreControl()?.click();
+    });
+    await waitFor(() =>
+      expect(moreControl()?.textContent).toBe(`1 ${CONTROL_LABELS.tree_page_row}`)
+    );
+    await waitFor(() => expect(document.activeElement).toBe(outlineRowOf(later.id)));
+
+    await act(async () => {
+      moreControl()?.click();
+    });
+    await waitFor(() => expect(outlineRowOf(last.id)).not.toBeNull());
+    expect(moreControl(), "no control once no page is left").toBeNull();
+    expect(
+      (api.getIssueTree as Mock<typeof api.getIssueTree>).mock.calls.map(
+        ([, query]) => query?.cursor
+      )
+    ).toEqual([undefined, "page-2", "page-3"]);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// R15: an address that names a node no page read yet holds - a comment past the first page -
+// reads the read's next pages until one brings it, and no page after it, and then lands on it as
+// on a node the first page held: its row is drawn with the focus on it, and the item's own read,
+// which the page reads where the tree holds no node of the item, is never sent.
+test("an address of a node past the first page reads pages until it is loaded", async () => {
+  const later: Comment = {
+    ...comment,
+    body: "A later turn of the conversation.",
+    created_at: "2026-11-06T00:00:00Z",
+    id: "comment-2",
+  };
+  const last: Comment = { ...later, created_at: "2026-11-07T00:00:00Z", id: "comment-3" };
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs), {
+    comments: [comment, later, last],
+  });
+  const whole = treeAnswer([comment, later, last]);
+  const nodes = whole.nodes ?? [];
+  const pages: Readonly<Record<string, TreeAnswer>> = {
+    first: pagedAnswer({ ...whole, nodes: nodes.slice(0, 3) }, "page-2", 2),
+    "page-2": pagedAnswer({ ...whole, nodes: nodes.slice(3, 4) }, "page-3", 1),
+    "page-3": pagedAnswer({ ...whole, nodes: nodes.slice(4) }, null),
+  };
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(
+    async (_key, query) => pages[query?.cursor ?? "first"] ?? pages.first
+  );
+  const item = spyOn(api, "getComment").mockRejectedValue(new Error("no item read is sent"));
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    const view = renderHook(() => useIssueTree(issue), {
+      wrapper: bodyWrapper(client, `/issues/${KEY}?comment=${later.id}`),
+    });
+    await waitFor(() => expect(outlineRowOf(later.id)).not.toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(outlineRowOf(later.id)));
+    await act(async () => {
+      await Bun.sleep(100);
+    });
+    expect(
+      (api.getIssueTree as Mock<typeof api.getIssueTree>).mock.calls.map(
+        ([, query]) => query?.cursor
+      )
+    ).toEqual([undefined, "page-2"]);
+    expect(outlineRowOf(last.id), "no page past the node is read").toBeNull();
+    expect(item).not.toHaveBeenCalled();
+    view.unmount();
+  } finally {
+    item.mockRestore();
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
   }
 });
 
@@ -2702,11 +2835,12 @@ test("a Retry of a refused tree read keeps the focus off the page's body while t
   }
 });
 
-/** The page's body as the stage draws it, around the hook a case reads the tree's state by. */
-function bodyWrapper(client: QueryClient) {
+/** The page's body as the stage draws it, around the hook a case reads the tree's state by, at
+ *  the router's first address or at `path` where a case gives one. */
+function bodyWrapper(client: QueryClient, path?: string) {
   const route = { key: KEY, kind: "issue" } as const;
   return ({ children }: { children: ReactNode }) => (
-    <MemoryRouter>
+    <MemoryRouter {...(path === undefined ? {} : { initialEntries: [path] })}>
       <QueryClientProvider client={client}>
         <KeymapProvider>
           <MarginProvider>

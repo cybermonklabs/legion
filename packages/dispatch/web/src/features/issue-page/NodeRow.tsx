@@ -111,6 +111,7 @@ export function NodeRow({
   focused,
   foldable = true,
   folded,
+  foldedMore = false,
   isClosed,
   level,
   node,
@@ -157,6 +158,9 @@ export function NodeRow({
   foldable?: boolean;
   /** How many nodes it holds while it is folded. */
   folded?: number;
+  /** Whether the read the row is drawn from holds nodes no page read yet holds, which its folded
+   *  count may hold more of: the count carries "+" then (R15). False unless the view passes it. */
+  foldedMore?: boolean;
   /** Whether the issue is closed, which the writes a row offers are refused on. */
   isClosed: boolean;
   /** How deep the row sits, the tree's first row at 1 (`aria-level`); its indent stops growing
@@ -268,8 +272,13 @@ export function NodeRow({
               {folded === undefined ? null : (
                 <span className={`ml-1.5 text-xs ${pageQuietText}`}>
                   <span className="whitespace-nowrap" data-node-count="" {...pageChrome}>
-                    <span {...authorText}>{folded.toLocaleString()}</span>{" "}
-                    {folded === 1 ? CONTROL_LABELS.folded_row : CONTROL_LABELS.folded_rows}
+                    <span {...authorText}>
+                      {folded.toLocaleString()}
+                      {foldedMore ? "+" : ""}
+                    </span>{" "}
+                    {folded === 1 && !foldedMore
+                      ? CONTROL_LABELS.folded_row
+                      : CONTROL_LABELS.folded_rows}
                   </span>
                 </span>
               )}

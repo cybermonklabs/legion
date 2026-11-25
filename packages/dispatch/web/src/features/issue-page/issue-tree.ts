@@ -27,7 +27,7 @@ import {
   treeContext,
   withShortAddresses,
 } from "./tree-drafts";
-import { askNodeIds, type TreeWords, treeDraftsFrom } from "./tree-read/tree-nodes";
+import { askNodeIds, nextTreeCursor, type TreeWords, treeDraftsFrom } from "./tree-read/tree-nodes";
 import type { TreeAnswer } from "./tree-read/tree-read";
 
 /**
@@ -246,6 +246,11 @@ export interface TreeNode {
   /** The choices an ask offers, in its own order; absent for every other node and for an ask
    *  that offers none. */
   readonly options?: readonly NodeOption[];
+  /** Whether the read the tree is drawn from holds nodes no page read yet holds: its answer names
+   *  a next page (`cursor`, R15), so a count the page draws over the tree counts the nodes loaded
+   *  and carries "+" (`presets.ts`' `filterSignals`, a folded row's count, a Contents entry's
+   *  marks). On the issue's own node alone, as `views` is, and absent once no page is left. */
+  readonly moreToRead?: true;
   /** Whether this ask takes more than one of its options, which its answer's picks follow. */
   readonly multiple?: true;
   /** Whether this node is an open question, whoever's turn it is - the reader's, another
@@ -739,9 +744,9 @@ export function treeWordsOf(reads: IssueTreeReads): TreeWords {
  * The issue's whole tree, from the reads it was given: the drafts of the tree read
  * (`treeDraftsFrom`), each where the read places it, with the outline's drafts of each decision
  * of today's decisions read that no node of the answer holds (`addDecisions`, while decisions are
- * sections of `decisions.md`). Until the tree read has answered every page
- * (`IssueTreeReads.tree`), the tree is the issue alone, since a node the read places under one
- * not yet read would otherwise be drawn in the wrong place.
+ * sections of `decisions.md`). Until the tree read has answered its first page
+ * (`IssueTreeReads.tree`), the tree is the issue alone. While the answer names a next page the
+ * issue's node says so (`TreeNode.moreToRead`), so each count over the tree carries "+".
  */
 export function buildIssueTree(reads: IssueTreeReads): TreeNode {
   const words = treeWordsOf(reads);
@@ -749,7 +754,8 @@ export function buildIssueTree(reads: IssueTreeReads): TreeNode {
   if (tree === undefined) return assemble(reads.issue, [], words.chipOf);
   const drafts = treeDraftsFrom(tree, reads, words);
   addDecisions(drafts, reads, words, () => askNodeIds(drafts, tree, reads));
-  return assemble(reads.issue, [...drafts.values()], words.chipOf);
+  const root = assemble(reads.issue, [...drafts.values()], words.chipOf);
+  return nextTreeCursor(tree) === undefined ? root : { ...root, moreToRead: true };
 }
 
 /**

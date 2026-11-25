@@ -40,7 +40,14 @@ import { answerHolds, filterHolding, filterOfUndrawn, presetView } from "../pres
 import type { SlotProps } from "../slot-props";
 import { specSummary } from "../spec-summary";
 import { focusIsLoose } from "../tree-focus";
-import { outlineQuery, type TreeAnswer, useOlderComments } from "../tree-read/tree-read";
+import { pathTo } from "../tree-fold";
+import {
+  outlineQuery,
+  type TreeAnswer,
+  useNextTreePage,
+  useOlderComments,
+  useReadUntilHeld,
+} from "../tree-read/tree-read";
 import { TreeReadFailed } from "../tree-read/view-read";
 import { abortOnReaderAct } from "../useNodeEditing";
 import { FailedReadLine } from "./failed-read-line";
@@ -73,11 +80,20 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
   // address's own node; and a block or the children the tree holds no node of are said to be
   // so, in the outline's place.
   const addressed = useAddressTarget(root, address);
+  // An address that names a node no page of the outline read yet holds - its own node, or the
+  // node Graph's address zooms to - reads the read's next pages until one brings it, or none is
+  // left (R15), and lands on it then as on a node the first page held: until the reading ends,
+  // the landing and the outline's first focus wait on it as on the reads the tree is built from.
+  const unloaded =
+    address.document === undefined &&
+    ((address.target !== undefined && addressed.reveal === undefined) ||
+      (address.zoom !== undefined && pathTo(root, address.zoom) === undefined));
+  const readingPages = useReadUntilHeld(issue, unloaded);
   const fallback = useAddressFallback({
     address,
     issue,
     reads,
-    readsHeld,
+    readsHeld: readsHeld && !readingPages,
     reveal: addressed.reveal,
     root,
     route,
@@ -98,8 +114,10 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
     [address.filter, memo, named, outline, root]
   );
   // The older comments of the outline read, whose control stands above the outline's first row
-  // under the issue while they remain (R15).
+  // under the issue while they remain, and its next page, whose control follows the outline's last
+  // row while its answer names one (R15).
   const older = useOlderComments(issue);
+  const more = useNextTreePage(issue);
   // An address on Conversation's own address that names a node Conversation draws no row of - a
   // plan task, a result - opens the filter of its kind at that node (R9): the address is
   // replaced by that filter's, with the same search and fragment, which the filter lands on as
@@ -192,10 +210,11 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
             holdsEscape={address.filter !== ""}
             isClosed={isClosed}
             {...(ancestor === undefined ? {} : { landingReport: KEY_REPORTS.agents_thread })}
+            more={more}
             older={older}
             onEditing={onEditing}
             readsHeld={readsHeld}
-            readsSettled={readsSettled}
+            readsSettled={readsSettled && !readingPages}
             {...(request === undefined ? {} : { request })}
             reveal={ancestor ?? addressed.reveal}
             root={view.root}

@@ -12,6 +12,7 @@ import { EMPTY_STATE_LINES } from "../page-words";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { SpecFilterBody } from "../spec-filter/SpecFilterBody";
+import { NextViewPage } from "../tree-read/view-read";
 import { useIssueTree } from "../useIssueTree";
 
 /**
@@ -61,6 +62,8 @@ export function ViewSpecSlot({ issue, route }: SlotProps): ReactNode {
           root={root}
           view={view.root}
         />
+        {/* While the view read answers a next page, the control that reads it (R15). */}
+        <NextViewPage filter="spec" issueKey={issue.key} />
       </div>
     </NoTooltips>
   );

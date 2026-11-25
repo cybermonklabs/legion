@@ -24,15 +24,17 @@ import { nodeEditable } from "./useNodeEditing";
  * reader folded, focused and is editing in is `IssueTree.tsx`'s, which hands each row what it
  * is. Every row draws its node whole, with what it holds on its face, whatever the focus (R11).
  * The row after a node's drawn children says how many are left and draws the next page of them,
- * and the control above the first row reads the outline read's next page of older comments, each
- * where it is given (R15).
+ * the control above the first row reads the outline read's next page of older comments, and the
+ * control after the last row reads the read's next page, each where it is given (R15).
  */
 export function TreeRows({
   artifacts,
   context,
   editing,
   focused,
+  foldedMore = false,
   isClosed,
+  more,
   onFocus,
   onOlder,
   onPage,
@@ -54,7 +56,14 @@ export function TreeRows({
    *  another control of the page took it from, which keeps its focused look until that press has
    *  ended (`IssueTree.tsx`'s `useReleaseFocus`). */
   focused: string | undefined;
+  /** Whether the read the rows are drawn from holds nodes no page read yet holds, so a folded
+   *  row's count carries "+" (R15). False unless the tree passes it. */
+  foldedMore?: boolean;
   isClosed: boolean;
+  /** The read's next page, which the control after the last row reads (R15): how many nodes the
+   *  read holds after the pages read, where it says, and the press. Undefined where its answer
+   *  names none, and the control is not drawn. */
+  more?: { readonly left: number | undefined; readonly onPress: () => void };
   onFocus: (row: string, node: TreeNode) => void;
   /** Reads the next page of the outline read's older comments, which the control above the
    *  first row does; undefined where no older comment remains or the tree is drawn from no
@@ -132,6 +141,7 @@ export function TreeRows({
             focused={focused === key}
             foldable={!(row.level === 1 && row.node.id === zoomRoot)}
             folded={row.folded}
+            foldedMore={foldedMore}
             isClosed={isClosed}
             key={key}
             level={row.level}
@@ -147,18 +157,40 @@ export function TreeRows({
           />
         );
       })}
+      {more === undefined ? null : (
+        <PageControl kind="more" level={1} onPress={more.onPress}>
+          <NextPageWords left={more.left} />
+        </PageControl>
+      )}
     </>
   );
 }
 
 /**
+ * What the control that reads a read's next page says (R15), in the outline and after a view's
+ * last row alike: how many nodes the read holds after the pages read, the author's number, and
+ * the words that agree with it, in one run of text, as the row after a node's children draws its
+ * count and words; the words alone where the read gives no count.
+ */
+export function NextPageWords({ left }: { left: number | undefined }): ReactNode {
+  if (left === undefined) return CONTROL_LABELS.tree_page;
+  return (
+    <span>
+      <span {...authorText}>{left.toLocaleString()}</span>{" "}
+      {left === 1 ? CONTROL_LABELS.tree_page_row : CONTROL_LABELS.tree_page_rows}
+    </span>
+  );
+}
+
+/**
  * One control that draws more of the outline in place (R15), at the level of the rows it draws
- * and under the guides of the levels above them: the row after a node's drawn children, and the
- * control above the first row that reads older comments. A press replaces it with what it drew,
- * so it takes no focus from that press: it leaves the focus where it is (decision 366), and it is
- * out of the tab order, as every control inside the tree is, since the tree is one tab stop. The
- * keys press it from the row beside it, and leave the focus on the first row it drew
- * (`useTreeKeymap.ts`'s `tree-next` and `tree-previous`).
+ * and under the guides of the levels above them: the row after a node's drawn children, the
+ * control above the first row that reads older comments, and the control after the last row that
+ * reads the read's next page. A press replaces it with what it drew, so it takes no focus from
+ * that press: it leaves the focus where it is (decision 366), and it is out of the tab order, as
+ * every control inside the tree is, since the tree is one tab stop. The keys press it from the row
+ * beside it, and leave the focus on the first row it drew (`useTreeKeymap.ts`'s `tree-next` and
+ * `tree-previous`); a press of the read's next page leaves it there too.
  */
 function PageControl({
   children,
@@ -167,9 +199,10 @@ function PageControl({
   onPress,
 }: {
   children: ReactNode;
-  /** Which of the two it is, by the mark it carries: the row after a node's children
-   *  (`data-tree-page`), or the control that reads older comments (`data-older-comments`). */
-  kind: "older" | "page";
+  /** Which of the three it is, by the mark it carries: the row after a node's children
+   *  (`data-tree-page`), the control that reads older comments (`data-older-comments`), or the
+   *  one that reads the read's next page (`data-tree-more`). */
+  kind: "more" | "older" | "page";
   level: number;
   onPress: () => void;
 }): ReactNode {
@@ -182,6 +215,7 @@ function PageControl({
       style={{ "--row-depth": depth } as CSSProperties}
       tabIndex={-1}
       data-older-comments={kind === "older" ? "" : undefined}
+      data-tree-more={kind === "more" ? "" : undefined}
       data-tree-page={kind === "page" ? "" : undefined}
     >
       <IndentGuides depth={depth} />

@@ -21,7 +21,7 @@ import {
   type NodeType,
   type Preset,
 } from "./page-words";
-import { readingOf, treeIdOfNode } from "./tree-read/tree-nodes";
+import { nextTreeCursor, readingOf, treeIdOfNode } from "./tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 
 /**
@@ -649,11 +649,19 @@ function heldFilterView(
       : { drawn: true, rows: part.rows.map((row) => ({ ...row, parentLine: line })) };
   };
   const children = amongView(top, liftedTop, drawTop).flatMap((part) => part.rows);
+  // The view says by its own read alone whether nodes remain to read (`TreeNode.moreToRead`),
+  // never by the outline read's mark on the root.
+  const { moreToRead: _outline, ...issueNode } = root;
   return {
     context,
     lines: viewLines(answer, treeNodeOf, drawnIds),
     matches: matched.size,
-    root: { ...root, children, held: heldBy(children) },
+    root: {
+      ...issueNode,
+      children,
+      held: heldBy(children),
+      ...(nextTreeCursor(answer) === undefined ? {} : { moreToRead: true }),
+    },
     rootRow: false,
   };
 }
@@ -756,6 +764,9 @@ export interface PresetSignal {
   /** The part of the count that asks something of the reader, with the word it is drawn with:
    *  the checks that failed, the decisions waiting for the reader's review. */
   readonly flag?: { readonly count: number; readonly word: keyof typeof FILTER_SIGNAL_WORDS };
+  /** Whether the read the count is read from holds nodes no page read yet holds, so the count is
+   *  of the nodes loaded and carries "+" (R15, `TreeNode.moreToRead`). */
+  readonly more?: true;
   /** The noun the count is drawn in, where the picture draws one ("13 steps"). */
   readonly unit?: keyof typeof FILTER_SIGNAL_WORDS;
 }
@@ -772,12 +783,18 @@ function countOf(root: TreeNode, type: NodeType, counts: (node: TreeNode) => boo
   return found.size;
 }
 
-/** The signal each filter's control draws under `query`, which its count follows. */
+/** The signal each filter's control draws under `query`, which its count follows. A count read
+ *  from a read that names a next page carries "+" (`PresetSignal.more`): the held view's own read
+ *  for a filter whose view is held, and the tree's for every other. */
 export function filterSignals(
   root: TreeNode,
   query: string
 ): Readonly<Record<Filter, PresetSignal>> {
   const view = (filter: Filter) => presetView(root, filter, query);
+  const more = (answer: TreeAnswer | undefined): Pick<PresetSignal, "more"> =>
+    (answer === undefined ? root.moreToRead === true : nextTreeCursor(answer) !== undefined)
+      ? { more: true }
+      : {};
   // Once a filter's view read is held, its count is the held view's own nodes of its main kind
   // whose words hold the query; until then, what the view read off the tree draws.
   const count = (filter: TreeFilter): number => {
@@ -814,12 +831,14 @@ export function filterSignals(
     decisions: {
       count: decisions.matches,
       ...(toReview === 0 ? {} : { flag: { count: toReview, word: "to_review" } }),
+      ...more(undefined),
     },
-    plan: { count: count("plan"), unit: "steps" },
-    spec: { count: count("spec") },
+    plan: { count: count("plan"), ...more(root.views?.plan), unit: "steps" },
+    spec: { count: count("spec"), ...more(root.views?.spec) },
     verification: {
       count: count("verification"),
       ...(failing === 0 ? {} : { flag: { count: failing, word: "failing" } }),
+      ...more(root.views?.verification),
     },
   };
 }

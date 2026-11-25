@@ -978,6 +978,14 @@ export const CONTROL_LABELS = freeze({
   /** The control above the outline's first row under the issue while the outline read answers
    *  older comments than it holds, which reads the next page of them (R15). */
   older_comments: "Older comments",
+  /** The control after the last row of an outline or a view while its read answers a next page,
+   *  which reads that page (R15): the count before it is how many nodes the read holds after the
+   *  pages read (its `remaining`) and carries `AUTHOR_TEXT_ATTRIBUTE`, and the words agree with
+   *  it: "1 more row to load", "1,240 more rows to load". Where the read gives no count, the
+   *  control says `tree_page` alone. */
+  tree_page_row: "more row to load",
+  tree_page_rows: "more rows to load",
+  tree_page: "Load more rows",
   /** The panel's list of the issue's history (R15): its status moves, claims, handoffs, the
    *  Legion daemon's messages, what agents wrote outside every thread a person wrote in, and
    *  every other event that is no row of the outline, newest first. `/activity` opens it. */
