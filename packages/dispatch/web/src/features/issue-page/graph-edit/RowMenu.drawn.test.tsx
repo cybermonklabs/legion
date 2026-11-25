@@ -771,6 +771,123 @@ test("a press on the fallback line tries the act again", async () => {
   expect(sent.patches[1]?.body).toEqual(sent.patches[0]?.body);
 });
 
+/** `held` as the server reads it once it took the move `answer` of `node`, made since the page
+ *  read `held`: the node and what stands under it, which the walk keeps together, under the
+ *  answer's `parent`, first among that parent's children - an `after` of null, on a block of the
+ *  spec, whose band stands first under any parent (dispatch://INFRA-1253 R7) - with the answer's
+ *  `placement_seq`, and the parent named as the read names it on the children it holds already;
+ *  every other node as `held` holds it. */
+function movedRead(
+  held: TreeAnswer,
+  node: TreeAnswerNode,
+  answer: {
+    readonly after: string | null;
+    readonly parent: string;
+    readonly placement_seq: unknown;
+  }
+): TreeAnswer {
+  const nodes = held.nodes ?? [];
+  const at = nodes.indexOf(node);
+  if (answer.after !== null || node.document?.slug !== SPEC_DOCUMENT.slug || at === -1) {
+    throw new Error(`movedRead places a block of the spec first under its parent, not ${node.id}`);
+  }
+  const inside = new Set([node.id]);
+  let end = at + 1;
+  for (; end < nodes.length; end += 1) {
+    const parent = nodes[end]?.parent;
+    if (parent === null || parent === undefined || !inside.has(parent.id)) break;
+    inside.add(nodes[end]?.id ?? "");
+  }
+  const rest = [...nodes.slice(0, at), ...nodes.slice(end)];
+  const parentAt = rest.findIndex((each) => each.id === answer.parent);
+  const ref = rest.find((each) => each.parent?.id === answer.parent)?.parent;
+  if (parentAt === -1 || ref === null || ref === undefined) {
+    throw new Error(`the read holds no parent ${answer.parent} with a child under it`);
+  }
+  const placed: TreeAnswerNode = {
+    ...node,
+    parent: ref,
+    placement_seq: answer.placement_seq as TreeAnswerNode["placement_seq"],
+  };
+  return {
+    ...held,
+    nodes: [
+      ...rest.slice(0, parentAt + 1),
+      placed,
+      ...nodes.slice(at + 1, end),
+      ...rest.slice(parentAt + 1),
+    ],
+  };
+}
+
+/** The row the page draws of `child` right under the row of `parent`, by its key, or null. */
+function rowUnder(
+  view: RenderResult,
+  parent: TreeAnswerNode,
+  child: TreeAnswerNode
+): HTMLElement | null {
+  const path = `>${rowId(parent)}>${rowId(child)}`;
+  const rows = [...view.container.querySelectorAll<HTMLElement>("[data-node-row]")];
+  return rows.find((row) => row.dataset.rowKey?.endsWith(path) === true) ?? null;
+}
+
+// R8: a 412 says the node moved since the page read it and reads the tree again, which draws the
+// node where the server holds it, under another parent; the focus stays on the node's row there,
+// where the reader was, and the move queued behind the refused one, from the menu opened again,
+// is dropped unsent. The 412 is the fixture's: the third statement's Indent sent with the
+// `placement_seq` the page read before that same Indent was taken, whose answer the read again
+// draws. The live feed is up, as on the page, so the refusal reads the outline once.
+test("a 412 keeps the focus on the row where the server holds it", async () => {
+  const user = userEvent.setup();
+  const precondition = fixture.refused.PRECONDITION_FAILED;
+  const refused = Promise.withResolvers<void>();
+  const reads = answerTreeReads(
+    converted,
+    refused.promise.then(() => movedRead(converted, STATEMENT_3, moved.indent.body))
+  );
+  const out = Promise.withResolvers<void>();
+  const sent = answerNodeRoutes({
+    deletes: [deleted.dry_run, deleted.dry_run],
+    patches: [{ ...precondition, gate: out.promise, returned: () => refused.resolve() }],
+  });
+  const client = signedIn();
+  liveFeedOn(client);
+  const view = draw(undefined, undefined, client);
+  await openMenu(view, user);
+  await user.click(entry(view, CONTROL_LABELS.edit_indent));
+  await waitFor(() => expect(sent.patches).toHaveLength(1));
+  // While the Indent is out, a second move waits behind it, picked from the menu opened again.
+  await user.click(await menuControl(view));
+  await waitFor(() => expect(menuOf(view)).not.toBeNull());
+  await user.click(entry(view, CONTROL_LABELS.edit_move_up));
+  await waitFor(() =>
+    expect(focusedRowId(), "the pick left the focus off the row").toBe(rowId(STATEMENT_3))
+  );
+  out.resolve();
+  // The read again draws the third statement under the second, and the focus is on that row.
+  const under = await waitFor(() => {
+    const found = rowUnder(view, STATEMENT_2, STATEMENT_3);
+    if (found === null) throw new Error("the read again draws no row of it under the second");
+    return found;
+  });
+  await waitFor(() => expect(document.activeElement, "the focus left the row").toBe(under));
+  expect(under.textContent, "the row says the node moved and one move was not sent").toContain(
+    `${ANSWER_LINES.refused_precondition_failed} 1 ${ANSWER_LINES.dropped_move}`
+  );
+  await letRequestsSettle();
+  expect(document.activeElement, "the focus did not stay on the refused row").toBe(under);
+  expect(sent.patches, "the queued move was sent").toEqual([
+    {
+      body: precondition.request.body,
+      dryRun: false,
+      expected: null,
+      id: "<statement-3>",
+      ifMatch: precondition.request.if_match,
+    },
+  ]);
+  expect(reads.outline(), "the refusal did not read the outline once").toBe(2);
+});
+
 // R6, the dry run's table: closed -> counting -> (failed -> counting) -> ready.
 test("delete reads counting while the dry run is out and asks again after a failed read", async () => {
   const user = userEvent.setup();

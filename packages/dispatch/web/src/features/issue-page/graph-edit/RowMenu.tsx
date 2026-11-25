@@ -166,13 +166,17 @@ function heldNode(client: QueryClient, key: string, node: string): TreeAnswerNod
 }
 
 /**
- * Keeps the row of a node an act moves in view and focused (R4). Made as the act is pressed, it
- * notes the node's `placement_seq` as Graph's held read holds it; once the act is taken with a new
- * one - a move, whose answer `node-writes.ts` writes into the held read - and the reader has not
- * acted since, the outline unfolds every branch above the node's own row under its new parent, a
- * folded new parent among them, and gives that row the focus once it is drawn
+ * Keeps the row of a node an act moves in view and focused (R4, R8). Made as the act is pressed,
+ * it notes the node's `placement_seq` as Graph's held read holds it; once the act is taken with a
+ * new one - a move, whose answer `node-writes.ts` writes into the held read - and the reader has
+ * not acted since, the outline unfolds every branch above the node's own row under its new
+ * parent, a folded new parent among them, and gives that row the focus once it is drawn
  * (`RowReveal.moved`). A taken delete leaves the sequence as it was: the outline's drop rule moves
- * the focus once a read draws the tree without the node.
+ * the focus once a read draws the tree without the node. An act refused with a refusal that reads
+ * the tree again (a 412, a gone node), and an act dropped unsent - a move queued behind a refused
+ * one, whose own pick ended the earlier act's hold on the reader's acts - keeps the focus on the
+ * node's row where that read draws it (`RowReveal.kept`), so a `412 PRECONDITION_FAILED` whose
+ * read draws the node under the parent the server holds leaves the reader on its row.
  */
 function keepInView(
   client: QueryClient,
@@ -186,9 +190,14 @@ function keepInView(
   return (outcome) => {
     const acted = acts.signal.aborted;
     acts.abort();
+    if (acted) return;
+    if (outcome.status === "dropped" || (outcome.status === "refused" && outcome.line.reads)) {
+      edit.outline.reveal?.kept(node);
+      return;
+    }
     const now = heldNode(client, key, node);
     const parent = now?.parent?.id;
-    if (outcome.status !== "taken" || acted || parent === undefined) return;
+    if (outcome.status !== "taken" || parent === undefined) return;
     if (now?.placement_seq !== before) edit.outline.reveal?.moved(id, parent);
   };
 }

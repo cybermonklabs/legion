@@ -18,6 +18,7 @@ import {
   editArtifact,
   recordCheckResult,
   reviewArtifact,
+  setGatedSteps,
   userHeaders,
 } from "./api";
 import { awaitBlockAsk } from "./issue-layout-seed-support";
@@ -522,6 +523,17 @@ export async function seedGraphEdit(): Promise<GraphEditSeed> {
 export async function approveDocuments(seed: GraphEditSeed): Promise<void> {
   await reviewArtifact(seed.spec, { state: "approved" });
   await reviewArtifact(seed.verification, { state: "approved" });
+}
+
+/** Gates the design steps of the seed's project, the Verification document's (`criteria`) and
+ *  the spec's, as a deployment that gates them publishes them (`PUT .../gated-steps`): the seed's
+ *  issue is a root of the project, so its header draws the approval of each of the two documents
+ *  (`gated-steps.ts`' `gatedStepEntries`), the Verification document's among them, which the
+ *  header of a project that gates nothing leaves out. Called before the page loads the issue, so
+ *  its first read of the project holds the steps. */
+export async function gateDesignSteps(): Promise<void> {
+  const gated = await setGatedSteps(GRAPH_PROJECT, ["criteria", "spec"]);
+  expect(gated.steps, "the seed's project gates no design step").toEqual(["criteria", "spec"]);
 }
 
 /** The tree read id of each node of the seed a row names. */
@@ -1184,5 +1196,42 @@ export async function expectApprovalChangedSince(
     new RegExp(`^${APPROVAL_STATE_WORDS.approved} v\\d+ · `, "u"),
     { timeout: 30_000 }
   );
+  expect(await sameDocument(page), `${message}, with no reload`).toBe(true);
+}
+
+/** Fails with `message` unless the identity block's approval chip of the document `id` reads it
+ *  approved at the version it holds, nothing changed since (`ApprovalChip.tsx`: `Approved v<N>`). */
+export async function expectApproved(page: Page, id: string, message: string): Promise<void> {
+  await expect(approvalChip(page, id), message).toHaveText(
+    new RegExp(`^${APPROVAL_STATE_WORDS.approved} v\\d+$`, "u"),
+    { timeout: 30_000 }
+  );
+}
+
+/** The words of the identity block's approval chip of the document `id`, once it is drawn reading
+ *  the document approved (`Approved v<N>`, with what changed since where something did) and two
+ *  reads a poll apart agree; fails with `message` where it is not drawn. */
+export async function approvalWords(page: Page, id: string, message: string): Promise<string> {
+  const chip = approvalChip(page, id);
+  await expect(chip, message).toHaveText(
+    new RegExp(`^${APPROVAL_STATE_WORDS.approved} v\\d+`, "u"),
+    { timeout: 30_000 }
+  );
+  return settledValue(message, async () => (await chip.textContent()) ?? "");
+}
+
+/** Fails with `message` unless the identity block's approval chip of the document `id` comes to
+ *  read other words than `before` (`approvalWords`), as the page draws a write of the document
+ *  live, with no reload since `markDocument`. */
+export async function expectApprovalWordsChanged(
+  page: Page,
+  id: string,
+  before: string,
+  message: string
+): Promise<void> {
+  const chip = approvalChip(page, id);
+  await expect
+    .poll(async () => (await chip.textContent()) ?? "", { message, timeout: 30_000 })
+    .not.toBe(before);
   expect(await sameDocument(page), `${message}, with no reload`).toBe(true);
 }

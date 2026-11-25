@@ -10,6 +10,7 @@ import { createComment, editArtifact, getComment } from "./api";
 import { gotoIssue, issuePage, phase } from "./issue-page";
 import { DESKTOP, PHONE, rowWords } from "./issue-page-g";
 import {
+  approvalWords,
   approveDocuments,
   asArchitect,
   cancelDelete,
@@ -32,11 +33,14 @@ import {
   EDIT_LINES,
   emptyParagraphs,
   expectApprovalChangedSince,
+  expectApprovalWordsChanged,
+  expectApproved,
   expectGrey,
   expectMenusFit,
   expectOffered,
   focusOn,
   fragmentTree,
+  gateDesignSteps,
   graphEditIds,
   insertInto,
   landOn,
@@ -1121,10 +1125,18 @@ test("a delete takes the block and its subtree after a confirm that names the co
     const key = seed.key;
     const [statement1, statement2, statement3] = ids.statements;
     await approveDocuments(seed);
+    // The header draws the Verification document's approval only as a step of a gated root, so
+    // the seed's project gates the design steps before the page first loads the issue.
+    await gateDesignSteps();
     await page.setViewportSize(size);
     const sent = watchNodeRequests(page, key);
 
     await landOn(page, key, statement1, "the first statement");
+    await expectApproved(
+      page,
+      seed.verification,
+      "the header draws the Verification document's approval, approved, before any delete"
+    );
     await openRowMenu(page, "press", "the first statement");
     expect(
       await deleteState(page, "the first statement"),
@@ -1230,12 +1242,23 @@ test("a delete takes the block and its subtree after a confirm that names the co
     // The second check, which the architect wrote and which holds no result.
     await landOn(page, key, ids.checkAgent, "the agent's check");
     await markDocument(page);
+    const verificationBefore = await approvalWords(
+      page,
+      seed.verification,
+      "the header draws no approval of the Verification document before its check is deleted"
+    );
     await openCountedDelete(page, "the agent's check", "the person deletes the agent's check");
     await expectOffered(page, EDIT_LABELS.edit_delete, "the person deletes the agent's check");
     await menuEntry(page, EDIT_LABELS.edit_delete).click();
     await confirmDelete(page).click();
     const agents = await nthWrite(sent, 3, "the person deletes the agent's check");
     expect((await agents.answer)?.status, "the person deletes the agent's check").toBe(200);
+    await expectApprovalWordsChanged(
+      page,
+      seed.verification,
+      verificationBefore,
+      "after the delete of the agent's check the Verification document's approval reads as before"
+    );
     await expectApprovalChangedSince(
       page,
       seed.verification,

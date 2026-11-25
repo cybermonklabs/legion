@@ -23,6 +23,13 @@ export interface RowReveal {
    *  parent among them, and gives the row the focus; until then, and unless the reader acts
    *  first, it waits for the tree that draws it (R4). */
   readonly moved: (id: string, parent: string) => void;
+  /** Keeps the focus the reader holds on a row of the node of read id `node` on the node's own
+   *  row, after a write of it that was refused or dropped: once a read draws that row under
+   *  another key - the node where the server holds it, under another parent - it takes the focus
+   *  there, unfolding what stands above it, unless the reader acts first; a read that lacks the
+   *  node leaves the focus to the outline's drop rule (R8). Nothing where the focus is on no row
+   *  of the node. */
+  readonly kept: (node: string) => void;
   /** Takes the reader to the row of the node of read id `node` wherever it stands, as the
    *  outline's keys do: the row a refusal's line names (R8). */
   readonly toRow: (node: string) => void;
@@ -153,7 +160,13 @@ export function useRowEdits({
   };
   const confirm =
     outline === undefined || asked === undefined ? null : (
-      <DeleteConfirm ask={asked} issue={outline.issue} key={asked.id} onDone={done} />
+      <DeleteConfirm
+        ask={asked}
+        issue={outline.issue}
+        key={asked.id}
+        onDone={done}
+        reveal={outline.reveal}
+      />
     );
   return { confirm, editOf };
 }
@@ -166,7 +179,8 @@ export function useRowEdits({
  * confirm stays open while it is out, taking no second confirm. Where the server answers that the
  * count moved (`409 DELETE_COUNT_MOVED`), the same confirm names the new count and waits for the
  * reader to confirm that one or cancel; any other answer closes it, a refusal's line drawn on the
- * row (`NodeWrites.lines`).
+ * row (`NodeWrites.lines`), and a refusal that reads the tree again, or a delete dropped unsent,
+ * keeps the focus on the node's row where that read draws it (`RowReveal.kept`).
  *
  * It is closed in the task of its answer (`flushSync`), so the focus it took goes back to the row
  * at once (`useDialog`), before a read of the tree the taken delete starts can draw the tree
@@ -178,10 +192,12 @@ function DeleteConfirm({
   ask,
   issue,
   onDone,
+  reveal,
 }: {
   ask: DeleteAsk;
   issue: NodeWritesIssue;
   onDone: (ask: DeleteAsk) => void;
+  reveal: RowReveal | undefined;
 }): ReactNode {
   const writes = useNodeWrites(issue);
   const [count, setCount] = useState(ask.count);
@@ -197,6 +213,9 @@ function DeleteConfirm({
         return;
       }
       flushSync(close);
+      if (outcome.status === "dropped" || (outcome.status === "refused" && outcome.line.reads)) {
+        reveal?.kept(ask.node);
+      }
     });
   };
   const unit = count === 1 ? CONTROL_LABELS.delete_row : CONTROL_LABELS.delete_rows;
