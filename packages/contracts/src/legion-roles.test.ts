@@ -62,8 +62,9 @@ describe("role token grammar", () => {
     );
   });
 
-  // A role is read by its fields since the roles of a deployment (contract 297), so a token whose
-  // role is no Legion role but a name of the step grammar, `operator`, parses as that role.
+  // A role is read by its fields since the roles of a deployment (the deployment roles' contract
+  // entry), so a token whose role is no Legion role but a name of the step grammar, `operator`,
+  // parses as that role.
   test("rejects a token for another project, the controller as an issue's role, or a role outside the grammar", () => {
     expect(parseRoleToken("other", controllerToken("omp"))).toBeUndefined();
     expect(parseRoleToken("omp", "legion-omp-legion-42-operator")).toEqual({

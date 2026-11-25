@@ -1,4 +1,5 @@
 import { type LegionStepRole, zodSchemaApi } from "@legion/contracts";
+import { daemonContract, type PluginManifest } from "@legion/contracts/daemon-contract";
 import {
   LEGION_PHASE_BACKWARD_TARGETS,
   LEGION_PLAN_RATING_LEAST,
@@ -30,7 +31,7 @@ export interface ClaimCapability {
   readonly sessionID: string;
   readonly tree: string;
   readonly issue: string;
-  /** One of Legion's six or a role of the deployment (contract 297). */
+  /** One of Legion's six or a role of the deployment (the deployment roles' contract entry). */
   readonly role: LegionStepRole;
   readonly secret: string;
   readonly claimToken: string;
@@ -412,12 +413,13 @@ export function legionToolDescription(host: {
 }
 
 /** The plugin build one process loaded, as its host's own `package.json` names it: the package
- * `name`, its `version`, and the daemon API contract that build speaks
- * (`legion.daemonApiVersion`, which the client states on every request as `pluginContract` and
- * `read_build` answers beside the daemon's own). It is the host's manifest and never a path on
- * the image: an Oh My Pi role's relaunch onto the daemon's contract installs the plugin pair
- * fresh under the role's state home, so the build at `/opt/legion/pi-legion` is another one. A
- * Claude Code role in a pod installs no plugin, and its build is its image's own claude-envoy. */
+ * `name`, its `version`, and the daemon API contract that build speaks (`daemonContract`: the
+ * `legion.daemonApiVersion` a pack writes, which the client states on every request as
+ * `pluginContract` and `read_build` answers beside the daemon's own). It is the host's manifest
+ * and never a path on the image: an Oh My Pi role's relaunch onto the daemon's contract installs
+ * the plugin pair fresh under the role's state home, so the build at `/opt/legion/pi-legion` is
+ * another one. A Claude Code role in a pod installs no plugin, and its build is its image's own
+ * claude-envoy. */
 export interface PluginBuild {
   readonly name: string;
   readonly version: string;
@@ -426,17 +428,17 @@ export interface PluginBuild {
 
 /** The three values of `PluginBuild` read off one host's manifest. `pi-shared` imports no
  * manifest and is bundled into both plugins, so each host calls this with the `package.json` it
- * imported (`packages/pi-legion/src/tools.ts`,
- * `packages/claude-envoy/src/legion-tool.ts`). */
-export function pluginBuildOf(manifest: {
-  readonly name: string;
-  readonly version: string;
-  readonly legion: { readonly daemonApiVersion: number };
-}): PluginBuild {
+ * imported and its own directory, the `from` of `daemonContract`
+ * (`packages/pi-legion/src/tools.ts`, `packages/claude-envoy/src/legion-tool.ts`). It throws
+ * where `daemonContract` does: a manifest that names no contract outside a checkout. */
+export function pluginBuildOf(
+  manifest: PluginManifest & { readonly name: string; readonly version: string },
+  from: string
+): PluginBuild {
   return {
     name: manifest.name,
     version: manifest.version,
-    pluginContract: manifest.legion.daemonApiVersion,
+    pluginContract: daemonContract(manifest, from),
   };
 }
 
@@ -494,9 +496,6 @@ async function recordFrom(daemon: LegionDaemonClient, issue: string): Promise<Le
 
 const ROOT_COMPLETION_REFUSAL =
   "handoff_complete is not available to a root architect session, which runs no phase";
-
-// The daemon's deploymentRolesContract (api/shaping.go) added step and returnTo to phase/backward.
-const STEP_BACKWARD_CONTRACT = 297;
 
 /** The three words `read_build` answers under `daemonContractNote`, where `daemonContract` is
  * null: the daemon answered the health route and stated no contract, which a daemon older than
@@ -666,16 +665,10 @@ export async function executePhaseOp(
           throw new Error(`a phase worker moves only its own issue ${claim.issue}, not ${named}`);
         }
       }
-      if (args.to === "step" || args.return_to !== undefined) {
-        const contract = await daemon.daemonContract();
-        if (contract === undefined || contract < STEP_BACKWARD_CONTRACT) {
-          const stated =
-            contract === undefined ? DAEMON_STATED_NO_CONTRACT : `daemon contract ${contract}`;
-          throw new Error(
-            `request_backward_move with to: step or return_to requires daemon contract ${STEP_BACKWARD_CONTRACT} or later; ${stated}. Nothing moved.`
-          );
-        }
-      }
+      // The target `step` and `return_to` arrived with the daemon's roles of a deployment
+      // (deploymentRolesContract's entry). An older daemon refuses either with a 400 and moves
+      // nothing: `step` as `INVALID_PHASE`, and `returnTo` as a body with an unknown field. So the
+      // move is sent as asked, and that refusal is the answer the caller reads.
       await daemon.phaseBackward({
         grantId: await mintClaimGrant(daemon, claim),
         to: args.to,

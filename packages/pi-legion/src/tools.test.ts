@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { type LegionRole, type LegionStepRole, roleToken } from "@legion/contracts";
+import { daemonContract } from "@legion/contracts/daemon-contract";
 import {
   LEGION_PHASES,
   LEGION_WORKFLOW_PHASES,
@@ -23,6 +24,9 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { z } from "zod";
 import pkg from "../package.json";
 import { createLegionTool, type LegionToolSession } from "./tools";
+
+/** The contract this build speaks, as `tools.ts` reads it (`daemonContract`): this checkout's. */
+const PLUGIN_CONTRACT = daemonContract(pkg, import.meta.dir);
 
 function context(sessionId = "ses_208"): SessionContext {
   return {
@@ -172,7 +176,7 @@ function goldenDaemon(answers: Readonly<Record<string, string>>, status = 200) {
       : Response.json(daemonFixture(golden), { status });
   }) as typeof fetch;
   const client = createLegionDaemonClient("http://daemon.test", {
-    pluginContract: pkg.legion.daemonApiVersion,
+    pluginContract: PLUGIN_CONTRACT,
     fetch: stub,
   });
   return { posted, daemon: () => client };
@@ -1932,7 +1936,8 @@ test("the controller reads the state without a grant and sets an issue's status 
     "compact",
     { grantId: "controller-grant-1", issue: "LEGION-209", role: "implementer" },
   ]);
-  // A claim of a role of the deployment (contract 297) is recovered as Legion's own roles' are.
+  // A claim of a role of the deployment (the deployment roles' contract entry) is recovered as
+  // Legion's own roles' are.
   await run({ op: "fresh_session", issue: "LEGION-209", role: "checker" });
   expect(calls.at(-1)).toEqual([
     "freshSession",
@@ -1987,8 +1992,8 @@ test("the controller reads the state without a grant and sets an issue's status 
   expect(minted).toEqual(["ses_controller", "ses_controller", "ses_controller", "ses_controller"]);
 });
 
-// Contract 297: the summary lists each worker of an issue's map, a role of the deployment's after
-// Legion's own in the order of the default steps, so the controller sees the claim that works a step.
+// The summary lists each worker of an issue's map, a role of the deployment's after Legion's own in
+// the order of the default steps, so the controller sees the claim that works a step.
 test("read_state's summary lists the claim of a role of the deployment under its issue", async () => {
   const state = stateOf92Issues(1);
   const running = state.issues["INFRA-100"];
@@ -2035,13 +2040,13 @@ test("read_build answers the package and version this process loaded, both contr
   const atImagePath = {
     ...pkg,
     version: "0.0.0-image",
-    legion: { daemonApiVersion: pkg.legion.daemonApiVersion - 1 },
+    legion: { daemonApiVersion: PLUGIN_CONTRACT - 1 },
   };
   await withImageManifest("/opt/legion/pi-legion/package.json", atImagePath, async () => {
     const { createLegionTool: createFreshLegionTool } = (await import(
       TOOLS_LOADED_UNDER_THE_IMAGE_MOCK
     )) as { readonly createLegionTool: typeof createLegionTool };
-    const { calls, daemon } = recordingDaemon({ daemonContract: pkg.legion.daemonApiVersion + 1 });
+    const { calls, daemon } = recordingDaemon({ daemonContract: PLUGIN_CONTRACT + 1 });
     const tool = createFreshLegionTool({
       pi,
       daemon,
@@ -2060,8 +2065,8 @@ test("read_build answers the package and version this process loaded, both contr
       details: {
         plugin: pkg.name,
         version: pkg.version,
-        pluginContract: pkg.legion.daemonApiVersion,
-        daemonContract: pkg.legion.daemonApiVersion + 1,
+        pluginContract: PLUGIN_CONTRACT,
+        daemonContract: PLUGIN_CONTRACT + 1,
         daemonContractNote: null,
       },
     });
@@ -2102,7 +2107,7 @@ test("read_build says the daemon stated no contract, and belongs to the controll
     details: {
       plugin: pkg.name,
       version: pkg.version,
-      pluginContract: pkg.legion.daemonApiVersion,
+      pluginContract: PLUGIN_CONTRACT,
       daemonContract: null,
       daemonContractNote: "the daemon stated no contract",
     },

@@ -593,9 +593,15 @@ type RequestOperatorClose struct{ Claim claim.Token }
 // caller — the claim runs again — and neither skips a check the other makes: it says only which
 // session the retry starts. A retry that asks for none resumes the recorded session, whatever the
 // claim's run of refused turns (freshSession).
+//
+// OneAttemptLeft is a production check look's retry of its checking role: the half-open trial of a
+// role that keeps failing, which gets one attempt of each budget its failure spent rather than a
+// fresh budget (Budgets.OneAttemptLeft), so a role that cannot start is launched once a look and
+// not a whole budget's worth of times. A failure that spent no budget runs again as any retry does.
 type RequestRetry struct {
-	Claim        claim.Token
-	FreshSession bool
+	Claim          claim.Token
+	FreshSession   bool
+	OneAttemptLeft bool
 	// Start is the work a workflow start retries the claim for, judged as RequestSpawn's is.
 	Start StartWork
 }
@@ -2823,7 +2829,10 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // retry is a failed or retired claim given another run: its budgets start over, and its session,
 // when it has one, is relaunched after the process the claim last ran is gone. A pending delivery
 // the claim kept goes once the agent is ready. Its event is the workflow's retry or the
-// operator's own (operatorRetry), and the pacing reads each its own way (exemptWake).
+// operator's own (operatorRetry), and the pacing reads each its own way (exemptWake). A production
+// check look's retry (RequestRetry.OneAttemptLeft) starts no budget over that the failure spent:
+// each is left one attempt short of its limit, and the rest stand as the failure left them
+// (Budgets.OneAttemptLeft).
 //
 // A retry that asks for a new session (`legion claims retry --fresh-session`, the controller's
 // fresh_session) forgets the recorded session instead, so the launch spawns a fresh agent
@@ -2878,8 +2887,18 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 		// (resumeRefusal), before the budgets start over.
 		return err
 	}
+	oneAttemptLeft := false
+	if r, ok := ev.(RequestRetry); ok {
+		oneAttemptLeft = r.OneAttemptLeft
+	}
 	return m.revive(ctx, exemptWake(ev), time.Time{}, start, func() {
-		m.claim.Budgets, m.claim.PendingCause = Budgets{}, ""
+		budgets := Budgets{}
+		if oneAttemptLeft {
+			budgets = m.claim.Budgets.OneAttemptLeft(m.deps.Limits)
+			m.log.Info("supervise: retrying with one attempt left of each budget the failure spent",
+				"failed", m.claim.Budgets, "budgets", budgets, "cause", m.claim.FailureCause)
+		}
+		m.claim.Budgets, m.claim.PendingCause = budgets, ""
 		m.claim.Failure, m.claim.FailureCause, m.claim.FailedAt = "", "", time.Time{}
 		m.claim.LeakCheckCause = ""
 	})

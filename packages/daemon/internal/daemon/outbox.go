@@ -2781,7 +2781,15 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			// A start that asks for a new session has the retry forget the recorded one, inside
 			// that one decision: the operator's `legion claims retry --fresh-session`, which is
 			// refused by whatever refuses this row rather than having discarded the session first.
-			if err := machine.Handle(ctx, supervise.RequestRetry{Claim: token, FreshSession: payload.FreshSession, Start: work}); err != nil {
+			// A production check look's start is the half-open trial of a checking role that
+			// failed: it retries the claim with one attempt left of each budget its failure spent,
+			// never a fresh budget, so a role that cannot start launches once a look rather than
+			// until a whole budget runs out at every look up to the check's bound
+			// (supervise.RequestRetry.OneAttemptLeft). A check start never asks for a new session
+			// (workflow's startLook); the resets a person or the controller makes, which give the
+			// whole budget, are the API's retry and fresh session (supervise.RequestOperatorRetry).
+			again := supervise.RequestRetry{Claim: token, FreshSession: payload.FreshSession, OneAttemptLeft: payload.CheckLook > 0, Start: work}
+			if err := machine.Handle(ctx, again); err != nil {
 				brought = fmt.Errorf("retry claim %s: %w", token, err)
 			}
 		case supervise.StateRetired:
@@ -4571,7 +4579,7 @@ func (r *outbox) lookBoundAfterPause(ctx context.Context, row record.OutboxRow, 
 // one's.
 func (r *outbox) checkWake(ctx context.Context, row record.OutboxRow, payload record.CheckWakeDue) error {
 	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("check-wake:%s:%d", row.Issue, row.ID),
-		intake.CheckWakeDue{Issue: row.Issue, Look: payload.Look, OpenedAt: payload.OpenedAt, Reason: payload.Reason}, r.handlers...); err != nil {
+		intake.CheckWakeOf(row.Issue, payload), r.handlers...); err != nil {
 		return fmt.Errorf("wake %s's production check at look %d: %w", row.Issue, payload.Look, err)
 	}
 	return nil
