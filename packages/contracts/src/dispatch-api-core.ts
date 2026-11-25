@@ -48,12 +48,15 @@ export type ActorOrigin = z.output<typeof ActorOriginSchema>;
 export const DISPATCH_SCOPES = ["person", "approve"] as const;
 export type DispatchScope = (typeof DISPATCH_SCOPES)[number];
 
-/** The scope words a Dispatch token can carry where its scopes are listed: the agent token list,
- *  and `scopes` in `GET /api/v1/whoami`. They are the two of `DISPATCH_SCOPES` and `read`. A
- *  token that holds `read` is read-only (`DISPATCH_READ_ONLY_TOKEN`): a personal token holds it
- *  alone or beside `person`, never beside `approve`. `read` is a mark on the token and not a
- *  scope a credential acts under, so no act records it, and `DISPATCH_SCOPES` and
- *  `ActorActSchema` keep `person` and `approve` alone. */
+/** The scope words a personal token can carry, which the agent token list names and `scopes` in
+ *  `GET /api/v1/whoami` names for it: the two of `DISPATCH_SCOPES` and `read`. A token that holds
+ *  `read` is read-only (`DISPATCH_READ_ONLY_TOKEN`): a personal token holds it alone or beside
+ *  `person`, never beside `approve`. `read` is a mark on the token and not a scope a credential
+ *  acts under, so no act records it, and `DISPATCH_SCOPES` and `ActorActSchema` keep `person` and
+ *  `approve` alone. `GET /api/v1/whoami` also names `legion-status` for a Legion daemon's own
+ *  broker token, which holds it alone (`WhoamiResponse`): it is that token's leave to write a
+ *  Legion issue's status where Dispatch runs with `DISPATCH_LEGION_STATUS_SCOPE` on, so no act
+ *  records it either, and no personal token can hold it. */
 export const DISPATCH_TOKEN_SCOPES = ["person", "approve", "read"] as const;
 export type DispatchTokenScope = (typeof DISPATCH_TOKEN_SCOPES)[number];
 

@@ -47,6 +47,13 @@ const (
 	// exchange client is not registered for it, so the library refuses a request that names it
 	// invalid_scope. A resource server that does not read the word accepts the token and ignores it.
 	ScopeLegionStatus = "legion-status"
+	// LegionDaemonSessionPrefix starts the session name a Legion daemon writes its project's
+	// issues under: legion-daemon:<PROJECT>. The broker marks an entry that fixes it for its own
+	// project as a Legion daemon's own (exchange.Claims.LegionStatus), and Dispatch reads it
+	// through ciphertoken.LegionDaemonSessionPrefix: one spelling for both ends of this module.
+	// The daemon's DaemonSession (packages/daemon/internal/dispatch/client.go), another Go module,
+	// writes the name and changes together with this one.
+	LegionDaemonSessionPrefix = "legion-daemon:"
 	// ExtraCredentialID is the token answer's field naming the launcher credential the login holds;
 	// the login's session carries it under the same key.
 	ExtraCredentialID = "credential_id"

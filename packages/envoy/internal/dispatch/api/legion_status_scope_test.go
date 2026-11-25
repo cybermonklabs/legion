@@ -392,8 +392,9 @@ func statusWrite(key, status string) legionPatch {
 	return legionPatch{key: key, body: map[string]any{"status": status}, written: []legionCheck{hasStatus(status)}}
 }
 
-// legionStatusWrites are test 1's judged writes: a status write on an issue that carries the
-// label, and a write of the open status that such an issue holds already.
+// legionStatusWrites are TestALegionIssueStatusNeedsThePersonOrLegionStatusScope's judged writes: a
+// status write on an issue that carries the label, and a write of the open status that such an
+// issue holds already.
 func legionStatusWrites() []legionWrite {
 	return []legionWrite{
 		{name: "a status write on a labelled issue", judged: true, make: func(t *testing.T, rig *legionStatusRig) legionPatch {
@@ -420,8 +421,8 @@ func legionHandOver() legionWrite {
 	}}
 }
 
-// legionLabelRemovals are test 2's judged writes: labels that leave out legion, and labels that
-// leave out Legion, the label in another case.
+// legionLabelRemovals are TestTakingTheLegionLabelOffNeedsTheScopeToo's judged writes: labels that
+// leave out legion, and labels that leave out Legion, the label in another case.
 func legionLabelRemovals() []legionWrite {
 	removal := func(label string) func(*testing.T, *legionStatusRig) legionPatch {
 		return func(t *testing.T, rig *legionStatusRig) legionPatch {
@@ -438,10 +439,10 @@ func legionLabelRemovals() []legionWrite {
 	}
 }
 
-// legionBeforeAndAfterWrites are test 3's writes on an unlabelled root, and the labelled issue
-// they move it under. R26 judges a status write by the labels and the chain the issue has after
-// the call too: a status write that adds the label, or that moves the issue under a labelled
-// issue, is judged. The label added alone is not.
+// legionBeforeAndAfterWrites are TestACallIsJudgedByTheLabelsAndChainBeforeAndAfterIt's writes on
+// an unlabelled root, and the labelled issue they move it under. R26 judges a status write by the
+// labels and the chain the issue has after the call too: a status write that adds the label, or
+// that moves the issue under a labelled issue, is judged. The label added alone is not.
 func legionBeforeAndAfterWrites(t *testing.T, rig *legionStatusRig) (writes []legionWrite, labelled string) {
 	t.Helper()
 	labelled = rig.issue(t, []string{"legion"}, "", "")
@@ -465,7 +466,8 @@ func legionBeforeAndAfterWrites(t *testing.T, rig *legionStatusRig) (writes []le
 	}, labelled
 }
 
-// legionParentFixture is the issues test 4 moves an issue between.
+// legionParentFixture is the issues TestAParentChangeThatLeavesNoLabelledAncestorNeedsTheScope
+// moves an issue between.
 type legionParentFixture struct {
 	// labelled is a labelled root, and middle an unlabelled child of it: each moved issue is made
 	// under middle, two levels under labelled.
@@ -476,13 +478,14 @@ type legionParentFixture struct {
 	other, otherChild string
 }
 
-// legionParentStatuses are the three open statuses test 4 moves an issue at.
+// legionParentStatuses are the three open statuses
+// TestAParentChangeThatLeavesNoLabelledAncestorNeedsTheScope moves an issue at.
 var legionParentStatuses = []string{"triage", "backlog", "in_progress"}
 
-// legionParentMoves are test 4's moves of an unlabelled issue two levels under a labelled root.
-// R26 judges a move out from under every labelled issue, under an unlabelled root or to no
-// parent, at each open status. It does not judge a move under another labelled root or under an
-// unlabelled child of one.
+// legionParentMoves are TestAParentChangeThatLeavesNoLabelledAncestorNeedsTheScope's moves of an
+// unlabelled issue two levels under a labelled root. R26 judges a move out from under every
+// labelled issue, under an unlabelled root or to no parent, at each open status. It does not judge
+// a move under another labelled root or under an unlabelled child of one.
 func legionParentMoves(t *testing.T, rig *legionStatusRig) ([]legionWrite, legionParentFixture) {
 	t.Helper()
 	fixture := legionParentFixture{labelled: rig.issue(t, []string{"legion"}, "", "")}
@@ -513,9 +516,10 @@ func legionParentMoves(t *testing.T, rig *legionStatusRig) ([]legionWrite, legio
 	return writes, fixture
 }
 
-// legionLabelRemovalUnderALabelledParent is test 5's write: a labelled issue under a labelled
-// parent loses its own label. It stays a Legion issue through its parent, and R26 judges the
-// removal all the same.
+// legionLabelRemovalUnderALabelledParent is
+// TestTheLabelsRemovalNeedsTheScopeUnderALabelledParentToo's write: a labelled issue under a
+// labelled parent loses its own label. It stays a Legion issue through its parent, and R26 judges
+// the removal all the same.
 func legionLabelRemovalUnderALabelledParent(t *testing.T, rig *legionStatusRig) legionWrite {
 	t.Helper()
 	parent := rig.issue(t, []string{"legion"}, "", "")
@@ -528,9 +532,9 @@ func legionLabelRemovalUnderALabelledParent(t *testing.T, rig *legionStatusRig) 
 	}}
 }
 
-// legionDeepStatusWrites are test 11's judged writes: a status write on an issue 1, 16 and
-// parentDepthCap links under a labelled root, and on an issue under a root labelled Legion. It
-// answers the issue parentDepthCap links under the labelled root too.
+// legionDeepStatusWrites are TestAnIssueUnderALabelledIssueIsALegionIssue's judged writes: a status
+// write on an issue 1, 16 and parentDepthCap links under a labelled root, and on an issue under a
+// root labelled Legion. It answers the issue parentDepthCap links under the labelled root too.
 func legionDeepStatusWrites(t *testing.T, rig *legionStatusRig) (writes []legionWrite, deepest string) {
 	t.Helper()
 	chain := createChain(t, rig.handler, brokerTestProject, rig.issue(t, []string{"legion"}, "", ""), parentDepthCap)
@@ -633,9 +637,10 @@ func (rig *legionStatusRig) sendStatusChange(t *testing.T, credential legionCred
 	}
 }
 
-// legionCascade is test 7's cascade: an unlabelled root moved to backlog with include_children,
-// over a child that carries the label and is in work. So the call writes the status of the
-// child, a Legion issue. With dryRun, it is the dry run of that call.
+// legionCascade is TestACascadeThatWritesALegionIssueIsRefusedWhole's cascade: an unlabelled root
+// moved to backlog with include_children, over a child that carries the label and is in work. So
+// the call writes the status of the child, a Legion issue. With dryRun, it is the dry run of that
+// call.
 func legionCascade(dryRun bool) legionStatusChange {
 	name := "a cascade over a labelled child in work"
 	if dryRun {
@@ -655,11 +660,11 @@ func legionCascade(dryRun bool) legionStatusChange {
 	}}
 }
 
-// legionStatusChanges are test 7's judged calls of the status-change route: the cascade and its
-// dry run (legionCascade); include_parent on an unlabelled child of a labelled issue, which
-// writes the status of the labelled issue and of its child; unlink_children of a labelled root,
-// which moves its unlabelled child out from under every labelled issue; and a status change with
-// no option on a labelled issue.
+// legionStatusChanges are TestACascadeThatWritesALegionIssueIsRefusedWhole's judged calls of the
+// status-change route: the cascade and its dry run (legionCascade); include_parent on an unlabelled
+// child of a labelled issue, which writes the status of the labelled issue and of its child;
+// unlink_children of a labelled root, which moves its unlabelled child out from under every
+// labelled issue; and a status change with no option on a labelled issue.
 func legionStatusChanges() []legionStatusChange {
 	return []legionStatusChange{
 		legionCascade(false),
@@ -1081,6 +1086,42 @@ func TestTheFixIsNotRefusedWithBothSettingsOn(t *testing.T) {
 		fixMoveComment(fixMove{key: notStarted, from: "backlog", inWork: inWork}))
 }
 
+// TestADaemonsWriteRecordsNoScopeAnActCannotCarry: a write from the Legion daemon's own broker
+// token records the session its token proved, with an act that names that session, and the act
+// records no scope: legion-status is the token's leave to write a Legion issue's status, and an
+// act's scopes are those of model.Scopes alone, the Go side of DISPATCH_SCOPES, which
+// @legion/contracts' ActorActSchema holds an act's scopes to. A person-scoped broker token's act
+// still records person.
+func TestADaemonsWriteRecordsNoScopeAnActCannotCarry(t *testing.T) {
+	rig := newLegionStatusRig(t, true)
+	for _, c := range []struct {
+		name   string
+		scopes []string
+	}{
+		{name: legionDaemonToken},
+		{name: legionPersonScopedToken, scopes: []string{model.ScopePerson}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			issue := rig.issue(t, []string{"legion"}, "", "todo")
+			if written := rig.credential(t, c.name).send(t, http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"status": "in_progress"}); written.Code != http.StatusOK {
+				t.Fatalf("%s writes the status of %s: status=%d body=%s", c.name, issue, written.Code, written.Body.String())
+			}
+			actor := scanEventActor(t, rig.database, `select actor from events where type = 'issue.updated' and issue_key = $1 order by id desc limit 1`, issue)
+			if actor.Act == nil || !actor.Act.SessionProven || actor.Act.Session == "" {
+				t.Fatalf("the write's actor = %+v, want an act naming the session its token proved", actor)
+			}
+			if !slices.Equal(actor.Act.Scopes, c.scopes) {
+				t.Errorf("the act records scopes %q, want %q", actor.Act.Scopes, c.scopes)
+			}
+			for _, scope := range actor.Act.Scopes {
+				if !slices.Contains(model.Scopes, scope) {
+					t.Errorf("the act records %q, which is not a scope of model.Scopes (DISPATCH_SCOPES)", scope)
+				}
+			}
+		})
+	}
+}
+
 // TestAnIssueUnderALabelledIssueIsALegionIssue: R26 reads the whole chain above an issue. A status
 // write from the shared token is refused on an issue 1, 16 and parentDepthCap links under a
 // labelled root, and on an issue under a root labelled Legion, and taken on the same issues of an
@@ -1123,11 +1164,12 @@ func TestAnIssueUnderALabelledIssueIsALegionIssue(t *testing.T) {
 	})
 }
 
-// TestTheLegionStatusRefusalWaitsForItsSetting: with Deps.LegionStatusScope off, every write that
-// tests 1 to 5 and 11 send from the shared token, and that R26 refuses with the setting on, is
-// taken. So is every call of the status-change route that test 7 sends from the shared token and
-// that R26 refuses with the setting on (legionStatusChanges), with DISPATCH_PARENT_STATUS_RULE off
-// too. The dry run among them is taken and writes nothing.
+// TestTheLegionStatusRefusalWaitsForItsSetting: with Deps.LegionStatusScope off, every write of
+// legionStatusWrites, legionLabelRemovals, legionBeforeAndAfterWrites, legionParentMoves,
+// legionLabelRemovalUnderALabelledParent and legionDeepStatusWrites that the shared token sends,
+// and that R26 refuses with the setting on, is taken. So is every call of the status-change route
+// of legionStatusChanges that the shared token sends and that R26 refuses with the setting on, with
+// DISPATCH_PARENT_STATUS_RULE off too. The dry run among them is taken and writes nothing.
 func TestTheLegionStatusRefusalWaitsForItsSetting(t *testing.T) {
 	rig := newLegionStatusRig(t, false)
 	shared := rig.credential(t, legionSharedToken)

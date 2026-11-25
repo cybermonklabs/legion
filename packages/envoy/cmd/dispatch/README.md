@@ -5136,7 +5136,7 @@ Each item below names a path with its method and identity, then its purpose.
   `expected_sequence` makes the write conditional: `409 ISSUE_CHANGED` when the issue's last event is no longer that sequence.
 
   - With `DISPATCH_LEGION_STATUS_SCOPE` on, three writes of a Legion issue need a credential that holds the `person` scope or `legion-status`: a status write, the removal of its `legion` label, and a move after which it is no longer a Legion issue.
-    A Legion issue carries the `legion` label, in any letter case, or is under an issue that carries it, and Dispatch judges the issue before the call and after it.
+    A Legion issue carries the `legion` label, in any letter case, or is under an issue of its own project that carries it, and Dispatch judges the issue before the call and after it.
     Any other credential is `403 LEGION_STATUS_SCOPE_REQUIRED`, with an `insufficient_scope` challenge naming `legion-status`, and the call writes no field of the issue and no event of it.
     The one exception is the owning architect's status write: a broker-issued token whose session the Legion daemon's own token published as the architect of an issue above the issue, of the issue's own project, before the call and after it, writes the status `done`, `backlog`, `icebox` or `triage`.
     The same call's removal of the `legion` label and its move out from under every labelled issue stay refused to it.

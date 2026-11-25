@@ -1343,7 +1343,7 @@ func (s *server) credentialOf(r *http.Request) (credentialKind, string) {
 // rather than of one request — a browser's cookie holds both scopes, and the shared token and a
 // service-account token hold none — and the cookie's is on the dashboard's hottest path, so
 // allocating either per request would be waste. Nothing writes a Credential or appends to its
-// Scopes: Holds reads, actingPerson copies the slice header onto the act it records, and
+// Scopes: Holds reads, actScopes copies the slice header onto the act it records, and
 // tokenScopes builds a set of its own.
 var (
 	scopelessCredential = &model.Credential{}
@@ -1418,6 +1418,19 @@ func actorNamesWriter(supplied *model.Actor) bool {
 	return supplied != nil && (strings.TrimSpace(supplied.ID) != "" || strings.TrimSpace(supplied.Kind) != "")
 }
 
+// actScopes is the scopes an act records of credential: the ones of model.Scopes, which an act's
+// reader may ask about (ActorAct.Holds; DISPATCH_SCOPES and ActorActSchema in @legion/contracts).
+// legion-status, which a Legion daemon's own broker token holds and holds alone, is the
+// credential's leave to write a Legion issue's status (legion_status_scope.go), not a grant an act
+// carries, so such a credential's act records no scope. No credential holds it beside another
+// scope (model.Credential), so every other credential's scopes are recorded whole, with no copy.
+func actScopes(credential *model.Credential) []string {
+	if credential.Holds(model.ScopeLegionStatus) {
+		return nil
+	}
+	return credential.Scopes
+}
+
 // bearerSessionActor resolves the acting session for a bearer caller: the caller names its own
 // session in the request body, and what the token itself proved — a personal token's owner, a
 // service token's verified subject — stays attached for attribution. Neither is ever taken from
@@ -1466,7 +1479,7 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 			actor.Act = &model.ActorAct{
 				Session:       authenticated.ID,
 				SessionProven: true,
-				Scopes:        authenticated.Credential.Scopes,
+				Scopes:        actScopes(authenticated.Credential),
 			}
 		}
 		accesslog.Note(r.Context(), accesslog.KindSession, actor.ID)
@@ -1747,7 +1760,7 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 			SessionProven: session != "" && session == credential.Session,
 			TokenID:       credential.TokenID,
 			TokenName:     credential.TokenName,
-			Scopes:        credential.Scopes,
+			Scopes:        actScopes(credential),
 		}
 	}
 	// Proven: every credential that holds the person scope proves its person - the cookie its

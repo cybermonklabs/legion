@@ -55,6 +55,11 @@ const ScopeRead = oauthwire.ScopeRead
 // person, shapeOf reads a token that holds it as it reads one that does not.
 const ScopeLegionStatus = oauthwire.ScopeLegionStatus
 
+// LegionDaemonSessionPrefix starts the session a Legion daemon writes its project's issues under,
+// legion-daemon:<PROJECT>: the broker's own spelling (oauthwire), carried here for the reason
+// ScopeLegionStatus is.
+const LegionDaemonSessionPrefix = oauthwire.LegionDaemonSessionPrefix
+
 // ExchangeClientID is the OAuth client every token issued for acting as a session is issued to:
 // the RFC 8693 exchange a pod, a workflow run or a dev box session asks for a Dispatch access
 // token through (internal/cipher/oauthwire). It is carried here for the same reason the project

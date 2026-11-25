@@ -1,8 +1,8 @@
 package api
 
 // legion_status_scope.go is R26 of dispatch://INFRA-3320: the refusal of three writes of a Legion
-// issue. A Legion issue carries the legion label, in any letter case, or is under an issue that
-// carries it (legionManagedStatus). Where Deps.LegionStatusScope is on
+// issue. A Legion issue carries the legion label, in any letter case, or is under an issue of its
+// own project that carries it (legionManagedStatus). Where Deps.LegionStatusScope is on
 // (DISPATCH_LEGION_STATUS_SCOPE), a credential that holds neither model.ScopePerson nor
 // model.ScopeLegionStatus cannot make these writes:
 //
@@ -30,7 +30,7 @@ package api
 //   - Before the call and after it, the chain above the step's issue holds an issue whose marked
 //     role holders name that session as architect (owningArchitectSQL). A pair is marked when the
 //     daemon's own broker token published it (issue_role_holders.daemon_proven,
-//     putIssueRoleHolders). The chain is the one that the legion walk reads (legionWalkSQL): the
+//     putIssueRoleHolders). The chain is the one that the legion walk reads (legionChainSQL): the
 //     parent and each issue above it of the step's issue's own project, up to parentDepthCap. The
 //     step's own issue's role holders do not count, so an issue that has no stored set of its own
 //     is written alike.
@@ -218,7 +218,7 @@ func refuseLegionStatusStep(ctx context.Context, q pgx.Tx, call architectCall, s
 		if !legion {
 			return nil
 		}
-		owned, err := step.writtenByOwningArchitect(ctx, q, stored.project, call)
+		owned, err := step.writtenByOwningArchitect(ctx, q, stored.project, *step.statusAfter, call)
 		if err != nil {
 			return err
 		}
@@ -246,9 +246,10 @@ func refuseLegionStatusStep(ctx context.Context, q pgx.Tx, call architectCall, s
 // call.options lets the architect write (architectWrites), and the chain above the issue names
 // that session as the architect of an issue both before the call (from parentBefore) and after it
 // (from parentLeft). The issue's own role holders do not count. It reads nothing when the session
-// or the status rules the write out, and one walk when the step keeps its parent.
-func (step issueWriteStep) writtenByOwningArchitect(ctx context.Context, q pgx.Tx, project string, call architectCall) (bool, error) {
-	if call.session == "" || !call.options.architectWrites(*step.statusAfter) {
+// or the status rules the write out, and one walk when the step keeps its parent. status is the
+// status the step writes (step.statusAfter, which a status write sets).
+func (step issueWriteStep) writtenByOwningArchitect(ctx context.Context, q pgx.Tx, project, status string, call architectCall) (bool, error) {
+	if call.session == "" || !call.options.architectWrites(status) {
 		return false, nil
 	}
 	before, err := architectAbove(ctx, q, step.key, project, step.parentBefore, call.session)
@@ -273,24 +274,18 @@ func (options statusChangeOptions) architectWrites(status string) bool {
 	return status != "done" || !options.includeChildren
 }
 
-// owningArchitectSQL answers whether the chain that starts at the issue $1, the parent of a
-// step's issue, holds an issue whose marked role holders name the session $3 as its architect.
-// The walk is legionWalkSQL's: it climbs only to a parent of the project $2, the step's issue's
-// own project, so it ends at the first issue of another project as at a root, and it stops at
-// parentDepthCap links above the step's issue. A pair is marked when the daemon's own broker token
-// published it (daemon_proven, putIssueRoleHolders). The role holders key (issue_key, role) finds
-// each issue's architect.
-var owningArchitectSQL = `
-	with recursive chain as (
-		select p.key, p.parent_key, 1 as depth from issues p where p.key = $1 and p.project_key = $2
-		union
-		select p.key, p.parent_key, c.depth + 1
-		from issues p join chain c on p.key = c.parent_key and p.project_key = $2
-		where c.depth < ` + parentDepthCapSQL + `
-	)
+// owningArchitectSQL answers whether an issue above the step's issue $4, whose parent is $1 and
+// whose project is $2, has marked role holders that name the session $3 as its architect. The
+// chain is legionChainSQL's, the one the legion walk reads: it climbs only to a parent of the
+// step's issue's own project, so it ends at the first issue of another project as at a root, and
+// it stops at parentDepthCap links above the step's issue. The step's own row is depth 0, and its
+// role holders do not count. A pair is marked when the daemon's own broker token published it
+// (daemon_proven, putIssueRoleHolders). The role holders key (issue_key, role) finds each issue's
+// architect.
+var owningArchitectSQL = legionChainSQL(`select $4::text as key, $1::text as parent_key, '{}'::text[] as labels, $2::text as project_key, 0 as depth`) + `
 	select exists (
 		select 1 from chain c join issue_role_holders h on h.issue_key = c.key
-		where h.role = 'architect' and h.session = $3 and h.daemon_proven
+		where c.depth > 0 and h.role = 'architect' and h.session = $3 and h.daemon_proven
 	)`
 
 // architectAbove reads owningArchitectSQL for the step's issue key: whether the chain from
@@ -301,7 +296,7 @@ func architectAbove(ctx context.Context, q pgx.Tx, key, project string, parent *
 		return false, nil
 	}
 	var named bool
-	if err := q.QueryRow(ctx, owningArchitectSQL, *parent, project, session).Scan(&named); err != nil {
+	if err := q.QueryRow(ctx, owningArchitectSQL, *parent, project, session, key).Scan(&named); err != nil {
 		return false, fmt.Errorf("read whether session %s is the architect of an issue above %s, for R26's refusal: %w", session, key, err)
 	}
 	return named, nil

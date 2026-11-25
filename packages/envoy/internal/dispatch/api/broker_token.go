@@ -209,8 +209,9 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// token that names no project names a person, as the shared public-session account's token
 	// does. legion-status on such a token would pass R26 on the Legion issues of every project,
 	// so it gets no scope. Dispatch does not check the token's session: the broker decides who
-	// holds the scope. No credential holds it beside person, so an act's scopes, which only a
-	// credential holding person records (actingPerson), never carry it. oneProject is also the
+	// holds the scope. No credential holds it beside person, and no act records it: the act of a
+	// proven session (bearerSessionActor) and of a person (actingPerson) record the credential's
+	// scopes through actScopes, which leaves legion-status out. oneProject is also the
 	// test for the one project the token may write (actor.Project, below), so the two cannot
 	// drift apart.
 	oneProject := caller.ProjectScope == ciphertoken.ProjectScopeNamed && len(caller.Projects) == 1

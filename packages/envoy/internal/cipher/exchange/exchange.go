@@ -88,13 +88,6 @@ var (
 // bytes is past any name a Legion session or a person's tool has reason to use.
 const MaxSessionBytes = 200
 
-// LegionDaemonSessionPrefix starts the session name a Legion daemon writes its project's issues
-// under: legion-daemon:<PROJECT>. It marks a Legion daemon's own entry (Claims.LegionStatus). Two
-// other spellings of the prefix change together with this one: the daemon's DaemonSession
-// (packages/daemon/internal/dispatch/client.go), which writes the name, and Dispatch's
-// legionDaemonSessionPrefix (internal/dispatch/api/issue_collaborators.go), which reads it.
-const LegionDaemonSessionPrefix = "legion-daemon:"
-
 // repositoryPattern is a GitHub repository as its token's `repository` claim names it,
 // <owner>/<name>: the owner a letter or digit, then up to 38 letters, digits, hyphens and
 // underscores, since a managed user's login ends in `_<shortcode>` (`mona-cat_octo`); the name up
@@ -372,7 +365,7 @@ type Claims struct {
 	// which names no project. The slice is this Claims' own.
 	Projects []string
 	// LegionStatus is true for the token of a Legion daemon's own entry: an account entry that
-	// names a project and fixes the session LegionDaemonSessionPrefix + that project, compared
+	// names a project and fixes the session oauthwire.LegionDaemonSessionPrefix + that project, compared
 	// exactly, case included. Such a token is ProjectScopeNamed and holds the OAuth scope
 	// oauthwire.ScopeLegionStatus too (oauth.writeProjectScope), which Dispatch reads as leave to
 	// write a Legion issue's status. Pod alone sets it, and reads the session the entry fixes,
@@ -444,7 +437,7 @@ type AccountEntry struct {
 	// request naming any other is refused. It is how a long-running service keeps writing under
 	// one name it does not get to choose per request. The name is one of the set's Reservations,
 	// held for the account however many of its pods exchange and refused to every other caller.
-	// LegionDaemonSessionPrefix + Project makes the entry a Legion daemon's own
+	// oauthwire.LegionDaemonSessionPrefix + Project makes the entry a Legion daemon's own
 	// (Claims.LegionStatus).
 	Session string
 }
@@ -871,7 +864,7 @@ func (s *Set) Pod(token map[string]any, session string, projects []string) (Clai
 
 // isLegionDaemon reports whether entry is a Legion daemon's own entry (Claims.LegionStatus).
 func isLegionDaemon(entry AccountEntry) bool {
-	project, fixesDaemonSession := strings.CutPrefix(entry.Session, LegionDaemonSessionPrefix)
+	project, fixesDaemonSession := strings.CutPrefix(entry.Session, oauthwire.LegionDaemonSessionPrefix)
 	return fixesDaemonSession && entry.Project != "" && project == entry.Project
 }
 

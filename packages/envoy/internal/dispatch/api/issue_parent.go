@@ -81,13 +81,13 @@ const legionLabel = "legion"
 // advice does (computeWriteAdvice, write_advice.go), and there it means the issue is treated as
 // one Legion does not run: the "still in triage" line prints. A chain that deep needs a reparent
 // that refuseParentTooDeep would have refused.
-var legionManagedStatusSQL = legionWalkSQL(`select i.parent_key, i.labels, i.project_key, 0 as depth from issues i where i.key = $1`)
+var legionManagedStatusSQL = legionWalkSQL(`select i.key, i.parent_key, i.labels, i.project_key, 0 as depth from issues i where i.key = $1`)
 
 // legionManagedStatusOfRowSQL is legionManagedStatusSQL walking from an issue row given rather
 // than read - $1 its parent_key, $2 its labels, $3 its project - for a write that reads its
 // advice before it writes that row (writeAdviceBefore). The walk above it, and the depth cap,
 // are the same.
-var legionManagedStatusOfRowSQL = legionWalkSQL(`select $1::text as parent_key, $2::text[] as labels, $3::text as project_key, 0 as depth`)
+var legionManagedStatusOfRowSQL = legionWalkSQL(`select null::text as key, $1::text as parent_key, $2::text[] as labels, $3::text as project_key, 0 as depth`)
 
 // legionManagedStatusWithLabelsSQL is legionManagedStatusSQL that answers the stored labels and
 // project of the issue keyed by $1 too, in the same statement: its labels, its project, then
@@ -95,22 +95,31 @@ var legionManagedStatusOfRowSQL = legionWalkSQL(`select $1::text as parent_key, 
 // the caller's owner locks (legion_status_scope.go).
 var legionManagedStatusWithLabelsSQL = `select i.labels, i.project_key, (` + legionManagedStatusSQL + `) from issues i where i.key = $1`
 
-// legionWalkSQL is the legion-label walk up the parent chain from the row start selects: its
-// parent_key, its labels, its project and depth 0. Each step joins only a parent of that project.
-// Both terms of the recursive query name the collation "C" for labels. A recursive query refuses
-// a column whose collation differs between its terms, and start's labels may be a parameter in
-// the database's default collation while the column has another one.
-func legionWalkSQL(start string) string {
+// legionChainSQL is Dispatch's one chain of the issues above an issue for a Legion rule: the
+// recursive query chain, from the row start selects (its key, parent_key, labels, project and
+// depth 0) up each parent of that same project, to parentDepthCap links above it. Each rule
+// reads it through a tail of its own: the legion-label walk (legionWalkSQL), and the owning
+// architect's walk (owningArchitectSQL, legion_status_scope.go), so the two read one set of
+// issues. Both terms of the recursive query name the collation "C" for labels. A recursive query
+// refuses a column whose collation differs between its terms, and start's labels may be a
+// parameter in the database's default collation while the column has another one.
+func legionChainSQL(start string) string {
 	return `
 	with recursive chain as (
-		select s.parent_key, s.labels collate "C" as labels, s.project_key, s.depth from (
+		select s.key, s.parent_key, s.labels collate "C" as labels, s.project_key, s.depth from (
 			` + start + `
 		) s
 		union
-		select p.parent_key, p.labels collate "C", c.project_key, c.depth + 1
+		select p.key, p.parent_key, p.labels collate "C", c.project_key, c.depth + 1
 		from issues p join chain c on p.key = c.parent_key and p.project_key = c.project_key
 		where c.depth < ` + parentDepthCapSQL + `
-	)
+	)`
+}
+
+// legionWalkSQL is the legion-label walk of legionChainSQL from the row start selects: whether
+// that row or an issue above it carries the legion label.
+func legionWalkSQL(start string) string {
+	return legionChainSQL(start) + `
 	select exists (
 		select 1 from chain c, unnest(c.labels) as label where lower(label collate "C") = '` + legionLabel + `'
 	)`
