@@ -2392,11 +2392,11 @@ func (m *Machine) markRound(ctx context.Context, round string, mark **time.Time)
 }
 
 // ReleasedLaunch is whether a stored claim is an uncertain launch ReleaseUncertainLaunch released
-// and no launch then recorded: queued at a generation above zero, with no process. A claim is
+// and no launch then recorded: queued after a launch (Launched), with no process. A claim is
 // created queued at generation zero, and only a release makes one queued again after a launch, so
 // the daemon's next boot counts such a claim as a launch to finish.
 func (c Claim) ReleasedLaunch() bool {
-	return c.State == StateQueued && c.Generation > 0 && c.Locator == nil
+	return c.State == StateQueued && c.Launched() && c.Locator == nil
 }
 
 // Launched is whether a launch of the claim was ever written: each launch raises the claim's
