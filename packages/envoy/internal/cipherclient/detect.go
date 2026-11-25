@@ -470,6 +470,19 @@ func credentialFileFailure(fields credentialFields) string {
 	return ""
 }
 
+// X509CredentialFailure is why the X.509 certificate files an external_account credential file
+// names cannot be used (certificateFailure), in words that print no path, and "" where the file
+// names no certificate, does not parse, or each of its certificate files can be used. Any reader
+// of such a file calls it before Google's library loads the file: the secret forms' sign-in
+// (cmd/cipher) as the machine source does.
+func X509CredentialFailure(credential []byte) string {
+	var fields credentialFields
+	if json.Unmarshal(credential, &fields) != nil || fields.Source.Certificate == nil {
+		return ""
+	}
+	return certificateFailure(*fields.Source.Certificate)
+}
+
 // certificateFailure is why an X.509 credential's files cannot be used, and "" where each can be:
 // its trust chain; its certificate configuration, the one it names or else the default one
 // (GOOGLE_API_CERTIFICATE_CONFIG, else gcloud's), which Google's library finds the same way; and

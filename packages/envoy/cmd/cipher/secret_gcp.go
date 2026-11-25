@@ -41,6 +41,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"cloud.google.com/go/auth/credentials"
+	"cloud.google.com/go/auth/oauth2adapt"
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
 	"golang.org/x/oauth2"
@@ -85,9 +87,10 @@ func checkSettingsKMSKeyName(settings Settings) error {
 
 // gcpCredentialsFile loads the credentials file at path, of whatever type it names, scoped for
 // Secret Manager: the file GOOGLE_APPLICATION_CREDENTIALS names and the well-known credentials
-// file. A file it cannot read is the os error, and one it cannot load errUnloadableCredentials,
-// never x/oauth2's or encoding/json's error, which quote the file's fields (credentialsFileRefusal).
-// Tests replace it.
+// file. An external_account file is loaded by externalAccountCredentials. A file it cannot read is
+// the os error, a certificate file such a credential names that cannot be used a
+// certificateRefusal, and one it cannot load errUnloadableCredentials, never a library's or
+// encoding/json's error, which quote the file's fields (credentialsFileRefusal). Tests replace it.
 var gcpCredentialsFile = func(ctx context.Context, path string) (*google.Credentials, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -99,6 +102,9 @@ var gcpCredentialsFile = func(ctx context.Context, path string) (*google.Credent
 	if json.Unmarshal(data, &file) != nil {
 		return nil, errUnloadableCredentials
 	}
+	if file.Type == string(google.ExternalAccount) {
+		return externalAccountCredentials(data)
+	}
 	creds, err := google.CredentialsFromJSONWithType(ctx, data, google.CredentialsType(file.Type), secretmanager.DefaultAuthScopes()...)
 	if err != nil {
 		return nil, errUnloadableCredentials
@@ -106,18 +112,52 @@ var gcpCredentialsFile = func(ctx context.Context, path string) (*google.Credent
 	return creds, nil
 }
 
+// externalAccountCredentials loads an external_account credentials file (workload identity
+// federation) with cloud.google.com/go/auth, which reads every credential_source, an X.509
+// certificate's among them (golang.org/x/oauth2 reads none), as the x/oauth2 credentials the
+// Secret Manager client and gcpUserinfo take. The file's own exchange and its impersonation URL
+// mint the account's access token. An X.509 certificate's files are checked first, in the machine
+// source's words (cipherclient.X509CredentialFailure), before the library reads a configuration
+// that would make it start an enterprise certificate proxy's signer. The library logs nothing,
+// whatever GOOGLE_SDK_GO_LOGGING_LEVEL says: its log of the exchange and the impersonation holds
+// both tokens.
+func externalAccountCredentials(data []byte) (*google.Credentials, error) {
+	if reason := cipherclient.X509CredentialFailure(data); reason != "" {
+		return nil, certificateRefusal(reason)
+	}
+	creds, err := credentials.NewCredentialsFromJSON(credentials.ExternalAccount, data, &credentials.DetectOptions{
+		Scopes: secretmanager.DefaultAuthScopes(),
+		Logger: slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		return nil, errUnloadableCredentials
+	}
+	return oauth2adapt.Oauth2CredentialsFromAuthCredentials(creds), nil
+}
+
+// certificateRefusal is why an X.509 certificate file an external_account credentials file names
+// cannot be used, in words that print no path (cipherclient.X509CredentialFailure).
+type certificateRefusal string
+
+func (r certificateRefusal) Error() string { return string(r) }
+
 // errUnloadableCredentials is a credentials file gcpCredentialsFile read but could not load: not
 // JSON, or no credential Google's libraries make a token source of.
 var errUnloadableCredentials = errors.New("holds no Google Cloud credential this command can load")
 
 // credentialsFileRefusal is the refusal of the credentials file file names (a phrase, such as
 // "the credentials file GOOGLE_APPLICATION_CREDENTIALS names") whose load failed with err
-// (gcpCredentialsFile): fixed text for a file it could not load, else the system's reason alone
-// (redact.File), which drops the path. The file holds a credential, and a variable meant for its
-// path is where a person who pasted the credential itself puts it.
+// (gcpCredentialsFile): fixed text for a file it could not load, the reason for a certificate file
+// it names that cannot be used, else the system's reason alone (redact.File), which drops the
+// path. The file holds a credential, and a variable meant for its path is where a person who
+// pasted the credential itself puts it.
 func credentialsFileRefusal(file string, err error) error {
-	if errors.Is(err, errUnloadableCredentials) {
+	var refusal certificateRefusal
+	switch {
+	case errors.Is(err, errUnloadableCredentials):
 		return fmt.Errorf("%s %w", file, errUnloadableCredentials)
+	case errors.As(err, &refusal):
+		return fmt.Errorf("%s: %w", file, refusal)
 	}
 	return fmt.Errorf("read %s: %w", file, redact.File(err))
 }
