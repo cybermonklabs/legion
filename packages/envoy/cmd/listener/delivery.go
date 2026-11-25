@@ -1018,7 +1018,10 @@ func fanoutRefusalOutcome(sessionID string, item contracts.Envelope, verdict fol
 
 // fanoutDelivery delivers a general-topic envelope to every session that
 // registered interest in it (registry.Match), aggregating per-recipient
-// failures into a single NAK/ACK decision for the underlying message.
+// failures into a single NAK/ACK decision for the underlying message. A session whose row matches
+// the topic only through a topic its consumer filter leaves out, an earlier build's row, is no
+// recipient and is skipped with its WARN line (skipLeftOutInterest), where it would otherwise be
+// read as a session whose own consumer relays the message.
 func fanoutDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope) {
 	items := cfg.registry.Match(cfg.machineID, item.Topic)
 	if len(items) == 0 {
@@ -1034,6 +1037,9 @@ func fanoutDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, 
 	var failed bool
 	var deadDeliveries int
 	for _, interest := range items {
+		if skipLeftOutInterest(cfg.logger, interest, item.Topic) {
+			continue
+		}
 		verdict, target, _ := judgeFollowedTopic(cfg.followedTopicRules(), interest.SessionID, item, mode, modeErr)
 		// The caches, the echo rule and an unreadable delivery mode judge the message before the
 		// session's own state does, as they always have; what is left is a message this path
@@ -1063,9 +1069,13 @@ func fanoutDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, 
 		deliveryTimer := metrics.NewTimer()
 		// One resolution per recipient decides every outcome below: it reads the entry the
 		// judgement above returned for every verdict, its refusals among them, and makes no call
-		// of its own. The capture is the deployed stream's, which the session's consumer filter is
-		// judged on too (sessionConsumerFilter), so a topic only a newer build's subjects capture
-		// is one that consumer relays.
+		// of its own. The capture is the deployed stream's as the listener's client last read it,
+		// so a topic only a newer build's subjects capture is one the session's consumer relays;
+		// that consumer's filter holds every topic of the session's row whatever the deployed
+		// stream captures (sessionConsumerFilter). A read of a narrowing that falls between the
+		// message's publish and this resolution judges the stored copy uncaptured, so this path
+		// logs listener delivery failed and NAKs it for a session whose entry it holds, while the
+		// session's consumer still hands the session the message once.
 		err := session.Resolve(item, interest.SessionID, target, message.storedSeq(), cfg.client.DeployedStreamCaptures(item.Topic))
 		relayed := err == nil
 		// Refusals are decided before the take case, since the session whose own consumer relays

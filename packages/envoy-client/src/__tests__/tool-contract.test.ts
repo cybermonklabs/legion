@@ -168,6 +168,19 @@ describe("envoyToolSpecs", () => {
     expect(publish?.description).not.toContain("Every notification topic is stored");
   });
 
+  // The listener's 503 that says the message was not sent (`MESSAGE_NOT_SENT_PREFIX`): the bus
+  // refused it before anything went out, so it is temporary and a resend stores it once. Both
+  // tools say so, so an agent neither waits on it as a send that may have arrived nor gives up on
+  // the message.
+  test("tells an agent that a message the listener did not send may be sent again later", () => {
+    for (const name of ["envoy_send", "envoy_publish"]) {
+      const spec = envoyToolSpecs.find((candidate) => candidate.name === name);
+      expect(spec?.description).toContain(
+        "An error that says the message was not sent means nothing was stored, so the same message may be sent again later."
+      );
+    }
+  });
+
   test("tells an agent the three answers a role message has, the kept one as a success", () => {
     const publish = envoyToolSpecs.find((spec) => spec.name === "envoy_publish");
 

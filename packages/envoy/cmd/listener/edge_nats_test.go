@@ -107,7 +107,7 @@ func TestADottedEdgeMachineIDStartsUnderItsSpelledPrefix(t *testing.T) {
 	seed, public := testnats.User(t)
 	_, uri := testnats.StartConfig(t, testnats.GrantedUsersConfig(testnats.StaticUser{NKey: public, Publish: grant.Publish, Subscribe: grant.Subscribe}), []string{"-js"}, false)
 	t.Setenv(bus.NkeySeedEnvVar, seed)
-	client, err := connectListenerBus(config.Service{NATSURLs: []string{uri}}, edge)
+	client, err := connectListenerBus(config.Service{NATSURLs: []string{uri}}, edge, newNATSStart(listenerCredentialWait))
 	if err == nil {
 		client.Close()
 		t.Fatal("the edge's start connected on a server with no stream")

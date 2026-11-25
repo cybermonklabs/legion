@@ -3659,7 +3659,10 @@ func TestSessionRoutesReportEachSessionsDeliveryMode(t *testing.T) {
 // carries only what the stream stored; refusing the whole registration would leave it no
 // consumer at all. A role lane is no such topic: its holder registers it and the listener stores
 // each role message for it on its agent subject, which the stream does capture (startRoleForward).
-// A team topic and a topic outside notifications. are stored as they always were.
+// A team topic is stored as it always was. A topic that does not begin with the literal
+// notifications. is left out of the row too, with a warning of its own and not the uncaptured
+// one: the session's consumer filter carries no such topic, so the plan keeps it out of the row
+// and the answer names it in that filter's words (planWithoutLeftOut).
 func TestSubscribeHandlerDropsAnUncapturedNotificationTopicByName(t *testing.T) {
 	t.Parallel()
 	registry, sessions := setupSessionsTest(t, nil, nil)
@@ -3717,9 +3720,24 @@ func TestSubscribeHandlerDropsAnUncapturedNotificationTopicByName(t *testing.T) 
 	if err != nil {
 		t.Fatalf("read the stored interest: %v", err)
 	}
-	want := []string{contracts.LegacyAgentSubject("ses_captured"), contracts.RoleTopicPrefix + "reviewer", "notifications.team.kept", "team.bridge.>"}
+	want := []string{contracts.LegacyAgentSubject("ses_captured"), contracts.RoleTopicPrefix + "reviewer", "notifications.team.kept"}
 	if !slices.Equal(stored.Topics, want) {
 		t.Fatalf("stored topics = %v, want %v", stored.Topics, want)
+	}
+	var answer interestSubscribeAnswer
+	if err := json.NewDecoder(recorder.Body).Decode(&answer); err != nil {
+		t.Fatalf("decode the answer: %v", err)
+	}
+	// The role lane in its old form earns a warning of its own (store.Registry.LegacyTopicWarnings),
+	// so the check is on the warnings that name team.bridge.>: one, in the filter's words.
+	var named []string
+	for _, warning := range answer.Warnings {
+		if strings.HasPrefix(warning, "team.bridge.> ") {
+			named = append(named, warning)
+		}
+	}
+	if want := (filterLeftOut{topic: "team.bridge.>"}).warning("ses_captured"); !slices.Equal(named, []string{want}) {
+		t.Fatalf("warnings = %q, want one naming team.bridge.>: %q", answer.Warnings, want)
 	}
 }
 

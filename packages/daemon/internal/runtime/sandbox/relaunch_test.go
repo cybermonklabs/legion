@@ -2028,7 +2028,7 @@ func (g *rig) scriptedStartLauncher(
 	}
 	server, client := net.Pipe()
 	pod := g.pod(SandboxName(token))
-	session := g.r.launchers.accept(token, launcherIssue(token), shimwire.LauncherHello{
+	session := g.r.launchers.accept(token, launcherIssue(token), g.keptSince(token), shimwire.LauncherHello{
 		LauncherID: "scripted-" + string(token), PodUID: string(pod.UID), ResumesBySession: g.resumesBySession,
 	})
 	g.t.Cleanup(func() { _ = client.Close() })

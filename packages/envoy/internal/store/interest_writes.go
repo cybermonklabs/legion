@@ -462,7 +462,9 @@ func createInterest(ctx context.Context, kv bus.KeyValue, sessionID string, valu
 // planned it with these same roles (PlanInterest), and plans again when the row it stored is not
 // the one it filtered on. plan's Withheld topics are taken out of the row the write read before
 // the merge: a caller that holds a session to a rule of its own (cmd/listener's edge hold) takes
-// a stored topic out of the row that way.
+// a stored topic out of the row that way. The row keeps none of the plan's LeftOut either, the
+// topics that route keeps out of the row because the session's consumer filter leaves them out
+// (InterestPlan.LeftOut), so a row an earlier build stored with one is cleaned by the same write.
 //
 // The machine id and the directory are the requesting registration's, and the stored row is the
 // fallback for whichever of the two the request leaves empty. A session that registers again
@@ -491,6 +493,9 @@ func mergeForUpsert(cur Interest, getErr error, item Interest, now int64, plan I
 		stored = slices.DeleteFunc(slices.Clone(stored), func(topic string) bool { return slices.Contains(plan.Withheld, topic) })
 	}
 	item.Topics = MergedTopics(requested.SessionID, plan.Roles, stored, plan.Topics)
+	if len(plan.LeftOut) > 0 {
+		item.Topics = slices.DeleteFunc(item.Topics, func(topic string) bool { return slices.Contains(plan.LeftOut, topic) })
+	}
 	return item, nil
 }
 
@@ -647,9 +652,10 @@ func (h LaneHolders) Keeps(sessionID, topic string) bool {
 // in the record (releaseRoleClaims answers which topics those are), because one interest record
 // serves every process running under one session id and that topic is the interest half of a
 // claim that still stands, written there by the grant (SetRoleWithPrevious). No delivery rides
-// on it - a role lane is not stream-captured, so it never enters a session's consumer filter
-// (cmd/listener's sessionConsumerFilter), and a role message reaches its holder's agent subject
-// with the holder read off the claim (cmd/listener's resolveCoreRoleHolder) - but the record is
+// on it - a session's consumer filter leaves every role lane out (bus.RoleLane, which
+// cmd/listener's sessionConsumerFilter reads), since the stream never stores one, and a role
+// message reaches its holder's agent subject with the holder read off the claim (cmd/listener's
+// resolveCoreRoleHolder) - but the record is
 // where a deregistration of this session finds the role claims it frees (the empty-topics
 // branch below, releaseAllRoleClaims), so a release from a process that does not hold the claim
 // would otherwise take the lane topic out from under the process that does and leave the claim
