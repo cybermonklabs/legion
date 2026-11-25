@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -2214,6 +2215,49 @@ func TestLegionVerdictSweepsWithNoAnswerAtAHeadWarnOnce(t *testing.T) {
 	warned(2, "the count of sweeps with no answer again")
 	if runs := rig.github.legionRuns("code"); len(runs) != 1 || runs[0].Conclusion != "success" {
 		t.Fatalf("legion-verdict runs on code = %+v, want the success left as it stands", runs)
+	}
+}
+
+// A head the writers' sweep no longer lists, as when its pull request closed or moved on, keeps no
+// count of the sweeps that found it undecided: the next sweep forgets it, and the head, listed
+// again, needs noAnswerSweeps new sweeps with no answer before the WARN.
+func TestLegionVerdictASweepForgetsTheCountOfAHeadItNoLongerLists(t *testing.T) {
+	rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode, openCapture)
+	rig.acceptedAndWritten(t)
+	counted := func() map[string]int {
+		rig.w.verdicts.mu.Lock()
+		defer rig.w.verdicts.mu.Unlock()
+		return maps.Clone(rig.w.verdicts.unanswered)
+	}
+	listing := func(open []sweptPull) {
+		rig.sweep.mu.Lock()
+		defer rig.sweep.mu.Unlock()
+		rig.sweep.open = open
+	}
+	rig.github.mu.Lock()
+	rig.github.compareStatus = http.StatusBadGateway
+	rig.github.mu.Unlock()
+	for range noAnswerSweeps - 1 {
+		rig.swept(t)
+	}
+	if counts := counted(); len(counts) != 1 {
+		t.Fatalf("the writer counts %v after %d sweeps with no answer at code, want code counted", counts, noAnswerSweeps-1)
+	}
+	listing(nil)
+	rig.swept(t)
+	if counts := counted(); len(counts) != 0 {
+		t.Fatalf("the writer counts %v after a sweep that listed no pull request at code, want nothing counted", counts)
+	}
+	listing([]sweptPull{openCapture})
+	for range noAnswerSweeps - 1 {
+		rig.swept(t)
+	}
+	if lines := loggedMessages(t, rig.logs.String(), noAnswerLine); len(lines) != 0 {
+		t.Fatalf("%q lines after code came back for %d sweeps = %v, want none: its count started again", noAnswerLine, noAnswerSweeps-1, lines)
+	}
+	rig.swept(t)
+	if lines := loggedMessages(t, rig.logs.String(), noAnswerLine); len(lines) != 1 {
+		t.Fatalf("%q lines after code came back for %d sweeps = %v, want one", noAnswerLine, noAnswerSweeps, lines)
 	}
 }
 
