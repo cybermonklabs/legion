@@ -11,7 +11,7 @@ import (
 )
 
 // P0BoundMode is what one change of the P0 bound made while the daemon runs does
-// (dispatch://INFRA-5636 C3), as migrations/20261124171452_p0_bound.up.sql's mode column holds it.
+// (dispatch://INFRA-5636 C3), as migrations/20261125181828_p0_bound.up.sql's mode column holds it.
 type P0BoundMode string
 
 const (

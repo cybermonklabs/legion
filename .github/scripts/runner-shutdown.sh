@@ -23,7 +23,7 @@
 #   GET repos/{repo}/commits/{HEAD_SHA}/check-runs?filter=all&per_page=100
 #     `name`, `url` and `details_url` of every check run on this run's commit. A job's own check
 #     run is GitHub's, made when the job starts, and its `url` is the one this script reads
-#     annotations from. This is the route ci-ok-reconcile.sh:96 already reads from the ci-ok
+#     annotations from. This is the route `.github/scripts/ci-ok-reconcile.sh#check-runs?check_name=ci-ok` already reads from the ci-ok
 #     job, and it is read here rather than the run's jobs route — which hands the same mapping
 #     as `check_run_url` — because this route needs only a scope the reading job already
 #     declares: the ci-ok job's `permissions:` block gives it `checks: write`, which carries
@@ -91,12 +91,12 @@
 # shutdown killed, one per line, and returns 0. It reads the commit's check runs on its first
 # question and keeps them in a variable for the rest of that shell, but both callers take its
 # output through `$(…)`, which is a subshell: ci-ok.sh in one call naming its `failed` jobs,
-# ci-ok-report.sh:180 one job per call. The variable dies with the subshell, so a call made
+# `.github/scripts/ci-ok-report.sh#runner_shutdown_kills "$1"` one job per call. The variable dies with the subshell, so a call made
 # that way reads the route again and the keeping saves nothing across such calls — asking job
 # by job costs one read of the check runs per job. It returns 1, having warned, when GitHub
 # refused one of its reads at every attempt gh-read.sh made or the environment above is
 # incomplete: the caller then keeps every failure a failure and the verdict stays the failing one,
-# which is how ci-ok-report.sh:249-260 answers a refused jobs list too. Every warning goes to
+# which is how `.github/scripts/ci-ok-report.sh#"unread"` answers a refused jobs list too. Every warning goes to
 # stderr, where the job log holds it as gh-read.sh's own attempts are held, so a caller may read
 # the job names off this function's stdout.
 

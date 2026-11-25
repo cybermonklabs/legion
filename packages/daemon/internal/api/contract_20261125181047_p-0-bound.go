@@ -19,7 +19,7 @@ package api
 // P0_BOUND_REASON_REQUIRED`; a daemon with no workflow refuses all four with `409
 // P0_BOUND_UNAVAILABLE`. Each refusal is a Failure and changes nothing. A change is one fact
 // (`intake.P0BoundSet`) whose admission appends it to the new table `project_p0_bound_changes`
-// (migration `20261124171452`) and makes its pass in the same transaction, so the bound is in force
+// (migration `20261125181828`) and makes its pass in the same transaction, so the bound is in force
 // from that pass on; every pass reads the project's newest change again. The controller's two
 // routes answer `{bound, configured, live?}` (`api.P0BoundView`, answers.go's AnswerP0Bound, whose
 // routes arrive with it, so no contract below 282 records either): `bound`, the bound in force or
