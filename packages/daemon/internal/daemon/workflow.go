@@ -341,7 +341,7 @@ func appTransient(err error) bool {
 	return errors.As(err, &transient)
 }
 
-// appAttempt is one attempt at call, an App call of the start (the App logins read or the key
+// appAttempt is one attempt at call, an App call of the start (the App's login read or the key
 // proof), bounded by appMintAttempt. The error the attempt returns decides its outcome, in this
 // order. No error passes. A token_command still running past the bound (appauth.ErrCommandPending,
 // most often for a grant that waits on a person's approval) is pending, and a pending attempt
@@ -357,17 +357,16 @@ func appTransient(err error) bool {
 // Under an App's JWT the next attempt of its installation read joins the shared read still in
 // flight (appauth.Manager.InstalledOwners), which appauth drops at its installationReadLimit
 // (1 min) when GitHub never answers it, inside appMintRetry's worst case of 2 min 20 s, so an
-// attempt after that asks GitHub afresh. In token mode the installation read and the logins read
+// attempt after that asks GitHub afresh. In token mode the installation read and the login read
 // are both the App's token_command's release of every installation, whose run appauth's
 // runTokenCommand shares: an attempt whose bound ends while the command runs is pending
 // (ErrCommandPending), the next attempt joins the run still going, and a run that finishes
 // between two attempts is kept for the next one (appauth's finishedRunKeep), so the command does
-// not run again for it. The logins read shares those runs; appauth's anyInstallation says why the
-// key proof never takes a release the logins read was answered with. The logins read keeps the
-// installation it took until it has read the App's login under it (appauth's loginRelease), and
-// an attempt of it reads only the Apps whose login no attempt before it read (appLoginsAtBoot):
-// each App's command runs again for the logins read only after a run of it failed, or once the
-// release it took has come within appauth's refreshWindow of its expiry.
+// not run again for it. The login read shares those runs; appauth's anyInstallation says why the
+// key proof never takes a release the login read was answered with. The login read of the one
+// App (appLoginAtBoot) keeps the installation it took until it has read the App's login under it
+// (appauth's loginRelease), so the App's command runs again for the login read only after a run of
+// it failed, or once the release it took has come within appauth's refreshWindow of its expiry.
 func appAttempt(waits *startWaits, call string, attempt func(context.Context) error) func(context.Context) bootprobe.Outcome {
 	return func(ctx context.Context) bootprobe.Outcome {
 		bounded, cancel := context.WithTimeout(ctx, appMintAttempt)
