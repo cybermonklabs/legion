@@ -270,7 +270,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		UncertainStreak: 1,
 		SuspendedBy:     supervise.SuspendedByOperator, SuspensionHeld: true,
 		SuspensionHeldBy: supervise.SuspendedByDaemon, Compacting: true, ProcessGone: true, DeathCharged: true,
-		PluginContract: api.DaemonAPIVersion, PluginRelaunchFor: api.DaemonAPIVersion - 1, AgentResumeGeneration: 3,
+		PluginContract: api.DaemonAPIVersion(), PluginRelaunchFor: api.DaemonAPIVersion() - 1, AgentResumeGeneration: 3,
 		UpdateRound: "pod:" + podUID, UpdateReasons: "the pod template changed: the image moved",
 		UpdateRepository: ghrepo.MustParse("acme/widgets"),
 		UpdateOpenedAt:   &openedAt, UpdateTaskedAt: &openedAt, UpdateSignalledAt: &answeredAt,

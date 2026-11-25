@@ -133,7 +133,7 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 			},
 		},
 		RegisteredPods: supervise.RegisteredPods{Pods: []string{podUID}, Unknown: true},
-		PluginContract: DaemonAPIVersion, PluginRelaunchFor: DaemonAPIVersion - 1, AgentResumeGeneration: 3,
+		PluginContract: DaemonAPIVersion(), PluginRelaunchFor: DaemonAPIVersion() - 1, AgentResumeGeneration: 3,
 		UpdateRound: "pod:" + podUID, UpdateReasons: "the pod template changed: the image moved",
 		UpdateRepository: ghrepo.MustParse("acme/widgets"),
 		UpdateOpenedAt:   &openedAt, UpdateTaskedAt: &openedAt, UpdateSignalledAt: &answeredAt,

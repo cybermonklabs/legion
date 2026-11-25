@@ -34,7 +34,7 @@
 -- pass fails with them. Before its image is pinned, stop this release's daemon and run the one
 -- transaction below. docs/kubernetes.md carries it under "An issue's repository follows the one
 -- Dispatch resolves it to, and the reminder asks the daemon what a claim owes (daemon API
--- contract 294)".
+-- contract entry 20261125181104)".
 --
 --   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
 --   begin;

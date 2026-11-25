@@ -429,8 +429,8 @@ type Assignment struct {
 	// record.DesignStep), so an import of config here would close a cycle.
 	Unit string
 	// Variant is the arm drawn (config.Variant.Name), "" for no variant: an experiment at mode
-	// off, which draws for no unit, and the answer a hand-over settles a child at for an
-	// experiment the tree it left held no row for.
+	// off, which gives every new unit no arm, and the answer a hand-over settles a child at for
+	// an experiment the tree it left held no row for.
 	Variant string
 	// Mode is the experiment's mode when the draw was made (a config.ExperimentMode word), "" where
 	// a hand-over settled the row and the old tree held none, so no draw was ever made under any
@@ -885,11 +885,11 @@ type PhaseRow struct {
 	// whose re-admitted tree's promotion writes the task again.
 	//
 	// The resume writes the text it rendered here all the same, though this release never sends
-	// it for an entry that holds a wait: its one reader is a rollback to the release before
-	// contract 294. The rollback block in docs/kubernetes.md (contract 294) marks each entry that
-	// holds a wait (phases.entry_verbatim), and that release sends a marked entry's task as this
-	// field holds it, as it did before this release. So the write is no dead code: it goes only
-	// when that rollback block goes.
+	// it for an entry that holds a wait: its one reader is a rollback to the release before this
+	// change's entry, 20261125181104. The rollback block in docs/kubernetes.md (contract entry
+	// 20261125181104) marks each entry that holds a wait (phases.entry_verbatim), and that release
+	// sends a marked entry's task as this field holds it, as it did before this release. So the
+	// write is no dead code: it goes only when that rollback block goes.
 	EntryTask string
 	// EntryAwaiting is the wait a person answered, as the resume of a root raised this entry on it
 	// (workflow's ResumeAwaitedRoot), and nil on every entry anything else raised. It is what the
@@ -1646,7 +1646,9 @@ func (m MergeState) Mergeable() bool {
 // LastWakeAt when; WakeAt is when the check is next looked at — the time the checking agent
 // named on a pending report, or the retry of a look nobody reported — and is nil when neither
 // stands. Last marks the bound's look, after which no look starts. A closed check has ClosedAt
-// and its Outcome.
+// and its Outcome. FailedLooks counts the looks in a row whose checking role's claim failed, in
+// the look or after it ended, since the role last reported a look: what the next look's backoff
+// doubles by (workflow.failedLookRetry), and 0 again once a look is reported.
 type ProductionCheck struct {
 	Issue   string
 	Project string
@@ -1673,6 +1675,7 @@ type ProductionCheck struct {
 	Last           bool
 	ClosedAt       *time.Time
 	Outcome        CheckOutcome
+	FailedLooks    int
 }
 
 // Open says whether the check is still open: no look has closed it.
@@ -2863,6 +2866,12 @@ type Store interface {
 	// the snapshot it asks the gates in (OutboxLeased), so it finishes such a row unpublished, and
 	// its finish then finds nothing to delete.
 	DropQueuedChanges(ctx context.Context, tx pgx.Tx, rows []int64) error
+	// DropUnfencedCheckWakes deletes every check_wake row of issue the outbox still holds that
+	// carries no wake of its own (CheckWakeDue.WakeAt): a row a release before that field queued,
+	// which checkWakeDue cannot fence by the wake the check records. The workflow drops them where it
+	// queues the row that replaces the check's wake (failedBetweenLooks). A row the runner has leased
+	// is dropped too; its fact is the one applying, and its finish then finds nothing to delete.
+	DropUnfencedCheckWakes(ctx context.Context, tx pgx.Tx, issue string) error
 	// OutboxLeased reports whether row id is still in the outbox under leaseToken: false once
 	// another transaction deleted it while the runner held it (DropCatchUps, DropQueuedChanges).
 	OutboxLeased(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) (bool, error)

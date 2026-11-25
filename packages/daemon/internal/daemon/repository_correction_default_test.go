@@ -259,7 +259,7 @@ func (r *podUpdateRig) secondIssue(issue, pod string) claim.Token {
 	token := mustClaimToken(r.t, issue, claim.RoleImplementer)
 	c := supervise.Claim{
 		Token: token, Project: podUpdateProject, Tree: issue, Issue: issue, Role: claim.RoleImplementer,
-		Generation: 1, State: supervise.StateReady, PluginContract: api.DaemonAPIVersion,
+		Generation: 1, State: supervise.StateReady, PluginContract: api.DaemonAPIVersion(),
 		Session: "ses_" + issue, SessionFile: "/sessions/" + issue + ".jsonl",
 		Locator: podUpdateLocator(token, issue, pod),
 	}

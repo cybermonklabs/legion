@@ -30,4 +30,4 @@ body: |-
   another document. An answer an earlier release wrote is asked as before. The kept
   approval now records the document approved (store migration 20261122212816 adds
   `readmitted_approvals.artifact`); a rollback takes the steps docs/kubernetes.md gives under
-  contract 294.
+  the daemon API contract entry 20261125181104.

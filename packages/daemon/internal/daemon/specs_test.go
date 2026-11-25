@@ -721,7 +721,7 @@ func TestSpawnSpecPluginsIsSetOnlyForAStaleKubernetesClaimWithASession(t *testin
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
-	pair := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion}
+	pair := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion()}
 	token, err := claim.NewToken("s1", "S1-2", claim.RoleImplementer)
 	if err != nil {
 		t.Fatal(err)
@@ -737,7 +737,7 @@ func TestSpawnSpecPluginsIsSetOnlyForAStaleKubernetesClaimWithASession(t *testin
 		{"kubernetes, session, recorded 0", "kubernetes", pair, base, true},
 		{"kubernetes, session, recorded a stale number", "kubernetes", pair, withContract(base, 23), true},
 		{"kubernetes, no session", "kubernetes", pair, withSession(base, ""), false},
-		{"kubernetes, at the daemon's contract", "kubernetes", pair, withContract(base, api.DaemonAPIVersion), false},
+		{"kubernetes, at the daemon's contract", "kubernetes", pair, withContract(base, api.DaemonAPIVersion()), false},
 		{"kubernetes, no known pair", "kubernetes", nil, base, false},
 		{"tmux", "tmux", pair, base, false},
 	} {
@@ -767,7 +767,7 @@ func TestSpawnSpecPluginsCoversTheDaemonsControllerToo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
-	pair := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion}
+	pair := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion()}
 	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, runtimeName: "kubernetes", plugins: pair, appOwners: noAppOwners}
 	c := supervise.Claim{Token: claim.ControllerToken("s1"), Project: "s1", Role: claim.RoleController, Session: "sess-1", PluginContract: 23}
 	spec, err := s.SpawnSpec(context.Background(), c)
@@ -865,7 +865,7 @@ func TestSpawnSpecPluginsSkipsAClaudeClaimAndNoOther(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
-	pair := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion}
+	pair := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion()}
 	// `worker_backends: {implementer: claude}`: every other role, and the controller, on Oh My Pi.
 	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, runtimeName: "kubernetes", plugins: pair,
 		appOwners: noAppOwners,

@@ -43,6 +43,7 @@ var seededRaisedAt = time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
 // implementer is started in implementing, completes, and is started there again, which leaves its
 // row at the second entry carrying the second entry's task.
 func TestEveryPhaseStartRaisesTheRolesEntryAndWritesItsTask(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: entryIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: entryIssue,
@@ -128,6 +129,7 @@ func TestEveryPhaseStartRaisesTheRolesEntryAndWritesItsTask(t *testing.T) {
 // entry instead, and raises no entry either
 // (TestTheBootsResumeOfAWorkerBehindItsEntrySendsThatEntrysWork).
 func TestTheBootsResumeRaisesNoEntry(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := t.Context()
 	project, err := claim.ProjectToken("LEGION")
@@ -172,6 +174,7 @@ func TestTheBootsResumeRaisesNoEntry(t *testing.T) {
 // still names the entry the worker is on and the start carries that number: a completion still in
 // flight is never refused for an entry nothing ever delivered.
 func TestAHeldPhasesRetryRaisesNoEntry(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: entryIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: entryIssue,
 		Project: "LEGION", Title: "root", Phase: phase.Held, Hold: &record.Hold{From: phase.Testing}, Generation: 1,
@@ -198,6 +201,7 @@ func TestAHeldPhasesRetryRaisesNoEntry(t *testing.T) {
 // instead, and the start raises no entry. So that role's record goes on naming whatever entry its
 // last phase gave it, and nothing of the check is weighed against a phases row.
 func TestAProductionChecksLookRaisesNoEntry(t *testing.T) {
+	t.Parallel()
 	rig := childCheckRig(t)
 	starts := superviseRowsOf(t, rig.pool, "LEGION-209", "start")
 	if len(starts) == 0 {
@@ -218,6 +222,7 @@ func TestAProductionChecksLookRaisesNoEntry(t *testing.T) {
 // (Engine.ClearTreeGeneration), so the record would otherwise name an entry whose work
 // nothing could send again.
 func TestThePromotionsStartRaisesTheEntryAndWritesItsTask(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	issue := record.Issue{Key: entryIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: entryIssue,
 		Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 2, Status: "in_progress", Rank: "U"}
@@ -259,6 +264,7 @@ func TestThePromotionsStartRaisesTheEntryAndWritesItsTask(t *testing.T) {
 // raised is handed a forward move's entry next, and a value left behind would make the fence
 // refuse work the issue moved forward into.
 func TestTheEntryCarriesWhetherTheMoveThatRaisedItMovedBack(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: entryIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: entryIssue,
 		Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
@@ -299,6 +305,7 @@ func TestTheEntryCarriesWhetherTheMoveThatRaisedItMovedBack(t *testing.T) {
 // reset. The merger reads both halves, and no task of either names a head: the merger reads the
 // head it merges on GitHub itself.
 func TestTheWorkAnEntryNamesIsSentOnce(t *testing.T) {
+	t.Parallel()
 	issue := record.Issue{Key: entryIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: entryIssue,
 		Project: "LEGION", Title: "root", Phase: phase.Merging, Generation: 1, Status: "in_progress", Rank: "U"}
 	for _, tc := range []struct {
@@ -355,6 +362,7 @@ func TestTheWorkAnEntryNamesIsSentOnce(t *testing.T) {
 // and the completion it answered with would be refused as behind that entry. A claim level with
 // its row is sent the resume, which is the whole of what its ready ever needed.
 func TestTheReadyOfAWorkerBehindItsEntrySendsThatEntrysWork(t *testing.T) {
+	t.Parallel()
 	issue := record.Issue{Key: entryIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: entryIssue, Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", HandedOver: true}
 	for _, tc := range []struct {

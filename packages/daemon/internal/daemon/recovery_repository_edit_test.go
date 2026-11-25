@@ -196,7 +196,12 @@ func TestAChildARecoveryFoundNewerThanItsListingIsRecordedByTheNextPass(t *testi
 	testwait.Eventually(t, "the held recovery ended", func() bool {
 		return len(w.recoveringReasons()) == 0 || client.listingCount() > listed
 	})
-	if recordedIssue(t, w, child) == nil && len(w.recoveringReasons()) == 0 {
+	// The recovery's end is read before the child's record. A pass commits its listing, the
+	// child's record with it, before it takes zeta/tools out of the repositories to recover
+	// (recoverRepositories), so a child read unrecorded after the end was read is one that pass
+	// let go. Read the other way round, the record can be read before the next pass commits and
+	// the end after it, and the test fails on a recovery that recorded the child.
+	if len(w.recoveringReasons()) == 0 && recordedIssue(t, w, child) == nil {
 		t.Fatalf("the held recovery let zeta/tools go with %s unrecorded: its listing, at 1, was older than the child's event at 2, and no later pass lists it", child)
 	}
 	testwait.Eventually(t, child+" recorded by a later recovery", func() bool { return recordedIssue(t, w, child) != nil })

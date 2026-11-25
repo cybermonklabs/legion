@@ -593,13 +593,14 @@ func (e *Engine) tellInPlace(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // send as this start's does. The text the entry holds is the record as it stands at this raise,
 // and is never sent again by this release: a person who approves the reviewed version after this
 // raise has answered the changes request it names. It is rendered and written all the same for its
-// one reader, a rollback to the release before contract 294: the rollback block in
-// docs/kubernetes.md (contract 294) marks each entry that holds a wait, and that release sends a
-// marked entry's task as written (record.PhaseRow.EntryTask), so the render goes only with that
-// block. The root's own record cannot stand in for the kept wait, since it holds the wait no
-// longer once the root resumes (the promotion clears it, and tellInPlace never writes one). Both
-// callers get it — the promotion of an answered root (admit's record.LineAnswered branch) and
-// tellInPlace, which gives a live architect this task where it stands.
+// one reader, a rollback to the release before this change's entry, 20261125181104: the rollback
+// block in docs/kubernetes.md (contract entry 20261125181104) marks each entry that holds a wait,
+// and that release sends a marked entry's task as written (record.PhaseRow.EntryTask), so the
+// render goes only with that block. The root's own record cannot stand in for the kept wait,
+// since it holds the wait no longer once the root resumes (the promotion clears it, and
+// tellInPlace never writes one). Both callers get it — the promotion of an answered root (admit's
+// record.LineAnswered branch) and tellInPlace, which gives a live architect this task where it
+// stands.
 //
 // The resume starts the root's architect, which is a movement of the issue
 // (record.Store.MarkIssueMoved, the rule in dispatchIssue). It is marked here rather than at

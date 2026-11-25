@@ -525,6 +525,21 @@ func TestTheProjectsRecordsWriteNoOutboxRowOfAnotherProjectsIssue(t *testing.T) 
 			t.Errorf("the project's own rows keyed LEGION-7 after the drop = %q, want its status write dropped", got)
 		}
 	})
+	t.Run("DropUnfencedCheckWakes", func(t *testing.T) {
+		unfenced := func(key string) record.OutboxRow {
+			return mustOutboxRow(t, key, record.CheckWakeDue{Look: 1, Reason: "an earlier release's wake"}, now)
+		}
+		seed(t, unfenced("OTHERPROJECT-10"))
+		before := rowsOf(t, "OTHERPROJECT-10")
+		write(t, func(tx pgx.Tx) error { return records.DropUnfencedCheckWakes(ctx, tx, "OTHERPROJECT-10") })
+		refused(t, record.OutboxKindCheckWake, "OTHERPROJECT-10", before)
+		seed(t, unfenced("LEGION-10"))
+		seed(t, mustOutboxRow(t, "LEGION-10", record.CheckWakeDue{Look: 1, WakeAt: now.Add(time.Hour), Reason: "this release's wake"}, now))
+		write(t, func(tx pgx.Tx) error { return records.DropUnfencedCheckWakes(ctx, tx, "LEGION-10") })
+		if got := rowsOf(t, "LEGION-10"); len(got) != 1 {
+			t.Errorf("the project's own rows keyed LEGION-10 after the drop = %q, want the wake that names its time alone", got)
+		}
+	})
 	// A clear of a generation deletes the design gates it covers and answers each issue it
 	// emptied, whose publication of the empty set its caller queues (record.Postgres.clearGates,
 	// workflow's Engine.ClearGeneration). A clear of another project's issue empties nothing and
