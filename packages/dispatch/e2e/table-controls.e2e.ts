@@ -75,6 +75,7 @@ import {
   control,
   controlRow,
   displayChoice,
+  filterPicker,
   listOf,
   listTrigger,
   openFilterPanel,
@@ -9945,5 +9946,166 @@ test("taking off the Inbox's only narrowing by its chip or by Clear filters at 3
   }
   // A keyboard reader who takes the narrowing off is left on a control they cannot see: their next
   // Tab starts from a place the window has carried away from them.
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): twenty labelled issues seeded, and at each of two widths the issue header's Status
+// and the project List's Labels filter walked by the arrows, then narrowed by a word and cleared.
+// INFRA-3135, round 26 (the tester's, measured in builds Jobs infra-3135-p-hc-pmzhr and
+// infra-3135-p-hfw-wx7zj at 8e7e463a and infra-3135-p-bc-td6pm and infra-3135-p-bfw-4tfm7 at
+// 34dc6a07, and this row in infra-3135-p-red-7lb7z and infra-3135-p-red2-p8kpf at 8e7e463a): the
+// reader opens a shared list from the keyboard, walks it with ArrowDown until its box has scrolled,
+// and types a letter that narrows it. The list marks its first remaining option active and the box
+// stays where the arrows left it, so that option stands wholly above what the box shows: Triage 39
+// px above it in the issue header's Status after "e", lab-01 259 px above it in the project List's
+// Labels filter after "1", and the same in the Inbox Filter panel's Project list, the issue's
+// Assignee and the Delivery page's Repository and Author lists, in Chromium, Firefox and WebKit at
+// 1440x900 and 390x664. Clearing the word leaves the first option out of sight too: lab-01 611 px
+// above it in Firefox and WebKit, 655 px in Chromium. Enter then picks an option the reader cannot
+// see. At 34dc6a07 the arrows scrolled the box nothing, so a walk never took the box off its top; a
+// box the reader scrolled with PageDown left the first option out of sight the same way once the
+// word was cleared. The cause: a change of the text box's word sets no active value
+// (components/MultiSelect.tsx:704-711), so the list marks its first row active (:322), and only the
+// arrows and a single pick's open scroll the box to the option they mark (`showOption`). The rule
+// (the architect's ruling of 2026-11-24 08:07Z on round 25's Status row): the shared list shows the
+// option it marks active, on every list it draws.
+test("the shared list keeps the option it marks active wholly inside its box when a typed word narrows it and when the word is cleared, in the issue header's Status and the project List's Labels filter, at 1440 and 390 @firefox @webkit", async ({
+  page,
+}) => {
+  // Two widths, each with an issue page's Status and the project List's Labels filter walked.
+  test.setTimeout(120_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Statuses in sight" });
+  for (let label = 1; label <= 20; label += 1) {
+    const labelled = await createIssue({ project: "CORE", title: `Labelled ${label}` });
+    await patchIssue(labelled.key, { labels: [`lab-${String(label).padStart(2, "0")}`] });
+  }
+  /** Where the option the open list marks active (its text box's `aria-activedescendant`) stands
+   *  in the list's scroll box, in that box's content: the option's top and bottom, and the part
+   *  of the content the box shows - below what it draws stuck to its top (the text box), above
+   *  what it draws stuck to its bottom (the Clear foot), and cut to the window - with the box's
+   *  scrollTop and height. `inside` is whether the option stands wholly in that part. */
+  const activeOptionSight = () =>
+    page.evaluate(() => {
+      const id = document.activeElement?.getAttribute("aria-activedescendant") ?? "";
+      const option = id === "" ? null : document.getElementById(id);
+      const none = {
+        bottom: 0,
+        height: 0,
+        inside: false,
+        name: "no option",
+        scrollTop: 0,
+        shownBottom: 0,
+        shownTop: 0,
+        top: 0,
+      };
+      if (option === null) return none;
+      const spoken = option.getAttribute("aria-label") ?? option.textContent ?? "";
+      const name = `"${spoken.replace("✓", "").replace(/\s+/g, " ").trim()}"`;
+      let found = option.parentElement;
+      while (found !== null && !/(auto|scroll)/.test(getComputedStyle(found).overflowY)) {
+        found = found.parentElement;
+      }
+      if (found === null) return { ...none, name };
+      const box = found;
+      const boxTop = box.getBoundingClientRect().top + box.clientTop;
+      let shownTop = Math.max(boxTop, 0);
+      let shownBottom = Math.min(boxTop + box.clientHeight, window.innerHeight);
+      for (const child of box.children) {
+        if (getComputedStyle(child).position !== "sticky") continue;
+        const stuck = child.getBoundingClientRect();
+        if (stuck.top <= boxTop + 1) shownTop = Math.max(shownTop, stuck.bottom);
+        else if (stuck.bottom >= boxTop + box.clientHeight - 1) {
+          shownBottom = Math.min(shownBottom, stuck.top);
+        }
+      }
+      const own = option.getBoundingClientRect();
+      const content = (y: number) => Math.round(y - boxTop + box.scrollTop);
+      return {
+        bottom: content(own.bottom),
+        height: box.clientHeight,
+        inside: own.top >= shownTop - 1 && own.bottom <= shownBottom + 1,
+        name,
+        scrollTop: Math.round(box.scrollTop),
+        shownBottom: content(shownBottom),
+        shownTop: content(shownTop),
+        top: content(own.top),
+      };
+    });
+  // Each list: how it is reached, its options, how many ArrowDown take its box off its top (its
+  // box shows five options), and the letter that narrows it while leaving more than the box shows.
+  // The Labels filter is walked to its last option: with its box scrolled 215 px, at lab-10, the
+  // narrowing left lab-01 in sight in all three engines (builds Job infra-3135-p-red-7lb7z), and
+  // with the box scrolled to its end the narrowing leaves it at 259 px.
+  const lists = [
+    {
+      name: "the issue header's Status",
+      listbox: "Status options",
+      options: 8,
+      downs: 5,
+      word: "e",
+      narrowed: 6,
+      reach: async () => {
+        await page.goto(`/issues/${issue.key}/artifacts`);
+        return listTrigger(page.getByTestId("issue-header"), "Status");
+      },
+    },
+    {
+      name: "the project List's Labels filter",
+      listbox: "Labels options",
+      options: 20,
+      downs: 19,
+      word: "1",
+      narrowed: 11,
+      reach: async () => {
+        await openIssuesTab(page, "CORE", "List");
+        await expect(page.locator("[data-issue-row]").first()).toBeVisible();
+        return filterPicker(page, "Labels");
+      },
+    },
+  ];
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    for (const list of lists) {
+      const where = `${list.name} at ${size.width}x${size.height}`;
+      const trigger = await list.reach();
+      await expect(trigger).toBeVisible();
+      await trigger.focus();
+      await page.keyboard.press("Enter");
+      const listbox = page.getByRole("listbox", { name: list.listbox });
+      await expect(listbox.getByRole("option")).toHaveCount(list.options);
+      for (let step = 0; step < list.downs; step += 1) {
+        await page.keyboard.press("ArrowDown");
+        await nextFrames(page);
+      }
+      // The word below is typed into a list whose box the arrows have taken off its top.
+      await expect
+        .poll(() => listbox.evaluate((node) => node.parentElement?.scrollTop ?? 0), {
+          message: `${where}: ${list.downs} ArrowDown scrolled the list's box nothing`,
+        })
+        .toBeGreaterThan(0);
+      for (const { change, key, count } of [
+        { change: `typing "${list.word}"`, key: list.word, count: list.narrowed },
+        { change: "clearing the word", key: "Backspace", count: list.options },
+      ]) {
+        await page.keyboard.press(key);
+        await expect(listbox.getByRole("option")).toHaveCount(count);
+        await nextFrames(page);
+        // One read is the answer: the list has drawn its rows, and nothing else scrolls the box.
+        const sight = await activeOptionSight();
+        if (!sight.inside) {
+          wrong.push(
+            `${where}: after ${list.downs} ArrowDown and ${change} the list marks ${sight.name} active at ${sight.top}-${sight.bottom} px of its content, and its box shows ${sight.shownTop}-${sight.shownBottom} px of it (scrollTop ${sight.scrollTop}, height ${sight.height}): the active option is out of sight`
+          );
+        }
+      }
+      await page.keyboard.press("Escape");
+      await expect(trigger).toHaveAttribute("aria-expanded", "false");
+    }
+  }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
