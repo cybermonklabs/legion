@@ -119,7 +119,7 @@ func ResolvedPlugins(cfg config.Config) (*runtime.PluginInstall, string) {
 	if k.PluginsFromBinary {
 		source = PluginsFromBinary
 	}
-	return &runtime.PluginInstall{PiLegion: k.Plugins.PiLegion, PiEnvoy: k.Plugins.PiEnvoy, Contract: api.DaemonAPIVersion}, source
+	return &runtime.PluginInstall{PiLegion: k.Plugins.PiLegion, PiEnvoy: k.Plugins.PiEnvoy, Contract: api.DaemonAPIVersion()}, source
 }
 
 // probeBudgetMargin is how far the image probe's attempt budget must clear
@@ -300,7 +300,7 @@ func imageProbe(cfg config.Config, references promptrefs.Names) (sandbox.ImagePr
 	}
 	budget, _ := ProbeBudget(cfg)
 	return sandbox.ImageProbe{
-		Contract: api.DaemonAPIVersion, Budget: budget, Retry: imageProbeRetry,
+		Contract: api.DaemonAPIVersion(), Budget: budget, Retry: imageProbeRetry,
 		RoleReferences: references,
 		Resources:      resources,
 	}, nil

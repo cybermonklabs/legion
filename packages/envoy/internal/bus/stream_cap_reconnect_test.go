@@ -10,6 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A connection that is reconnecting reports no server version ((*nats.Conn).ConnectedServerVersion
@@ -34,7 +35,8 @@ func TestAnEnsureHookAcrossAReconnectDecidesNothingOnTheEmptyVersion(t *testing.
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -150,22 +152,16 @@ func TestAFlapRunsTheSecondDisconnectHookAtOnce(t *testing.T) {
 
 func waitNotConnected(t *testing.T, conn *nats.Conn) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for conn.IsConnected() {
-		if time.Now().After(deadline) {
-			t.Fatal("the connection still reports connected 5s after its server stopped")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Until(t, "the connection to report not connected after its server stopped", func() (bool, bool) {
+		connected := conn.IsConnected()
+		return connected, !connected
+	})
 }
 
 func waitConnected(t *testing.T, conn *nats.Conn) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for conn.Status() != nats.CONNECTED {
-		if time.Now().After(deadline) {
-			t.Fatalf("the connection is %v 30s after its server started, want connected", conn.Status())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Until(t, "the connection to report connected after its server started", func() (nats.Status, bool) {
+		status := conn.Status()
+		return status, status == nats.CONNECTED
+	})
 }

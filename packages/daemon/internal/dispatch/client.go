@@ -286,6 +286,27 @@ func (c *HTTPClient) PutStepRating(ctx context.Context, key, id string, write St
 	}, nil)
 }
 
+// PutStepExperiment writes the experiment and the variant of the record's issue onto the record id
+// of the issue key, through the record's experiment route, PUT
+// /api/v1/issues/{key}/steps/{id}/experiment, as the daemon's own session. The body is the run's
+// identity out of write, of which Dispatch sets each field the record does not hold yet and keeps
+// each it holds, and the pair, and no other field: the start, the end and the rating are the
+// record's own writes, which the outbox sends first (publishStepRecord), so a Dispatch older than
+// this route takes the record and only the pair waits. The pair has a route of its own because the
+// step route and the rating route ignore a member they do not declare, so a pair sent there would
+// be answered 200 and lost. Dispatch answers the step route's refusals, and 400 STEP_INPUT for a
+// pair off its rule; a Dispatch older than the route answers its router's 404 (NoRoute), which the
+// outbox's row waits on.
+func (c *HTTPClient) PutStepExperiment(ctx context.Context, key, id string, write StepWrite, experiment StepExperiment) error {
+	identity := StepWrite{Task: write.Task, Step: write.Step, Kind: write.Kind, Role: write.Role, Type: write.Type,
+		Agent: write.Agent, Generation: write.Generation}
+	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/steps/"+url.PathEscape(id)+"/experiment", stepExperimentWrite{
+		StepWrite:      identity,
+		StepExperiment: experiment,
+		Actor:          daemonActor(key),
+	}, nil)
+}
+
 // PutPlan writes the plan one run of the issue key carries out onto Dispatch's plan id of that
 // issue, through PUT /api/v1/issues/{key}/plans/{id}, as the daemon's own session, the one session
 // the route takes a plan of the issue from. The write appends no event and notifies nobody. The
@@ -1009,6 +1030,14 @@ type stepWrite struct {
 type stepRatingWrite struct {
 	StepWrite
 	PlanRating
+	Actor actor `json:"actor"`
+}
+
+// stepExperimentWrite is the body of a variant's write: the run's identity, the experiment and the
+// variant, and the daemon's actor.
+type stepExperimentWrite struct {
+	StepWrite
+	StepExperiment
 	Actor actor `json:"actor"`
 }
 

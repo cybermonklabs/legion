@@ -262,7 +262,7 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr, 
 		omplaunch.WithPrefixShown(cfg.OmpLaunchPrefix, invocation), controllerDir)
 	secret, designSteps, err := probeAndMint(ctx, cfg.DaemonURL, daemon.ControllerProbe{
 		Omp: invocation, Prefix: cfg.OmpLaunchPrefix, Env: env, WorkDir: controllerDir, Stdin: os.Stdin, Stderr: attempts,
-		Contract: api.DaemonAPIVersion, Log: slog.New(slog.NewTextHandler(stderr, redact.HandlerOptions(nil))),
+		Contract: api.DaemonAPIVersion(), Log: slog.New(slog.NewTextHandler(stderr, redact.HandlerOptions(nil))),
 	}, operatorToken)
 	if err != nil {
 		removeDirs(created)

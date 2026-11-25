@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Tests for ci_citations.py, which holds each citation token under .github to the file it
-# names and refuses a citation of any other shape there:
+# Tests for ci_citations.py, which holds each citation token under .github, and in each //ci: line
+# outside it, to the file it names and refuses a citation of any other shape there:
 # - a token whose name its file holds passes and is counted; after a rename in that file it
 #   fails, naming the path and the name; a name that only a comment of the file holds fails, and
 #   so do a text name that a longer word holds at either end, a hyphen included, and an
@@ -32,9 +32,15 @@
 #   a line break between them included), is refused with the message that names the token to
 #   write, and so is a backticked text before in and a path; one further on in the sentence is
 #   not, which is the stated limit of that rule;
-# - a file outside .github is not read, and ordinary text that names no path passes;
+# - a file outside .github is not read but for its //ci: lines, and ordinary text that names no
+#   path passes;
+# - a //ci: line outside .github is read as a text of its own: its token is held and counted, an
+#   indented one too, and fails, naming the line, after a rename in the cited file; a line number
+#   in it is refused; and a //ci: that does not start its line is not read, nor is any other line
+#   of the file, nor the next //ci: line with it;
 # - a scan that finds no token fails rather than passing;
-# - and this repository's own .github passes, with at least 700 tokens.
+# - and this repository's own .github passes, with at least 700 tokens, and so do the //ci: lines
+#   outside it, at least 200, with at least 19 tokens among them.
 #
 # This file is under .github, so the real scan reads it as text. Every token, line number and
 # backticked text a case needs is built at run time from bt, h and c below, so this file's own
@@ -192,6 +198,13 @@ refused() {
 
 # clean <line>: true when the output names no problem of notes.md at that line, for check.
 clean() { is "$(grep -cF -- ".github/ci-notes/notes.md$c$1: " <<<"$out")" 0; }
+
+# refused_in <file> <line> <text>: refused, for a citing file outside .github.
+refused_in() {
+  local at
+  at=$(grep -F -- "$1$c$2: " <<<"$out" || true)
+  grep -qF -- "$3" <<<"$at" && echo true || echo false
+}
 
 app="packages/app/main_test.go"
 pw="packages/app/playwright.config.ts"
@@ -596,7 +609,7 @@ run_check "$root"
 check "while the same name right after the path is refused" \
   "$(refused 3 "write it as $(tok .github/workflows/ci.yaml no_such_output)")"
 
-echo "case: a file outside .github is not read"
+echo "case: a file outside .github is not read, but for its //ci: lines"
 root=$(fixture outside)
 notes "$root" <<EOF
 $(tok "$app" TestReadsTheConfig)
@@ -608,6 +621,77 @@ track "$root"
 run_check "$root"
 check "passes" "$(is "$status" 0)"
 check "and counts the one token under .github" "$(contains "$out" '^1 citation tokens in 1 of')"
+
+echo "case: a //ci: line outside .github is read: its token is held and counted, and a rename fails it"
+root=$(fixture ci-held)
+ci="packages/app/reads_test.go"
+# The second line is indented, which the //ci: parser reads as a line too.
+cat > "$root/$ci" <<EOF
+package app
+
+//ci:reads packages/app/run.sh $(tok "$app" TestReadsTheConfig) runs it
+	//ci:builds packages/app . $(tok packages/app/scan.go Scanned) builds it
+EOF
+track "$root"
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+check "counts the token of each line, and the lines" \
+  "$(contains "$out" '^2 citation tokens in 0 of the [0-9]* text files under .github/ and 2 of the 2 //ci: lines outside it ')"
+sed -i 's/TestReadsTheConfig/TestReadsItsConfig/' "$root/$app"
+run_check "$root"
+check "fails after the rename" "$(is "$status" 1)"
+check "naming the //ci: line, the path and the name" \
+  "$(refused_in "$ci" 3 "${bt}$app${bt} holds no ${bt}TestReadsTheConfig${bt}")"
+check "and that line alone, the indented line's token still held" "$(is "$(grep -cF -- "$ci$c" <<<"$out")" 1)"
+
+echo "case: a //ci: line that cites by a line number is refused"
+root=$(fixture ci-numbers)
+cat > "$root/$ci" <<EOF
+package app
+
+//ci:reads packages/app/run.sh $app${c}6 runs it
+//ci:reads packages/app/run.sh $(tok "$app" 6) runs it
+//ci:reads packages/app/run.sh TestReadsTheConfig runs it (main_test.go${c}6)
+EOF
+track "$root"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "refuses a path, a colon and a number" "$(refused_in "$ci" 3 "cites ${bt}$app${bt} by a line number")"
+check "refuses a token whose name is a line number" "$(refused_in "$ci" 4 "cites ${bt}$app${bt} by a line number")"
+check "refuses a file name and a number, naming its root path" \
+  "$(refused_in "$ci" 5 "cites ${bt}$app${bt} by a line number")"
+
+echo "case: outside .github only a line that starts with //ci: is read, and each such line alone"
+# The texts the case above refuses stand here in a comment, a string and after code, where no
+# //ci: line starts, and the token of each names what main_test.go does not hold: read, they
+# would fail. The two //ci: lines are read alone: the bare colon and number of the second line
+# stand beside no path of its own, while the same two lines under .github, read as one text,
+# put it beside the path that ends the first line.
+root=$(fixture ci-only)
+cat > "$root/$ci" <<EOF
+package app
+
+//ci:reads packages/app/run.sh $(tok "$app" TestReadsTheConfig) runs packages/app/run.sh
+//ci:reads-set app_set TestReadsTheConfig reads them, and ${c}4
+
+// A comment that is no //ci: line: $app${c}6 and $(tok "$app" TestGone).
+var notALine = "//ci:reads packages/app/run.sh $app${c}6 $(tok "$app" TestGone)"
+var afterCode = 1 //ci:reads packages/app/run.sh $app${c}6 $(tok "$app" TestGone)
+EOF
+track "$root"
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+check "and counts the two //ci: lines and the one token" \
+  "$(contains "$out" '^1 citation tokens in 0 of the [0-9]* text files under .github/ and 1 of the 2 //ci: lines outside it ')"
+notes "$root" <<EOF
+//ci:reads packages/app/run.sh $(tok "$app" TestReadsTheConfig) runs packages/app/run.sh
+//ci:reads-set app_set TestReadsTheConfig reads them, and ${c}4
+EOF
+git -C "$root" add -A
+run_check "$root"
+check "while the same two lines under .github are refused" \
+  "$(refused 1 "cites ${bt}packages/app/run.sh${bt} by a line number")"
+check "and the test file's are not" "$(is "$(grep -cF -- "$ci$c" <<<"$out")" 0)"
 
 echo "case: ordinary text that names no path passes"
 root=$(fixture ordinary)
@@ -631,10 +715,17 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "says it found no token" "$(contains "$out" '^found no citation token in the [0-9]* text files under .github/')"
 
-echo "case: this repository's own .github holds every token and no citation of another shape"
+echo "case: this repository's own .github and //ci: lines hold every token and no citation of another shape"
 run_check "$repo"
 check "passes" "$(is "$status" 0)"
 count=$(sed -n 's/^\([0-9][0-9]*\) citation tokens in .*/\1/p' <<<"$out")
 check "over at least 700 tokens, so a scan that stopped finding them fails here" "$(is "$(( ${count:-0} >= 700 ))" 1)"
+ci_counts=' and \([0-9][0-9]*\) of the \([0-9][0-9]*\) //ci: lines outside it '
+ci_lines=$(sed -n "s|.*$ci_counts.*|\2|p" <<<"$out")
+ci_holding=$(sed -n "s|.*$ci_counts.*|\1|p" <<<"$out")
+check "and reads at least 200 //ci: lines outside it, so a scan that stopped reading them fails here" \
+  "$(is "$(( ${ci_lines:-0} >= 200 ))" 1)"
+check "of which at least 19 hold a token, the ones that cited by a line number" \
+  "$(is "$(( ${ci_holding:-0} >= 19 ))" 1)"
 
-summary "ci_citations.py holds each citation token under .github to its file and refuses every other shape"
+summary "ci_citations.py holds each citation token under .github and in each //ci: line outside it to its file and refuses every other shape"
