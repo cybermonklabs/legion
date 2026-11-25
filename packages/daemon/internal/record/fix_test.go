@@ -696,7 +696,7 @@ func besidePushRace(t *testing.T, records *Postgres) besidePushes {
 	}
 	begin := func() pgx.Tx {
 		t.Helper()
-		tx, err := st.Pool().Begin(ctx)
+		tx, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 		must(t, err)
 		t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
 		return tx
@@ -710,7 +710,7 @@ func besidePushRace(t *testing.T, records *Postgres) besidePushes {
 	must(t, records.RecordBesidePush(ctx, pushTx, fixIssue, 3, "a", 1, "implementer", fixHeadX))
 	other := make(chan error, 1)
 	go func() {
-		tx, err := st.Pool().Begin(ctx)
+		tx, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 		if err != nil {
 			other <- err
 			return
