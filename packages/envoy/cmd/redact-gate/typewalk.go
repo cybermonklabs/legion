@@ -8,12 +8,12 @@ import "go/types"
 // fields, and no walk follows an interface's methods. A walk whose question needs other edges
 // sets them here; its caller's doc says why.
 type edges struct {
-	chans      bool                              // a channel to its element
-	signatures bool                              // a function type to its parameters' and results' types
-	typeArgs   bool                              // a named type to its type arguments, in place of its underlying type
-	topPointer bool                              // a pointer only at the top: the type walked, or the underlying type of a named type at the top
-	mapValues  bool                              // a map to its value alone, not its key
-	field      func(s *types.Struct, i int) bool // which fields of a struct it follows; nil follows every one
+	chans       bool                              // a channel to its element
+	signatures  bool                              // a function type to its parameters' and results' types
+	typeArgs    bool                              // a named type to its type arguments, in place of its underlying type
+	topPointer  bool                              // a pointer only at the top: the type walked, or the underlying type of a named type at the top
+	skipMapKeys bool                              // a map to its value alone, not its key
+	field       func(s *types.Struct, i int) bool // which fields of a struct it follows; nil follows every one
 }
 
 // reaches reports whether a value of t holds a type leaf accepts: t itself, or a type e's edges
@@ -50,7 +50,7 @@ func (e edges) walk(t types.Type, top bool, leaf func(types.Type) bool, seen map
 	case *types.Array:
 		return e.walk(t.Elem(), false, leaf, seen)
 	case *types.Map:
-		return !e.mapValues && e.walk(t.Key(), false, leaf, seen) || e.walk(t.Elem(), false, leaf, seen)
+		return !e.skipMapKeys && e.walk(t.Key(), false, leaf, seen) || e.walk(t.Elem(), false, leaf, seen)
 	case *types.Chan:
 		return e.chans && e.walk(t.Elem(), false, leaf, seen)
 	case *types.Struct:

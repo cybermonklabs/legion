@@ -151,7 +151,7 @@ var fmtEdges = edges{topPointer: true}
 // value: it follows every pointer and writes the exported fields, the fields an embedded struct
 // promotes, every element and every map value, but no map key, which it writes as a string; a
 // field tagged json:"-" it leaves out, and a channel it refuses.
-var jsonEdges = edges{mapValues: true, field: func(s *types.Struct, i int) bool {
+var jsonEdges = edges{skipMapKeys: true, field: func(s *types.Struct, i int) bool {
 	f := s.Field(i)
 	switch {
 	case reflect.StructTag(s.Tag(i)).Get("json") == "-":
