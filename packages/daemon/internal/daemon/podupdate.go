@@ -1407,11 +1407,14 @@ func (s *supervision) overtakenByLaunch(ctx context.Context, recorded store.PodR
 // the pod taken already, and took nothing. Where the record of a launch's delete of the issue's
 // Sandbox and its kept volume over that pod stands (runtime.TakenPod.WithPod), that launch took
 // the pod, so the finish yields to it (store.Store.FinishPodReplacement): the round queues no
-// notice and ends, and the round's record stands beside the launch's, holding nothing (roundOver),
-// until the launch's finish takes it once that act is confirmed and tells the architect from the
-// read of the two that tells most (the Legion reviewer's Medium 1 on #5285 at 4b123279). The end
-// is the round's end all the same, so no later walk reads the round's pod as one that went without
-// its round (the Legion reviewer's Important on #5285 at 69e00593, path a).
+// notice and ends, and in the finish's transaction the round's read moves onto the launch's record
+// where it weighs more (movedRead) and the round's record goes. The launch's record alone then
+// stands for the one act: its finish tells the architect from the read of the two that tells most
+// once that act is confirmed (the Legion reviewer's Medium 1 on #5285 at 4b123279), and where the
+// runtime shows the act not made, the record is forgotten and nothing is told of a call that took
+// nothing (the Legion reviewer's Medium 1 on #5285 at 18d81dad). The end is the round's end all
+// the same, so no later walk reads the round's pod as one that went without its round (the Legion
+// reviewer's Important on #5285 at 69e00593, path a).
 //
 // read is what the read of the workspace before the replacement found (workspaceRead), and read.by
 // is who made the replacement (roundReplacer). The line of a replacement by issue or at a launch

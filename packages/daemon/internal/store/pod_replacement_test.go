@@ -38,14 +38,14 @@ func TestTheFinishOfAnActFinishesEveryRecordOfItsTarget(t *testing.T) {
 	}
 	notice := workspaceTaken(t, nil)
 
-	finish, err := st.FinishPodReplacement(ctx, "legion", rootIssue, "launch-1", false, notice)
+	finish, err := st.FinishPodReplacement(ctx, "legion", rootIssue, "launch-1", nil, notice)
 	if err != nil || !finish.Found || !finish.Told {
 		t.Fatalf("the finish of launch-1 = %+v, %v; want its record finished and its notice queued", finish, err)
 	}
 	if standing := operationsStanding(t, st); !slices.Equal(standing, []string{"launch-2", "launch-3"}) {
 		t.Errorf("records standing once launch-1's act on pod-a is finished = %v, want the two records of the Sandbox's volume: round-1's record of pod-a goes with launch-1's", standing)
 	}
-	finish, err = st.FinishPodReplacement(ctx, "legion", rootIssue, "round-1", false, notice)
+	finish, err = st.FinishPodReplacement(ctx, "legion", rootIssue, "round-1", nil, notice)
 	if err != nil || finish.Found || finish.Told {
 		t.Errorf("the later finish of round-1 = %+v, %v; want no record found and nothing queued", finish, err)
 	}
@@ -53,7 +53,7 @@ func TestTheFinishOfAnActFinishesEveryRecordOfItsTarget(t *testing.T) {
 		t.Errorf("workspace-taken notices queued = %d, want one for the one act on pod-a", queued)
 	}
 
-	finish, err = st.FinishPodReplacement(ctx, "legion", rootIssue, "launch-2", false, nil)
+	finish, err = st.FinishPodReplacement(ctx, "legion", rootIssue, "launch-2", nil, nil)
 	if err != nil || !finish.Found || finish.Told {
 		t.Fatalf("the finish of launch-2 with no notice = %+v, %v; want its record finished and nothing queued", finish, err)
 	}
@@ -90,7 +90,7 @@ func TestTheFinishOfAVolumeActWithItsPodFinishesThatPodsRecords(t *testing.T) {
 					t.Fatalf("record %s: %v", r.Operation, err)
 				}
 			}
-			if finish, err := st.FinishPodReplacement(ctx, "legion", rootIssue, "launch-volume", false, nil); err != nil || !finish.Found {
+			if finish, err := st.FinishPodReplacement(ctx, "legion", rootIssue, "launch-volume", nil, nil); err != nil || !finish.Found {
 				t.Fatalf("the finish of launch-volume = %+v, %v; want its record finished", finish, err)
 			}
 			if standing := operationsStanding(t, st); !slices.Equal(standing, tc.standing) {
@@ -105,12 +105,14 @@ func TestTheFinishOfAVolumeActWithItsPodFinishesThatPodsRecords(t *testing.T) {
 // issue's Sandbox and its kept volume over a live pod of it (WithPod) names that pod beside the
 // Sandbox. So a round's finish of the pod's act takes the launch's record of the delete, and no
 // other record of the Sandbox, since the suspension of a pod takes no volume. A round's finish whose
-// call took nothing yields to that record: it takes nothing and queues nothing, and the round's
-// record stands beside the launch's, which tells the architect once its act is confirmed, with the
-// round's read among those it weighs (the Legion reviewer's Medium 1 on #5285 at 4b123279). The
-// next launch's delete of the same Sandbox takes the first launch's record, and with it the round's
-// record of the pod that Sandbox ran. A finish that may yield and finds no record to yield to takes
-// as any finish does. A record of another pod stands in each case.
+// call took nothing yields to that record: it takes nothing and queues nothing, the record its yield
+// answers is written over the launch's, which tells the architect once its act is confirmed from the
+// read that tells most of the two (the Legion reviewer's Medium 1 on #5285 at 4b123279), and the
+// round's record goes, so no record of a call that took nothing is left to be read later as an act of
+// its own (the Legion reviewer's Medium 1 on #5285 at 18d81dad). The next launch's delete of the same
+// Sandbox takes the first launch's record, and with it the round's record of the pod that Sandbox
+// ran. A finish that may yield and finds no record to yield to takes as any finish does, and asks its
+// yield nothing. A record of another pod stands in each case.
 func TestTheFinishOfAnActTakesTheRecordsOfEveryTargetItTook(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -123,7 +125,7 @@ func TestTheFinishOfAnActTakesTheRecordsOfEveryTargetItTook(t *testing.T) {
 		{name: "a_round's_act_on_the_pod", operation: "round-a",
 			took: []string{"launch-volume", "round-a"}, standing: []string{"launch-reset", "round-b", "launch-next"}},
 		{name: "a_round's_call_that_took_nothing", operation: "round-a", yield: true,
-			standing: []string{"launch-reset", "launch-volume", "round-a", "round-b", "launch-next"}},
+			standing: []string{"launch-reset", "launch-volume", "round-b", "launch-next"}},
 		{name: "the_next_delete_of_the_sandbox", operation: "launch-next",
 			took: []string{"launch-reset", "launch-volume", "round-a", "launch-next"}, standing: []string{"round-b"}},
 		{name: "control:_a_call_that_took_nothing_of_a_pod_no_delete_took", operation: "round-b", yield: true,
@@ -145,7 +147,17 @@ func TestTheFinishOfAnActTakesTheRecordsOfEveryTargetItTook(t *testing.T) {
 				}
 			}
 			var handed []PodReplacement
-			finish, err := st.FinishPodReplacement(ctx, "legion", rootIssue, tc.operation, tc.yield, workspaceTaken(t, &handed))
+			// moved is the record the yield answers for the record it yields to, and onto that record.
+			moved := []byte(`{"moved": "round-a"}`)
+			var onto []string
+			var yield func(onto, yielding PodReplacement) ([]byte, error)
+			if tc.yield {
+				yield = func(to, yielding PodReplacement) ([]byte, error) {
+					onto = append(onto, to.Operation+"<-"+yielding.Operation)
+					return moved, nil
+				}
+			}
+			finish, err := st.FinishPodReplacement(ctx, "legion", rootIssue, tc.operation, yield, workspaceTaken(t, &handed))
 			if err != nil || !finish.Found {
 				t.Fatalf("the finish of %s = %+v, %v; want its record found", tc.operation, finish, err)
 			}
@@ -165,6 +177,17 @@ func TestTheFinishOfAnActTakesTheRecordsOfEveryTargetItTook(t *testing.T) {
 			}
 			if queued, want := workspaceTakenQueued(t, st), len(tc.took) > 0; (queued == 1) != want || queued > 1 {
 				t.Errorf("workspace-taken notices queued = %d, want one only where the finish took its records", queued)
+			}
+			wantOnto := []string(nil)
+			if finish.Yielded {
+				wantOnto = []string{"launch-volume<-" + tc.operation}
+				var record string
+				if err := st.Pool().QueryRow(ctx, `select record::text from pod_replacements where operation = 'launch-volume'`).Scan(&record); err != nil || record != `{"moved": "round-a"}` {
+					t.Errorf("the record of launch-volume after the yield = %q, %v; want the record the yield answered, %s", record, err, moved)
+				}
+			}
+			if !slices.Equal(onto, wantOnto) {
+				t.Errorf("the yield was asked %v, want %v", onto, wantOnto)
 			}
 		})
 	}
@@ -208,7 +231,7 @@ func TestTwoFinishesOfOneIssueAtOnceBothCommit(t *testing.T) {
 	}
 	finished := make(chan result, 1)
 	go func() {
-		finish, err := st.FinishPodReplacement(ctx, "legion", rootIssue, "round-b", false, nil)
+		finish, err := st.FinishPodReplacement(ctx, "legion", rootIssue, "round-b", nil, nil)
 		finished <- result{finish, err}
 	}()
 	awaitLockWait(t, st)

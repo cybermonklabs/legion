@@ -171,6 +171,30 @@ func tellingRead(took []store.PodReplacement) (read recordedRead, tells bool) {
 	return read, tells
 }
 
+// movedRead is the record onto, a launch's record of the act that took the pod a round's call
+// found taken, once the call's own record, yielding, yields to it (store.Store.FinishPodReplacement):
+// onto holding yielding's read in place of its own where yielding's weighs more (recordedRead.weight),
+// or nil, onto as it is, where it does not. The two records are of one act, so the one record left
+// holds the read that tells most of the two, and the launch's finish tells it; where the launch's
+// act is not made, that record is forgotten and nothing is told (the Legion reviewer's Medium 1 on
+// #5285 at 18d81dad). Of two reads that weigh the same, the launch's own stands: it is the read made
+// last before the act, under the pod's launch turn. A record this daemon cannot read moves nothing,
+// as it tells nothing (tellingRead).
+func movedRead(onto, yielding store.PodReplacement) ([]byte, error) {
+	var to, from replacementRecord
+	if json.Unmarshal(onto.Record, &to) != nil || json.Unmarshal(yielding.Record, &from) != nil {
+		return nil, nil
+	}
+	var held, moved recordedRead
+	held.work, held.err = to.work(onto.PodUID)
+	moved.work, moved.err = from.work(yielding.PodUID)
+	if moved.weight() <= held.weight() {
+		return nil, nil
+	}
+	to.Head, to.Changed, to.Commits, to.Count, to.Failed = from.Head, from.Changed, from.Commits, from.Count, from.Failed
+	return json.Marshal(to)
+}
+
 // launchMessage is the notice of a launch's own replacement, taken (launchTakenMessage), over the
 // read the notice tells (tellingRead) in place of the launch's own.
 func launchMessage(taken runtime.TakenPod) func(recordedRead) string {
@@ -240,15 +264,16 @@ func (s *supervision) forgetReplacement(ctx context.Context, recorded store.PodR
 // the read of every record the finish took that tells most (tellingRead), so one act is told from
 // the one read that says most of what it took, whichever of its records the caller finishes. yield
 // is a round's call that took nothing, which yields to the record of a launch's act that took the
-// pod with its Sandbox's volume: that record tells the architect, and this one stands, with
-// nothing queued, for that record's finish, which takes it and weighs its read (roundReplaced; the
-// Legion reviewer's Medium 1 on #5285 at 4b123279). It answers what the finish did, and the
-// store's error where it refused, which it logs: the records then stand for a later sweep
-// (finishReplacements). A record that the finish of another act took, or another finish of the
-// same act, is finished already: the finish answers it not found (store.PodReplacementFinish.Found)
-// and no error, nothing is queued for it here (the Legion reviewer's Important 1 on #5285 at
-// 7da847c0), and the finish that took it ended its round (endRecordedRound). attrs name the
-// replacement on its lines.
+// pod with its Sandbox's volume: in the same transaction this record's read moves onto that record
+// where it weighs more (movedRead), and this record goes, with nothing queued, so that record alone
+// tells the architect once its act is confirmed, and is forgotten alone where its act is not made
+// (roundReplaced; the Legion reviewer's Medium 1 on #5285 at 4b123279 and at 18d81dad). It answers
+// what the finish did, and the store's error where it refused, which it logs: the records then stand
+// for a later sweep (finishReplacements). A record that the finish of another act took, or another
+// finish of the same act, is finished already: the finish answers it not found
+// (store.PodReplacementFinish.Found) and no error, nothing is queued for it here (the Legion
+// reviewer's Important 1 on #5285 at 7da847c0), and the finish that took it ended its round
+// (endRecordedRound). attrs name the replacement on its lines.
 func (s *supervision) finishReplacement(ctx context.Context, operation, issue, pod string, yield bool, message func(recordedRead) string,
 	attrs ...any) (store.PodReplacementFinish, error) {
 	attrs = append([]any{"issue", issue, "pod", pod, "operation", operation}, attrs...)
@@ -265,7 +290,11 @@ func (s *supervision) finishReplacement(ctx context.Context, operation, issue, p
 		noticed = true
 		return &store.IdleReleaseRow{Kind: string(row.Kind), Payload: row.Payload}, nil
 	}
-	finish, err := s.supervisor.store.FinishPodReplacement(ctx, s.plan.project, issue, operation, yield, notice)
+	var yielded func(onto, yielding store.PodReplacement) ([]byte, error)
+	if yield {
+		yielded = movedRead
+	}
+	finish, err := s.supervisor.store.FinishPodReplacement(ctx, s.plan.project, issue, operation, yielded, notice)
 	switch {
 	case err != nil:
 		if ctx.Err() == nil {
@@ -277,7 +306,7 @@ func (s *supervision) finishReplacement(ctx context.Context, operation, issue, p
 		s.log.Info("supervise: the record of this replacement of the issue's pod is finished already, with the record of another act it took or by another finish of it; nothing is queued for it",
 			attrs...)
 	case finish.Yielded:
-		s.log.Info("supervise: the record of this replacement of the issue's pod yields to the record of a launch's act that took the pod with its Sandbox's volume; nothing is queued for it, and it stands for the launch's finish, which takes it and tells the architect from the read of the two that tells most",
+		s.log.Info("supervise: the record of this replacement of the issue's pod yields to the record of a launch's act that took the pod with its Sandbox's volume; nothing is queued for it, its read moves onto that record where it weighs more, and it goes, so the launch's finish tells the architect from the read of the two that tells most",
 			attrs...)
 	case !noticed:
 	case !finish.Told:
@@ -379,8 +408,7 @@ func (s *supervision) endTakenRounds(ctx context.Context, issue, operation strin
 // notice of its own: that act's notice, told from the read of the records it took that tells most,
 // r's among them, is the one word of it. Otherwise r is finished here, and the round ends as the
 // replacement r records, from the read made before it (roundReplaced). A round that is over already
-// (roundOver: its call yielded to a launch's act and ended it, and r stood for the read that act's
-// finish weighs) is ended no second time.
+// (roundOver: no claim records it any more, or the sweep has ended it) is ended no second time.
 //
 // It answers what the finish of r did, which is nothing where took is true, and whether the round is
 // over: false where the store refused the finish, and the round stays open with r for a later sweep.
@@ -410,10 +438,9 @@ func (s *supervision) endRecordedRound(ctx context.Context, group []supervise.Cl
 // (runtime.ActReader), and answers the issues whose round's record still stands, which the walk
 // decides nothing of at this sweep: a round there must neither read a pod its replacement took
 // again, nor keep it, nor end as a pod that went without its round (GPT-6.1 Sol's point 1 at
-// 0259f8af). A round's record whose round is over holds nothing (roundOver): its round's call
-// yielded to a launch's delete of the issue's Sandbox over the pod and the round ended, and the
-// record stands only for the read that launch's finish weighs (the Legion reviewer's Medium 1 on
-// #5285 at 4b123279). claims is the sweep's snapshot.
+// 0259f8af). A round's record whose round is over holds nothing (roundOver): no claim of the issue
+// records that round any more, or the sweep has ended it, so no round is left to decide. claims is
+// the sweep's snapshot.
 //
 // The runtime reads each act under the pod's launch turn, from the cluster's API (GPT-6.1 Sol's
 // point 2 on #5285 at fa9deb04, the Legion reviewer's point A). Every act a record names is made

@@ -110,8 +110,8 @@ type PodReplacementFinish struct {
 	// the same act took before, is not found, and nothing is queued for it.
 	Found bool
 	// Yielded is whether the finish yielded to the record of another act that took the target: it
-	// took nothing and queued nothing, and the record stands for the finish of that act, which
-	// takes it (PodReplacement.Targets) and weighs its read.
+	// took nothing and queued nothing, the read of its record moved onto that record where it
+	// weighs more, and its record went, so one record stands for the one act.
 	Yielded bool
 	// Took is every record the finish took, oldest first: the finished record and each record its
 	// act took with it (takenWith). It is empty where the record was not found or the finish
@@ -147,18 +147,23 @@ type PodReplacementFinish struct {
 // for no notice. A notice of an issue of another project than project is queued by no daemon of
 // this one, so the records go with no row queued, and Told says so.
 //
-// yield is a finish whose caller's own call took nothing of the record's target: the runtime found
-// the target taken already, and answered without asking the act's last word. Where a standing
-// record of another act names that target beside its own (Targets: a launch's delete of the
-// issue's Sandbox and its kept volume over the pod, WithPod), that act took it, and the finish
-// yields to it: it takes nothing, asks for no notice, and leaves the finished record standing, and
-// the other record tells the architect once its own act is confirmed, in a finish that takes the
-// yielding record through the targets it names (the Legion reviewer's Important on #5285 at
-// 69e00593, path a). The yielding record's read is then one of the reads that notice weighs, so a
-// read that found work before the call is told though the other act's own read failed (the Legion
-// reviewer's Medium 1 on #5285 at 4b123279). Where no such record stands, the finish takes what the
-// act took, as every other finish does.
-func (s *Store) FinishPodReplacement(ctx context.Context, project, issue, operation string, yield bool,
+// yield, where it is not nil, is a finish whose caller's own call took nothing of the record's
+// target: the runtime found the target taken already, and answered without asking the act's last
+// word. Where a standing record of another act names that target beside its own (Targets: a
+// launch's delete of the issue's Sandbox and its kept volume over the pod, WithPod), that act took
+// it, and the finish yields to it (the Legion reviewer's Important on #5285 at 69e00593, path a):
+// it takes nothing and asks for no notice, and in the same transaction yield is asked for that
+// record's new record (onto, the newest such record) with the finished record's read beside its
+// own, and the finished record goes. So the one act stands under one record, which tells the
+// architect once its own act is confirmed and is forgotten alone where the runtime shows its act
+// not made; no record of the call that took nothing is left to be read later as an act of its own
+// (the Legion reviewer's Medium 1 on #5285 at 18d81dad). yield answers onto's record carrying the
+// read that tells most of the two, so a read that found work before the call is told though the
+// other act's own read failed (the Legion reviewer's Medium 1 on #5285 at 4b123279), or nil to
+// keep onto's record as it is; its error is the finish's, which then changes nothing. Where no
+// such record stands, the finish takes what the act took, as every other finish does.
+func (s *Store) FinishPodReplacement(ctx context.Context, project, issue, operation string,
+	yield func(onto, yielding PodReplacement) ([]byte, error),
 	notice func(took []PodReplacement) (*IdleReleaseRow, error)) (PodReplacementFinish, error) {
 	var finish PodReplacementFinish
 	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
@@ -178,7 +183,21 @@ func (s *Store) FinishPodReplacement(ctx context.Context, project, issue, operat
 		}
 		finish.Found = true
 		finished := standing[at]
-		if yield && yieldsTo(finished, standing) {
+		if onto, ok := yieldTarget(finished, standing); ok && yield != nil {
+			record, err := yield(onto, finished)
+			if err != nil {
+				return err
+			}
+			if record != nil {
+				if _, err := tx.Exec(ctx, `update pod_replacements set record = $4::jsonb where project = $1 and issue = $2 and operation = $3`,
+					project, issue, onto.Operation, string(record)); err != nil {
+					return err
+				}
+			}
+			if _, err := tx.Exec(ctx, `delete from pod_replacements where project = $1 and issue = $2 and operation = $3`,
+				project, issue, operation); err != nil {
+				return err
+			}
 			finish.Yielded = true
 			return nil
 		}
@@ -255,12 +274,16 @@ func takenWith(finished PodReplacement, standing []PodReplacement) []PodReplacem
 	return took
 }
 
-// yieldsTo is whether a record of standing names the act that finished records as a target it
-// takes beside its own (PodReplacement.Targets): another act took that target with its own.
-func yieldsTo(finished PodReplacement, standing []PodReplacement) bool {
-	return slices.ContainsFunc(standing, func(r PodReplacement) bool {
-		return r.Act != finished.Act && slices.Contains(r.Targets(), finished.Act)
-	})
+// yieldTarget is the newest record of standing, the issue's records oldest first, that names the
+// act that finished records as a target it takes beside its own (PodReplacement.Targets): another
+// act took that target with its own. ok is false where none does.
+func yieldTarget(finished PodReplacement, standing []PodReplacement) (onto PodReplacement, ok bool) {
+	for _, r := range slices.Backward(standing) {
+		if r.Act != finished.Act && slices.Contains(r.Targets(), finished.Act) {
+			return r, true
+		}
+	}
+	return PodReplacement{}, false
 }
 
 // ForgetPodReplacement deletes the record of operation, a replacement of issue's pod whose act was
