@@ -1401,13 +1401,13 @@ test("the line that says what is new holds across a close and an open of Details
   }
 });
 
-/** A thread only an agent wrote in, one message written a minute ago: no row of the outline,
+/** A thread the Legion daemon began, one message written a minute ago: no row of the outline,
  *  an entry of the history (`agents-only.ts`). It is built when the file loads, before any case
  *  sets the clock, so it is dated from the cases' midday rather than from `Date.now()`. */
 const AGENTS_THREAD: MessageRead = {
   message: {
-    author: { id: "planner", kind: "session" },
-    body: "The agents' own words.",
+    author: { id: "legion-daemon:CORE", kind: "session" },
+    body: "The daemon's own words.",
     broadcast_id: null,
     created_at: new Date(NOON.getTime() - 60_000).toISOString(),
     deliveries: [],
@@ -1416,7 +1416,7 @@ const AGENTS_THREAD: MessageRead = {
     in_reply_to: null,
     issue_key: KEY,
     reply_block: null,
-    target: "role:legion-p-core-1-reviewer",
+    target: null,
   },
   replies: [],
 };

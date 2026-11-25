@@ -315,13 +315,13 @@ test("midnight opens the day that was today and leaves every other day as the re
   }
 });
 
-/** A message an agent wrote outside every thread a person wrote in, `ago` seconds ago: a thread
- *  of the history whose first turn's event no page of the log read here holds. */
+/** A message the Legion daemon wrote, `ago` seconds ago: a thread of the history whose first
+ *  turn's event no page of the log read here holds. */
 function agentMessage(id: string, ago: number): MessageRead {
   return {
     message: {
-      author: { id: "planner", kind: "session" },
-      body: `Agent note ${id}.`,
+      author: { id: "legion-daemon:CORE", kind: "session" },
+      body: `Daemon message ${id}.`,
       broadcast_id: null,
       created_at: new Date(Date.now() - ago * 1000).toISOString(),
       deliveries: [],

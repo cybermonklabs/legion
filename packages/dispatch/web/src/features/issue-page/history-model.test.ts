@@ -24,6 +24,9 @@ import { CONTROL_LABELS, DECLARED_WORDS, wordsIn } from "./page-words";
 const KEY = "CORE-1";
 const PERSON: Actor = { id: "alice", kind: "user" };
 const AGENT: Actor = { id: "planner", kind: "session" };
+/** The Legion daemon of the issue's project, as it writes. */
+const DAEMON: Actor = { id: "legion-daemon:CORE", kind: "session" };
+const REVIEWER: Actor = { id: "reviewer", kind: "session" };
 
 let seq = 0;
 /** One event of the issue's log, its sequence the next, at `at`. */
@@ -80,6 +83,68 @@ function comment(id: string, at: string, author: Actor, over: Partial<Comment> =
 }
 
 const flat = (days: readonly HistoryDay[]): HistoryEntry[] => days.flatMap((day) => day.entries);
+
+/** A message of the issue by `author`, at `at`. */
+function message(
+  id: string,
+  at: string,
+  author: Actor,
+  over: Partial<MessageRead["message"]> = {}
+): MessageRead["message"] {
+  return {
+    author,
+    body: `Message ${id}.`,
+    broadcast_id: null,
+    created_at: at,
+    deliveries: [],
+    ...messageCorrectionFields(),
+    id,
+    in_reply_to: null,
+    issue_key: KEY,
+    reply_block: null,
+    target: null,
+    ...over,
+  };
+}
+
+/** Where a comment's head is tied to the words of a document. */
+const TIED = {
+  artifact_id: "spec",
+  block_id: null,
+  mark_id: "mark-1",
+  orphaned: false,
+  quote: "The words it is tied to.",
+  version: 1,
+};
+
+/** The history of `comments`, `messages` and `events`, read whole. */
+function historyOf(
+  comments: readonly Comment[],
+  messages: readonly MessageRead[],
+  events: readonly DispatchEvent[] = []
+): HistoryEntry[] {
+  return flat(
+    buildHistory({
+      artifacts: [],
+      asks: [],
+      blocks: new Map(),
+      comments,
+      events,
+      lastReadSeq: 0,
+      messages,
+      today: "2026-11-15",
+    })
+  );
+}
+
+/** The thread entries of `entries`, newest first: each one's root turn and its replies. */
+function threadsIn(entries: readonly HistoryEntry[]): { replies: string[]; root: string }[] {
+  return entries.flatMap((entry) =>
+    entry.kind === "thread"
+      ? [{ replies: entry.replies.map((one) => one.id), root: entry.root.id }]
+      : []
+  );
+}
 
 test("the history leaves out every event of a row the outline draws, and a document's versions", () => {
   seq = 0;
@@ -341,7 +406,7 @@ test("a thread agents wrote among themselves is one entry with its replies, unti
   );
   const daemon: MessageRead = {
     message: {
-      author: AGENT,
+      author: DAEMON,
       body: "The daemon moved the issue.",
       broadcast_id: null,
       created_at: "2026-11-15T09:02:00Z",
@@ -393,6 +458,124 @@ test("a thread agents wrote among themselves is one entry with its replies, unti
     { replies: [], root: "daemon" },
     { replies: ["approve-later"], root: "approve-first" },
   ]);
+});
+
+// A thread the Legion daemon began is the history's whole, whoever writes in it: a person's reply
+// leaves it one entry, with that reply among its turns, and the outline draws none of it.
+test("a thread the Legion daemon began is one entry, and stays one when a person replies", () => {
+  seq = 0;
+  const root = message("daemon", "2026-11-15T09:00:00Z", DAEMON);
+  const agent = message("planner-reply", "2026-11-15T09:01:00Z", AGENT, { in_reply_to: "daemon" });
+  const person = message("person-reply", "2026-11-15T09:02:00Z", PERSON, {
+    in_reply_to: "daemon",
+  });
+
+  expect(threadsIn(historyOf([], [{ message: root, replies: [agent] }]))).toEqual([
+    { replies: ["planner-reply"], root: "daemon" },
+  ]);
+  expect(threadsIn(historyOf([], [{ message: root, replies: [agent, person] }]))).toEqual([
+    { replies: ["planner-reply", "person-reply"], root: "daemon" },
+  ]);
+});
+
+// The history holds no message thread but the daemon's: an agent's note to the issue's people and
+// a thread between agents are Threads', and the outline draws them until Threads does. Nor does it
+// hold a comment thread whose head is tied to the words of a document, which the margin draws,
+// though agents alone wrote in it. An agents' comment thread tied to no text is the one entry.
+test("an agent's note, a thread between agents and an agents' comment thread tied to text are no entry", () => {
+  seq = 0;
+  const note = message("note", "2026-11-15T09:00:00Z", AGENT);
+  const between = message("asked", "2026-11-15T09:01:00Z", AGENT, {
+    target: "role:legion-p-core-1-reviewer",
+  });
+  const answer = message("answered", "2026-11-15T09:02:00Z", REVIEWER, { in_reply_to: "asked" });
+  const tied = comment("tied", "2026-11-15T09:03:00Z", AGENT, { anchor: TIED });
+  const tiedReply = comment("tied-reply", "2026-11-15T09:04:00Z", REVIEWER, {
+    answers: "tied",
+    reply_to: "tied",
+  });
+  const post = comment("post", "2026-11-15T09:05:00Z", AGENT);
+
+  expect(
+    threadsIn(
+      historyOf(
+        [tied, tiedReply, post],
+        [
+          { message: note, replies: [] },
+          { message: between, replies: [answer] },
+        ]
+      )
+    )
+  ).toEqual([{ replies: [], root: "post" }]);
+});
+
+// A thread the history holds is drawn from its comments and messages, each turn whole with its
+// marks, and the outline draws every other thread from the same reads: so no creation, edit,
+// delete, answer or acceptance of a post is a line, whichever thread the post is of.
+test("no event that creates, edits, deletes or answers a post is a line, whichever thread it is of", () => {
+  seq = 0;
+  const daemon = message("daemon", "2026-11-15T09:00:00Z", DAEMON);
+  const daemonReply = message("daemon-reply", "2026-11-15T09:01:00Z", PERSON, {
+    in_reply_to: "daemon",
+  });
+  const note = message("note", "2026-11-15T09:02:00Z", AGENT);
+  const post = comment("post", "2026-11-15T09:03:00Z", AGENT);
+  const mine = comment("mine", "2026-11-15T09:04:00Z", PERSON);
+  const at = "2026-11-15T09:10:00Z";
+  const events = [
+    ...["post", "mine"].flatMap((id) =>
+      ["comment.created", "comment.edited", "comment.deleted", "comment.answered"].map((type) =>
+        event(type, at, { id })
+      )
+    ),
+    ...["daemon", "daemon-reply", "note"].flatMap((id) => [
+      ...["message.created", "message.edited", "message.deleted", "message.answered"].map((type) =>
+        event(type, at, { id })
+      ),
+      event("message.accepted", at, { message_id: id }),
+    ]),
+    event("handoff.recorded", at, {}),
+  ];
+
+  const lines = historyOf(
+    [post, mine],
+    [
+      { message: daemon, replies: [daemonReply] },
+      { message: note, replies: [] },
+    ],
+    events
+  ).flatMap((entry) => (entry.kind === "event" ? [entry.event.type] : []));
+  expect(lines).toEqual(["handoff.recorded"]);
+});
+
+// What happened to a post after it was written is a line where the history holds its thread, and
+// the outline's where it draws the thread: a delivery of the daemon's message is a line, and one
+// of an agent's note, which the outline draws, is not.
+test("a delivery of a message is a line in a thread the daemon began, and none of an agent's note", () => {
+  seq = 0;
+  const daemon = message("daemon", "2026-11-15T09:00:00Z", DAEMON);
+  const note = message("note", "2026-11-15T09:01:00Z", AGENT);
+  const delivered = (id: string) =>
+    event("message.delivery", "2026-11-15T09:02:00Z", {
+      message_id: id,
+      session_id: "tester-7",
+      state: "sent",
+      target: "session:tester-7",
+    });
+
+  const lines = historyOf(
+    [],
+    [
+      { message: daemon, replies: [] },
+      { message: note, replies: [] },
+    ],
+    [delivered("daemon"), delivered("note")]
+  ).flatMap((entry) =>
+    entry.kind === "event" && entry.event.type === "message.delivery"
+      ? [entry.event.payload.message_id]
+      : []
+  );
+  expect(lines).toEqual(["daemon"]);
 });
 
 /** `hour`:`minute` of the reader's own `day` of November 2026, as the log writes a moment. The

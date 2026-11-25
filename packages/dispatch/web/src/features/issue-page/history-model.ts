@@ -29,15 +29,18 @@ import { plainWords } from "./tree-drafts";
  * first, by day.
  *
  * It holds the issue's status moves, its claims and releases, its handoffs, its documents added
- * and removed, every other event of the issue itself, and the comments and messages agents wrote
- * outside every thread a person wrote in, each thread with its text, its replies and their reply
- * controls (`agents-only.ts`). It leaves out each event of a row the outline draws - an ask
- * asked, answered, resolved, edited or handed on, a comment or a message the outline draws and
- * what happened to it, a result recorded against a check, a decision kept, a child's status move
- * - and a new version of a document, which is a version and no upload: a document's versions are
- * in its own toolbar. The upload of any other file or picture, its first version or a later one,
- * is an upload, and a run of uploads is one entry that opens each: one author's newest upload
- * and their uploads made at most a minute before it, with no other author's upload between them.
+ * and removed, every other event of the issue itself, and the threads of `agents-only.ts` - each
+ * thread the Legion daemon began, whoever wrote in it, and each comment thread tied to no text
+ * that only agents wrote in - each thread with its text, its replies and their reply controls.
+ * It holds no event that writes a post: a thread it holds is drawn from its comments and
+ * messages, and every other thread is the outline's. It leaves out each event of a row the
+ * outline draws - an ask asked, answered, resolved, edited or handed on, what happened to a
+ * comment or a message the outline draws, a result recorded against a check, a decision kept, a
+ * child's status move - and a new version of a document, which is a version and no upload: a
+ * document's versions are in its own toolbar. The upload of any other file or picture, its first
+ * version or a later one, is an upload, and a run of uploads is one entry that opens each: one
+ * author's newest upload and their uploads made at most a minute before it, with no other
+ * author's upload between them.
  *
  * Pure, so the panel and its unit tests read one model.
  */
@@ -55,7 +58,7 @@ export interface HistoryDay {
   readonly entries: readonly HistoryEntry[];
 }
 
-/** One turn of a thread agents wrote among themselves. */
+/** One turn of a thread the history holds (`agents-only.ts`). */
 export interface HistoryTurn {
   readonly at: string;
   readonly author: Actor;
@@ -199,14 +202,28 @@ function nodeLine(text: string, holder: object, kind: string): string {
   return first.line === "" ? kind : drawnLine(first);
 }
 
-/** The event types of a row the outline draws, which the history leaves out. A comment's and a
- *  message's are left out where the outline draws that comment or message - one a person took
- *  part in - and for its creation always, since this list draws a thread agents wrote among
- *  themselves from the issue's comments and messages, each turn whole; what happened to such a
- *  thread after - a mention that could not be delivered, a resolution, an edit - is no node's,
- *  so it is a line here (`ofOutlineRow`). An ask's are left out for a question alone: an
- *  approval request is no row of the outline - the identity block draws its step
- *  (`ApprovalSteps.tsx`) - so its asking, hand-back and answer are the history's, as are the
+/** The event types that write a post of a comment or message thread: its creation, an edit, a
+ *  delete, an answer, and a message taken as an agent's turn. None is a line of the history,
+ *  whichever thread it is of: a thread the history holds is drawn from its comments and
+ *  messages, each turn whole with its marks, and the outline draws every other thread. */
+const POST_WRITES: Readonly<Record<string, true>> = {
+  "comment.answered": true,
+  "comment.created": true,
+  "comment.deleted": true,
+  "comment.edited": true,
+  "message.accepted": true,
+  "message.answered": true,
+  "message.created": true,
+  "message.deleted": true,
+  "message.edited": true,
+};
+
+/** The event types of a row the outline draws, which the history leaves out. Every other event
+ *  of a comment or a message - a delivery, a resolution, a reopening, an anchor refresh - is left
+ *  out where the outline draws that comment or message, and is a line where it is a turn of a
+ *  thread the history holds, since no node draws it (`ofOutlineRow`). An ask's are left out for
+ *  a question alone: an approval request is no row of the outline - the identity block draws its
+ *  step (`ApprovalSteps.tsx`) - so its asking, hand-back and answer are the history's, as are the
  *  followers added to it and removed. */
 const OUTLINE_EVENTS: Readonly<Record<string, true>> = {
   "ask.anchor_refreshed": true,
@@ -221,16 +238,10 @@ const OUTLINE_EVENTS: Readonly<Record<string, true>> = {
   "child.added": true,
   "child.status": true,
   "comment.anchor_refreshed": true,
-  "comment.answered": true,
-  "comment.created": true,
   "comment.delivery": true,
-  "comment.edited": true,
   "comment.reopened": true,
   "comment.resolved": true,
   "decision.kept": true,
-  "message.accepted": true,
-  "message.answered": true,
-  "message.created": true,
   "message.delivery": true,
   "result.recorded": true,
   "result.retracted": true,
@@ -266,7 +277,11 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
         ? event.payload.status
         : undefined;
     const upload = uploadOf(event, artifacts);
-    if (ofOutlineRow(event, agentsOnly, approvals) || isDocumentVersion(event, artifacts)) {
+    if (
+      POST_WRITES[event.type] === true ||
+      ofOutlineRow(event, agentsOnly, approvals) ||
+      isDocumentVersion(event, artifacts)
+    ) {
       if (status !== undefined) previousStatus = status;
       continue;
     }
@@ -379,10 +394,10 @@ function uploadRuns(
   return runs;
 }
 
-/** Each thread agents wrote among themselves, as one entry at its first turn: every one that
- *  began inside what the log has read (`HistoryInput.loadedFrom`). A comment under an ask names
- *  the ask (`ask_id`), where the server's climb to a thread's head stops, so the thread of an
- *  approval request is every comment naming it (`agents-only.ts`), whatever its `reply_to`
+/** Each thread the history holds (`agents-only.ts`), as one entry at its first turn: every one
+ *  that began inside what the log has read (`HistoryInput.loadedFrom`). A comment under an ask
+ *  names the ask (`ask_id`), where the server's climb to a thread's head stops, so the thread of
+ *  an approval request is every comment naming it (`agents-only.ts`), whatever its `reply_to`
  *  says: one entry per ask, at its earliest comment, the rest its replies. */
 function threadsOf(
   input: HistoryInput,
@@ -639,21 +654,17 @@ function messageTurn(message: MessageRead["message"]): HistoryTurn {
   };
 }
 
-/** The comment or message an event is about, where it is one of a comment's or a message's
- *  that the history draws for a thread agents wrote among themselves: every one but the
- *  creation, which the thread's own turn draws. */
+/** The comment or message an event of `OUTLINE_EVENTS` is about, where it is one of a comment's
+ *  or a message's: a delivery, a resolution, a reopening or an anchor refresh. */
 function turnOf(event: DispatchEvent): string | undefined {
   switch (event.type) {
     case "comment.delivery":
       return event.payload.comment_id;
-    case "message.accepted":
     case "message.delivery":
       return event.payload.message_id;
-    case "comment.answered":
-    case "comment.edited":
+    case "comment.anchor_refreshed":
     case "comment.reopened":
     case "comment.resolved":
-    case "message.answered":
       return event.payload.id;
     default:
       return undefined;
@@ -661,10 +672,10 @@ function turnOf(event: DispatchEvent): string | undefined {
 }
 
 /** Whether `event` is of a row the outline draws, and so no line of the history. What happened
- *  to a comment or a message of a thread agents wrote among themselves (`agentsOnly`) is no
- *  row's, and an approval request's events are the history's: an event that carries the ask
- *  says its kind, and a follower's, which names the ask alone, is an approval request's where
- *  the issue's asks hold that ask as one (`approvals`, by id). */
+ *  to a comment or a message of a thread the history holds (`agentsOnly`) is no row's, and an
+ *  approval request's events are the history's: an event that carries the ask says its kind,
+ *  and a follower's, which names the ask alone, is an approval request's where the issue's asks
+ *  hold that ask as one (`approvals`, by id). */
 function ofOutlineRow(
   event: DispatchEvent,
   agentsOnly: ReadonlySet<string>,

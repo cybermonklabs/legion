@@ -156,8 +156,8 @@ export function IssueTree({
   isClosed: boolean;
   /** What the row the address lands on says once it has the focus, as a key's report is said at
    *  the row it was pressed on, until the reader's next key or move: that the thread of the turn
-   *  the address names is the agents' alone, where the outline draws no row for that turn and
-   *  `reveal` is the chain to its nearest drawn ancestor (`slots/body.tsx`). */
+   *  the address names is in the history in Details, where the outline draws no row for that
+   *  turn and `reveal` is the chain to its nearest drawn ancestor (`slots/body.tsx`). */
   landingReport?: string;
   /** The document the reader is editing a node of here, so the page draws that document's one
    *  editor rather than leaving the row with nothing to put a caret in, and hands that editor to
