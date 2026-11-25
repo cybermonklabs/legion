@@ -29,10 +29,9 @@ import (
 // leaving job 7 queued for the unit, as systemd keeps the job of a client killed while it waits,
 // unless .no-queued-job exists. Each restart leaves the .restarted marker; with
 // .fail-read-before-restart or .fail-read-after-restart, the read of the unit's main process
-// before or after a restart fails at once, printing systemctl's error for a user manager that did
-// not answer on stderr and exiting 1. Its environment names a socket and a runtime directory
-// of its own, and runAs refuses to run install against any socket outside the rig's directory
-// (foreignSocket).
+// before or after a restart fails at once, exiting 1. Its environment names a socket and a
+// runtime directory of its own, and runAs refuses to run install against any socket outside the
+// rig's directory (foreignSocket).
 type installRig struct {
 	t      testing.TB
 	dir    string
@@ -68,8 +67,8 @@ func newInstallRig(t *testing.T) *installRig {
 	}
 	script := "#!/bin/sh\nif [ \"$2\" = is-active ]; then read -r state < " + r.active + "; echo \"$state\"; exit 0; fi\n" +
 		"if [ \"$2\" = show ] && [ \"$3\" = --property=Job ]; then if [ -e " + r.calls + ".job ]; then read -r job < " + r.calls + ".job; echo \"$job\"; fi; exit 0; fi\n" +
-		"if [ \"$2\" = show ] && [ ! -e " + r.calls + ".restarted ] && [ -e " + r.calls + ".fail-read-before-restart ]; then echo 'Failed to get properties: Connection timed out' >&2; exit 1; fi\n" +
-		"if [ \"$2\" = show ] && [ -e " + r.calls + ".restarted ] && [ -e " + r.calls + ".fail-read-after-restart ]; then echo 'Failed to get properties: Connection timed out' >&2; exit 1; fi\n" +
+		"if [ \"$2\" = show ] && [ ! -e " + r.calls + ".restarted ] && [ -e " + r.calls + ".fail-read-before-restart ]; then exit 1; fi\n" +
+		"if [ \"$2\" = show ] && [ -e " + r.calls + ".restarted ] && [ -e " + r.calls + ".fail-read-after-restart ]; then exit 1; fi\n" +
 		"if [ \"$2\" = show ]; then read -r pid < " + r.pid + "; echo \"$pid\"; exit 0; fi\n" +
 		"echo \"$*\" >> " + r.calls + "\n" +
 		"if [ \"$2\" = restart ]; then : > " + r.calls + ".restarted; fi\n" +
@@ -485,17 +484,20 @@ func TestInstallDrainsAndRestartsAHelperWithNoSessions(t *testing.T) {
 // failed and says install could not tell whether the restart replaced the helper, never that the
 // helper was not restarted. Install sends undrain, which changes nothing on a new helper and lets
 // an old one take sessions again, except while a job for the unit is still queued, which the error
-// then names.
+// then names. An undrain the helper refused is an attempt, and the error says so rather than that
+// install sent it.
 func TestInstallCannotTellWhetherTheRestartReplacedTheHelperWhenAReadFails(t *testing.T) {
 	const cannotTell = "systemctl --user restart agent-secrets-helper.service answered success, but install could not tell whether the restart replaced the helper it drained, since its main process could not be read "
-	const read = "systemctl --user show --property=MainPID agent-secrets-helper.service"
+	// The read's own failure, as unitProperty wraps it: the command and how it ended.
+	const read = "systemctl --user show --property=MainPID agent-secrets-helper.service: exit status 1"
 	for _, tc := range []struct {
 		name, marker, want, ops string
-		queued                  bool
+		queued, refuseUndrain   bool
 	}{
-		{name: "after the restart", marker: ".fail-read-after-restart", want: cannotTell + "after the restart: " + read, ops: "sessions,drain,undrain"},
-		{name: "before the restart", marker: ".fail-read-before-restart", want: cannotTell + "before the restart: " + read, ops: "sessions,drain,undrain"},
+		{name: "after the restart", marker: ".fail-read-after-restart", want: cannotTell + "after the restart: " + read + "; install sent it undrain", ops: "sessions,drain,undrain"},
+		{name: "before the restart", marker: ".fail-read-before-restart", want: cannotTell + "before the restart: " + read + "; install sent it undrain", ops: "sessions,drain,undrain"},
 		{name: "after the restart with job 7 queued", marker: ".fail-read-after-restart", queued: true, want: cannotTell + "after the restart: " + read, ops: "sessions,drain"},
+		{name: "after the restart with the undrain refused", marker: ".fail-read-after-restart", refuseUndrain: true, want: cannotTell + "after the restart: " + read + "; install attempted undrain, which failed", ops: "sessions,drain,undrain"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newInstallRig(t)
@@ -507,7 +509,12 @@ func TestInstallCannotTellWhetherTheRestartReplacedTheHelperWhenAReadFails(t *te
 					t.Fatal(err)
 				}
 			}
-			ops := r.fakeHelper(t, nil)
+			ops := r.scriptedHelper(t, func(op string) helper.Response {
+				if op == "undrain" && tc.refuseUndrain {
+					return helper.Response{Code: helper.CodeBadRequest, Error: "refused"}
+				}
+				return helper.Response{OK: true}
+			})
 			err := r.run("--url", "https://secrets.example")
 			if err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "not restarted") {
 				t.Fatalf("install whose read of the main process %s failed: %v; want an error holding %q, never that the helper was not restarted", tc.name, err, tc.want)
