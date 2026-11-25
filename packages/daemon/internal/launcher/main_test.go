@@ -171,6 +171,7 @@ func exitHelper(t *testing.T) {
 // git and jj fixtures of the sweep's tests build their environment from (fixturegit.Isolated),
 // drops a workspace the process holds.
 func TestNoTestOfThisPackageCanReachThePodsWorkspace(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	// The test process: Guard ran, and nothing it takes out is left — no LEGION_, no GIT_ but
 	// GIT_ALLOW_PROTOCOL=file, no JJ_ (fixtureenv.RequireGuarded), so neither this package's code
 	// under test nor a child it starts with no environment of its own can read the pod's.
@@ -212,6 +213,7 @@ func TestNoTestOfThisPackageCanReachThePodsWorkspace(t *testing.T) {
 // resume of this package's tests would have queried. A test that wants a session database names
 // its own with testdb.DSNFile, in the start's own environment.
 func TestNoTestOfThisPackageCanReachThePodsSessionStore(t *testing.T) {
+	t.Parallel()
 	// The test process: TestMain unset both, so neither this package's code under test nor a
 	// child it starts with no environment of its own can read the pod's store.
 	t.Run("the test process holds no session store of the pod's", func(t *testing.T) {

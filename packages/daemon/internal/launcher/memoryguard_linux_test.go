@@ -59,6 +59,7 @@ const memoryGuardHeld = 64 << 20
 // holder's, each a link to the process's own directory in /proc, so the guard can end nothing of
 // the machine's.
 func TestMemoryGuardOnRealRoleNamespaces(t *testing.T) {
+	t.Parallel()
 	switch os.Getenv(memoryGuardRoleEnv) {
 	case "init":
 		memoryGuardRoleInit(t)
@@ -332,6 +333,8 @@ const (
 // the time of the high, the counter's high and low and the largest process, the agent; the next
 // hour's line carries that hour's readings alone.
 func TestControllerPodMemoryGuardEndsEachKindOfCommand(t *testing.T) {
+	// Not parallel: it writes the package variable podTrimmer (useGuardPodKilling), which parallel
+	// tests read.
 	python, err := exec.LookPath("python3")
 	if err != nil {
 		t.Skipf("no python3 to start the agent's Python kernel with: %v", err)

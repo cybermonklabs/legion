@@ -425,9 +425,9 @@ func (t *trimmer) bound(report shimwire.LauncherVolumeReport) shimwire.LauncherV
 }
 
 // boundReport is how a report is bounded where it is made and where it replaces a held one
-// (report, switchOff, deliver): bound itself, a package variable for the reason readVolumeUsage
-// is one, so a case can make the bound panic and read that what the report was to carry stays
-// with the trimmer for the next one.
+// (report, switchOff, deliver): bound itself, a package variable so a case can make the bound
+// panic and read that what the report was to carry stays with the trimmer for the next one. A
+// case that replaces it runs alone, since every trimmer of the process reads it.
 var boundReport = (*trimmer).bound
 
 // saidLeftOut writes the one line of what a report leaves out, so a person reading the pod's log

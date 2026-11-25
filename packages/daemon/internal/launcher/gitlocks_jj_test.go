@@ -32,7 +32,8 @@ import (
 // these rows plant is the index of this workspace's own git worktree entry, which exists only in a
 // colocated clone that has a workspace added to it.
 //
-// Neither row calls t.Parallel, as no row of this package may (gitlocks_test.go).
+// Both rows run in parallel: each works a clone of its own, and its pass reads a /proc root that
+// holds only the row's own process (procRoot).
 
 // jjWorkspaceName is the name the workspace is added under, which is also the base name of its
 // directory: `jj workspace add --name` names the jj workspace, and git names the worktree entry
@@ -208,6 +209,7 @@ func holdsOpen(t *testing.T, lock string) int {
 // jj is read before the lock's own removal is, which is this row's point: a pass that removed
 // nothing fails here on jj's real refusal rather than on a missing file.
 func TestAStaleIndexLockBlocksJJUntilTheSweepRemovesIt(t *testing.T) {
+	t.Parallel()
 	c := newJJClone(t)
 	// jj takes the index lock only when it has something to snapshot, so the workspace is given a
 	// changed file first: measured against the jj this machine runs (0.45.1-sami), with this lock
@@ -236,6 +238,7 @@ func TestAStaleIndexLockBlocksJJUntilTheSweepRemovesIt(t *testing.T) {
 // deleting a file. A lock some process still holds must never be removed, whatever its age: two
 // writers would then replace one file, and the loser's write would be the one the clone kept.
 func TestAHeldIndexLockStaysAndJJStaysBlocked(t *testing.T) {
+	t.Parallel()
 	c := newJJClone(t)
 	c.write(filepath.Join(c.dir, "work.txt"), "a role's unsnapshotted work\n")
 	lock := c.worktreeLock("index.lock", "", time.Hour)

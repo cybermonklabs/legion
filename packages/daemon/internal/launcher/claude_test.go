@@ -176,6 +176,7 @@ func appendTo(t *testing.T, path, text string) {
 // into the same pod leaves when the last save missed its last lines, is never shortened: the child
 // finds it whole, and the next save adds what the row lacked.
 func TestAClaudeResumeRestoresBeforeTheChildStartsAndNeverShortensALongerFile(t *testing.T) {
+	t.Parallel()
 	c := newClaudeRig(t, Config{})
 	saved := "{\"n\":1}\n{\"n\":2}\n"
 	c.seed(c.transcript, saved, time.Now())
@@ -205,6 +206,7 @@ func TestAClaudeResumeRestoresBeforeTheChildStartsAndNeverShortensALongerFile(t 
 // A fresh transcript is saved as it grows, and only up to its last newline: a line Claude Code has
 // begun and not finished is never in the table, and joins it once finished.
 func TestAClaudeSaveEndsAtANewline(t *testing.T) {
+	t.Parallel()
 	c := newClaudeRig(t, Config{})
 	c.launch(1, "exec sleep 600", false)
 	write(t, c.transcript, "{\"n\":1}\n{\"n\":", time.Now())
@@ -222,6 +224,7 @@ func TestAClaudeSaveEndsAtANewline(t *testing.T) {
 // the pod's replacement holds, this launcher stops saving that file and says so, and neither its
 // periodic saves nor its last one overwrite what the other wrote.
 func TestAClaudeSaveStopsWhenAnotherWriterMovedTheRow(t *testing.T) {
+	t.Parallel()
 	c := newClaudeRig(t, Config{})
 	c.launch(1, "exec sleep 600", false)
 	write(t, c.transcript, "{\"n\":1}\n", time.Now())
@@ -246,6 +249,7 @@ func TestAClaudeSaveStopsWhenAnotherWriterMovedTheRow(t *testing.T) {
 // The phase reminder's record comes back with its count on a resume, so a worker in a new pod is
 // reminded where its last one left off, and a record the plugin replaces is saved again.
 func TestAClaudeResumeRestoresThePhaseReminderRecordWithItsCount(t *testing.T) {
+	t.Parallel()
 	c := newClaudeRig(t, Config{})
 	c.seed(c.transcript, "{\"n\":1}\n", time.Now())
 	record := `{"state":"open","count":2,"reported":false}`
@@ -265,6 +269,7 @@ func TestAClaudeResumeRestoresThePhaseReminderRecordWithItsCount(t *testing.T) {
 // mtime_ms is the transcript's mtime when it was saved, so a workspace created after it was
 // recreated since and one created before it was not.
 func TestAClaudeResumeIsToldWhetherItsWorkspaceWasRecreatedSinceTheLastSave(t *testing.T) {
+	t.Parallel()
 	c := newClaudeRig(t, Config{})
 	dir := newWorkspace(t)
 	c.launch(1, "exec sleep 600", false)
@@ -303,6 +308,7 @@ func TestAClaudeResumeIsToldWhetherItsWorkspaceWasRecreatedSinceTheLastSave(t *t
 // holding a lock the save waits on, no marker is written and the child runs on; once the save
 // commits the marker follows.
 func TestAClaudeSaveMarksAFreshTranscriptOnlyAfterItsFirstCommit(t *testing.T) {
+	t.Parallel()
 	c := newClaudeRig(t, Config{})
 	pidFile := filepath.Join(t.TempDir(), "pid")
 	c.launch(1, sleeping(pidFile), false)
@@ -357,6 +363,7 @@ func alive(pid int) bool { return syscall.Kill(pid, 0) == nil }
 // the last save having landed, or exactly what the last periodic save left. Nothing else, and
 // never a line cut short.
 func TestAClaudeFinalSaveAtTheFloorGraceLandsOrKeepsTheLastPeriodicSave(t *testing.T) {
+	t.Parallel()
 	c := newClaudeRig(t, Config{StopGrace: shim.MinStopGrace})
 	script := fmt.Sprintf(`trap 'sleep %d; printf "{\"n\":\"last\"}\n" >> %q; exit 0' TERM; sleep 600 & wait`,
 		int(shim.DefaultGrace/time.Second), c.transcript)
@@ -380,6 +387,7 @@ func TestAClaudeFinalSaveAtTheFloorGraceLandsOrKeepsTheLastPeriodicSave(t *testi
 // Under a session database of the pod's own the launcher keeps the session through its
 // generation's proxy socket, the one the child's URL file names in the agent's spelling.
 func TestAClaudeSaveReachesTheTableThroughTheGenerationsProxy(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (sessionDatabaseAt).
 	dsn := testdb.PlainDatabase(t, "legion_launcher_claude_proxy_test")
 	database, dialer := sessionDatabaseAt(t, dsn)
 	g := newSessionRig(t, Config{SessionDatabase: database, SessionDialer: dialer.build})
@@ -406,6 +414,7 @@ const launcherProcessEnv = "LEGION_LAUNCHER_TEST_PROCESS"
 // was killed, ends the launcher too: no launcher outlives its test to redial the next listener on
 // its port with a hello the daemon end takes.
 func TestLauncherProcess(t *testing.T) {
+	// Not parallel: a helper child, run in a process of its own; here it returns at once.
 	if os.Getenv(launcherProcessEnv) != "1" {
 		return
 	}
@@ -469,6 +478,7 @@ func processRig(t *testing.T) (g *rig, kill func()) {
 // committed, a prefix of the transcript ending at a newline. A resume in the pod that replaces it,
 // on a disk that holds nothing of the session, restores exactly that.
 func TestAClaudeResumeAfterASIGKILLRestoresExactlyTheSavedPrefix(t *testing.T) {
+	t.Parallel()
 	_, dsnFile := testdb.DSNFile(t, "legion_launcher_claude_kill_test")
 	killed, kill := processRig(t)
 	c := claudeRigOn(t, killed, dsnFile)
@@ -502,6 +512,7 @@ func TestAClaudeResumeAfterASIGKILLRestoresExactlyTheSavedPrefix(t *testing.T) {
 // separator or a dot that would lead either file outside CLAUDE_CONFIG_DIR — is refused before
 // anything is kept, the refusal naming the variable; a uuid is kept.
 func TestClaudeKeeperRefusesASessionIDThatIsNoUUID(t *testing.T) {
+	t.Parallel()
 	configDir := t.TempDir()
 	env := func(session string) []string {
 		return []string{"CLAUDE_CONFIG_DIR=" + configDir, claudelaunch.SessionVariable + "=" + session,
@@ -643,6 +654,7 @@ func local(t *testing.T, path string) string {
 // writer moved to the length a failed save would have left, with bytes of its own, is not one of
 // the keeper's, and the keeper stops saving that file rather than overwrite it.
 func TestAClaudeSaveTakesEverySaveThatMayHaveLandedAsSavedWhenTheRowMovedToIt(t *testing.T) {
+	t.Parallel()
 	_, dsnFile := testdb.DSNFile(t, "legion_launcher_keeper_test")
 
 	t.Run("an appended transcript", func(t *testing.T) {
@@ -732,6 +744,7 @@ func TestAClaudeSaveTakesEverySaveThatMayHaveLandedAsSavedWhenTheRowMovedToIt(t 
 // past the row: the restore allocates a small fraction of what a read of the whole file would
 // hold in memory.
 func TestAClaudeRestoreAndSaveRefuseAFifoAndReadNoFurtherThanTheRow(t *testing.T) {
+	// Not parallel: it measures the whole process's heap, which parallel tests allocate on.
 	ctx := context.Background()
 	_, dsnFile := testdb.DSNFile(t, "legion_launcher_keeper_test")
 	conn, err := ompsessions.Connect(ctx, dsnFile)

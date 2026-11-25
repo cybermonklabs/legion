@@ -83,6 +83,7 @@ type agentPlan struct {
 // TestRoleNamespaceProbeHelper is the probe itself: cloned into a role's namespaces, it does the
 // first thing role-init does there. A machine may allow the namespaces and refuse the mounts.
 func TestRoleNamespaceProbeHelper(t *testing.T) {
+	// Not parallel: a helper child, run in a process of its own; here it returns at once.
 	dir := os.Getenv(roleProbeEnv)
 	if dir == "" {
 		return
@@ -110,6 +111,7 @@ func TestRoleNamespaceProbeHelper(t *testing.T) {
 // its own, a copy of the pod's shared one that no sibling reads; and when the role's init exits
 // nothing of the role is left, not even a detached process that ignores SIGTERM.
 func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
+	t.Parallel()
 	requireRoleNamespaces(t)
 	self, err := os.Executable()
 	if err != nil {
@@ -330,6 +332,7 @@ func reported(output string) map[string]string {
 // carry, starts a process outside the role's namespaces, runs role-init over that layout, and
 // reports what the container can see once the role is gone.
 func TestRoleInitStageHelper(t *testing.T) {
+	// Not parallel: a helper child, run in a process of its own; here it returns at once.
 	encoded := os.Getenv(roleInitStageEnv)
 	if encoded == "" {
 		return
@@ -1193,6 +1196,7 @@ func procStat(pid string) (string, string, error) {
 // role's namespaces, which reports what the role can reach and leaves a detached process behind.
 // Every line it prints carries its generation's label, so the stage's two runs read apart.
 func TestRoleInitAgentHelper(t *testing.T) {
+	// Not parallel: a helper child, run in a process of its own; here it returns at once.
 	encoded := os.Getenv(roleInitAgentEnv)
 	if encoded == "" {
 		return
@@ -1514,6 +1518,7 @@ func fileKind(path string) string {
 // answers `uncovered`, read in the namespace where the unmount happened. A probe that read the
 // sibling from its caller's namespace, where the cover never left, answered `refused` here.
 func TestTheUncoverProbeReportsAnUnlockedCoverRemoved(t *testing.T) {
+	t.Parallel()
 	if dir := os.Getenv(uncoverControlEnv); dir != "" {
 		if err := privateMounts(); err != nil {
 			fmt.Println("control error:", err)
@@ -1709,6 +1714,7 @@ const roleCheckEnv = "LEGION_ROLE_INIT_TEST_CHECK"
 // pod's sits on a volume of its own: role-init covers the roles directory after it has given the
 // role its own /tmp.
 func TestTheRoleNamespaceCheckRunsARoleGeneration(t *testing.T) {
+	t.Parallel()
 	if dir := os.Getenv(roleCheckEnv); dir != "" {
 		err := privateMounts()
 		if err == nil {
@@ -1768,6 +1774,7 @@ func TestTheRoleNamespaceCheckRunsARoleGeneration(t *testing.T) {
 // a file's. A file already at a file's mount point is left as it is. An entry in the way that is
 // neither a directory nor a link is refused, and so is a target outside the root.
 func TestAMountPointsPlaceFollowsNoLinkARoleLeft(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root, elsewhere := filepath.Join(dir, "home"), filepath.Join(dir, "roles", RoleHomesDir, "b")
 	for _, path := range []string{root, elsewhere} {
@@ -1833,6 +1840,8 @@ func TestAMountPointsPlaceFollowsNoLinkARoleLeft(t *testing.T) {
 // directory where a file's mount point goes. No walk here, refused or not, leaves a descriptor
 // behind.
 func TestAMountPointsPlaceRereadsAnEntryThatChangedUnderTheWalk(t *testing.T) {
+	// Not parallel: it reads every descriptor of the whole process (descriptorsKept), so a parallel
+	// test's open file would read as a descriptor the walk left behind.
 	dir := t.TempDir()
 	root, elsewhere := filepath.Join(dir, "home"), filepath.Join(dir, "elsewhere")
 	for _, path := range []string{root, elsewhere} {
@@ -1934,12 +1943,12 @@ func openDescriptors(t *testing.T) map[int]string {
 // descriptorsKept reports what the call between the two snapshots left open, as a set and never
 // as a count: a descriptor open after it, on a target that was not open on that number before
 // it, is one the call opened and did not close. It reads the whole process, so it holds only
-// while nothing else opens a descriptor in the window: no test of this package runs in parallel,
-// and every goroutine a test starts ends with that test. That is why it checks this direction
-// alone: a descriptor vanishing between the snapshots is no finding, because the finaliser of a
-// file an earlier test left unreferenced closes it at whatever garbage collection lands in the
-// window (measured, with the two snapshots around a runtime.GC()), and a finaliser closes where
-// it never opens.
+// while nothing else opens a descriptor in the window: its one caller is a test that is not
+// parallel, and no parallel test runs beside such a test, and every goroutine a test starts ends
+// with that test. That is why it checks this direction alone: a descriptor vanishing between the
+// snapshots is no finding, because the finaliser of a file an earlier test left unreferenced
+// closes it at whatever garbage collection lands in the window (measured, with the two snapshots
+// around a runtime.GC()), and a finaliser closes where it never opens.
 func descriptorsKept(t *testing.T, label string, before, after map[int]string) {
 	t.Helper()
 	for number, target := range after {
@@ -1955,6 +1964,7 @@ func descriptorsKept(t *testing.T, label string, before, after map[int]string) {
 // again from the pod's shared one, and so is a link at its path, which is removed without touching
 // what it named. A finished copy is the role's own from then on: what the role wrote there stays.
 func TestAnOwnConfigHomeWithoutItsMarkerIsMadeAgain(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	shared, own, elsewhere := filepath.Join(dir, "shared"), filepath.Join(dir, "own"), filepath.Join(dir, "elsewhere")
 	for path, body := range map[string]string{
@@ -2011,6 +2021,7 @@ func TestAnOwnConfigHomeWithoutItsMarkerIsMadeAgain(t *testing.T) {
 // Never prove the option by running TestARoleRunsInNamespacesOfItsOwn against a head without it:
 // under gVisor that ends the pod's sandbox rather than failing a test.
 func TestARoleHomeLayerIsMountedWithUserxattr(t *testing.T) {
+	t.Parallel()
 	homes := filepath.Join("/roles", RoleHomesDir, "a")
 	home, upper, work := Home, filepath.Join(homes, "upper"), filepath.Join(homes, "work", "0000000001")
 	options := homeOverlayOptions(home, upper, work)
@@ -2030,6 +2041,7 @@ func TestARoleHomeLayerIsMountedWithUserxattr(t *testing.T) {
 // Nothing is mounted and no directory is renamed. The case reads the refusal's text alone, and
 // fails when the error is nil.
 func TestARefusedRoleHomeLayerNamesTheOptionsItTried(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	homes, home := filepath.Join(dir, "homes"), filepath.Join(dir, "home")
 	upper, work := filepath.Join(homes, "upper"), filepath.Join(homes, "work", "0000000001")
@@ -2068,6 +2080,7 @@ func TestARefusedRoleHomeLayerNamesTheOptionsItTried(t *testing.T) {
 // inside the re-exec stage and writes to an inherited descriptor, so a test of it is a test of
 // that stage rather than of this function.
 func TestTheStatusPipeReadsTheWidthItCarries(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		raw  string
@@ -2159,6 +2172,7 @@ const roleDrainStaysBound = 30 * time.Second
 // polls or the descendant's trap changes no case's verdict; the stage's one deadline is a hang
 // guard (roleDrainReport).
 func TestARoleWhoseShimExitsSignalsItsNamespaceBeforeItKills(t *testing.T) {
+	t.Parallel()
 	if encoded := os.Getenv(roleDrainEnv); encoded != "" {
 		var plan roleDrainPlan
 		if err := json.Unmarshal([]byte(encoded), &plan); err != nil {

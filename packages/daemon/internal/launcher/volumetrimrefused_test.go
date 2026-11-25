@@ -23,6 +23,8 @@ import (
 // trimmer can run is the launcher's own manager's to say (manager.applyAck, volumeTrimming), so
 // the case drives the real launcher.
 func TestARefusedAnswerStopsTheSweepInFlight(t *testing.T) {
+	// Not parallel: it writes the package variable podTrimmer (useLauncherTrimmer), which parallel
+	// tests read.
 	f := newTrimFixture(t, 25) // a hundred entries, against a volume that never reaches the low mark
 	f.useVolume(steady(90))
 	f.setSettings(trimSettings())

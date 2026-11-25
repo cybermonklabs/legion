@@ -25,6 +25,7 @@ const namespaceHelperEnv = "LEGION_LAUNCHER_NAMESPACE_HELPER"
 
 // This helper runs the real launcher as PID 1, without a Docker daemon or a model process.
 func TestLauncherPIDOneHelper(t *testing.T) {
+	// Not parallel: a helper child, run in a process of its own; here it returns at once.
 	if os.Getenv(namespaceHelperEnv) != "1" {
 		return
 	}
@@ -183,6 +184,7 @@ func namespaceRig(t *testing.T, grace time.Duration) *rig {
 }
 
 func TestPIDOneLauncherCleansDetachedDescendants(t *testing.T) {
+	t.Parallel()
 	for _, end := range []string{"stop", "natural exit"} {
 		t.Run(end, func(t *testing.T) {
 			g := namespaceRig(t, 2*time.Second)
@@ -217,6 +219,7 @@ while [ ! -s "$DETACHED_MARKER" ]; do /bin/sleep 0.01; done
 }
 
 func TestPIDOneLauncherReapsOrphansWhileRoleStaysResident(t *testing.T) {
+	t.Parallel()
 	g := namespaceRig(t, 2*time.Second)
 	marker := filepath.Join(t.TempDir(), "orphan")
 	resultFile := filepath.Join(t.TempDir(), "reaped")
@@ -243,6 +246,7 @@ exec /bin/sleep 600
 }
 
 func TestPIDOneLauncherUsesConfiguredShutdownGrace(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		grace    time.Duration

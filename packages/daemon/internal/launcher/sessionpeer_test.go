@@ -166,6 +166,8 @@ func (r *peerRig) check(t *testing.T) *sessionPeer {
 // the agent is refused, also when it runs the agent's executable, and so are the shim's other
 // children, and an orphan that runs `legion worker-shim` with its child.
 func TestTheSessionPeerCheckAdmitsTheLauncherAndTheAgentAlone(t *testing.T) {
+	// Not parallel: it writes the package variable peerProc (newPeerRig), which parallel tests
+	// read.
 	r := newPeerRig(t)
 	for _, tc := range []struct {
 		pid  int
@@ -204,6 +206,8 @@ func TestTheSessionPeerCheckAdmitsTheLauncherAndTheAgentAlone(t *testing.T) {
 // the agent ended has another start time, and it is refused, though its place in the table and its
 // executable are the agent's.
 func TestTheSessionPeerCheckRefusesAProcessThatTookTheAgentsPid(t *testing.T) {
+	// Not parallel: it writes the package variable peerProc (newPeerRig), which parallel tests
+	// read.
 	r := newPeerRig(t)
 	check := r.check(t)
 	if err := check.admit(sessionproxy.Peer{PID: peerAgent}); err != nil {
@@ -220,6 +224,8 @@ func TestTheSessionPeerCheckRefusesAProcessThatTookTheAgentsPid(t *testing.T) {
 // agent: a connection is refused, and nothing is pinned. Once the wrapper execs the agent, the
 // same pid runs the agent's executable, and it is admitted.
 func TestTheSessionPeerCheckKnowsAWrappedAgentOnlyOnceTheWrapperHasExeced(t *testing.T) {
+	// Not parallel: it writes the package variable peerProc (newPeerRig), which parallel tests
+	// read.
 	r := newPeerRig(t)
 	wrapper := guardProcess{pid: peerAgent, ppid: peerShim, exe: "/usr/bin/dash",
 		args: []string{"/bin/sh", "-c", `legion-setup && exec "$@"`, "legion-start", r.agent, "--mode", "rpc"}, ns: testerNamespace}
@@ -242,6 +248,8 @@ func TestTheSessionPeerCheckKnowsAWrappedAgentOnlyOnceTheWrapperHasExeced(t *tes
 // A Claude Code generation has no agent that connects: the launcher keeps its session. So its
 // check admits the launcher alone, and it needs no agent executable.
 func TestTheSessionPeerCheckOfAClaudeCodeGenerationAdmitsOnlyTheLauncher(t *testing.T) {
+	// Not parallel: it writes the package variable peerProc (newPeerRig), which parallel tests
+	// read.
 	r := newPeerRig(t)
 	exe := launcherExe(t)
 	r.pod.add(
@@ -269,6 +277,8 @@ func TestTheSessionPeerCheckOfAClaudeCodeGenerationAdmitsOnlyTheLauncher(t *test
 // generation running, with a table it cannot read, and with no role-init, no shim or no agent in
 // the table, the agent's pid is refused with the reason. The launcher is admitted all the same.
 func TestTheSessionPeerCheckRefusesWithoutItsGenerationItsTableItsShimOrItsAgent(t *testing.T) {
+	// Not parallel: it writes the package variable peerProc (usePeerProc), which parallel tests
+	// read.
 	for _, tc := range []struct {
 		name string
 		// change takes from the rig what the case lacks.
@@ -422,6 +432,7 @@ func roleExecutable(t *testing.T, dir string) string {
 // runs. Each reaches the session table through the fake dialer, and the proxy logs no refusal. An
 // Oh My Pi generation and a Claude Code one admit the launcher alike.
 func TestTheLaunchersOwnSessionConnectionsPassTheWriterCheck(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (sessionDatabaseAt).
 	database, dialer := sessionDatabaseAt(t, testdb.PlainDatabase(t, "legion_launcher_writer_test"))
 	database.ImpersonateServiceAccount, database.WriterAudience = testServiceAccount, testWriterAudience
 	shortenResumeLookup(t)
@@ -485,6 +496,8 @@ func TestTheLaunchersOwnSessionConnectionsPassTheWriterCheck(t *testing.T) {
 // file and text that is not an integer each refuse the start before anything is written or
 // dialed, naming the file and what it read. A scope of 1 lets the start go on.
 func TestAWriterGenerationIsRefusedUnlessYamaForbidsTracingTheAgent(t *testing.T) {
+	// Not parallel: it writes the package variable ptraceScopeFile (useTraceScope), which parallel
+	// tests read.
 	for _, tc := range []struct {
 		name    string
 		content string
@@ -529,6 +542,8 @@ func TestAWriterGenerationIsRefusedUnlessYamaForbidsTracingTheAgent(t *testing.T
 // the agent by it, so a start that names none, or a relative one, is refused before anything is
 // written or dialed. A Claude Code start names none and goes on.
 func TestAnOhMyPiWriterStartMustNameItsAgentsExecutableAsAnAbsolutePath(t *testing.T) {
+	// Not parallel: it writes the package variable ptraceScopeFile (useTraceScope), which parallel
+	// tests read.
 	useTraceScope(t, "1\n")
 	claude := []string{claudelaunch.SessionVariable + "=" + claudelaunch.NewSessionID()}
 	for _, tc := range []struct {
@@ -566,6 +581,7 @@ func TestAnOhMyPiWriterStartMustNameItsAgentsExecutableAsAnAbsolutePath(t *testi
 // sends the workload-identity file's token, though the writer token sits under the same roles
 // directory.
 func TestTheMetadataEndpointExchangesItsOwnTokenAndNeverTheWriterToken(t *testing.T) {
+	// Not parallel: it unsets environment variables of the whole process (holdMetadataVariables).
 	holdMetadataVariables(t, "")
 	rolesDir := t.TempDir()
 	identity := filepath.Join(rolesDir, WorkloadIdentityDirName, WorkloadIdentityTokenFile)
@@ -670,6 +686,7 @@ func sessionPeerShim() int {
 // echoes it through the proxy. The child stays until the test lets it end, so the test can read
 // its pid in the launcher's process table; the agent stays until the child ends.
 func TestSessionPeerStandInHelper(t *testing.T) {
+	// Not parallel: a helper child, run in a process of its own; here it returns at once.
 	which := os.Getenv(peerStandInEnv)
 	if which == "" {
 		return
@@ -863,6 +880,8 @@ func (g *peerGeneration) release() {
 // The agent connects next and is admitted: its round trip reaches the upstream. Inside the role's
 // namespaces the agent cannot read the writer token, which the roles directory holds.
 func TestARealRolesAgentIsAdmittedAndItsChildIsRefused(t *testing.T) {
+	// Not parallel: it writes the package variable launcherExecutable (startPeerGeneration), which
+	// parallel tests read.
 	g := startPeerGeneration(t)
 	defer g.release()
 	if said := g.said(peerChildSaw); said != "connect=refused" {
@@ -908,6 +927,8 @@ func TestARealRolesAgentIsAdmittedAndItsChildIsRefused(t *testing.T) {
 // stand-in's environment, which holds all its role-init and its shim were given, names neither,
 // and no file of the generation's directory holds either.
 func TestTheWriterTokenIsInNoEnvironmentAndNoFileOfItsGeneration(t *testing.T) {
+	// Not parallel: it writes the package variable launcherExecutable (startPeerGeneration), which
+	// parallel tests read.
 	g := startPeerGeneration(t)
 	defer g.release()
 	for _, entry := range strings.Split(g.said(peerAgentEnviron), "\x00") {
