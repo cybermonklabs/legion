@@ -478,6 +478,7 @@ func TestASilentRelaySubscriberReadsConnected(t *testing.T) {
 // record at all, so a session the store has aged out is that same 404 and not a stopped answer
 // with a month-old last_seen.
 func TestASendToASessionNeitherStoreKnowsIsTheNotFound(t *testing.T) {
+	t.Parallel()
 	rig := newKnownSessionRig(t)
 
 	unknown := rig.send(t, "ses_never_registered", nil)
@@ -516,6 +517,7 @@ func TestASendToASessionNeitherStoreKnowsIsTheNotFound(t *testing.T) {
 // that advertises nothing, so its send is accepted and the mode is left to the session to judge
 // when it runs again.
 func TestASendToAStoppedSessionIsJudgedByItsRecordsCapabilities(t *testing.T) {
+	t.Parallel()
 	rig := newKnownSessionRig(t)
 	const steerFrame = `{"event":{"id":0,"issue_key":"CORE-1"},"delivery":{"attempt":1,"mode":"steer"}}`
 
@@ -562,6 +564,7 @@ func TestASendToAStoppedSessionIsJudgedByItsRecordsCapabilities(t *testing.T) {
 // only its record is left. A connected target is the ordinary 200, and a send with the flag absent
 // stores for a stopped target.
 func TestConnectedOnlyRefusesAStoppedTargetAndStoresNothing(t *testing.T) {
+	t.Parallel()
 	rig := newKnownSessionRig(t)
 
 	const cleanlyStopped = "ses_switch_stopped"
@@ -660,6 +663,7 @@ func wakeNamed(report wakeReport, kind, name string) bool {
 // and whose probe met no responders raises none, as no lingering entry does, and answers stopped
 // with its entry's age and last_seen.
 func TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry(t *testing.T) {
+	t.Parallel()
 	rig := newKnownSessionRig(t)
 	wakesCtx, stopWakes := context.WithCancel(context.Background())
 	t.Cleanup(stopWakes)
@@ -733,6 +737,7 @@ func TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry(t *tes
 // in the window (newQuietKnownSessionRig), so what the probe counts is the send route's, however
 // long the sends take.
 func TestAHundredSendsToAStoppedSessionSendNoJetStreamAPIRequest(t *testing.T) {
+	t.Parallel()
 	rig := newQuietKnownSessionRig(t)
 	const gone = "ses_stopped_api_free"
 	rig.register(t, gone, nil)
@@ -764,6 +769,7 @@ func TestAHundredSendsToAStoppedSessionSendNoJetStreamAPIRequest(t *testing.T) {
 // own fields and no port and no host at all, a live session is its ordinary body, and a session
 // neither store knows is still the 404.
 func TestTheRegistryRouteAnswersAStoppedSessionOnlyWhenAsked(t *testing.T) {
+	t.Parallel()
 	rig := newKnownSessionRig(t)
 	const gone = "ses_registry_stopped"
 	rig.register(t, gone, map[string]any{

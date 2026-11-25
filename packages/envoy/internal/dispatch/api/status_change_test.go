@@ -2768,8 +2768,11 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 				t.Fatal(err)
 			}
 			firstAnswer := make(chan keyedAnswered, 1)
+			// The first request carries the shared wait's bound itself, as body_drain_test.go's
+			// first requests do (testwait.Context).
+			ctx := testwait.Context(t)
 			go func() {
-				status, body, _, err := keyedPost(server, write.path, string(encoded), key, 30*time.Second)
+				status, body, _, err := keyedPostContext(ctx, server, write.path, string(encoded), key)
 				firstAnswer <- keyedAnswered{status: status, body: body, err: err}
 			}()
 			select {

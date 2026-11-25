@@ -171,6 +171,7 @@ func TestSenderStampNamesTheCurrentRegistration(t *testing.T) {
 // answering does. The stamp must name the record's machine and directory, and it returns only once
 // the stalled entry read has spent the window, which shows the entry read went to the bucket.
 func TestTheSenderStampReadsTheInterestRecordBeforeTheSessionEntry(t *testing.T) {
+	t.Parallel()
 	const (
 		sender  = "ses_stamp_read_order_sender"
 		machine = "interest-machine"

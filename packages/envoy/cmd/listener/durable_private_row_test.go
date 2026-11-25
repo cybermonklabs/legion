@@ -26,6 +26,7 @@ import (
 // durable did read the stored row; and the session's own message, stored after the others, is its
 // first frame, so its relay is live.
 func TestADurableMessageOnAPrivateSubjectAStoredRowNamesReachesNoOtherSession(t *testing.T) {
+	t.Parallel()
 	rig := newRelayRig(t)
 	const (
 		sessionID = "ses_durable_forged_pub"
