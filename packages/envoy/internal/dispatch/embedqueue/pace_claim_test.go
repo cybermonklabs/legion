@@ -38,17 +38,29 @@ func TestAClaimIsRenewedThroughThePacesWaitAtItsSlowest(t *testing.T) {
 }
 
 // latestWait is the latest a wait can start after the claim's last renewal: a claim
-// claimWindow-callBound-callSlack (45 s) old or older is renewed as the call is made.
-const latestWait = claimWindow - 60*time.Second - callSlack - 100*time.Millisecond
+// claimWindow-callBound-callSlack (45 s) old or older is renewed as the call is made. A var, as
+// callBound is, so it follows callBound's value rather than repeating it.
+var latestWait = claimWindow - callBound - callSlack - 100*time.Millisecond
 
-// A call the pace holds 48 s, from a claim 11.9 s old, goes out with the claim renewed. The wait
-// renews nothing, since its renewal falls due at renewClaimInterval and the wait ends at 59.9 s,
-// so only the renewal as the call goes out (embedDocuments, needing callBound and callSlack)
-// keeps the claim young enough. Unrenewed, the call went out with the claim 59.9 s old, past
-// claimWindow less callBound less callSlack, and a call run to callBound ended with it 119.9 s old.
+// A call the pace holds, from a claim old enough that the wait ends just before the wait's own
+// renewal falls due (renewClaimInterval), goes out with the claim renewed: the wait renews nothing,
+// so only the renewal as the call goes out (embedDocuments, needing callBound and callSlack) keeps
+// the claim young enough. The hold is the first of the pace's back-off steps that leaves the claim
+// too young for that renewal as the call starts, and the claim's age is what remains of the
+// interval, both computed from the constants (24 s from 35.9 s at today's values), so the row keeps
+// testing that renewal when a constant moves. Unrenewed, the call went out with the claim 59.9 s
+// old, past claimWindow less callBound less callSlack, and a call run to callBound ended with it
+// 119.9 s old.
 func TestACallThePaceHeldRenewsItsClaimAsItGoesOut(t *testing.T) {
+	needed := claimWindow - callBound - callSlack
+	end := renewClaimInterval - 100*time.Millisecond
+	steps := embed.NewRateLimitedEmbedder(&fakeEmbedder{})
+	for steps.Interval() <= end-needed {
+		steps.BackOff()
+	}
+	held := steps.Interval()
 	synctest.Test(t, func(t *testing.T) {
-		requireRenewedThroughThePacesWait(t, Deps{Embedder: &fakeEmbedder{}}.Paced(), 48*time.Second, 11900*time.Millisecond)
+		requireRenewedThroughThePacesWait(t, Deps{Embedder: &fakeEmbedder{}}.Paced(), held, end-held)
 	})
 }
 
