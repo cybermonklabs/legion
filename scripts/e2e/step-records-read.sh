@@ -48,7 +48,7 @@ read_dispatch_quiet plans --project "$project"
 
 # Each line after the header is one finished issue, as `dispatch plans` prints it
 # (packages/envoy-client/src/dispatch-commands/plans.ts):
-#   <issue> closed <closed_at> plan <none|<source> (<n> tasks: <steps of the first|->)> ratings … time … failed steps <n>
+#   <issue> closed <closed_at> plan <none|<source> (<n> tasks: <steps of the first|->)> ratings … time … failed steps <n> on set model …
 # The awk prints the line of the issue, then the steps of its plan, or the reason it cannot.
 planned=$(awk -v project="$project" -v issue="$issue" '
   function unknown(why) { print why; status = 2; exit status }
@@ -86,9 +86,17 @@ planned=$(awk -v project="$project" -v issue="$issue" '
 printf '%s\n' "${planned%%$'\n'*}"
 
 # Each line after the header is one run, as `dispatch steps` prints it:
-#   <task> <step> <kind> <role> <type|-> attempt <a> <agent|-> <model|-> <started_at|-> <ended_at|running> <result|running>
+#   <task> <step> <kind> <role> <type|-> attempt <a> <agent|-> <model|-> <started_at|-> <ended_at|running> <result|running> set <set model|-> answered <answers>
+# A set model is `-` or a model: printable ASCII with no space, 1 to 128 characters. The answers
+# are `running`, `unknown`, `none`, or each model as `<model>=<calls>(<share>%)`, joined by `,`. A
+# line in another form is no run.
 awk -v issue="$issue" -v steps="${planned#*$'\n'}" '
   function unknown(why) { print "UNKNOWN: " why; status = 2; exit status }
+  BEGIN {
+    # One model that answered: its name, its calls (at least 1) and their share in whole percent.
+    answer = "[!-~]+=[1-9][0-9]*\\((100|[1-9]?[0-9])%\\)"
+    answers = "^(running|unknown|none|" answer "(," answer ")*)$"
+  }
   NR == 1 {
     if ($0 !~ ("^" issue ": [0-9]+ steps in [0-9]+ tasks$")) unknown("the first line of the answer is no header of " issue ": " $0)
     listed = $2 + 0
@@ -97,7 +105,8 @@ awk -v issue="$issue" -v steps="${planned#*$'\n'}" '
   }
   NF == 0 { next }
   {
-    if (NF != 12 || $6 != "attempt") unknown("the line is no run: " $0)
+    if (NF != 16 || $6 != "attempt" || $13 != "set" || $15 != "answered") unknown("the line is no run: " $0)
+    if ($14 !~ /^[!-~]+$/ || length($14) > 128 || $16 !~ answers) unknown("the line is no run: " $0)
     runs++
     place = ($3 == "step") ? "step " $2 : "the " $3
     seen[place] = 1
