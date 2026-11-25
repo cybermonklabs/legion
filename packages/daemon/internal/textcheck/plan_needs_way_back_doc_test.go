@@ -2,8 +2,8 @@ package textcheck
 
 // internal/store's plan_needs_way_back_test.go runs the committed copy beside it and reads no text
 // outside its package; these lines hold the copy to the guide, in the text-check job.
-//ci:reads docs/kubernetes.md internal/textcheck/waiting_line_texts_test.go:498 reads it under ../../../.. for TestThePlanNeedsWayBackExtractIsTheGuidesWayBackBlock (assertTheExtractIsTheGuidesBlock, way_back_doc_test.go:136, through wayBackBlockOfTheGuide, :188, and shippedText)
-//ci:reads packages/daemon/internal/store/plan_needs_way_back_extract.txt internal/textcheck/waiting_line_texts_test.go:488 reads it as ../store/plan_needs_way_back_extract.txt for assertTheExtractIsTheGuidesBlock, the committed copy it holds the guide's block of the needs' way back to (quotedBody)
+//ci:reads docs/kubernetes.md `packages/daemon/internal/textcheck/waiting_line_texts_test.go#shippedText` reads it under ../../../.. for TestThePlanNeedsWayBackExtractIsTheGuidesWayBackBlock (`packages/daemon/internal/textcheck/way_back_doc_test.go#assertTheExtractIsTheGuidesBlock`, through `packages/daemon/internal/textcheck/way_back_doc_test.go#wayBackBlockOfTheGuide`)
+//ci:reads packages/daemon/internal/store/plan_needs_way_back_extract.txt `packages/daemon/internal/textcheck/waiting_line_texts_test.go#readExtract` reads it as ../store/plan_needs_way_back_extract.txt for `packages/daemon/internal/textcheck/way_back_doc_test.go#assertTheExtractIsTheGuidesBlock`, the committed copy it holds the guide's block of the needs' way back to (`packages/daemon/internal/textcheck/waiting_line_texts_test.go#quotedBody`)
 
 import "testing"
 
