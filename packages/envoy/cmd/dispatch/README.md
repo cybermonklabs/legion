@@ -5983,7 +5983,8 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/issues/{key}/nodes/{id}/settle` (POST; cookie, trusted header, or bearer)
 
   Settle the proposed node `{id}` names, `{actor?}` (an empty body too): one `state` tuple at `settled`, written by the caller, at no event (`settleNode`).
-  A node the caller may not see under the issue is `404 NOT_FOUND`, the bytes a node nobody wrote answers but for the id. A gone node is `409 NODE_GONE`, naming it.
+  A node the caller may not see under the issue is `404 NOT_FOUND`, the bytes a node nobody wrote answers but for the id.
+  A gone node is `409 NODE_GONE`, naming it.
   A settle on the block of an `:::ask` block returns `409 ASK_HOLDS_STATE` and writes nothing, naming the ask whose node holds the question's state (the block's own ask or the source ask for a copy) or saying no ask holds it yet (`askHoldsState`).
   Any other node not at `proposed` is `409 NODE_NOT_PROPOSED`.
   A person settles any proposal - a browser's cookie, or a token holding the `person` scope, whose settle is written as the person it acts for (`actingPerson`) - and any other caller only a proposal whose recorded author, its `made_by`, is the author its credential proves, by the one author rule (`maySettle`, `graphstore.SameAuthor`, the Go half of `graphstore.AuthorIsSQL`): the same person for a personal token or a broker session that names a person, the same session for a broker session that names none (`model.Actor.Proven`), and the same workload for a pod's service-account token; any other caller is `403 SETTLE_NOT_PERMITTED`, naming the node.
