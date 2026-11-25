@@ -139,11 +139,18 @@ func readerInput(t *testing.T, messages []conversation.Message) []map[string]any
 }
 
 // assertResponsesResumeMatches checks the Responses request the pinned Oh My Pi sent on resuming
-// a session against the reader's conversation from before the resume, then the follow-up.
-func assertResponsesResumeMatches(t *testing.T, before *Session, body []byte, followUp string) []map[string]any {
+// a session as assertResumeMatches checks an Anthropic one: the request is the reader's
+// conversation of the session as the resume left it before its request, cut from content, the
+// session after the resume, then the follow-up. That session is the one from before the resume
+// plus any record Oh My Pi writes at the resume, such as a tool_result_prune of a read a newer
+// read of the same path superseded (session-maintenance.ts #pruneWithheldIfDue, pruning.ts). So
+// the conversation from before the resume is its own but for the tool results such a record
+// blanked (assertBlankedOnly).
+func assertResponsesResumeMatches(t *testing.T, before *Session, content, body []byte, followUp string) []map[string]any {
 	t.Helper()
+	resumed := resumedSession(t, before, content, Options{}, followUp)
 	got := requestInput(t, body)
-	want := append(readerInput(t, before.Messages), map[string]any{"role": "user", "content": []any{map[string]any{"type": "input_text", "text": followUp}}})
+	want := append(readerInput(t, resumed.Messages), map[string]any{"role": "user", "content": []any{map[string]any{"type": "input_text", "text": followUp}}})
 	observed, _ := json.Marshal(got)
 	t.Logf("Oh My Pi's resume request input: %s", observed)
 	wantJSON, _ := json.Marshal(want)
@@ -154,9 +161,10 @@ func assertResponsesResumeMatches(t *testing.T, before *Session, body []byte, fo
 	if !reflect.DeepEqual(got, wantDecoded) {
 		t.Errorf("Oh My Pi's resume request input:\n%s\nthe reader's conversation and the follow-up:\n%s", observed, wantJSON)
 	}
-	if before.Model != standInProvider+"/"+standInGPT || before.API != openaiResponses {
-		t.Errorf("the reader's model %q, API %q", before.Model, before.API)
+	if resumed.Model != standInProvider+"/"+standInGPT || resumed.API != openaiResponses {
+		t.Errorf("the reader's model %q, API %q", resumed.Model, resumed.API)
 	}
+	assertBlankedOnly(t, before, resumed)
 	return got
 }
 
@@ -192,7 +200,7 @@ func TestThePinnedOhMyPiReplaysTheOpenAIItemsTheReaderCarries(t *testing.T) {
 	}
 
 	rig.run(t, file, "What colour is the fruit?")
-	assertResponsesResumeMatches(t, before, model.last(t), "What colour is the fruit?")
+	assertResponsesResumeMatches(t, before, sessionContent(t, file), model.last(t), "What colour is the fruit?")
 }
 
 // itemCarriedOnce is the index in input of the last item match accepts, -1 when none is, and
@@ -278,7 +286,7 @@ func TestThePinnedOhMyPiResumesAnAppendedOpenAIAnswer(t *testing.T) {
 		t.Fatal(err)
 	}
 	rig.run(t, file, "Thanks.")
-	input := assertResponsesResumeMatches(t, appended, model.last(t), "Thanks.")
+	input := assertResponsesResumeMatches(t, appended, sessionContent(t, file), model.last(t), "Thanks.")
 
 	question := itemCarriedOnce(t, input, func(item map[string]any) bool { return userText(item) == answer.Question }, "the question")
 	firstReasoning := itemCarriedOnce(t, input, func(item map[string]any) bool { return item["encrypted_content"] == "gAAAAAPPEND+/1==" }, "the first reasoning item")
@@ -345,7 +353,7 @@ func TestThePinnedOhMyPiResumesAnOpenAIAnswerAskedForAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 	rig.run(t, file, "Thanks.")
-	input := assertResponsesResumeMatches(t, appended, model.last(t), "Thanks.")
+	input := assertResponsesResumeMatches(t, appended, sessionContent(t, file), model.last(t), "Thanks.")
 
 	// The reader rebuilds from the same appended session Oh My Pi resumes, so a re-ask the
 	// appender dropped or wrote out of place would leave the two agreeing; these checks hold the

@@ -214,6 +214,16 @@ func (r *ompRig) sessionFile(t *testing.T) string {
 	return files[0]
 }
 
+// sessionContent is the session file at path as it is now.
+func sessionContent(t *testing.T, path string) []byte {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return content
+}
+
 // The first run's two model calls: a turn that thinks (signed and redacted), says it reads the
 // note and calls read, then an answer.
 func firstRunReplies() []string {
@@ -378,13 +388,107 @@ func readerTurns(t *testing.T, messages []conversation.Message) []wireTurn {
 	return turns
 }
 
-// assertResumeMatches checks the request the pinned Oh My Pi sent on resuming a session against
-// what the reader rebuilt from the session before the resume: the request is the rebuilt
-// conversation, then the follow-up.
-func assertResumeMatches(t *testing.T, before *Session, request anthropicRequest, followUp string) {
+// resumedSession is the session as the pinned Oh My Pi's resume sent it: the reader's read of
+// content, the session after the resume, cut just before the resume's follow-up, the first user
+// message entry the session before the resume did not hold. The follow-up is found by its id, not
+// past the size read before the resume, since Oh My Pi writes a session with a torn record out
+// again before it appends to it (session-manager.ts). The test fails, naming the cause, when
+// content holds no such entry or that entry's text is not followUp.
+func resumedSession(t *testing.T, before *Session, content []byte, opts Options, followUp string) *Session {
 	t.Helper()
+	for start := 0; start < len(content); {
+		line, next := content[start:], len(content)
+		if i := bytes.IndexByte(line, '\n'); i >= 0 {
+			line, next = line[:i], start+i+1
+		}
+		var e struct {
+			Type    string `json:"type"`
+			ID      string `json:"id"`
+			Message struct {
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal(line, &e) != nil || e.Type != "message" || e.Message.Role != "user" || before.ids[e.ID] {
+			start = next
+			continue
+		}
+		blocks, err := parseBlocks(e.Message.Content, inputBlocks, "the resume's follow-up")
+		if err != nil {
+			t.Fatalf("the first user message the session before the resume did not hold: %v\n%s", err, line)
+		}
+		if len(blocks) != 1 || blocks[0].Type != "text" || blocks[0].Text != followUp {
+			t.Fatalf("the first user message the session before the resume did not hold is not the follow-up %q:\n%s", followUp, line)
+		}
+		resumed, err := Read(content[:start], opts)
+		if err != nil {
+			t.Fatalf("the reader's read of the session as the resume left it before its request: %v", err)
+		}
+		return resumed
+	}
+	t.Fatalf("the session after the resume holds no user message the session before it did not; want the follow-up %q", followUp)
+	return nil
+}
+
+// assertBlankedOnly checks the conversation the reader rebuilt from the session before the resume
+// against resumed, the session as the resume sent it: the same messages, one for one, but for
+// tool results of the same call whose content differs, which a prune record the resume wrote
+// blanked. Any other difference fails the test, naming the message. The calls so blanked are
+// logged, not checked: which they are depends on the pinned Oh My Pi, the provider's cache and
+// the time.
+func assertBlankedOnly(t *testing.T, before, resumed *Session) {
+	t.Helper()
+	if len(before.Messages) != len(resumed.Messages) {
+		t.Errorf("the reader rebuilt %d messages from the session before the resume and %d from the session as the resume sent it; want as many",
+			len(before.Messages), len(resumed.Messages))
+		return
+	}
+	var blanked []string
+	for i, was := range before.Messages {
+		is := resumed.Messages[i]
+		if reflect.DeepEqual(was, is) {
+			continue
+		}
+		if call, ok := blankedResult(was, is); ok {
+			blanked = append(blanked, call)
+			continue
+		}
+		wasJSON, _ := json.Marshal(was)
+		isJSON, _ := json.Marshal(is)
+		t.Errorf("message %d the reader rebuilt from the session before the resume:\n%s\nfrom the session as the resume sent it:\n%s\nwant the same, or the same call's tool result blanked",
+			i, wasJSON, isJSON)
+	}
+	if len(blanked) > 0 {
+		t.Logf("the resume blanked the results of %s", strings.Join(blanked, ", "))
+	}
+}
+
+// blankedResult is the call of the one tool result that was and is each hold, and whether the
+// two messages differ in that result's content alone.
+func blankedResult(was, is conversation.Message) (string, bool) {
+	if was.Role != conversation.Tool || len(was.Content) != 1 || len(is.Content) != 1 {
+		return "", false
+	}
+	wasResult, isResult := was.Content[0], is.Content[0]
+	wasResult.Content, isResult.Content = nil, nil
+	was.Content, is.Content = nil, nil
+	return wasResult.ToolCallID, wasResult.Type == conversation.ToolResult && reflect.DeepEqual(wasResult, isResult) && reflect.DeepEqual(was, is)
+}
+
+// assertResumeMatches checks the request the pinned Oh My Pi sent on resuming a session against
+// the reader's rebuild of the session as the resume left it before its request: the request is
+// that conversation, then the follow-up. content is the session after the resume, and
+// resumedSession cuts that session from it. It is the session from before the resume plus any
+// record Oh My Pi writes at the resume. One such record is a tool_result_prune of a read that a
+// newer read of the same path superseded: Oh My Pi writes it before the first request of a
+// resumed process once the prompt cache entry has lapsed (session-maintenance.ts
+// #pruneWithheldIfDue, pruning.ts). So the conversation the reader rebuilt from the session before
+// the resume is that session's but for the tool results such a record blanked (assertBlankedOnly).
+func assertResumeMatches(t *testing.T, before *Session, content []byte, request anthropicRequest, followUp string) {
+	t.Helper()
+	resumed := resumedSession(t, before, content, standInEndpoint, followUp)
 	got := request.turns(t)
-	want := append(readerTurns(t, before.Messages), wireTurn{Role: "user", Blocks: []wireBlock{{Type: "text", Text: followUp}}})
+	want := append(readerTurns(t, resumed.Messages), wireTurn{Role: "user", Blocks: []wireBlock{{Type: "text", Text: followUp}}})
 	observed, _ := json.Marshal(got)
 	t.Logf("Oh My Pi's resume request, reduced: %s", observed)
 	if !reflect.DeepEqual(got, want) {
@@ -392,14 +496,16 @@ func assertResumeMatches(t *testing.T, before *Session, request anthropicRequest
 		wantJSON, _ := json.MarshalIndent(want, "", "  ")
 		t.Errorf("Oh My Pi's resume request:\n%s\nthe reader's conversation and the follow-up:\n%s", gotJSON, wantJSON)
 	}
-	if before.Model != standInProvider+"/"+standInModel || before.API != anthropicMessages {
-		t.Errorf("the reader's model %q, API %q", before.Model, before.API)
+	if resumed.Model != standInProvider+"/"+standInModel || resumed.API != anthropicMessages {
+		t.Errorf("the reader's model %q, API %q", resumed.Model, resumed.API)
 	}
+	assertBlankedOnly(t, before, resumed)
 }
 
 // The pinned Oh My Pi, resuming a session it wrote with a tool call and signed and redacted
-// thinking in it, sends the stand-in model the conversation the reader rebuilds from the session:
-// the same turns, roles, block order, text, tool ids, thinking signatures and redacted data.
+// thinking in it, sends the stand-in model the conversation the reader rebuilds from the session
+// as the resume left it before its request: the same turns, roles, block order, text, tool ids,
+// thinking signatures and redacted data.
 func TestThePinnedOhMyPiResumesTheConversationTheReaderRebuilds(t *testing.T) {
 	model := newAnthropicStandIn(t, firstRunReplies()...)
 	rig := newOMPRig(t, anthropicMessages, model)
@@ -414,7 +520,7 @@ func TestThePinnedOhMyPiResumesTheConversationTheReaderRebuilds(t *testing.T) {
 	}
 
 	rig.run(t, file, "What colour is the fruit?")
-	assertResumeMatches(t, before, model.lastAnthropic(t), "What colour is the fruit?")
+	assertResumeMatches(t, before, sessionContent(t, file), model.lastAnthropic(t), "What colour is the fruit?")
 }
 
 // The pinned Oh My Pi and the reader rebuild alike a session that, after a real first run, holds
@@ -491,7 +597,7 @@ func TestThePinnedOhMyPiResumesHandWrittenRecordsAsTheReaderRebuildsThem(t *test
 				t.Fatal(err)
 			}
 			rig.run(t, file, "What colour is the fruit?")
-			assertResumeMatches(t, before, model.lastAnthropic(t), "What colour is the fruit?")
+			assertResumeMatches(t, before, sessionContent(t, file), model.lastAnthropic(t), "What colour is the fruit?")
 		})
 	}
 }
@@ -533,7 +639,8 @@ func carriedOnce(t *testing.T, turns []wireTurn, match func(wireTurn, wireBlock)
 // The answer an append writes reaches the model when the pinned Oh My Pi resumes the session,
 // under file storage and under SQL storage: its next request carries the question, the tool call,
 // its result and the answer once each, in that order, with the appended thinking signed as it was
-// written, and is the conversation the reader rebuilds from the appended session.
+// written, and is the conversation the reader rebuilds from the appended session as the resume
+// left it before its request.
 func TestThePinnedOhMyPiResumesAnAppendedAnswer(t *testing.T) {
 	answer := conversation.Append{
 		QuestionID: "q-1", Question: "Which fruit does the note name?",
@@ -554,11 +661,11 @@ func TestThePinnedOhMyPiResumesAnAppendedAnswer(t *testing.T) {
 			},
 		},
 	}
-	assertAppended := func(t *testing.T, model *standIn, appended *Session) {
+	assertAppended := func(t *testing.T, model *standIn, appended *Session, content []byte) {
 		t.Helper()
 		request := model.lastAnthropic(t)
 		turns := request.turns(t)
-		assertResumeMatches(t, appended, request, "Thanks.")
+		assertResumeMatches(t, appended, content, request, "Thanks.")
 		question := carriedOnce(t, turns, func(turn wireTurn, b wireBlock) bool {
 			return turn.Role == "user" && b.Type == "text" && b.Text == answer.Question
 		}, "the question")
@@ -597,7 +704,7 @@ func TestThePinnedOhMyPiResumesAnAppendedAnswer(t *testing.T) {
 			t.Fatal(err)
 		}
 		rig.run(t, file, "Thanks.")
-		assertAppended(t, model, appended)
+		assertAppended(t, model, appended, sessionContent(t, file))
 	})
 
 	t.Run("SQL storage", func(t *testing.T) {
@@ -630,11 +737,11 @@ func TestThePinnedOhMyPiResumesAnAppendedAnswer(t *testing.T) {
 			t.Fatal(err)
 		}
 		rig.run(t, path, "Thanks.")
-		assertAppended(t, model, appended)
 		content, _, err := ompsessions.Read(ctx, conn, path)
 		if err != nil {
 			t.Fatal(err)
 		}
+		assertAppended(t, model, appended, content)
 		if !bytes.Contains(content, []byte(`"Thanks."`)) {
 			t.Error("the resumed run's follow-up is not in the session table")
 		}
@@ -645,7 +752,7 @@ func TestThePinnedOhMyPiResumesAnAppendedAnswer(t *testing.T) {
 // made it when the pinned Oh My Pi resumes the session: its next request carries the question, the
 // refused reply (a model turn with no tool call), the message the loop asked again with and the
 // reply after it, once each and one after another, then the follow-up, and is the conversation the
-// reader rebuilds from the appended session.
+// reader rebuilds from the appended session as the resume left it before its request.
 func TestThePinnedOhMyPiResumesAnAnswerAskedForAgain(t *testing.T) {
 	answer := conversation.Append{
 		QuestionID: "q-1", Question: "Which fruit does the note name?",
@@ -680,7 +787,7 @@ func TestThePinnedOhMyPiResumesAnAnswerAskedForAgain(t *testing.T) {
 	rig.run(t, file, "Thanks.")
 	request := model.lastAnthropic(t)
 	turns := request.turns(t)
-	assertResumeMatches(t, appended, request, "Thanks.")
+	assertResumeMatches(t, appended, sessionContent(t, file), request, "Thanks.")
 
 	// The reader rebuilds from the same appended session Oh My Pi resumes, so a re-ask the
 	// appender dropped or wrote out of place would leave the two agreeing; these checks hold the
