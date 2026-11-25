@@ -16,6 +16,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestProcAliveSeesAZombieAndAReapedProcessAsGone(t *testing.T) {
@@ -28,13 +30,10 @@ func TestProcAliveSeesAZombieAndAReapedProcessAsGone(t *testing.T) {
 	}
 	pid := cmd.Process.Pid
 	// Until Wait reaps it, the exited child stays in /proc as a zombie.
-	deadline := time.Now().Add(10 * time.Second)
-	for procAlive(pid) {
-		if time.Now().After(deadline) {
-			t.Fatalf("exited, unreaped child %d still reads as alive", pid)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Until(t, fmt.Sprintf("the exited, unreaped child %d to read as gone", pid), func() (bool, bool) {
+		alive := procAlive(pid)
+		return alive, !alive
+	})
 	_ = cmd.Wait()
 	if procAlive(pid) {
 		t.Fatalf("reaped child %d reads as alive", pid)

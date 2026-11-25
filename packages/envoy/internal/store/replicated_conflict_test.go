@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -48,9 +49,10 @@ func raceRoles(t *testing.T, cluster *testnats.Cluster, reg *Registry) *testnats
 func TestAWriteThatLosesToAReplicatingWriteIsALostRace(t *testing.T) {
 	cluster, reg := openReplicatedRegistry(t)
 	ctx := context.Background()
-	putRecord := func(t *testing.T, sessionID string) ([]byte, uint64) {
+	putRecord := func(t *testing.T, sessionID string) (Interest, []byte, uint64) {
 		t.Helper()
-		value, err := json.Marshal(Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{"notifications.replicated"}})
+		row := Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{"notifications.replicated"}}
+		value, err := json.Marshal(row)
 		if err != nil {
 			t.Fatalf("encode %s's record: %v", sessionID, err)
 		}
@@ -58,7 +60,7 @@ func TestAWriteThatLosesToAReplicatingWriteIsALostRace(t *testing.T) {
 		if err != nil {
 			t.Fatalf("put %s's record: %v", sessionID, err)
 		}
-		return value, revision
+		return row, value, revision
 	}
 	// claim claims role for sessionID and returns once every copy of the role claims holds the
 	// claim, so the reads after it, which any copy may answer, read it.
@@ -73,11 +75,11 @@ func TestAWriteThatLosesToAReplicatingWriteIsALostRace(t *testing.T) {
 
 	t.Run("a conditional delete of an interest record keeps the record", func(t *testing.T) {
 		const sessionID = "ses_replicated_interest_delete"
-		_, revision := putRecord(t, sessionID)
+		_, _, revision := putRecord(t, sessionID)
 		race := cluster.RaceKeyValue(t, reg.watcher.KV().Legacy(), 1)
 		useKV(t, reg, race)
 
-		deleted, err := reg.deleteInterestAt(ctx, sessionID, revision)
+		deleted, err := reg.deleteInterestAt(ctx, sessionID, revision, kvchunk.Layout{})
 		if err != nil || deleted {
 			t.Fatalf("deleteInterestAt = %t, %v; want the record kept and no error", deleted, err)
 		}
@@ -91,13 +93,13 @@ func TestAWriteThatLosesToAReplicatingWriteIsALostRace(t *testing.T) {
 
 	t.Run("a conditional write of an interest record is refused for a plan over the new row", func(t *testing.T) {
 		const sessionID = "ses_replicated_interest_write"
-		value, revision := putRecord(t, sessionID)
+		row, value, revision := putRecord(t, sessionID)
 		race := cluster.RaceKeyValue(t, reg.watcher.KV().Legacy(), 1)
 		useKV(t, reg, race)
 
-		_, _, took, err := reg.putInterestAt(ctx, sessionID, value, revision)
-		if err != nil || took {
-			t.Fatalf("putInterestAt took the write: %t, %v; want it refused and no error", took, err)
+		written, _, err := reg.putInterestAt(ctx, sessionID, row, value, revision, kvchunk.Layout{})
+		if err != nil || written.Stored {
+			t.Fatalf("putInterestAt took the write: %+v, %v; want it refused and no error", written, err)
 		}
 		if race.Lost() != 1 {
 			t.Fatalf("%d writes lost the race, want 1", race.Lost())

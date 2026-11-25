@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A settlement's stages are tested one at a time, each over a live service and its PostgreSQL:
@@ -52,7 +53,7 @@ func openStageTransaction(t *testing.T, settle *settlement, parent context.Conte
 	if err != nil {
 		t.Fatalf("begin the settlement's transaction: %v", err)
 	}
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := tx.Rollback(context.Background()); errors.Is(err, pgx.ErrTxClosed) {
 			return
 		}
@@ -91,6 +92,7 @@ func seedAnsweredAskBlock(t *testing.T, service *Service, artifactID string) str
 // take holds the room's live instance for the whole settlement and reads the generation that
 // instance stands at, which is the generation every later stage compares the room against.
 func TestSettlementTakeHoldsTheRoomsLiveInstance(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "Context.\n")
@@ -115,6 +117,7 @@ func TestSettlementTakeHoldsTheRoomsLiveInstance(t *testing.T) {
 // rendering its version reuses, the latest version it compares that rendering against, and whom
 // that version would credit.
 func TestSettlementReadLockedReadsTheTreeTheSettlementReconciles(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "Context.\n")
@@ -145,6 +148,7 @@ func TestSettlementReadLockedReadsTheTreeTheSettlementReconciles(t *testing.T) {
 // applyStamp stamps into the room the block ids the document lacks, holding the stamp's update
 // from the room's persistence until the settlement stores it.
 func TestSettlementApplyStampStampsTheBlockIdsTheDocumentLacks(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	owedStamp(t, service, artifactID)
@@ -176,6 +180,7 @@ func TestSettlementApplyStampStampsTheBlockIdsTheDocumentLacks(t *testing.T) {
 // room and its browsers, so it is stored and committed on its own, and the settlement writes no
 // version.
 func TestSettlementCommitStampCommitsTheStampAlone(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	owedStamp(t, service, artifactID)
@@ -216,6 +221,7 @@ func TestSettlementCommitStampCommitsTheStampAlone(t *testing.T) {
 // planRepairs reconciles the document's ask blocks against their rows, which says what the
 // document owes each block.
 func TestSettlementPlanRepairsReconcilesTheAnsweredAskBlock(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedAnsweredAskBlock(t, service, artifactID)
@@ -244,6 +250,7 @@ func TestSettlementPlanRepairsReconcilesTheAnsweredAskBlock(t *testing.T) {
 // version is rendered from that later read, which holds the repairs, and the head it records is
 // read once every update through it is stored.
 func TestSettlementCommitRepairsWritesTheRepairIntoTheRoom(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedAnsweredAskBlock(t, service, artifactID)
@@ -279,6 +286,7 @@ func TestSettlementCommitRepairsWritesTheRepairIntoTheRoom(t *testing.T) {
 // test fails - with the repair planned after the stage that writes it, the settlement writes
 // nothing into the room and versions the document unrepaired.
 func TestSettlementStagesSettleTheDocumentInOrder(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	want := seedAnsweredAskBlock(t, service, artifactID)

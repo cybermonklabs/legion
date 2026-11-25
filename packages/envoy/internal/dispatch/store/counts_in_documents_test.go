@@ -132,11 +132,12 @@ func TestTheDocumentsStateTheCountsThisPackageHolds(t *testing.T) {
 	docnumbers.Check(t, root, stated)
 }
 
-// sumTerms is one entry per term of the README's connection sum, "opens at most 64 + 20 + 8 + 4 +
-// 2 + 1 + 2 + 2 + 1 + 5 = 109 connections to Postgres", generated from the pools themselves: the
-// terms in the order the sum writes them, each entry anchored by the terms before it, which are
-// written from the constants too. Nothing of the sum is a literal here, so the day a pool moves
-// the entry moves with it and the sentence is held to the new value rather than to the old one.
+// sumTerms is one entry per term of the README's connection sum, "opens at most 64 + 26 + 8 + 4 +
+// 2 + 2 + 1 + 2 + 2 + 1 + 5 = 117 connections to Postgres", generated from the pools themselves:
+// the terms in the order the sum writes them, each entry anchored by the terms before it, which
+// are written from the constants too. Nothing of the sum is a literal here, so the day a pool
+// moves the entry moves with it and the sentence is held to the new value rather than to the old
+// one.
 //
 // How many terms the sum has is read from the document rather than from the loop below, because
 // a guard whose expectation and whose observation come from one source cannot fail: a term added

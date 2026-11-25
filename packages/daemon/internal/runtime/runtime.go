@@ -276,8 +276,19 @@ type IssueSuspender interface {
 // writes again are deleted. Every other Sandbox is deleted, as IssueSuspender deletes it. A Sandbox
 // already gone is success, so a retried release finishes. Process-only runtimes have no pod to
 // release.
+//
+// It answers whether it released a Sandbox: true once it has stopped the pod of the issue's
+// Sandbox and deleted or kept that Sandbox, false where it acted on nothing — authorize's false, a
+// Sandbox already gone (deleted by hand or by an earlier teardown), or a kept Sandbox an earlier
+// release already released, which runs no pod and owns no Secret.
+//
+// writing, where it is not nil, is called under the same lock once the runtime has found a Sandbox
+// to release, just before its first write to that Sandbox or what it owns, and at most once; an
+// error from it ends the release before any write. A release that answers true has called it, and
+// one that acted on nothing has not.
 type IssueReleaser interface {
-	ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error
+	ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error),
+		writing func(context.Context) error) (released bool, err error)
 }
 
 // IssueVolumeReader says whether the issue's Sandbox holds a kept volume that it held already at
@@ -295,28 +306,15 @@ type IssueVolumeReader interface {
 	IssueKeepsVolume(issue string, since time.Time) bool
 }
 
-// WorkspaceBundler asks one live role's process to bundle the unpushed work of the issue
-// workspace every role of the issue shares, so a release can keep it while the pod, its disk and
-// the workspace on it go. A kept volume does not go: the release keeps the Sandbox that owns it
-// (IssueReleaser), and the pod after the release takes no saved work that volume holds
-// (HeldWorkspaceBundleDrop). The save is still made, because a reset replaces a kept volume, and
-// the save is then the one copy of the unpushed work. The role named must be one whose process
-// runs: the shim builds the bundle with the jj and git of the workspace it already works in. A
-// runtime whose processes share no workspace implements nothing here, and the release of such a
-// pod saves nothing because there is no such pod.
-type WorkspaceBundler interface {
-	BundleWorkspace(ctx context.Context, issue string, role claim.Role) (WorkspaceBundle, error)
-}
-
 // WorkspaceWorkReader asks one live role's process whether the issue workspace every role of the
-// issue shares holds work that no branch or tag on origin holds. It is the read a pod update round
-// makes before it replaces a pod without waiting for every role, so that the replacement can name
-// what goes with the pod, and it is one runtime call so that INFRA-3271 can make the same read with
-// its own reading (spec R1 of INFRA-4109). The role named must be one whose process runs in the
-// issue's pod: its shim reads the workspace with the jj it already works with. The read keeps
-// nothing of the work and saves no bundle; the one thing it writes is jj's snapshot of the working
-// copy (Conn.WorkspaceWork). A runtime whose processes share no workspace implements nothing
-// here.
+// issue shares holds work that no branch or tag on origin holds. Two decisions rest on the read. A
+// pod update round makes it before it replaces a pod without waiting for every role, so that the
+// replacement can name what goes with the pod. The idle release makes it before it takes an
+// issue's pod, and takes the pod only when the read finds no work: nothing keeps a copy of work a
+// released pod's workspace held. The role named must be one whose process runs in the issue's pod:
+// its shim reads the workspace with the jj it already works with. The read keeps nothing of the
+// work; the one thing it writes is jj's snapshot of the working copy (Conn.WorkspaceWork). A
+// runtime whose processes share no workspace implements nothing here.
 type WorkspaceWorkReader interface {
 	WorkspaceWork(ctx context.Context, issue string, role claim.Role) (WorkspaceWork, error)
 }
@@ -341,64 +339,6 @@ type WorkspaceWork struct {
 // HoldsWork is whether the read found work: a change in the working copy, or a commit origin does
 // not hold.
 func (w WorkspaceWork) HoldsWork() bool { return w.Changed || w.Count > 0 }
-
-// SavedWorkspaceBundle answers the bundle an issue's last release saved for the pod of podUID,
-// created at podCreated, to restore, and what that ask did to the bundle. It is the other half
-// of WorkspaceBundler: the save's own store (store.Store.TakeWorkspaceBundleForRestore, bound to
-// the daemon's project where the daemon wires it), handed to the runtime so that the runtime,
-// which alone knows when a replacement pod's launcher is up, can carry the saved work back into
-// the new workspace before any role of that pod starts.
-//
-// WorkspaceBundleNone is nothing to send and nothing recorded: an issue never released, one
-// whose restore the launcher confirmed, one whose release a wake cancelled, one whose bundle has
-// had its one attempt already, one the daemon's project does not record, whose bundle another
-// project's daemon saved, and the pod the work was taken off asking for its own workspace's
-// work back. The runtime calls this at every start of every role, and a release stops the roles
-// of the pod it is releasing, so a role relaunched in that pod before the teardown deletes it is
-// one of those calls; the store knows that pod by the uid the save recorded
-// (WorkspaceBundle.PodUID) and leaves the row untouched for the pod that replaces it.
-//
-// WorkspaceBundleSend is the attempt, and the call is where it is spent: the store records
-// podUID against the bundle before answering the body, and answers no body for that bundle
-// again. A launcher holds its record of the restore it ran in memory, so a roles container that
-// restarts comes back to the pod's own disk with that record gone and the workspace hours of
-// work past the save; the daemon's record is what keeps the bundle from being applied over that
-// work.
-//
-// WorkspaceBundleRefusedOlder is that same one attempt, spent on a pod that was not created
-// after the save: nothing is sent, and no later pod is sent the bundle either. Such a pod is one
-// the release's teardown did not replace, or the replacement under a node clock running ahead of
-// the API server's; either way its roles go on working and pushing from the workspace its own
-// fetch provisioned, and a bundle the daemon kept open for the pod after it would be applied
-// over that work. The saved work stays in the database for a person to recover and holds the
-// issue's pod (workflow.IdleHoldBundleUnrestored).
-type SavedWorkspaceBundle func(ctx context.Context, issue, podUID string, podCreated time.Time) (WorkspaceBundle, WorkspaceBundleTake, error)
-
-// WorkspaceBundleRestored is the runtime's confirmation that the pod replacing the released one
-// has put the issue's saved work back: its launcher ran the restore and reported that it
-// succeeded, naming the release whose save it restored. It drops that release's saved copy and no
-// other (store.Store.DeleteRestoredWorkspaceBundle), so it is called only on that report, and a
-// report that arrives after a later release has saved again finds nothing of its own to delete —
-// a bundle no launcher has restored, because none took it, because the restore failed, or because
-// its confirmation named a release the store no longer holds, stays in the daemon's database for
-// the issue's next pod.
-type WorkspaceBundleRestored func(ctx context.Context, issue string, release int64) error
-
-// HeldWorkspaceBundleDrop drops the bundle an issue's last release saved where the pod of podUID
-// holds that work on its volume already: the pod's Sandbox owns the issue's kept volume and was
-// created at keptSince, before the save. That volume is the one the work was taken off, so the pod
-// is sent nothing. The launcher would refuse a bundle sent there, because its workspace is older
-// than the save. It would then log a notice that the work was lost, and the bundle would hold the
-// issue's pod (workflow.IdleHoldBundleUnrestored). The drop answers the release and the time of
-// the bundle it dropped, never its body, and true. False is nothing dropped, and the runtime then
-// takes the bundle as SavedWorkspaceBundle answers it. It deletes the row a confirmed restore
-// deletes (store.Store.DropHeldWorkspaceBundle, bound to the daemon's project where the daemon
-// wires it), under the take's own rules: the pod the work came off drops nothing, a bundle whose
-// one attempt is spent drops nothing, and a bundle of an issue the daemon's project does not
-// record drops nothing. A Sandbox created after the save holds a new volume, which a reset made,
-// and its pod restores the bundle. So does a Sandbox created in the save's own second, which the
-// rule cannot order against the save.
-type HeldWorkspaceBundleDrop func(ctx context.Context, issue, podUID string, keptSince time.Time) (WorkspaceBundle, bool, error)
 
 // MemoryGuardKilled is the daemon's reading of one process an issue pod's launcher ended with
 // SIGKILL because the pod was near its memory limit, or, in a microVM pod, one that the pod's own
@@ -457,9 +397,8 @@ type ControllerMemoryGuardKilled func(ctx context.Context, token claim.Token, po
 // the next sweep that ends above the low mark reports the volume again, under the same trimmer
 // and the episode it is then in, so the state a dropped report would have told reaches the
 // architect from a later one, as far as the notice bounds let that one through (workflow's
-// volumeNoticeHeldBy; internal/runtime/sandbox's volumeReported, as restoreReported's own
-// comment says of its delete). The report that the trimmer switched itself off is its last, and
-// one dropped here is not sent again.
+// volumeNoticeHeldBy; internal/runtime/sandbox's volumeReported). The report that the trimmer
+// switched itself off is its last, and one dropped here is not sent again.
 type VolumeReported func(ctx context.Context, issue, podUID string, report shimwire.LauncherVolumeReport) error
 
 // RoundPodEnds is the daemon's reading of the pod update round over a live issue pod a launch

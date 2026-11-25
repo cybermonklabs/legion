@@ -512,7 +512,7 @@ func TestABootsBackfillLeavesARecordGitHubDoesNotAnswerForAndTheRefresherFillsIt
 					published = append(published, repos)
 					return nil
 				}}
-			left, err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, "LEGION", w.stateDir, w.defaultBranches, ghrepo.Renames{}, w.log)
+			left, err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, "LEGION", w.stateDir, w.defaultBranches, ghrepo.Renames{}, productionRepositoryReads(), w.log)
 			if err != nil || !left {
 				t.Fatalf("backfill = left %v, %v; want LEGION-7 left and the boot going on", left, err)
 			}
@@ -665,7 +665,7 @@ func TestABootWithARecordedDefaultBranchComesUpAtOnceThroughARateLimit(t *testin
 	var reset atomic.Int64
 	github := newLimitedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main"}, spendsOnce("acme/widgets", 30*time.Second, &reset))
 	logs := &syncBuffer{}
-	if err := bootsOrExitsOn(t, cfg, &workflowTokenRecorder{}, github.url, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil))); err != nil {
+	if err := bootsOrExitsOn(t, cfg, &workflowTokenRecorder{}, github.url, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil)), nil); err != nil {
 		t.Fatalf("boot = %v, want it to come up on the recorded default branch", err)
 	}
 	testwait.Eventually(t, "the first job holding acme/widgets's recorded branch", func() bool {
@@ -734,7 +734,7 @@ func TestABootThroughASpentRateLimitComesUp(t *testing.T) {
 	var reset atomic.Int64
 	github := newLimitedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main"}, spendsOnce("acme/widgets", 3*time.Second, &reset))
 	logs := &syncBuffer{}
-	if err := bootsOrExitsOn(t, cfg, &workflowTokenRecorder{}, github.url, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil))); err != nil {
+	if err := bootsOrExitsOn(t, cfg, &workflowTokenRecorder{}, github.url, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil)), nil); err != nil {
 		t.Fatalf("boot = %v, want it to come up through GitHub's rate limit", err)
 	}
 	testwait.Eventually(t, "acme/widgets read once more after the limit's reset", func() bool { return len(github.readsOf("acme/widgets")) >= 2 })
@@ -798,15 +798,16 @@ func TestARateLimitedDefaultBranchReadDeliversTheEventAgainAfterGitHubsWait(t *t
 // maximum (c-boot-mint-rate-limit case 10, the maximum shortened to 5 s): an event's preparation
 // whose read a 429 refuses, asking for 17 s, is delivered again after 17 s, not 5 s.
 func TestAnEventsDefaultBranchReadAfterTheStartStillWaitsTheRetryAfterGitHubNames(t *testing.T) {
-	// Not parallel: it writes the package variable startRateLimits (withStartRateLimits).
-	withStartRateLimits(t, func(policy *rateLimitPolicy) { policy.Max = 5 * time.Second })
+	t.Parallel()
+	calls := productionAppCalls()
+	calls.rateLimits.Max = 5 * time.Second
 	github := newLimitedGitHub(t, limitedBoth, func(w http.ResponseWriter, _ string, _ int) bool {
 		w.Header().Set("Retry-After", "17")
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = io.WriteString(w, `{"message":"You have exceeded a secondary rate limit."}`)
 		return true
 	})
-	w := &workflowRuntime{installs: &installations{}, repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger(),
+	w := &workflowRuntime{installs: &installations{}, repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger(), appCalls: &calls,
 		defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now)}
 	_, err := w.prepareUnrecorded(context.Background(), intake.DispatchIssue{Key: "LEGION-2", Status: "todo", HandedOver: true, ResolvedRepo: "zeta/tools"}, false)
 	var later *intake.RetryLater

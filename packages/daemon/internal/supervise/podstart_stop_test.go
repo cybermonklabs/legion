@@ -256,6 +256,9 @@ func aGrantAfterTheDaemonsStop(t *testing.T) {
 	h.wantGrantedStart(third, 1)
 	h.wantStartLine(third.token, podIssue, &podWait{claim: second.token, waited: podLoadSettle, endedBy: "failed launch"})
 	h.wantStarts(second.token, 0)
+	// The second's decision writes its cut-short line after it gives the pod on, so the third can
+	// start before the line is written.
+	h.postsReturned()
 	if lines := h.podRecords(podLaunchCutShortLine, second.token); len(lines) != 1 {
 		t.Fatalf("cut-short lines of the stopped role = %d, want 1", len(lines))
 	}
@@ -284,17 +287,15 @@ func aGrantedStartCutBeforeItRan(t *testing.T) {
 		{name: "a close of the issue", state: StateRetired, ended: "retirement", cut: func(h *harness, r *podRole) error {
 			return h.postPromptly(r, RequestIssueClose{Claim: r.token})
 		}},
-		// The provider's refusals of the turns of the process the launch let go, which every live
-		// state takes, reach the launch failure limit: the claim fails, which lets its process go
-		// (fail, letGo), and the start it was to make is that process's end.
+		// A turn-outcome report, which every live state takes, of a turn that ran no prompt of
+		// the daemon's and that the provider refused with a status that cannot clear, at the
+		// generation the claim stands at: the claim fails at once (unpromptedTurnEnded, fail),
+		// which lets its process go (letGo), and the start it was to make is that process's end.
+		// A run of refused reports fails no claim (dispatch://INFRA-4508), so one such report is
+		// the turn-outcome path to a failure.
 		{name: "a failure of its claim", state: StateFailed, ended: "process end", cut: func(h *harness, r *podRole) error {
-			for sequence := range uint64(h.deps.Limits.LaunchFailures) {
-				if err := h.postPromptly(r, RequestTurnOutcome{Claim: r.token, Generation: 1, Sequence: sequence + 1, Refused: true,
-					Message: "the provider refused the turn"}); err != nil {
-					return err
-				}
-			}
-			return nil
+			return h.postPromptly(r, RequestTurnOutcome{Claim: r.token, Generation: r.m.View().Claim.Generation, Sequence: 1,
+				Refused: true, Message: "400 the provider refused the turn", HTTPStatus: 400, Unprompted: true})
 		}},
 		// The wake pacing's park replaces the gate's (parkWake, waitOnMachine). No event of the
 		// table raises a second launch over a claim whose launch waits at the gate, so the case
@@ -304,7 +305,7 @@ func aGrantedStartCutBeforeItRan(t *testing.T) {
 			return h.insideDecision(r.m, func() error {
 				now := h.clock.Now()
 				return r.m.parkWake(h.ctx, &wake{at: now.Add(time.Hour), reserved: now, kind: WakeLaunch, state: StateLaunching,
-					run: func(context.Context) error { return nil }}, time.Hour)
+					run: func(context.Context) error { return nil }})
 			})
 		}},
 		// A path added later that drops the parked wake and takes nothing out of the gate: the
@@ -440,6 +441,35 @@ func aResumeParkedOverARefusedStop(t *testing.T) {
 	h.wantClaimState(second, StateLaunching)
 }
 
+// pausedPodWithAWaitingStart is a pod whose first role has started and loads, and whose second
+// role's start waits at the gate for that load, in a project that has just paused (pause 7): the
+// first role's load ending grants the second's start during the pause. secondWorker, when not nil,
+// is the second machine's Deps.Worker, through which each of its timers and its grant run (fire).
+func pausedPodWithAWaitingStart(t *testing.T, secondWorker func(context.Context) context.Context) (h *harness, first, second *podRole, flag *pauseFlag, stops *stopTransaction) {
+	t.Helper()
+	h = podHarness(t, "")
+	flag, stops = &pauseFlag{}, &stopTransaction{store: h.store}
+	h.deps.Paused, h.deps.PauseStopped = flag.Paused, stops.PauseStopped
+	first = h.podRole(claim.RoleArchitect, StateSuspended)
+	h.deps.Worker = secondWorker
+	second = h.podRole(claim.RoleImplementer, StateSuspended)
+	h.deps.Worker = nil
+	h.mustPostTo(first.m, RequestResume{Claim: first.token})
+	h.wantStarts(first.token, 1)
+	h.parks(second, RequestResume{Claim: second.token}, 0)
+	flag.set(7)
+	return h, first, second, flag, stops
+}
+
+// pauseStopPosted is whether r's machine holds the pause gate's stop of its claim, posted and not
+// yet run (TimerPause, pauseGate).
+func pauseStopPosted(r *podRole) bool {
+	r.m.mu.Lock()
+	defer r.m.mu.Unlock()
+	_, posted := r.m.timers[TimerPause]
+	return posted
+}
+
 // grantedDuringAPause is a pod whose second role's start waited at the gate from before a project
 // pause and was granted while the pause stands, its pause's own stop row not having reached the
 // claim yet, as a stop row behind other rows has not: the grant starts no process, the pod's start
@@ -447,27 +477,10 @@ func aResumeParkedOverARefusedStop(t *testing.T) {
 // pauseGate; decision 7 of dispatch://INFRA-3759), which the harness's clock fires when it moves.
 func grantedDuringAPause(t *testing.T) (h *harness, second *podRole, flag *pauseFlag, stops *stopTransaction) {
 	t.Helper()
-	h = podHarness(t, "")
-	flag, stops = &pauseFlag{}, &stopTransaction{store: h.store}
-	h.deps.Paused, h.deps.PauseStopped = flag.Paused, stops.PauseStopped
-	first := h.podRole(claim.RoleArchitect, StateSuspended)
-	second = h.podRole(claim.RoleImplementer, StateSuspended)
-	h.mustPostTo(first.m, RequestResume{Claim: first.token})
-	h.wantStarts(first.token, 1)
-	h.parks(second, RequestResume{Claim: second.token}, 0)
-
-	// The project pauses while the second's start waits, and the first role's load then ends: the
-	// gate grants the second's start during the pause.
-	flag.set(7)
+	h, first, second, flag, stops := pausedPodWithAWaitingStart(t, nil)
 	h.loadEnds(first)
-	stopPosted := func() bool {
-		second.m.mu.Lock()
-		defer second.m.mu.Unlock()
-		_, posted := second.m.timers[TimerPause]
-		return posted
-	}
 	testwait.Eventually(t, "the second's grant, during the pause, to start its process or to post its stop for the pause", func() bool {
-		return h.starts(second.token) > 0 || stopPosted()
+		return h.starts(second.token) > 0 || pauseStopPosted(second)
 	})
 	second.m.Wait()
 	if n := h.starts(second.token); n != 0 {

@@ -40,6 +40,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
@@ -82,16 +83,20 @@ var suiteProtocol = protocolHTTP1
 // request handling whichever framing carried the request. A row that speaks to the proxy on a
 // socket of its own - a CONNECT written by hand, an upgrade, a frame written by hand - runs the
 // same bytes in both runs. The banner before each run names the protocol of the run below it.
+// Both runs go through storetest.Run, which drops the test binary's own database the rows'
+// schemas are made in once both have ended.
 func TestMain(m *testing.M) {
-	code := 0
-	for _, protocol := range []string{protocolHTTP1, protocolH2} {
-		suiteProtocol = protocol
-		fmt.Printf("proxy: every rig's client speaks %s to a bound host in the run below\n", protocol)
-		if run := m.Run(); run != 0 {
-			code = run
+	os.Exit(storetest.Run(func() int {
+		code := 0
+		for _, protocol := range []string{protocolHTTP1, protocolH2} {
+			suiteProtocol = protocol
+			fmt.Printf("proxy: every rig's client speaks %s to a bound host in the run below\n", protocol)
+			if run := m.Run(); run != 0 {
+				code = run
+			}
 		}
-	}
-	os.Exit(code)
+		return code
+	}))
 }
 
 // testRules is the rules file every row but the two-name one runs under.
