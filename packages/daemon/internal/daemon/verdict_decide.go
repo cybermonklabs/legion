@@ -464,16 +464,24 @@ func (w *workflowRuntime) readCommits(ctx context.Context, repository ghrepo.Rep
 }
 
 // changeRefused is whether err, a read of the change that did not give its commits, is GitHub's
-// definite answer that they cannot be read (readCommits): GitHub's 404 or 422 that is no rate
-// limit, or an answer that holds no reading of the change (errChangeRefused). Every other error is
-// no answer; a mint's error carries no *githubrest.Answer (appauth.AnswerError), so a read token
-// not minted is no answer either.
+// definite answer that they cannot be read (readCommits): GitHub's 404 or 422 that is no rate limit
+// (rateLimited), or an answer that holds no reading of the change (errChangeRefused). Every other
+// error is no answer; a mint's error carries no *githubrest.Answer (appauth.AnswerError), so a read
+// token not minted is no answer either.
 func changeRefused(err error) bool {
 	var answer *githubrest.Answer
 	if errors.As(err, &answer) {
-		return !answer.RateLimited && (answer.Status == http.StatusNotFound || answer.Status == http.StatusUnprocessableEntity)
+		return !rateLimited(answer) && (answer.Status == http.StatusNotFound || answer.Status == http.StatusUnprocessableEntity)
 	}
 	return errors.Is(err, errChangeRefused)
+}
+
+// rateLimited is whether answer is a rate limit of GitHub's, on whatever status: githubrest marks
+// one on a 403 or a 429 alone (Answer.RateLimited), and GitHub's headers or its secondary limit's
+// words on a 404 or a 422 are that limit too (githubrest.RateLimitSignals), and no answer about the
+// change.
+func rateLimited(answer *githubrest.Answer) bool {
+	return answer.RateLimited || answer.Limit.Remaining == "0" || answer.Limit.RetryAfter != "" || githubrest.NamesSecondaryLimit(answer.Body)
 }
 
 // compareBase is the branch pull request number merges into, with which its head's change is

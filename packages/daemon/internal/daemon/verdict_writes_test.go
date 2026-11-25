@@ -161,12 +161,13 @@ type fakeWrite struct {
 // 86's commits, one for each head it stood at (history), oldest first, each made by the
 // implementer's session unless messages gives its message, as GitHub's compare of the base and a
 // head lists them, and none at all where compareStatus is set, which GitHub's answer to the compare
-// then is (502 where it fails the request, 404 or 422 where it cannot serve that compare); the
-// branch pull request 86 merges into (base86, main where it is ""), whose tip holds the
-// first parentCommits commits of history, so a compare with that branch lists only the commits after
-// them while a compare with main lists them all; any other pull request named in pulls, whose reads it
-// counts in pullReads; and the open pull requests at a commit (GET /commits/{sha}/pulls): pull
-// request 86 at its head, and each of opened at its own. Each write and each read of pull request
+// then is (502 where it fails the request, 404 or 422 where it cannot serve that compare), with the
+// headers compareHeader names (a rate limit's); the branch pull request 86 merges into (base86,
+// main where it is ""), whose tip holds the first parentCommits commits of history, so a compare
+// with that branch lists only the commits after them while a compare with main lists them all; any
+// other pull request named in pulls, whose reads it counts in pullReads; and the open pull requests
+// at a commit (GET /commits/{sha}/pulls): pull request 86 at its head, and each of opened at its
+// own, or pullsStatus where that is set. Each write and each read of pull request
 // 86 is recorded in order, and requests is every request it served, as its method, its path under
 // the repository and its query. failCreates is how many of the next creates of a check run GitHub
 // answers 502, as it does when it fails a request; staleReads is how many reads of pull request
@@ -181,6 +182,8 @@ type verdictGitHub struct {
 	history       []string
 	messages      map[string]string
 	compareStatus int
+	compareHeader http.Header
+	pullsStatus   int
 	runs          []fakeRun
 	statuses      []fakeStatus
 	writes        []fakeWrite
@@ -307,6 +310,9 @@ func (g *verdictGitHub) serve(t *testing.T) http.HandlerFunc {
 			base86 := fakePull{base: g.base86}.baseRef()
 			switch {
 			case g.compareStatus != 0:
+				for key, values := range g.compareHeader {
+					w.Header()[key] = values
+				}
 				http.Error(w, fmt.Sprintf(`{"message":%q}`, http.StatusText(g.compareStatus)), g.compareStatus)
 				return
 			case !ranged || base != "main" && base != base86 || !reached:
@@ -361,6 +367,10 @@ func (g *verdictGitHub) serve(t *testing.T) http.HandlerFunc {
 		case r.Method == http.MethodGet && len(parts) == 3 && parts[0] == "commits" && parts[2] == "pulls":
 			if r.Header.Get("Authorization") != "Bearer "+readToken("acme") {
 				t.Errorf("the pull requests at %s were listed with %q, want the read token", parts[1], r.Header.Get("Authorization"))
+			}
+			if g.pullsStatus != 0 {
+				http.Error(w, fmt.Sprintf(`{"message":%q}`, http.StatusText(g.pullsStatus)), g.pullsStatus)
+				return
 			}
 			answer(pullsAtCommit(parts[1], append([]fakePull{{number: 86, ref: "legion/CAPTURE-1", head: g.head86, base: g.base86}}, g.opened...)))
 		case r.Method == http.MethodGet && len(parts) == 3 && parts[0] == "commits" && parts[2] == "check-runs":
@@ -2280,6 +2290,79 @@ func TestLegionVerdictNoAnswerOnTheBoundsSweepsInARowIsFailure(t *testing.T) {
 	rig.swept(t)
 	at("failure", "the bound's sweeps with no answer again")
 	warned(2, "the bound's sweeps with no answer again")
+}
+
+// failingReadTokens mints as roleTokens does, and fails each read token while fail is set, as a mint
+// GitHub or the App's key refuses: an error that carries no answer of GitHub's.
+type failingReadTokens struct {
+	roleTokens
+	fail *atomic.Bool
+}
+
+func (t failingReadTokens) ReadToken(ctx context.Context, owner string) (appauth.Lease, error) {
+	if t.fail.Load() {
+		return appauth.Lease{}, errors.New("the App's key was refused")
+	}
+	return t.roleTokens.ReadToken(ctx, owner)
+}
+
+// Each class of read of the change that readCommits names, as the fake answers it once the owner's
+// acceptance wrote success at code. No answer - a 401, a 403 that is no rate limit, a rate-limited
+// 403, a 429, a rate-limited 422, a read token not minted - decides nothing yet: the success stands,
+// nothing is written, and the read says so. A definite answer - a 404 to the pull requests at the
+// head, where the record holds no base to compare with (the seed records none, as
+// TestLegionVerdictComparesTheHeadWithTheBranchItsPullRequestMergesInto says) - makes the change
+// unread at once: failure with the no-reader title.
+func TestLegionVerdictEachClassOfReadOfTheChange(t *testing.T) {
+	limited := http.Header{"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Resource": {"core"}}
+	for _, tc := range []struct {
+		name   string
+		fault  func(*verdictGitHub, *atomic.Bool)
+		unread bool
+	}{
+		{"a 401 to the compare", func(g *verdictGitHub, _ *atomic.Bool) { g.compareStatus = http.StatusUnauthorized }, false},
+		{"a 403 to the compare that is no rate limit", func(g *verdictGitHub, _ *atomic.Bool) { g.compareStatus = http.StatusForbidden }, false},
+		{"a rate-limited 403 to the compare", func(g *verdictGitHub, _ *atomic.Bool) {
+			g.compareStatus, g.compareHeader = http.StatusForbidden, limited
+		}, false},
+		{"a 429 to the compare", func(g *verdictGitHub, _ *atomic.Bool) { g.compareStatus = http.StatusTooManyRequests }, false},
+		{"a rate-limited 422 to the compare", func(g *verdictGitHub, _ *atomic.Bool) {
+			g.compareStatus, g.compareHeader = http.StatusUnprocessableEntity, limited
+		}, false},
+		{"a read token not minted", func(_ *verdictGitHub, mint *atomic.Bool) { mint.Store(true) }, false},
+		{"a 404 to the pull requests at the head, with no base recorded", func(g *verdictGitHub, _ *atomic.Bool) { g.pullsStatus = http.StatusNotFound }, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mint := &atomic.Bool{}
+			rig := newVerdictRig(t, failingReadTokens{fail: mint}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode)
+			run := rig.acceptedAndWritten(t)
+			made, _ := rig.github.recorded()
+			rig.github.mu.Lock()
+			tc.fault(rig.github, mint)
+			rig.github.mu.Unlock()
+			rig.checkState(t, "code", "k1", verdict.StateYes)
+			rig.written(t)
+			if tc.unread {
+				rig.noReader(t, "code", wantUnreadOpening)
+				if lines := loggedMessages(t, rig.logs.String(), changeUnreadLine); len(lines) != 1 {
+					t.Fatalf("%q lines = %v, want one: GitHub answered", changeUnreadLine, lines)
+				}
+				return
+			}
+			if runs := rig.github.legionRuns("code"); len(runs) != 1 || runs[0].ID != run.ID || runs[0].Conclusion != "success" {
+				t.Fatalf("legion-verdict runs on code = %+v, want run %d left at success: no answer decides nothing", runs, run.ID)
+			}
+			if writes, _ := rig.github.recorded(); len(writes) != len(made) {
+				t.Fatalf("the writer wrote %+v, want nothing", writes[len(made):])
+			}
+			if lines := loggedMessages(t, rig.logs.String(), changeUnansweredLine); len(lines) == 0 || lines[0]["head"] != "code" {
+				t.Fatalf("%q lines = %v, want one naming code", changeUnansweredLine, lines)
+			}
+			if lines := loggedMessages(t, rig.logs.String(), changeUnreadLine); len(lines) != 0 {
+				t.Fatalf("%q lines = %v, want none: GitHub gave no answer", changeUnreadLine, lines)
+			}
+		})
+	}
 }
 
 // R19 while no decision stands: the writers' sweep writes over each run and status of the App its
