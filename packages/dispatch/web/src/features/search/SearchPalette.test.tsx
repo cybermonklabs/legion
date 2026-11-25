@@ -765,6 +765,7 @@ test("Ctrl+Enter on a project row and on a recent page opens it in a new tab, an
       key: "INFRA",
       name: "Infra",
       open_asks: 0,
+      proven_sessions: false,
     },
   ]);
   const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
@@ -1850,6 +1851,7 @@ test("a project picked in the panel narrows the search and reads back as its chi
       key: "INFRA",
       name: "Infra",
       open_asks: 0,
+      proven_sessions: false,
     },
   ]);
   const view = renderPalette();
@@ -1904,6 +1906,7 @@ test("the bar's Project and Status lists each hold a text box that narrows their
       key,
       name: key === "INFRA" ? "Infra" : "Core",
       open_asks: 0,
+      proven_sessions: false,
     }))
   );
   const view = renderPalette();
@@ -1979,6 +1982,7 @@ test("after Shift+Tab out of the Project list, Escape closes the panel, and the 
       key: "INFRA",
       name: "Infra",
       open_asks: 0,
+      proven_sessions: false,
     },
   ]);
   let closed = 0;

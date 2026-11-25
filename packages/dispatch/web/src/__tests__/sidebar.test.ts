@@ -80,6 +80,7 @@ function project(overrides: Partial<Project> = {}): Project {
     name: "Core",
     open_asks: 3,
     gated_steps: [],
+    proven_sessions: false,
     ...overrides,
   };
 }

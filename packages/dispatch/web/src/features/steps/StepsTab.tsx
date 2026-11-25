@@ -22,7 +22,7 @@ import {
   textMutedOnSurface,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
-import { type StepRow, stepTasks } from "./steps-model";
+import { type StepRow, stepTasks, stepVariant } from "./steps-model";
 
 const COLUMNS = [
   "Step",
@@ -256,13 +256,14 @@ function useCatchUp(issueKey: string, shown: boolean): void {
 /**
  * The steps Legion ran on the issue (`GET /issues/{key}/steps`): one table per task, in the order
  * of each task's first step, and one row per run of a step - its role, type, agent, model,
- * attempt, start, end and result. The records are the Legion daemon's; this tab only reads them,
- * and only through its catch-up (`useCatchUp`) and Retry, so the query fetches nothing on its
- * own: it is never enabled, and a read that failed is asked again by the catch-up's next read,
- * not by the app's retry policy, whose retries no cleanup of the tab could stop. A failed read
- * shows alone only while the tab has drawn nothing; after a read that answered, the failure and
- * its Retry stand above the rows that read drew, since nothing may read again until the next
- * start or Retry.
+ * attempt, start, end and result. Where the records of the issue's newest run name an experiment,
+ * the tab shows `Experiment <experiment>: variant <variant>` once above its tables. The records
+ * are the Legion daemon's; this tab only reads them, and only through its catch-up (`useCatchUp`)
+ * and Retry, so the query fetches nothing on its own: it is never enabled, and a read that failed
+ * is asked again by the catch-up's next read, not by the app's retry policy, whose retries no
+ * cleanup of the tab could stop. A failed read shows alone only while the tab has drawn nothing;
+ * after a read that answered, the failure and its Retry stand above the rows that read drew,
+ * since nothing may read again until the next start or Retry.
  */
 export function StepsTab({ active, issueKey }: { active: boolean; issueKey: string }): ReactNode {
   const query = useQuery({ ...issueStepsQuery(issueKey), enabled: false, retry: false });
@@ -278,9 +279,12 @@ export function StepsTab({ active, issueKey }: { active: boolean; issueKey: stri
     return failure ?? <p className={textMutedOnCanvas}>Loading steps…</p>;
   }
   const tasks = stepTasks(query.data);
+  // The experiment a draw put the issue in, with the variant it drew, once above the tasks.
+  const variant = stepVariant(query.data);
   return (
     <div className="min-w-0 space-y-6">
       {failure}
+      {variant === null ? null : <p className={`text-sm ${textSecondaryOnCanvas}`}>{variant}</p>}
       {tasks.length === 0 ? (
         <EmptyState label="Steps empty state" message="No step of this issue has run in Legion." />
       ) : (
