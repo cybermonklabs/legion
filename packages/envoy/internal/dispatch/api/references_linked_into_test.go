@@ -47,28 +47,28 @@ const referencesGrowthBound = 6.5
 // links it reads, not with the links times the issue's own targets.
 //
 // The seed stands for production, where 17 issues never got a 200 from the route and 57 of its 65
-// statement timeouts were in its in statement (refs' linksInQuery). The issue holds 40 documents of
-// 50 blocks, so its own targets are 2,041 - the issue, its 40 documents and their 2,000 blocks - as
-// are those of the issue measured on a copy of a dispatch:local database seeded at production's
-// size (block_refs 876,018 rows). There the in statement read 5,000 links into it in 3.44-3.48 s
-// while it left the issue's own targets out by a test against an array, and in 0.27-0.36 s by the
-// anti-join it reads now (refs' oneRowPerNode). Here 500 documents of 20 blocks link into the
-// issue's documents, each block mentioning one of their 2,000 blocks: 10,000 links, 5 into each
-// block. The server's sessions run with JIT off, as production's Cloud SQL runs every statement:
-// it does not support PostgreSQL's LLVM JIT.
+// statement timeouts were in its in statement (refs' linksInQuery). The issue holds its spec and
+// 40 documents of 50 blocks, so its own targets are 2,042 - the issue, its 41 documents and their
+// 2,000 blocks - one more than the 2,041 of the issue measured on a copy of a dispatch:local
+// database seeded at production's size (block_refs 876,018 rows). There the in statement read
+// 5,000 links into it in 3.44-3.48 s while it left the issue's own targets out by a test against
+// an array, and in 0.27-0.36 s by the anti-join it reads now (refs' oneRowPerNode). Here 500
+// documents of 20 blocks link into the issue's documents, each block mentioning one of their 2,000
+// blocks: 10,000 links, 5 into each block. The server's sessions run with JIT off, as production's
+// Cloud SQL runs every statement: it does not support PostgreSQL's LLVM JIT.
 //
-// The budget alone measures the machine as much as the query: the negative control below reads
-// that issue in 0.9 s on the build farm, inside it, and in about 6 s in the implementer's pod. So
-// the test also seeds an issue a fifth the size: 8 documents of 50 blocks, so 409 own targets, and
-// 100 documents of 20 blocks that link into them, 2,000 links, 5 into each block. A read linear in
-// its links reads 5 times the rows at the large issue as at the small one; a test of each link
-// against every own target makes 10,000 × 2,041 comparisons at the one and 2,000 × 409 at the
-// other, 25 times as many. refs.Closure, the read the route makes, reads each issue 3 times, the
-// two in turn, with no budget (closureRead), and the median of the large issue's reads is at most
-// referencesGrowthBound times the median of the small one's. The route then reads the large issue
-// 3 times, and their median answers 200 inside the budget: one read a slow spell of the machine
-// pushes past it does not fail the test, and two do. Each issue has a database and a server of
-// its own (seedLinkedIntoIssue).
+// The budget alone measures the machine as much as the query: the negative control below reads that
+// issue in 0.9 s on the build farm, inside it, and in about 6 s in the implementer's pod. So the
+// test also seeds an issue a fifth the size: its spec and 8 documents of 50 blocks, so 410 own
+// targets, and 100 documents of 20 blocks that link into them, 2,000 links, 5 into each block. A
+// read linear in its links reads 5 times the rows at the large issue as at the small one; a test of
+// each link against every own target makes 10,000 × 2,042 comparisons at the one and 2,000 × 410 at
+// the other, 25 times as many. refs.Closure, the read the route makes, reads each issue 3 times,
+// the two in turn, with no budget (closureRead), and the median of the large issue's reads is at
+// most referencesGrowthBound times the median of the small one's. The route then reads the large
+// issue 3 times, and their median answers 200 inside the budget: one read a slow spell of the
+// machine pushes past it does not fail the test, and two do. Each issue has a database and a server
+// of its own (seedLinkedIntoIssue).
 //
 // One document of each side is written through the API, and the rest are copies of its rows
 // written in SQL (seedDocumentCopies), so the rows the read reads are as the server's own writes
@@ -201,11 +201,13 @@ func medianTook(times []time.Duration) time.Duration {
 	return sorted[len(sorted)/2]
 }
 
-// linkedIntoIssue is an issue seedLinkedIntoIssue seeded: the handler of the server that reads its
-// database and the store it reads through, the issue's key, the number of block links into its
-// blocks, and the uuids of the documents that hold those links.
+// linkedIntoIssue is an issue seedLinkedIntoIssue seeded: the server that reads its database,
+// through handler, and the store it reads through, whose every session runs with JIT off; the
+// issue's key; the number of block links into its blocks; and the uuids of the documents that hold
+// those links.
 type linkedIntoIssue struct {
 	handler http.Handler
+	server  *server
 	served  *store.Store
 	key     string
 	links   int
@@ -232,7 +234,7 @@ func seedLinkedIntoIssue(t *testing.T, ownDocuments, linkingDocuments int) linke
 		t.Fatalf("turn JIT off for the test database: %v", err)
 	}
 	served := storetest.Reopened(t, database, func(*pgxpool.Config) {})
-	handler, _, _, _ := newRegisteredTestServer(t, testServerOptions{store: served})
+	handler, _, _, registered := newRegisteredTestServer(t, testServerOptions{store: served})
 	var jit string
 	if err := served.Pool.QueryRow(ctx, `select current_setting('jit')`).Scan(&jit); err != nil || jit != "off" {
 		t.Fatalf("the server's sessions read jit = %q (%v), want off", jit, err)
@@ -323,7 +325,7 @@ func seedLinkedIntoIssue(t *testing.T, ownDocuments, linkingDocuments int) linke
 	}
 	t.Logf("seed: %d own blocks, %d links into them from %d documents, copied and vacuumed in %s",
 		ownBlocks, linksInto, len(linking), time.Since(seeded).Round(time.Millisecond))
-	return linkedIntoIssue{handler: handler, served: served, key: issue.Key, links: linksInto, linking: linking}
+	return linkedIntoIssue{handler: handler, server: registered, served: served, key: issue.Key, links: linksInto, linking: linking}
 }
 
 // paragraphsMarkdown is the markdown of a document of texts, one paragraph each.

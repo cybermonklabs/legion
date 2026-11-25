@@ -15308,6 +15308,9 @@
               "null",
               "string"
             ]
+          },
+          "token": {
+            "type": "string"
           }
         },
         "required": [
@@ -30653,6 +30656,9 @@
               "null",
               "string"
             ]
+          },
+          "token": {
+            "type": "string"
           }
         },
         "required": [
