@@ -282,7 +282,9 @@ tests read outside the daemon: the contracts fixtures `packages/daemon/internal/
 `packages/daemon/internal/intake/intake_test.go#TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer` and `packages/daemon/internal/intake/intake_test.go#TestAWorkflowRunEnvelopeIsNoFact`
 read, the agents `packages/daemon/internal/prompts/roles_test.go#TestEveryTaskAgentARolePromptDispatchesIsShipped`
 stats, the tools skill `packages/daemon/internal/prompts/roles_test.go#TestThePodMemoryRuleAndTheToolsSkillSendTheSameRunsToCI`
-holds roles/mechanics/headless.md to, the merge gate
+holds roles/mechanics/headless.md to, the rule file
+`packages/daemon/internal/prompts/roles_test.go#TestNoReusablePartNamesARepositoryOrLibrary`
+runs over each reusable role part, the merge gate
 `packages/daemon/internal/workflow/engine_test.go#TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries`
 holds the reviewer's prompt to, the GitHub App helper
 `packages/daemon/internal/api/real_github_test.go#runGitHubAppsLib` sources, and the examples and
@@ -309,6 +311,13 @@ stats `agents/<name>.md`.
 With its manifest, which the Stage 1 proof (ci-job-daemon-go.yaml's "Stage 1 live proof" step) reads, they are the files of
 pi-legion this suite reads. The pack and prompt probes, which read the rest of
 it, are the plugin-pack job's.
+
+## daemon_go_tests: The rule file internal/prompts/roles_test.go holds the role parts to
+
+The repository's own rule file, .github/private-names.toml, which
+internal/prompts/roles_test.go's TestNoReusablePartNamesARepositoryOrLibrary reads and
+runs over every reusable role part, since the `legion` binary embeds no rule. A change
+to that file alone changes what the test refuses, so it starts this job.
 
 ## plugin_pack: The plugin-pack job: internal/daemon's three tests of
 
@@ -416,6 +425,13 @@ test-lib.sh, which each of them sources for `check`, `is` and `summary`.
 Before these the job's filter carried one pattern, '.github/scripts/*', for all of
 them: a change to any one script ran every harness, and 28 of the 66 commits that
 touched that directory since 2026-10-01 changed no Go file (dispatch://INFRA-1413).
+
+## release_push_test: The rule file release-push.sh reads beside itself
+
+`.github/scripts/release-push.sh#leak_guard` finds .github/private-names.toml
+beside itself and runs gitleaks with it, and
+`.github/scripts/release-push.test.sh#leak_rules_into` copies it into each
+fixture checkout it runs a copy of the script from.
 
 ## test: The test job: the script harnesses and the Bun suites of scripts/
 
@@ -1086,13 +1102,19 @@ its own tests read - this package's, and pmdoc's, which one of them names throug
 
 The private-name port harness, in a job of its own: it builds the `legion` binary
 of this head (.github/scripts/check-private-names-port.test.sh, its `go build` of
-./cmd/legion) and holds the rules that binary carries to the frozen shell
-script's verdicts, case for case.
-That build is why this list is as long as it is - legion_command is what the
-binary is made of, the rule file packages/daemon/internal/leakguard embeds among
-it - and why the step has a job: while it was the test job's, the whole closure
-sat on the `test` filter, so a change to one package of the daemon ran thirty-odd
-shell harnesses and the Bun suites of scripts/ with it (dispatch://INFRA-1413).
+./cmd/legion) and holds the rules of .github/private-names.toml, as that binary
+runs them, to the frozen shell script's verdicts, case for case. That build is why
+this list is as long as it is - legion_command is what the binary is made of - and
+why the step has a job: while it was the test job's, the whole closure sat on the
+`test` filter, so a change to one package of the daemon ran thirty-odd shell
+harnesses and the Bun suites of scripts/ with it (dispatch://INFRA-1413).
+
+## private_names_port: The rule file the harness names to the binary
+
+The rule file the harness names to the binary in LEGION_PRIVATE_NAME_RULES_FILE
+(.github/scripts/check-private-names-port.test.sh, its `rule_file` and the line
+that exports it), since the binary embeds none, and reads each rule's description
+out of (its `description=` line).
 
 ## private_names_port: test-lib.sh, which the harness sources for check/is/summary
 

@@ -83,8 +83,7 @@ func (c liveClaim) worksLook(t *testing.T, look int, openedAt time.Time) {
 }
 
 // newCheckLookClaim is the live claim of role on key whose worker took look of key's production
-// check, the check seedCheck records: what the look's start leaves, and what the completion route
-// reads to tell a report on that look from a phase completion.
+// check, the check seedCheck records: the assignment an explicitly named report must match.
 func newCheckLookClaim(t *testing.T, h *harness, key string, role claim.Role, look int) liveClaim {
 	t.Helper()
 	c := newLiveClaim(t, h, key, role)
@@ -153,17 +152,12 @@ func theCheckIsUntouched(t *testing.T, h *harness, facts *factRecorder) {
 	}
 }
 
-// The reviewer's trace, which the issue's phase cannot tell apart from a check report and the
-// caller's own assignment can. The tester ends the testing turn the close ran behind with a
-// verdict of pass — which is also a check verdict.
-//
-// Routed by the issue's phase, that completion was recorded as the production check passing with
-// nobody having looked at production. Routed by the claim's own live assignment, which is still
-// the testing task's, it is no report on the check. Nor is it a completion of a phase the issue
-// runs: the person's done kept the issue's phase out of Legion's work (R20 of
-// dispatch://INFRA-3320), so the testing entry the turn serves is the one the stop ended, and the
-// completion is refused as every completion of an entry before a stop is
-// (HANDOFF_NOT_CURRENT_PHASE). Nothing is recorded, and the check is untouched.
+// A tester ends its testing turn after the merge closed the issue. Its verdict also names a
+// valid check outcome, but only checkOpenedAt selects a check report, so this fieldless call is a
+// phase completion. The issue runs no phase: the person's done kept its testing phase (R20 of
+// dispatch://INFRA-3320), yet its record is done by its status, so the route refuses the call
+// with CHECK_LOOK_NOT_SERVED and names checkOpenedAt, the check identity's recovery path. It
+// records nothing and leaves the check untouched.
 func TestATestingVerdictAfterTheMergedCloseIsNoReportOnTheProductionCheck(t *testing.T) {
 	h, facts, tester, machine := mergedCloseBehindATestingTurn(t)
 	if p := machine.Claim().Pending; p == nil || p.ConfirmedAt.IsZero() || p.Entry != 1 {
@@ -172,15 +166,15 @@ func TestATestingVerdictAfterTheMergedCloseIsNoReportOnTheProductionCheck(t *tes
 	if look := machine.Claim().ServingCheck(); look.Look != 0 {
 		t.Fatalf("the tester serves check look %+v, want none: its live assignment is the testing task's", look)
 	}
-	if stopped := recordedChild(t, h, "LEGION-209"); stopped == nil || stopped.Phase != phase.Testing || record.InLegionsWork(*stopped) {
-		t.Fatalf("LEGION-209 after the person's done = %#v, want it out of Legion's work with its testing phase kept", stopped)
+	if stopped := recordedChild(t, h, "LEGION-209"); stopped == nil || stopped.Phase != phase.Testing || stopped.Status != "done" || record.InLegionsWork(*stopped) {
+		t.Fatalf("LEGION-209 after the person's done = %#v, want it done, out of Legion's work with its testing phase kept", stopped)
 	}
 
 	// The testing turn ends with the verdict a check report also names.
 	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
-		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_NOT_CURRENT_PHASE")
-	if !strings.Contains(message, "changed nothing") {
-		t.Fatalf("the refusal is %q, want it to say this completion changed nothing", message)
+		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "CHECK_LOOK_NOT_SERVED")
+	if !strings.Contains(message, "checkOpenedAt") || !strings.Contains(message, "recorded nothing") {
+		t.Fatalf("the refusal is %q, want the missing check identity and nothing recorded", message)
 	}
 	theCheckIsUntouched(t, h, facts)
 }
@@ -196,8 +190,9 @@ func TestATestingVerdictAfterTheMergedCloseIsNoReportOnTheProductionCheck(t *tes
 // A look the claim has only had sent to it is no look it serves: read as one, this verdict would
 // close the production check as a pass with nobody having looked at production, which is the
 // whole of what the fallback for an unread task must not do. So the completion reports on no
-// look, and it completes the testing entry the person's done ended, which is refused
-// (HANDOFF_NOT_CURRENT_PHASE), with nothing recorded and the check left open at its look.
+// look, and it completes no phase either: the person's done kept the issue's testing phase, yet
+// the issue is done, so the call is refused CHECK_LOOK_NOT_SERVED, naming checkOpenedAt, with
+// nothing recorded and the check left open at its look.
 func TestATestingVerdictBehindAnUnreadLooksTaskIsNoReportOnTheProductionCheck(t *testing.T) {
 	h, facts, tester, machine := mergedCloseBehindATestingTurn(t)
 	ctx := context.Background()
@@ -223,9 +218,9 @@ func TestATestingVerdictBehindAnUnreadLooksTaskIsNoReportOnTheProductionCheck(t 
 	}
 
 	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
-		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_NOT_CURRENT_PHASE")
-	if !strings.Contains(message, "changed nothing") {
-		t.Fatalf("the refusal is %q, want it to say this completion changed nothing", message)
+		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "CHECK_LOOK_NOT_SERVED")
+	if !strings.Contains(message, "checkOpenedAt") || !strings.Contains(message, "recorded nothing") {
+		t.Fatalf("the refusal is %q, want the missing check identity and nothing recorded", message)
 	}
 	theCheckIsUntouched(t, h, facts)
 }
@@ -255,7 +250,7 @@ func TestACompletionOfADoneIssueFromASessionWorkingNoLookIsRefused(t *testing.T)
 			req.GrantID = implementer.grant(t)
 
 			message := refused(t, h.complete(req), http.StatusConflict, "CHECK_LOOK_NOT_SERVED")
-			for _, want := range []string{"LEGION-208 is done", "works no look", "recorded nothing", "pass, pending or fail"} {
+			for _, want := range []string{"LEGION-208 is done", "checkOpenedAt", "recorded nothing", "pass, pending or fail"} {
 				if !strings.Contains(message, want) {
 					t.Fatalf("the refusal is %q, want it to say %q", message, want)
 				}
@@ -297,7 +292,7 @@ func TestACompletionOfADoneIssueWithNoOpenProductionCheckIsRefused(t *testing.T)
 
 			message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t),
 				Summary: "production carries it", Verdict: "pass"}), http.StatusConflict, "CHECK_LOOK_NOT_SERVED")
-			for _, want := range []string{"LEGION-208 is done", "works no look", "recorded nothing",
+			for _, want := range []string{"LEGION-208 is done", "checkOpenedAt", "recorded nothing",
 				"no open production check", "nothing here for any role to report"} {
 				if !strings.Contains(message, want) {
 					t.Fatalf("the refusal is %q, want it to say %q", message, want)
@@ -341,17 +336,16 @@ func TestAPhaseCompletionNamingAWakeIsRefused(t *testing.T) {
 	}
 }
 
-// A worker whose live assignment is a check look reports on that look, not on whichever look the
-// check has reached: a report from a turn that outlived its look names the look it was given, and
-// the engine's own fence refuses it (CHECK_LOOK_NOT_OPEN) instead of recording it as the current
-// look's.
+// A report that names its check carries the look this session served, not whichever look the
+// check has reached. The engine refuses a turn that outlived its look (CHECK_LOOK_NOT_OPEN)
+// instead of recording it as the current look's report.
 func TestACheckReportCarriesTheLookTheClaimWasGivenNotTheChecksCurrentOne(t *testing.T) {
 	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 	seedIssueAt(t, h, "LEGION-208", phase.Done)
 	seedCheck(t, h, "LEGION-208", claim.RoleImplementer, false, false)
 	implementer := newCheckLookClaim(t, h, "LEGION-208", claim.RoleImplementer, 1)
 
-	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "looked", Verdict: "pass"}))
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "looked", Verdict: "pass", CheckOpenedAt: &checkOpenedAt}))
 	want := intake.CheckReport{Issue: "LEGION-208", Claim: implementer.token, Look: 1, Verdict: "pass", Summary: "looked"}
 	if got := lastCheckReport(t, facts); !sameCheckReport(got, want) {
 		t.Fatalf("check report = %+v, want %+v: the record is at look 2, and this worker's look is 1", got, want)
@@ -368,10 +362,11 @@ func TestACheckReportOfAReplacedChecksLookIsRefused(t *testing.T) {
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 	implementer.worksLook(t, 2, checkOpenedAt.Add(-24*time.Hour))
 
-	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "looked", Verdict: "pass"}),
+	opened := checkOpenedAt.Add(-24 * time.Hour)
+	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "looked", Verdict: "pass", CheckOpenedAt: &opened}),
 		http.StatusConflict, "CHECK_NOT_OPEN")
-	if !strings.Contains(message, "replaced") {
-		t.Fatalf("the refusal is %q, want it to say a later merge replaced the check this look belongs to", message)
+	if !strings.Contains(message, opened.UTC().Format(time.RFC3339Nano)) {
+		t.Fatalf("the refusal is %q, want the named check's opening time", message)
 	}
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("facts = %#v, want none", got)

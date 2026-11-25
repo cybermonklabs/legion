@@ -74,6 +74,20 @@ import {
 import { DISPATCH_KEY_PATTERN, isLegionRole, LEGION_ROLES } from "./legion-roles";
 import { PlanRatingCases } from "./plan-rating-cases";
 
+test("a look's report names its check and carries no step's record or commit", () => {
+  const report = {
+    grantId: "grant",
+    summary: "looked",
+    verdict: "pending",
+    checkOpenedAt: "2026-10-19T06:00:00.123456Z",
+    wakeAt: "2026-10-19T09:00:00Z",
+  };
+  expect(LegionHandoffCompleteRequest.parse(report)).toEqual(report);
+  for (const fields of [{ commit: "c0ffee" }, { handoffId: "handoff" }, { handoffVersion: 1 }]) {
+    expect(LegionHandoffCompleteRequest.safeParse({ ...report, ...fields }).success).toBeFalse();
+  }
+});
+
 const fixtureDir = path.join(import.meta.dir, "..", "fixtures", "daemon-api");
 
 // `legionRepositories` exactly as contract 152 holds it (`legion-api.ts` before INFRA-4401, with

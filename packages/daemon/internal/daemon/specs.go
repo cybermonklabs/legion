@@ -154,12 +154,12 @@ func (s specs) ownersOf(role claim.Role) []string {
 	return s.appOwners(role)
 }
 
-// SpawnSpec is the launch's secrets (launchSecrets: the Envoy bearer and the NATS nkey seed, each
-// when the daemon has one), its prompt — the role prompt parts, the addressing sentence, the
-// deployment instructions and the instructions of each arm the claim's unit was drawn into, each
-// file read again first (copies), so a launch carries what the operator's files hold now
-// — and its repository with that repository's default branch, whose workspace is on the daemon's
-// host by then when the runtime leaves workspaces to the daemon
+// SpawnSpec is the launch's secrets (launchSecrets: the Envoy bearer, the deployment's private-name
+// rule file and the NATS nkey seed, each when the daemon has one), its prompt — the role prompt
+// parts, the addressing sentence, the deployment instructions and the instructions of each arm the
+// claim's unit was drawn into, each file read again first (copies), so a launch carries what the
+// operator's files hold now — and its repository with that repository's default branch, whose
+// workspace is on the daemon's host by then when the runtime leaves workspaces to the daemon
 // (ensureWorkspace). The controller's launch (controllerSpawnSpec) is its own. Both name the
 // backend the role runs on and are told its prompt part after the role's parts (launchBackend).
 // Plugins carries the plugin pair a stale-plugin relaunch installs (stalePluginInstall), set the

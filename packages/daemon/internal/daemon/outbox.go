@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -183,6 +184,12 @@ type outbox struct {
 	// it makes (serving). Nil in a test that configures neither, where a recorded repository is
 	// served under its own name.
 	repositories *repositories
+	// privateNameRules is the deployment's private-name rule file as boot compiled it
+	// (plan.privateNameRules), which every issue branch's create runs over the ref name before it
+	// writes (ghbranch.Create), set by attach after newOutbox. Nil where the deployment names no
+	// rule file, and in a test that builds the outbox by hand: the create then runs no
+	// private-name rule.
+	privateNameRules *leakguard.RuleSet
 	// limits is every GitHub rate limit a row met, by the budget it exhausted, held until its
 	// deadline: a row that spends one of those budgets waits for the latest deadline among them
 	// (standingLimit) rather than meet a limit again. The lanes run rows on many goroutines, so
@@ -3257,9 +3264,8 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// entry queues no second task of it (supervise.Claim.GivenEntry). A start that hands
 		// the role the work of the entry its row already names travels with the mark that
 		// says so (record.SuperviseRequest.ResendEntry), and the claim takes its task though
-		// it was given that entry. A check start's look
-		// and check instance travel the same way, and are what say the completion this task's
-		// turn reports is a report on that look rather than a phase completion
+		// it was given that entry. A check start's look and check instance travel the same way,
+		// and attribute a report that names its check to the look this task gave the worker
 		// (supervise.Claim.ServingCheck, api/handoff.go). The row travels as well: the claim
 		// writes it with the delivery, so a retry of this row (a
 		// settle or a ClaimReady below that failed, a crash before the row finished) queues the
@@ -5223,7 +5229,8 @@ func (r *outbox) issueBranch(ctx context.Context, row record.OutboxRow, _ record
 // write an issue branch (appauth.AppRoleFor), and the one workspace provisioning clones with.
 // The create is a REST write, so a tree recorded before a transfer gets its branch on the
 // repository as GitHub holds it today rather than a write to an owner whose installation has
-// lost it.
+// lost it. The ref name passes the deployment's private-name rules first, the ones boot compiled
+// (privateNameRules), so the create runs the same file every role runs.
 func (r *outbox) createBranch(ctx context.Context, issue record.Issue) error {
 	ctx, cancel := context.WithTimeout(ctx, issueBranchTimeout)
 	defer cancel()
@@ -5236,7 +5243,7 @@ func (r *outbox) createBranch(ctx context.Context, issue record.Issue) error {
 	if err != nil {
 		return fmt.Errorf("mint the implement App token for %s: %w", repo, err)
 	}
-	return ghbranch.Create(ctx, github, repo, workspace.Bookmark(issue.Key), issue.DefaultBranch)
+	return ghbranch.Create(ctx, github, repo, workspace.Bookmark(issue.Key), issue.DefaultBranch, r.privateNameRules)
 }
 
 // recordedIssue is key's issue as the record holds it, nil when the daemon keeps none: the one
