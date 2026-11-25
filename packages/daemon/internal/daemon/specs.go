@@ -428,7 +428,7 @@ func (s specs) stalePluginInstall(c supervise.Claim, backend runtime.Backend) *r
 	if runtime.Of(backend) == runtime.BackendClaude {
 		return nil
 	}
-	if s.runtimeName != "kubernetes" || c.Session == "" || c.PluginContract == api.DaemonAPIVersion || s.plugins == nil {
+	if s.runtimeName != "kubernetes" || c.Session == "" || c.PluginContract == api.DaemonAPIVersion() || s.plugins == nil {
 		return nil
 	}
 	install := *s.plugins

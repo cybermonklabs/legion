@@ -202,9 +202,9 @@ func TestACompletionIsRefusedWhileTheNextEntrysTaskWaitsUnconfirmed(t *testing.T
 // What a worker refused HANDOFF_STALE_ENTRY is told to do is one text in two languages: the
 // daemon ends every intake.StaleEntry refusal with intake.StaleEntryInstruction, and the legion
 // tool's description (STALE_ENTRY_INSTRUCTION in `packages/pi-shared/src/legion-phase-ops.ts`)
-// carries it after the code. This golden is where the two meet, as version.json is for the
-// contract number: `packages/pi-shared/src/legion-phase-ops.test.ts` holds the description to the
-// file, so a word changed on the Go side fails here until the fixture is written again
+// carries it after the code. This golden is where the two meet, as released-contracts.json is for
+// the numbered contracts: `packages/pi-shared/src/legion-phase-ops.test.ts` holds the description
+// to the file, so a word changed on the Go side fails here until the fixture is written again
 // (`go test ./internal/api/ -update`), and then fails there until the plugin's text says it too.
 //
 // The code is written out here beside it, so a rename of the constant's value — which would

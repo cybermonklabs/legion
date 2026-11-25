@@ -576,6 +576,9 @@ type rig struct {
 	// (shimwire.LauncherHello.ResumesBySession, withResumesBySession): unset, each is a launcher
 	// built before it could.
 	resumesBySession bool
+	// heldStops, when set, holds every fake launcher's answer to a stop until it is closed
+	// (withHeldStops), as a launcher whose child takes its grace to exit holds it.
+	heldStops <-chan struct{}
 }
 
 type rigOption func(*rig, *Options)
@@ -611,6 +614,12 @@ func withCauselessLeakCheck() rigOption {
 // withResumesBySession has every fake launcher's hello say it can look a session up by its id and
 // resume the file it finds, as a launcher of this release says.
 func withResumesBySession() rigOption { return func(g *rig, _ *Options) { g.resumesBySession = true } }
+
+// withHeldStops has every fake launcher of this rig receive a stop and answer it only once release
+// is closed.
+func withHeldStops(release <-chan struct{}) rigOption {
+	return func(g *rig, _ *Options) { g.heldStops = release }
+}
 
 // testLaunchers is a launchers of its own, outside any rig, with no receiver for a memory guard's
 // reports and no volume seam behind it: the tests that build one drive the launcher protocol
@@ -1104,7 +1113,7 @@ func (g *rig) reportLauncher(token claim.Token, state shimwire.LauncherState) {
 	if pod == nil {
 		g.t.Fatal("cannot report launcher state without its pod")
 	}
-	s := g.r.launchers.accept(token, launcherIssue(token), shimwire.LauncherHello{LauncherID: "test-" + string(token), PodUID: string(pod.UID)})
+	s := g.r.launchers.accept(token, launcherIssue(token), g.keptSince(token), shimwire.LauncherHello{LauncherID: "test-" + string(token), PodUID: string(pod.UID)})
 	s.mu.Lock()
 	s.state = state
 	close(s.ready)
@@ -1345,7 +1354,7 @@ func (g *rig) connect(token claim.Token) { g.connectRunning(token, 0) }
 func (g *rig) connectRunning(token claim.Token, running uint64) {
 	server, client := net.Pipe()
 	pod := g.pod(SandboxName(token))
-	session := g.r.launchers.accept(token, launcherIssue(token), shimwire.LauncherHello{
+	session := g.r.launchers.accept(token, launcherIssue(token), g.keptSince(token), shimwire.LauncherHello{
 		LauncherID: "test-" + string(token), PodUID: string(pod.UID),
 		LeakCheckTag: g.leakCheckTag, LeakCheckInstalled: g.leakCheckInstalled, ResumesBySession: g.resumesBySession,
 	})
@@ -1378,6 +1387,9 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 			g.commandsMu.Unlock()
 			switch command := frame.(type) {
 			case shimwire.LauncherStart, shimwire.LauncherStop:
+				if _, stop := frame.(shimwire.LauncherStop); stop && g.heldStops != nil {
+					<-g.heldStops
+				}
 				answers, _ := answerGeneration(frame, &running)
 				for _, answer := range answers {
 					_ = writer.WriteFrame(answer)
@@ -1400,6 +1412,27 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 			}
 		}
 	}()
+}
+
+// keptSince is what the resolver reads off the Sandbox of token's pod for a hello
+// (LauncherResolver, keptVolumeSince): when that Sandbox was created, where it owns the issue's
+// kept volume, and the zero time otherwise. It reads the Sandbox the tracker holds, and a Sandbox
+// the tracker does not hold or cannot decode reads as the zero time, since a fake launcher may
+// connect from the controller stand-in's goroutine, where the test cannot fail.
+func (g *rig) keptSince(token claim.Token) time.Time {
+	object, err := g.dyn.Tracker().Get(sandboxGVR, testNamespace, SandboxName(token))
+	if err != nil {
+		return time.Time{}
+	}
+	u, ok := object.(*unstructured.Unstructured)
+	if !ok {
+		return time.Time{}
+	}
+	s, err := decodeSandbox(u)
+	if err != nil {
+		return time.Time{}
+	}
+	return keptVolumeSince(s)
 }
 
 // issueLaunchers connects a fake launcher for every role of token's issue.

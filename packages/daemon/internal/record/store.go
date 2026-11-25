@@ -2030,7 +2030,7 @@ func scanPullRequest(row scanner) (*PullRequest, error) {
 }
 
 const productionCheckColumns = `issue, project, tree, repo, pr_number, merge_sha, opened_at, bound_at, role, looks, look_open,
-	look_wake_at, last_wake_kind, last_wake_detail, last_wake_at, wake_at, last, closed_at, outcome, generation, task`
+	look_wake_at, last_wake_kind, last_wake_detail, last_wake_at, wake_at, last, closed_at, outcome, generation, task, failed_looks`
 
 // ProductionCheckOf is the one place of the rule that a row or a fact naming no check acts on the
 // issue's newest check: a zero openedAt reads the check of issue that opened last, and another
@@ -2068,17 +2068,17 @@ func (s *Postgres) PutProductionCheck(ctx context.Context, tx pgx.Tx, check Prod
 	}
 	_, err := tx.Exec(ctx, `insert into production_checks (issue, project, tree, repo, pr_number, merge_sha, opened_at, bound_at,
 		role, looks, look_open, look_wake_at, last_wake_kind, last_wake_detail, last_wake_at, wake_at,
-		last, closed_at, outcome, generation, task)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, nullif($19::text, ''), $20, $21)
+		last, closed_at, outcome, generation, task, failed_looks)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, nullif($19::text, ''), $20, $21, $22)
 		on conflict (issue, opened_at) do update set project = excluded.project, tree = excluded.tree, repo = excluded.repo,
 		pr_number = excluded.pr_number, merge_sha = excluded.merge_sha, bound_at = excluded.bound_at,
 		role = excluded.role, looks = excluded.looks, look_open = excluded.look_open, look_wake_at = excluded.look_wake_at,
 		last_wake_kind = excluded.last_wake_kind, last_wake_detail = excluded.last_wake_detail, last_wake_at = excluded.last_wake_at,
 		wake_at = excluded.wake_at, last = excluded.last, closed_at = excluded.closed_at, outcome = excluded.outcome,
-		generation = excluded.generation, task = excluded.task`,
+		generation = excluded.generation, task = excluded.task, failed_looks = excluded.failed_looks`,
 		check.Issue, check.Project, check.Tree, check.Repo, check.Number, check.MergeSHA, check.OpenedAt, check.BoundAt,
 		string(check.Role), check.Looks, check.LookOpen, check.LookWakeAt, check.LastWakeKind, check.LastWakeDetail, check.LastWakeAt,
-		check.WakeAt, check.Last, check.ClosedAt, string(check.Outcome), int64(check.Generation), check.Task,
+		check.WakeAt, check.Last, check.ClosedAt, string(check.Outcome), int64(check.Generation), check.Task, check.FailedLooks,
 	)
 	if err != nil {
 		return fmt.Errorf("put production check of %s: %w", check.Issue, err)
@@ -2140,7 +2140,7 @@ func scanProductionCheck(row scanner) (*ProductionCheck, error) {
 	var generation int64
 	if err := row.Scan(&check.Issue, &check.Project, &check.Tree, &check.Repo, &check.Number, &check.MergeSHA, &check.OpenedAt, &check.BoundAt,
 		&role, &check.Looks, &check.LookOpen, &check.LookWakeAt, &check.LastWakeKind, &check.LastWakeDetail, &check.LastWakeAt,
-		&check.WakeAt, &check.Last, &check.ClosedAt, &outcome, &generation, &check.Task); err != nil {
+		&check.WakeAt, &check.Last, &check.ClosedAt, &outcome, &generation, &check.Task, &check.FailedLooks); err != nil {
 		return nil, err
 	}
 	check.Generation = uint64(generation)
@@ -3844,6 +3844,13 @@ func (s *Postgres) WaitingNotices(ctx context.Context, tx pgx.Tx, project string
 func (s *Postgres) DropStatusWrites(ctx context.Context, tx pgx.Tx, issue string) error {
 	if _, err := tx.Exec(ctx, "delete from outbox where kind = $1 and issue = $2", string(OutboxKindDispatchStatus), issue); err != nil {
 		return fmt.Errorf("drop the queued status writes of %s: %w", issue, err)
+	}
+	return nil
+}
+
+func (s *Postgres) DropUnfencedCheckWakes(ctx context.Context, tx pgx.Tx, issue string) error {
+	if _, err := tx.Exec(ctx, "delete from outbox where kind = $1 and issue = $2 and not payload ? 'wakeAt'", string(OutboxKindCheckWake), issue); err != nil {
+		return fmt.Errorf("drop the queued check wakes of %s that name no wake: %w", issue, err)
 	}
 	return nil
 }

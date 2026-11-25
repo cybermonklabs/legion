@@ -179,7 +179,7 @@ func (r *idleRig) closedIssuesWithStoppedClaims(t *testing.T, count int) {
 		if err := r.st.PutClaim(ctx, supervise.Claim{Token: token, Project: "legion", Tree: key,
 			Issue: key, Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
 			State: supervise.StateRetired, Session: "ses-" + key, SessionFile: "/tmp/" + key + ".jsonl",
-			PluginContract: api.DaemonAPIVersion}); err != nil {
+			PluginContract: api.DaemonAPIVersion()}); err != nil {
 			t.Fatalf("seed the retired claim of %s: %v", key, err)
 		}
 	}

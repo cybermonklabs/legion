@@ -23,6 +23,7 @@ import {
   LISTENER_CALL_ATTEMPTS,
   roleToken,
 } from "@legion/contracts";
+import { daemonContract } from "@legion/contracts/daemon-contract";
 import {
   LegionCapabilityReport,
   type LegionCapabilityReportBody,
@@ -107,6 +108,9 @@ import type {
   setLegionCapabilitySendTimeoutForTests as SetLegionCapabilitySendTimeoutForTests,
   setLegionStallProcessesForTests as SetLegionStallProcessesForTests,
 } from "./legion";
+
+// The contract this build speaks, as `legion.ts` reads it (`daemonContract`): this checkout's.
+const PLUGIN_CONTRACT = daemonContract(pkg, import.meta.dir);
 
 // The consumer answer every registration here is given is the harness's (`deliveryFor`), shared
 // with the tests that run the real binary.
@@ -1515,7 +1519,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           sessionId: "ses_worker",
           ompSessionFile: "/tmp/ses_worker.jsonl",
           agentId: "ses_worker",
-          pluginContract: pkg.legion.daemonApiVersion,
+          pluginContract: PLUGIN_CONTRACT,
         },
       },
       {
@@ -1560,8 +1564,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
 
   // dispatch://INFRA-2694: the daemon serves each caller the shape that caller's own contract
   // describes, and reads that contract from a request header. This pane states the contract of
-  // the module it loaded, its own manifest's `legion.daemonApiVersion`, on every request it
-  // makes, a GET included.
+  // the module it loaded (`daemonContract` of its own manifest) on every request it makes, a GET
+  // included.
   test("every daemon request of a pane states this build's own daemon API contract", async () => {
     const stated: { readonly path: string; readonly contract: string | null }[] = [];
     const pane = await bootPane({
@@ -1581,7 +1585,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     expect(pane.exits).toEqual([]);
     expect(stated.length).toBeGreaterThan(0);
     expect(stated.map((request) => request.contract)).toEqual(
-      stated.map(() => String(pkg.legion.daemonApiVersion))
+      stated.map(() => String(PLUGIN_CONTRACT))
     );
   });
   test("does nothing for a session with no Legion environment markers", async () => {
@@ -4518,7 +4522,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
           sessionId: "ses_controller",
           ompSessionFile: "/tmp/ses_controller.jsonl",
           agentId: "ses_controller",
-          pluginContract: pkg.legion.daemonApiVersion,
+          pluginContract: PLUGIN_CONTRACT,
         },
       },
     ]);
@@ -5600,7 +5604,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
           sessionId: "ses_controller_pod",
           ompSessionFile: "/tmp/ses_controller_pod.jsonl",
           agentId: "ses_controller_pod",
-          pluginContract: pkg.legion.daemonApiVersion,
+          pluginContract: PLUGIN_CONTRACT,
         },
       },
       {

@@ -677,6 +677,14 @@ type LauncherGitHubCredential struct {
 // it writes them.
 func GenerationDir(generation uint64) string { return "g" + strconv.FormatUint(generation, 10) }
 
+// DispatchTokenBrokerVariable is the daemon's word, in a role's environment (LauncherStart's Env),
+// that its Dispatch credential is a token its Dispatch client trades its pod's exchange identity
+// for at the secrets broker, and nothing else: under it the client reads no bearer from any source
+// (packages/envoy-client's dispatch-config.ts, brokerRouteForced), and the role's worker shim
+// refuses a providers-Secret key that would hand it the shared one (shim.ReadProviderEnv). The
+// Sandbox runtime tells it, as 1, under dispatch_token_broker alone.
+const DispatchTokenBrokerVariable = "DISPATCH_TOKEN_BROKER"
+
 // SessionRefusal is why a launcher refused a start over the session it was asked to resume. It is
 // one kind with two values rather than a flag for each, because a start meets at most one of them:
 // SessionGone is the session table answering that it holds no such session, a session that is

@@ -518,8 +518,8 @@ What each part is for:
   nothing, so its own first open draws it like any other new tree.
   The launch follows the record, not the mode: a tree the daemon drew into the memory group keeps
   its overlays and its instructions while the block still names them, whatever the mode is now, so
-  `mode: off` stops new draws and takes memory from no tree already running with it, and taking
-  the files away is removing them from the block.
+  `mode: off` gives every new tree no arm and takes memory from no tree already running with it,
+  and taking the files away is removing them from the block.
   That is why the overlay rules — the Kubernetes mount check, the readability check at boot, and
   the refusal of a block that names overlays while `worker_backends` puts an issue role on Claude
   Code — hold whatever the mode is.
@@ -547,8 +547,13 @@ What each part is for:
 
   An experiment's name is 1 to 32 characters of `a-z`, `0-9` and `-`, and the project names it
   once.
-  `mode` is `off`, the default, which draws for no unit, `on`, which gives every new unit the arm
-  `on_variant` names, or `random`, which draws among the arms by their weights.
+  `mode` is `off`, `on` or `random`, and `off` is the default.
+  `off` gives every new unit no arm, and the daemon records that unit at the empty arm, with the
+  mode `off` and the instant.
+  The record keeps that arm as `""`, and `legion state --json` shows `""` too.
+  The plain `legion state` line prints it as `none`.
+  `on` gives every new unit the arm `on_variant` names, and `random` draws among the arms by their
+  weights.
   `unit` is `tree`, the default, which draws once for a whole tree and gives every issue of it the
   same arm, or `issue`, which draws for each issue on its own.
   `roles` lists the issue roles whose launches load the experiment's arms (`architect`, `planner`,
@@ -577,7 +582,7 @@ What each part is for:
   The draw is made once, when the unit is opened, and is recorded with the arm, its `plan` where it
   names one, the mode in force and the instant; the launch then follows that record and not the
   mode, so moving a mode to `off`
-  stops new draws and takes nothing from a unit already running.
+  gives every new unit no arm and takes nothing from a unit already running.
   Under `runtime: kubernetes` each overlay must be a file one of the operator's pod mounts
   carries, and the day a project declares an arm with overlay files every live issue pod of the
   deployment is replaced, since a role cannot read a file its pod does not mount
@@ -1040,10 +1045,10 @@ answer. A pre-registration states seven things.
    to widen — more projects, or a larger weight — or not to run.
 
 5. **The date it stops.** A calendar date, fixed before the first draw. On that date read the
-   outcome and set `mode: off`, which stops new draws and leaves every unit already drawn running
-   as it was. Reading the numbers early and stopping because they look good is how a null result
-   becomes a positive one, so if you will look early, say in the pre-registration what an early
-   look may and may not decide.
+   outcome and set `mode: off`, which gives every new unit no arm and leaves every unit already
+   drawn running as it was. Reading the numbers early and stopping because they look good is how a
+   null result becomes a positive one, so if you will look early, say in the pre-registration what
+   an early look may and may not decide.
 
 6. **That the analysis groups by tree.** The issues of one tree are not independent draws: they
    share a repository, a spec, an architect and each other's work, so two issues of one tree
@@ -1095,7 +1100,12 @@ Exposure checks: kept-pod drops from the launch log; the date any arm left the f
   ```
 
 - **The Dispatch and Envoy tokens** go in the files `dispatch_token_file` and `envoy_token_file`
-  name. The daemon hands each pod its own copy; no pod reads your files.
+  name. The daemon hands each pod its own copy; no pod reads your files. With
+  `dispatch_token_broker: true` in place of `dispatch_token_file`, the daemon trades its own pod
+  identity at the secrets broker for a Dispatch token of its own, each role trades its pod's
+  identity for one of its own session, and a launch into a pod that carries that identity carries
+  no Dispatch token
+  ([The daemon's own Dispatch credential](https://github.com/cybermonklabs/legion/blob/main/docs/kubernetes.md#the-daemons-own-dispatch-credential-dispatch_token_broker)).
 - **The providers Secret**, `legion-<project>-providers` in the namespace (`<project>` lowercased
   with everything but letters and digits removed, `legion-widgets-providers` here), holds, under
   `session_store: postgres`, the key `session_dsn_secret` names, with the session database's
@@ -1437,10 +1447,10 @@ Closing the terminal leaves the project without one, and the daemon logs
   memory: 6 issues — 3 memory (random), 2 none (off), 1 none (random)
   plan-length: 4 issues — 2 control (random), 2 long (random)
   roots waiting on a person: 1, 0 answered and standing in the admission line — WIDGETS-9 waits on ask 7f3c2a10, unanswered
-  open production checks: 1; the oldest, WIDGETS-12 #42 at 4b7d2a1, worked by the tester, look 1 woken by merge at 2026-10-03T10:15:02Z, next look 2026-10-03T14:15:02Z
+  open production checks: 1; the oldest, WIDGETS-12 #42 at 4b7d2a1, worked by the tester, look 1 woken by merge at 2026-10-03T10:15:02Z, next look 2026-10-17T10:15:02Z
   merge waits: 2; the oldest head, WIDGETS-11 #38, head 9c1f0be, GitHub said blocked, read 2026-10-03T10:40:11Z
   open update rounds: none
-  agents in a tool call: 1 — WIDGETS-12 implementer "bash toolu_01F3 since 2026-10-03T10:41:07Z"
+  agents in a tool call: 1 — WIDGETS-12 tester "bash toolu_01F3 since 2026-10-03T10:41:07Z"
   pending Dispatch status writes: none
   held lifecycle rows: none
   claims nothing will wake: none
@@ -1520,8 +1530,13 @@ Closing the terminal leaves the project without one, and the daemon logs
   fields the `memory` experiment fills — `memoryGroup` (`memory` or `none`), `memoryDrawMode`
   (the mode in force at the draw) and `memoryDrawnAt` — are still on every issue and answer
   exactly as they did, absent together where nothing was drawn for that tree. Read
-  `assignments` for a measurement: a declared experiment that is not `memory` appears nowhere
-  else.
+  `assignments` for a measurement: no other field of an issue in the state names its answer for
+  a declared experiment that is not `memory`.
+  Dispatch holds that answer too where the draw put the issue in the experiment's group, by an arm
+  that sets `plan`: each step record of the issue names the experiment and the variant, so
+  `dispatch steps --issue <KEY>` prints `Experiment <experiment>: variant <variant>.` above its
+  runs, the issue's **Steps** tab shows that line, and `dispatch plans --project <KEY>` ends the
+  issue's line with `variant <experiment>/<variant>`.
 
   The `roots waiting on a person` line counts the roots in phase `awaiting_person`, each holding
   the slot it took when the daemon started it, how many of them a person

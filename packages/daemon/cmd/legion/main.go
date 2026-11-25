@@ -105,28 +105,54 @@ func helpRequested(arg string) bool {
 	return arg == "-h" || arg == "-help" || arg == "--help"
 }
 
+// newVersionCommand is `legion version`: the version and the commit the binary was built from,
+// and the linked plugin pair where both are linked. With --contracts it prints the daemon API
+// contract of this build instead (printContracts).
 func newVersionCommand(stdout io.Writer) *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "version",
 		Short: "print the version and the commit the binary was built from",
 		Args:  noArguments,
-		RunE: runs(func(context.Context, []string) int {
-			version := "(devel)"
-			if release != "" {
-				version = release
-			} else if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" {
-				version = info.Main.Version
-			}
-			if revision != "" {
-				fmt.Fprintf(stdout, "legion %s commit %s\n", version, revision)
-			} else {
-				fmt.Fprintf(stdout, "legion %s\n", version)
-			}
-			if piLegionVersion != "" && piEnvoyVersion != "" {
-				fmt.Fprintf(stdout, "plugins @sjawhar/pi-legion %s @sjawhar/pi-envoy %s\n", piLegionVersion, piEnvoyVersion)
-			}
+	}
+	contracts := cmd.Flags().Bool("contracts", false, "print this build's daemon API contract, whether its entries are numbered in the order a stamp gives or by id, and each entry's id, number and slug")
+	cmd.RunE = runs(func(context.Context, []string) int {
+		if *contracts {
+			printContracts(stdout)
 			return 0
-		}),
+		}
+		version := "(devel)"
+		if release != "" {
+			version = release
+		} else if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" {
+			version = info.Main.Version
+		}
+		if revision != "" {
+			fmt.Fprintf(stdout, "legion %s commit %s\n", version, revision)
+		} else {
+			fmt.Fprintf(stdout, "legion %s\n", version)
+		}
+		if piLegionVersion != "" && piEnvoyVersion != "" {
+			fmt.Fprintf(stdout, "plugins @sjawhar/pi-legion %s @sjawhar/pi-envoy %s\n", piLegionVersion, piEnvoyVersion)
+		}
+		return 0
+	})
+	return cmd
+}
+
+// printContracts is `legion version --contracts`: `contract <n>`, this build's own contract;
+// `order stamped` for a build whose entries are numbered in the merge order its stamp gives
+// (api.ContractOrderStamped), `order id` for one that ranks them by id; and then one line
+// `<id> <number> <slug>` for each entry, in the build's order. An operator reads an entry's
+// number in the build they run here, since no file holds it.
+func printContracts(stdout io.Writer) {
+	fmt.Fprintf(stdout, "contract %d\n", api.DaemonAPIVersion())
+	order := "id"
+	if api.ContractOrderStamped() {
+		order = "stamped"
+	}
+	fmt.Fprintf(stdout, "order %s\n", order)
+	for _, entry := range api.NumberedEntries() {
+		fmt.Fprintf(stdout, "%d %d %s\n", entry.ID, entry.Number, entry.Slug)
 	}
 }
 
@@ -227,10 +253,12 @@ func pluginsLine(cfg config.Config) string {
 // starts with, the daemon's own NATS nkey seed among them, then the store's refusals of a
 // postgres_dsn, which daemon.CheckStart lists), and nothing else: no store connection, no team, no
 // file written, and no process but `mise where <tool>` when a tmux configuration's omp_invocation
-// names a mise tool. Each refusal is written to stderr through printRefusal, as `legion start`
-// writes its own, so a URL a refusal quotes loses its query and its userinfo in both commands.
-// The OK line names the design-gate steps the file resolved to, in the order it named them
-// (`design-gate-steps=`, `none` for a deployment that gates none), and each NATS nkey seed's
+// names a mise tool. Under dispatch_token_broker it reads the transition token's file where the
+// file names one, and no identity variable: the trade at the secrets broker is boot's alone
+// (dispatch://INFRA-4425 R1). Each refusal is written to stderr through printRefusal, as `legion
+// start` writes its own, so a URL a refusal quotes loses its query and its userinfo in both
+// commands. The OK line names the design-gate steps the file resolved to, in the order it named
+// them (`design-gate-steps=`, `none` for a deployment that gates none), and each NATS nkey seed's
 // public key when there is one, never the seed.
 // Right after it comes one line per loader warning (config.Config.Warnings) — a key the file
 // still sets that this daemon no longer reads, whether a project sets it or the file does at its

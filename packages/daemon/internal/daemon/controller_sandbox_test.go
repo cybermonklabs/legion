@@ -411,7 +411,7 @@ func (r *controllerSandboxRig) runtimeFor(cfg config.Config) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, address string, _ appauth.Source,
 		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, _ func() []ghrepo.Repository,
 	) (legionruntime.Runtime, error) {
-		opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, r.project, "placeholder-dispatch-token", lookup(nil),
+		opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, r.project, sandbox.DispatchCredential{Bearer: "placeholder-dispatch-token"}, lookup(nil),
 			slog.New(slog.NewJSONHandler(r.logs, nil)))
 		if err != nil {
 			return nil, fmt.Errorf("sandboxOptions: %w", err)
@@ -1103,7 +1103,7 @@ func (s *controllerSandboxShim) register() error {
 	for {
 		status, err := s.post("/legion/v1/claims/register", claim.RegisterRequest{
 			BootToken: s.bootToken, SessionID: controllerSandboxSession, OmpSessionFile: controllerSandboxSessionFile,
-			AgentID: controllerSandboxSession, PluginContract: api.DaemonAPIVersion,
+			AgentID: controllerSandboxSession, PluginContract: api.DaemonAPIVersion(),
 		}, &registration)
 		if err == nil && status == http.StatusOK {
 			break

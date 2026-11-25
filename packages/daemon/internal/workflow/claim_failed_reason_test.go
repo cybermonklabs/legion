@@ -628,7 +628,9 @@ func TestARoleThatWorksNoPhaseKeepsTheReasonItsPathBuilds(t *testing.T) {
 // role's own plugin posts, of up to a mebibyte over any number of lines. The case fails the tester
 // of a closed child whose look is open, with a sentence of two lines and two thousand bytes. The
 // negative control is the path at dd846980, which wrote the sentence whole after "production
-// check look 1 lost its tester: ".
+// check look 1 lost its tester: ". After the sentence the reason names the cause and the look
+// that retries the claim (checkRoleFailedReason), words of the daemon's own of a bounded length,
+// so the bound is held on what comes before them.
 func TestAProductionCheckLooksWorkerDiedReasonIsOneBoundedLine(t *testing.T) {
 	const forged = "forged: the role is fine"
 	sentence := "the provider refused 3 turns in a row: request rejected\n" + forged + " " + strings.Repeat("y", 2000)
@@ -647,7 +649,14 @@ func TestAProductionCheckLooksWorkerDiedReasonIsOneBoundedLine(t *testing.T) {
 	if strings.Contains(reason, "\n") {
 		t.Errorf("the look's worker-died reads over %d lines, want one: %.200q", strings.Count(reason, "\n")+1, reason)
 	}
-	if limit := len([]rune("production check look 1 lost its tester: ")) + runtime.PodEndRunes + len([]rune(deathReasonCut)) + 2; len([]rune(reason)) > limit {
-		t.Errorf("the look's worker-died is %d runes, want no more than %d: the sentence and its cut mark, quoted", len([]rune(reason)), limit)
+	head, tail, ok := strings.Cut(reason, "; its cause is provider_error; look 2 retries the claim at ")
+	if !ok {
+		t.Fatalf("the look's worker-died reads %q, want the cause and the next look after the sentence", reason)
+	}
+	if limit := len([]rune("production check look 1 lost its tester: ")) + runtime.PodEndRunes + len([]rune(deathReasonCut)) + 2; len([]rune(head)) > limit {
+		t.Errorf("the look's worker-died is %d runes before its cause, want no more than %d: the sentence and its cut mark, quoted", len([]rune(head)), limit)
+	}
+	if len([]rune(tail)) > 200 {
+		t.Errorf("the look's worker-died's next look reads %d runes, want a bounded sentence of the daemon's own: %q", len([]rune(tail)), tail)
 	}
 }
