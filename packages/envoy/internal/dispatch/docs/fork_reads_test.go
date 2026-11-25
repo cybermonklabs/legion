@@ -530,8 +530,8 @@ type forkStep struct {
 }
 
 // runForkSteps runs steps as one committed transaction in mode, asserting each step's fork reads
-// and checkRendering sites, then that the commit's publish checked the rendering once, and that no
-// check found a rendering its fork disagrees with.
+// and checkRendering sites, then that the commit checked the rendering once, as it hands the fork
+// to the room's shadow, and that no check found a rendering its fork disagrees with.
 func runForkSteps(t *testing.T, service *Service, artifactID string, checks *renderingChecks, mode forkReadsMode, steps ...forkStep) {
 	t.Helper()
 	mode.prepare(t, service, artifactID)
@@ -559,7 +559,7 @@ func runForkSteps(t *testing.T, service *Service, artifactID string, checks *ren
 	}
 	calls, found := checks.take()
 	failures = append(failures, found...)
-	if want := map[string]int{"publish": 1}; !maps.Equal(calls, want) {
+	if want := map[string]int{"commit": 1}; !maps.Equal(calls, want) {
 		t.Errorf("the commit checked the rendering at %v, want %v", calls, want)
 	}
 	for _, failure := range failures {
@@ -568,12 +568,13 @@ func runForkSteps(t *testing.T, service *Service, artifactID string, checks *ren
 }
 
 // Every rendering a write hands on - to a margin write (applyMargin), to a read joined to its
-// transaction (docTree), to a version (capture), and at each fork read and its publish - is a
-// fresh read and render of its fork, in each transaction the API runs: an anchored comment, a
-// suggestion, an edit and its version, an accept, and a transaction a browser commits under,
-// whose fork stands where its one read left it, so every rendering after that commit is still
-// reused, whether the room stores the browser's commit before the write's publish or after it.
-// Each version records the state its own transaction wrote.
+// transaction (docTree), to a version (capture), at each fork read, and at its commit, which
+// hands the fork to the room's shadow - is a fresh read and render of its fork, in each
+// transaction the API runs: an anchored comment, a suggestion, an edit and its version, an
+// accept, and a transaction a browser commits under, whose fork stands where its one read left
+// it, so every rendering after that commit is still reused, whether the room stores the browser's
+// commit before the write's publish or after it. Each version records the state its own
+// transaction wrote.
 func TestForkReadsEveryReuseOfAWritesRenderingDescribesItsFork(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newForkReadsRoom(t)
@@ -770,7 +771,8 @@ func TestForkReadsEveryReuseOfAWritesRenderingDescribesItsFork(t *testing.T) {
 	// the write's commit on, the fork holds more than the write. Here the publish is held after
 	// the commit (PauseAfterCommit) until the room has stored the browser's commit and the fork
 	// holds its text, the order envoy-go-race-docs job 138988277423 met by chance; the write's
-	// rendering still describes the write's own state, as its version does.
+	// rendering, checked as the commit hands the fork on, still describes the write's own state,
+	// as its version does.
 	t.Run("warm/a browser commit the room stores before the publish", func(t *testing.T) {
 		const section = 45
 		if err := service.ArmLiveWritePause(artifactID, PauseAfterCommit); err != nil {
