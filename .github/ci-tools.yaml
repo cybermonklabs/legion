@@ -20,7 +20,7 @@
 # docker provider plugin the envoy-infra live tests install,
 # the `packages/envoy/loadtest/cluster/render-nats.sh#HELM=` line for helm, whose render runs
 # an installed helm only where that helm answers the version the line names,
-# `const PIN_TAG` of packages/pi-legion/scripts/skill-cuts/natives.ts for the skill-cuts-omp row,
+# `packages/pi-legion/scripts/skill-cuts/natives.ts#const PIN_TAG` for the skill-cuts-omp row,
 # the Oh My Pi release whose native addon the skill-cuts runner opens and no other,
 # and .bun-version for the three bun rows.
 # A row named `<tool>-aarch64` is the arm64 build of the `<tool>` row beside it, for the jobs that
@@ -484,7 +484,7 @@ tools:
   # The Oh My Pi release the skill-cuts runner (packages/pi-legion/scripts/skill-cuts) rebuilds
   # tool answers of, whose native addon it opens for a read's block context and summary and opens
   # no other: not the build .omp-pin names, whose addon is another file. Its version is the
-  # `const PIN_TAG` of natives.ts without the tag's `v`. .github/actions/install-skill-cuts-omp
+  # `packages/pi-legion/scripts/skill-cuts/natives.ts#const PIN_TAG` without the tag's `v`. .github/actions/install-skill-cuts-omp
   # installs it for the pi-legion job's tests, extracting the addon with the archive's own
   # `bin/omp --help`. The release ships this one linux-x64 archive, so the row has no -aarch64 row
   # beside it, and the fork publishes it nowhere else, so the second source is a copy, as elan's

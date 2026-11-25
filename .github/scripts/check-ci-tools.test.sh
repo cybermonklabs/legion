@@ -640,7 +640,7 @@ skill_cuts_row "$root" 8.8.8-fork.1
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
 check "names the file and the row that answers to it" \
-  "$(contains "$out" '^packages/pi-legion/scripts/skill-cuts/natives.ts:1: this file is missing or is not readable as text, and the skill-cuts-omp row of .github/ci-tools.yaml carries the version its PIN_TAG pins$')"
+  "$(contains "$out" "^packages/pi-legion/scripts/skill-cuts/natives.ts${colon}1: this file is missing or is not readable as text, and the skill-cuts-omp row of .github/ci-tools.yaml carries the version its PIN_TAG pins\$")"
 
 echo "case: rule 2 — a skill-cuts-omp row and a natives.ts with no PIN_TAG line"
 # A comment that names the tag is no pin: the line the gate reads is the constant the runner reads.
@@ -650,7 +650,7 @@ skill_cuts_natives "$root" '// const PIN_TAG = "v8.8.8-fork.1";'
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
 check "names the file and the line it lacks" \
-  "$(contains "$out" '^packages/pi-legion/scripts/skill-cuts/natives.ts:1: this file declares no const PIN_TAG = "v<version>";, and the skill-cuts-omp row of .github/ci-tools.yaml carries what it pins$')"
+  "$(contains "$out" "^packages/pi-legion/scripts/skill-cuts/natives.ts${colon}1: this file declares no const PIN_TAG = \"v<version>\";, and the skill-cuts-omp row of .github/ci-tools.yaml carries what it pins\$")"
 
 echo "case: rule 1 — a second_url that does not hold its row's version"
 # The rule that holds a URL to the row's version reads every URL the row writes, so a second

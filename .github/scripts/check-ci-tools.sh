@@ -81,8 +81,8 @@
 #      helm the render passes over for the one it builds with `go run`. That file is read only
 #      where a helm row exists, and then a file that is missing, is not readable as text, or
 #      holds no such line is refused too.
-#      The `skill-cuts-omp` row's `version` is natives.ts's `const PIN_TAG = "v<version>"`
-#      (packages/pi-legion/scripts/skill-cuts/natives.ts) without its leading `v`: the skill-cuts
+#      The `skill-cuts-omp` row's `version` is `packages/pi-legion/scripts/skill-cuts/natives.ts#const PIN_TAG`
+#      (a `const PIN_TAG = "v<version>"` line) without its leading `v`: the skill-cuts
 #      runner opens only the native addon of the Oh My Pi release that tag names, and
 #      .github/actions/install-skill-cuts-omp installs this row's archive for its tests, so a row
 #      at another version installs an addon whose digest the runner refuses. That file is read

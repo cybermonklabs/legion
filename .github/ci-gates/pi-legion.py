@@ -48,7 +48,7 @@ GATE = gate("pi_legion", "pi-legion", runs=[
                   " sweeps it, a root of that test's list"),
     ("scripts/e2e/lib/**", "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#scriptFunctions`, imported from scripts/e2e/lib/script-functions, and `packages/pi-legion/scripts/skill-scenarios/rig.test.ts#loopbackDsn`, which the services_up row sources; `packages/pi-legion/scripts/skill-scenarios/rig.sh#$root/scripts/e2e/lib/rig.sh` sources scripts/e2e/lib/rig.sh"),
     ("packages/envoy/scripts/lib/pg-url.sh", "`packages/pi-legion/scripts/skill-scenarios/rig.sh#$root/packages/envoy/scripts/lib/pg-url.sh` sources it for pg_sql and safe_url; "
-                                             "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#safe_url drops the password of a URL and keeps the rest` and "
+                                             "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#safe_url drops the password of a Postgres URL and keeps the rest, and prints only a NATS URL's scheme, host and port` and "
                                              "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#refuses a URL the runs cannot use before psql runs or the URL is written` source it, "
                                              "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#fails, naming the rig's root, when the root is no checkout` copies it beside rig.sh, and "
                                              "`packages/pi-legion/scripts/skill-scenarios/rig-isolation.test.ts#pgUrl` copies it into its scratch checkout beside rig.sh"),
