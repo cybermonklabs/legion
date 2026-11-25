@@ -129,6 +129,12 @@ type Admission struct {
 	// observePass): a replay's measure of its own run. nil in the daemon, where a pass gathers no
 	// view.
 	observer func(PassView)
+
+	// p0Bound is the P0 bound in force at the moment of a pass (UseP0Bound): how many issues that
+	// start outside the cap (record.SlotRule.StartsOutsideCap) may hold a slot at once, nil for no
+	// bound. nil, the daemon's own, reads no bound, as R10 has none unless one is configured; only a
+	// replay registers one, from its window's P0 bounds.
+	p0Bound func() *int
 }
 
 // ReportCapabilities registers open, whose answer every tick controller notice carries as its
@@ -191,6 +197,43 @@ func (a *Admission) UseWorkerSilence(silence, background time.Duration) {
 // anything builds an admission, and none of them but the package's own sets a clock.
 func (a *Admission) UseClock(clock func() time.Time) {
 	a.now = clock
+}
+
+// UseP0Bound registers bound, which answers the P0 bound in force at the moment it is asked (R10
+// of the tool's spec): how many issues that start outside the cap may hold a slot at once, nil for
+// no bound. Each pass asks it once, before it judges the line (promoteHolds), so a change of the
+// bound is in force from the next pass on. An admission given none admits under no bound, which is
+// the daemon's own until cybermonklabs/legion#5488 gives it a bound of its own, set in legion.yaml
+// or while it runs and read from its store at each pass; that read replaces this one at the forward
+// merge that brings it, and a replay then applies each change of its window's bound as the change's
+// own fact. It is a setter rather than a parameter of New for the reason UseExperiments is.
+func (a *Admission) UseP0Bound(bound func() *int) {
+	a.p0Bound = bound
+}
+
+// p0BoundNow is the P0 bound this pass admits under (UseP0Bound), nil for none.
+func (a *Admission) p0BoundNow() *int {
+	if a.p0Bound == nil {
+		return nil
+	}
+	return a.p0Bound()
+}
+
+// The lines of R10's starts, in the words cybermonklabs/legion#5488 writes them: each start
+// outside the cap (P0StartLine), and each issue that would start outside the cap held at the P0
+// bound (P0BoundRefusalLine), each with the P0 holders, the other holders, the cap and the bound
+// (boundWords). A replay's log carries them, which a fixture window checks.
+const (
+	P0StartLine        = "admission starts a P0 issue outside the cap"
+	P0BoundRefusalLine = "admission holds a P0 issue at the P0 bound"
+)
+
+// boundWords is a P0 bound as a log line writes it: the number, or "none".
+func boundWords(bound *int) any {
+	if bound == nil {
+		return "none"
+	}
+	return *bound
 }
 
 var _ intake.Handler = (*Admission)(nil)
@@ -475,6 +518,12 @@ const todoWakeDelay = 30 * time.Second
 // nobody. It is judged under the pass's own rule (lineFacts) and counted as the promotion counts
 // against the cap (capLets): a candidate a counted waiter offers its slot to under a cover
 // (covers) starts on that slot, which the waiter gives up for it, and takes no free slot.
+//
+// The slot it speaks of is one of the cap's, so under a rule that starts a P0 issue outside the
+// cap it counts the holders the cap counts (record.SlotRule.HoldersOf): a P0 holder takes none of
+// the cap's slots, and a P0 candidate is no taker of one either, since it starts outside the cap
+// (record.SlotRule.StartsOutsideCap) or, at the P0 bound, waits for a P0 holder to finish. The
+// promotion, the stall measure's free-slot term (lineCanMove) and this read count the same holders.
 func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 	if a.cap <= 0 {
 		return false, nil
@@ -497,16 +546,18 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 		return false, err
 	}
 	lending := coversOf(issues, own, rows, facts)
+	rule := facts.Rule.OrMain()
+	held := rule.HoldersOf(issues, own)
 	taking := 0
 	for _, candidate := range line {
-		if len(blockers.LineWaitsOn(rows, candidate)) > 0 || !slotFor(candidate, facts) {
+		if len(blockers.LineWaitsOn(rows, candidate)) > 0 || !slotFor(candidate, facts) || rule.StartsOutsideCap(candidate.Issue) {
 			continue
 		}
 		if _, covering := lending.take(candidate.Issue.Key); !covering {
 			taking++
 		}
 	}
-	return len(own)+taking < a.cap, nil
+	return held.Capped+taking < a.cap, nil
 }
 
 // wakeController queues notice on issue, due at dueAt, when a controller is registered and no
@@ -2088,6 +2139,9 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	if err != nil || paused {
 		return 0, nil, err
 	}
+	// The P0 bound is read once for the pass, beside the pause, and the stall measure and the
+	// promotion below judge under it (capLets).
+	p0Bound := a.p0BoundNow()
 	issues, slots, facts, err := a.adoptQueuedRoots(ctx, tx, respectHolds)
 	if err != nil {
 		return 0, nil, err
@@ -2237,7 +2291,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	// holds now. It runs before the cap check below, because a deployment whose cap admits
 	// nothing still runs the trees it opened before and still owes its controller the news that
 	// one has stopped.
-	if err := a.tellStalledTrees(ctx, tx, issues, facts, slots, line, dropped, rows, floor); err != nil {
+	if err := a.tellStalledTrees(ctx, tx, issues, facts, slots, line, dropped, rows, floor, p0Bound); err != nil {
 		return 0, released, err
 	}
 	if a.cap <= 0 {
@@ -2250,6 +2304,12 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	var promoted []string
 	for {
 		own := ownSlots(issues, slots)
+		// The holders as the cap and the P0 bound count them under the pass's rule
+		// (record.SlotRule.HoldersOf), which grow with each grant below: the holders below P0,
+		// which the cap counts, and under a rule that starts a P0 outside the cap the P0 holders,
+		// which the bound counts and the cap does not.
+		rule := facts.Rule.OrMain()
+		held := rule.HoldersOf(issues, own)
 		// The covers of this round under a rule whose start may take a cover: the slots its
 		// counted waiters offer to what they wait on (covers), nothing under every other rule,
 		// the daemon's own among them.
@@ -2300,23 +2360,34 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			// the wait. The phases are the pass's rule's (slotFor, over its facts), and so is
 			// what the cap lets through (capLets, with the slots its holders lend).
 			takes := slotFor(candidate, facts)
-			if !a.capLets(candidate, len(own), facts, lending) {
+			if !a.capLets(candidate, held, facts, lending, p0Bound) {
 				// A full cap gives no further slot, and the scan goes on. This is not the hold
 				// above and must not be read as one: a hold is an answer for every candidate
 				// behind it, because it says the pass does not yet know what this candidate is;
 				// the cap is an answer for this candidate alone, because it says only that there
-				// is no slot for it. own only grows inside this loop, so no candidate behind
-				// this one takes a slot either and the rank order of the issues that need one is
-				// kept whole, while the candidates the cap cannot bind — the ones slotFor is
-				// false for, and under a rule that starts a P0 above the cap an issue whose own
-				// priority is P0 — are promoted as they are reached, which is what makes a
-				// hand-over and an answered root resume under a cap that is permanently full.
+				// is no slot for it. The count only grows inside this loop, so no candidate
+				// behind this one that the cap counts takes a slot either and the rank order of
+				// the issues that need one is kept whole, while the candidates the cap cannot
+				// bind — the ones slotFor is false for, and under a rule that starts a P0 outside
+				// the cap an issue whose own priority is P0 — are promoted as they are reached,
+				// which is what makes a hand-over and an answered root resume under a cap that is
+				// permanently full.
 				//
 				// An answered root this branch passes over is told nothing. It reads where it
 				// stands from its own record — `waitingLine`, which is the live place
 				// (api.WaitingLineView) — and the daemon resumes it by itself on the pass that
 				// finds a slot free, so a message would carry a snapshot of a place that moves
 				// with every pass and nothing besides.
+				//
+				// An issue that starts outside the cap is held here by the P0 bound alone, never
+				// by the cap: the bound is set and as many such issues as it allows hold a slot.
+				// It waits in the line where its priority places it, and the pass says why, in
+				// the words and keys of cybermonklabs/legion#5488's line, so the swap of the seam
+				// at its merge leaves this line as it stands.
+				if takes && rule.StartsOutsideCap(issue) {
+					a.logOnCommit(ctx, P0BoundRefusalLine, "issue", issue.Key, "p0_holders", held.P0, "p0_bound", boundWords(p0Bound),
+						"other_holders", held.Capped, "cap", a.cap)
+				}
 				moves.pass(candidate, place, record.PassedCap)
 				continue
 			}
@@ -2385,6 +2456,10 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 						return admitted, released, err
 					}
 					own = slices.DeleteFunc(own, func(slot record.Slot) bool { return slot.Issue == waiter })
+					// The waiter holds no slot now, so the holders are counted again without it
+					// (record.SlotRule.HoldersOf), which reads no record under a rule that starts
+					// no P0 outside the cap.
+					held = rule.HoldersOf(issues, own)
 					if err := a.keepCovers(ctx, tx, lending.held); err != nil {
 						return admitted, released, err
 					}
@@ -2392,12 +2467,12 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				// An entry carries whether its issue held a row when the line was built
 				// (record.LineEntry.Holds), and the line this loop reads holds each issue once,
 				// so no grant here changes the answer slotFor gives a candidate behind it; what
-				// the grant does change, the count against the cap, is own, which grows with
-				// it. finishFencedStarts keeps the line to one entry an issue, not record.Waiting:
-				// Waiting would list an issue at admitted that holds no row and still owes a start
-				// both as a return and as a first phase, but every owed start names a worker
-				// phase, and finishFencedStarts ends each one whose phase is not the issue's own
-				// before the line is built, so none is left owed at admitted.
+				// the grant does change, the count against the cap and the P0 bound, is own and
+				// held, which grow with it. finishFencedStarts keeps the line to one entry an
+				// issue, not record.Waiting: Waiting would list an issue at admitted that holds no
+				// row and still owes a start both as a return and as a first phase, but every owed
+				// start names a worker phase, and finishFencedStarts ends each one whose phase is
+				// not the issue's own before the line is built, so none is left owed at admitted.
 				slot := record.Slot{Issue: issue.Key, Index: nextSlotIndex(slots), AdmittedAt: now}
 				if err := a.store.PutSlot(ctx, tx, slot); err != nil {
 					return admitted, released, fmt.Errorf("put admission slot for %s: %w", issue.Key, err)
@@ -2412,8 +2487,17 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 					}
 				}
 				slots, own = append(slots, slot), append(own, slot)
+				rule.AddHolder(&held, issue)
 				a.logSlot(ctx, "taken", issue.Key, len(own))
 				moves.give(issue.Key, candidate.Kind, len(own))
+				// A start outside the cap is the one start the cap does not count, so it says so
+				// with what the cap and the bound count, in the words and keys of
+				// cybermonklabs/legion#5488's line: the P0 holders, this one among them, the other
+				// holders, the cap and the bound.
+				if rule.StartsOutsideCap(issue) {
+					a.logOnCommit(ctx, P0StartLine, "issue", issue.Key, "p0_holders", held.P0, "other_holders", held.Capped,
+						"cap", a.cap, "p0_bound", boundWords(p0Bound))
+				}
 			}
 			switch candidate.Kind {
 			case record.LineReturning:
@@ -2644,31 +2728,39 @@ func slotFor(entry record.LineEntry, facts record.LineFacts) bool {
 	return !entry.Holds && facts.KeepsSlot(entry.Issue)
 }
 
-// capLets says whether the cap lets the promotion start entry, given held, the rows of the cap
-// the project holds, facts, the pass's own, and lending, the covers of the pass (covers): an
-// entry that takes no slot (slotFor) starts whatever the cap says, and one that takes a slot
-// starts while a row stands free or, under a rule whose start may take a cover
-// (record.TakeCover), while a counted waiter that waits on it offers its own, which the waiter
-// gives up for it (covers.take), so the start leaves the count where it stood. A covered waiter
-// holds no row, so held is the count the cap bounds. Under a rule that starts a P0 above the cap
-// (record.SlotRule.P0AboveCap) an entry whose issue's own priority is P0 (record.Issue.Priority,
-// never its tree root's) starts whatever the number of rows in use, so the count may stand above
-// the cap after it; below P0 the cap holds as it does under the daemon's own rule. A cap that
-// admits nothing lets nothing start, a P0 among it, since the promotion does not run under it.
-// It answers the cap's half alone: what an entry waits on is the other half
-// (blockers.LineWaitsOn), which each reader asks beside this, so every hold on a start but the
-// cap holds a P0 as it holds any other entry.
+// capLets says whether the cap and the P0 bound let the promotion start entry, given held, the
+// project's holders as the two count them under the pass's rule (record.SlotRule.HoldersOf),
+// facts, the pass's own, lending, the covers of the pass (covers), and p0Bound, the P0 bound the
+// pass admits under (nil for none). An entry that takes no slot (slotFor) starts whatever the cap
+// says, and so does one that a counted waiter that waits on it offers its own slot to, under a rule
+// whose start may take a cover (record.TakeCover), which the waiter gives up for it (covers.take),
+// so the start leaves the count where it stood; a covered waiter holds no row, so held is the count
+// the cap bounds. Under a rule that starts a P0 issue outside the cap
+// (record.SlotRule.StartsOutsideCap: its own priority is P0, never its tree root's), such an entry
+// that takes a slot starts while fewer such issues than the bound hold a slot, or always where no
+// bound is in force, whatever the number of rows in use, so the slots in use may stand above the
+// cap after it. Any other entry that takes a slot starts only while the holders the cap counts
+// (held.Capped, every holder under a rule that starts none outside the cap) leave a row free. A
+// cap that admits nothing lets nothing start, a P0 among it, since the promotion does not run under
+// it. It answers the cap's half alone: what an entry waits on is the other half
+// (blockers.LineWaitsOn), which each reader asks beside this, so every hold on a start but the cap
+// holds a P0 as it holds any other entry.
 //
 // It is the one statement of the cap's half, and two readers ask it: the promotion itself
 // (promoteHolds) and the stall measure's free-slot term (lineCanMove). Read apart, the measure
 // said the cap held a queued root in accepting, retro or merging that the promotion of the same pass started,
 // and told the controller of a stall that was not one.
-func (a *Admission) capLets(entry record.LineEntry, held int, facts record.LineFacts, lending covers) bool {
+func (a *Admission) capLets(entry record.LineEntry, held record.SlotHolders, facts record.LineFacts, lending covers, p0Bound *int) bool {
 	if a.cap <= 0 {
 		return false
 	}
-	aboveCap := facts.Rule.OrMain().P0AboveCap && entry.Issue.Priority == record.P0
-	return !slotFor(entry, facts) || held < a.cap || aboveCap || lending.offers(entry.Issue.Key)
+	if !slotFor(entry, facts) || lending.offers(entry.Issue.Key) {
+		return true
+	}
+	if facts.Rule.OrMain().StartsOutsideCap(entry.Issue) {
+		return p0Bound == nil || held.P0 < *p0Bound
+	}
+	return held.Capped < a.cap
 }
 
 // held says whether Reconcile still holds key for the Dispatch consumer to reach the stream

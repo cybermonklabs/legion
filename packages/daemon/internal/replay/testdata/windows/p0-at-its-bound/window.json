@@ -28,7 +28,7 @@
   "workerBackground": "4h0m0s",
   "experiments": [],
   "lines": [
-    "admission: P0 start refused at its bound",
+    "admission holds a P0 issue at the P0 bound",
     "admission: slot taken",
     "daemon: opening the store; a connection error that the next attempt can clear is tried again",
     "supervise: a turn started",
@@ -40,7 +40,7 @@
     "events/ACME-2.jsonl": "0858234a0f71058473513315d7e9208020c4bd7958ca590bd5e07e9a0bd09326",
     "events/ACME-3.jsonl": "0f7fdaff1ba4515c047a5c20c0729f258ec0ec72d98c1817528ddf5b6c327e26",
     "events/ACME-4.jsonl": "bbc35b46a6e110db0a0df4174e29729e891193225631ead79fd3217a69e660f7",
-    "log.jsonl": "24147ac1730c86894c937a9f32c29a052ba69dc266bc583b7c2067f83fc78abf"
+    "log.jsonl": "ee2ed60f6a56edd08c622f360ca8854044788d01ae528a7afb8a3dc5028d140e"
   },
   "p0Bounds": [
     {

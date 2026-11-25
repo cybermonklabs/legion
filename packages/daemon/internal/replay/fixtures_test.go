@@ -146,6 +146,7 @@ func TestFixtureWindows(t *testing.T) {
 			for _, run := range runs {
 				t.Run(run.name, func(t *testing.T) {
 					t.Parallel()
+					skipUntilBuilt(t)
 					out := t.TempDir()
 					result, err := Run(context.Background(), RunConfig{Window: window, Rule: replayedRule(t, run.rule), Branch: run.branch,
 						Seed: run.want.Seed, Slowdown: cmp.Or(run.want.Slowdown, 1), PGDSN: dsn, Out: out})

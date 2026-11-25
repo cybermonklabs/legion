@@ -389,6 +389,10 @@ func (d *driver) newChain(at time.Time) {
 	d.admission.UseStalledTreeNotice(time.Duration(w.StalledTreeNotice))
 	d.admission.UseWorkerSilence(time.Duration(w.WorkerSilence), time.Duration(w.WorkerBackground))
 	d.admission.UsePassObserver(d.snap.pass)
+	// R10's P0 bound in force at the moment of each pass, from the window's record of its changes
+	// (p0BoundAt): a rule that starts a P0 issue outside the cap admits under it, and every other
+	// rule reads it not at all.
+	d.admission.UseP0Bound(func() *int { return p0BoundAt(w, d.clock.Instant()) })
 	d.handlers = []intake.Handler{replayHandler{engine: d.engine, clock: d.clock.Now, rule: d.rule, records: d.records, project: w.Project}}
 	for _, handler := range admit.Handlers(d.records, w.Project, d.engine, d.admission) {
 		if _, pass := handler.(*admit.Admission); pass {
@@ -426,6 +430,20 @@ func capAt(w Window, at time.Time) int {
 		}
 	}
 	return limit
+}
+
+// p0BoundAt is R10's P0 bound w's daemon ran with at at: the last change at or before it, nil for
+// no bound where at is before every change or the window records none (Window.P0Bounds). The
+// daemon's bound has no value unless its configuration gives one, and the window records each
+// change from the daemon's line of it, so before the first change no bound stands.
+func p0BoundAt(w Window, at time.Time) *int {
+	var bound *int
+	for _, change := range w.P0Bounds {
+		if !change.At.After(at) {
+			bound = &change.Bound
+		}
+	}
+	return bound
 }
 
 // processCap is the admission cap the daemon process running from at served under (capOfProcess),
@@ -844,6 +862,17 @@ func (d *driver) run() error {
 		if !pause.To.IsZero() && !pause.To.Before(w.From) && pause.To.Before(end) {
 			d.push(&item{at: pause.To, class: classAct, rec: pause.To, order: lineOrder, run: func() error { return d.resume(pause) }})
 		}
+	}
+	// Each change of R10's P0 bound the window records runs a pass at its moment, as the daemon's
+	// change of the bound does (P0BoundChanged).
+	for _, change := range w.P0Bounds {
+		if change.At.Before(w.From) || !change.At.Before(end) {
+			continue
+		}
+		d.push(&item{at: change.At, class: classAct, rec: change.At, order: lineOrder, run: func() error {
+			_, err := d.apply("replay", d.factID("p0-bound", change.Bound), P0BoundChanged{Bound: change.Bound})
+			return err
+		}})
 	}
 	for i := range d.script.events {
 		if event := &d.script.events[i]; !event.at.Before(w.From) && event.piece == nil {

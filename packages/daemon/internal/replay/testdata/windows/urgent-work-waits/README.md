@@ -2,6 +2,10 @@
 
 The measured span is 09:00–10:00 UTC. Replay continues to 10:15. Cap 1 is never reached by work below P0 that holds a slot in this record: ACME-1 and ACME-2 take exempt slots. ACME-3's link to an unfinished issue keeps it from starting, even though there is room.
 
+R10 is the start of a P0 issue outside the cap.
+`p0-at-once` runs it now, and `main` runs it once cybermonklabs/legion#5488 merges; until then `main` starts no P0 issue outside the cap, and its run waits on the skip list (`pending_test.go`, ruling D16).
+So the values below are those of `p0-at-once` now, and of `main` after that merge.
+
 | Issue | First `todo` | Priority before first slot | First slot | `done` |
 | --- | --- | --- | --- | --- |
 | ACME-1 | 09:05 | P0 throughout | 09:05 | Not by 10:15 |

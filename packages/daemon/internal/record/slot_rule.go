@@ -81,11 +81,16 @@ type SlotRule struct {
 	// only under a rule that keeps a slot in merging (KeepsSlotIn).
 	ReleaseAtReady bool
 	// P0AboveCap says whether an issue whose own Dispatch priority is P0 (Issue.Priority) starts
-	// above the cap: the pass that would start it but for the cap starts it, whatever the number
-	// of slots in use, and every other hold on a start holds it as before (admit's capLets). The
-	// issue's own priority alone counts: a root's priority places its tree's members in a line
-	// that orders by priority (PriorityOf) and starts none of them above the cap. Below P0 the cap
-	// holds as the daemon's own rule holds it.
+	// outside the cap, R10 of the tool's spec: the cap counts only the holders that did not start
+	// outside it, so the pass that would start such an issue but for the cap starts it, whatever
+	// the number of slots in use, while fewer such issues than the P0 bound in force hold a slot,
+	// or always where none is in force; and every other hold on a start holds it as before. The
+	// issue's own priority alone counts: a root's priority places its tree's members in a line that
+	// orders by priority (PriorityOf) and starts none of them outside the cap. Below P0 the cap
+	// holds as the daemon's own rule holds it. Every reader reads it through StartsOutsideCap and
+	// HoldersOf (p0_start.go), whose doc says what replaces them when cybermonklabs/legion#5488
+	// merges; until then it is off in MainRule and the recorded rules, and on in p0-at-once and
+	// p0-idle alone.
 	P0AboveCap bool
 	// IdleReturn is how long a slot holder that waits on its children or on a person may go with
 	// no turn of any of its roles before it gives its slot back (LineFacts.IdleReturns, admit's
@@ -172,10 +177,11 @@ const (
 // the slot back at the pass that finds them, with no grace, and stop nothing; the line stands by
 // priority first (cybermonklabs/legion#5365) and, within one priority, work that came back goes
 // first, oldest first, then the line by rank; a start takes a slot of its own, whatever its
-// priority; a conflicting head keeps its phase while the base is merged forward, and past the
-// review waits for merging, where the merger merges it (cybermonklabs/legion#4979); and no slot
-// goes back because its holder is idle. Its commit is the commit the rule was first written as a
-// value at.
+// priority, since no issue starts outside the cap (P0AboveCap) until R10 reaches the daemon in
+// cybermonklabs/legion#5488; a conflicting head keeps its phase while the base is merged forward,
+// and past the review waits for merging, where the merger merges it (cybermonklabs/legion#4979);
+// and no slot goes back because its holder is idle. Its commit is the commit the rule was first
+// written as a value at.
 var MainRule = SlotRule{
 	Name:   "main",
 	Commit: "0d3786da536722f2eb26a793ab1b9827b6e90f47",
@@ -351,21 +357,22 @@ func (r SlotRule) ChildrenFirstCandidates(issues []Issue, gates map[string]TreeG
 
 // SlotRules is every named rule the repository keeps, the daemon's own first, and then the rules
 // the replay's comparison runs beside it: the rules three recorded windows ran under
-// (legion-v20.42.5, legion-v19.57.3, legion-v22.14.1) and the thirteen candidates of the
+// (legion-v20.42.5, legion-v19.57.3, legion-v22.14.1) and the fourteen candidates of the
 // comparison (keep-past-review, blockers-first, returned-by-rank, cover, wait-grace and
 // wait-grace-1h, one rule at two graces, returned-by-first-slot, rework-first and
 // rework-first-keep, one order with and without the slot kept past the review, arrival-order,
-// and p0-at-once, idle-return-1h and p0-idle, two answers apart and together). The daemon's own
-// rule orders the line by priority first since cybermonklabs/legion#5365, which the comparison ran
-// as the candidate priority-first before that change merged; each candidate, built from the
-// daemon's own, keeps that band, and the recorded rules, whose releases came before it, do not.
-// `legion replay rules` prints them. Each answer is built afresh, so a caller that changes a rule
-// it was handed changes no other caller's.
+// before-p0, the daemon's own with no P0 started outside the cap, measured for reference, and
+// p0-at-once, idle-return-1h and p0-idle, two answers apart and together). The daemon's own rule
+// orders the line by priority first since cybermonklabs/legion#5365, which the comparison ran as
+// the candidate priority-first before that change merged; each candidate, built from the daemon's
+// own, keeps that band, and the recorded rules, whose releases came before it, do not. `legion
+// replay rules` prints them. Each answer is built afresh, so a caller that changes a rule it was
+// handed changes no other caller's.
 func SlotRules() []SlotRule {
 	return []SlotRule{mainRuleWith(MainRule.Name, func(*SlotRule) {}), windowOneRule(), windowTwoRule(), windowThreeRule(),
 		keepPastReviewRule(), blockersFirstRule(), returnedByRankRule(), coverRule(),
 		waitGraceRule("wait-grace", waitGrace), waitGraceRule("wait-grace-1h", longWaitGrace), returnedByFirstSlotRule(),
-		reworkFirstRule(), reworkFirstKeepRule(), arrivalOrderRule(), p0AtOnceRule(), idleReturnRule(), p0IdleRule()}
+		reworkFirstRule(), reworkFirstKeepRule(), arrivalOrderRule(), beforeP0Rule(), p0AtOnceRule(), idleReturnRule(), p0IdleRule()}
 }
 
 // The commits the recorded rules come from: release 20.42.5, the last a deployment ran over its
@@ -574,10 +581,23 @@ func arrivalOrderRule() SlotRule {
 	})
 }
 
-// p0AtOnceRule is the daemon's own rule with an issue whose own priority is P0 started above the
-// cap (P0AboveCap): an owner's direction that a P0 issue starts at once, with the daemon's own
-// rule below P0. It reads the issue's own priority (Issue.Priority), which the daemon's store keeps
-// from each Dispatch observation (cybermonklabs/legion#5365).
+// beforeP0Rule is the daemon's own rule with no issue started outside the cap (P0AboveCap off): the
+// rule before R10, under which a P0 issue waits in the line as any issue does, measured beside the
+// rules that start one outside the cap for reference. The daemon's own rule starts none outside the
+// cap until cybermonklabs/legion#5488 merges and turns its field on, so until then this rule equals
+// main in every choice but its name.
+func beforeP0Rule() SlotRule {
+	return mainRuleWith("before-p0", func(rule *SlotRule) {
+		rule.P0AboveCap = false
+	})
+}
+
+// p0AtOnceRule is the daemon's own rule with an issue whose own priority is P0 started outside the
+// cap (P0AboveCap, StartsOutsideCap): an owner's direction that a P0 issue starts at once, with the
+// daemon's own rule below P0. The cap counts the holders below P0 alone, and a replay's P0 bound,
+// from its window, limits the P0 holders. It reads the issue's own priority (Issue.Priority),
+// which the daemon's store keeps from each Dispatch observation (cybermonklabs/legion#5365). It is
+// the daemon's own rule once cybermonklabs/legion#5488 turns main's field on, and goes then.
 func p0AtOnceRule() SlotRule {
 	return mainRuleWith("p0-at-once", func(rule *SlotRule) {
 		rule.P0AboveCap = true

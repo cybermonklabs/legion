@@ -80,6 +80,18 @@ type FirstBoot struct {
 	replayFact
 }
 
+// P0BoundChanged is a change of R10's P0 bound the window records (Window.P0Bounds), applied at its
+// moment: the daemon makes an admission pass at each change of the bound, so a raise starts the P0
+// issues it lets in at once (cybermonklabs/legion#5488), and the replay makes that pass with this
+// fact, which no handler of the chain reads but admission, whose pass runs under the bound in force
+// from that moment (p0BoundAt). Under a rule that starts no P0 issue outside the cap the pass finds
+// what the one before it found. At the forward merge that brings #5488 the replay applies that
+// change's own fact in its place.
+type P0BoundChanged struct {
+	replayFact
+	Bound int
+}
+
 // replayHandler is the handler a replay puts before the daemon's chain (admit.Handlers) for the
 // replay's own facts: a RecordedMove through the engine's ReplayTransition, refused with its reason
 // where the issue does not stand where the record says; a ReadyMark and a HeldSignOff into the

@@ -2,10 +2,16 @@
 
 Cap 1 is full from 09:05 UTC, with ACME-1 holding the regular slot. The P0 bound becomes 1 at 09:07. ACME-2, the first P0, takes its slot at 09:10. Both remain in their first turns through 10:00.
 
-ACME-4 waits below P0 from 09:20. ACME-3 (P0) takes first place at 09:30 despite its worse board rank. The pass refuses ACME-3 at bound 1, logs the issue, first place and bound, and releases neither holder.
+ACME-4 waits below P0 from 09:20. ACME-3 (P0) takes first place at 09:30 despite its worse board rank. The pass refuses ACME-3 at bound 1 and releases neither holder. It logs `admission holds a P0 issue at the P0 bound` with the issue (ACME-3), the P0 holders (1, ACME-2), the bound (1), the other holders (1, ACME-1) and the cap (1), the line cybermonklabs/legion#5488 writes, and the record holds that line at 09:30.
+
+R10 is the start of a P0 issue outside the cap under the P0 bound.
+`p0-at-once` runs it now, and `main` runs it once cybermonklabs/legion#5488 merges; until then `main` starts no P0 issue outside the cap, and its run waits on the skip list (`pending_test.go`, ruling D16).
+So the values below are those of `p0-at-once` now, and of `main` after that merge; the window's change of the bound at 09:07 makes a pass of its own, which starts nothing, since no P0 issue waits then.
 
 Both waiters outrank ACME-1 and rank behind ACME-2, with or without the priority band. The priority-taken reading is therefore the same even though the two orders disagree on which waiter comes first.
 
 The two grants have zero wait. In-flight and slot time in turns are each 55 + 50 = 105 minutes, with a maximum of two issues in flight and a mean of 105/60. From 09:20 to 09:30 one of two holder/waiter pairs is inverted. From 09:30 to 10:00 two of four are inverted. Priority taken is 20/60. There are no returns, completions or loops.
 
 As said above, both orders give the same pairs, so `priorityTakenBanded` is also 20/60. The wait of urgent work holds the two P0 issues, its waits cut at 10:00 (the window has no run-out). ACME-2 is `todo` at 09:10 and takes its slot then, a wait of 0, and is not done: 50 minutes, cut. ACME-3 is `todo` at 09:30 and has neither: 30 and 30 minutes, each cut. The first-slot waits 0 and 30 give a median of 15 and a 90th percentile of 30, one cut; the waits to `done`, 30 and 50, a median of 40 and a 90th percentile of 50, two cut.
+
+The run names assumptions 1 (always), 8 (ACME-3 and ACME-4 are handed to Legion and the record never starts either), 9 (the run gives out slots) and 15 (work is left in flight at 10:00).

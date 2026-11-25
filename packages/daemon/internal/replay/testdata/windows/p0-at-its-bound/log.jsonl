@@ -5,4 +5,4 @@
 {"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-2","slots":2,"cap":1}
 {"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-2-architect","generation":1,"incarnation":"5e0c1a02","resumed":false,"resumedBy":"none"}
 {"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-2-architect","generation":1,"delivery":"outbox:2"}
-{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"admission: P0 start refused at its bound","issue":"ACME-3","place":1,"bound":1}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"admission holds a P0 issue at the P0 bound","issue":"ACME-3","p0_holders":1,"p0_bound":1,"other_holders":1,"cap":1}

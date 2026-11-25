@@ -24,13 +24,16 @@ This file gives the conventions every window is written and worked by, once: the
 | `every-trigger` | a root and two children through every trigger keep their recorded moves | `main` |
 | `one-minute-wait` | a wait on another issue that lasts one minute gives the slot back, or keeps it for a grace | `main`, `wait-grace` |
 | `root-idle-while-children-run` | a tree root holds its slot with no turn while its children run | `main` |
-| `p0-at-a-full-cap` | a P0 starts at a full regular cap with no P0 bound, but waits under the reference rule | `main`, `before-p0` |
-| `p0-at-its-bound` | the first P0 fills a bound of one, and the pass refuses the second P0 in first place | `main` |
-| `urgent-work-waits` | the first `todo`, a priority raise and the run-out determine the waits of P0 and P1 work | `main` |
+| `p0-at-a-full-cap` | a P0 starts at a full regular cap with no P0 bound, but waits under the reference rule | `main`, `p0-at-once`, `before-p0` |
+| `p0-at-its-bound` | the first P0 fills a bound of one, and the pass refuses the second P0 in first place | `main`, `p0-at-once` |
+| `urgent-work-waits` | the first `todo`, a priority raise and the run-out determine the waits of P0 and P1 work | `main`, `p0-at-once` |
 | `conflict-in-accepting` | a conflict in accepting returns work to implementing | `legion-v20.42.5` |
 | `conflict-in-retro` | a conflict in retro returns work to implementing | `legion-v20.42.5` |
 | `signal-crosses-with-no-event` | the tick still starts P0 and returns a slot, but only the signal deadline starts lower-priority work | `main`, `signals` |
 | `no-crossing-due` | no deadline is due at first, and a new kill moves the pending deadline before it fires | `signals` |
+
+The three windows of R10, the start of a P0 issue outside the cap, run it under `p0-at-once`, and under `main` once cybermonklabs/legion#5488 merges and `main` starts a P0 issue outside the cap.
+Until then each run under `main` waits on the skip list (`pending_test.go`, ruling D16), and its expected values are those of the run under `p0-at-once`.
 
 ## What a directory holds
 
