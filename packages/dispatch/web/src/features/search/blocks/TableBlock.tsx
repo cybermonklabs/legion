@@ -7,6 +7,8 @@ import {
   surfaceBg,
   textSecondaryOnSurface,
 } from "../../../theme/classes";
+import { PriorityValue } from "../../going/PriorityValue";
+import { issuePriority } from "../../issue/issue-priority";
 import { ItemChip } from "../../refs/ItemChip";
 import { buildReferencePath } from "../../refs/routes";
 import { type BlockOf, columnText, columnWords } from "./block-cells";
@@ -79,19 +81,29 @@ export function TableBlock({
                     at === 0 && typeof value === "string" && ISSUE_KEY.test(value)
                       ? value
                       : undefined;
+                  // A priority set reads as the issue page's badge, as every priority the bar
+                  // shows does; none reads as the page's words (`columnText`).
+                  const priority =
+                    column === "priority" && typeof value === "number"
+                      ? issuePriority(value)
+                      : null;
+                  let cell: ReactNode = columnText(column, value);
+                  if (issue !== undefined) {
+                    cell = (
+                      <a
+                        className="inline-flex max-w-full"
+                        data-testid="going-block-item"
+                        href={buildReferencePath({ key: issue, kind: "issue" })}
+                      >
+                        <ItemChip issue={issue} />
+                      </a>
+                    );
+                  } else if (priority !== null) {
+                    cell = <PriorityValue priority={priority} />;
+                  }
                   return (
                     <td className={blockCellClassName} key={column}>
-                      {issue === undefined ? (
-                        columnText(column, value)
-                      ) : (
-                        <a
-                          className="inline-flex max-w-full"
-                          data-testid="going-block-item"
-                          href={buildReferencePath({ key: issue, kind: "issue" })}
-                        >
-                          <ItemChip issue={issue} />
-                        </a>
-                      )}
+                      {cell}
                     </td>
                   );
                 })}

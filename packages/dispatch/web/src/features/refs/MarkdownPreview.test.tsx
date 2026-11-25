@@ -236,6 +236,29 @@ test("a Dispatch picture shows as its thumbnail beside its caption, a link only 
   }
 });
 
+// A host whose own Enter and click are a row's one action - a search hit - draws each link of its
+// preview as the words around it (`links="text"`): no anchor, which would compete with the row,
+// and no link look, which would offer a second action. A reference still reads as its title. The
+// default keeps the link look on the same words.
+test("a link in text mode is plain text: no anchor and no link look, a reference still by its title", async () => {
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(issue);
+  const markdown = "Read [the plan](https://example.com/plan) and dispatch://CORE-1 today.";
+  const { preview, rerender, view } = renderPreview({ lines: 1, links: "text", markdown });
+  try {
+    await waitFor(() => expect(preview()).toHaveTextContent("Design decision"));
+    expect(words(preview())).toBe("Read the plan and CORE-1 Design decision today.");
+    expect(preview().querySelector("a")).toBeNull();
+    expect(preview().querySelector("[data-markdown-link]")).toBeNull();
+
+    rerender({ lines: 1, markdown });
+    await waitFor(() => expect(preview().querySelectorAll("[data-markdown-link]")).toHaveLength(2));
+    expect(preview().querySelector("a")).toBeNull();
+  } finally {
+    view.unmount();
+    getIssueSummary.mockRestore();
+  }
+});
+
 test("a lead is the app's own words: syntax and a reference in it stay literal while the body formats", async () => {
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(issue);
   // A session titles itself; its title is the lead of every quote of its messages.

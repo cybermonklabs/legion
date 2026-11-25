@@ -359,7 +359,7 @@ test("a row that adds labels keeps the issue's others and shows them, and nothin
   expect(removalWords(edited)).toBe("Removes API");
 });
 
-test("a row that takes values out names each of them, and a close says it closes", () => {
+test("a row that takes values out names each of them, a close says it closes, and a delete says no more than its words", () => {
   const words = (planned: GoingPlanRow) => removalWords(rowChanges(planned, undefined, new Map()));
   const labels = (now: string[], next: string[], extra: Record<string, unknown> = {}) =>
     row(0, {
@@ -391,8 +391,10 @@ test("a row that takes values out names each of them, and a close says it closes
       })
     )
   ).toBe("Removes DEMO-9");
+  // A delete's own words say what it removes, and its red mark marks it: no bare "Removes"
+  // stands under them (review a1).
   expect(words(row(0, { arguments: { priority: "p-1" }, tool: "dispatch_delete_priority" }))).toBe(
-    "Removes"
+    ""
   );
 });
 

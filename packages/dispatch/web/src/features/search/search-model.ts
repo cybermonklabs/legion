@@ -274,6 +274,41 @@ export function snippetWithoutDirectives(tree: DisplayTree | undefined): Display
   return changed ? (walked as DisplayTree) : tree;
 }
 
+/** The tail of a sentence a window began on, and the space after it: words that start with a
+ *  small letter, up to a full stop, a question mark or an exclamation mark and any closing quote
+ *  or bracket after it, then whitespace. */
+const SENTENCE_TAIL = /^\p{Ll}[^.!?]*[.!?]+["'’”)\]]*\s+/u;
+
+/**
+ * A cut snippet's tree started at the first word of a sentence (review A2): the server's headline
+ * window can begin on the tail of the sentence before the match ("table. A page is read…"), which
+ * reads as a fragment. Where the tree's first text starts with a small letter, carries no mark -
+ * no matched word, no link, no formatting - and ends its sentence inside that text, the tail
+ * comes out, and the line starts at the word after it. `tree` itself where it starts any other
+ * way, and where the tail is all the text its block holds.
+ */
+export function snippetFromSentence(tree: DisplayTree | undefined): DisplayTree | undefined {
+  if (tree === undefined) return undefined;
+  const cut = (node: TreeNode): TreeNode | undefined => {
+    const [first, ...rest] = node.content ?? [];
+    if (first === undefined) return undefined;
+    if (first.type !== "text") {
+      // A block that holds no text of its own starts where its first child does.
+      const inner = node.content?.some((child) => child.type === "text") ? undefined : cut(first);
+      return inner === undefined ? undefined : { ...node, content: [inner, ...rest] };
+    }
+    const text = first.text ?? "";
+    const tail =
+      Array.isArray(first.marks) && first.marks.length > 0 ? null : SENTENCE_TAIL.exec(text);
+    if (tail === null) return undefined;
+    const left = text.slice(tail[0].length);
+    if (left === "" && rest.length === 0) return undefined;
+    return { ...node, content: left === "" ? rest : [{ ...first, text: left }, ...rest] };
+  };
+  const started = cut(tree as TreeNode);
+  return started === undefined ? tree : (started as DisplayTree);
+}
+
 /** How many words a hit's snippet holds where the server's headline cut its body to the
  *  headline's window: `pmdoc.SearchSnippetWords` (`packages/envoy/internal/dispatch/pmdoc/
  *  fragment.go`; `headlineOptions` in `api/search.go`, MaxWords=24). A body that fits the window

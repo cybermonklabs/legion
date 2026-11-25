@@ -607,7 +607,7 @@ test("typing filters History by every question of a conversation, and the arrows
     });
     await screen.findAllByTestId("going-history-conversation");
     // The box takes the focus as History opens.
-    const filter = screen.getByRole("searchbox", { name: "Filter History" });
+    const filter = screen.getByRole("searchbox", { name: "Filter history" });
     expect(filter).toHaveFocus();
 
     // A later question of a conversation finds it too.

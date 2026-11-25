@@ -68,11 +68,11 @@ import {
 import { NO_MODEL_WORDS } from "../going/run-states";
 import { useAsk } from "../going/useAsk";
 import { statusText } from "../project/board-model";
-import { ItemChip } from "../refs/ItemChip";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { DeletedBody, EditedMark } from "../refs/PostBody";
 import { postDeletion } from "../refs/post-marks";
 import { referenceTriggerProps } from "../refs/RefPreview";
+import { issueSummaryQuery } from "../refs/reference-target";
 import {
   buildProjectPath,
   type DispatchReferenceRoute,
@@ -85,6 +85,7 @@ import { KeyHints } from "../shell/ShortcutHelp";
 import { useCloseOnNavigation, useDialog } from "../shell/useDialog";
 import { AnswerPanel } from "./AnswerPanel";
 import { AskHitStatus } from "./AskHitStatus";
+import { documentRouteOf } from "./bar-scope";
 import { dropFiling, fileNewIssue, filingParent, useBarOpen, useFiling } from "./filing";
 import { barNoteClassName, type OfferRow } from "./offer";
 import { type RecentItem, readRecents } from "./recents";
@@ -99,6 +100,7 @@ import {
   ownerWords,
   searchOperators,
   searchResultKind,
+  snippetFromSentence,
   snippetWasCut,
   snippetWithoutDirectives,
   stepActive,
@@ -329,16 +331,71 @@ function PaletteOption({
   );
 }
 
-/** A hit (design v3, state 1): its kind's icon, its owner's key and its words at the size of the
- *  line on top, and the issue's status at its end, the one place the row says it. A hit that is
- *  the issue itself is one line, its title. Any other hit names its owner - the issue's title,
+/**
+ * The one look of a row that opens an item (design v3, state 1; review a12), a hit's and a recent
+ * item's alike, as Raycast gives every list of its bar one row look: its kind's icon, its owner's
+ * key small and grey, its words at the size of the line on top (`name`), then `after` on the
+ * same line, and the issue's status at the row's end, the one place the row says it, in a column
+ * of its own beside `under`, a second line under the key, which stops before it rather than
+ * running on under it (review R4). A row of a done issue reads muted.
+ */
+function ItemRow({
+  after,
+  icon,
+  itemKey,
+  muted = false,
+  name,
+  status,
+  under,
+}: {
+  after?: ReactNode;
+  icon: ReactNode;
+  itemKey: string;
+  muted?: boolean;
+  name: ReactNode;
+  status: string | undefined;
+  under?: ReactNode;
+}): ReactNode {
+  return (
+    <div className="flex min-w-0 flex-1 items-start gap-2">
+      <div className="min-w-0 flex-1">
+        <div
+          className={`flex min-w-0 items-center gap-2 text-sm ${
+            muted ? textMutedOnSelectedCard : textSecondaryOnSurface
+          }`}
+        >
+          {icon}
+          {itemKey === "" ? null : (
+            <span className="shrink-0 text-xs font-semibold">{itemKey}</span>
+          )}
+          {name}
+          {after}
+        </div>
+        {under}
+      </div>
+      {status === undefined ? null : (
+        <span
+          className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${badgeLow.bg} ${badgeLow.text}`}
+          data-testid="search-hit-status"
+        >
+          {statusText(status)}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** A hit (design v3, state 1) in the one look of a row that opens an item (`ItemRow`). A hit that
+ *  is the issue itself is one line, its title. Any other hit names its owner - the issue's title,
  *  and the document's name where it is one of the issue's - on the first line, and its snippet on
- *  a second, grey line under it: the server's reading of it (`snippet_tree`) drawn on one line,
- *  its formatting shown rather than its syntax and the words the search matched marked, with the
- *  syntax of a Proof directive the window cut taken out of its text (`snippetWithoutDirectives`;
- *  rule 1, no marker text). A snippet the server cut out of a longer text ends with "…"
- *  (`snippetWasCut`), and the status keeps a column of its own at the row's end, which the
- *  snippet's line stops before (review R4). A hit of a done issue reads muted. */
+ *  a second line under it, one size below the title and in the grey of the bar's hints (review
+ *  A2): the server's reading of it (`snippet_tree`) drawn on one line, its formatting shown rather
+ *  than its syntax, the words the search matched marked, and each link drawn as the words around
+ *  it, since a link inside the row would compete with the row's own Enter and click. The syntax
+ *  of a Proof directive the window cut is taken out of its text (`snippetWithoutDirectives`; rule
+ *  1, no marker text), and a window the server began on the tail of a sentence starts at the next
+ *  sentence's first word (`snippetFromSentence`). A snippet the server cut out of a longer text
+ *  ends with "…" (`snippetWasCut`). */
 function ResultOption({
   active,
   onSelect,
@@ -368,12 +425,13 @@ function ResultOption({
   const title = itself ? issueHitTitle(result, source) : undefined;
   const words = muted ? textMutedOnSelectedCard : textPrimaryOnSurface;
   const highlight = `rounded px-0.5 ${searchHitBg} ${searchHitText}`;
+  const cut = snippetWasCut(source);
   // The same tree, and so the same drawing, on every render of the row: a tree cut anew each
   // time would paint the snippet again on each.
-  const snippetTree = useMemo(
-    () => snippetWithoutDirectives(result.snippet_tree),
-    [result.snippet_tree]
-  );
+  const snippetTree = useMemo(() => {
+    const drawn = snippetWithoutDirectives(result.snippet_tree);
+    return cut ? snippetFromSentence(drawn) : drawn;
+  }, [cut, result.snippet_tree]);
   // A delete takes the post's windows with its body, so a deleted post is no hit once the
   // delete commits. The mark is the backstop for a hit of one all the same, whose snippet is
   // empty: the deleted line stands where the snippet would, as it does in the referenced-by
@@ -408,48 +466,40 @@ function ResultOption({
       reference={nodeRouteFromHref(result.href)}
       status={status}
     >
-      {/* The hit's lines in one column and its status in the next, so the snippet's line stops
-          where the first line does, before the status, rather than running on under it. */}
-      <div className="flex min-w-0 items-start gap-2">
-        <div className="min-w-0 flex-1">
-          <div
-            className={`flex min-w-0 items-center gap-2 text-sm ${
-              muted ? textMutedOnSelectedCard : textSecondaryOnSurface
-            }`}
-          >
-            {kind === undefined ? null : <SearchResultIcon kind={kind} />}
-            <span className="shrink-0 text-xs font-semibold">{owner.key}</span>
-            {named}
-            {/* A comment or a message its author edited says so, as its byline does. */}
-            <EditedMark at={result.edited_at} className="shrink-0" deleted={deleted} />
-          </div>
-          {itself ? null : (
-            // Under the key, past the icon's 16 px and the 8 px gap after it.
-            <div className="mt-0.5 flex min-w-0 pl-6" data-testid="search-hit-snippet">
+      <ItemRow
+        // A comment or a message its author edited says so, as its byline does.
+        after={<EditedMark at={result.edited_at} className="shrink-0" deleted={deleted} />}
+        icon={kind === undefined ? null : <SearchResultIcon kind={kind} />}
+        itemKey={owner.key}
+        muted={muted}
+        name={named}
+        status={status}
+        under={
+          itself ? null : (
+            // Under the key, past the icon's 16 px and the 8 px gap after it. The preview takes
+            // its size and its colour from the line it stands in (`.dispatch-markdown` inherits
+            // both), so the line sets them.
+            <div
+              className={`mt-0.5 flex min-w-0 pl-6 text-xs ${textMutedOnSurface}`}
+              data-testid="search-hit-snippet"
+            >
               {deleted === null ? (
                 <MarkdownPreview
-                  className={`min-w-0 flex-1 text-xs ${textMutedOnSelectedCard}`}
+                  className={`min-w-0 flex-1 ${textMutedOnSurface}`}
                   highlightClassName={highlight}
                   lines={1}
+                  links="text"
                   markdown={withoutDirectiveSyntax(source)}
-                  trail={snippetWasCut(source) ? "…" : undefined}
+                  trail={cut ? "…" : undefined}
                   tree={snippetTree}
                 />
               ) : (
                 <DeletedBody className="min-w-0 flex-1 text-xs" deleted={deleted} />
               )}
             </div>
-          )}
-        </div>
-        {status === undefined ? null : (
-          <span
-            className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${badgeLow.bg} ${badgeLow.text}`}
-            data-testid="search-hit-status"
-          >
-            {statusText(status)}
-          </span>
-        )}
-      </div>
+          )
+        }
+      />
       {result.ask === undefined ? null : <AskHitStatus ask={result.ask} muted={muted} />}
     </PaletteOption>
   );
@@ -474,8 +524,9 @@ function ConversationIcon(): ReactNode {
   );
 }
 
-/** An action, project, recent item or Continue row: its icon where it has one (`icon`), its label
- *  - or `body`, which draws it, as a recent issue's chip does - and an optional trailing hint. */
+/** An action, project, recent item or Continue row: its icon where it has one (`icon`) and its
+ *  label - or `body`, which draws the whole row, as a recent item's one look does - and an
+ *  optional trailing hint. */
 function CommandOption({
   active,
   body,
@@ -494,28 +545,54 @@ function CommandOption({
   onSelect: () => void;
 }): ReactNode {
   return (
-    <PaletteOption active={active} id={id} layout="flex items-center gap-3" onSelect={onSelect}>
-      {icon === undefined ? null : (
-        <span className={`flex shrink-0 ${textMutedOnSurface}`}>{icon}</span>
-      )}
-      {body === undefined ? (
-        <span className={`min-w-0 flex-1 truncate text-sm ${textPrimaryOnSurface}`}>{label}</span>
-      ) : (
-        <span className="flex min-w-0 flex-1">{body}</span>
+    <PaletteOption
+      active={active}
+      id={id}
+      layout={body === undefined ? "flex items-center gap-3" : "flex items-center"}
+      onSelect={onSelect}
+    >
+      {body ?? (
+        <>
+          {icon === undefined ? null : (
+            <span className={`flex shrink-0 ${textMutedOnSurface}`}>{icon}</span>
+          )}
+          <span className={`min-w-0 flex-1 truncate text-sm ${textPrimaryOnSurface}`}>{label}</span>
+        </>
       )}
       {hint}
     </PaletteOption>
   );
 }
 
-/** What a recent item's row draws (design v3, state 1; review n1), as Raycast's recent items
- *  show their kind: an issue by its kind's icon and its chip - its key, its status's dot and its
- *  title - and a project document by its icon and its name. */
-function recentLook(item: RecentItem): { readonly body?: ReactNode; readonly icon: ReactNode } {
+/** A recent item (design v3, state 1) in the one look of a row that opens an item (`ItemRow`;
+ *  review a12), since it is an item to open in the same list as a hit: an issue by its icon, its
+ *  key, its title and its status, read from the issue's summary - the one read every reference
+ *  to it shares - with the title its visit recorded until that read answers; a project document
+ *  by its icon, its project's key and its name. */
+function RecentItemRow({ item }: { item: RecentItem }): ReactNode {
   const issue = parseIssuePath(item.path)?.key;
-  return issue === undefined
-    ? { icon: <SearchResultIcon kind="document" /> }
-    : { body: <ItemChip issue={issue} />, icon: <SearchResultIcon kind="issue" /> };
+  const summary = useQuery({ ...issueSummaryQuery(issue), enabled: issue !== undefined }).data;
+  // A visit records an issue as its key and its title, and a document as its name.
+  const recorded =
+    issue !== undefined && item.label.startsWith(`${issue} `)
+      ? item.label.slice(issue.length + 1)
+      : item.label;
+  return (
+    <ItemRow
+      icon={<SearchResultIcon kind={issue === undefined ? "document" : "issue"} />}
+      itemKey={issue ?? documentRouteOf(item.path, "")?.project ?? ""}
+      muted={summary?.status === "done"}
+      name={
+        <span
+          className={`min-w-0 flex-1 truncate text-sm ${textPrimaryOnSurface}`}
+          data-testid="search-hit-title"
+        >
+          {summary?.title ?? recorded}
+        </span>
+      }
+      status={summary?.status}
+    />
+  );
 }
 
 /**
@@ -1040,7 +1117,7 @@ function PaletteDialog({
           id: RECENT_GROUP_ID,
           label: "Recent",
           options: recentRows.map((row) => ({
-            ...recentLook(row.item),
+            body: <RecentItemRow item={row.item} />,
             hint: null,
             label: row.item.label,
             row,

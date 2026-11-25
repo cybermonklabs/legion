@@ -58,13 +58,17 @@ interface MenuPlace {
 
 /** Where the mode menu of `button` opens: above it where more of the window is above it than
  *  below, as at the foot of the bar and of the panel, else below it, as at the top of the bar
- *  before Enter. The menu is fixed to the window, so the bar's frame, which cuts off what
- *  overflows it, never cuts the menu. */
-function menuPlace(button: HTMLElement): MenuPlace {
+ *  before Enter. It stands clear of the whole row the button is in (`row`), whose box is taller
+ *  than the button, so the menu never covers a corner of the box beside it (review a10). The menu
+ *  is fixed to the window, so the bar's frame, which cuts off what overflows it, never cuts it. */
+function menuPlace(button: HTMLElement, row: HTMLElement): MenuPlace {
   const box = button.getBoundingClientRect();
-  return box.top > window.innerHeight - box.bottom
-    ? { bottom: window.innerHeight - box.top + MENU_GAP, left: box.left }
-    : { left: box.left, top: box.bottom + MENU_GAP };
+  const rowBox = row.getBoundingClientRect();
+  const top = Math.min(box.top, rowBox.top);
+  const bottom = Math.max(box.bottom, rowBox.bottom);
+  return top > window.innerHeight - bottom
+    ? { bottom: window.innerHeight - top + MENU_GAP, left: box.left }
+    : { left: box.left, top: bottom + MENU_GAP };
 }
 
 /**
@@ -105,7 +109,9 @@ export function LevelControl(): ReactNode {
   }, [open]);
 
   const openMenu = () => {
-    if (button.current !== null) setMenu(menuPlace(button.current));
+    if (button.current !== null) {
+      setMenu(menuPlace(button.current, wrapper.current?.parentElement ?? button.current));
+    }
   };
   const choose = (level: GoingRun["level"]) => {
     setLevel(level);

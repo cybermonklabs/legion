@@ -10,6 +10,7 @@ import {
   kindLabel,
   optionId,
   ownerWords,
+  snippetFromSentence,
   snippetWasCut,
   snippetWithoutDirectives,
   stepActive,
@@ -185,6 +186,37 @@ test("a snippet tree loses a cut directive's syntax across its text nodes, its m
   };
   expect(snippetWithoutDirectives(plain)).toBe(plain);
   expect(snippetWithoutDirectives(undefined)).toBeUndefined();
+});
+
+// A window the server cut can begin on the tail of the sentence before the match ("table. A page
+// is…", 13-filing-line), which reads as a fragment (review A2): the line starts at the first word
+// of the next sentence. A window that starts with a capital, starts on a matched word or a link,
+// or holds nothing past the tail, starts where it does.
+test("a cut snippet that begins on a sentence's tail starts at the next sentence's first word", () => {
+  const paragraph = (...content: object[]): DisplayTree =>
+    ({ content: [{ content, type: "paragraph" }], type: "doc" }) as DisplayTree;
+  const link = { attrs: { href: "/issues/CORE-1" }, type: "link" };
+  expect(
+    snippetFromSentence(paragraph({ text: "table. A page is read once it is drawn", type: "text" }))
+  ).toEqual(paragraph({ text: "A page is read once it is drawn", type: "text" }));
+  // The tail is a text of its own, before a link: the link starts the line.
+  expect(
+    snippetFromSentence(
+      paragraph(
+        { text: 'route table." ', type: "text" },
+        { marks: [link], text: "A page", type: "text" }
+      )
+    )
+  ).toEqual(paragraph({ marks: [link], text: "A page", type: "text" }));
+  for (const kept of [
+    paragraph({ text: "Table. A page is read", type: "text" }),
+    paragraph({ marks: [{ type: "searchHighlight" }], text: "table. A page", type: "text" }),
+    paragraph({ text: "no sentence ends here", type: "text" }),
+    paragraph({ text: "table. ", type: "text" }),
+  ]) {
+    expect(snippetFromSentence(kept)).toBe(kept);
+  }
+  expect(snippetFromSentence(undefined)).toBeUndefined();
 });
 
 // The server's headline cuts a body longer than its window to 24 words, and hands a shorter body

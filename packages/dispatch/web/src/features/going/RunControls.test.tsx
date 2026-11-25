@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
@@ -92,6 +92,38 @@ test("the keys move in the mode menu, and Escape closes it without closing the b
   expect(goingState().level).toBe("fast");
   expect(screen.queryByRole("menu")).toBeNull();
   expect(screen.getByRole("textbox", { name: "Ask the command bar" })).toHaveFocus();
+});
+
+// The box beside the mode button is taller than the button, so a menu that opened just under the
+// button covered the box's lower-left corner (review a10): it opens clear of the whole row.
+test("the mode menu opens a few pixels under the whole box row, never over the box's corner", async () => {
+  const user = userEvent.setup();
+  renderRow();
+  const button = screen.getByTestId("going-level-button");
+  const row = screen.getByTestId("going-level").parentElement as HTMLElement;
+  const rect = (top: number, bottom: number): DOMRect => ({
+    bottom,
+    height: bottom - top,
+    left: 20,
+    right: 120,
+    toJSON: () => ({}),
+    top,
+    width: 100,
+    x: 20,
+    y: top,
+  });
+  // The button is 28 px tall and the box, and so the row, 38: the row ends 3 px under the button.
+  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    return this === button ? rect(100, 128) : this === row ? rect(95, 133) : rect(0, 0);
+  });
+  try {
+    await user.click(button);
+    expect(screen.getByRole("menu", { name: "Mode" }).style.top).toBe("137px");
+  } finally {
+    boxes.mockRestore();
+  }
 });
 
 // The mode button keeps one width whatever the mode is called, so the box beside it never moves

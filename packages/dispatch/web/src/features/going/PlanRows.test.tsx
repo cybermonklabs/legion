@@ -11,7 +11,8 @@ import { answerRoute } from "../../__tests__/send-answers";
 import { ApiError, api, type WriteBounds } from "../../api/client";
 import { goingPlanQuery } from "../../api/queries";
 import type { GoingPlanAnswer, GoingPlanRow, GoingRun, GoingUndoAnswer } from "../../api/types";
-import { linkText, pageQuietText } from "../../theme/classes";
+import { borderStrong, linkText, quoteAccentBorder, textMutedOnSurface } from "../../theme/classes";
+import { PriorityEditor } from "../issue/PriorityControl";
 import { issue as issueFixture } from "../margin/margin-fixture";
 import { clockWords } from "../search/blocks/block-cells";
 import {
@@ -226,9 +227,29 @@ test("a change row names its item and each field in the page's words, the values
     expect(priority).toHaveTextContent(/^Priority: No priority → P2/u);
     const now = within(priority).getByTestId("going-plan-now");
     expect(now).toHaveTextContent("No priority");
-    // The value now is the page's grey, never the colour of a link.
-    expect(now.className).toContain(pageQuietText);
+    // The value now is the bar's one grey, never the colour of a link.
+    expect(now.className).toContain(textMutedOnSurface);
     expect(now.className).not.toContain(linkText);
+    // The new priority is the badge the issue page draws a priority in, the same one everywhere
+    // the bar shows one (review a5).
+    const issuePage = renderWithQueries(
+      <PriorityEditor
+        issueKey="DEMO-10"
+        write={{
+          failed: false,
+          pending: false,
+          retry: undefined,
+          shown: 2,
+          stopped: undefined,
+          submit: () => {},
+        }}
+      />
+    );
+    const pageBadge = within(issuePage.container).getByText("P2", { selector: "span" });
+    expect(within(within(priority).getByTestId("going-plan-next")).getByText("P2").className).toBe(
+      pageBadge.className
+    );
+    issuePage.unmount();
     const labels = fieldOf(drawn, "labels");
     expect(labels).toHaveTextContent(/^Labels: board →/u);
     // The label added is the one marked in green; the label kept is the page's plain chip.
@@ -767,11 +788,12 @@ function postRow(
 }
 
 // An edit and a delete of a comment (R4, R6): the row names what it does to whose post on which
-// issue, by the issue's chip; an edit's body is a field, "Body: old → new", with Edit, as every
-// change of a field is; a delete's body shows whole, struck through, and the row says that a
-// delete cannot be undone. A comment deleted after the plan read it shows no word of it - nor the
-// words the edit would put there - says it was deleted, and has no tick: Approve leaves it out.
-test("post rows name the author and the issue, show an edit's body as a field and a delete's struck through, and a post deleted since shows no body and no tick", async () => {
+// issue, by the issue's chip; an edit's body is drawn once, as an inline diff with the words it
+// changes marked and no "Body:" label (review a3), with Edit, as every change of a field has; a
+// delete's body shows whole, struck through under a grey bar, and the row says that a delete
+// cannot be undone. A comment deleted after the plan read it shows no word of it - nor the words
+// the edit would put there - says it was deleted, and has no tick: Approve leaves it out.
+test("post rows name the author and the issue, show an edit's body as an inline diff and a delete's struck through, and a post deleted since shows no body and no tick", async () => {
   const user = userEvent.setup();
   const restore = await openPlan(
     planOf([
@@ -815,7 +837,13 @@ test("post rows name the author and the issue, show an edit's body as a field an
     );
     expect(within(editLine).getByTestId("item-chip")).toHaveTextContent("DEMO-15");
     const body = fieldOf(edit, "body");
-    expect(body).toHaveTextContent(/^Body: The window is 24 hours\. → The window is 72 hours\./u);
+    expect(body.textContent ?? "").not.toMatch(/Body/u);
+    // The body once, the one word it changes struck through and the one it writes marked.
+    expect(within(body).getByTestId("going-plan-body-diff")).toHaveTextContent(
+      /^The window is\s*2472\s*hours\.$/u
+    );
+    expect(body.querySelector("del")?.textContent).toBe("24");
+    expect(body.querySelector("ins")?.textContent).toBe("72");
     expect(within(body).getByRole("button", { name: "Edit body" })).toBeInTheDocument();
     expect(
       within(edit).getByRole("checkbox", { name: "Edit the comment on DEMO-15" })
@@ -828,8 +856,13 @@ test("post rows name the author and the issue, show an edit's body as a field an
         /^Delete the comment by bob on DEMO-16In progressThe issue DEMO-16$/u
       )
     );
-    const struck = within(remove).getByTestId("going-plan-quote").querySelector("del");
-    expect(struck?.textContent).toBe("Ship it Friday.");
+    const quote = within(remove).getByTestId("going-plan-quote");
+    expect(quote.querySelector("del")?.textContent).toBe("Ship it Friday.");
+    // A deleted body's bar is grey: the blue bar is the look of words that go out.
+    expect(quote.className).toContain(borderStrong);
+    expect(quote.className).not.toContain(quoteAccentBorder);
+    // Its own words and its red mark say it removes, so no "Removes" stands alone under them.
+    expect(within(remove).queryByTestId("going-plan-removes")).toBeNull();
     expect(within(remove).getByTestId("going-plan-final")).toHaveTextContent(
       /^Cannot be undone once deleted$/u
     );
@@ -871,6 +904,57 @@ test("post rows name the author and the issue, show an edit's body as a field an
     );
   } finally {
     restore();
+  }
+});
+
+// A comment the signed-in person wrote reads "your comment", never "the comment by <their own
+// login>" (review a3). A body too long for one line reads as the first sentences of what the
+// edit writes, with its diff folded under them, as a document's text change does (R4).
+test("an edit of the signed-in person's own comment says your comment, and a long body folds its diff", async () => {
+  const signedIn = spyOn(api, "whoAmI").mockResolvedValue({
+    event_head: "0",
+    kind: "user",
+    login: "alice",
+  });
+  const before = "The window is 24 hours. It starts when the plan is approved. ".repeat(4).trim();
+  const after = before.replace("24 hours", "72 hours");
+  const restore = await openPlan(
+    planOf([
+      postRow(0, "dispatch_edit_comment", "DEMO-15", "alice", { body: before }, { body: after }),
+      postRow(1, "dispatch_edit_comment", "DEMO-16", "bob", { body: "Old." }, { body: "New." }),
+    ])
+  );
+  try {
+    renderWithQueries(<Card />);
+    await screen.findByTestId("going-plan-card-rows");
+    await waitFor(() =>
+      expect(within(drawnRow(0)).getByTestId("going-plan-post")).toHaveTextContent(
+        /^Edit your comment on DEMO-15/u
+      )
+    );
+    expect(within(drawnRow(0)).getByTestId("going-plan-post").textContent).not.toMatch(
+      /alice|by /u
+    );
+    expect(
+      within(drawnRow(0)).getByRole("checkbox", { name: "Edit the comment on DEMO-15" })
+    ).toBeChecked();
+    // A comment of another person's still names them.
+    expect(within(drawnRow(1)).getByTestId("going-plan-post")).toHaveTextContent(
+      /^Edit the comment by bob on DEMO-16/u
+    );
+
+    const long = fieldOf(drawnRow(0), "body");
+    expect(within(long).getByTestId("going-plan-sentences")).toHaveTextContent(
+      /^The window is 72 hours\./u
+    );
+    const folded = within(long).getByTestId("going-plan-diff");
+    expect(folded.tagName).toBe("DETAILS");
+    expect(folded).not.toHaveAttribute("open");
+    expect(folded.querySelector("del")?.textContent).toBe("24");
+    expect(folded.querySelector("ins")?.textContent).toBe("72");
+  } finally {
+    restore();
+    signedIn.mockRestore();
   }
 });
 
@@ -1405,12 +1489,17 @@ test("Undo on the card reverts the run, names a value someone else changed, and 
     renderWithQueries(<Card />);
     await screen.findByTestId("going-plan-card-rows");
     expect(screen.getByTestId("going-plan-title")).toHaveTextContent("Applied 3 changes");
-    expect(within(drawnRow(2)).getByTestId("going-plan-row-state")).toHaveTextContent("Sent");
     // The message row reads in the applied card as it reads while the plan waits: nothing routes,
-    // claims or follows DEMO-1, so it reaches no session.
+    // claims or follows DEMO-1, so it reaches no session, and its result says where it went
+    // rather than "Sent" under "Message to no session" (review a8).
     await waitFor(() =>
       expect(within(drawnRow(2)).getByTestId("going-plan-message")).toHaveTextContent(
         /^Message to no session on DEMO-1In progressThe issue DEMO-1$/u
+      )
+    );
+    await waitFor(() =>
+      expect(within(drawnRow(2)).getByTestId("going-plan-row-state")).toHaveTextContent(
+        /^Posted on DEMO-1In progressThe issue DEMO-1$/u
       )
     );
     expect(screen.getByTestId("going-undo-button")).toHaveTextContent(/^Undo 2 changes$/u);
@@ -1443,6 +1532,135 @@ test("Undo on the card reverts the run, names a value someone else changed, and 
   } finally {
     reread.mockRestore();
     restore();
+  }
+});
+
+// A message that reached a session says "Sent", as before: "Posted on" is for the message that
+// reached no session, whose line above says so (review a8).
+test("a sent message that reached a session reads Sent, not Posted on", async () => {
+  const reaching = spyOn(api, "getIssueSubscribers").mockResolvedValue([
+    {
+      last_seen: 0,
+      live: true,
+      removable: true,
+      session_id: "s-planner",
+      title: "Planner",
+      topics: [],
+    },
+  ]);
+  const restore = await openPlan(
+    planOf(
+      [
+        row(0, {
+          arguments: { body: "Done.", issue: "DEMO-1" },
+          class: "message",
+          issue: "DEMO-1",
+          item: "DEMO-1",
+          result: { code: "", delivery: "sent", message: "", status: 201 },
+          state: "done",
+          tool: "dispatch_message",
+        }),
+      ],
+      { state: "done" }
+    )
+  );
+  try {
+    renderWithQueries(<Card />);
+    await screen.findByTestId("going-plan-card-rows");
+    await waitFor(() =>
+      expect(within(drawnRow(0)).getByTestId("going-plan-message")).toHaveTextContent(
+        /^Message to .+ on DEMO-1/u
+      )
+    );
+    expect(within(drawnRow(0)).getByTestId("going-plan-message").textContent).not.toMatch(
+      /no session/u
+    );
+    expect(within(drawnRow(0)).getByTestId("going-plan-row-state")).toHaveTextContent(/^Sent$/u);
+  } finally {
+    restore();
+    reaching.mockRestore();
+  }
+});
+
+// Review A1: the pinned Approve bar hides the rows scrolled under it, and Enter approves all of
+// them. While rows stand under the bar, its top edge says so - how many, and how many of those
+// nothing takes back - a press of it scrolls to the first of them, and it goes once none is under
+// the bar (the view's scroll, at its end).
+test("rows under the pinned Approve bar are counted on it with those that cannot be undone, a press scrolls to them, and the line goes once none is hidden", async () => {
+  const user = userEvent.setup();
+  // The bar's top edge, and each row's foot as a browser lays them out: row n ends at 100(n+1).
+  let edge = 250;
+  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    const bottom =
+      this.dataset.testid === "going-plan-actions"
+        ? edge + 60
+        : this.dataset.testid === "going-plan-row"
+          ? (Number(this.dataset.row) + 1) * 100
+          : 0;
+    const top = this.dataset.testid === "going-plan-actions" ? edge : bottom - 100;
+    return {
+      bottom,
+      height: bottom - top,
+      left: 0,
+      right: 700,
+      toJSON: () => ({}),
+      top,
+      width: 700,
+      x: 0,
+      y: top,
+    };
+  });
+  const scrolled: (string | undefined)[] = [];
+  const scrollTo = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+    this: Element
+  ) {
+    scrolled.push((this as HTMLElement).dataset.row);
+  });
+  const restore = await openPlan(
+    planOf([
+      row(0, { arguments: { issue: "DEMO-1", priority: 1 }, fields: ["priority"], item: "DEMO-1" }),
+      row(1, { arguments: { issue: "DEMO-2", priority: 1 }, fields: ["priority"], item: "DEMO-2" }),
+      row(2, { arguments: { issue: "DEMO-3", priority: 1 }, fields: ["priority"], item: "DEMO-3" }),
+      postRow(3, "dispatch_delete_comment", "DEMO-16", "bob", { body: "Ship it Friday." }),
+      row(4, {
+        arguments: { body: "Hello.", issue: "DEMO-1" },
+        class: "message",
+        issue: "DEMO-1",
+        item: "DEMO-1",
+        tool: "dispatch_message",
+        waits: ["message"],
+      }),
+    ])
+  );
+  try {
+    renderWithQueries(<Card />);
+    await screen.findByTestId("going-plan-card-rows");
+    const more = await screen.findByTestId("going-plan-more");
+    // Rows 2, 3 and 4 stand under the bar; the delete and the message cannot be undone.
+    expect(more).toHaveTextContent("3 more ↓ · 2 cannot be undone");
+    expect(screen.getByTestId("going-plan-actions").className).toContain("shadow-");
+    await user.click(more);
+    expect(scrolled).toEqual(["2"]);
+
+    // A row that is unticked is not run, so it is not one the line warns of.
+    await user.click(within(drawnRow(4)).getByRole("checkbox"));
+    expect(screen.getByTestId("going-plan-more")).toHaveTextContent(
+      "3 more ↓ · 1 cannot be undone"
+    );
+
+    // The view scrolled to its end: no row stands under the bar, and the line and shadow go.
+    edge = 1000;
+    act(() => {
+      document.dispatchEvent(new Event("scroll"));
+    });
+    await waitFor(() => expect(screen.queryByTestId("going-plan-more")).toBeNull());
+    expect(screen.getByTestId("going-plan-actions").className).not.toContain("shadow-");
+  } finally {
+    restore();
+    scrollTo.mockRestore();
+    boxes.mockRestore();
   }
 });
 

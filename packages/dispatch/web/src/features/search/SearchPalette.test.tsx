@@ -263,9 +263,10 @@ test("groups the hits by kind with marked snippets, names each hit's issue once,
 // A document hit whose headline window began in one Proof directive and ends inside the next
 // one's attributes (review N2, 13-filing-line): the server's reader reads neither cut piece as a
 // directive, so its tree holds them as paragraph text, a soft break between them a space. The
-// snippet line draws that tree, its link and its highlight as drawn, with no fence and no
-// attribute syntax: `table. A page is ready once its plan loads`.
-test("a document hit's snippet shows no directive fence or attributes a cut window left, its link and highlight kept", async () => {
+// snippet line draws that tree with no fence and no attribute syntax: `table. A page is ready
+// once its plan loads`, its highlight kept, and its link as the words around it (review A2): no
+// anchor and no link look inside the row, whose own Enter and click are its one action.
+test("a document hit's snippet shows no directive fence or attributes a cut window left, its highlight kept and its link as text", async () => {
   await warmMarkdownRenderer();
   const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(
@@ -315,7 +316,8 @@ test("a document hit's snippet shows no directive fence or attributes a cut wind
     );
     expect(body.textContent).not.toMatch(/:::|plan_task|serves=|[{}"]/u);
     expect(within(body).getByText("plan", { selector: "mark" })).toBeTruthy();
-    expect(body.querySelector("[data-markdown-link]")?.textContent).toBe("A page");
+    expect(option.querySelector("a")).toBeNull();
+    expect(body.querySelector("[data-markdown-link]")).toBeNull();
   } finally {
     search.mockRestore();
     view.unmount();
@@ -1787,6 +1789,9 @@ test("each filter is one pill naming its field and its value, and Updated since 
     expect(within(authorPill).getByText("Author").className).toBe(
       within(status).getByText("Status").className
     );
+    // It ends in the caret every other pill ends in (review a6).
+    expect(authorPill.lastElementChild?.textContent).toBe("▾");
+    expect(status.lastElementChild?.textContent).toBe("▾");
     const since = screen.getByRole("button", { name: "Updated since" });
     expect(since).toHaveTextContent("Updated sinceAny time");
     expect(since.className).toBe(status.className);
@@ -1900,15 +1905,20 @@ test("the empty box lists Continue on the last hour's conversation, then at most
       screen.getByRole("option", { name: "Continue: Who looks after the comet" })
     ).toBeTruthy();
     const recent = within(screen.getByRole("group", { name: "Recent" })).getAllByRole("option");
-    // Each recent issue shows its kind's icon and its chip - its key, its status's dot and its
-    // title - as Raycast's recent items show their kind (review n1).
+    // Each recent issue reads as an Issues hit does, as Raycast gives every list one row look
+    // (review a12): its kind's icon, named as a hit's is, its key, its title - the issue's own
+    // once its summary is read - and its status at the row's end.
     await waitFor(() =>
-      expect(
-        recent.map((row) => within(row).queryByTestId("item-chip-title")?.textContent)
-      ).toEqual(items.slice(0, 5).map((item) => `Instrument ${item.label.split(" ")[0]}`))
+      expect(recent.map((row) => row.textContent)).toEqual(
+        items.slice(0, 5).map((item) => {
+          const key = item.label.split(" ")[0] ?? "";
+          return `Issue result${key}Instrument ${key}Todo`;
+        })
+      )
     );
     for (const row of recent) {
       expect(row.querySelector("svg")).not.toBeNull();
+      expect(within(row).getByTestId("search-hit-status")).toHaveTextContent("Todo");
     }
     expect(
       screen.getByRole("option", { name: "Continue: Who looks after the comet" })

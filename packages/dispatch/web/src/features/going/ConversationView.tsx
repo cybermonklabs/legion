@@ -16,7 +16,6 @@ import {
   dangerText,
   linkHoverText,
   linkText,
-  pageQuietText,
   primaryButton,
   secondaryButtonCompact,
   secondaryButtonPaired,
@@ -200,7 +199,7 @@ function AnswerFoot({
 }): ReactNode {
   return (
     <div className="group flex flex-wrap items-center gap-1" data-testid="going-run-foot">
-      <p className={`text-xs ${pageQuietText}`} data-testid="going-run-state" role="status">
+      <p className={`text-xs ${textMutedOnSurface}`} data-testid="going-run-state" role="status">
         {status}
       </p>
       <div className="flex items-center opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 pointer-coarse:opacity-100">
@@ -291,7 +290,16 @@ function RunEnd({
         onClick={action === "new" ? newConversation : onRetry}
         type="button"
       >
-        {action === "new" ? "Start a new conversation" : "Try again"}
+        {action === "new" ? (
+          "Start a new conversation"
+        ) : (
+          <>
+            Try again
+            <span aria-hidden="true" className="ml-2 font-normal">
+              ↵
+            </span>
+          </>
+        )}
       </button>
     );
   }

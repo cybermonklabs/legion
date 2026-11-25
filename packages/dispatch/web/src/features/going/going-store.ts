@@ -275,6 +275,12 @@ export function offersContinue(run: RunEntry): boolean {
   return endWords(shownState(run), endReason(run), run.record.level, "")?.action === "continue";
 }
 
+/** Whether how `run` ended offers Try again (`endWords`): a failure whose words the person can
+ *  say again; never one that asks for a new conversation, which Enter does not start. */
+export function offersRetry(run: RunEntry): boolean {
+  return endWords(shownState(run), endReason(run), run.record.level, "")?.action === "retry";
+}
+
 /** The open conversation's newest run. */
 export function newestRun(of: GoingState = state): RunEntry | undefined {
   const id = of.conversation?.at(-1);

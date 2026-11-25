@@ -9,8 +9,10 @@ import {
   borderDefault,
   card,
   dangerText,
+  focusVisibleRing,
   linkHoverText,
   linkText,
+  surfaceMutedHoverBg,
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import { issueSummaryQuery } from "../refs/reference-target";
@@ -91,7 +93,9 @@ export function useNotice(): ShownNotice | undefined {
   return useSyncExternalStore(subscribe, readShown, readShown);
 }
 
-const actionClassName = `underline ${linkText} ${linkHoverText}`;
+/** A notice's action (review a13): a small text button, as the bar's own buttons are, in the
+ *  link's blue, filled on hover and ringed on focus - never an underlined link inside a line. */
+const actionClassName = `-my-0.5 rounded-md px-1.5 py-0.5 text-xs font-medium outline-none focus-visible:ring-2 ${linkText} ${linkHoverText} ${surfaceMutedHoverBg} ${focusVisibleRing}`;
 
 /** The separator between the notice's parts, which a screen reader does not read out. */
 const dot = <span aria-hidden="true"> · </span>;

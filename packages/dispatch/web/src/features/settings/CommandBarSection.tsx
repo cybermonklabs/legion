@@ -167,12 +167,15 @@ export function CommandBarSection(): ReactNode {
                 </div>
               </div>
             ))}
-            <p className="sr-only" data-testid="going-settings-saved" role="status">
-              {saved === undefined
-                ? null
-                : `Saved: ${MODES.find((one) => one.mode === saved)?.label ?? saved}.`}
-            </p>
           </div>
+          {/* Outside the spaced rows: this line takes no room, but a row's margin would still
+              stand under the last help line and leave the card deeper at its foot than at its
+              head (review a14). */}
+          <p className="sr-only" data-testid="going-settings-saved" role="status">
+            {saved === undefined
+              ? null
+              : `Saved: ${MODES.find((one) => one.mode === saved)?.label ?? saved}.`}
+          </p>
         </fieldset>
       )}
       {refusal === undefined ? null : (

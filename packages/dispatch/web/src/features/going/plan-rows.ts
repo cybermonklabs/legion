@@ -442,12 +442,13 @@ export function rowRemoves(row: GoingPlanRow, changes: readonly RowChange[]): bo
 /** What a row `rowRemoves` marks in red says in words beside the mark (design v3, state 6), given
  *  the row's `changes`: each value they take out, by name, so the person reads before Approve
  *  what the row drops - "Removes board", "Removes board and api" - and "Closes" where it closes
- *  its issue; "Removes" alone for a row whose tool removes something and names no value of a
- *  field. */
+ *  its issue. A row whose tool removes something and names no value of a field says nothing
+ *  more: its red mark and its own words ("Delete the comment") say it, and a bare "Removes" under
+ *  them is no sentence (review a1). */
 export function removalWords(changes: readonly RowChange[]): string {
   const removed = changes.flatMap(removedValues).filter((words) => words !== "");
   const closes = changes.some((change) => change.field === "status" && change.next === "done");
-  if (removed.length === 0) return closes ? "Closes" : "Removes";
+  if (removed.length === 0) return closes ? "Closes" : "";
   return `${closes ? "Closes, and removes" : "Removes"} ${listed(removed)}`;
 }
 
@@ -472,6 +473,13 @@ export function rowKind(row: GoingPlanRow): RowKind {
   if (documentChange(row, "") !== undefined) return "document";
   if (row.tool === "dispatch_issue_update") return "change";
   return row.tool === "dispatch_claim" ? "claim" : "other";
+}
+
+/** Whether a row's change cannot be undone once it runs (R6): a message, which stays sent, and a
+ *  delete of a comment or an issue message, which nothing restores. Each says so while it waits
+ *  ("Cannot be undone once sent"). */
+export function rowIrreversible(row: GoingPlanRow): boolean {
+  return rowKind(row) === "message" || postToolOf(row.tool)?.deletes === true;
 }
 
 /** How a message reaches its session, in the words the row says it with. */
@@ -600,11 +608,13 @@ export function deletedSince(row: GoingPlanRow): boolean {
 }
 
 /** What a row that edits or deletes a post does, in its tool's verb, as an order: "Edit the
- *  comment", "Delete the message"; "" for a row of any other tool. */
-export function postAction(row: GoingPlanRow): string {
+ *  comment", "Delete the message", and "Edit your comment" where the post is the person's own
+ *  (`yours`, review a3); "" for a row of any other tool. */
+export function postAction(row: GoingPlanRow, yours = false): string {
   const post = postToolOf(row.tool);
   if (post === undefined) return "";
-  return `${capitalized(TOOL_LABELS.get(row.tool)?.verb ?? "change")} the ${post.kind}`;
+  const verb = capitalized(TOOL_LABELS.get(row.tool)?.verb ?? "change");
+  return `${verb} ${yours ? "your" : "the"} ${post.kind}`;
 }
 
 /** The label the plan names a row by in place of its tool's, given the row's arguments: a new

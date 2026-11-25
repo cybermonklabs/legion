@@ -307,6 +307,29 @@ async function hintUnderBox(surface: Locator): Promise<void> {
   ).toBeLessThanOrEqual(1);
 }
 
+/** Reads that the plan card's pinned bar (`surface`'s) says rows stand under it, how many and how
+ *  many of those cannot be undone, with its soft shadow on its top edge (review A1): a person
+ *  sees at once that more is below, and that Enter would approve it. */
+async function rowsUnderTheBar(surface: Locator): Promise<void> {
+  const more = surface.getByTestId("going-plan-more");
+  await expect(more).toBeVisible();
+  await expect(more).toHaveText(/^\d+ more ↓ · \d+ cannot be undone$/u);
+  await expect(surface.getByTestId("going-plan-actions")).toHaveClass(/shadow-/u);
+}
+
+/** Presses that line, which scrolls to the rows, then the scroll's end, so every row kind of the
+ *  plan has stood above the bar and the line and shadow are gone: the bar shows no cue because
+ *  nothing stands under it. */
+async function scrollPlanToItsEnd(surface: Locator): Promise<void> {
+  await surface.getByTestId("going-plan-more").click();
+  await surface.getByTestId("going-conversation-view").evaluate((view) => {
+    view.scrollTop = view.scrollHeight;
+  });
+  await expect(surface.getByTestId("going-plan-more")).toHaveCount(0);
+  await expect(surface.getByTestId("going-plan-actions")).not.toHaveClass(/shadow-/u);
+  await approvePinned(surface);
+}
+
 /** Whether two boxes a locator measured share any point. A box that is not drawn is refused: the
  *  row asks about two that are. */
 function boxesMeet(
@@ -403,13 +426,15 @@ const barRows: readonly BarRow[] = [
       await expect(bar(page).locator("#search-option-continue")).toHaveText(
         "Continue: What waits on the observatory dome"
       );
-      // Each recent item is its kind's icon and its chip: its key, its status's dot and its
-      // title, which the chip reads after it draws its key, so the shot waits for the titles.
+      // Each recent item reads as an Issues hit does (review a12): its kind's icon, its key, its
+      // title and its status at the row's end, which the row reads from the issue's summary after
+      // it draws its key, so the shot waits for them.
       const recent = bar(page).getByRole("group", { name: "Recent" }).getByRole("option");
-      await expect(recent.getByTestId("item-chip-title")).toHaveText([
+      await expect(recent.getByTestId("search-hit-title")).toHaveText([
         "Raise the observatory dome",
         "Polish the eyepiece",
       ]);
+      await expect(recent.getByTestId("search-hit-status")).toHaveCount(2);
       // New put the cursor back in the box, so its focus shows and typing lands in it.
       await expect(searchBox(page)).toBeFocused();
       // The box is on top; History and the move are in the foot, and Close is Esc there alone.
@@ -460,9 +485,10 @@ const barRows: readonly BarRow[] = [
   },
   {
     // State 3. Scripts a run that looks for a tool, reads two issues in one model call under
-    // the words it wrote beside them, searches, then streams without end: four finished lines -
-    // the look in its own words, since one step past the newest three folds into no line of its
-    // own - then "Thinking…" with the run's timer, since no call runs while the model writes, and
+    // the words it wrote beside them, searches, then streams without end: four finished steps,
+    // of which the newest three show as lines and the oldest, the look, folds into the one grey
+    // line above them (review a7), then "Thinking…" with the run's timer, since no call runs while
+    // the model writes, and
     // the run still working. Words sent while it works wait under it; the row drops them before
     // it stops the run.
     reach: async (page, seed) => {
@@ -495,11 +521,13 @@ const barRows: readonly BarRow[] = [
       await askTheAgent(page, words);
       const run = newestRun(page);
       const finished = '[data-testid="going-step"][data-running="false"]';
-      await expect(run.locator(finished)).toHaveCount(4, { timeout: RUN_STEPS_MS });
-      await expect(run.getByTestId("going-steps-older")).toHaveCount(0);
-      await expect(run.getByTestId("going-step-label").first()).toHaveText(
-        /^Looked for a way to \S/
+      // The fourth finished step folds at once: the look, the oldest, into the line above.
+      await expect(run.getByTestId("going-steps-older")).toHaveAccessibleName(
+        "Looked for a way once",
+        { timeout: RUN_STEPS_MS }
       );
+      await expect(run.locator(finished)).toHaveCount(3);
+      await expect(run.getByTestId("going-step-label").first()).toHaveText(/^Read OPS-\d+$/u);
       // Both calls under the model's words ended, so its header reads in the past tense.
       await expect(run.getByTestId("going-step-words")).toHaveText("Read the telescope's issues");
       // No call runs while the model streams, so the run ends with "Thinking…" and its timer
@@ -516,7 +544,7 @@ const barRows: readonly BarRow[] = [
       await shoot(page, "03-working-bar");
       await keepAtTheSide(page);
       await expect(sidePanel(page).getByTestId("going-queued")).toBeVisible();
-      await expect(sidePanel(page).locator(finished)).toHaveCount(4);
+      await expect(sidePanel(page).locator(finished)).toHaveCount(3);
       await shoot(page, "03-working-panel");
       await sidePanel(page).getByTestId("going-queued-drop").click();
       await expect(sidePanel(page).getByTestId("going-queued")).toHaveCount(0);
@@ -669,78 +697,81 @@ const barRows: readonly BarRow[] = [
           afterwards: say("Discarded."),
           turns: [
             slow(
-              proposePlan("Fit a dome motor, retire the old shutter, and fix your notes on it.", [
-                {
-                  arguments: {
-                    parent: dome,
-                    priority: 2,
-                    project,
-                    spec: "The dome turns by a motor once it has one. The motor takes the place of the hand crank. The old shutter goes with it.",
-                    title: "Fit a motor to the dome",
+              proposePlan(
+                "Fit a dome motor, retire the old shutter, and tidy your comments on it.",
+                [
+                  {
+                    arguments: {
+                      parent: dome,
+                      priority: 2,
+                      project,
+                      spec: "The dome turns by a motor once it has one. The motor takes the place of the hand crank. The old shutter goes with it.",
+                      title: "Fit a motor to the dome",
+                    },
+                    tool: "dispatch_issue",
                   },
-                  tool: "dispatch_issue",
-                },
-                {
-                  arguments: { body: hingeNext, comment: hingeNote },
-                  tool: "dispatch_edit_comment",
-                },
-                { arguments: { comment: latchNote }, tool: "dispatch_delete_comment" },
-                {
-                  arguments: { issue: mount, labels: ["optics"], priority: 2 },
-                  tool: "dispatch_issue_update",
-                },
-                {
-                  arguments: {
-                    artifact: "spec",
-                    body: "The dome turns by motor once it has one, so the spec says so.",
-                    issue: dome,
-                    quote: "The dome turns by hand.",
-                    replace_with: "The dome turns by motor.",
+                  {
+                    arguments: { body: hingeNext, comment: hingeNote },
+                    tool: "dispatch_edit_comment",
                   },
-                  tool: "dispatch_suggest",
-                },
-                {
-                  arguments: {
-                    body: "A motor for the dome is planned.",
-                    delivery: "btw",
-                    session: sessionIds.planner,
+                  { arguments: { comment: latchNote }, tool: "dispatch_delete_comment" },
+                  {
+                    arguments: { issue: mount, labels: ["optics"], priority: 2 },
+                    tool: "dispatch_issue_update",
                   },
-                  tool: "dispatch_send_to_agent",
-                },
-                {
-                  arguments: {
-                    issue: shutter,
-                    reason: "The motor's shutter replaces it.",
-                    status: "done",
+                  {
+                    arguments: {
+                      artifact: "spec",
+                      body: "The dome turns by motor once it has one, so the spec says so.",
+                      issue: dome,
+                      quote: "The dome turns by hand.",
+                      replace_with: "The dome turns by motor.",
+                    },
+                    tool: "dispatch_suggest",
                   },
-                  tool: "dispatch_issue_update",
-                },
-              ])
+                  {
+                    arguments: {
+                      body: "A motor for the dome is planned.",
+                      delivery: "btw",
+                      session: sessionIds.planner,
+                    },
+                    tool: "dispatch_send_to_agent",
+                  },
+                  {
+                    arguments: {
+                      issue: shutter,
+                      reason: "The motor's shutter replaces it.",
+                      status: "done",
+                    },
+                    tool: "dispatch_issue_update",
+                  },
+                ]
+              )
             ),
           ],
           words,
         },
       ]);
       // The two post rows, in the bar and then in the panel: each says what it does to whose
-      // comment on the shutter, by the shutter's chip (the author is the row's own login,
-      // `drawState`). The edit shows its body as a field, the words the comment holds and the
-      // words the edit writes; the delete shows the words it takes out, struck through, and that a
-      // delete cannot be undone. Both stand in view under the question, so each shot shows them.
+      // comment on the shutter, by the shutter's chip - "your comment", since the author is the
+      // row's own login (`drawState`; review a3). The edit shows its body once, the words it
+      // changes marked as a diff marks them; the delete shows the words it takes out, struck
+      // through, and that a delete cannot be undone. Both stand in view under the question.
       const postRows = planCard(page).locator('[data-testid="going-plan-row"][data-kind="post"]');
       const postRowsDrawn = async (): Promise<void> => {
         await expect(postRows).toHaveCount(2);
         const edit = postRows.first();
         await expect(edit.getByTestId("going-plan-post")).toHaveText(
-          new RegExp(`^Edit the comment by bar-06 on ${shutter}(?!\\d)`)
+          new RegExp(`^Edit your comment on ${shutter}(?!\\d)`)
         );
         const body = edit.getByTestId("going-plan-field");
         await expect(body).toHaveAttribute("data-field", "body");
-        await expect(body).toHaveText(/^Body: /);
-        await expect(body.getByTestId("going-plan-now")).toHaveText(hingeNow);
-        await expect(body.getByTestId("going-plan-next")).toHaveText(hingeNext);
+        await expect(body).not.toContainText("Body:");
+        await expect(body.locator("del")).toHaveText(/^week/u);
+        await expect(body.locator("ins")).toHaveText(/^month/u);
         const remove = postRows.last();
         await expect(remove.getByTestId("going-plan-post")).toHaveText(
-          new RegExp(`^Delete the comment by bar-06 on ${shutter}(?!\\d)`)
+          new RegExp(`^Delete your comment on ${shutter}(?!\\d)`)
         );
         await expect(remove.getByTestId("going-plan-quote").locator("del")).toHaveText(latchNow);
         await expect(remove.getByTestId("going-plan-final")).toHaveText(
@@ -781,7 +812,12 @@ const barRows: readonly BarRow[] = [
       await approvePinned(bar(page));
       await expect(bar(page).getByTestId("going-box-hint")).toHaveText("↵ Approve");
       await hintUnderBox(bar(page));
+      // Rows stand under the pinned bar, which says so and what Enter would approve there
+      // (review A1); the shot after it is the plan scrolled to its end, every row kind read.
+      await rowsUnderTheBar(bar(page));
       await shoot(page, "06-plan-bar");
+      await scrollPlanToItsEnd(bar(page));
+      await shoot(page, "06-plan-end");
       await keepAtTheSide(page);
       await expect(planRows(planCard(page))).toHaveCount(7);
       await expect(
@@ -797,6 +833,7 @@ const barRows: readonly BarRow[] = [
       await approvePinned(sidePanel(page));
       await expect(sidePanel(page).getByTestId("going-box-hint")).toHaveText("↵ Approve");
       await hintUnderBox(sidePanel(page));
+      await rowsUnderTheBar(sidePanel(page));
       await shoot(page, "06-plan-panel");
       await planCard(page).getByTestId("going-plan-reject").click();
       await expect(planCard(page)).not.toHaveAttribute("data-state", "waiting", {
@@ -868,6 +905,12 @@ const barRows: readonly BarRow[] = [
       // Undo names what Dispatch says it can take back: the two changes, never the message.
       await expect(planCard(page).getByTestId("going-undo-button")).toHaveText("Undo 2 changes");
       await expect(message).toHaveText(reachesNoSession);
+      // The message reached no session, so its result says where it went (review a8).
+      await expect(
+        planCard(page)
+          .locator('[data-testid="going-plan-row"][data-kind="message"]')
+          .getByTestId("going-plan-row-state")
+      ).toHaveText(new RegExp(`^Posted on ${eyepiece}(?!\\d)`));
       const fold = newestRun(page).getByTestId("going-steps-fold");
       await expect(fold).toHaveAccessibleName(/^Worked for \d+ s · applied 3 changes$/);
       const finderChip = planCard(page)
@@ -1023,7 +1066,7 @@ const barRows: readonly BarRow[] = [
       await expect(newestRun(page).getByTestId("going-run-state")).toContainText(
         "Dispatch could not reach the model."
       );
-      await expect(newestRun(page).getByTestId("going-run-action")).toHaveText("Try again");
+      await expect(newestRun(page).getByTestId("going-run-action")).toHaveText(/^Try again/u);
       await shoot(page, "09-failed");
     },
     shows: "a stop at a bound, a Stop, and a failure",
@@ -1140,6 +1183,10 @@ const barRows: readonly BarRow[] = [
         "data-selected",
         "true"
       );
+      await expect(bar(page).getByRole("searchbox", { name: "Filter history" })).toHaveAttribute(
+        "placeholder",
+        "Filter history…"
+      );
       await shoot(page, "11-history");
     },
     shows: "the chip, and History",
@@ -1251,6 +1298,30 @@ const barRows: readonly BarRow[] = [
     },
     shows: "File as a new issue, and the notice of the filing",
     state: "13",
+  },
+  {
+    // State 14. The Settings page's command-bar section just after a choice of approval mode,
+    // which saves in the press and says "Saved" beside the mode for 3 s: Auto-review is chosen
+    // and the clock held while the mark shows, so the shot is of that moment on every run. No
+    // run and no model: the page is the state.
+    reach: async (page, seed) => {
+      await script(seed, []);
+      await page.goto("/settings");
+      await expect(page.getByRole("heading", { level: 1, name: "Settings" })).toBeVisible();
+      const heading = page.getByRole("heading", { name: "Command bar" });
+      await heading.evaluate((element) => element.scrollIntoView({ block: "start" }));
+      await page.getByRole("radio", { name: "Auto-review" }).check();
+      const saved = page.getByTestId("going-settings-saved-mark");
+      await expect(saved).toHaveText("✓ Saved");
+      await expect(page.getByTestId("going-settings-saved")).toHaveText("Saved: Auto-review.");
+      // Held a second on, well inside the mark's 3 s, so it is on the screen for the shot.
+      await page.clock.pauseAt(new Date(Date.now() + 1000));
+      await expect(saved).toBeVisible();
+      await shoot(page, "14-settings-saved");
+      await page.clock.resume();
+    },
+    shows: "the settings page just after a choice of approval mode, saying Saved",
+    state: "14",
   },
 ];
 

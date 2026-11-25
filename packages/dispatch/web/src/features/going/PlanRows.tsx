@@ -3,8 +3,10 @@ import {
   Fragment,
   type KeyboardEvent,
   type ReactNode,
+  type RefObject,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -12,13 +14,14 @@ import {
 import { Link, useInRouterContext } from "react-router-dom";
 
 import { api } from "../../api/client";
-import { issueQuery } from "../../api/queries";
+import { issueQuery, whoAmIQuery } from "../../api/queries";
 import type { GoingPlanAnswer, GoingPlanRow, GoingUndoLine } from "../../api/types";
 import { Pill, pillShapeClassName } from "../../components/Pill";
 import { QueryError } from "../../components/QueryError";
 import { issueProject } from "../../lib/issue-key";
 import {
   borderDefault,
+  borderStrong,
   borderTransparent,
   calloutDangerBorder,
   calloutWarningBorder,
@@ -32,7 +35,6 @@ import {
   inputClasses,
   linkHoverText,
   linkText,
-  pageQuietText,
   primaryButton,
   quoteAccentBorder,
   quoteBodyText,
@@ -56,6 +58,7 @@ import { TimedWords } from "../refs/dispatch-time";
 import { ItemChip } from "../refs/ItemChip";
 import { objectOf, textOf } from "./fields";
 import { draftOf, type PlanDraft, setDraft, useGoing, useGoingValue } from "./going-store";
+import { PriorityValue } from "./PriorityValue";
 import {
   approvable,
   argumentsOf,
@@ -71,6 +74,7 @@ import {
   type LabelMark,
   labelMarks,
   MARK_WORDS,
+  type MessageReach,
   MODE_WORDS,
   messageReach,
   needsUnticked,
@@ -86,6 +90,7 @@ import {
   removalWords,
   reviewWords,
   rowChanges,
+  rowIrreversible,
   rowKind,
   rowLabel,
   rowOutcome,
@@ -272,32 +277,70 @@ export function usePlanDraft(plan: GoingPlanAnswer | undefined): PlanDraft | und
   return draft;
 }
 
-/** One piece of a document change, its words out and in marked as a diff marks them. A whole
- *  document's pieces are diffed within the bound `changedWords` keeps, and once for each pair. */
-function PieceDiff({ piece }: { readonly piece: ChangePiece }): ReactNode {
-  const { added, removed } = piece;
+/** The words of one change marked as a diff marks them (`changedWords`): those taken out struck
+ *  through in red, those put in in green, the rest as they are. Each pair is diffed once, within
+ *  the bound `changedWords` keeps. */
+function MarkedWords({ added, removed }: ChangePiece): ReactNode {
   const parts = useMemo(() => changedWords(removed, added), [removed, added]);
+  return parts.map((part, index) => {
+    const Mark = part.kind === "added" ? "ins" : part.kind === "removed" ? "del" : "span";
+    const marked =
+      part.kind === "added"
+        ? `${diffAddedBg} ${diffAddedText} no-underline`
+        : part.kind === "removed"
+          ? `${diffRemovedBg} ${diffRemovedText}`
+          : undefined;
+    return (
+      // biome-ignore lint/suspicious/noArrayIndexKey: a part is its place in the diff, which never changes for one piece
+      <Mark className={marked} key={index}>
+        {part.value}
+      </Mark>
+    );
+  });
+}
+
+/** One piece of a document change, its words out and in marked as a diff marks them. */
+function PieceDiff({ piece }: { readonly piece: ChangePiece }): ReactNode {
   return (
     <p
       className="whitespace-pre-wrap break-words font-mono text-xs"
       data-testid="going-plan-diff-piece"
     >
-      {parts.map((part, index) => {
-        const Mark = part.kind === "added" ? "ins" : part.kind === "removed" ? "del" : "span";
-        const marked =
-          part.kind === "added"
-            ? `${diffAddedBg} ${diffAddedText} no-underline`
-            : part.kind === "removed"
-              ? `${diffRemovedBg} ${diffRemovedText}`
-              : undefined;
-        return (
-          // biome-ignore lint/suspicious/noArrayIndexKey: a part is its place in the diff, which never changes for one piece
-          <Mark className={marked} key={index}>
-            {part.value}
-          </Mark>
-        );
-      })}
+      <MarkedWords added={piece.added} removed={piece.removed} />
     </p>
+  );
+}
+
+/** The longest a post's body reads whole in its row's inline diff, in characters: two lines of
+ *  the bar's row. */
+const INLINE_BODY_MAX = 160;
+
+/**
+ * An edit of a post's body (review a3), drawn as VS Code's inline diff draws a change: the body
+ * once, the words the edit takes out struck through in red and the words it puts in in green,
+ * the rest as they are, so the change is read and not hunted for between two copies. A long body
+ * - more than one line, or past `INLINE_BODY_MAX` - reads as the first two or three sentences of
+ * what the edit writes, with its diff under them, closed, as a document's text change does (R4).
+ */
+function BodyDiff({ next, now }: { readonly next: string; readonly now: string }): ReactNode {
+  const long = [now, next].some((body) => body.includes("\n") || body.length > INLINE_BODY_MAX);
+  if (!long) {
+    return (
+      <span className="whitespace-pre-wrap break-words" data-testid="going-plan-body-diff">
+        <MarkedWords added={next} removed={now} />
+      </span>
+    );
+  }
+  return (
+    <span className="block w-full space-y-1" data-testid="going-plan-body-diff">
+      <span className="block" data-testid="going-plan-sentences">
+        {specSentences(next)}
+      </span>
+      <details data-testid="going-plan-diff">
+        <summary className={`cursor-pointer text-xs ${textMutedOnSurface}`}>The diff</summary>
+        <PieceDiff piece={{ added: next, removed: now }} />
+      </details>
+    </span>
   );
 }
 
@@ -346,7 +389,8 @@ function LabelChips({ marks }: { readonly marks: readonly LabelMark[] }): ReactN
 }
 
 /** A value as the issue page shows it: labels as its chips, marked against the labels `against`
- *  where given; a session holding a claim by its name; anything else in words (`valueWords`). */
+ *  where given; a priority as its badge (`PriorityValue`); a session holding a claim by its name;
+ *  anything else in words (`valueWords`). */
 function FieldValue({
   against,
   field,
@@ -360,6 +404,9 @@ function FieldValue({
 }): ReactNode {
   if (field === "labels" && Array.isArray(value)) {
     return <LabelChips marks={labelMarks(against ?? value, value)} />;
+  }
+  if (field === "priority") {
+    return <PriorityValue priority={issuePriority(typeof value === "number" ? value : null)} />;
   }
   const holder = objectOf(value);
   if (field === "claim" && holder.kind === "session") {
@@ -402,21 +449,23 @@ const VALUE_BUTTON = `rounded text-left underline decoration-dotted underline-of
 
 /**
  * One field a row writes, in the issue page's words (design v3, rule 6): as a line, its name, the
- * value now in the page's grey, which no reader takes for a link, and the new value ("Priority: No
- * priority → P2"), each value in one look - a priority and a status by their words, labels as
- * chips - whatever the field; as a new issue's title, the value alone; as a part of a new issue's
- * line, the value with the word that says what it is ("under CORE-1"). While the row waits, each
- * line the person may edit has one Edit, whatever its field, which swaps the new value for the
- * field's own control from the issue page and opens it: the priority menu, the label picker, the
- * status menu, the assignee picker, or a box of text; a pick puts the value back in its words. A
- * title or a part of a new issue's line is pressed to edit it instead, and a title also says Edit.
- * A value of a field that may name a new issue of the plan (`RowChange.namesNewIssue`) naming one
- * shows that issue's title and "(new)" (`newIssues`), and its edit box holds the value itself,
- * which the person may replace with an issue's key. The edit box starts from the new value of the
- * plan it is drawn for, and its caller keys it to that plan, so a revised plan or a new run's
- * never opens with an earlier plan's value or the person's unsaved typing. An edited value says
- * "Edited". Once Undo took the change back (`reverted`), a line reads "Priority: ~~P2~~ → No
- * priority", all grey.
+ * value now in the bar's grey, which no reader takes for a link, and the new value ("Priority: No
+ * priority → P2"), each value in one look - a priority as its badge, a status by its word, labels
+ * as chips - whatever the field; as a new issue's title, the value alone; as a part of a new
+ * issue's line, the value with the word that says what it is ("under CORE-1"); as a post's body
+ * (`diff`), the body once with the words the edit changes marked (`BodyDiff`) and no field name,
+ * since the row already says it is a comment (review a3). While the row waits, each line the
+ * person may edit has one Edit, whatever its field, which swaps the new value for the field's own
+ * control from the issue page and opens it: the priority menu, the label picker, the status menu,
+ * the assignee picker, or a box of text; a pick puts the value back in its words. A title or a
+ * part of a new issue's line is pressed to edit it instead, and a title also says Edit. A value of
+ * a field that may name a new issue of the plan (`RowChange.namesNewIssue`) naming one shows that
+ * issue's title and "(new)" (`newIssues`), and its edit box holds the value itself, which the
+ * person may replace with an issue's key. The edit box starts from the new value of the plan it
+ * is drawn for, and its caller keys it to that plan, so a revised plan or a new run's never opens
+ * with an earlier plan's value or the person's unsaved typing. An edited value says "Edited".
+ * Once Undo took the change back (`reverted`), a line reads "Priority: ~~P2~~ → No priority", all
+ * grey, and a body its diff back to the words it holds again.
  */
 function FieldChange({
   change,
@@ -437,7 +486,7 @@ function FieldChange({
   /** Whether Undo took the row's change back whole, which a line draws as the value it wrote,
    *  struck out, and the old value it put back. */
   readonly reverted: boolean;
-  readonly shape: "line" | "title" | "part";
+  readonly shape: "line" | "title" | "part" | "diff";
 }): ReactNode {
   const { field, next, now } = change;
   const [editing, setEditing] = useState(false);
@@ -449,7 +498,7 @@ function FieldChange({
   const edit = editable ? change.edit : undefined;
   // A line's Edit swaps its value for the field's control, which opens at once: a menu's select
   // shows its options, a picker its list, and a box of text takes the focus.
-  const lineEdit = shape === "line" && edit !== undefined;
+  const lineEdit = (shape === "line" || shape === "diff") && edit !== undefined;
   useEffect(() => {
     if (!editing) return;
     if (box.current !== null) {
@@ -476,9 +525,22 @@ function FieldChange({
     setEditing(false);
   };
   const nextValue = <FieldValue against={now} field={field} newIssues={shown} value={next} />;
+  if (reverted && shape === "diff") {
+    // Undo put the words back: the diff from what the edit wrote to what the post holds again.
+    return (
+      <div
+        className={`text-sm ${textMutedOnSurface}`}
+        data-field={field}
+        data-reverted="true"
+        data-testid="going-plan-field"
+      >
+        <BodyDiff next={textOf(now)} now={textOf(next)} />
+      </div>
+    );
+  }
   if (reverted && shape === "line") {
     // Undo took the change back: the value it wrote, struck out, then the old value it put back,
-    // all in the page's grey (design v3, state 7).
+    // all in the bar's grey (design v3, state 7).
     return (
       <div
         className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-xs"
@@ -487,13 +549,13 @@ function FieldChange({
         data-testid="going-plan-field"
       >
         <span className={`font-medium ${textMutedOnSurface}`}>{fieldWords(field)}:</span>{" "}
-        <del className={pageQuietText} data-testid="going-plan-next">
+        <del className={textMutedOnSurface} data-testid="going-plan-next">
           <FieldValue field={field} newIssues={shown} value={next} />
         </del>{" "}
-        <span aria-hidden="true" className={pageQuietText}>
+        <span aria-hidden="true" className={textMutedOnSurface}>
           →
         </span>{" "}
-        <span className={pageQuietText} data-testid="going-plan-now">
+        <span className={textMutedOnSurface} data-testid="going-plan-now">
           <FieldValue field={field} newIssues={undefined} value={now} />
         </span>
       </div>
@@ -609,6 +671,12 @@ function FieldChange({
         )}
       </>
     );
+  } else if (shape === "diff") {
+    value = (
+      <span className={textSecondaryOnSurface} data-testid="going-plan-next">
+        <BodyDiff next={textOf(next)} now={textOf(now)} />
+      </span>
+    );
   } else {
     value = (
       <span className={textPrimaryOnSurface} data-testid="going-plan-next">
@@ -618,7 +686,7 @@ function FieldChange({
   }
   return (
     <div
-      className={`flex flex-wrap items-baseline gap-x-2 gap-y-1 ${shape === "title" ? "text-sm font-medium" : "text-xs"}`}
+      className={`flex flex-wrap items-baseline gap-x-2 gap-y-1 ${shape === "title" ? "text-sm font-medium" : shape === "diff" ? "text-sm" : "text-xs"}`}
       data-field={field}
       data-testid="going-plan-field"
       ref={line}
@@ -626,7 +694,7 @@ function FieldChange({
       {shape === "line" ? (
         <>
           <span className={`font-medium ${textSecondaryOnSurface}`}>{fieldWords(field)}:</span>{" "}
-          <span className={pageQuietText} data-testid="going-plan-now">
+          <span className={textMutedOnSurface} data-testid="going-plan-now">
             <FieldValue field={field} newIssues={undefined} value={now} />
           </span>{" "}
           <span aria-hidden="true">→</span>{" "}
@@ -664,8 +732,9 @@ function FieldChange({
   );
 }
 
-/** The words a row posts or sends, whole, as a quote; struck through where the row deletes
- *  them. */
+/** The words a row posts or sends, whole, as a quote; struck through where the row deletes them,
+ *  under a grey bar rather than a message's blue one, which reads as words that go out (review
+ *  a2). */
 function Quote({
   struck = false,
   text,
@@ -675,7 +744,7 @@ function Quote({
 }): ReactNode {
   return (
     <blockquote
-      className={`border-l-2 pl-2 text-sm whitespace-pre-wrap break-words ${quoteAccentBorder} ${quoteBodyText}`}
+      className={`border-l-2 pl-2 text-sm whitespace-pre-wrap break-words ${struck ? borderStrong : quoteAccentBorder} ${quoteBodyText}`}
       data-testid="going-plan-quote"
     >
       {struck ? <del>{text}</del> : text}
@@ -726,17 +795,31 @@ function MessageTo({
   );
 }
 
+/** Whom a message on `issue`'s conversation reaches (`messageReach`), read from the issue as it
+ *  stands and from the sessions that follow it, under the key the issue's header and an ask's
+ *  card read them by, so a session that stops following it leaves all three. */
+function useIssueReach(issue: string): MessageReach {
+  const read = useQuery(issueQuery(issue)).data;
+  const followers = useQuery({
+    queryFn: () => api.getIssueSubscribers(issue),
+    queryKey: ["subscribers", issue],
+  }).data;
+  return messageReach(
+    read,
+    followers?.map((follower) => follower.session_id)
+  );
+}
+
 /**
- * Whom a message on an issue's conversation, `row`, reaches (`messageReach`), read from the issue
- * as it stands and from the sessions that follow it, in the form a message to a session and a
- * broadcast have, while the plan waits and once it ran alike: one session by its name, "Message
- * to ‹session› on DEMO-15"; more by their count, "Message to 3 sessions on DEMO-15", with the
- * sessions under it; a role no session is known to hold by its name, "the planner"; and none,
- * "Message to no session on DEMO-15", where the page and the server both know it reaches none
- * (`reachesNoSession`). Where the page cannot read who follows the issue, or the server finds a
- * session the page does not know, it says whom Dispatch tells of it in words: "Message to the
- * agents that follow DEMO-15", after whoever the issue's own read names. A message on an issue
- * names no delivery, so the line says none.
+ * Whom a message on an issue's conversation, `row`, reaches (`useIssueReach`), in the form a
+ * message to a session and a broadcast have, while the plan waits and once it ran alike: one
+ * session by its name, "Message to ‹session› on DEMO-15"; more by their count, "Message to 3
+ * sessions on DEMO-15", with the sessions under it; a role no session is known to hold by its
+ * name, "the planner"; and none, "Message to no session on DEMO-15", where the page and the server
+ * both know it reaches none (`reachesNoSession`). Where the page cannot read who follows the
+ * issue, or the server finds a session the page does not know, it says whom Dispatch tells of it
+ * in words: "Message to the agents that follow DEMO-15", after whoever the issue's own read names.
+ * A message on an issue names no delivery, so the line says none.
  */
 function IssueMessageTo({
   delivery,
@@ -747,17 +830,7 @@ function IssueMessageTo({
   readonly issue: string;
   readonly row: GoingPlanRow;
 }): ReactNode {
-  const read = useQuery(issueQuery(issue)).data;
-  // The sessions that follow the issue, under the key the issue's header and an ask's card read
-  // them by, so a session that stops following it leaves all three.
-  const followers = useQuery({
-    queryFn: () => api.getIssueSubscribers(issue),
-    queryKey: ["subscribers", issue],
-  }).data;
-  const reach = messageReach(
-    read,
-    followers?.map((follower) => follower.session_id)
-  );
+  const reach = useIssueReach(issue);
   const chip = <ItemSlot item={issue} />;
   const [only] = reach.sessions;
   const counted = reach.sessions.length > 1;
@@ -853,12 +926,36 @@ function MessageBody({
 }
 
 /**
+ * What a message on an issue's conversation, `row`, says once it was sent (R7): where it went,
+ * "Posted on DEMO-15" by the issue's chip, where it reaches no session (`reachesNoSession`), since
+ * "Sent" under "Message to no session" leaves the person asking to whom (review a8); "Sent" where
+ * a session takes it.
+ */
+function SentOnIssue({
+  issue,
+  row,
+}: {
+  readonly issue: string;
+  readonly row: GoingPlanRow;
+}): ReactNode {
+  const reach = useIssueReach(issue);
+  return reachesNoSession(reach, row) ? (
+    <>
+      Posted on <ItemSlot item={issue} />
+    </>
+  ) : (
+    "Sent"
+  );
+}
+
+/**
  * A row that edits or deletes a comment or an issue message: what it does to whose post on which
- * issue, "Edit the comment by alice on DEMO-15", the issue by its chip; then an edit's body as a
- * field, "Body: old → new", with Edit while the row waits, as every change of a field has; or a
- * delete's body, whole and struck through, and while it waits, that it cannot be undone once
- * deleted (R6), as a message cannot once sent. A post deleted after the plan read it
- * (`deletedSince`) shows no word of it, nor the words an edit would put in its place, which can
+ * issue, "Edit the comment by alice on DEMO-15", or "Edit your comment on DEMO-15" where the post
+ * is the signed-in person's own (review a3), the issue by its chip; then an edit's body once,
+ * with the words it changes marked (`BodyDiff`) and Edit while the row waits, as every change of
+ * a field has; or a delete's body, whole and struck through, and while it waits, that it cannot
+ * be undone once deleted (R6), as a message cannot once sent. A post deleted after the plan read
+ * it (`deletedSince`) shows no word of it, nor the words an edit would put in its place, which can
  * repeat it: "This comment was deleted." A delete that ran says so in its outcome.
  */
 function PostBody({
@@ -874,6 +971,8 @@ function PostBody({
 }): ReactNode {
   const read = postRead(row);
   const post = postToolOf(row.tool);
+  const login = useQuery(whoAmIQuery()).data?.login;
+  const yours = read.author?.kind === "user" && read.author.id === login;
   let below: ReactNode;
   if (deletedSince(row)) {
     below = (
@@ -898,8 +997,8 @@ function PostBody({
   return (
     <div className="space-y-1">
       <p className={textPrimaryOnSurface} data-testid="going-plan-post">
-        {postAction(row)}
-        {read.author === undefined ? null : (
+        {postAction(row, yours)}
+        {read.author === undefined || yours ? null : (
           <>
             {" by "}
             <AgentName actor={read.author} kind="static" />
@@ -1095,7 +1194,12 @@ export function PlanRowView({
     plan.state === "rejected" ? "not_run" : reverted ? "reverted" : ROW_MARKS[row.state];
   const item = row.item || row.issue;
   const project = textOf(args.project) || issueProject(item);
-  const field = (change: RowChange, shape: "line" | "title" | "part") => (
+  // A message on an issue's conversation that was sent says where it went (`SentOnIssue`).
+  const postedOn =
+    row.tool === "dispatch_message" && row.result?.delivery === "sent"
+      ? item || textOf(args.issue)
+      : "";
+  const field = (change: RowChange, shape: "line" | "title" | "part" | "diff") => (
     <FieldChange
       change={change}
       editable={tickable}
@@ -1118,7 +1222,7 @@ export function PlanRowView({
     body = (
       <PostBody
         changes={changes}
-        field={(change) => field(change, "line")}
+        field={(change) => field(change, "diff")}
         row={row}
         waiting={tickable}
       />
@@ -1150,11 +1254,16 @@ export function PlanRowView({
   // row whose post was deleted since takes nothing out. The mark is a bar in a gutter every row
   // keeps, so a marked row's tick stands in the same column as every other row's.
   const removing = removes && !reverted && !deletedSince(row);
+  const removal = removing ? removalWords(changes) : "";
   const gutter = removing
     ? calloutDangerBorder
     : changed
       ? calloutWarningBorder
       : borderTransparent;
+  // A new issue's title carries its Edit while the row waits, a button as tall as the line (44 px
+  // on a phone, 28 px from `sm`), so the tick stands lower to sit level with that line's words, as
+  // every other row's tick sits level with its first line (review a4).
+  const tickTop = kind === "new_issue" && tickable ? "mt-3.5 sm:mt-1.5" : "mt-0.5";
   return (
     <li
       className={`border-t py-2 outline-none first:border-t-0 focus-visible:ring-2 ${focusVisibleRing} ${borderDefault}`}
@@ -1177,7 +1286,7 @@ export function PlanRowView({
           <input
             aria-label={label}
             checked={ticked}
-            className="mt-0.5 size-4 shrink-0 cursor-pointer"
+            className={`${tickTop} size-4 shrink-0 cursor-pointer`}
             onChange={() => setDraft(toggledDraft(draft, plan.rows ?? [], row.row))}
             type="checkbox"
           />
@@ -1196,11 +1305,11 @@ export function PlanRowView({
         )}
         <div className="min-w-0 flex-1 space-y-1 text-sm">
           {body}
-          {removing ? (
+          {removal === "" ? null : (
             <p className={`text-xs font-medium ${dangerText}`} data-testid="going-plan-removes">
-              {removalWords(changes)}
+              {removal}
             </p>
-          ) : null}
+          )}
           {changed ? (
             <p className={`text-xs ${inlineWarningText}`} data-testid="going-plan-changed">
               Changed since the plan: now {valuesNowWords(changes)}
@@ -1221,7 +1330,7 @@ export function PlanRowView({
               className={`text-xs ${outcome.failed ? dangerText : textMutedOnSurface}`}
               data-testid="going-plan-row-state"
             >
-              {outcome.text}
+              {postedOn === "" ? outcome.text : <SentOnIssue issue={postedOn} row={row} />}
               {outcome.failed && onFix !== undefined ? (
                 <>
                   {" "}
@@ -1348,11 +1457,63 @@ function useRanAt(plan: GoingPlanAnswer | undefined): number | undefined {
   return seen !== undefined && seen.plan === ran ? seen.at : undefined;
 }
 
+/** The soft shadow the pinned Approve bar casts up over the rows while some stand under it. */
+const COVERING_SHADOW = "shadow-[0_-6px_12px_-6px_rgba(15,23,42,0.18)]";
+
+/**
+ * The rows of a waiting plan's card that its pinned Approve and Discard (`bar`) cover, by their
+ * numbers, read again on every scroll, resize and change of the list's size (review A1): each row
+ * any of whose words stand below the bar's top edge. Its bottom padding may stand there: a row
+ * whose words all show is read. None while `watching` is false.
+ */
+function useHiddenRows(
+  list: RefObject<HTMLUListElement | null>,
+  bar: RefObject<HTMLDivElement | null>,
+  watching: boolean
+): readonly number[] {
+  const [hidden, setHidden] = useState<readonly number[]>([]);
+  useLayoutEffect(() => {
+    if (!watching) {
+      setHidden((was) => (was.length === 0 ? was : []));
+      return undefined;
+    }
+    const measure = () => {
+      const edge = bar.current?.getBoundingClientRect().top;
+      const under =
+        edge === undefined
+          ? []
+          : [...(list.current?.querySelectorAll<HTMLElement>(ROW) ?? [])]
+              .filter((row) => {
+                const padding = Number.parseFloat(getComputedStyle(row).paddingBottom) || 0;
+                return row.getBoundingClientRect().bottom - padding > edge + 1;
+              })
+              .map((row) => Number(row.dataset.row));
+      setHidden((was) =>
+        was.length === under.length && was.every((row, at) => row === under[at]) ? was : under
+      );
+    };
+    measure();
+    document.addEventListener("scroll", measure, { capture: true, passive: true });
+    window.addEventListener("resize", measure);
+    const sizes = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(measure);
+    if (list.current !== null) sizes?.observe(list.current);
+    return () => {
+      document.removeEventListener("scroll", measure, { capture: true });
+      window.removeEventListener("resize", measure);
+      sizes?.disconnect();
+    };
+  }, [bar, list, watching]);
+  return hidden;
+}
+
 /**
  * The plan card of the bar and the side panel. While its plan waits (design v3, state 6): a
  * title made from the plan's rows and its approval mode, linked to its setting; the rows no page
  * on the screen draws, with "2 changes show on this page" for the rest; and the plan's Approve and
- * Discard, pinned at the foot of the view while the card is taller than it. A row the page draws
+ * Discard, pinned at the foot of the view while the card is taller than it. While rows stand under
+ * that bar (review A1), its top edge casts a soft shadow and it says how many and whether any of
+ * them cannot be undone - "3 more ↓ · 1 cannot be undone" - a press of which scrolls to them, so
+ * Enter never approves a row the person was not shown was there. A row the page draws
  * (`PlannedChanges`) shows there and not here, so the rows of one plan can show in both places,
  * each once, and Approve approves the ticked rows of both. While the plan waits, the box's ↑
  * moves the focus onto the card's rows (`usePlanCardKeys`).
@@ -1387,7 +1548,9 @@ export function PlanCard({
   const ranAt = useRanAt(plan);
   const [open, setOpen] = useState(false);
   const list = useRef<HTMLUListElement>(null);
+  const actions = useRef<HTMLDivElement>(null);
   const waiting = plan !== undefined && planWaits(plan);
+  const hidden = useHiddenRows(list, actions, waiting);
   useEffect(() => {
     if (!waiting) return undefined;
     return holdCardFocus(() => {
@@ -1437,6 +1600,13 @@ export function PlanCard({
   const unmatched = (lines ?? []).filter(
     (line) => line.plan !== plan.plan || !rows.some((row) => row.row === line.row)
   );
+  // The rows the pinned bar covers (`useHiddenRows`), and how many of those Approve would run that
+  // nothing takes back once they run (`rowIrreversible`).
+  const covered = rows.filter((row) => hidden.includes(row.row));
+  const unticked = untickedRows(plan, draft);
+  const final = covered.filter(
+    (row) => rowWaits(row) && !unticked.has(row.row) && rowIrreversible(row)
+  ).length;
   // Undo is offered for what the record says it can still take back, and names that count; an
   // Undo pressed on this page has answered, and its rows say what became of each change.
   const undoable = recorded?.undoable ?? 0;
@@ -1567,9 +1737,24 @@ export function PlanCard({
         // no row shows under it; its fill and its top rule cover the rows that scroll behind it.
         // It is the card's last part, so once the card's end is in view it stands there.
         <div
-          className={`sticky bottom-0 z-10 -mx-3 -mb-3 rounded-b-lg border-t px-3 py-3 ${borderDefault} ${surfaceBg}`}
+          className={`sticky bottom-0 z-10 -mx-3 -mb-3 rounded-b-lg border-t px-3 py-3 ${borderDefault} ${surfaceBg} ${covered.length === 0 ? "" : COVERING_SHADOW}`}
           data-testid="going-plan-actions"
+          ref={actions}
         >
+          {covered.length === 0 ? null : (
+            <button
+              className={`mb-2 block text-left text-xs hover:underline ${textMutedOnSurface}`}
+              data-testid="going-plan-more"
+              onClick={() =>
+                list.current
+                  ?.querySelector(`${ROW}[data-row="${covered[0]?.row}"]`)
+                  ?.scrollIntoView({ block: "start" })
+              }
+              type="button"
+            >
+              {covered.length} more ↓{final === 0 ? null : ` · ${final} cannot be undone`}
+            </button>
+          )}
           <PlanControls answering={answering} draft={draft} enterApproves />
         </div>
       ) : null}

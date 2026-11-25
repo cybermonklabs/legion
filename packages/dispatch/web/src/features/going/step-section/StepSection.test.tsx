@@ -10,8 +10,8 @@ import { elapsedTimeWords, foldWords, pastHeader, StepSection, workedWords } fro
 // A run's steps as the bar draws them (design v2, states 3 and 4): one line for each call, the
 // running ones in the present tense with a shimmer and the ended ones in the past tense, the
 // newest line with the run's timer; past three calls at once, "and 2 more…"; at most three
-// finished lines, two or more older ones folded into one line that opens on a click, and one
-// older one drawn as its own line; the model's prose as a grey header above its calls; keys as
+// finished lines, every older one folded into one line that opens on a click; the model's prose
+// as a grey header above its calls; keys as
 // plain links; and once the run no longer works, every step folded into "Worked for 1 min 48 s ·
 // read 14 items, searched twice ›".
 
@@ -252,9 +252,10 @@ test("at most three finished lines show, and the older ones fold into one line t
   expect(labels()).toHaveLength(4);
 });
 
-// A fold of one step would only say again, in other words, what its one line says: that step
-// keeps its own line, in its own words, and nothing folds.
-test("one finished step past the newest three draws as its own line, in its own words", () => {
+// The design shows at most three finished lines (review a7): a fourth finished step folds, alone,
+// into the one grey line above the rest, which says what that step was.
+test("at most three finished lines show: one step past the newest three folds on its own", async () => {
+  const user = userEvent.setup();
   const look = "Looked for a way to list an issue's messages";
   render(
     <StepSection
@@ -270,8 +271,12 @@ test("one finished step past the newest three draws as its own line, in its own 
       workedMs={undefined}
     />
   );
-  expect(screen.queryByTestId("going-steps-older")).toBeNull();
-  expect(screen.queryByText(/looked for a way once/iu)).toBeNull();
+  expect(labels()).toEqual(["Read DEMO-2", "Read DEMO-3", "Read DEMO-4"]);
+  const older = screen.getByTestId("going-steps-older");
+  expect(older).toHaveAccessibleName("Looked for a way once");
+  // The fold is the bar's one grey, as every hint and status line is.
+  expect(older.className).toContain(textMutedOnSurface);
+  await user.click(older);
   expect(labels()).toEqual([look, "Read DEMO-2", "Read DEMO-3", "Read DEMO-4"]);
 });
 

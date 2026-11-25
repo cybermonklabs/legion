@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 
 import { renderWithQueries } from "../../../__tests__/query-provider";
 import { api } from "../../../api/client";
+import { PriorityEditor } from "../../issue/PriorityControl";
 import type { BlockOf } from "./block-cells";
 import { TableBlock } from "./TableBlock";
 
@@ -40,7 +41,8 @@ async function chipsRead(count: number): Promise<void> {
 
 // A table the command bar's agent draws of issues counted by priority, as the server's chain
 // answers it: each priority as the number the issue reads carry, and the issues with none in the
-// group "none". The person reads each priority as Dispatch writes it everywhere else.
+// group "none". The person reads each priority as Dispatch writes it everywhere else, and a set
+// one in the form the issue page draws it, the badge of its priority menu (review a5).
 test("a table of issues by priority shows each priority as Dispatch writes it", () => {
   const block: BlockOf<"table"> = {
     kind: "table",
@@ -64,6 +66,23 @@ test("a table of issues by priority shows each priority as Dispatch writes it", 
       .getAllByRole("columnheader")
       .map((head) => head.textContent)
   ).toEqual(["Priority", "Bugs"]);
+  const issuePage = render(
+    <PriorityEditor
+      issueKey="DEMO-1"
+      write={{
+        failed: false,
+        pending: false,
+        retry: undefined,
+        shown: 1,
+        stopped: undefined,
+        submit: () => {},
+      }}
+    />
+  );
+  const pageBadge = within(issuePage.container).getByText("P1", { selector: "span" });
+  expect(within(screen.getByTestId("going-block-table")).getByText("P1").className).toBe(
+    pageBadge.className
+  );
 });
 
 // A table of a run's saved results may name any field of their rows (going/blocks.go

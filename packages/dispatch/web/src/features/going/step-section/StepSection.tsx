@@ -41,7 +41,6 @@ import {
   dangerText,
   linkHoverText,
   linkText,
-  pageQuietText,
   textMutedOnSurface,
   textSecondaryOnSurface,
 } from "../../../theme/classes";
@@ -49,8 +48,8 @@ import { TimedWords } from "../../refs/dispatch-time";
 import { buildReferencePath } from "../../refs/routes";
 import type { RunStep } from "../run-frames";
 
-/** How many finished steps show as lines while the run works; two or more older ones fold into
- *  one line. */
+/** How many finished steps show as lines while the run works; every older one folds into one
+ *  line (design v3, state 3: "at most 3 finished lines show"). */
 export const FINISHED_LINES = 3;
 /** How many calls that run at once show as lines; the rest fold into "and 2 more…". */
 export const RUNNING_LINES = 3;
@@ -313,14 +312,13 @@ export interface StepLines {
 }
 
 /** Which of `steps` draw as lines while the run works, and which fold. The finished steps past
- *  the newest `FINISHED_LINES` fold into one line only where there are two or more of them: one
- *  such step draws as its own line, in its own words ("Looked for a way to list an issue's
- *  messages"), which takes the room the line folding it would. */
+ *  the newest `FINISHED_LINES` fold into one line, however few they are, so no more than that
+ *  many finished lines ever show (review a7). */
 export function stepLines(steps: readonly RunStep[]): StepLines {
   const finished = steps.filter((step) => !step.running);
   const running = steps.filter((step) => step.running);
   const past = finished.length - FINISHED_LINES;
-  const older = past > 1 ? finished.slice(0, past) : [];
+  const older = past > 0 ? finished.slice(0, past) : [];
   const folded = new Set([...older, ...running.slice(RUNNING_LINES)]);
   return {
     more: Math.max(0, running.length - RUNNING_LINES),
@@ -530,7 +528,7 @@ function FoldLine({
   return (
     <button
       aria-expanded={open}
-      className={`flex min-h-6 max-w-full items-center gap-1 text-left text-xs hover:underline ${pageQuietText}`}
+      className={`flex min-h-6 max-w-full items-center gap-1 text-left text-xs hover:underline ${textMutedOnSurface}`}
       data-testid={testId}
       onClick={onToggle}
       type="button"
@@ -547,8 +545,8 @@ function FoldLine({
  * The steps of one run, as the bar over the page and the panel at the side both draw them.
  *
  * While the run works (design v2, state 3), each call has a line, as Happy's section is live:
- * the newest finished ones, at most `FINISHED_LINES`, under one grey line that folds the older
- * ones where there are two or more ("Read 6 items, searched twice ›", which opens them), then the
+ * the newest finished ones, at most `FINISHED_LINES`, under one grey line that folds every older
+ * one ("Read 6 items, searched twice ›", which opens them), then the
  * calls that run, at most `RUNNING_LINES` of them and "and 2 more…" for the rest. The prose the
  * model wrote beside its calls heads them as a grey line and folds with them. The newest line
  * carries the run's timer, counted from `since`.

@@ -294,7 +294,7 @@ export function History({ onOpen }: { readonly onOpen: () => void }): ReactNode 
       data-testid="going-history"
     >
       <input
-        aria-label="Filter History"
+        aria-label="Filter history"
         className={`block w-full rounded-lg border px-3 py-1.5 text-sm outline-none ${inputClasses(true)}`}
         data-testid="going-history-filter"
         onBlur={() => setInBox(false)}
@@ -310,7 +310,7 @@ export function History({ onOpen }: { readonly onOpen: () => void }): ReactNode 
             if (first !== undefined) open(first.conversation);
           }
         }}
-        placeholder="Filter History…"
+        placeholder="Filter history…"
         ref={box}
         type="search"
         value={filter}

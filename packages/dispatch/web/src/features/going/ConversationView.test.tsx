@@ -10,7 +10,7 @@ import { renderWithQueries } from "../../__tests__/query-provider";
 import { answerRoute } from "../../__tests__/send-answers";
 import { api, type WriteBounds } from "../../api/client";
 import type { GoingPlanAnswer, GoingPlanRow, GoingRun, GoingUndoAnswer } from "../../api/types";
-import { dangerText, linkText, pageQuietText, textMutedOnSurface } from "../../theme/classes";
+import { dangerText, linkText, textMutedOnSurface } from "../../theme/classes";
 import { clockWords } from "../search/blocks/block-cells";
 import { ConversationView } from "./ConversationView";
 import {
@@ -1188,8 +1188,8 @@ test("under the answer, Done in grey, with Copy of the answer's text and Retry o
     const foot = await screen.findByTestId("going-run-foot");
     const state = within(foot).getByTestId("going-run-state");
     expect(state.textContent).toBe("Done");
-    // The page's grey, never the colour of a link.
-    expect(state.className).toContain(pageQuietText);
+    // The bar's one grey for hints and status, never the colour of a link.
+    expect(state.className).toContain(textMutedOnSurface);
     expect(state.className).not.toContain(linkText);
     await user.click(within(foot).getByRole("button", { name: "Copy the answer" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("DEMO-1 is the oldest."));
@@ -1212,6 +1212,58 @@ function AskedConversation(): ReactNode {
     />
   );
 }
+
+/** `AskedConversation` with a box under it whose Enter is the bar's: `asking.enter` of what it holds. */
+function BoxedConversation(): ReactNode {
+  const asking = useAsk({ path: "/projects/DEMO/issues" });
+  return (
+    <>
+      <ConversationView
+        answering={asking.answering}
+        onContinue={asking.onContinue}
+        onRetry={asking.retry}
+      />
+      <input
+        aria-label="Ask the command bar"
+        onKeyDown={(event) => {
+          if (event.key === "Enter") asking.enter(event.currentTarget.value);
+        }}
+        type="text"
+      />
+    </>
+  );
+}
+
+// Try again shows the key that does it, as Continue and Approve do (design v3, rule 7; review a9):
+// Enter in the empty box runs the failed run's words again, and the button says so. A failure that
+// asks for a new conversation has no such key.
+test("Try again shows ↵, and Enter in the empty box runs the failed run's words again", async () => {
+  const user = userEvent.setup();
+  const start = spyOn(api, "createGoingRun").mockResolvedValue(
+    record("working", 1000, { id: "r-2", words: "where is DEMO-15" })
+  );
+  const stream = spyOn(api, "streamGoingRunEvents").mockImplementation((_id, onFrame) => {
+    onFrame("end", { offers: [], reason: "MODEL_FAILED: azure: 502 Bad Gateway", state: "failed" });
+    return new Promise<void>(() => {});
+  });
+  openConversation({
+    id: "c-1",
+    newest_at: new Date().toISOString(),
+    runs: [record("failed")],
+  });
+  try {
+    renderWithQueries(<BoxedConversation />);
+    const button = await screen.findByRole("button", { name: "Try again" });
+    expect(button).toHaveTextContent("Try again↵");
+    await user.click(screen.getByRole("textbox", { name: "Ask the command bar" }));
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+    expect(start.mock.calls[0]?.[0]).toMatchObject({ continues: "r-1", words: "where is DEMO-15" });
+  } finally {
+    start.mockRestore();
+    stream.mockRestore();
+  }
+});
 
 // Retry under an older answer takes the words as Enter in the box does: while the newest run's
 // plan waits, they say what to change of it. It starts no conversation of its own, which would

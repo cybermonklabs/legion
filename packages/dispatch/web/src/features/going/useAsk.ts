@@ -9,6 +9,7 @@ import {
   movePanel,
   newestRun,
   offersContinue,
+  offersRetry,
   shownState,
   startRun,
   stopRun,
@@ -27,7 +28,8 @@ export interface Asking {
   readonly runWaits: boolean;
   /** Enter with `words` in the box: approves the waiting plan from an empty box, revises it in
    *  words, continues from an empty box a run whose end offers Continue - a bound of its level, or
-   *  the person's own Stop (design v3, state 9) - or starts a run of the words, which records
+   *  the person's own Stop (design v3, state 9) - tries again, from an empty box, a run that
+   *  failed and offers Try again (review a9), or starts a run of the words, which records
    *  `line`, the line on top Enter was pressed on, where the words were sent from it; answers
    *  whether it did any. */
   readonly enter: (words: string, line?: GoingLine) => boolean;
@@ -83,8 +85,14 @@ export function useAsk(context: GoingContextInput): Asking {
     }
     const newest = newestRun();
     if (said === "") {
-      if (newest === undefined || !offersContinue(newest)) return false;
-      listed(continueRun(newest.id, context, login));
+      if (newest === undefined) return false;
+      if (offersContinue(newest)) {
+        listed(continueRun(newest.id, context, login));
+        return true;
+      }
+      if (!offersRetry(newest)) return false;
+      // Try again runs the failed run's own words again, as its button does.
+      listed(startRun(newest.record.words, context, login, {}));
       return true;
     }
     listed(startRun(said, context, login, { line }));

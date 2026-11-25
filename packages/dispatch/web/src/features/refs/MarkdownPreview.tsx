@@ -120,15 +120,17 @@ const paintOneLine: PaintMarkdown = (element, parsed, serializer) => {
 };
 
 /**
- * Every link in the preview as inert, link-styled text. Each surface a preview sits in is
- * already one control - a link (a reply quote, an unfurl card, a hover card, a Broadcasts row),
- * a search option or a margin card's toggle - so a link inside it is a link in a link: a click
- * on it would follow the inner link and the outer control at once, and it would be a second tab
- * stop inside a tooltip. The words, their formatting and a reference's `data-dispatch-ref` (its
- * hover card) stay; the host is the one thing a click or a key press follows. Answers each
- * replaced link's span, so a reference's portal can follow its words into it.
+ * Every link in the preview as inert text. Each surface a preview sits in is already one control
+ * - a link (a reply quote, an unfurl card, a hover card, a Broadcasts row), a search option or a
+ * margin card's toggle - so a link inside it is a link in a link: a click on it would follow the
+ * inner link and the outer control at once, and it would be a second tab stop inside a tooltip.
+ * The words, their formatting and a reference's `data-dispatch-ref` (its hover card) stay; the
+ * host is the one thing a click or a key press follows. Each link that is `inert` keeps
+ * Typography's link look (`data-markdown-link`, styles.css), so a reference still reads as one;
+ * one that is `text` reads as the words around it. Answers each replaced link's span, so a
+ * reference's portal can follow its words into it.
  */
-function inertLinks(root: HTMLElement): Map<HTMLElement, HTMLElement> {
+function inertLinks(root: HTMLElement, look: "inert" | "text"): Map<HTMLElement, HTMLElement> {
   const replaced = new Map<HTMLElement, HTMLElement>();
   for (const link of root.querySelectorAll("a")) {
     const span = document.createElement("span");
@@ -137,7 +139,7 @@ function inertLinks(root: HTMLElement): Map<HTMLElement, HTMLElement> {
         span.setAttribute(name, value);
       }
     }
-    span.setAttribute("data-markdown-link", "");
+    if (look === "inert") span.setAttribute("data-markdown-link", "");
     span.append(...link.childNodes);
     link.replaceWith(span);
     replaced.set(link, span);
@@ -164,7 +166,9 @@ function inertLinks(root: HTMLElement): Map<HTMLElement, HTMLElement> {
  * control is a toggle rather than a navigation (the margin's collapsed card, which opens the
  * thread) passes `links="live"` and keeps them real: there a click on a reference is the one
  * way out of the card to its target, as it was before the preview, and its handler skips a
- * click under an `a`.
+ * click under an `a`. A host whose own Enter and click are the one action of a row (a search
+ * hit) passes `links="text"`, and each link reads as the words around it, with no link look
+ * that would offer a second one.
  *
  * `lines` is the clamp (`1` is `truncate`-like but keeps the inline markup; `2` and `3` wrap
  * then clamp). `className` styles the element, whose `display` is the clamp's own, so a parent
@@ -202,9 +206,10 @@ export function MarkdownPreview({
    *  `Replying to Planner — `. Clamped with the text as one line. */
   lead?: string;
   lines: 1 | 2 | 3;
-  /** `inert` (the default) renders every link as link-styled text; `live` keeps them links, for
-   *  a host whose own control is a toggle. */
-  links?: "inert" | "live";
+  /** `inert` (the default) renders every link as link-styled text; `text` renders it as the words
+   *  around it, with no link look; `live` keeps them links, for a host whose own control is a
+   *  toggle. */
+  links?: "inert" | "text" | "live";
   markdown: string;
   /** The record this text is - the ask, comment, message or document version whose text it is
    *  (`TextSource`); none for text of no record, which links no `#id`. */
@@ -220,7 +225,7 @@ export function MarkdownPreview({
   const root = useRef<HTMLSpanElement>(null);
   const decorate = useCallback<DecorateMarkdown>(
     (element, anchors) => {
-      const replaced = links === "inert" ? inertLinks(element) : undefined;
+      const replaced = links === "live" ? undefined : inertLinks(element, links);
       if (highlightClassName !== "") {
         for (const mark of element.querySelectorAll<HTMLElement>(HIGHLIGHT_SELECTOR)) {
           mark.className = highlightClassName;

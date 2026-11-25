@@ -206,12 +206,13 @@ export function SearchFilterBar({
       ) : null}
       {filters.author === undefined ? (
         // The pill names its field in the dark words the other pills use and takes the author
-        // after it, its "Anyone" in the grey of their values (review M6), so the four read alike.
-        <label className={`${pill} w-52 cursor-text ${focusWithinBorder}`}>
+        // after it, its "Anyone" in the grey of their values (review M6), as wide as its words
+        // and ending in the caret theirs end in (review a6), so the four read alike.
+        <label className={`${pill} cursor-text ${focusWithinBorder}`}>
           <span className={textPrimaryOnSurface}>Author</span>
           <input
             aria-label="Author"
-            className={`min-w-0 flex-1 outline-none ${bgTransparent}`}
+            className={`field-sizing-content min-w-[6ch] outline-none ${bgTransparent}`}
             onBlur={takeAuthor}
             onChange={(event) => setAuthor(event.target.value)}
             onKeyDown={(event) => {
@@ -224,6 +225,9 @@ export function SearchFilterBar({
             type="search"
             value={author}
           />
+          <span aria-hidden="true" className={textMutedOnSurface}>
+            ▾
+          </span>
         </label>
       ) : null}
       {filters.updatedSince === undefined ? (
