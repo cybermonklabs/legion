@@ -1202,7 +1202,7 @@ They depend on which role's jj command made or last rewrote the shared working-c
 So inside the shared working copy, a commit can still show the GitHub App of another role as its author, and its trailers still name the role that made it.
 
 **Each push sets the author from the `Legion-Role` trailer.**
-Before each `jj git push`, the push step of `legion jj` gives each commit that the push sends the author of the role that its first `Legion-Role` trailer names.
+Before each `jj git push`, the push step of `legion jj` gives each commit that the push sends the author of the role that its first `Legion-Role` trailer names, with the exceptions below.
 It takes that role's identity from `LEGION_ROLE_IDENTITIES`, which the daemon writes into every workflow role's process.
 It prints one line for each commit it rewrote: `legion jj: <role>: <old commit id> -> <new commit id>`.
 A commit with no `Legion-Role` trailer keeps the author that jj gave it.

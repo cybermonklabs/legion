@@ -559,15 +559,15 @@ run_outside_case() { # run_outside_case <jj-gerrit|jj-unwrapped>
 echo
 echo "======== jj-push-author-from-trailer: the push step, in a repository of its own"
 # On the head's image the jj wrapper hands each `jj git push` to `legion jj --real`, whose push
-# step sets the author of each commit the push sends from that commit's first Legion-Role trailer:
-# the identity that LEGION_ROLE_IDENTITIES gives that role (packages/daemon/cmd/legion/jj.go). No
-# push above sets that table, so the step runs for none of them. This case sets the table for its
-# one push alone. One identity makes the commit with `jj new`, and the implementer's identity
-# describes it with `jj commit -m`, which leaves the author as it was. On the head's image the step
-# makes the implementer's identity the author before the push. The control's image, published
-# before the wrappers, has no step, so there the remote commit keeps the first identity as its
-# author. The table names the first identity too, as the tester's, so the step must take the
-# identity of the role the trailer names.
+# step sets the author of each commit the push sends from that commit's first Legion-Role trailer,
+# where its rules let it: the identity that LEGION_ROLE_IDENTITIES gives that role
+# (packages/daemon/cmd/legion/jj.go). No push above sets that table, so the step runs for none of
+# them. This case sets the table for its one push alone. One identity makes the commit with
+# `jj new`, and the implementer's identity describes it with `jj commit -m`, which leaves the
+# author as it was. On the head's image the step makes the implementer's identity the author
+# before the push. The control's image, published before the wrappers, has no step, so there the
+# remote commit keeps the first identity as its author. The table names the first identity too,
+# as the tester's, so the step must take the identity of the role the trailer names.
 author_id=jj-push-author-from-trailer
 author_dir=$scratch/runs/$author_id
 author_bare=$author_dir/origin.git

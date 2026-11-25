@@ -25,7 +25,7 @@ const jjUsage = `usage: legion jj --real <jj> -- <jj argument>…
 A jj wrapper runs this command, never a person. It runs a jj with the arguments after --.
 Before a jj git push, it first sets the author of a commit the push sends from that
 commit's first Legion-Role trailer: the identity LEGION_ROLE_IDENTITIES gives that role, by
-one jj metaedit --update-author for each role, where its rules let it
+jj metaedit --update-author run under that role's identity, where its rules let it
 (docs/deployment.md). It prints one line for each commit it rewrote.
 With --after, it first expands the arguments as jj does, through jj's aliases and
 ui.default-command, so a command that jj runs as a jj git push is one too.
@@ -205,8 +205,8 @@ var jjDryRunQuiet = []string{"--config", "ui.quiet=false"}
 
 // jjStep is the step that runs before a push: it reads what the push sends from its dry run, and
 // sets the author of each of those commits whose first Legion-Role trailer names a role of the
-// table, where it is not that role's identity, by one jj metaedit --update-author for each role,
-// where its rules let it (setAuthors, errJJAsWritten).
+// table, where it is not that role's identity, by jj metaedit --update-author under that role's
+// identity, where its rules let it (setAuthors, errJJAsWritten).
 // Each revision argument reaches each pass of the dry run and the real push in the words
 // revisionGiven gives it, which name the commits it named before the step, as the step left them:
 // once a metaedit of the step has run, every argument is held to them, whether or not it moved the
@@ -278,10 +278,7 @@ type jjRewrite struct {
 // what the command printed on standard error, and runs no push. Four go on past one:
 // readRevisions, revisionSet and revisionGiven, past the failure of their reads of a revision
 // argument (readRevision, ids), and metaedit, past jj's refusal to make a commit that exists
-// already (jjCommitExists) where that commit stands for one of its commits (existing). Where it
-// stands for none, or the read of it is itself such a failure (jj refuses it, or it cannot start),
-// metaedit answers that refusal; where the step cannot parse what jj printed for that read (read),
-// metaedit answers that error, which runJJ prints as `legion jj: <error>`, ending with code 1.
+// already (jjCommitExists) where that commit stands for one of its commits (existing).
 type jjStepFailure struct {
 	code   int
 	output string
@@ -586,14 +583,16 @@ func jjStartingWith[T any](items []T, id func(T) string, short string) []T {
 // author's email is not that role's. It decides before its first metaedit, never after, whether
 // the push's command would still be under jjArgMax bytes once each revision argument has the
 // words the step may give it after that rewrite (checkArgMax); where it would not, it rewrites
-// nothing. It runs one metaedit for each role with such commits, in claim.Roles' order, each in as
-// many parts as keep each command under jjArgMax bytes (metaedit), and reads the set again before
-// each metaedit after its first, from what the dry run's new commits stand for after the one
-// before. Nothing to rewrite runs no metaedit, and reads no set of a revision argument. A set with
-// a commit to rewrite gets checkArgMax's decision before its first metaedit can answer
-// errJJSnapshot (metaedit): where the push's command would pass the limit, the step changes
-// nothing and takes no snapshot that it has not taken (errJJAsWritten); else, where the step's
-// snapshot is due, the run after that snapshot decides again.
+// nothing. It calls metaedit once at most for each role with such commits, in claim.Roles' order:
+// a call runs jj's metaedit in as many parts as keep each command under jjArgMax bytes, and again
+// over the commits left, if any, after a refusal it resolves (metaedit). It reads the set again
+// before each call after its first, from what the dry run's new commits stand for after the one
+// before, and makes no call for a role with no such commit left in that set. Nothing to rewrite
+// runs no metaedit, and reads no set of a revision argument. A set with a commit to rewrite gets
+// checkArgMax's decision before its first metaedit can answer errJJSnapshot (metaedit): where the
+// push's command would pass the limit, the step changes nothing and takes no snapshot that it has
+// not taken (errJJAsWritten); else, where the step's snapshot is due, the run after that snapshot
+// decides again.
 func (s *jjStep) setAuthors(heads []string) error {
 	if len(heads) == 0 {
 		return nil
@@ -803,7 +802,8 @@ func jjExistingCommit(err error) (id string, ok bool) {
 // bookmarks and descendants only the refused metaedit would have moved onto made, where another
 // of commits is hidden, and where the read of made is a command of the step that failed
 // (jjStepFailure). Where the step cannot parse what jj printed for that read (read), it answers
-// that error, and no commit.
+// that error, and no commit; metaedit answers it in turn, and runJJ prints it as
+// `legion jj: <error>` and ends with code 1.
 func (s *jjStep) existing(made string, commits []*jjFollowed) (*jjFollowed, error) {
 	read, err := s.read("commit_id(" + made + ")")
 	var failed jjStepFailure

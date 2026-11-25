@@ -737,9 +737,9 @@ func passingLegion(t *testing.T, path string) string {
 }
 
 // The jj wrapper hands a line it reads as a `jj git push` to legion jj, which runs the step that
-// sets each commit's author and then the push: after its setup checks, it runs legion as `jj
-// --real <the real jj> -- <the line>`, the line being the one it runs the real jj with for a
-// `jj gerrit upload`. That line is the git wrapper's first layer
+// sets each commit's author, where its rules let it, and then the push: after its setup checks,
+// it runs legion as `jj --real <the real jj> -- <the line>`, the line being the one it runs the
+// real jj with for a `jj gerrit upload`. That line is the git wrapper's first layer
 // (`--config=git.executable-path="<the git wrapper>"` and `--config-file=/dev/null`), then the
 // command line as jj expands it, global options in front of the command included, with the git
 // wrapper once more as its last layer, which goes right in front of the command where no

@@ -109,9 +109,9 @@ func otherApp(role claim.Role) appauth.AppRole {
 // as its own App mints it (appauth.AppRoleFor: the review App for the architect, the planner, the
 // tester and the reviewer, the implement App for the implementer and the merger), asked for the
 // repository the launch works, whatever role the launch is: the push step of `legion jj` reads it
-// to set each commit's author from its Legion-Role trailer. Each App is asked once, the claim's
-// own first, since every role of an App commits as that App's one identity. The controller's
-// launch carries none.
+// to set each commit's author from its Legion-Role trailer, where the step's rules let it. Each
+// App is asked once, the claim's own first, since every role of an App commits as that App's one
+// identity. The controller's launch carries none.
 func TestEveryLaunchCarriesTheIdentityOfEachRole(t *testing.T) {
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {

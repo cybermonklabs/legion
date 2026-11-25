@@ -537,7 +537,7 @@ in front of a `--`; so jj keeps both and reads it after each `--config-file` the
 it; only a `--config-file` at a deeper place that sets `ui.quiet = true` silences the dry run,
 which the step then cannot read.
 Where a commit's author is not the identity that the table gives the trailer's role, the step
-runs one `jj metaedit` for each such role, under that role's identity, which sets the author.
+runs `jj metaedit` for each such role, under that role's identity, which sets the author.
 It prints one line for each commit it rewrote,
 `legion jj: <role>: <old commit id> -> <new commit id>`, and then runs the push with the role's
 own arguments, but for a revision argument whose meaning the rewrite changed, and with
@@ -593,8 +593,8 @@ A jj command of the step that fails stops the push with jj's error and exit stat
 run that it cannot read (below), a read of a revision argument that jj refuses, and a rewrite
 that jj refuses because its commit exists already, where that commit stands for one the push
 names (below).
-An argument that jj refuses to read before any rewrite goes to the push as written; one that jj
-refuses to read again later goes as its ids, with its one printed line.
+An argument whose set jj refuses to read goes to the push as written; one whose set the step has
+read and that jj then refuses to read again goes as its ids, with its one printed line.
 Where it cannot read the dry run, it prints one line, and the push runs as written, but where a
 metaedit of the step ran first, such as the fill of an empty author, after which each revision
 argument is held to its set as above, and with `--ignore-working-copy` where the step took its

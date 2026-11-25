@@ -1074,7 +1074,7 @@ func (f *rolePushFixture) check(want rolePushWant, args []string, code int, stde
 	}
 	if want.metaedits != 0 {
 		if got := f.metaedits() - edits; got != want.metaedits {
-			t.Errorf("the push added %d metaedit operations, want %d, one for each role", got, want.metaedits)
+			t.Errorf("the push added %d metaedit operations, want %d", got, want.metaedits)
 		}
 	}
 	calls := f.calls()

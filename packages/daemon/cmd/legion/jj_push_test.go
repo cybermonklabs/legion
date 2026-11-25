@@ -11,9 +11,9 @@ import (
 )
 
 // The tests in this file are those of the step that runs before every `jj git push` and sets the
-// author of each commit the push sends from that commit's first Legion-Role trailer
-// (dispatch://INFRA-4172). Each runs a role's push as a process, through one of the two forms of
-// Legion's jj, on a real jj repository with a local bare remote:
+// author of each commit the push sends from that commit's first Legion-Role trailer, where its
+// rules let it (dispatch://INFRA-4172). Each runs a role's push as a process, through one of the
+// two forms of Legion's jj, on a real jj repository with a local bare remote:
 //
 //   - the pod's form: a copy of packages/daemon/docker/jj first on PATH, whose real=, wrapper= and,
 //     where it has one, legion= lines are repointed at the real jj (or a recording jj ahead of it),
