@@ -978,14 +978,14 @@ func cmdRequest(args []string, stdout, stderr io.Writer) int {
 		// still prints the body as it came, since it is asked for by name.
 		fmt.Fprintf(stdout, "request_id: %s\nstate: %s\nsource: %s\n", idWordsOf(c.baseURL, result.RequestID), c.baseURL.WordsOf(result.State), c.source(ctx))
 		printDetail(stdout, c.baseURL, result.Detail)
-		if result.State.Equal("pending") {
+		if stateOf(result.State) == statePending {
 			fmt.Fprintln(stdout, waitingOn(c.baseURL, result.Approver, result.ApproveURL, result.JudgeDeciding))
 		}
 	}
 	switch stateOf(result.State) {
-	case "pending":
+	case statePending:
 		return exitPending
-	case "denied":
+	case stateDenied:
 		projectHint(stderr, result.Detail)
 		return exitDenied
 	default:
@@ -1024,7 +1024,7 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	fmt.Fprintf(stdout, "state: %s\nsource: %s\n", c.baseURL.WordsOf(result.State), c.source(ctx))
-	if result.State.Equal("pending") {
+	if stateOf(result.State) == statePending {
 		fmt.Fprintln(stdout, waitingOn(c.baseURL, result.Approver, result.ApproveURL, result.JudgeDeciding))
 	}
 	if result.GrantID != nil {
@@ -1253,7 +1253,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	// the approver may still decide before --wait runs out, and a grant this command has stopped
 	// waiting for is one nothing collects.
 	var pollErr error
-	if state.Equal("pending") {
+	if stateOf(state) == statePending {
 		reportPending(stderr, c.baseURL, shownID, result.Approver, result.ApproveURL, result.JudgeDeciding, *wait, src())
 		judging := result.JudgeDeciding
 		deadline := time.Now().Add(*wait)
@@ -1263,7 +1263,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		// which answers every read at once; a failed read that comes back sooner gets the same
 		// sleep. Without it the loop would ask such a broker as fast as it answers.
 		backoff := 2 * time.Second
-		for state.Equal("pending") {
+		for stateOf(state) == statePending {
 			remaining := time.Until(deadline)
 			if remaining <= 0 {
 				break
@@ -1287,7 +1287,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 				state, grantID, detail = status.State, status.GrantID, status.Detail
 				// The judge held the request and has given it up: it is its person's now, and the
 				// agent is told who that is and where they decide it, once.
-				if judging && !status.JudgeDeciding && state.Equal("pending") {
+				if judging && !status.JudgeDeciding && stateOf(state) == statePending {
 					fmt.Fprintf(stderr, "agent-secrets: the model judge could not decide it; %s\n", waitingOn(c.baseURL, status.Approver, status.ApproveURL, false))
 					judging = false
 				}
@@ -1301,26 +1301,26 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 				refuse(stderr, "agent-secrets", src(), err)
 				return 1
 			}
-			if state.Equal("pending") && time.Since(sent) < time.Duration(asked)*time.Second {
+			if stateOf(state) == statePending && time.Since(sent) < time.Duration(asked)*time.Second {
 				pollBackoff(min(backoff, time.Until(deadline)))
 				backoff = nextBackoff(backoff)
 			}
 		}
 	}
 	switch known := stateOf(state); known {
-	case "granted":
-	case "pending":
+	case stateGranted:
+	case statePending:
 		if pollErr != nil {
 			fmt.Fprintf(stderr, "agent-secrets: the wait for request %s to %s ran out while its status could not be read: %v; nothing was run. %s\n", shownID, src(), pollErr, statusHint(c.baseURL, result.RequestID))
 			return exitPending
 		}
 		fmt.Fprintf(stderr, "agent-secrets: request %s to %s is still waiting for approval; nothing was run. %s\n", shownID, src(), statusHint(c.baseURL, result.RequestID))
 		return exitPending
-	case "denied":
+	case stateDenied:
 		fmt.Fprintf(stderr, "agent-secrets: request %s to %s was denied%s\n", shownID, src(), deniedBecause(c.baseURL, detail))
 		projectHint(stderr, detail)
 		return exitDenied
-	case "cancelled", "expired":
+	case stateCancelled, stateExpired:
 		fmt.Fprintf(stderr, "agent-secrets: request %s to %s was %s\n", shownID, src(), known)
 		return 1
 	default:

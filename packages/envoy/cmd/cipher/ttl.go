@@ -41,7 +41,7 @@ func ttlSeconds(flags *flagSet, ttl time.Duration) (*int, error) {
 // them: an id the rule does not print as it came is sent nowhere, and the error says it was not
 // ended.
 func grantedLifetime(ctx context.Context, c *client, signer Signer, result RequestResult, ttl *int) error {
-	if ttl == nil || result.State.Equal("denied") || (result.LifetimeSeconds != nil && *result.LifetimeSeconds == *ttl) {
+	if ttl == nil || stateOf(result.State) == stateDenied || (result.LifetimeSeconds != nil && *result.LifetimeSeconds == *ttl) {
 		return nil
 	}
 	given := "no lifetime"
@@ -56,7 +56,7 @@ func grantedLifetime(ctx context.Context, c *client, signer Signer, result Reque
 	switch {
 	case result.GrantID != nil && result.RecordID != nil:
 		return fmt.Errorf("%s, so nothing was run and the existing grant %s was left as approved: %s", mismatch, words(*result.GrantID), why)
-	case result.State.Equal("pending") && result.Coalesced:
+	case stateOf(result.State) == statePending && result.Coalesced:
 		return fmt.Errorf("%s, so nothing was run and the existing pending request %s was left waiting for its approver: %s", mismatch, words(result.RequestID), why)
 	case result.GrantID != nil:
 		grantID, sent := result.GrantID.SendBack()
@@ -67,7 +67,7 @@ func grantedLifetime(ctx context.Context, c *client, signer Signer, result Reque
 			return fmt.Errorf("%s, and revoking its grant %s failed: %w", mismatch, words(*result.GrantID), err)
 		}
 		return fmt.Errorf("%s, so its grant %s was ended and nothing was run: %s", mismatch, words(*result.GrantID), why)
-	case result.State.Equal("pending"):
+	case stateOf(result.State) == statePending:
 		requestID, sent := result.RequestID.SendBack()
 		if !sent {
 			return fmt.Errorf("%s, and it was not cancelled: %s; nothing was run: %s", mismatch, notSentBack, why)
