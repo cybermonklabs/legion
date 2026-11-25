@@ -24,7 +24,7 @@ var keptVolumeMade = time.Date(2026, 11, 24, 9, 30, 0, 0, time.UTC)
 func keptPodRefused(h *harness) error {
 	return fmt.Errorf("launch %s: record its pod with its kept volume: %w", h.token, runtime.KeptPodUnrecorded{
 		PodUID: keptPodUID, KeptSince: keptVolumeMade,
-		Err: errors.New("record the pod " + keptPodUID + " of LEGION-209 with its kept volume, and drop a workspace bundle that volume holds: dial tcp 10.0.0.7:5432: connect: connection refused"),
+		Err: errors.New("record the pod " + keptPodUID + " of LEGION-209 with its kept volume: dial tcp 10.0.0.7:5432: connect: connection refused"),
 	})
 }
 

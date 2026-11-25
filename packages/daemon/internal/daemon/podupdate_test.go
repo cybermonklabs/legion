@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -305,7 +306,8 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 	// orphan sweep's goroutine does in production (store.ForConcurrentWorker(s.supervisor.ctx)),
 	// while the supervisor keeps the unmarked base context production gives it. On an unmarked
 	// context the pool refuses nothing, so a sweep that asked it for a second connection under a
-	// held one would pass every test of this rig (INFRA-3169).
+	// held one would pass every test of this rig (INFRA-3169). That mark is the rig's one
+	// sequential flow's: a goroutine a test starts beside it takes worker() instead.
 	rig := &podUpdateRig{t: t, ctx: store.ForConcurrentWorker(ctx), s: s, sup: sup, rt: rt, pool: pool, records: records, clock: clock, conns: conns,
 		workers: map[claim.Role]*fake.Conn{}, tokens: tokens, st: st, logs: logs, log: log, engine: w.engine,
 		listener: &holderPublisher{}, asked: map[int64]record.UpdateAsk{}}
@@ -365,6 +367,15 @@ func (r *podUpdateRig) drifts(reasons ...string) {
 	for _, token := range r.tokens {
 		r.rt.ScriptPodDrift(token, reasons...)
 	}
+}
+
+// worker is the context of a goroutine a test starts beside the rig's own calls — a machine's
+// Handle, a lane's execute — with a hold mark of its own (store.ForConcurrentWorker), as each of
+// production's goroutines takes. On r.ctx the two would share one mark: the goroutine's
+// transaction would set it, and the pool would refuse the rig's next read a second connection it
+// does not hold (store.ErrNestedAcquire).
+func (r *podUpdateRig) worker() context.Context {
+	return store.ForConcurrentWorker(r.ctx)
 }
 
 // tick is one orphan sweep: the claims as the store holds them now, put to the sweep.
@@ -507,7 +518,7 @@ func (r *podUpdateRig) runAsk(row record.OutboxRow) {
 // unless a test calls for one, so a condition the sweep alone decides never arrives while a
 // wait merely polls for it. One tick is not enough on its own, as it is not for the replacement
 // (awaitReplacement): the sweep reads the claims live and through the deciding mask
-// (roundGroup), so a claim whose machine is still settling a decision at that read counts as not
+// (masked), so a claim whose machine is still settling a decision at that read counts as not
 // having answered, and what the round would have decided is left to the next sweep. Nothing is
 // given up by the sweeps this makes: the rig's clock is held, so no round's bound is crossed by
 // sweeping again, and a claim the sweep has asked is not asked again (supervision.askRound).
@@ -549,7 +560,7 @@ func (r *podUpdateRig) awaitSwept(role claim.Role, what string, want func(superv
 // worker answers from inside the turn the round's ask started, after Oh My Pi acknowledged that
 // ask, so the answer waits for the machine to have handled each acknowledgement it is owed
 // (supervise.PromptAcked). Answered while one is still in flight, the machine decides that
-// acknowledgement after the answer, and a sweep that reads it then masks the answer (roundGroup)
+// acknowledgement after the answer, and a sweep that reads it then masks the answer (masked)
 // and asks the runtime nothing, which CI run 41563218953 is the reproduction of.
 //
 // After the answer, signal writes the activity report that the answering turn's end sends in
@@ -619,20 +630,17 @@ func (r *podUpdateRig) startInPod(role claim.Role, pod string) {
 }
 
 // launcherStarts is what the launcher of pod asks of the store at a role's start there, before the
-// role runs, where the issue's Sandbox owns a kept volume (keptSince): the start of a role in a pod
-// of a kept volume, which records pod with its volume and drops a bundle that volume holds
-// (sandbox's launchers.restoreWorkspace, store.StartKeptPod). It answers whether the call deleted
-// a bundle, and false, having asked nothing, where the issue's pods have volumes of their own.
-func (r *podUpdateRig) launcherStarts(pod string) bool {
+// role runs, where the issue's Sandbox owns a kept volume (keptSince): the record of a role's start
+// in a pod of a kept volume, which records pod with its volume (sandbox's launchers.recordKeptPod,
+// store.StartKeptPod). It asks nothing where the issue's pods have volumes of their own.
+func (r *podUpdateRig) launcherStarts(pod string) {
 	r.t.Helper()
 	if r.keptSince.IsZero() {
-		return false
+		return
 	}
-	_, dropped, err := r.st.StartKeptPod(r.ctx, podUpdateProject, podUpdateIssue, pod, r.keptSince)
-	if err != nil {
+	if err := r.st.StartKeptPod(r.ctx, podUpdateProject, podUpdateIssue, pod, r.keptSince); err != nil {
 		r.t.Fatalf("the launcher of pod %s asked the store to record its start in a pod of the kept volume: %v", pod, err)
 	}
-	return dropped
 }
 
 // displacedInto is the role's process ending with the pod it ran in and the daemon starting the
@@ -738,7 +746,7 @@ func (r *podUpdateRig) replacements() []fake.Call {
 
 // awaitReplacement sweeps until the pod has been replaced n times, and is how every assertion
 // that a replacement happened reads the count. One tick is not enough on its own:
-// completePodUpdate reads the group live and through the deciding mask (roundGroup), so a claim
+// completePodUpdate reads the group live and through the deciding mask (masked), so a claim
 // whose machine is still settling a decision at that read counts as not having answered, the
 // replacement is deferred, and the round is simply decided by the next sweep instead
 // (podupdate.go's completePodUpdate). Nothing is lost by that deferral and the round stays open,
@@ -1508,7 +1516,7 @@ func TestPodUpdateKeepsARoundWhoseLiveClaimStopsRecordingItsLivePod(t *testing.T
 // suspendByOperator is the operator suspending a claim, settled: the process goes with the
 // suspension (letGo clears the locator), and the machine is deciding nothing by the time it
 // returns, since a sweep's live read counts a claim whose machine is deciding as one that has
-// not answered (roundGroup's mask) and would decide something else entirely.
+// not answered (masked) and would decide something else entirely.
 func (r *podUpdateRig) suspendByOperator(role claim.Role) {
 	r.t.Helper()
 	r.suspendBy(role, supervise.SuspendedByOperator)
@@ -1958,8 +1966,8 @@ func TestPodUpdateRevivesNoSuspendedClaimForTheRound(t *testing.T) {
 // of a released pod records a process in it. Both readers of PodDrift ask it only through a
 // claim that records one (groupDrift, podProcess), so the branch that answers runtime.ErrPodGone
 // for a Sandbox suspended without this round's own displaced-pod mark is never reached for a
-// released pod: the sweep opens no round over it, writes nothing on the issue about work the
-// release's bundle is holding, and leaves the wake to bring the pod back.
+// released pod: the sweep opens no round over it, writes nothing on the issue about work a pod it
+// no longer has might have held, and leaves the wake to bring the pod back.
 func TestPodUpdateReadsAReleasedPodAsNoPodRatherThanAPodThatWent(t *testing.T) {
 	t.Parallel()
 	rig := newPodUpdateRig(t,
@@ -2338,7 +2346,7 @@ func TestPodUpdateAbortsTheReplacementForAClaimTheGroupNeverHeld(t *testing.T) {
 
 	// The call below is the one sweep the test makes, over a group it built by hand, so nothing
 	// may still be deciding when it reads the claims: a machine mid-decision reads as not having
-	// answered (roundGroup's mask), and the sweep would then decide nothing at all rather than
+	// answered (masked), and the sweep would then decide nothing at all rather than
 	// refuse the replacement — under the race detector, 4 runs in 30 on the base this change sits
 	// on.
 	rig.settleAll()
@@ -2628,25 +2636,25 @@ func TestPodUpdateReadsAClaimMidRelaunchWithoutWaitingAndCountsItUnanswered(t *t
 	read := make(chan []supervise.Claim, 1)
 	rig.rt.HoldResume(func() {
 		rig.rt.HoldResume(nil)
-		read <- rig.s.liveGroup(rig.snapshot())
+		_, live := rig.s.liveGroup(rig.snapshot())
+		read <- live
 		<-released
 	})
 	relaunching := rig.tokens[claim.RoleTester]
 	go func() {
 		m, _ := rig.sup.Machine(relaunching)
-		_ = m.Handle(rig.ctx, supervise.RuntimeObservation{
+		_ = m.Handle(rig.worker(), supervise.RuntimeObservation{
 			Observation: runtime.Observation{Locator: *rig.claimOf(claim.RoleTester).Locator, Kind: runtime.Gone, Detail: "the process ended"},
 		})
 	}()
 
-	var live []supervise.Claim
-	select {
-	case live = <-read:
-	case <-time.After(10 * time.Second):
-		close(released)
-		t.Fatal("the live read did not answer while a claim's machine was inside a Resume; it waited on the decision")
-	}
-	close(released)
+	// The read is the answer of a call the test started: a read that waited on the decision would
+	// give none, and the wait gives up by name at the test binary's deadline (testwait.Receive),
+	// letting the held Resume go first.
+	release := sync.OnceFunc(func() { close(released) })
+	defer release()
+	live := testwait.Receive(t, "the live read while a claim's machine is inside a Resume; a read that waits on the decision gives none", read)
+	release()
 
 	var answered []claim.Role
 	for _, c := range live {
@@ -2687,6 +2695,62 @@ func (r *podUpdateRig) settleAll() {
 		m.Wait()
 		testwait.Eventually(r.t, string(role)+" to be deciding nothing", func() bool { return m.Deciding() == nil })
 	}
+}
+
+// holdInDecision puts role's machine in a decision and keeps it there until release is called:
+// the decision is the claim's connection closing (supervise.StreamClosed), whose probe of the
+// claim's process waits inside the runtime (fake's HoldProbe). The probe then finds the process
+// alive, so the decision changes nothing of the claim. Until release, the machine is deciding
+// (Machine.Deciding), its published view shows the claim as it was, and an event the sweep posts
+// to it waits on its feed. This is the moment a loaded pod gives by chance, when a machine is
+// slow to decide a post a sweep made, and a later sweep reads the claim. release lets the probe
+// answer and waits for the decision to end. A test that stops before it releases is released at
+// its cleanup, ahead of the supervisor's stop, which waits for the held decision.
+func (r *podUpdateRig) holdInDecision(role claim.Role) (release func()) {
+	r.t.Helper()
+	m, ok := r.sup.Machine(r.tokens[role])
+	if !ok {
+		r.t.Fatalf("%s is not supervised", role)
+	}
+	return holdMachineInDecision(r.t, r.ctx, r.rt, m, r.tokens[role], "the "+string(role))
+}
+
+// holdInDecision is podUpdateRig.holdInDecision on the machine of issue's role.
+func (r *fleetRig) holdInDecision(issue string, role claim.Role) (release func()) {
+	r.t.Helper()
+	return holdMachineInDecision(r.t, r.ctx, r.rt, r.machineOf(issue, role), r.token(issue, role), issue+"'s "+string(role))
+}
+
+// holdMachineInDecision is the hold of podUpdateRig.holdInDecision on m, the machine of token,
+// over the fake runtime rt; who names the claim in a failure.
+func holdMachineInDecision(t *testing.T, ctx context.Context, rt *fake.Runtime, m *supervise.Machine, token claim.Token, who string) (release func()) {
+	t.Helper()
+	inside, held := make(chan struct{}), make(chan struct{})
+	rt.HoldProbe(func(loc runtime.Locator) {
+		if loc.Claim != token {
+			return
+		}
+		rt.HoldProbe(nil)
+		close(inside)
+		<-held
+	})
+	decided := make(chan error, 1)
+	release = sync.OnceFunc(func() {
+		close(held)
+		if err := <-decided; err != nil {
+			t.Errorf("%s's held decision ended with %v, want nil: the probe found the process alive", who, err)
+		}
+	})
+	t.Cleanup(release)
+	// The decision runs beside the test, so it takes a hold mark of its own
+	// (store.ForConcurrentWorker): the mark is one flag per context, and a connection the decision
+	// held on ctx's mark would have the pool refuse the test's own read beside it.
+	go func() { decided <- m.Handle(store.ForConcurrentWorker(ctx), supervise.StreamClosed{Claim: token}) }()
+	testwait.Receive(t, fmt.Sprintf("%s's probe to wait inside the runtime", who), inside)
+	if m.Deciding() == nil {
+		t.Fatalf("%s's machine is deciding nothing while its probe waits, want the closed connection's decision", who)
+	}
+	return release
 }
 
 // The report names the members of the round that lost work, and nothing else of the issue. Two

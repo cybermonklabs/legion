@@ -242,7 +242,7 @@ func TestAKubernetesDaemonOpensItsStoreAfterAClusterCheckThatUsedMostOfItsBudget
 	defer apiServer.Close()
 	cfg := kubernetesConfig(t, apiServer.URL)
 	database := testdb.Database(t, "legion_daemon_late_open")
-	cfg.PostgresDSN = pgProxy(t, database, silentConnection)
+	cfg.PostgresDSN = testdb.Outage(t, database, testdb.Silent).DSN
 	all, err := migrations.All()
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)

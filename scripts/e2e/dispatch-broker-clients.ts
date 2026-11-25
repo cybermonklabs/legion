@@ -84,11 +84,11 @@ if (session === "") {
 const cwd = process.cwd();
 
 /** The client the `dispatch` command builds for one call, as runDispatchCli builds it. */
-function cliClient(): DispatchClient {
+async function cliClient(): Promise<DispatchClient> {
   const env = process.env;
   const file = handedConfigFile(env) ?? sessionConfigFile("omp", env);
   if (file.path === null) throw new Error(`dispatch: ${file.error}`);
-  const { dispatch: resolution } = sessionDispatchSettings(file, env, { cwd, session });
+  const { dispatch: resolution } = await sessionDispatchSettings(file, env, { cwd, session });
   if (!resolution.enabled) {
     throw new Error(
       resolution.error === null
@@ -112,11 +112,11 @@ function cliClient(): DispatchClient {
 
 /** The client pi-envoy's extension builds for one request of its own, as timedDispatchClient
  *  builds it, acting as `session`. */
-function pluginClient(): DispatchClient {
-  const made = sessionDispatchClient(
+async function pluginClient(): Promise<DispatchClient> {
+  const made = await sessionDispatchClient(
     sessionConfigFile("omp", process.env),
     cwd,
-    AbortSignal.timeout(PLUGIN_REQUEST_MS),
+    { deadlineMs: PLUGIN_REQUEST_MS },
     () => session
   );
   if (made === undefined) throw new Error("the plugin's session has no Dispatch configured");
@@ -157,7 +157,7 @@ async function write(request: WriteRequest): Promise<void> {
       throw new Error(`${JSON.stringify(request.method)} is not a write these clients make`);
     }
     if (!Array.isArray(request.args)) throw new Error("args is not a list");
-    const client = request.client === "cli" ? cliClient() : pluginClient();
+    const client = request.client === "cli" ? await cliClient() : await pluginClient();
     const method = (client as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>)[
       request.method
     ];
@@ -179,8 +179,8 @@ async function write(request: WriteRequest): Promise<void> {
 // Both clients' settings resolve before the test is told this process is ready: a role whose
 // environment names no Dispatch is refused here, rather than at its first write.
 try {
-  cliClient();
-  pluginClient();
+  await cliClient();
+  await pluginClient();
 } catch (error) {
   refuse(messageFor(error));
 }

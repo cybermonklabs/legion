@@ -41,6 +41,10 @@ var leakCheckReported = regexp.MustCompile(`still alive after (\S+)\n`)
 //     no later than leakWaitBudget allows, far sooner than the child's deadline, at which a
 //     shut-down service would be given up on.
 func TestTheLeakCheckWaitsForAShutDownServiceAndFailsOneNeverShutDown(t *testing.T) {
+	// Not parallel: it runs three more copies of this race binary at once, each holding a service
+	// until its end-of-run check, and holds the never-shut-down child's check to leakWaitBudget
+	// plus 30 s of wall clock; beside the package's parallel tests those children would share the
+	// runner's 4 vCPU and its memory with them.
 	if os.Getenv("DISPATCH_TEST_DATABASE_URL") == "" {
 		t.Skip("DISPATCH_TEST_DATABASE_URL is unset, so the child builds no service and nothing here is tested")
 	}

@@ -12,6 +12,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -27,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -101,7 +103,7 @@ type State struct {
 	AgentSecretsLogin *AgentSecretsLoginView `json:"agentSecretsLogin,omitempty"`
 	// DispatchCredential is the daemon's own Dispatch credential under dispatch_token_broker and
 	// the two counts a deployment reads before it removes dispatch_token_transition_file
-	// (DispatchCredentialView), absent when the setting is off (contract 241).
+	// (DispatchCredentialView), absent when the setting is off (contract 275).
 	DispatchCredential *DispatchCredentialView `json:"dispatchCredential,omitempty"`
 	// Capabilities is the deployment's capability report (capabilities.Deployment.Report), one row
 	// per capability in the table's order: what the worker image was probed for, what the live
@@ -674,9 +676,10 @@ type Admission struct {
 	// admit.releaseSlotsForWaits) and stands in `waiting` and in `blocked`, which is how a reader
 	// tells it from an issue a person parked, which stands in none of the three.
 	Active []string `json:"active"`
-	// Waiting is the admission line, in the line's own order: the issues whose work came back,
-	// oldest first, then the issues whose first phase can start, by their tree root's Dispatch
-	// rank. It carries children as well as roots, for the same reason `active` does. An owed
+	// Waiting is the admission line, in the line's own order: by priority first (each issue's own
+	// Dispatch priority, else its tree root's, else after P3), and within one priority the issues
+	// whose work came back, oldest first, then the issues whose first phase can start, by their
+	// tree root's Dispatch rank. It carries children as well as roots, for the same reason `active` does. An owed
 	// start in it holds no row and waits for one, as does an issue released for what it waits
 	// on; an issue in it that holds a row already (the kinds record.LineEntry.Holds names)
 	// stands in both lists until the pass that promotes it, which takes no second row.
@@ -820,6 +823,13 @@ type Issue struct {
 	// reading on this wire.
 	Ancestry  []string   `json:"ancestry,omitempty"`
 	Architect *ClaimView `json:"architect,omitempty"`
+	// Priority is the issue's own Dispatch priority (record.Issue.Priority): its number, 0 for P0
+	// to 3 for P3, or null for an issue with none. It is the issue's own and never its tree
+	// root's; the priority that placed a member of the line is its waitingLine's. It is set on
+	// every issue the workflow records, and absent on an issue it does not record (an operator's
+	// claim, Unrecorded) and from every issue of the body served a caller below priorityContract
+	// (shaping.go's withoutPriority).
+	Priority *PriorityView `json:"priority,omitempty"`
 	// Workers is keyed by the role that holds the claim; the vocabulary of a claim belongs to
 	// `internal/claim`, which the runtime, the worker stream, and the supervisor all speak
 	// without importing this package.
@@ -954,6 +964,46 @@ type Issue struct {
 	// holds an answer for, so the wire never carries an empty list, and absent from every issue of
 	// the body the route serves a caller below 141 (shapeIssue, withoutAssignments).
 	Assignments []AssignmentView `json:"assignments,omitempty"`
+	// PodHold is the standing hold of the issue's pod: why the idle rule keeps that pod running
+	// past the idle period, from when, until which pass, and what holds it (PodHoldView). It is
+	// the streak of store's pod_holds that no pass has ended, read in this state's own snapshot
+	// (store.StandingPodHoldsTx). Absent for an issue whose pod no hold stands on: a pod the rule
+	// has not held, one it released, and one whose streak a later pass ended. Absent from every
+	// issue of the body the route serves a caller below podHoldContract (shapeIssue,
+	// withoutPodHold).
+	PodHold *PodHoldView `json:"podHold,omitempty"`
+}
+
+// PodHoldView is one pod's standing hold as the state shows it (store.PodHold): Reason, the idle
+// rule's own name for what holds the pod (workflow.IdleHold's String, as the daemon's hold
+// records and its per-pass log line spell it); FirstAt, the first pass of the streak; At, its
+// newest pass, so a reader tells a streak the passes still read from one whose passes stopped,
+// since a streak stays standing until the next pass of its pod ends it; and Detail, what that one
+// word leaves out (the kinds a background-work hold's session reported), cut to its first
+// podHoldDetailChars characters, and absent where the record holds none.
+type PodHoldView struct {
+	Reason  string    `json:"reason"`
+	FirstAt time.Time `json:"firstAt"`
+	At      time.Time `json:"at"`
+	Detail  string    `json:"detail,omitempty"`
+}
+
+// podHoldDetailChars is how many characters of a hold's detail the state shows: enough to name
+// every kind a session reports, and a bound on what one row adds to a body every issue carries.
+const podHoldDetailChars = 200
+
+// PodHoldViewOf is hold as the state shows it, its detail cut to its first podHoldDetailChars
+// characters. A character is a rune, so a cut never splits one.
+func PodHoldViewOf(hold store.PodHold) *PodHoldView {
+	detail, chars := hold.Detail, 0
+	for at := range detail {
+		if chars == podHoldDetailChars {
+			detail = detail[:at]
+			break
+		}
+		chars++
+	}
+	return &PodHoldView{Reason: hold.Reason, FirstAt: hold.FirstAt, At: hold.At, Detail: detail}
 }
 
 // AssignmentView is one experiment's answer for an issue as the state shows it
@@ -983,8 +1033,8 @@ type AssignmentView struct {
 // with GateVersion and ArtifactID, the spec version of its registered document a person has not
 // reviewed. Since is Dispatch's time of the hand-back the wait began at,
 // absent when unknown. AnsweredAt and AnsweredBy are absent until a person's act answers the
-// wait; the answered root then stands in admission's waiting line as well, among the issues
-// whose work came back, oldest first, until the pass that resumes it. AnsweredBy is every value
+// wait; the answered root then stands in admission's waiting line as well, within its priority,
+// among the issues whose work came back, oldest first, until the pass that resumes it. AnsweredBy is every value
 // of record.Answer, `declined` — a person who closed an ask of the root rather than answer it
 // (contract 68) — among them, and it names how the wait was answered, not always by a person.
 type WaitingOnView struct {
@@ -995,6 +1045,31 @@ type WaitingOnView struct {
 	Since       *time.Time    `json:"since,omitempty"`
 	AnsweredAt  *time.Time    `json:"answeredAt,omitempty"`
 	AnsweredBy  record.Answer `json:"answeredBy,omitempty"`
+}
+
+// PriorityView is a Dispatch priority on this wire, as Dispatch sends one: its number, 0 for P0
+// to 3 for P3, or null for none (record.Priority). A field of it is a pointer with `omitempty`,
+// so a view that carries the field says null for none, and a body served a caller below the
+// contract that added it carries no key at all.
+type PriorityView record.Priority
+
+// MarshalJSON writes the priority's number, or null for none (record.Priority.Level).
+func (p PriorityView) MarshalJSON() ([]byte, error) {
+	return json.Marshal(record.Priority(p).Level())
+}
+
+// UnmarshalJSON reads the number back, 0 for P0 to 3 for P3; null reads as none
+// (record.DecodePriority).
+func (p *PriorityView) UnmarshalJSON(data []byte) error {
+	priority, read, err := record.DecodePriority(data)
+	if err != nil {
+		return err
+	}
+	if !read {
+		return fmt.Errorf("priority %s is no priority Dispatch sends", data)
+	}
+	*p = PriorityView(priority)
+	return nil
 }
 
 // MarshalJSON keeps `workers` an object on the wire for an issue that has no worker yet.
@@ -1068,12 +1143,19 @@ type ClaimView struct {
 	// start did not produce a running agent — a launcher that refused it, a failed init container,
 	// a pod that never became ready — and LastReady when its agent last said it could be prompted.
 	// Each is absent until it happens. The two causes are separate because they answer separate
-	// questions. LastReady dates the death's cause: a death older than it is one the agent running
-	// now has already survived. The claim drops its start failure when its agent says it is ready
-	// (supervise.Claim.LastStartFailure says which older claims can still hold one from before).
-	LastDeathCause   string     `json:"lastDeathCause,omitempty"`
-	LastStartFailure string     `json:"lastStartFailure,omitempty"`
-	LastReady        *time.Time `json:"lastReady,omitempty"`
+	// questions. LastDeathAt and LastStartFailureAt are when the daemon recorded the cause beside
+	// each (causeTimesContract), set and cleared only with it, as supervise.Claim.LastDeathAt
+	// states; each is absent beside a cause an earlier release recorded, which wrote no time,
+	// except after a rollback (the migration's header, 20261124073512_claim_cause_times).
+	// LastDeathAt dates the death: a LastDeathAt before LastReady is a death the agent running now
+	// has survived. The claim drops its start failure, with its time, when its agent says it is
+	// ready (supervise.Claim.LastStartFailure says which older claims can still hold one from
+	// before).
+	LastDeathCause     string     `json:"lastDeathCause,omitempty"`
+	LastDeathAt        *time.Time `json:"lastDeathAt,omitempty"`
+	LastStartFailure   string     `json:"lastStartFailure,omitempty"`
+	LastStartFailureAt *time.Time `json:"lastStartFailureAt,omitempty"`
+	LastReady          *time.Time `json:"lastReady,omitempty"`
 	// ProviderErrorRun is how many turns of this claim ended in a provider error in a row
 	// (supervise.Claim.ProviderErrorRun), and is absent for a claim whose last turn ended with
 	// none. It bounds nothing — a limit here would fail every claim of a project at once in a
@@ -1208,14 +1290,17 @@ func ClaimViewOf(c supervise.Claim) ClaimView {
 		// What the daemon last saw this claim's agent do, which the stall backstop and an
 		// operator read alike; nil for a claim whose agent has not stepped (StepViewOf).
 		Step: StepViewOf(c.Step),
-		// When the agent last began and last ended a turn, and when it last said it could be
-		// prompted, each absent until it happens: they are what tells a worker still making
-		// progress from one wedged in a turn, and the ready is what dates the death's cause below.
-		LastTurnStart:    instant(c.LastTurnStart),
-		LastTurnEnd:      instant(c.LastTurnEnd),
-		LastReady:        instant(c.LastReady),
-		LastDeathCause:   c.LastDeathCause,
-		LastStartFailure: c.LastStartFailure,
+		// When the agent last began and last ended a turn, when it last said it could be
+		// prompted, and when each cause was recorded, each absent until it happens: they are what
+		// tells a worker still making progress from one wedged in a turn, and a LastDeathAt before
+		// the ready is a death the running agent survived.
+		LastTurnStart:      instant(c.LastTurnStart),
+		LastTurnEnd:        instant(c.LastTurnEnd),
+		LastReady:          instant(c.LastReady),
+		LastDeathCause:     c.LastDeathCause,
+		LastDeathAt:        instant(c.LastDeathAt),
+		LastStartFailure:   c.LastStartFailure,
+		LastStartFailureAt: instant(c.LastStartFailureAt),
 		// Why the claim failed, for as long as the daemon holds a record of it: a claim an
 		// operator retired after it failed carries the record still, since nothing but the launch
 		// that runs it again clears it (FailureViewOf). It is keyed on the stored record rather
@@ -1507,13 +1592,13 @@ const MergeWaitField = "mergeWait"
 
 // WaitingLineView is the issue's place in `admission.waiting`, where 1 is first in the line,
 // and the length of that list at this read, beside the waiting line's own fields for a program
-// that acts on the line rather than reading the sentence Reason renders: which part the issue
-// waits in and why it waits there (record.LinePart and record.LineKind, whose String methods
-// are the words carried here), its place within its own part and that part's length, whether it
-// already holds one of the cap's slots, and what placed it — the moment its work came back for
-// a member of the returned part, the Dispatch ranks and the tree root's key for a member of the
-// starting part. It says where the issue stands, not what holds it: `admission.blocked` names
-// what holds it.
+// that acts on the line rather than reading the sentence Reason renders: the priority that placed
+// it, which part the issue waits in within that priority's band and why it waits there
+// (record.LinePart and record.LineKind, whose String methods are the words carried here), its
+// place within its band's part and that part's length, whether it already holds one of the cap's
+// slots, and what placed it there — the moment its work came back for a member of the returned
+// part, the Dispatch ranks and the tree root's key for a member of the starting part. It says
+// where the issue stands, not what holds it: `admission.blocked` names what holds it.
 //
 // Every field beside Place and Length is omitempty, for two readers at once: a member carries
 // the fields of its own part alone, so a returned member's body names no rank and a starting
@@ -1538,6 +1623,11 @@ type WaitingLineView struct {
 	RootRank  string     `json:"rootRank,omitempty"`
 	OwnRank   string     `json:"ownRank,omitempty"`
 	RootKey   string     `json:"rootKey,omitempty"`
+	// Priority is the priority that placed the member (record.LineEntry.Priority): the issue's
+	// own, else its tree root's, as a number from 0 for P0 to 3 for P3, or null for a member
+	// neither it nor its tree root has a priority for, whose band stands after P3. It is the first
+	// key of the whole line; Part, PartPlace and PartLength count within its band.
+	Priority *PriorityView `json:"priority,omitempty"`
 	// Reason is the rendered sentence of this member's wait, the one answer a person reads: what
 	// put it in the line and when, where it stands in its own part, and what that place means
 	// for the slot it waits for. The projection renders it from the fields above and the length

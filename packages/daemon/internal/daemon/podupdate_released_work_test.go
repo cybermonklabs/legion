@@ -1,10 +1,7 @@
 package daemon
 
-// The store's record of the disks of an issue's pods (store.PodHoldsEarlierWork), whose mark of
-// the round's pod every end of an update round reads (workOnRoundPod, roundPodHoldsEarlierWork):
-// the mark of a pod that took an idle release's work survives a daemon restart between the take
-// and the round's end, and it stands until the issue's work is over, when the outbox's
-// dropReleasedWork deletes it with the issue's bundle.
+// Every end of a pod update round reads whether an earlier pod mounted the same kept volume.
+// This file checks that the record survives a daemon restart and goes away at issue close.
 
 import (
 	"context"
@@ -14,40 +11,27 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// The daemon restarts between the take that sent P an idle release's work and the end of the
-// round over P, and the end still names each role whose work the release saved. The tester and
-// the reviewer ran in P0, whose release saved the workspace they share and suspended both; the
-// tester's wake brought the issue's pod back as P, which took the bundle, and the tester answers
-// the round. The implementer never ran an agent before the restart: its first launch, with no
-// session, is refused for P, so it is a member of the round with no session and an empty set.
-// After the restart P is recreated, and the implementer's retry comes up in the pod in P's place
-// and registers there.
+// The tester and reviewer register in P0. An idle release suspends them and keeps the volume,
+// and the tester wakes and registers in P, the next pod of that volume. The tester answers the
+// round. The implementer's first launch is refused for P. After the daemon restarts, P is
+// recreated, and the implementer's retry registers in the pod in P's place.
 //
-// A restart reads every stored claim that shows a session as a claim whose set is unknown
-// (supervise's bootRegisteredPods), so the reviewer is named whatever the store holds. The
-// implementer's stored claim shows no session, so its set is known: {the pod in P's place}. It
-// never ran an agent before the release, so none of its work is in the bundle. It is named only
-// because the rule names every member with a session or a pod at an end over a pod that took an
-// idle release's work, which may name a role whose work that pod does not hold: the cost
-// INFRA-1484's architect accepted
-// (dispatch://INFRA-4425/comment/566feff4-2b27-41f2-89a9-b1a333d97ecd). That is why it is the one
-// member whose naming after the restart shows that the store's record of the take survived it:
-// the restarted daemon reads that record at the end, and nothing else names the implementer. The
-// test also reads the record through the restarted daemon's own read, before the end.
-func TestARestartBetweenTheTakeAndTheRoundsEndStillNamesTheRoles(t *testing.T) {
+// At the end the reviewer's set is unknown, but the implementer's known set contains only the
+// pod in P's place. The end names the implementer only because it reads P's kept-volume mark.
+func TestARestartBetweenTheKeptPodRecordAndTheRoundsEndStillNamesTheRoles(t *testing.T) {
 	implementer, tester, reviewer := claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer
 	rig := newPodUpdateRig(t, podUpdateRole{role: implementer, state: supervise.StateQueued},
 		podUpdateRole{role: tester, state: supervise.StateQueued}, podUpdateRole{role: reviewer, state: supervise.StateQueued})
 	refusals := rig.refuseLaunches()
+	rig.ownsKeptVolume(keptVolumeMadeAt)
 	rig.startInPod(tester, releasedPod)
 	rig.startInPod(reviewer, releasedPod)
-	rig.releases(releasedPod, 1, releasedSavedAt, tester, reviewer)
-	rig.wakesInto(tester, podUpdatePod, roundPodMadeAt)
+	rig.releases(releasedPod, tester, reviewer)
+	rig.wakesInto(tester, podUpdatePod)
 	refusals.refuse(implementer, podUpdatePod)
 	rig.refusedFirstLaunch(implementer)
 	rig.drifts(podUpdateExchangeDrift)
@@ -59,12 +43,13 @@ func TestARestartBetweenTheTakeAndTheRoundsEndStillNamesTheRoles(t *testing.T) {
 	rig.signal(tester, "c0ffee")
 
 	rig, refusals = rig.restarted()
+	rig.ownsKeptVolume(keptVolumeMadeAt)
 	// The restarted daemon's read answers true on a failed read too, so the store is read itself.
 	if holds, err := rig.st.PodHoldsEarlierWork(rig.ctx, podUpdateIssue, podUpdatePod); err != nil || !holds {
-		t.Fatalf("after the restart the store reads that the disk of pod %s holds work from before it: %t (%v), want the mark of the take before the restart", podUpdatePod, holds, err)
+		t.Fatalf("after restart the store says %s holds earlier work: %t (%v), want the kept-volume mark", podUpdatePod, holds, err)
 	}
 	if !rig.s.roundPodHoldsEarlierWork(rig.ctx, podUpdateIssue, podUpdateRound) {
-		t.Fatalf("the restarted daemon reads that the disk of pod %s holds no work from before it, want the store's mark of the take before the restart", podUpdatePod)
+		t.Fatalf("the restarted daemon did not read the kept-volume mark for pod %s", podUpdatePod)
 	}
 	if c := rig.claimOf(implementer); c.Session != "" || c.RegisteredPods.Unknown || len(c.RegisteredPods.Pods) != 0 {
 		t.Fatalf("after the restart the implementer has session %q and set %+v, want no session and a known, empty set", c.Session, c.RegisteredPods)
@@ -83,7 +68,7 @@ func TestARestartBetweenTheTakeAndTheRoundsEndStillNamesTheRoles(t *testing.T) {
 	rig.awaitSwept(implementer, "its round to end", func(c supervise.Claim) bool { return c.UpdateRound == "" })
 	rig.settleAll()
 
-	lost := loggedLines(t, rig.logs.String(), podWentLostLine)
+	lost := loggedLines(t, rig.logs.String(), podWentKeptOnVolumeLine)
 	if len(lost) != 1 {
 		t.Fatalf("the round's end was logged %+v, want one line that the members that had not answered lost what they had not pushed", lost)
 	}
@@ -102,12 +87,9 @@ func TestARestartBetweenTheTakeAndTheRoundsEndStillNamesTheRoles(t *testing.T) {
 	}
 }
 
-// The mark of a pod that took an idle release's work stands until the issue's work is over. A
-// park of a role of the issue (a `suspend` row, which takes the role over) keeps it, as it keeps
-// the issue's bundle, since the issue comes back; the issue's close deletes both
-// (dropReleasedWork). The confirmed restore before them deletes the bundle's own row and leaves
-// the mark, which is why the record is a table of its own.
-func TestThePodsThatTookAReleasesWorkGoWithTheIssuesWork(t *testing.T) {
+// Parking one role keeps the pod disk records because the issue can come back.
+// Closing the issue deletes both the marked and unmarked rows (forgetIdleRelease).
+func TestTheKeptPodRecordsGoWithTheIssuesWork(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	runner, sup, _ := hookRunner(t, &outboxPublisher{})
@@ -117,38 +99,35 @@ func TestThePodsThatTookAReleasesWorkGoWithTheIssuesWork(t *testing.T) {
 	}
 	releasedClaim(t, sup, claim.RoleImplementer)
 	releasedClaim(t, sup, claim.RoleArchitect)
-	const sourcePod, takingPod = "pod-the-release-took", "pod-that-took-the-work"
-	at := time.Now().Add(-time.Hour)
-	if err := st.PutWorkspaceBundle(ctx, pauseIssue, 7, runtime.WorkspaceBundle{Bundle: []byte("PACK the released work"),
-		Head: passedOverHead, At: at, PodUID: sourcePod}); err != nil {
-		t.Fatalf("save the release's bundle: %v", err)
-	}
-	saved, take, err := st.TakeWorkspaceBundleForRestore(ctx, "legion", pauseIssue, takingPod, at.Add(time.Minute))
-	if err != nil || take != runtime.WorkspaceBundleSend {
-		t.Fatalf("the pod after the release was answered %v (%v), want the bundle sent", take, err)
-	}
-	took := func(when string, want bool) {
-		t.Helper()
-		got, err := st.PodHoldsEarlierWork(ctx, pauseIssue, takingPod)
-		if err != nil || got != want {
-			t.Fatalf("%s the store reads that the disk of pod %s holds the release's work: %t (%v), want %t", when, takingPod, got, err, want)
+	const first, later = "first-kept-pod", "later-kept-pod"
+	keptSince := time.Now().Add(-time.Hour)
+	for _, pod := range []string{first, later} {
+		if err := st.StartKeptPod(ctx, "legion", pauseIssue, pod, keptSince); err != nil {
+			t.Fatalf("record kept pod %s: %v", pod, err)
 		}
 	}
-	took("after the take,", true)
-	if err := st.DeleteRestoredWorkspaceBundle(ctx, pauseIssue, saved.Release); err != nil {
-		t.Fatalf("confirm the restore: %v", err)
+	wantRows := func(when string, want int) {
+		t.Helper()
+		var got int
+		err := st.Pool().QueryRow(ctx, `select count(*) from issue_pod_disks where issue = $1`, pauseIssue).Scan(&got)
+		if err != nil || got != want {
+			t.Fatalf("%s: got %d pod disk rows (%v), want %d", when, got, err, want)
+		}
 	}
-	took("after the confirmed restore,", true)
+	wantRows("after both starts", 2)
+	if holds, err := st.PodHoldsEarlierWork(ctx, pauseIssue, later); err != nil || !holds {
+		t.Fatalf("later pod holds earlier work = %t (%v), want true", holds, err)
+	}
 
 	if err := runner.execute(ctx, mustOutboxRow(t, pauseIssue, record.SuperviseRequest{Op: "suspend", Tree: pauseIssue,
 		Role: claim.RoleArchitect, Generation: 1, Reason: "the tree was parked"}, time.Now())); err != nil {
 		t.Fatalf("the architect's suspend: %v", err)
 	}
-	took("after a park of a role,", true)
+	wantRows("after parking a role", 2)
 
 	if err := runner.execute(ctx, mustOutboxRow(t, pauseIssue, record.SuperviseRequest{Op: "issue_close", Tree: pauseIssue,
 		Role: claim.RoleImplementer, Generation: 1}, time.Now())); err != nil {
 		t.Fatalf("the implementer's issue close: %v", err)
 	}
-	took("after the issue's close,", false)
+	wantRows("after closing the issue", 0)
 }

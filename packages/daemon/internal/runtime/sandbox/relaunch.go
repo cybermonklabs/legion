@@ -415,6 +415,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			if s, err = r.annotate(bounded, s, map[string]*string{secretsReleasedAnnotation: nil}); err != nil {
 				return fail("remove the release's record that its secrets are deleted", err)
 			}
+			r.forgetTaken(s.Name)
 		}
 		if err := l.kind.provision(bounded, r, &l, s); err != nil {
 			return runtime.Locator{}, fmt.Errorf("launch %s: %w", spec.Claim, boundRanOut(ctx, bounded, r.launchBound, err))
@@ -465,7 +466,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// recreated. So the launch ends here, answering runtime.ErrSessionLookupUnavailable, which the
 	// supervisor follows in the same try with a Resume that has the agent resolve the id. It ends
 	// before anything is done in the pod: no earlier generation is stopped, no address is recorded,
-	// no leak check or saved workspace is sent, and no start, so there is no issued child to stop
+	// no leak check is sent, and no start, so there is no issued child to stop
 	// (stopIssuedChild). A spec with ResumeByAgent is held to nothing here: it names no
 	// session to the launcher (launcherCommand), so any launcher the pod has can start it.
 	if spec.ResumeSession != "" && !spec.ResumeByAgent && !r.launchers.resumesBySession(spec.Claim, loc.Sandbox.PodUID) {
@@ -516,12 +517,11 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	if err := l.checkStartFrame(command); err != nil {
 		return fail("measure its start frame", err)
 	}
-	// The saved workspace goes to the pod's launcher before the role's start, and a pod of a kept
-	// volume is recorded with it first (restoreWorkspace). A record the store could not write
-	// refuses this launch before its Start frame goes out, as the leak check's refusal does, so no
-	// role runs in a pod of a kept volume the issue's update round has no record of; nothing was
-	// issued, so nothing is stopped.
-	if err := r.launchers.restoreWorkspace(starting, spec.Claim, string(pod.UID)); err != nil {
+	// A pod of a kept volume is recorded with that volume before the role's start
+	// (recordKeptPod). A record the store could not write refuses this launch before its Start
+	// frame goes out, as the leak check's refusal does, so no role runs in a pod of a kept volume
+	// the issue's update round has no record of; nothing was issued, so nothing is stopped.
+	if err := r.launchers.recordKeptPod(starting, session); err != nil {
 		return fail("record its pod with its kept volume", err)
 	}
 	if err := r.launchers.start(starting, spec.Claim, session, command); err != nil {
@@ -610,7 +610,7 @@ func (r *Runtime) dispatchCredential(l *launch, pod *corev1.Pod) error {
 // unless the launcher answered that Start with a refusal (startRefusal), which started nothing. A
 // launch whose shared public leak check could not be installed never reaches it: serveLeakCheck
 // refuses that launch before its Start is built. Nor does a launch whose pod of a kept volume the
-// store could not record: restoreWorkspace refuses it before its Start is sent
+// store could not record: recordKeptPod refuses it before its Start is sent
 // (runtime.KeptPodUnrecorded).
 // Any other error leaves the Start's outcome unknown: the launcher may have received it and begun
 // the generation while its answer was still on its way. The Stop travels after the Start on the

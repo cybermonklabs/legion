@@ -140,7 +140,7 @@ export function callingThread(meta: unknown): string | undefined {
 export function dispatchToolDefinition() {
   return {
     description:
-      'Runs the `dispatch` command as this session, outside Codex\'s sandbox. Pass the words after `dispatch` as `args` (for example ["read", "--issue", "LEGION-3"]) and what the command would read on standard input as `stdin` (the text of a here-document given as `--body-file -`). `["--help"]` lists the commands. Answers with what the command printed and its exit code: for a command a Dispatch spec defines, 0 written or read, 1 not done for a reason other than its arguments (refused by Dispatch or AskGate, Dispatch unreachable, or no answer kept for a call that writes nothing), 2 a usage error; `dispatch proxy` and `dispatch login` give their own exit codes in their help.',
+      'Runs the `dispatch` command as this session, outside Codex\'s sandbox. Pass the words after `dispatch` as `args` (for example ["read", "--issue", "LEGION-3"]) and what the command would read on standard input as `stdin` (the text of a here-document given as `--body-file -`). `["--help"]` lists the commands. Answers with what the command printed and its exit code: for a command a Dispatch spec defines, 0 written or read, 1 Dispatch\'s refusal, a Dispatch the command cannot reach, or `ANSWER_NOT_KEPT` for a call that wrote nothing, which you run again, and 2 a usage error or a session or configuration it cannot use; `dispatch proxy` and `dispatch login` give their own exit codes in their help.',
     inputSchema: {
       properties: {
         args: {
@@ -452,7 +452,7 @@ export async function runCodexEnvoyServer(): Promise<void> {
     RECORD_POLL_MS,
   )
   const id = new SessionIdentity(bound.session_id, bound.cwd)
-  const { dispatch, envoy, notice } = sessionSettings(configFile, process.env, {
+  const { dispatch, envoy, notice } = await sessionSettings(configFile, process.env, {
     cwd: bound.cwd,
     session: () => id.id,
   })
@@ -612,9 +612,10 @@ export async function runCodexEnvoyServer(): Promise<void> {
           createCodexUserTurnRouter({
             ask: (question) => askSideQuestion(command(), id.id, question),
             deliver: (item) => codexDelivery.deliver(item),
-            dispatch: (ms) => {
+            dispatch: async (ms) => {
               const active = activeDispatchSettings(
-                sessionDispatchSettings(configFile, process.env, { cwd: bound.cwd }).dispatch,
+                (await sessionDispatchSettings(configFile, process.env, { cwd: bound.cwd }))
+                  .dispatch,
               )
               return active === null
                 ? undefined

@@ -212,7 +212,7 @@ func lockDeploymentIssueDependencies(ctx context.Context, tx pgx.Tx) error {
 // this is the first point at which a target's or the parent's project is known, and a caller that
 // may not write the link would otherwise take the deployment-wide lock first. A create asks the
 // same earlier still, before its near-copy gate writes anything (createIssue), and a PATCH before
-// a close settles the issue's documents (patchIssue). The write asks again under the locks, which
+// a close settles the issue's documents (writeIssue). The write asks again under the locks, which
 // is the authoritative refusal: writeBlockedBy for a target, and validateIssueParent or the
 // create's own read for the parent. Every step words its refusal through refuseUncoveredProject.
 func lockIssueDependencyWrite(ctx context.Context, tx pgx.Tx, project, caller string, targets []string, parent string) error {

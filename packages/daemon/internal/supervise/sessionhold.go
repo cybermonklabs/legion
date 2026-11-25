@@ -232,9 +232,9 @@ func (e *NamesCarriedError) Error() string {
 func (m *Machine) ReleaseNames(ctx context.Context) (ReleasedNames, error) {
 	m.mu.Lock()
 	defer m.unlock()
-	// The read is bounded as a claim write is, as HoldsItsSession bounds its own, so a database
-	// that has stopped answering does not hold the machine's lock for the outage.
-	reading, cancel := context.WithTimeout(ctx, m.deps.claimWrite())
+	// The read is bounded as a claim write is (bounded), as HoldsItsSession bounds its own, so a
+	// database that has stopped answering does not hold the machine's lock for the outage.
+	reading, cancel := m.bounded(ctx)
 	holds, err := m.deps.Store.ClaimHolds(reading, m.claim.Project, m.claim.Token)
 	cancel()
 	if err != nil {
@@ -843,7 +843,7 @@ func (m *Machine) HoldsItsSession(ctx context.Context) error {
 	}
 	holds := RecordedHolds(c.Session, c.SessionFile)
 	if len(holds) > 0 {
-		asking, cancel := context.WithTimeout(ctx, m.deps.claimWrite())
+		asking, cancel := m.bounded(ctx)
 		holders, err := m.deps.Store.HoldSessions(asking, c.Project, c.Token, holds)
 		cancel()
 		switch {

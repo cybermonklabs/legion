@@ -70,7 +70,7 @@ func suspendedRole(role claim.Role, by supervise.SuspendSource) podUpdateRole {
 //     holds nothing back;
 //   - neither suspended claim is asked (no update-ask row, no publish to its topic), woken or
 //     resumed (no Resume call), and each is still suspended once the round is over;
-//   - no bundle of the workspace is saved.
+//   - no idle release declines the pod: the round's read writes no decline row.
 func replacedOverPassedOverClaims(t *testing.T, script func(*podUpdateRig)) (*podUpdateRig, map[string]any) {
 	t.Helper()
 	rig := newPodUpdateRig(t,
@@ -97,7 +97,7 @@ func replacedOverPassedOverClaims(t *testing.T, script func(*podUpdateRig)) (*po
 	}
 	// Nothing is deciding when the sweep reads the claims, so the first sweep after the answers
 	// is the one that replaces the pod, and the read cannot be followed by a refusal that a
-	// machine mid-decision would cause (roundGroup's mask).
+	// machine mid-decision would cause (masked).
 	rig.settleAll()
 	replaced := rig.awaitReplacement(1, "once both workers answered")
 
@@ -147,12 +147,12 @@ func replacedOverPassedOverClaims(t *testing.T, script func(*podUpdateRig)) (*po
 	if resumes := rig.rt.CallsOf("Resume"); len(resumes) != 0 {
 		t.Errorf("the round resumed %d processes, want none", len(resumes))
 	}
-	var bundles int
-	if err := rig.pool.QueryRow(rig.ctx, "select count(*) from workspace_bundles").Scan(&bundles); err != nil {
-		t.Fatalf("read the workspace bundles: %v", err)
+	var declines int
+	if err := rig.pool.QueryRow(rig.ctx, "select count(*) from idle_release_declines").Scan(&declines); err != nil {
+		t.Fatalf("read the idle release declines: %v", err)
 	}
-	if bundles != 0 {
-		t.Errorf("the round saved %d workspace bundles, want none: the read keeps nothing", bundles)
+	if declines != 0 {
+		t.Errorf("the round recorded %d idle release declines, want none: its read is the round's, which declines no release", declines)
 	}
 
 	lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
@@ -310,13 +310,13 @@ func TestAnUpdateRoundNamesTheWorkItsSuspendedClaimsLeft(t *testing.T) {
 // The round passed over the implementer, a claim the daemon suspended, and the implementer answers
 // the round while the sweep decides the replacement: its machine has published the answer and
 // waits on the store's write of it, which the test holds with a lock on the claim's row. The
-// replacement's decision reads a claim whose machine is deciding as one that has not answered
-// (roundGroup's mask). So the read of the workspace is due, as for any claim the round passed over
-// that has not answered: it is made through the tester, whose process the pod is replaced through,
-// and it finds work. The replacement's line, which the decision's read gives, names the implementer
-// under notWaitedFor. The message on the issue only reports, and it reads the claims unmasked
-// (noticeGroup): the implementer answered the round, so it pushed its work, and no other claim
-// lost work, so the issue is written nothing.
+// replacement's decision reads such a claim as one that has not answered (masked), but the round
+// waits for no answer of a claim it passed over, so the replacement is made at this sweep. The
+// read of the workspace, the line and the message read the claim as it holds its answer
+// (noticeGroup): the implementer answered the round, so it pushed its work, and no claim is left
+// that the round did not wait for and that had not answered. So the replacement through the
+// tester makes no read of the workspace, the line names no claim under notWaitedFor, and the
+// issue is written nothing.
 func TestPodUpdateNamesNoPassedOverClaimThatAnsweredWhileItsMachineDecides(t *testing.T) {
 	rig := newPodUpdateRig(t, suspendedRole(claim.RoleImplementer, supervise.SuspendedByDaemon), readyWorker(claim.RoleTester))
 	token := rig.tokens[claim.RoleImplementer]
@@ -363,8 +363,10 @@ func TestPodUpdateNamesNoPassedOverClaimThatAnsweredWhileItsMachineDecides(t *te
 	if len(lines) != 1 {
 		t.Fatalf("the replacement was logged %+v, want one line", lines)
 	}
-	wantReadThroughTheTester(t, rig, lines[0], "found work")
-	wantField(t, lines[0], "notWaitedFor", claim.RoleImplementer)
+	if reads := rig.rt.CallsOf("WorkspaceWork"); len(reads) != 0 {
+		t.Errorf("the workspace was read %+v, want no read: the implementer answered the round, so the round passed over no claim that had not answered", reads)
+	}
+	wantField(t, lines[0], "notWaitedFor")
 	if messages := rig.messages(); len(messages) != 0 {
 		t.Errorf("the issue was written %q, want nothing: the implementer answered the round, and no other claim lost work", messages)
 	}

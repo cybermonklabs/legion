@@ -74,11 +74,12 @@ const BudgetGraphQL Budget = "graphql"
 // pull requests costs one point. An answer other than 2xx is an *Answer, as a REST call's is, a
 // rate limit among them, and so is a 200 whose errors are GitHub's rate limit (rateLimited:
 // GraphQL's RATE_LIMITED, a retry-after, an exhausted budget, or the secondary limit's message),
-// with the wait its headers ask, or a minute (limitWait). A 2xx whose `errors` list is not empty
-// is GraphQLErrors after the data it carries is read, so a caller that asked for several things
-// takes those GitHub answered and reads each error's Path for the rest; one with no `data` and no
-// errors is an error too. It is not named Query: the daemon's transaction guard (internal/textcheck)
-// reads every method of that name that takes a context first as a database statement.
+// with the wait its headers ask, or a minute (LimitHeaders.WaitAt). A 2xx whose `errors` list is
+// not empty is GraphQLErrors after the data it carries is read, so a caller that asked for several
+// things takes those GitHub answered and reads each error's Path for the rest; one with no `data`
+// and no errors is an error too. It is not named Query: the daemon's transaction guard
+// (internal/textcheck) reads every method of that name that takes a context first as a database
+// statement.
 func (c Client) GraphQL(ctx context.Context, query string, variables map[string]any, into any) error {
 	encoded, err := json.Marshal(map[string]any{"query": query, "variables": variables})
 	if err != nil {
@@ -103,8 +104,10 @@ func (c Client) GraphQL(ctx context.Context, query string, variables map[string]
 		if budget == BudgetCore {
 			budget = BudgetGraphQL
 		}
+		limit := limitHeaders(headers)
+		wait, _ := limit.WaitAt(time.Now())
 		return &Answer{Method: http.MethodPost, Path: path, Status: http.StatusOK, Body: body, RateLimited: true,
-			RetryAfter: limitWait(headers, time.Now()), Budget: budget, Limit: limitHeaders(headers)}
+			RetryAfter: wait, Budget: budget, Limit: limit}
 	}
 	data := len(answer.Data) > 0 && string(answer.Data) != "null"
 	if data {

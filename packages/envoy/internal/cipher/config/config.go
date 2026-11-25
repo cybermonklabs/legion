@@ -203,6 +203,33 @@ type Config struct {
 	// BROKER_SIGNIN_* setting, naming the ones set, and beside the model judge, which decides
 	// only a request that waits for a person; any other value refuses naming it.
 	SignInOff bool
+	// BROKER_GITHUB_APP_FIELD: off turns off the answer to the github_app field that an
+	// agent-secrets of a release before --target sends with --github-owner, --github-repo,
+	// --github-read-only and --github-token (requests.Machine.GitHubAppFieldOff): the field is
+	// then refused 400 GITHUB_APP_FIELD_REMOVED, as it was before this setting. Unset (or empty),
+	// the broker answers it: for the stored github-app secret the old body names, it serves the
+	// profile of that secret the profiles file grants the caller at once, narrowed to the body's
+	// account and repositories, minted in the released installations form and handed over outside
+	// the airlock, as legion-envoy-v33.7.0 did. Set it to off once no released client sends the
+	// field (the broker logs each answer, requests.GitHubAppFieldAnsweredMessage). Any other value
+	// refuses the start, naming the setting and the value.
+	GitHubAppFieldOff bool
+	// BROKER_GITHUB_APP_FIELD_REQUESTERS: the services and people the broker answers the
+	// github_app field for, separated by commas or spaces, each a registered service's name or a
+	// person's lowercase email. Unset, the broker answers no service at all, so a deployment's
+	// own value is what turns the answer on for its pods. A person asking for their own App, which
+	// the secret's owner tag names, is answered beside this list. Every other requester is refused
+	// 400 GITHUB_APP_FIELD_REMOVED, whatever the profiles file would grant it: a profile with no
+	// requesters list is granted to every agent-tier caller, and the old body hands over a real
+	// token outside the airlock, which such a caller's own --target request never gets.
+	GitHubAppFieldRequesters string
+	// BROKER_GITHUB_APP_FIELD_SECRETS: the stored github-app secrets whose release the github_app
+	// field hands over outside the airlock, separated by commas or spaces, each an uppercase
+	// agent-secret name such as EXAMPLE_APP. Unset, the broker names none, so it answers the
+	// field for no secret: a deployment names the Apps the broker of its earlier release handed
+	// over raw. The field's answer removes the profile's proxy block, so this setting, and not
+	// the requester list, is what says which App may leave the airlock at all.
+	GitHubAppFieldSecrets string
 	// BROKER_SIGNIN_WORKSPACE_DOMAINS: the other domains the Google Workspace owns beside
 	// BROKER_SIGNIN_DOMAIN, separated by commas, each a lowercase domain name; an
 	// internationalized one is written in Unicode or as its A-labels, and is held as its A-labels.
@@ -830,11 +857,11 @@ type Config struct {
 	// system:serviceaccount:example-ns:example-reader=example-reader=example-reader-session. The
 	// token minted for a pod of the account holds only the OAuth scope read, the project scope
 	// none, the service and the session, and names no person and no project: Dispatch serves it
-	// on the routes its read list names and refuses it everywhere else, and every other service
-	// that reads the broker's tokens, the Envoy listener among them, refuses it. That token reads the
-	// whole answer of GET /api/v1/projects/{key}/architecture for every project that has an
-	// architecture source: each source, each component, and every issue of the project, closed and
-	// iceboxed ones included. No setting holds a read entry to some projects.
+	// on every GET route it classes as a read and refuses it everywhere else, and every other
+	// service that reads the broker's tokens, the Envoy listener among them, refuses it. So that
+	// token reads everything a read route answers, across every project: issues, documents, asks,
+	// comments and the rest, closed and iceboxed ones included. No setting holds a read entry to
+	// some projects.
 	// The session is everything after the second "=", so it alone may carry one. A namespace's
 	// default account is refused, as is a service that is not lowercase letters, digits and
 	// hyphens, at most 64, or is shared, an account listed twice, and an account
@@ -2412,6 +2439,18 @@ func Load(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	gitHubAppFieldOff, err := parseGitHubAppField(getenv(gitHubAppFieldSetting))
+	if err != nil {
+		return Config{}, err
+	}
+	gitHubAppFieldRequesters, err := parseGitHubAppFieldRequesters(getenv(gitHubAppFieldRequestersSetting))
+	if err != nil {
+		return Config{}, err
+	}
+	gitHubAppFieldSecrets, err := parseGitHubAppFieldSecrets(getenv(gitHubAppFieldSecretsSetting))
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
 		ListenAddr:                orDefault(getenv("BROKER_LISTEN_ADDR"), "127.0.0.1:13380"),
 		MetricsListenAddr:         orDefault(getenv("BROKER_METRICS_LISTEN_ADDR"), "127.0.0.1:13382"),
@@ -2449,6 +2488,9 @@ func Load(getenv func(string) string) (Config, error) {
 		EnvoyURL:                  getenv("BROKER_ENVOY_URL"),
 		TrustedProxyHeader:        getenv("BROKER_TRUSTED_PROXY_HEADER"),
 		SignInOff:                 signInOff,
+		GitHubAppFieldOff:         gitHubAppFieldOff,
+		GitHubAppFieldRequesters:  gitHubAppFieldRequesters,
+		GitHubAppFieldSecrets:     gitHubAppFieldSecrets,
 	}
 	// The local stack's test-only settings, the airlock's and the judge's: each is read
 	// whatever the rules file says, since the two minter bases are read with no airlock at all.
@@ -3019,6 +3061,64 @@ func parseSignInSwitch(getenv func(string) string) (bool, error) {
 			signInSwitchSetting, signInOffValue, strings.Join(set, ", "), verb, signInSwitchSetting, signInOffValue)
 	}
 	return true, nil
+}
+
+// gitHubAppFieldSetting turns off the answer to the github_app field of an earlier agent-secrets
+// (Config.GitHubAppFieldOff).
+const gitHubAppFieldSetting = "BROKER_GITHUB_APP_FIELD"
+
+// gitHubAppFieldRequestersSetting and gitHubAppFieldSecretsSetting name whom the github_app
+// field is answered for and which stored secrets it hands over outside the airlock.
+const (
+	gitHubAppFieldRequestersSetting = "BROKER_GITHUB_APP_FIELD_REQUESTERS"
+	gitHubAppFieldSecretsSetting    = "BROKER_GITHUB_APP_FIELD_SECRETS"
+)
+
+// parseGitHubAppFieldRequesters reads BROKER_GITHUB_APP_FIELD_REQUESTERS, its entries separated
+// by commas or spaces: each a registered service's name (record.ValidService) or a person's
+// lowercase email (policy.ValidPersonOwner, the rule a secret's owner tag is held to). It
+// answers them joined by one
+// space, and refuses the start naming the setting and the entry for anything else, since an
+// entry nobody matches would answer that caller nothing with no message, in the middle of the
+// incident this field exists for. Unset or empty names nobody.
+func parseGitHubAppFieldRequesters(value string) (string, error) {
+	var entries []string
+	for entry := range strings.FieldsSeq(strings.ReplaceAll(value, ",", " ")) {
+		person := strings.Contains(entry, "@")
+		if person && !policy.ValidPersonOwner(entry) || !person && !record.ValidService(entry) {
+			return "", fmt.Errorf("%s names %q, which is neither a registered service's name nor a person's lowercase email", gitHubAppFieldRequestersSetting, entry)
+		}
+		entries = append(entries, entry)
+	}
+	return strings.Join(entries, " "), nil
+}
+
+// parseGitHubAppFieldSecrets reads BROKER_GITHUB_APP_FIELD_SECRETS, its entries separated by
+// commas or spaces: each an agent-secret name, as a session asks for one. It answers them joined
+// by one space, and refuses the start naming the setting and the entry for anything else. Unset
+// or empty names no secret, so the field is answered for none.
+func parseGitHubAppFieldSecrets(value string) (string, error) {
+	var entries []string
+	for entry := range strings.FieldsSeq(strings.ReplaceAll(value, ",", " ")) {
+		if _, err := policy.NameToSlug(entry); err != nil {
+			return "", fmt.Errorf("%s names %q, which is no agent-secret name: %v", gitHubAppFieldSecretsSetting, entry, err)
+		}
+		entries = append(entries, entry)
+	}
+	return strings.Join(entries, " "), nil
+}
+
+// parseGitHubAppField reads BROKER_GITHUB_APP_FIELD: unset (or empty) answers the field, exactly
+// off refuses it, and any other value refuses the start naming the setting and the value, so a
+// misspelled off never leaves the answer on.
+func parseGitHubAppField(value string) (bool, error) {
+	switch value {
+	case "":
+		return false, nil
+	case "off":
+		return true, nil
+	}
+	return false, fmt.Errorf("%s must be off or unset, got %q", gitHubAppFieldSetting, value)
 }
 
 // parseSignIn reads the broker's sign-in client, its session lasting sessionLifetime, the

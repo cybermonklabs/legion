@@ -17,6 +17,8 @@ import {
   parseCommand,
 } from "./dispatch-command";
 import { defined } from "./dispatch-commands/context";
+import { parentStatusConflictLines } from "./dispatch-commands/failures";
+import { printsJson } from "./dispatch-commands/issues";
 import { loginCommand } from "./dispatch-commands/login";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import type { DispatchHost } from "./dispatch-cwd";
@@ -315,21 +317,26 @@ function callSession(
 /**
  * Dispatch's configuration for `session`, read now, with each line the read of its file says
  * beside it; or why Dispatch is off. The session is the one a broker trade writes under, so the
- * token the call presents names it rather than naming none or another of this machine's.
+ * token the call presents names it rather than naming none or another of this machine's. The
+ * `dispatch` command, a spec command's call and `dispatch proxy` alike, is the one caller that
+ * takes the token files (`tokenFilesTarget`, dispatch-config.ts).
  */
-function callDispatch(
+async function callDispatch(
   session: CallSession,
   env: Readonly<Record<string, string>>,
   cwd: string
-): { readonly warnings: readonly string[] } & (
-  | { readonly config: ActiveDispatchConfig }
-  | CallRefused
-) {
+): Promise<
+  { readonly warnings: readonly string[] } & (
+    | { readonly config: ActiveDispatchConfig }
+    | CallRefused
+  )
+> {
   const { file, sessionId } = session;
   if (file.path === null) return { warnings: [], refused: `dispatch: ${file.error}` };
-  const { dispatch: resolution, warnings } = sessionDispatchSettings(file, env, {
+  const { dispatch: resolution, warnings } = await sessionDispatchSettings(file, env, {
     cwd,
     session: sessionId,
+    tokenFiles: true,
   });
   if (!resolution.enabled) {
     return {
@@ -386,7 +393,7 @@ async function runProxyCommand(
       "dispatch proxy: DISPATCH_TOKEN_BROKER is not 1, so this session holds no broker token for the proxy to serve with. The proxy runs only where the deployment trades this session's Dispatch credential at the secrets broker, and never with a bearer."
     );
   }
-  const dispatch = callDispatch(session, env, io.cwd);
+  const dispatch = await callDispatch(session, env, io.cwd);
   for (const warning of dispatch.warnings) say(`dispatch: ${warning}`);
   if ("refused" in dispatch) return cannotStart(dispatch.refused);
   const { config } = dispatch;
@@ -438,6 +445,8 @@ export async function runDispatchCli(
   }
   // `dispatch login` logs the machine in, before any session of it exists: a person runs it in a
   // terminal, so it reads no host, no session and no envoy.json (`dispatch-commands/login.ts`).
+  // It refuses while either token file is set, after its own `--help`; `tokenFilesTarget` in
+  // `dispatch-config.ts` says when a call below runs on the files.
   if (argv[0] === LOGIN_COMMAND) {
     return await loginCommand(argv.slice(1), env, {
       print,
@@ -531,7 +540,13 @@ export async function runDispatchCli(
     const settings =
       file.path === null
         ? null
-        : sessionDispatchSettings(file, env, { cwd: io.cwd, session: sessionId }).dispatch;
+        : (
+            await sessionDispatchSettings(file, env, {
+              cwd: io.cwd,
+              session: sessionId,
+              tokenFiles: true,
+            })
+          ).dispatch;
     const { problems } = await checkDispatchCall({
       tool: parsed.tool,
       args: parsed.args,
@@ -545,9 +560,13 @@ export async function runDispatchCli(
     print(JSON.stringify(parsed.args, null, 2));
     return OK;
   }
-  const dispatch = callDispatch(session, env, io.cwd);
+  const dispatch = await callDispatch(session, env, io.cwd);
+  // A call whose whole output is one JSON object (`printsJson`) prints the CLI's own lines on
+  // standard error, so its standard output is the object alone.
+  const wholeJson = printsJson(parsed.tool, parsed.args);
+  const note = (line: string): void => (wholeJson ? io.stderr(`${line}\n`) : print(line));
   // A checkout's OpenCode-era file, which is not read, is said on every call while it is there.
-  for (const warning of dispatch.warnings) print(`dispatch: ${warning}`);
+  for (const warning of dispatch.warnings) note(`dispatch: ${warning}`);
   if ("refused" in dispatch) return refuse(dispatch.refused, USAGE, parsed.tool);
   const { config } = dispatch;
 
@@ -690,7 +709,7 @@ export async function runDispatchCli(
   let topics: Promise<readonly string[] | null> | undefined;
   const readTopics = async (): Promise<readonly string[] | null> => {
     try {
-      const envoy = sessionEnvoySettings(file, env, {
+      const envoy = await sessionEnvoySettings(file, env, {
         cwd: io.cwd,
         nats: false,
         session: sessionId,
@@ -764,7 +783,12 @@ export async function runDispatchCli(
     // is never told an issue was filed. Its text is the same either way.
     code = result.refused === true ? REFUSED : OK;
   } catch (error) {
-    text = messageFor(error);
+    // A 409 PARENT_STATUS_CONFLICT names each issue that holds the rule and what the refused
+    // command's caller does next (`parentStatusConflictLines`), as a near copy's refusal names
+    // each open issue. LEGION_ISSUE tells the project of the issue a call with no --issue names.
+    text = (
+      parentStatusConflictLines(error, tool, args, env.LEGION_ISSUE) ?? [messageFor(error)]
+    ).join("\n");
     // The command's write landed but its answer was lost: it is done, so the call succeeded, and
     // its one line says to read back what it made. The executor turns a landing of a write that
     // was only a step of its command (a picture, a closing reason) into a failure of its own. A
@@ -799,12 +823,17 @@ export async function runDispatchCli(
       return `not written, ${messageFor(error)}`;
     }
   };
+  // A cut JSON object is no JSON object, so a call whose output is one is printed whole on every
+  // host, and its kept lines go to standard error.
+  if (wholeJson) for (const line of kept) note(line);
   print(
     fitOutput(
       text,
       pictures,
-      kept,
-      host === "claude" || host === "codex" ? CLAUDE_OUTPUT_MAX : Number.POSITIVE_INFINITY,
+      wholeJson ? [] : kept,
+      (host === "claude" || host === "codex") && !wholeJson
+        ? CLAUDE_OUTPUT_MAX
+        : Number.POSITIVE_INFINITY,
       writeFull
     )
   );

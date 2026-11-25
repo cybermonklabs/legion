@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"strings"
@@ -12,14 +13,50 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
+// keptPodStore is a migrated store whose issues table records testTree under the rig's project:
+// the store records a pod of a kept volume only for an issue the asking project records
+// (store.Store.StartKeptPod).
+func keptPodStore(t *testing.T) *store.Store {
+	t.Helper()
+	st := migratedStore(t)
+	if _, err := st.Pool().Exec(context.Background(), `insert into issues
+		(key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
+		values ($1, $1, 'LEGION', 'root', 'implementing', 1, 'in_progress', 'A', 1)`, testTree); err != nil {
+		t.Fatalf("record %s: %v", testTree, err)
+	}
+	return st
+}
+
+// keptPodStart is st's record of a role's start in a pod of the rig's project whose Sandbox owns
+// the issue's kept volume, as the daemon wires it into the runtime (internal/daemon's keptPodStart).
+func keptPodStart(st *store.Store) runtime.KeptPodStart {
+	return func(ctx context.Context, issue, podUID string, keptSince time.Time) error {
+		return st.StartKeptPod(ctx, testProject, issue, podUID, keptSince)
+	}
+}
+
+// faultedStore is st's database through a commit-fault proxy, opened as a store of its own: the
+// record runs on it, and st reads what committed.
+func faultedStore(t *testing.T, st *store.Store) (*store.Store, *testdb.CommitFault) {
+	t.Helper()
+	dsn, fault := testdb.CommitFaults(t, st.Pool().Config().ConnString())
+	faulted, err := store.Open(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("open the store through the fault proxy: %v", err)
+	}
+	t.Cleanup(faulted.Close)
+	return faulted, fault
+}
+
 // keptPodRows is the store's record of each pod of the rig's issue, as "<pod>/<kept_since>/<mark>"
-// in the order of the pods' uids: kept_since in RFC 3339, "none" for a pod with none.
+// in the order of the pods' uids, kept_since in RFC 3339.
 func keptPodRows(t *testing.T, st *store.Store) []string {
 	t.Helper()
 	rows, err := st.Pool().Query(t.Context(), `select pod_uid || '/'
-		|| coalesce(to_char(kept_since at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), 'none') || '/'
+		|| to_char(kept_since at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') || '/'
 		|| case when holds_earlier_work then 'marked' else 'unmarked' end
 		from issue_pod_disks where issue = $1 order by pod_uid`, testTree)
 	if err != nil {
@@ -33,16 +70,14 @@ func keptPodRows(t *testing.T, st *store.Store) []string {
 }
 
 // A role's start in a pod whose Sandbox owns the issue's kept volume records that pod with its
-// volume whether or not the issue has a saved bundle (launchers.restoreWorkspace,
-// store.StartKeptPod). What the roles of that pod leave unpushed stays on the volume, so the next
-// pod of the same Sandbox holds it, and the store marks that next pod for it, while the first pod
-// of the volume stays unmarked (store.PodHoldsEarlierWork). No release here saves any work, so a
-// launcher that asked the store only where the issue has a bundle would record neither pod, and
-// the next pod would read as holding nothing from before it.
-func TestAKeptPodsStartRecordsThePodWithNoSavedBundle(t *testing.T) {
-	st := bundleStore(t)
+// volume (launchers.recordKeptPod, store.StartKeptPod). What the roles of that pod leave unpushed
+// stays on the volume, so the next pod of the same Sandbox holds it, and the store marks that next
+// pod for it, while the first pod of the volume stays unmarked (store.PodHoldsEarlierWork). A
+// launcher that recorded no pod of a kept volume would leave the next pod reading as holding
+// nothing from before it.
+func TestAKeptPodsStartRecordsThePodAndMarksTheNextPodOfItsVolume(t *testing.T) {
+	st := keptPodStore(t)
 	g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)), withOptions(func(o *Options) {
-		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = takeBundle(st), st.DeleteRestoredWorkspaceBundle
 		o.KeptPodStart = keptPodStart(st)
 	}))
 	spec := workerSpec(t)
@@ -51,21 +86,15 @@ func TestAKeptPodsStartRecordsThePodWithNoSavedBundle(t *testing.T) {
 	if s == nil || !ownsKeptVolume(s) {
 		t.Fatalf("the issue's Sandbox = %+v, want one that owns the kept volume, or this case proves nothing", s)
 	}
-	if _, held, err := st.WorkspaceBundleSize(g.ctx, testTree); err != nil || held {
-		t.Fatalf("the store holds a bundle for %s = %t (%v), want none, or this case proves nothing", testTree, held, err)
-	}
 
 	// The release keeps the Sandbox and its volume, and the issue's next launch brings the next pod
 	// of that Sandbox, in which the role starts again.
-	if err := g.r.ReleaseIssue(g.ctx, testTree, testTree, authorized); err != nil {
-		t.Fatalf("ReleaseIssue: %v", err)
+	if released, err := g.r.ReleaseIssue(g.ctx, testTree, testTree, authorized, nil); err != nil || !released {
+		t.Fatalf("ReleaseIssue = %v, %v; want the issue's pod released", released, err)
 	}
 	next := g.relaunchOnNewPod(first, &spec)
 	if kept := g.sandbox(next.Sandbox.Name); kept == nil || kept.UID != s.UID {
 		t.Fatalf("after the release the issue's Sandbox is %+v, want %s kept", kept, s.UID)
-	}
-	if _, held, err := st.WorkspaceBundleSize(g.ctx, testTree); err != nil || held {
-		t.Fatalf("the store holds a bundle for %s = %t (%v), want none, or this case proves nothing", testTree, held, err)
 	}
 
 	for _, pod := range []struct {
@@ -93,10 +122,9 @@ func TestAKeptPodsStartRecordsThePodWithNoSavedBundle(t *testing.T) {
 // since nothing was issued; and the store holds no row of the pod. Once the store answers again,
 // the next launch starts the role and the row is written.
 func TestAKeptPodTheStoreCannotRecordStartsNoRoleUntilItCan(t *testing.T) {
-	st := bundleStore(t)
-	faulted, fault := faultedBundleStore(t, st)
+	st := keptPodStore(t)
+	faulted, fault := faultedStore(t, st)
 	g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)), withOptions(func(o *Options) {
-		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = takeBundle(st), st.DeleteRestoredWorkspaceBundle
 		o.KeptPodStart = keptPodStart(faulted)
 	}))
 	// The start's bound is the boot timeout here, not the minutes a kept volume's attach may take,

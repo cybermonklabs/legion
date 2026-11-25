@@ -31,6 +31,7 @@ import {
 } from "./signins";
 import type { TokenSource } from "./source";
 import { BrokerTokenClient } from "./token-client";
+import { SCOPE_READ } from "./wire";
 
 /** Names the secrets broker, as it does for every other form of `agent-secrets`. */
 export const BROKER_URL_VAR = "AGENT_SECRETS_URL";
@@ -265,6 +266,13 @@ export interface MadeBrokerClient {
   readonly signIn: Pick<SignInRecord, "person" | "thumbprint"> | undefined;
 }
 
+/** A trade narrowed to reading, as a caller of {@link brokerTokenClient} asks for one: the scope
+ *  `read` ({@link SCOPE_READ}), and the cut where the token reads as of a past time. */
+export interface ReadTrade {
+  /** The cut, an RFC 3339 time sent as written (`FORM_AS_OF`); absent or empty for none. */
+  readonly asOf?: string | undefined;
+}
+
 /**
  * The client this environment describes for a caller acting as the session `own`, with the
  * sign-in it trades, or undefined where it names no broker or no identity — a machine that trades
@@ -319,10 +327,22 @@ export interface MadeBrokerClient {
  * ({@link PERSON_TRADE_VAR} set to `off`) is refused one: the broker mints its trade as the
  * login's person, so a controller would act on Dispatch and Envoy in its operator's name, and
  * there is no machine identity to trade in its place.
+ *
+ * Where `read` is given, each of the three clients asks for the scope read ({@link SCOPE_READ})
+ * and the cut `read` names: the token keeps the identity the same trade would have had, and only
+ * reads. The person's client and the device login's prove a key that signs launcher proofs, the
+ * box key or the login's key, and the broker binds no read token to such a key, so each makes a
+ * key of its own for the client and sends it as the holder key (`holderKey`): the token is bound
+ * to that key, which signs every proof presented beside it, and the proof key signs the trade
+ * alone. Neither sends `launcher_credential`, which the broker reads as declined for a read
+ * trade. The machine's own client proves a key that holds no launcher credential, one this
+ * process made or a pod role's agent-secrets key, which the broker enrolls as a session key and
+ * mints no launcher credential on, and needs no holder key.
  */
 export async function brokerTokenClient(
   env: BrokerEnvironment,
-  own = ""
+  own = "",
+  read?: ReadTrade | undefined
 ): Promise<MadeBrokerClient | undefined> {
   const brokerUrl = value(env, BROKER_URL_VAR);
   const machine = machineIdentity(env);
@@ -330,6 +350,11 @@ export async function brokerTokenClient(
   // Not quoted: every trade's text names this URL, and a value that is none may be a token pasted
   // into the variable.
   if (!isHttpUrl(brokerUrl)) throw new Error(`${BROKER_URL_VAR} is not an http or https URL`);
+  const narrowed = read === undefined ? {} : { scope: SCOPE_READ, asOf: read.asOf };
+  // A read trade of a client whose key signs launcher proofs, the person's or the device login's,
+  // with a holder key made for that client alone.
+  const heldApart = async () =>
+    read === undefined ? {} : { ...narrowed, holderKey: await newDpopKey() };
   if (machine instanceof DeviceLoginIdentity) {
     if (personTradeOff(env)) {
       throw new Error(
@@ -342,6 +367,7 @@ export async function brokerTokenClient(
       subject: machine,
       session: tradeSession(env, own) || deviceLoginSessionName(await machine.thumbprint()),
       projects: tradeProjects(env),
+      ...(await heldApart()),
     });
     return { client, signIn: undefined };
   }
@@ -353,6 +379,7 @@ export async function brokerTokenClient(
       subject: machine,
       session: tradeSession(env, own),
       launcherCredential: false,
+      ...narrowed,
     });
     return { client, signIn: undefined };
   }
@@ -369,6 +396,7 @@ export async function brokerTokenClient(
     actor: machine,
     session: own.trim() || signInSessionName(record),
     projects: tradeProjects(env),
+    ...(await heldApart()),
   });
   return { client, signIn: { person: record.person, thumbprint: record.thumbprint } };
 }
