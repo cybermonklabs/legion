@@ -570,7 +570,8 @@ function completionOf(responses: Response[], start: ReadLine, end: ReadLine): Re
  * Why no comparison can take the step on its reads, or "" where one can. On a step that its agent
  * ended, with one start read and one end read of one launch and neither final, it also gives the
  * response that holds the completion call, or null. The 2 s test of the end read leaves that
- * response out, and every other response keeps the 2 s test at both reads.
+ * response out, and every other response keeps the 2 s test at both reads. Where no response holds
+ * the call, the end read leaves out nothing.
  */
 function whyNot(
   starts: ReadLine[],
@@ -597,7 +598,6 @@ function whyNot(
       return { why: `a response ended within 2 s of its ${read.side} read`, completion };
     }
   }
-  if (completion === null) return { why: "no response holds its completion call", completion };
   return { why: "", completion };
 }
 

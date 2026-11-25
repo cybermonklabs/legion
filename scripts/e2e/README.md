@@ -5629,7 +5629,8 @@ Each item below names a comparison, then what it takes and judges.
 - `c-real` takes, for each harness of the agents file, the first step that its agent ended, in `--issue` order and then in printed order.
   Its agent ended it where the daemon's end line of the step says `endedBy` `agent`.
   The step needs one start read and one end read of one launch, neither final totals, and neither within 2 s of a response.
-  It needs a completion's response. The 2 s test of its end read leaves that response out, and every other response keeps the test at both reads.
+  Where a response holds its completion call, the 2 s test of its end read leaves that response out.
+  Every other response keeps the test at both reads, and where no response holds the call, the end read leaves out none.
   Its set model must be the agent's `setModel`, and its counts must be known and total at least 1.
   Its counts must equal, model by model, the transcript's counted responses after the start read and up to the end read, with the completion's response.
   That response counts where its time lies after the end read too.
