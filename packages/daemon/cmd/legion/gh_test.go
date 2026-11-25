@@ -1152,7 +1152,7 @@ func TestReadGitRemotesReadsWhatGhReads(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	repository := t.TempDir()
 	t.Chdir(repository)
-	if remotes, err := readGitRemotes(); err != nil || remotes != nil {
+	if remotes, err := readGitRemotes(context.Background()); err != nil || remotes != nil {
 		t.Errorf("readGitRemotes outside a git repository = %v, %v; want none", remotes, err)
 	}
 	// One home for every fixture of this test: each command reads the repository it is given and
@@ -1176,7 +1176,7 @@ func TestReadGitRemotesReadsWhatGhReads(t *testing.T) {
 		// credential a GIT_ variable planted back after the guard could name.
 		fixture.Run(repository, append([]string{"git"}, args...)...)
 	}
-	remotes, err := readGitRemotes()
+	remotes, err := readGitRemotes(context.Background())
 	want := []ghRemote{
 		{name: "origin", url: "https://github.com/acme/widgets.git"},
 		{name: "origin", url: "https://github.com/acme/pushed.git", push: true},
@@ -1222,7 +1222,7 @@ func TestReadGitRemotesReadsEveryMarkerLineGitPrints(t *testing.T) {
 	// git config writes no key without a value, so that line is written into the repository's
 	// configuration file itself.
 	appendTo(t, filepath.Join(repository, ".git", "config"), "[remote \"upstream\"]\n\tgh-resolved\n")
-	remotes, err := readGitRemotes()
+	remotes, err := readGitRemotes(context.Background())
 	want := []ghRemote{
 		{name: "origin", url: "https://github.com/acme/widgets.git"},
 		{name: "origin", url: "https://github.com/acme/widgets.git", push: true},
@@ -1271,7 +1271,7 @@ func TestReadGitRemotesRefusesALineGhReadsOtherwise(t *testing.T) {
 				// environment is its own too, for the reason the test above gives.
 				fixture.Run(repository, append([]string{"git"}, args...)...)
 			}
-			if remotes, err := readGitRemotes(); err == nil || !strings.Contains(err.Error(), "git remote -v printed") || !strings.Contains(err.Error(), "evilown") {
+			if remotes, err := readGitRemotes(context.Background()); err == nil || !strings.Contains(err.Error(), "git remote -v printed") || !strings.Contains(err.Error(), "evilown") {
 				t.Errorf("readGitRemotes = %+v, %v; want the line naming evilown refused", remotes, err)
 			}
 		})

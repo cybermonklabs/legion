@@ -599,7 +599,7 @@ func (c *claimsCall) awaitHeld(ctx context.Context, op operator, token legioncla
 			return nil, false
 		}
 		if !c.until.IsZero() && !time.Now().Add(heldPoll).Before(c.until) {
-			fmt.Fprintf(c.stderr, "%s: %s is still %s after the --wait bound of %s, its %s\n", c.name(), token, seen.State, *c.wait, outlasted)
+			fmt.Fprintf(c.stderr, "%s: %s is still %s after the --wait bound of %s, its %s\n", c.name(), token, seen.State, c.waited, outlasted)
 			return nil, false
 		}
 		select {
