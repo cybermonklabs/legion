@@ -183,13 +183,6 @@ type fakeGrants struct {
 	// broker's own table holds it: minted once and answered again after.
 	access      map[string]string
 	accessCalls int
-	// enrollmentCalls counts the reads of every live grant of an enrollment, and enrollmentErr
-	// is what each of them answers when a row sets it: a read that did not happen. grantErrs is
-	// the answer of a read that reaches one grant, by its id: that grant's own check failing, as
-	// its project check does while Dispatch cannot answer, fails the whole read.
-	enrollmentCalls int
-	enrollmentErr   error
-	grantErrs       map[string]error
 }
 
 func newFakeGrants() *fakeGrants {

@@ -28,6 +28,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"errors"
 	"io"
 	"log"
 	"log/slog"
@@ -44,8 +45,10 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	"github.com/sjawhar/envoy/internal/cipher/netaddr"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/fold"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
@@ -100,24 +103,6 @@ type GrantSource interface {
 	// name and slot and answered again after, so a command that asks for one scope twice - and
 	// a second pod that exchanges that scope for itself - reads back the same string.
 	AirlockAccessPlaceholder(ctx context.Context, grantID, name, slot string) (string, error)
-	// ProxyGrantsOfEnrollment is the live grants of enrollment enrollmentID, but exceptGrantID,
-	// that hold a placeholder of one of names - the secrets whose entries bind the host the proxy
-	// decides for (boundEntries) - each as AirlockConnection answers a connection opened with one
-	// of its placeholders, in grant id order. A grant that holds no placeholder of any of names
-	// is left out before any check of it, its project check among them, and a read naming no
-	// name answers none: so such a grant is never read for this host, and a check of it that
-	// cannot be made fails no call to that host. A grant that does hold one is read and checked
-	// whole, even where the name it holds is one its session's operator withheld. A command holds
-	// the placeholders of every grant its session has, so a host such a grant binds is read
-	// (sessionBinds), and a placeholder of such a grant is swapped on one connection (handledFor).
-	// Every error of it is a read that did not happen, or a refusal of the whole enrollment
-	// (grantRefusal).
-	ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID, exceptGrantID string, names []string) ([]requests.AirlockConnection, error)
-	// ProxyPlaceholderGrant is the grant the broker minted a placeholder for, and "" where it
-	// knows none: a release's placeholder live or ended, until the sweep deletes an ended grant's
-	// rows, and a minted capability's while its grant lives. The refusal of a request that still
-	// carries a placeholder after the swap names that grant (Server.placeholderGrant).
-	ProxyPlaceholderGrant(ctx context.Context, placeholder string) (string, error)
 }
 
 // Options is what a Server is built from.
@@ -327,15 +312,8 @@ type connInfo struct {
 	password string
 	// grant is what that password proved when the connection was opened. Nothing is decided
 	// from it - each request is decided from the grant it read for itself - and what it is
-	// here for is the line a request logs before that read answers. On the copy one request
-	// reads, serveBound replaces it with the grant that request is handled for (handledFor),
-	// which the call's line, its dials and its watcher read.
+	// here for is the line a request logs before that read answers.
 	grant requests.AirlockConnection
-	// handledBy is a placeholder of the grant one request on this connection is handled for,
-	// when that is another live grant of the connection's enrollment than the one password
-	// proves (handledFor), and "" otherwise: the watcher of the call reads that grant again by it
-	// (carryRefusal). It is set on the copy of this one request, never on the connection's own.
-	handledBy string
 	// cut is the connection under this one's TLS, which the cut of a joined connection
 	// stops before it writes close_notify (cutJoined). It travels here so that the watcher
 	// of a join reaches it as it reaches everything else it was opened with, rather than
@@ -543,7 +521,22 @@ func (s *Server) serveProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	grant, err := s.grants.AirlockConnection(r.Context(), placeholder)
 	if err != nil {
-		s.refuseRead(w, r, call{host: requestHost(r)}, "connection", err)
+		status, code, why := s.grantRefusal("connection", err)
+		switch status {
+		case http.StatusProxyAuthRequired:
+			// The broker's own words for why this credential opens nothing - an unknown or
+			// ended grant, an enrollment whose lease lapsed, a grant every one of whose
+			// names is withheld - and never the placeholder itself, which a command's own
+			// proxy error line would otherwise print and keep.
+			s.refuseCredential(w, r, call{host: requestHost(r)}, code, why)
+		case http.StatusServiceUnavailable:
+			// A read that did not happen, which grantRefusal has logged: a failure of the
+			// broker's, and no refusal of the caller.
+			fail(w, http.StatusServiceUnavailable, code, why)
+		default:
+			// The broker's own refusal of this grant, in its own words (grantRefusal).
+			s.refuse(w, r, call{host: requestHost(r)}, status, code, why)
+		}
 		return
 	}
 	// Every dial below this point is made for this grant, and the lines it writes name it
@@ -578,6 +571,14 @@ func proxyPassword(r *http.Request) (string, string) {
 	return password, ""
 }
 
+// refuseCredential answers 407 and asks for the credential again (refuse, with the challenge a
+// client sends its credential again on). Nothing is tunnelled and nothing is dialled: a request
+// that reaches here never left the broker.
+func (s *Server) refuseCredential(w http.ResponseWriter, r *http.Request, c call, code, why string) {
+	w.Header().Set("Proxy-Authenticate", `Basic realm="airlock"`)
+	s.refuse(w, r, c, http.StatusProxyAuthRequired, code, why)
+}
+
 // requestHost is the host a request of the outer server asks for, as a refusal's line names it
 // before anything has read the request as a call: an absolute URL's host, and otherwise the
 // request's Host, which is a CONNECT's authority, without its port. Both are ASCII lower-cased,
@@ -591,6 +592,106 @@ func requestHost(r *http.Request) string {
 		host = r.Host
 	}
 	return fold.ASCII(host)
+}
+
+// grantUnreadable is what a command is told when a read of its grant did not answer at all. It
+// names nothing of the read that failed - a Postgres connect error carries the database's user,
+// its name and its address - and it says the call can be made again, because nothing in such a
+// failure says the grant has ended.
+const grantUnreadable = "the broker could not read this grant just now; make the call again"
+
+// The codes of a grant read's answers (grantRefusal): the API port's own code where it answers
+// the same refusal of a grant's release (api's grantValues), and one of this port's own for a
+// refusal the API port names no code for and for a read that did not happen.
+const (
+	codeGrantNotLive       = "GRANT_NOT_LIVE"
+	codeAirlockNoNames     = "AIRLOCK_NO_NAMES"
+	codeGrantChain         = "GRANT_CHAIN_INVALID"
+	codeSecretNotInStore   = "SECRET_NOT_IN_STORE"
+	codeMintFailed         = "MINT_FAILED"
+	codeProfileMintRefused = "PROFILE_MINT_REFUSED"
+	codeTargetRefused      = "TARGET_REFUSED"
+	codeTargetRepositories = "TARGET_REPOSITORIES_REFUSED"
+	codeValueShape         = "AIRLOCK_VALUE_SHAPE"
+	codeMintedOnly         = "MINTED_ONLY"
+	codeGrantRefused       = "GRANT_REFUSED"
+	codeGrantUnreadable    = "GRANT_UNREADABLE"
+)
+
+// grantRefusal is the status, the code and the words one failed grant read is answered with,
+// and it is the one rule for every read of a grant this package makes. Three answers, by what
+// the read said:
+//
+//   - A grant that has ended, and a grant holding no name this session may have, are the read's
+//     own answer about that grant, so they are 407 in the broker's own words, which is what
+//     tells a command to ask for a new grant.
+//   - A mint the secret's own minter could not even ask for - the upstream did not answer, or
+//     answered a 5xx, a 408 or a rate limit (secrets.ErrMintUpstream) - is a read that did not
+//     happen, and it falls to the last answer below. It reaches here wrapped in ErrMintFailed,
+//     which is a refusal of the package the line below asks, so it has to be read first: a
+//     re-mint of a github-app, google-login or azure-login name behind the airlock fails this way
+//     whenever its upstream has a bad minute, and answering that 403 would tell a command no retry
+//     clears it and would close a WebSocket the grant still carries.
+//   - Every other refusal the broker made about this grant - a chain that no longer verifies, a
+//     secret the store no longer holds, a mint the secret's own minter refused, a profile's scope
+//     that minter refused (secrets.ErrMintNarrowingRefused, which the release hands over as it
+//     is), a target the live profile does not hold, a value whose shape the airlock cannot take
+//     apart, a stored secret under a dpop block - is 403 in those words. No retry clears one of
+//     them, so telling a command to make the call again would be untrue, and none of them
+//     carries anything of the store the read went to. Which errors those are is the read's own
+//     package to say (requests.IsRefusal), since a sentinel added there would be missed by a
+//     list kept here; the eight named here have a code of their own, and any other is
+//     GRANT_REFUSED.
+//   - A release the broker refused because it could not learn whether Dispatch calls the
+//     session's person a restricted member (*projectaccess.MemberKindUncheckable) is 503 in its
+//     own fixed words under the code the API port answers it with: nothing is released while
+//     that cannot be told, and the call can be made again.
+//   - Everything left is a read that did not happen - a database that did not answer, most of
+//     them - and is 503 and grantUnreadable, with the error itself in the log, where it is
+//     wanted: a failed read is no proof that a grant ended, and a database failover must not
+//     send every agent in the middle of a call to ask for a grant it already holds, which on
+//     the human tier is a person approving each one. Nor may the answer carry the read's own
+//     words, which for a Postgres connect error are the database's user, name and address.
+func (s *Server) grantRefusal(read string, err error) (int, string, string) {
+	var uncheckable *projectaccess.MemberKindUncheckable
+	switch {
+	case errors.As(err, &uncheckable):
+		if uncheckable.CallerEnded() {
+			s.log.Info("airlock proxy: the caller ended before Dispatch said whether the person is a restricted member, so the release is refused",
+				"read", read, "person", uncheckable.Person, "error", uncheckable.Err)
+		} else {
+			s.log.Error("airlock proxy: whether Dispatch calls a person a restricted member cannot be read, so the release is refused",
+				"read", read, "person", uncheckable.Person, "error", uncheckable.Err)
+		}
+		return http.StatusServiceUnavailable, projectaccess.UncheckableCode, uncheckable.Error()
+	case errors.Is(err, requests.ErrGrantNotLive):
+		return http.StatusProxyAuthRequired, codeGrantNotLive, err.Error()
+	case errors.Is(err, requests.ErrAirlockNoNames):
+		return http.StatusProxyAuthRequired, codeAirlockNoNames, err.Error()
+	case errors.Is(err, secrets.ErrMintUpstream):
+		// The upstream, not the grant: this one falls through to the 503 below, ahead of the
+		// refusal line, which would otherwise take it for one.
+	case errors.Is(err, requests.ErrGrantChainInvalid):
+		return http.StatusForbidden, codeGrantChain, err.Error()
+	case errors.Is(err, requests.ErrSecretNotInStore):
+		return http.StatusForbidden, codeSecretNotInStore, err.Error()
+	case errors.Is(err, requests.ErrMintFailed):
+		return http.StatusForbidden, codeMintFailed, err.Error()
+	case errors.Is(err, secrets.ErrMintNarrowingRefused):
+		return http.StatusForbidden, codeProfileMintRefused, err.Error()
+	case errors.Is(err, requests.ErrTargetRepositoriesRefused):
+		return http.StatusForbidden, codeTargetRepositories, err.Error()
+	case errors.Is(err, requests.ErrTargetRefused):
+		return http.StatusForbidden, codeTargetRefused, err.Error()
+	case errors.Is(err, requests.ErrAirlockValueShape):
+		return http.StatusForbidden, codeValueShape, err.Error()
+	case errors.Is(err, requests.ErrMintedOnly):
+		return http.StatusForbidden, codeMintedOnly, err.Error()
+	case requests.IsRefusal(err):
+		return http.StatusForbidden, codeGrantRefused, err.Error()
+	}
+	s.log.Error("airlock proxy: a grant could not be read", "read", read, "error", err)
+	return http.StatusServiceUnavailable, codeGrantUnreadable, grantUnreadable
 }
 
 // servePlain answers an absolute-URL proxy request, which is plain HTTP: a command that asked
@@ -627,17 +728,11 @@ func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant reques
 	forwarded := *r.URL
 	forwarded.Host = net.JoinHostPort(host, port)
 	r.URL = &forwarded
-	// Whether any name of this grant, or of another live grant of its enrollment, may carry a
-	// secret to this host, from the one function that says what is bound for a session
-	// (sessionBinds). It is asked about 443 because that is the only port an entry's hosts speak
-	// about, while the refusal below is about no port at all: a value may not cross in the clear
-	// whatever port it was asked for on.
-	bound, err := s.sessionBinds(r.Context(), grant, host, 443)
-	if err != nil {
-		s.refuseRead(w, r, call{grant: grant, host: host}, "enrollment", err)
-		return
-	}
-	if bound {
+	// Whether any name of this grant may carry a secret to this host, from the one function
+	// that says what is bound (candidates). It is asked about 443 because that is the only
+	// port an entry's hosts speak about, while the refusal below is about no port at all: a
+	// value may not cross in the clear whatever port it was asked for on.
+	if len(s.candidates(grant, host, 443)) > 0 {
 		// Plain HTTP to a bound host is refused rather than swapped into: the value would
 		// cross the network in the clear, and no rule of the airlock says a secret may. The
 		// command asks again over https, where the proxy's own certificate covers it.
@@ -652,9 +747,9 @@ func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant reques
 		s.refuse(w, r, call{grant: grant, host: host}, http.StatusForbidden, codeAddressRefused, err.Error())
 		return
 	}
-	// A host no name of a live grant of the session is bound to: the proxy forwards it and puts
-	// nothing into it, exactly as the tunnel above carries what it cannot read, on a socket of
-	// its own whose line is the tunnel's (Server.forward).
+	// A host no name of this grant is bound to: the proxy forwards it and puts nothing into it,
+	// exactly as the tunnel above carries what it cannot read, on a socket of its own whose line
+	// is the tunnel's (Server.forward).
 	proxy := &httputil.ReverseProxy{
 		Transport:     s.forward,
 		FlushInterval: -1,

@@ -1543,45 +1543,14 @@ a fixed phrase in place of the names, so a service that sent the value back ther
 on.
 
 The proxy reads the grant behind the password on every connection, and the entry decides each
-request (`packages/envoy/internal/cipher/proxy`). A command can hold the placeholders of several
-grants of its session at once — one `agent-secrets` run nested in another, or a Legion role's own
-GitHub grant beside the grant a run inside the role asked for — and its password names one of
-them, so a host is bound when an entry of any live grant of the password's enrollment binds it. A
-host no such entry binds is tunnelled unread, to a public address alone. A bound host is read with
-a certificate of the proxy's own authority, and the request must name that same host in its TLS
-name and in its `Host` header; then the entry's hosts, headers, methods and paths decide whether
-the swap happens. A request is handled for one name of one grant: the password's own grant when
-the request carries one of its placeholders, and otherwise the first other live grant of the
-enrollment, in grant id order, that binds the host and whose placeholder the request carries, so
-a placeholder of another grant of the session is swapped on the same connection. A `github-app`
-or `github-installations` name holds one placeholder for each account its App is installed on,
-and the token swapped in is the one of the account the request's path names, when the grant holds
-that account: `/repos/{owner}/…`, `/orgs/{owner}` and `/users/{owner}` on an API host, and git's
-`/{owner}/{repo}` on `github.com`.
-Otherwise it is the token of the account whose placeholder the request carries, so a GraphQL,
-search or `/user` call gets the token of the account the command's gh configuration names. A
-request that still carries a placeholder after the swap is refused `403`
-(`PLACEHOLDER_NOT_SWAPPED`), and nothing of it goes to the service: the placeholder of a grant
-that has ended, of another session, of a second grant beside the one the request is handled for,
-or one outside the headers its entry names, in another header, a trailer, the path or the query.
-Its refusal line names the grant the placeholder was minted for, in `placeholder_grant`: a
-release's while the broker still holds its row, and a minted capability's while its grant lives.
-The scan reads the headers, the trailers, the path and the query. A trailer is a header field a
-request sends after its body, over HTTP/1.1 and HTTP/2 alike, so it has reached the broker by
-this point only where the broker has already read that body to its end: an AWS call it signs
-with the body's hash, and a `Limited` name's post it reads to find the channel. On every other
-request the body is streamed to the service, and the proxy copies the trailer map before any
-value has arrived in it, so such a trailer reaches the service with its names and without its
-values. Two more a command can give its own placeholder away in: the
-body, which is never read, so a placeholder a command writes there goes as it wrote it; and the
-form of the Azure token exchange, which the exchange itself decides and refuses
-`TOKEN_ASSERTION` unless the assertion is this grant's own placeholder. In each of those a
-command gives away its own placeholder, to a service its grant already lets it call.
-A decrypted connection speaks HTTP/1.1
-to a client that offers it, and HTTP/2 to a client that offers nothing else, which is how every
-gRPC client connects. Each HTTP/2 stream is decided on its own, as one request, with its
-`:authority` as its `Host`, so one connection carries no request for another host. A `CONNECT` or
-an upgrade to `h2c` inside that connection is refused
+request (`packages/envoy/internal/cipher/proxy`). A host no entry of that grant binds is
+tunnelled unread, to a public address alone. A bound host is read with a certificate of the
+proxy's own authority, and the request must name that same host in its TLS name and in its `Host`
+header; then the entry's hosts, headers, methods and paths decide whether the swap happens. That
+connection speaks HTTP/1.1 to a client that offers it, and HTTP/2 to a client that offers nothing
+else, which is how every gRPC client connects. Each HTTP/2 stream is decided on its own, as one
+request, with its `:authority` as its `Host`, so one connection carries no request for another
+host. A `CONNECT` or an upgrade to `h2c` inside that connection is refused
 (`PROTOCOL_SWITCH_REFUSED`), because what crosses after its answer is no request the proxy reads.
 How a stream becomes the request the entry decides is tested, not proved: the Lean model of the
 decision has no wire format. A refusal is an HTTP error from the proxy naming the rule that
