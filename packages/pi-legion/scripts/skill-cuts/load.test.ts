@@ -28,7 +28,7 @@ import {
 import { pathHash } from "./cases";
 import { type CliIo, main } from "./cli";
 import { Stopped } from "./common";
-import { ghSource, localSource } from "./context";
+import { cacheKey, ghSource, localSource } from "./context";
 import {
   ContentBlock,
   createGateway,
@@ -1414,18 +1414,19 @@ describe("skill-cuts load answers skill reads as the behaviour replay does", () 
 
   /** A load test of alpha under `<dir>/<id>` on `host`: the one need task `id`, written, in the
    *  context of `profile` (BETA_PROFILE unless given), with its capture saved, whose context
-   *  installed beta from the cache entry `<id>`, which holds `beta` as beta's SKILL.md; its
-   *  listing measured; and the arguments that run it. */
+   *  installed beta from the cache entry `key` (`id` unless given), which holds `beta` as beta's
+   *  SKILL.md; its listing measured; and the arguments that run it. */
   function readsTest(
     id: string,
     beta: string,
     host: Host = "omp",
-    profile: Record<string, unknown> = BETA_PROFILE
+    profile: Record<string, unknown> = BETA_PROFILE,
+    key = id
   ): { out: string; args: string[] } {
     const root = path.join(dir, id);
     const out = path.join(root, "out");
     const tasks = path.join(root, "tasks.jsonl");
-    writeTree(path.join(cache, "skills", id), { "SKILL.md": beta });
+    writeTree(path.join(cache, "skills", key), { "SKILL.md": beta });
     writeTree(root, {
       "tasks.jsonl": `${JSON.stringify({ id, text: NEED, label: "need", source: "written" })}\n`,
       "profile.json": JSON.stringify(profile),
@@ -1435,7 +1436,7 @@ describe("skill-cuts load answers skill reads as the behaviour replay does", () 
       skills: [
         {
           name: "beta",
-          from: { repo: "acme/skills", commit: COMMIT, path: "skills/beta", key: id },
+          from: { repo: "acme/skills", commit: COMMIT, path: "skills/beta", key },
         },
         { name: "alpha", from: "arm" },
       ],
@@ -1525,6 +1526,30 @@ describe("skill-cuts load answers skill reads as the behaviour replay does", () 
     expect(ran.stdout).toContain(
       "load: task plain (need, written): loaded in 3 of 3 judged runs (run 1 loads, run 2 loads, run 3 loads); runs sent by another skill: 0; runs that read past the last round: 0; extra runs: 0: no fault"
     );
+  });
+
+  // Catches: a saved capture replayed on a machine whose cache lacks beta's installed copy (the
+  // cache is not kept with --out), so each run that reads beta fails.
+  test("a saved capture whose cache lacks beta's installed copy has it made again from beta's repository, and a first message that reads beta is answered from it", async () => {
+    const key = cacheKey("acme/skills", COMMIT, "skills/beta");
+    const s = readsTest("restored", BETA_SKILL, "omp", BETA_PROFILE, key);
+    // The cache of a new machine holds no copy of beta; beta's repository holds it.
+    rmSync(path.join(cache, "skills", key), { recursive: true });
+    const repos = path.join(dir, "restored", "repos");
+    writeTree(path.join(repos, "acme/skills", COMMIT), { "skills/beta/SKILL.md": BETA_SKILL });
+    answer = (body) => (answeredRounds(body) === 0 ? [readOf("skill://beta")] : READ_ALPHA);
+    const before = recorder.requests.length;
+    const ran = await cli([...s.args, "--repos", repos]);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(readFileSync(path.join(cache, "skills", key, "SKILL.md"), "utf8")).toBe(BETA_SKILL);
+    const shown = `[Skill file: /skills/beta/SKILL.md]\n${BETA_SKILL.replace(/\n$/, "")}`;
+    const answered = recorder.requests
+      .slice(before)
+      .filter((request) => messagesOf(request).length === 3);
+    expect(answered.map((request) => answersOf(request))).toEqual(
+      Array(3).fill([{ text: shown, isError: false }])
+    );
+    expect(savedRuns(s.out, "restored").map((run) => run.outcome)).toEqual(Array(3).fill("loaded"));
   });
 
   test('a run whose answered skill text names the tested skill as skill://<name> is "sent by" that skill: not counted, and the task runs again', async () => {
