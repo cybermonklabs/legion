@@ -56,17 +56,21 @@ import type { RuleMatch } from "./rules-check";
 import { renderTemplate } from "./text";
 
 // The hang guards this file's own rows and hooks set are 30_000, 60_000, 80_000, 120_000,
-// 230_000, 270_000, 300_000 and 470_000. A row or hook that sets none takes the 250 s that
+// 230_000, 270_000, 300_000 and 390_000. A row or hook that sets none takes the 250 s that
 // `bun run test` gives it (`bun test --timeout 250000`, package.json), the hooks that
 // `temporaryTmpdir` and `temporaryDirectory` register here included. Where a
 // guard's comment gives a measured worst, the guard is at least six times that worst, at the load
 // the comment names. Only the room the pi-envoy job leaves for one hang caps a guard. That job's
-// `timeout-minutes: 15` (.github/workflows/ci-job-pi-envoy.yaml) is 900 s. CI run 45437325102,
-// at 06d187e7, ran the job in 308 s, which leaves 592 s for one hang. A guard inside that room
-// lets a hang redden the job with the row named, where a cancelled job names nothing. A row that
-// sets a guard, and whose model call only the call's stop or the gate's own 90 s default deadline
-// (`GATE_TIMEOUT_MS`) ends, keeps that guard below the deadline, whatever six times its worst is,
-// so the runner's limit ends a call that never returns before that deadline can decide the row.
+// `timeout-minutes: 15` (.github/workflows/ci-job-pi-envoy.yaml) is 900 s. The workflow's own
+// comment (`ci-job-pi-envoy.yaml:26-31`) records 505 s as the job's longest run: 94 s for its
+// other steps, 5 s of its clock and 406 s for its test step (run 44807153227). That is longer
+// than the 308 s CI run 45437325102 took at 06d187e7, so it leaves 395 s for one hang. A guard
+// inside that room lets a hang redden the job with the row named, where a cancelled job names
+// nothing. A guard that six times its worst would put past that room takes 390_000, inside it.
+// A row that sets a guard, and whose model call only the call's stop or the gate's own 90 s
+// default deadline (`GATE_TIMEOUT_MS`) ends, keeps that guard below the deadline, whatever six
+// times its worst is, so the runner's limit ends a call that never returns before that deadline
+// can decide the row.
 // Eight rows on the real clock hold such a call and set no guard: six in "deadline and
 // abandonment", and the two, one per mode, of the loop "a rules call given up after the charter
 // allowed". They take the 250 s, so the runner's limit decides none of them: a stop one of them
@@ -161,9 +165,9 @@ function test(name: string, body: () => unknown, timeout?: number): void {
 // that load twice in 20, at 15887.94 ms and 11035.86 ms, charged to a hook of this file as "a
 // beforeEach/afterEach hook timed out", so the load starves the process far past what this body
 // costs. Six times that worst is 95 s, rounded up to 120_000: 7.6 times that
-// worst. That fits the 592 s the pi-envoy job leaves for one hang (the rule above `DryRunner`,
-// CI run 45437325102), so a call end that never returns still reddens with this file named
-// instead of cancelling the job, which names nothing. The kills
+// worst. That fits the 395 s the pi-envoy job leaves for one hang (the rule above `DryRunner`,
+// `ci-job-pi-envoy.yaml:26-31`), so a call end that never returns still reddens with this file
+// named instead of cancelling the job, which names nothing. The kills
 // run before the call ends, and in this same hook. A limit does not interrupt a body: bun fails a
 // hook whose body ran past it, after the fact, and skips the same scope's hooks registered after
 // it, so a kill in a hook of its own would carry the run's default hook limit (bun's 5 s when this
@@ -2061,9 +2065,9 @@ console.log(JSON.stringify(args, null, 2));
     // runs with no `--timeout`, bun's 5 s default applied and failed a correct run 7 times in 10,
     // at 5125.67 ms to 6316.73 ms; `bun run test` gives an unnamed row 250 s. Six times the worst
     // of those 60 runs is 108_669 ms, rounded up to 120_000: 6.6 times that worst. That fits the
-    // 592 s the pi-envoy job leaves for one hang (the rule above `DryRunner`, CI run 45437325102),
-    // so a dry run or a model call that never returns reddens with this test named instead of
-    // cancelling the job, which names nothing.
+    // 395 s the pi-envoy job leaves for one hang (the rule above `DryRunner`,
+    // `ci-job-pi-envoy.yaml:26-31`), so a dry run or a model call that never returns reddens with
+    // this test named instead of cancelling the job, which names nothing.
     // The row's remaining load ceiling is the gate's own, not this guard, and not the budget
     // asserted above either: at 240 busy loops, 120 per CPU, a real
     // `dispatch` subprocess cannot finish inside the gate's own DRY_RUN_TIMEOUT_MS of 20 s, so the
@@ -2172,7 +2176,7 @@ console.log(JSON.stringify(args, null, 2));
     // through bash, or a model call that only the call's stop ends. 80_000, below the gate's 90 s
     // deadline by the rule above `DryRunner`. Worst measured cost: 12 535.92 ms at 160 busy loops
     // (80 per CPU), this row's acceptance rung, on a two-CPU pod. 80_000 is 6.4 times it, and fits
-    // the 592 s the pi-envoy job leaves for one hang (CI run 45437325102).
+    // the 395 s the pi-envoy job leaves for one hang (`ci-job-pi-envoy.yaml:26-31`).
   }, 80_000);
   test("dispatch search is not reviewed", async () => {
     const g = bind({ env: STUB, cwd: work });
@@ -2688,8 +2692,8 @@ console.log(JSON.stringify(args, null, 2));
     // Sized from the tester's round 27: worst measured cost 14 501 ms over 20 runs at the 96 rung
     // in the Job infra-1580-t27-j14-z4bf4 of the cluster's `builds` namespace, two CPUs and 8 GiB
     // (140 busy loops, row A 39.5 s), at 06d187e7. Six times it is 87 006 ms, past 80_000, so
-    // this takes 120_000, 8.3 times it. That fits the 592 s the pi-envoy job leaves for one hang
-    // (the rule above `DryRunner`, CI run 45437325102).
+    // this takes 120_000, 8.3 times it. That fits the 395 s the pi-envoy job leaves for one hang
+    // (the rule above `DryRunner`, `ci-job-pi-envoy.yaml:26-31`).
   }, 120_000);
   // A program word an expansion names or the shell expands, the old scan's "unreadable program".
   for (const command of [
@@ -3446,11 +3450,11 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     // 10, charged 30638.29 ms to 32534.80 ms, each `this test timed out after 30000ms`. At 240,
     // the rung the lighter rows of this file take, the ten dry runs cost 7952.24 / 45847.18 /
     // 77402.03 ms, 20 of 20 green under a 600_000 provisional. Six times that worst is 464_412 ms,
-    // rounded up to 470_000: 6.07 times it. That fits the 592 s the pi-envoy job leaves for one
-    // hang (the rule above `DryRunner`, CI run 45437325102), so a dry run or a model call that
-    // never returns reddens with this test named instead of cancelling the job, which names
-    // nothing.
-  }, 470_000);
+    // past the 395 s the pi-envoy job leaves for one hang (the rule above `DryRunner`,
+    // `ci-job-pi-envoy.yaml:26-31`). So the room decides the guard: 390_000, inside that room and
+    // 5.04 times that worst. A dry run or a model call that never returns then reddens with this
+    // test named instead of cancelling the job, which names nothing.
+  }, 390_000);
   test("a 2>&1 after the here-document opener runs as written and is left out of the dry-run", () => {
     const after = core.scopedCommand(
       "dispatch comment --issue X-1 --body-file - <<'EOF' 2>&1\nhi\nEOF"
@@ -3646,8 +3650,8 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     // 3117.29 ms (min/median/max over 20 runs). At 240 the same row cost 145.03 ms to 44509.41 ms
     // under a 300_000 provisional limit, 20 of 20 green, so it is correct there and merely slow; a
     // 60_000 guard, 1.35 times that worst, cut one run in 20 at that load. Six times the 240 worst
-    // is 267_056 ms, rounded up to 270_000: 6.07 times it. That fits the 592 s the pi-envoy job
-    // leaves for one hang (the rule above `DryRunner`, CI run 45437325102).
+    // is 267_056 ms, rounded up to 270_000: 6.07 times it. That fits the 395 s the pi-envoy job
+    // leaves for one hang (the rule above `DryRunner`, `ci-job-pi-envoy.yaml:26-31`).
   }, 270_000);
   test("the runner answers when the script ends, and a helper the script left running goes with it", async () => {
     const pidFile = path.join(work, "dry-run-helper.pid");
@@ -4224,8 +4228,8 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
       // cost: 15 599 ms in askgate.test.ts run whole at the 96 rung in the Job
       // infra-1580-aw-j452l (140 busy loops, row A 39.4 s), at 2a77b2b8. Main's 30_000 is 1.9
       // times that. Six times it is 93 594 ms, so this takes 120_000, 7.7 times it. That fits the
-      // 592 s the pi-envoy job leaves for one hang (the rule above `DryRunner`, CI run
-      // 45437325102).
+      // 395 s the pi-envoy job leaves for one hang (the rule above `DryRunner`,
+      // `ci-job-pi-envoy.yaml:26-31`).
     }, 120_000);
 
     // Design 2: `scopedCommand` reads the override comment the gate itself writes, so the command
@@ -4457,10 +4461,11 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
       // answers. The row's own cost, read from bun's junit reporter on this two-CPU pod: 41.77 /
       // 43.15 / 82.11 ms (min/median/max over 5 idle runs), and 1881.55 / 7287.44 / 18768.15 ms
       // over 20 runs under 240 busy loops, 120 per CPU, the rung that reddens this file. Six times
-      // that worst is 112_609 ms, rounded up to 120_000: 6.4 times that worst. That fits the 592 s
-      // the pi-envoy job leaves for one hang (the rule above `DryRunner`, CI run 45437325102), so
-      // a dry run that never returns reddens with this test named instead of cancelling the job,
-      // which names nothing. In row-filtered `bun test` runs with no `--timeout`, bun's 5 s
+      // that worst is 112_609 ms, rounded up to 120_000: 6.4 times that worst. That fits the 395 s
+      // the pi-envoy job leaves for one hang (the rule above `DryRunner`,
+      // `ci-job-pi-envoy.yaml:26-31`), so a dry run that never returns reddens with this test
+      // named instead of cancelling the job, which names nothing. In row-filtered `bun test` runs
+      // with no `--timeout`, bun's 5 s
       // default applied and failed a correct run 5 times in 10 at that load, charged 5165.92 ms
       // to 6076.99 ms, each `this test timed out after 5000ms`; `bun run test` gives an unnamed
       // row 250 s. The row's remaining load ceiling is the gate's own, not this guard: at 240
@@ -6534,13 +6539,13 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     // there were 19 of 20 each, both reds that same block, charged 47391.11 and 46540.80 ms. So
     // this row's acceptance rung is 80 busy loops, 40 per CPU: 40 of 40 there on that same pod,
     // charged 3637.88 / 11990.81 / 37554.08 ms (min/median/max). Six times that worst is
-    // 225_324 ms, rounded up to 230_000: 6.1 times it. That fits the 592 s the pi-envoy job leaves
-    // for one hang (the rule above `DryRunner`, CI run 45437325102), so a dry run or a post that
-    // never returns reddens with this test named instead of cancelling the job. At 80 the base
-    // fails the row 1 run in 10, at its own 30_000. The here-document and `(c) … relative --path`
-    // rows meet the same ceiling and stay at 96, where each is 20 of 20 on that pod, because at
-    // 80 their worst cost (4.52 s, 4.37 s) sits under the 5 s default of row-filtered `bun test`
-    // runs with no `--timeout`.
+    // 225_324 ms, rounded up to 230_000: 6.1 times it. That fits the 395 s the pi-envoy job leaves
+    // for one hang (the rule above `DryRunner`, `ci-job-pi-envoy.yaml:26-31`), so a dry run or a
+    // post that never returns reddens with this test named instead of cancelling the job. At 80
+    // the base fails the row 1 run in 10, at its own 30_000. The here-document and
+    // `(c) … relative --path` rows meet the same ceiling and stay at 96, where each is 20 of 20
+    // on that pod, because at 80 their worst cost (4.52 s, 4.37 s) sits under the 5 s default of
+    // row-filtered `bun test` runs with no `--timeout`.
   }, 230_000);
 
   // The seven rows below, before the warn-mode row, run the same real `dispatch` subprocesses as
@@ -6549,13 +6554,13 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
   // --body-file form 11 of 20, at 212 busy loops for the 96 rung, in the tester's Job
   // infra-1580-t25-ge1-d72x8).
   // Each now takes 300_000 as a hang guard: six times the worst any row's comment below gives,
-  // 49 900 ms, is 299_400 ms. That fits the 592 s the pi-envoy job leaves for one hang (the rule
-  // above `DryRunner`, CI run 45437325102). Each model call these rows make is answered at once,
-  // by `bind`'s default or by the first row's own REVISE, so the gate's 90 s deadline decides
-  // none of them. Each row's comment says how many times its worst the guard is. The worst
-  // readings are from Jobs of the cluster's `builds` namespace, two CPUs and 8 GiB, at 0fba4c77
-  // with each row's limit at 250_000, 20 runs a row a rung (40 for the --body-file post): at the
-  // 96 rung, infra-1580-r26-ea-cgqwb (99 busy loops, row A 34.5 s)
+  // 49 900 ms, is 299_400 ms. That fits the 395 s the pi-envoy job leaves for one hang (the rule
+  // above `DryRunner`, `ci-job-pi-envoy.yaml:26-31`). Each model call these rows make is answered
+  // at once, by `bind`'s default or by the first row's own REVISE, so the gate's 90 s deadline
+  // decides none of them. Each row's comment says how many times its worst the guard is. The
+  // worst readings are from Jobs of the cluster's `builds` namespace, two CPUs and 8 GiB, at
+  // 0fba4c77 with each row's limit at 250_000, 20 runs a row a rung (40 for the --body-file
+  // post): at the 96 rung, infra-1580-r26-ea-cgqwb (99 busy loops, row A 34.5 s)
   // and infra-1580-r26-eb-8n6cr (81 busy loops, row A 36.8 s); at the 80 rung,
   // infra-1580-r26-ea80-8jqwq and infra-1580-r26-ec80-785db (117 busy loops for the 80 rung, row A
   // 36.1 s and 37.7 s) and infra-1580-r26-eb80-dw9zn (68 busy loops, row A 36.0 s). A run these

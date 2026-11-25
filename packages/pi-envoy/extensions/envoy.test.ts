@@ -5714,7 +5714,7 @@ describe("envoy OMP extension", () => {
       stderr: "pipe",
       // A backstop above the row's own limit, so that limit, not this kill, decides a slow run.
       // The runner kills the process of a row it abandons.
-      timeout: 520_000,
+      timeout: 450_000,
     });
     const [stdout, stderr, exitCode] = await Promise.all([
       new Response(started.stdout).text(),
@@ -5732,12 +5732,12 @@ describe("envoy OMP extension", () => {
     // infra-1580-krows-j5-sjzwb of the cluster's `builds` namespace, two CPUs and 8 GiB (271 busy
     // loops, at which row A's runs took 51.2 s against the calibration's 31.2 s),
     // 2026-11-21T20:10Z to 20:45Z; 46 698.73 ms at 16 busy loops (the 96 rung) on the two-CPU,
-    // 8 GiB pod of 2026-11-19 18:40Z. Six times the worst is 483 036.23 ms, so the limit is
-    // 490_000, 6.1 times the worst. The pi-envoy job leaves one hang 592 s: its
-    // `timeout-minutes: 15` less its 308 s at 06d187e7 (CI run 45437325102). The process's kill
-    // (520 s, `timeout` above) lies between the limit and that room, so the limit decides a slow
-    // run.
-  }, 490_000);
+    // 8 GiB pod of 2026-11-19 18:40Z. Six times the worst is 483 036.23 ms, past the room the
+    // pi-envoy job leaves one hang. That room is 395 s: the job's `timeout-minutes: 15` less the
+    // 505 s its workflow records as its longest run (`ci-job-pi-envoy.yaml:26-31`). So the room
+    // decides the limit: 390_000, inside that room and 4.8 times the worst. The process's kill
+    // (450 s, `timeout` above) is past the limit, so the limit decides a slow run.
+  }, 390_000);
 
   /** A context for `ses_title` whose live session name is `name()`, as agent `kind` runs it. */
   const titledContext = (kind: "main" | "sub", name: () => string | undefined): SessionContext => ({
@@ -13717,9 +13717,9 @@ console.log(JSON.stringify(args));
         ENVOY_SESSION_ROLE_SESSION: "ses_pod_parent",
       },
       // A backstop above the row's own limit, so that limit, not this kill, decides a slow run.
-      // It is above the children's own kill too (510 s, `session-pod-process.ts`). The runner
+      // It is above the children's own kill too (420 s, `session-pod-process.ts`). The runner
       // kills the process of a row it abandons, and the children end with it (`runSessionPod`).
-      timeoutMs: 540_000,
+      timeoutMs: 450_000,
     });
     const refusal = (session: string) =>
       `envoy: ENVOY_SESSION_ROLE fan-cloud belongs to session ses_pod_parent; this session ${session} claims nothing`;
@@ -13748,12 +13748,13 @@ console.log(JSON.stringify(args));
     // the Job infra-1580-krows-j5-sjzwb of the cluster's `builds` namespace, two CPUs and 8 GiB
     // (135 busy loops, half the 271 at which row A's runs took 51.2 s against the calibration's
     // 31.2 s at the 96 rung), 2026-11-21T19:39Z to 20:06Z; 66 217.75 ms at 15 busy loops (the 48
-    // rung) on a two-CPU, 8 GiB pod. Six times the worst is 473 440.94 ms, so the limit is
-    // 480_000, 6.1 times the worst. The pi-envoy job leaves one hang 592 s: its
-    // `timeout-minutes: 15` less its 308 s at 06d187e7 (CI run 45437325102). The children's kill
-    // (510 s, `session-pod-process.ts`) and this process's kill (540 s, `timeoutMs` above) lie
-    // between the limit and that room, so the limit decides a slow run.
-  }, 480_000);
+    // rung) on a two-CPU, 8 GiB pod. Six times the worst is 473 440.94 ms, past the room the
+    // pi-envoy job leaves one hang. That room is 395 s: the job's `timeout-minutes: 15` less the
+    // 505 s its workflow records as its longest run (`ci-job-pi-envoy.yaml:26-31`). So the room
+    // decides the limit: 390_000, inside that room and 4.9 times the worst. The children's kill
+    // (420 s, `session-pod-process.ts`) and this process's kill (450 s, `timeoutMs` above) are
+    // past the limit, so the limit decides a slow run.
+  }, 390_000);
 
   test("unsubscribing all topics preserves a held role for heartbeat re-assertion", async () => {
     const role = "librarian";
@@ -27787,12 +27788,13 @@ describe("consumer delivery", () => {
     // namespace, two CPUs and 8 GiB, 137 busy loops, row A 31.6 s, at 06d187e7), and up to 107 425
     // ms (infra-1580-r28np96-55dhk, 122 busy loops, row A 35.1 s); at 48, up to 112 946 ms
     // (infra-1580-r28np48-lkphb, 97 busy loops for the 48 rung, row A 32.7 s). Six times any of
-    // these is past what the pi-envoy job leaves one hang: its `timeout-minutes: 15` less its 308 s
-    // at 06d187e7 (CI run 45437325102) leaves 592 s. At 32 it is 20 of 20, charged 8 285 / 31 938 /
-    // 71 686 ms (min / median / max), in the Job infra-1580-r28np32-z7t7q (76 busy loops for the 32
-    // rung, row A 37.6 s), at 06d187e7 with this round's changes, and 440_000 is 6.1 times that
-    // worst, inside the job's room.
-  }, 440_000);
+    // these is past the room the pi-envoy job leaves one hang. That room is 395 s: the job's
+    // `timeout-minutes: 15` less the 505 s its workflow records as its longest run
+    // (`ci-job-pi-envoy.yaml:26-31`). At 32 it is 20 of 20, charged 8 285 / 31 938 / 71 686 ms
+    // (min / median / max), in the Job infra-1580-r28np32-z7t7q (76 busy loops for the 32 rung,
+    // row A 37.6 s), at 06d187e7 with this round's changes. Six times that worst, 430 116 ms, is
+    // past the room too, so the room decides the limit: 390_000, 5.4 times that worst.
+  }, 390_000);
 
   test("a NATS reconnect begins a new epoch and registers it at once", async () => {
     const session = await bootConsumer("consumer-reconnect");
@@ -28573,8 +28575,9 @@ describe.skipIf(process.env.LEGION_E2E !== "1")(
       // which the whole-file Jobs infra-1580-t27-j1-l27pc and infra-1580-r27wf-4rk46 did not set.
       // Worst measured cost: 177.60 ms, in CI's pi-envoy job at 473ab6ae (run 45515356217), and
       // 172.17 ms at 06d187e7 (run 45437325102). Main's 60_000 is 337.8 times the worst, so it is
-      // kept. The pi-envoy job leaves one hang 569 s: its `timeout-minutes: 15` less its 331 s in
-      // run 45515356217, and 60 s is inside that.
+      // kept. The pi-envoy job leaves one hang 395 s: its `timeout-minutes: 15` less the 505 s
+      // its workflow records as its longest run (`ci-job-pi-envoy.yaml:26-31`), which is longer
+      // than its 331 s in run 45515356217. 60 s is inside that room.
     }, 60_000);
   }
 );

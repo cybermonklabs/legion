@@ -14,13 +14,15 @@ import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
 // Every hang guard in this file is sized from a measured worst at 96 busy loops, 48 per CPU, this
 // suite's calibrated rung. A guard is at least six times that worst, rounded up. Only the room
 // the pi-legion job leaves for one hang caps a guard. That job's `timeout-minutes: 28`
-// (.github/workflows/ci-job-pi-legion.yaml) is 1680 s. The job did not run at the head these
-// guards were sized at, so the room is read from its slowest recent run: job 137361573250 of CI
-// run 45072143421 (2026-11-22, head 90aae385), one of the three jobs the workflow's own comment
-// names. It took 378 s, from 21:28:13Z to 21:34:31Z, which leaves 1302 s for one hang. A guard
-// inside that room lets a hang redden the job with its test or file named, where a cancelled job
-// names nothing. A row whose body is synchronous and starts no child carries no guard: it runs at
-// the package's `--timeout 300000` (package.json).
+// (.github/workflows/ci-job-pi-legion.yaml) is 1680 s. The room is that limit less the job's
+// longest duration on record. The job did not run at the head these guards were sized at. Its
+// slowest recent run is job 137361573250 of CI run 45072143421 (2026-11-22, head 90aae385), one
+// of the three jobs the workflow's own comment names. It took 378 s, from 21:28:13Z to
+// 21:34:31Z. That workflow comment (`ci-job-pi-legion.yaml:54-61`) records a budget of 396 s for
+// the job, which is longer. So the room is 1680 s less 396 s, which leaves 1284 s for one hang.
+// A guard inside that room lets a hang redden the job with its test or file named, where a
+// cancelled job names nothing. A row whose body is synchronous and starts no child carries no
+// guard: it runs at the package's `--timeout 300000` (package.json).
 
 // score.ts reads each label's checkout from <work>/profiles/<label>/checkout, beside <work>/runs.
 const work = temporaryDirectory("skill-scenarios-score");
@@ -44,10 +46,10 @@ const stagings: (() => void)[] = [];
 // the body on this two-CPU pod: 1376.98 / 1394.75 / 1591.83 ms (min / median / max) over 3 idle
 // runs of this file, and 28259.94 / 43733.27 / 74782.68 ms over 10 runs at 96 busy loops (48 per
 // CPU), this suite's calibrated rung. Six times that worst is 448.7 s, rounded up to 450_000,
-// 6.02 times it. That fits the 1302 s the pi-legion job leaves for one hang (the rule above
-// `work`, CI run 45072143421). A drain that never returns then reddens the job with this file
-// named instead of cancelling it. Bun reports a timed-out `beforeAll` as `(unnamed)`, so the row
-// itself is not named.
+// 6.02 times it. That fits the 1284 s the pi-legion job leaves for one hang (the rule above
+// `work`, `ci-job-pi-legion.yaml:54-61`). A drain that never returns then reddens the job with
+// this file named instead of cancelling it. Bun reports a timed-out `beforeAll` as `(unnamed)`,
+// so the row itself is not named.
 beforeAll(() => {
   for (const label of ["head", "base", "cross", "on", "off"]) {
     mkdirSync(path.join(work, "profiles", label), { recursive: true });
@@ -3134,11 +3136,11 @@ let scoredExitCode: number | null = null;
 // hook spawns over the staged world. Timed round the body on this two-CPU pod: 2213.74 / 2243.03
 // / 2319.58 ms (min / median / max) over 3 idle runs, and 24833.04 / 60288.11 / 60932.92 ms over
 // the 7 of 10 runs at 96 busy loops (48 per CPU), this suite's calibrated rung, that reached it.
-// Six times that worst is 365.6 s, rounded up to 370_000, 6.07 times it. That fits the 1302 s the
-// pi-legion job leaves for one hang (the rule above `work`, CI run 45072143421). This hook and
-// the drain above, both hung, take 820 s, which still fits it. A subprocess that never returns
-// then reddens the job with this file named instead of cancelling it. Bun reports a timed-out
-// `beforeAll` as `(unnamed)`, so the row itself is not named.
+// Six times that worst is 365.6 s, rounded up to 370_000, 6.07 times it. That fits the 1284 s the
+// pi-legion job leaves for one hang (the rule above `work`, `ci-job-pi-legion.yaml:54-61`). This
+// hook and the drain above, both hung, take 820 s, which still fits it. A subprocess that never
+// returns then reddens the job with this file named instead of cancelling it. Bun reports a
+// timed-out `beforeAll` as `(unnamed)`, so the row itself is not named.
 beforeAll(() => {
   const scored = Bun.spawnSync(["bun", path.join(import.meta.dir, "score.ts"), "runs", runs]);
   out = scored.stdout.toString();
@@ -3651,10 +3653,10 @@ beforeAll(() => {
 // 4.0 s to 19.7 s under 96 busy loops (48 per CPU, this suite's calibrated rung), median 12.4 s
 // over 20 runs. Bun's 5 s default for a test failed this row in 9 of 10 loaded runs, which were
 // taken without the package's `--timeout 300000`: that default applies only to a run with no
-// flag. Six times the worst is 118 s, rounded up to 120_000, 6.1 times it. That fits the 1302 s
-// the pi-legion job leaves for one hang (the rule above `work`, CI run 45072143421). A
-// subprocess that never returns then reddens the job with this test named instead of cancelling
-// it.
+// flag. Six times the worst is 118 s, rounded up to 120_000, 6.1 times it. That fits the 1284 s
+// the pi-legion job leaves for one hang (the rule above `work`, `ci-job-pi-legion.yaml:54-61`).
+// A subprocess that never returns then reddens the job with this test named instead of
+// cancelling it.
 test("live-read compares a skill read's text after Oh My Pi's `[Skill file: …]` header line", () => {
   const read = Bun.spawnSync([
     "bun",
