@@ -151,6 +151,14 @@ describe("an ask block's text is its body, read past its containers", () => {
     expect(ids(askBlocks(markdown))).toEqual(["window"]);
   });
 
+  // A backslash before a `]` escapes it, so that `]` belongs to the label, and the label ends at
+  // the next `]` (pmdoc's rule, which the block reader in @legion/contracts follows).
+  test("a block opens on the line of a footnote label that holds an escaped bracket", () => {
+    expect(askBlocks("[^a\\]b]: :::ask{#window}\n    Which?\n    :::")).toEqual([
+      { kind: "block", id: "window", text: "Which?", opening: "Which?" },
+    ]);
+  });
+
   test("a CR LF line break reads as a line feed", () => {
     expect(askBlocks(":::ask{#window}\r\nWhich deployment window?\r\n:::\r\n")).toEqual([
       {
