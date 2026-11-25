@@ -1061,7 +1061,7 @@ const assignmentPlanContract = 220
 const intakeGiveUpsContract = 228
 
 // repositoryCorrectionContract is the daemon contract that added what a correction of an issue's
-// repository left on its record (version.go's 259, dispatch://INFRA-3136): `repoBefore` and
+// repository left on its record (version.go's 269, dispatch://INFRA-3136): `repoBefore` and
 // `repoCorrectedAt`, the repository the issue left and the moment the daemon applied the
 // correction, and `repoChangePending` and `repoChangeReason`, a repository Dispatch has named that
 // the daemon has not applied and why. A plugin before it is served every issue without the four
@@ -1081,7 +1081,7 @@ const intakeGiveUpsContract = 228
 // dispatch://INFRA-3136's own number, and the arrival of the owed answer moves with it. It is the
 // last number of answers.go's SupportedContracts, which names the constant rather than its number
 // for that reason.
-const repositoryCorrectionContract = 259
+const repositoryCorrectionContract = 269
 
 // podHoldContract is the daemon contract that added each issue's `podHold` to the state
 // (version.go's 246): the standing hold of the issue's pod, which the idle rule wrote only to its

@@ -47,7 +47,7 @@ const ServingFloor = 46
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
 // headers out of version.go and holds this list to them in both directions.
 //
-// 193, 202, 205, 213, 219, 220, 228, 246, 250, 256 and 259 are constants rather than their
+// 193, 202, 205, 213, 219, 220, 228, 246, 250, 256 and 269 are constants rather than their
 // numbers, because the entries that added them name them (shapedAnswersContract, the shaped
 // answers' entry; repositoriesLiveContract, dispatch://INFRA-4401's; childRouteRemovedContract,
 // dispatch://INFRA-3178's; cachesSourceContract, dispatch://INFRA-4036's; OwnerPlanContract, the
@@ -225,7 +225,7 @@ var Answers = []Answer{
 	// version.go's 228: the ids the controller's discard of the intake's give-ups closed
 	// (`api.IntakeDiscardResponse`), arrived with its route as the replay's answer did.
 	{ID: AnswerIntakeDiscard, Routes: []string{"POST /legion/v1/intake/discard"}, Since: intakeGiveUpsContract},
-	// version.go's 259: what a live role's claim owes now (`api.OwedResponse`), which the
+	// version.go's 269: what a live role's claim owes now (`api.OwedResponse`), which the
 	// end-of-turn reminder renders. The route arrives with the answer at the contract of the
 	// repository correction, so no contract below it records either.
 	{ID: AnswerOwed, Routes: []string{"POST /legion/v1/claims/owed"}, Since: repositoryCorrectionContract},
