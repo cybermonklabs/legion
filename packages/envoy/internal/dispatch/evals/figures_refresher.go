@@ -620,7 +620,8 @@ func (r *refresh) refoldStaleCuts(ctx context.Context) (bool, error) {
 	}
 	cuts, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (staleCut, error) {
 		var cut staleCut
-		return cut, row.Scan(&cut.project, &cut.repo)
+		err := row.Scan(&cut.project, &cut.repo)
+		return cut, err
 	})
 	if err != nil {
 		return false, fmt.Errorf("read the stale cuts of the stored figures: %w", err)

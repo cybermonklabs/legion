@@ -20,7 +20,8 @@ body: |-
   (`eval_figure_cuts_stale`); the refresher's pass that publishes the move begins to fold those
   again, and until they are done a read of such a repository folds the day rows. A register
   write that moves what an eval folds by is folded by the refresher's next pass, which reads the
-  change log from a cursor of its own. Both reads fold each eval's rows in day order, so a sum of
+  change log from a cursor of its own. Both reads fold each eval's rows in one order, by day and
+  within a day by the key each row is stored under, its repository and its series, so a sum of
   floats answers the same bits whatever order the rows come back in. The bench waits for every
   project's figures to be built before it measures a first paint.
   A change of the delivery settings reaches an open evals page in one pass of the refresher, as

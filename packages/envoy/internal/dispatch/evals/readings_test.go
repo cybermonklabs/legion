@@ -531,7 +531,8 @@ func (r rig) loggedChanges(t *testing.T, kind string, heads [2]int) []dayChange 
 	}
 	changes, err := pgx.CollectRows(changed, func(row pgx.CollectableRow) (dayChange, error) {
 		var change dayChange
-		return change, row.Scan(&change.project, &change.evalID, &change.first, &change.last)
+		err := row.Scan(&change.project, &change.evalID, &change.first, &change.last)
+		return change, err
 	})
 	if err != nil {
 		t.Fatalf("read the %s changes logged: %v", kind, err)

@@ -1019,10 +1019,7 @@ func (r *refresh) stageFigures(ctx context.Context, rb *rebuildState, project st
 	if err != nil {
 		return fmt.Errorf("read the cuts of %s's staged rows: %w", project, err)
 	}
-	more, err := pgx.CollectRows(staged, func(row pgx.CollectableRow) (figureCut, error) {
-		var cut figureCut
-		return cut, row.Scan(&cut.repo, &cut.deployRepo)
-	})
+	more, err := pgx.CollectRows(staged, scanFigureCut)
 	if err != nil {
 		return fmt.Errorf("read the cuts of %s's staged rows: %w", project, err)
 	}
@@ -1256,7 +1253,11 @@ func stageDayFigures(ctx context.Context, tx pgx.Tx, rb int64, project string, d
 // the same series and day, and a staged row of the project's default repository for that one
 // alone, beside its own row of the same series and day stored under legionfacts.DefaultRepo, which
 // the default's cut folds too (cutOf); so the stored rows are read with the repository each stands
-// under (dayWindowIn's stored), and a staged row stands for the stored row of its whole key.
+// under (WindowRow.repo: DayWindowIn answers it in the read of a repository's cut, and every row of
+// the project's own cut stands under ""), and a staged row stands for the stored row of its whole
+// key. The staged rows come after the stored ones, and newFigureGroup sorts the group into the
+// folds' one order (sortWindowRows), so each is folded where a read of the rows the flip leaves
+// folds it.
 func readOverlayGroups(ctx context.Context, q delivery.Querier, rb int64, scope figureScope, entries map[string]Entry, evalIDs []string, cut figureCut, r Range) (map[string]*figureGroup, error) {
 	groups := map[string]*figureGroup{}
 	var read []Entry
@@ -1272,7 +1273,7 @@ func readOverlayGroups(ctx context.Context, q delivery.Querier, rb int64, scope 
 	if len(read) == 0 || !r.From.Before(r.To) {
 		return groups, nil
 	}
-	live, err := dayWindowIn(ctx, q, []string{scope.project}, read, cut.deployRepo, cut.repos(), r, nil, true)
+	live, err := DayWindowIn(ctx, q, []string{scope.project}, read, cut.deployRepo, cut.repos(), r, nil)
 	if err != nil {
 		return nil, err
 	}

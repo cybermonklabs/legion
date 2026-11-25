@@ -382,14 +382,18 @@ func CountedIn(ctx context.Context, q delivery.Querier, project, family, deployR
 // each), the fence took the median execution from 77 to 78 ms to 64 to 67 ms, with the same plan.
 //
 // A row answers what the folds and the answer read and nothing more (WindowRow), since what the
-// read costs is the bytes it sends: no project, repository, listing or build, but the owner it is
-// stored under, which a rebuild's overlay of staged rows reads, and a sample list
-// only for a series whose fold reads one (readsSamples), so a logged series folded by anything but
-// a quantile, whose rows keep every value of their day, sends none. The write that stored a row's
-// last value (last_recorded_at, last_reading), which the `last` fold breaks a tie of two rows'
-// last_at by (aggStatistics), comes only with a row of a `last` series in a read that names more
-// than one repository: only that read folds two rows of one series and day, which can tie, and
-// it sets no order. Every other row answers no write: null and the empty string.
+// read costs is the bytes it sends: no project, listing or build, but the owner it is stored under
+// and, in a read that names repositories, the repository it is stored under, which the folds order
+// a day's rows by (sortWindowRows) and a rebuild's overlay of staged rows reads
+// (readOverlayGroups); a read that names none reads the rows stored under "" alone, and sends no
+// repository. And a sample list only for a series whose fold reads one (readsSamples), so a
+// logged series folded by anything but a quantile, whose rows keep every value of their day, sends
+// none. The write that stored a row's last value (last_recorded_at, last_reading), which the
+// `last` fold breaks a tie of two rows' last_at by (aggStatistics), comes only with a row of a
+// `last` series in a read that names more than one repository: only that read folds two rows of
+// one series and day, which can tie, and the order the folds take its rows in (sortWindowRows)
+// says nothing of which was written later. Every other row answers no write: null and the empty
+// string.
 //
 // q is the pool; a transaction that writes the rows it reads, as the stored figures' writes fold
 // them (figures.go), so a fold of the rows a write left reads them as a paint does; or the snapshot
@@ -404,24 +408,11 @@ func CountedIn(ctx context.Context, q delivery.Querier, project, family, deployR
 // read, every run reads the one moment the answer's other reads read, as one statement would; on
 // the pool, or in a transaction at read committed, each reads the rows that stand when it runs.
 func DayWindowIn(ctx context.Context, q delivery.Querier, projects []string, entries []Entry, deployRepo string, repos []string, window Range, compare *Range) ([]WindowRow, error) {
-	return dayWindowIn(ctx, q, projects, entries, deployRepo, repos, window, compare, false)
-}
-
-// dayWindowIn is DayWindowIn, each row answering the repository it is stored under too
-// (WindowRow.repo) where stored is set: the read of a rebuild's overlay (readOverlayGroups), whose
-// staged row stands for one stored row, where a cut of a project's default repository holds two of
-// its own rows of one series and day, one of the repository and one stored under
-// legionfacts.DefaultRepo. The list's read sends no repository.
-func dayWindowIn(ctx context.Context, q delivery.Querier, projects []string, entries []Entry, deployRepo string, repos []string, window Range, compare *Range, stored bool) ([]WindowRow, error) {
-	cut := `d.repo = any($2)`
+	cut, storedRepo, ownedRepo, scan := `d.repo = any($2)`, "", "", scanWindowRow
 	if len(repos) == 0 {
 		repos = []string{""}
 	} else {
-		cut = repoCut("d", "$2", "o.project_key")
-	}
-	storedRepo, ownedRepo, scan := "", "", scanWindowRow
-	if stored {
-		storedRepo, ownedRepo, scan = ", repo", ", d.repo", scanStoredWindowRow
+		cut, storedRepo, ownedRepo, scan = repoCut("d", "$2", "o.project_key"), ", repo", ", d.repo", scanRepoWindowRow
 	}
 	ranged := func(inWindow string, from, to int) string {
 		return `select ` + inWindow + `, eval_id, series, day, n, sum, num, den, max,

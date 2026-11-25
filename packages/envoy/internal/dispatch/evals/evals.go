@@ -292,7 +292,9 @@ type WindowRow struct {
 	// owner is the key the row is stored under (owners.go): the reading project's own, or an owner
 	// key of the repository it publishes, whose row of one series and day can stand beside the
 	// project's; a rebuild's overlay of staged rows replaces each owner's row alone. repo is the
-	// repository it is stored under, read by that overlay alone (dayWindowIn's stored).
+	// repository it is stored under: a read that names repositories answers it, and every row of
+	// one that names none is stored under "". The folds take a day's rows in the order of the two
+	// and the series (sortWindowRows), and the overlay replaces a row of each repository alone.
 	owner string
 	repo  string
 }

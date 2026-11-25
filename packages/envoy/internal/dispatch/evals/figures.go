@@ -35,9 +35,9 @@ import (
 //   - eval_range_figures holds, for each project, cut (figureCut: '' for the project's own rows, or
 //     a repository), range (one of FigureLengths and its end day, exclusive) and eval, the
 //     statistics FoldStatistics answers for the eval's listed series over the range's rows of the
-//     cut, those rows in day order, each series' via-repository count, and the oldest updated_at of
-//     the rows (the read's freshness). A range that holds no listed row of the eval in the cut has
-//     no row: its fold is the fold of no parts.
+//     cut, those rows in the folds' one order (sortWindowRows), each series' via-repository count,
+//     and the oldest updated_at of the rows (the read's freshness). A range that holds no listed row
+//     of the eval in the cut has no row: its fold is the fold of no parts.
 //   - eval_day_figures holds, for each project, cut, day and eval that holds a listed row of the
 //     eval in the cut, the day's figures of each headline series that holds a row that day (the
 //     per-day array SeriesValuesOf answers), and the stamp of the rows it folded (rowsStamp).
@@ -51,11 +51,11 @@ import (
 // legionfacts.DefaultRepo (repoCut), which belong to that cut alone and to none where the project
 // publishes no default (cutOf). No cut of legionfacts.DefaultRepo itself is stored: no read names
 // it. At INFRA's size the fold of the day rows of one repository read 35,297 rows at 84 days with a
-// compare range, 75 to 175 ms on the farm, past R14's 150 ms, where its stored cut answered in at
-// most 17 ms at 04de13fa. Each is kept for the rows of each deploy repository apart, as the day
-// rows are (deploy_repos.go): a fold of the evals that read the deploy repository for each
-// repository whose rows of them are kept, and a read looks up the fold of the repository recorded
-// with the rows (DeployRepoIn).
+// compare range, 75 to 175 ms on the farm, past R8's 150 ms (the eval list's 84-day read bound),
+// where its stored cut answered in at most 17 ms at 04de13fa. Each is kept for the rows of each
+// deploy repository apart, as the day rows are (deploy_repos.go): a fold of the evals that read the
+// deploy repository for each repository whose rows of them are kept, and a read looks up the fold
+// of the repository recorded with the rows (DeployRepoIn).
 //
 // A range exists for every length of FigureLengths and every end day from the day after the
 // eval's first row through FigureLead days after today: a compare range ends on any day before the
@@ -349,8 +349,9 @@ func rowsStamp(rows []stampedRow) int64 {
 	return int64(hash.Sum64())
 }
 
-// figureGroup is one eval's listed day rows of one cut and deploy repository, in day order, and
-// what folds them: the stored figures of every range and day of the rows are folded from it.
+// figureGroup is one eval's listed day rows of one cut and deploy repository, in the folds' order
+// (sortWindowRows), and what folds them: the stored figures of every range and day of the rows are
+// folded from it.
 type figureGroup struct {
 	entry            Entry
 	listed, headline []Series
@@ -360,15 +361,15 @@ type figureGroup struct {
 }
 
 // newFigureGroup is the group of rows, one eval's listed rows of one cut and deploy repository as
-// DayWindowIn reads them, whose figures fold under key. It sorts rows by day, keeping the read's
-// order within a day, the order SeriesValuesOf's inputs are folded in too, so a range's figures are
-// the bits a read folds. Each series whose every row holds samples a sort keeps bit for bit
-// (SortableSamples) has each row's samples sorted in place, once, so every range of the series
-// reads its ranks across them (measures.MergedSamples, which finds them sorted); a series with a -0
-// or a NaN keeps its rows' samples in the order they were stored, which the merge and sort of each
-// range reads as a read of the rows does, in the same order.
+// DayWindowIn reads them, whose figures fold under key. It sorts rows into the one order
+// SeriesValuesOf folds its inputs in too (sortWindowRows), so a range's figures are the bits a read
+// folds whatever order either read answered the rows in. Each series whose every row holds samples
+// a sort keeps bit for bit (SortableSamples) has each row's samples sorted in place, once, so every
+// range of the series reads its ranks across them (measures.MergedSamples, which finds them
+// sorted); a series with a -0 or a NaN keeps its rows' samples in the order they were stored, which
+// the merge and sort of each range reads as a read of the rows does, in the same order.
 func newFigureGroup(entry Entry, key int64, rows []WindowRow) *figureGroup {
-	sortByDay(rows)
+	sortWindowRows(rows)
 	group := &figureGroup{entry: entry, key: key, rows: rows, parts: make([]measures.DayPart, len(rows))}
 	group.listed, group.headline = listedAndHeadline(entry)
 	sortable := map[string]bool{}
@@ -458,7 +459,7 @@ func (g *figureGroup) foldEnds(evalID string, cut figureCut, first, last time.Ti
 // write keeps each of them true to its rows; no range ending after it is written, nor the day row
 // of a day on or after it: those are the walks' to fold, from the rows that stand when they do.
 // own is whether the write folds the figures of the project's own rows alone (the cut of repo
-// ”), as the commit that publishes a move of the default repositories does, which marks the cuts
+// ""), as the commit that publishes a move of the default repositories does, which marks the cuts
 // it moves stale for their refold instead (publishDefaults); every other write folds each cut its
 // rows reach.
 type figureScope struct {
@@ -523,7 +524,7 @@ func (s daySpan) widen(day time.Time) daySpan {
 }
 
 // figureCut is one fold a read of a project's stored figures looks up: its rows of repo, the empty
-// string for the project's own rows (repo ”) and a repository's name for the rows a read that
+// string for the project's own rows (repo "") and a repository's name for the rows a read that
 // names that one repository folds (cutOf), of one deploy repository ("" for the evals no deploy
 // repository moves; deploy_repos.go).
 type figureCut struct {
@@ -542,6 +543,17 @@ func (c figureCut) repos() []string {
 		return nil
 	}
 	return []string{c.repo}
+}
+
+// scanFigureCut reads one cut of a read that answers a repository and then a deploy repository
+// (readFigureCuts, and the cuts of a rebuild's staged rows in stageFigures). It scans in a
+// statement of its own and then returns the cut: of a return that names the cut beside the call
+// that fills it, the Go spec leaves open whether the cut is read before or after the call, so such
+// a return may answer the cut unfilled.
+func scanFigureCut(row pgx.CollectableRow) (figureCut, error) {
+	var cut figureCut
+	err := row.Scan(&cut.repo, &cut.deployRepo)
+	return cut, err
 }
 
 // cutOf is, in SQL, the repository of the cut whose stored figures fold a day row (alias) of an
@@ -571,7 +583,7 @@ type figureGroupKey struct {
 // day's stored row of the cut recorded, which holds rows and no stored row or a stored row and no
 // rows, or whose stored row was folded under another fold key than the eval's definition now has
 // (a register write). A scope of the project's own rows alone (figureScope.own) reads the cut of
-// repo ” alone. Which build folded a stored row is no part of the test: a figure whose rows stand
+// repo "" alone. Which build folded a stored row is no part of the test: a figure whose rows stand
 // is the fold every build of these folds answers. A day on or after scope.through is the figures
 // walks', and none of it is read. The days of an eval are those any of spans names, each read once
 // (spansOf), and none between two spans of it that none names. Each of its two reads is one range
@@ -1439,7 +1451,7 @@ func compareDayFigureKeys(a, b dayFigureKey) int {
 // buildFigureEnds folds, in tx, every stored figure of project whose range ends on a day from
 // first through last, and the day row of every day before one of those end days, of each eval of
 // entries in each cut the project's rows of the days those ranges span hold (readFigureCuts), or in
-// the one cut of repo where repo is not nil (a stale cut's refold, refoldStaleCut), and writes them
+// the one cut of repo where repo is not nil (a stale cut's refold, refoldCut), and writes them
 // where they moved (writeFigures): one read of the rows of each cut over those days. Every stored
 // row of those end days and days, of the cuts it folds, that no row holds any more is deleted: one
 // an earlier build folded, of an eval, a cut or a deploy repository that holds none now, or one a
@@ -1564,10 +1576,7 @@ func readFigureCuts(ctx context.Context, q delivery.Querier, project string, r R
 	if err != nil {
 		return nil, fmt.Errorf("read the cuts of %s's day rows: %w", project, err)
 	}
-	cuts, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (figureCut, error) {
-		var cut figureCut
-		return cut, row.Scan(&cut.repo, &cut.deployRepo)
-	})
+	cuts, err := pgx.CollectRows(rows, scanFigureCut)
 	if err != nil {
 		return nil, fmt.Errorf("read the cuts of %s's day rows: %w", project, err)
 	}

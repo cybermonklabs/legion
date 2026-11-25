@@ -319,27 +319,28 @@ func scanDay(row pgx.Row) (DayRow, error) {
 	return day, nil
 }
 
-// scanWindowRow reads one row of a DayWindowIn read: whether it answers for the window or the
-// compare range, then its eval, series and day, its parts, its updated_at and the owner it is
-// stored under (owners.go).
+// scanWindowRow reads one row of a DayWindowIn read that names no repository: whether it answers
+// for the window or the compare range, then its eval, series and day, its parts, its updated_at and
+// the owner it is stored under (owners.go). Every row of that read is stored under "", which the
+// row's repo, left empty, says.
 func scanWindowRow(row pgx.CollectableRow) (WindowRow, error) {
 	return scanWindowRowOf(row, false)
 }
 
-// scanStoredWindowRow is scanWindowRow of a read that answers each row's repository after its
-// owner (dayWindowIn's stored).
-func scanStoredWindowRow(row pgx.CollectableRow) (WindowRow, error) {
+// scanRepoWindowRow is scanWindowRow of a read that names repositories, which answers each row's
+// repository after its owner (DayWindowIn).
+func scanRepoWindowRow(row pgx.CollectableRow) (WindowRow, error) {
 	return scanWindowRowOf(row, true)
 }
 
-func scanWindowRowOf(row pgx.CollectableRow, stored bool) (WindowRow, error) {
+func scanWindowRowOf(row pgx.CollectableRow, repo bool) (WindowRow, error) {
 	var inWindow bool
 	var day WindowRow
 	part := &day.Part
 	fields := append(make([]any, 0, 19), &inWindow, &day.EvalID, &part.Series, &part.Day, &part.N, &part.Sum, &part.Num, &part.Den, &part.Max,
 		&part.Samples, &part.LastValue, &part.LastAt, &part.LastRecordedAt, &part.LastReading, &part.Counts, &part.ViaRepository,
 		&day.UpdatedAt, &day.owner)
-	if stored {
+	if repo {
 		fields = append(fields, &day.repo)
 	}
 	if err := row.Scan(fields...); err != nil {

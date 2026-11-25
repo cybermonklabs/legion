@@ -104,8 +104,9 @@ const EvalDaysWrittenByRebuild = "rebuild"
 // and, where it moves the project whose published default is the deploy repository, whose evals
 // judge the delivery views' figures (evals.Store.DeployRepoEvals), one more whose Ref is
 // DefaultsJudgingRef and Repo the deploy repository, which marks every delivery view those evals
-// judge (JudgingMoved). The commit makes the defaults and the stored figures folded under them
-// visible together, so a view of them is recomputed at once.
+// judge (JudgingMoved). The commit makes the defaults, the stored figures of the projects' own rows
+// folded under them and the marks of the cuts left to the refold visible together, so a view of
+// them is recomputed at once.
 const EvalDaysWrittenByDefaults = "defaults"
 
 // DefaultsJudgingRef is the Ref of the change that says the project judging the delivery views

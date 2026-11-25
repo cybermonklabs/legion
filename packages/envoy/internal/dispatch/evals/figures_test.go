@@ -1,6 +1,7 @@
 package evals
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -35,8 +36,8 @@ import (
 
 // The checks of the stored figures (figures.go): after each change, the stored rows are the
 // fold of the day rows that stand, as a read of those rows folds them (truthFigures, which reads
-// them through DayWindowIn and folds each range with FoldStatistics over its rows in day order,
-// merging and sorting every quantile's samples), and the rows the change wrote (by the
+// them through DayWindowIn and folds each range with FoldStatistics over its rows in the folds'
+// order, merging and sorting every quantile's samples), and the rows the change wrote (by the
 // transaction that last wrote each, xmin) are only those its moved days reach (figureReach).
 
 // figureRow is one stored figures row as the checks read it: the transaction that last wrote it
@@ -171,10 +172,10 @@ func (r *refresherRig) figuresFolded(t *testing.T) map[string]time.Time {
 // repository and, of its published default, its own rows stored under legionfacts.DefaultRepo; of
 // each eval of each deploy repository read through DayWindowIn, with no repository named or that
 // one (the evals keyed by the deploy repository read with that repository, every other eval with
-// none), in day order, and every range of FigureLengths ending on or before that day that holds one
-// of them folded by FoldStatistics, and every day before it that holds one folded alone over its
-// headline series. No list is sorted before the fold, so every quantile merges and sorts its
-// samples.
+// none), in the folds' order (by day, then by the key each row is stored under, its repository and
+// its series), and every range of FigureLengths ending on or before that day that holds one of them
+// folded by FoldStatistics, and every day before it that holds one folded alone over its headline
+// series. No list is sorted before the fold, so every quantile merges and sorts its samples.
 func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 	t.Helper()
 	ctx := t.Context()
@@ -193,10 +194,7 @@ func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 		if err != nil {
 			t.Fatalf("read the cuts of %s: %v", project, err)
 		}
-		cuts, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (figureCut, error) {
-			var cut figureCut
-			return cut, row.Scan(&cut.repo, &cut.deployRepo)
-		})
+		cuts, err := pgx.CollectRows(rows, scanFigureCut)
 		if err != nil {
 			t.Fatalf("read the cuts of %s: %v", project, err)
 		}
@@ -226,7 +224,10 @@ func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 				if len(held) == 0 {
 					continue
 				}
-				slices.SortStableFunc(held, func(a, b WindowRow) int { return a.Part.Day.Compare(b.Part.Day) })
+				slices.SortFunc(held, func(a, b WindowRow) int {
+					return cmp.Or(a.Part.Day.Compare(b.Part.Day), strings.Compare(a.owner, b.owner), strings.Compare(a.repo, b.repo),
+						strings.Compare(a.Part.Series, b.Part.Series))
+				})
 				key := foldKeyOf(entry)
 				within := func(from, to time.Time) ([]WindowRow, []measures.DayPart) {
 					var rows []WindowRow
@@ -954,10 +955,11 @@ func (r *refresherRig) readCut(t *testing.T, project string) cutRead {
 // under the project's eval id of its slug (asReader), its via_repository counted only where the
 // project reads the key through the repository (viaAsRead). Of each eval it keeps the rows of the
 // deploy repository its read reads (DeployRepoOf), and of each row what the read sends of it: the
-// samples of a series whose fold reads them (readsSamples), the write of a last value only in a
-// read of more than one repository, and no counts where it holds none. The stored rows hold no
-// writer, and none is needed: no eval of these histories changes its source, so every row of an
-// eval is its own writer's.
+// owner key and the repository it is stored under, which the fold orders a day's rows by
+// (sortWindowRows); the samples of a series whose fold reads them (readsSamples), the write of a
+// last value only in a read of more than one repository, and no counts where it holds none. The
+// stored rows hold no writer, and none is needed: no eval of these histories changes its source, so
+// every row of an eval is its own writer's.
 func (c cutRead) cutValues(t *testing.T, repos []string, window Range, compare *Range) map[string]string {
 	t.Helper()
 	cut := repos
@@ -1004,10 +1006,10 @@ func (c cutRead) cutValues(t *testing.T, repos []string, window Range, compare *
 			part.Counts = nil
 		}
 		if in(row.Day, window) {
-			byEval[evalID] = append(byEval[evalID], WindowRow{Range: RangeWindow, EvalID: evalID, Part: part, UpdatedAt: row.UpdatedAt, owner: owner})
+			byEval[evalID] = append(byEval[evalID], WindowRow{Range: RangeWindow, EvalID: evalID, Part: part, UpdatedAt: row.UpdatedAt, owner: owner, repo: row.Repo})
 		}
 		if compare != nil && in(row.Day, *compare) {
-			byEval[evalID] = append(byEval[evalID], WindowRow{Range: RangeCompare, EvalID: evalID, Part: part, UpdatedAt: row.UpdatedAt, owner: owner})
+			byEval[evalID] = append(byEval[evalID], WindowRow{Range: RangeCompare, EvalID: evalID, Part: part, UpdatedAt: row.UpdatedAt, owner: owner, repo: row.Repo})
 		}
 	}
 	values := map[string]string{}
@@ -1238,6 +1240,82 @@ func TestTheDayRowsAreFoldedInDayOrderWhateverOrderTheReadAnswers(t *testing.T) 
 	want, got := inOrder[0].Window["sum"], reversed[0].Window["sum"]
 	if want == nil || *want != 1e16 || got == nil || math.Float64bits(*got) != math.Float64bits(*want) {
 		t.Errorf("the sum of rows answered in day order is %s and of rows answered the other way round %s, want 1e16 for both", showValue(want), showValue(got))
+	}
+}
+
+// TestADaysRowsAreFoldedInOneOrderWhateverOrderTheReadAnswers: a read of the cut of a project's
+// default repository answers, on one day, rows of one series that differ only in the key each is
+// stored under or its repository: the project's own row of the repository, its own row stored
+// under legionfacts.DefaultRepo (repoCut) and the repository's owner key's row (owners.go), in
+// whatever order the read's plan answers them; and a sum of floats depends on the order of its
+// parts: 1e16, -1e16 and 1 sum to 1 in that order and to 0 in another (1 is half an ulp of 1e16
+// and rounds to the even neighbour). So every fold sorts a day's rows by the key each is stored
+// under and then by its repository (sortWindowRows): in each of the six orders the read can answer
+// the rows in, the read of the day rows (SeriesValuesOf) answers the same bytes, and so do the
+// stored figures (newFigureGroup) of the range and of the day, the range's sum the read's bit for
+// bit.
+func TestADaysRowsAreFoldedInOneOrderWhateverOrderTheReadAnswers(t *testing.T) {
+	day := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	entry := Entry{Definition: Definition{EvalID: "EVAL/spend", ProjectKey: "EVAL", Source: SourceLogged},
+		Series: []Series{{EvalID: "EVAL/spend", Series: "dollars", SeriesComputation: SeriesComputation{Role: RoleHeadline, Listed: true, Agg: AggSum}}}}
+	stored := []struct {
+		owner, repo string
+		sum         float64
+	}{
+		{"EVAL", "acme/legion", 1e16},
+		{"EVAL", legionfacts.DefaultRepo, -1e16},
+		{OwnerKey("acme/legion", nil, nil), "acme/legion", 1},
+	}
+	rows := func(order []int) []WindowRow {
+		held := make([]WindowRow, len(order))
+		for at, index := range order {
+			sum := stored[index].sum
+			held[at] = WindowRow{Range: RangeWindow, EvalID: entry.Definition.EvalID, owner: stored[index].owner, repo: stored[index].repo,
+				Part: measures.DayPart{Series: "dollars", Day: day, N: 1, Sum: &sum, Samples: []float64{sum}}}
+		}
+		return held
+	}
+	end := day.AddDate(0, 0, 1)
+	window := rangeOf(7, end)
+	firsts := map[string]time.Time{"dollars": window.From}
+	unsorted := map[uint64]bool{}
+	var read, ranged, daily []byte
+	for _, order := range [][]int{{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}} {
+		var parts []measures.DayPart
+		for _, row := range rows(order) {
+			parts = append(parts, row.Part)
+		}
+		unsorted[math.Float64bits(*FoldStatistics(entry.Definition, entry.Series, parts, window)["dollars"]["sum"])] = true
+
+		values := SeriesValuesOf(entry, rows(order), firsts, window, nil)
+		encoded, err := json.Marshal(values)
+		if err != nil {
+			t.Fatalf("encode the values of the rows in the order %v: %v", order, err)
+		}
+		group := newFigureGroup(entry, foldKeyOf(entry), rows(order))
+		rangeFigures, _, rangeHeld := group.rangeFigure(7, end)
+		dayFigures, _, dayHeld := group.dayFigure(day)
+		if !rangeHeld || !dayHeld {
+			t.Fatalf("the rows in the order %v hold the range (%t) and the day (%t), want both", order, rangeHeld, dayHeld)
+		}
+		folded, _, err := decodeFigures(rangeFigures)
+		if err != nil {
+			t.Fatalf("decode the stored range of the rows in the order %v: %v", order, err)
+		}
+		if got, want := folded["dollars"]["sum"], values[0].Window["sum"]; got == nil || want == nil || math.Float64bits(*got) != math.Float64bits(*want) {
+			t.Errorf("the rows in the order %v: the stored range sums to %s and the read of the day rows to %s, want the same bits", order, showValue(got), showValue(want))
+		}
+		if read == nil {
+			read, ranged, daily = encoded, rangeFigures, dayFigures
+			continue
+		}
+		if !slices.Equal(encoded, read) || !slices.Equal(rangeFigures, ranged) || !slices.Equal(dayFigures, daily) {
+			t.Errorf("the rows in the order %v fold to other bytes than in the order [0 1 2]: the read of the day rows %s, want %s; the stored range %x, want %x; the stored day %x, want %x",
+				order, encoded, read, rangeFigures, ranged, dayFigures, daily)
+		}
+	}
+	if len(unsorted) < 2 {
+		t.Errorf("the rows summed in the order they come in answer one sum whatever the order, want two: the check would show nothing")
 	}
 }
 
@@ -1742,14 +1820,16 @@ func TestEachWritesGoKeyOrderIsPostgresCollateCOrder(t *testing.T) {
 // prefix of the keys only once they hold at least the least ranges, and at the limit wherever it
 // falls (rangeChunks): at a least of one, a chunk each prefix, cut again at the limit; at a larger
 // least, chunks of several prefixes, which pass the end of a prefix inside them by; and at
-// rangeChunkLeast, a write of a few ranges is one chunk.
+// rangeChunkLeast, a write of a few ranges is one chunk. The third prefix keeps the second's
+// length, so only the repository ends the second: a split that compared lengths alone would not
+// close a chunk there.
 func TestARangeChunkClosesAtARepositoryOrLengthOnceItHoldsTheLeast(t *testing.T) {
 	day := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	var ranges []rangeTarget
 	for _, prefix := range []struct {
 		repo        string
 		days, count int
-	}{{"", 7, 3}, {"", 8, 5}, {"acme/api", 7, 1}, {"acme/api", 8, 2}} {
+	}{{"", 7, 3}, {"", 8, 5}, {"acme/api", 8, 1}, {"acme/api", 14, 2}} {
 		for end := range prefix.count {
 			key := rangeFigureKey{repo: prefix.repo, days: prefix.days, end: day.AddDate(0, 0, end), eval: "EVAL/latency"}
 			ranges = append(ranges, rangeTarget{rangeFigureRow: rangeFigureRow{rangeFigureKey: key}})
