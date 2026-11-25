@@ -9,7 +9,6 @@ import { api } from "../../api/client";
 import type { DisplayTree, IssueReferenceSummary } from "../../api/types";
 import fixtures from "./__fixtures__/display-trees.json";
 import { MarkdownPreview } from "./MarkdownPreview";
-import { warmMarkdownRenderer } from "./markdown-engine";
 import { installFakeParseWorker, restoreParseWorker } from "./parse-worker-fixture";
 
 /**
@@ -74,7 +73,13 @@ function words(element: HTMLElement): string {
   return (element.textContent ?? "").replace(/\s+/g, " ").trim();
 }
 
-afterEach(cleanup);
+// The parse worker's fake is restored first: that ends a wait no body ended
+// (`parse-worker-fixture.ts`), which closes the act the wait holds open before `cleanup`
+// unmounts. A row that reaches its deadline never reaches its own `finally`.
+afterEach(() => {
+  restoreParseWorker();
+  cleanup();
+});
 
 test("a hit inside bold or code text is marked inside the formatting, with no syntax left", async () => {
   // q="bold word" and q=code: `**<mark>Bold</mark>** <mark>word</mark>, see `<mark>code</mark>``.
@@ -287,8 +292,6 @@ test("a line break inside a paragraph reads as a space, so nothing after it fall
 // the faked worker (`parse-worker-fixture.ts`): the clamp it proves - the whole body parsed,
 // never the two lines the reader can see - is the one the dashboard applies to a body that size.
 test("a long body is parsed whole in the worker, so formatting past any visible cut renders and leaves no syntax", async () => {
-  // The body reaches the worker only once the lazy Markdown engine loads (`renderWithEngine`).
-  await warmMarkdownRenderer();
   const worker = installFakeParseWorker();
   const { preview, view } = renderPreview({
     lines: 2,

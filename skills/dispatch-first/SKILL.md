@@ -34,7 +34,7 @@ dispatch search --query 'reviewer threads OR review comments'
 
 ## Reach a person only through Dispatch
 
-- The moment a person blocks your work, open an ask: an ask block for a design question its document records, else `dispatch ask`. A blocker that is not an open ask does not exist for them. A Legion phase worker sends decisions to its architect instead. Before you say you wait on a person, run `dispatch open-asks`.
+- The moment a person blocks your work, open an ask: an ask block for a design question its document records, else `dispatch ask`. A blocker that is not an open ask does not exist for them. A Legion phase worker sends decisions to its architect instead. Before you say you wait on a person, run `dispatch open-asks`. A secret request that waits for a person is already in their Inbox, so it gets no ask (`skill://agent-secrets`).
 - A result a person asked for ends its document with an ask block asking their next step, else `dispatch ask`.
 - Record each request you accept in Dispatch before you start it. Your issue's work is a task, or a task's new text, in its plan. Other work is an issue or an ask. Before you end a turn, read the plan, your issues and open asks: each item is done, in progress, or an open ask. Never drop one.
 
