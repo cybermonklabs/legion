@@ -491,10 +491,14 @@ left out of both); a `grep` and a `glob` are each worked out in a worker thread,
 runner's own, since grep's JavaScript regular expression may backtrack where Oh My Pi's Rust one
 does not (`(a+)+b` over a long line), and glob's matcher of each path may take seconds for a long
 pattern in a large checkout; past 30 s the worker is ended and the call is not answered. A `grep`
-one test of whose regular expression (or of its exclusions') takes more than 100 ms is not
-answered either: JavaScript's engine stops a backtracking match after a count of its steps and
-gives no match (`(a+)+b` over 40 a's and then `xab`, about 0.7 s), where Oh My Pi's search finds
-one, so its `No matches found` would be wrong. A `grep` pattern may start with one inline flag
+one test of whose regular expression over a line (or of its exclusions' over a path) takes more
+than 100 ms is not answered either: JavaScript's engine stops a backtracking match after a count of
+its steps and gives no match (`(a+)+b` over 40 a's and then `xab`, about 0.7 s), where Oh My Pi's
+search finds one, so its `No matches found` would be wrong. Each file's whole text is tested first,
+with the `m` flag, and its lines only where that test finds a match or takes more than 100 ms: a
+match of a line is a match of the whole text (a look-around, which could look past the line, is
+not answered), so no match is lost, and the lines of the many files with none are neither split
+nor tested. A `grep` pattern may start with one inline flag
 group `(?FLAGS)`, FLAGS one or more of `i`, `m` and `s` each once (`(?i)technique[- ]targeted`),
 which Oh My Pi's Rust regex takes and JavaScript's does not: the runner takes it off and adds its
 letters to JavaScript's flags (`i` as `case: false` does); a flag group anywhere else, a scoped one
@@ -651,11 +655,11 @@ command where its colocation failed or whose checkout tracks a `.jj` at its root
 sandbox cannot be made or one of whose programs the sandbox lacks, an output whose notice would
 name an artifact (past 50 KB, a line past 768 bytes, or one the minimizer may rewrite), a `find`
 or `ls` tool, a run past its time, a `grep` or `glob` past 30 s, a `grep` one regex test of which
-took more than 100 ms; and any call but a skill read where the written case has no checkout,
-above) gets no verdict, never judged on that call: its reason begins `unanswered-read:` and names
-the call and why, and it is run again as any run with no verdict (at most 5 extra runs a case,
-stage and arm; an arm that cannot finish for such runs and those that read past round 5 drops its
-case as
+over a line took more than 100 ms; and any call but a skill read where the written case has no
+checkout, above) gets no verdict, never judged on that call: its reason begins `unanswered-read:`
+and names the call and why, and it is run again as any run with no verdict (at most 5 extra runs
+a case, stage and arm; an arm that cannot finish for such runs and those that read past round 5
+drops its case as
 `reads-past-last-round`, its reason counting each kind). The judged step is each answered round's
 calls, then the act; a reply after round 5 still all read-only calls the copy answers gets no
 verdict and is run again (`reads-past-last-round`). A session case's read-only calls are its

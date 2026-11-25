@@ -252,10 +252,13 @@
  *   out in a worker thread (`answerInWorker`), never the runner's own, within BASH_TIME_LIMIT_MS
  *   (30 s), past which the worker is ended; and since JavaScriptCore stops a backtracking match
  *   after a count of its steps and gives no match where the pin finds one, a call one test of
- *   whose expression (or of its exclusions') takes past REGEX_TEST_MS (100 ms) is not answered
- *   (`timedExec`). A pattern that starts with one inline flag group `(?FLAGS)`, FLAGS one or
- *   more of `i`, `m` and `s` each once, which Rust's regex takes and JavaScript's does not, is
- *   read without it, its letters added to the expression's flags (`i` as `case` false adds it).
+ *   whose expression over a line (or of its exclusions' over a path) takes past REGEX_TEST_MS
+ *   (100 ms) is not answered (`timedExec`). Each file's whole text is tested first, and its lines
+ *   only where that test finds a match or takes past REGEX_TEST_MS (`grepScan`, where the
+ *   invariant that loses no match is stated). A pattern that starts with one inline flag group
+ *   `(?FLAGS)`, FLAGS one or more of `i`, `m` and `s` each once, which Rust's regex takes and
+ *   JavaScript's does not, is read without it, its letters added to the expression's flags (`i`
+ *   as `case` false adds it).
  *   Not answered: a glob or a selector in a searched path, a path outside the root, a path (or
  *   every path of a list) the copy lacks, a path named twice, an exclusion of a form the runner
  *   does not read (`dialectGlob`), a list joined by commas or blanks, a file named alone past
@@ -263,7 +266,8 @@
  *   a named group in Rust's own form or a flag group other than that leading one (one elsewhere,
  *   a scoped `(?i:…)`, a negated one, one of another flag), one JavaScript does not take, a cut
  *   match line of a file that is not UTF-8, an output past 50 KB with its notices, a test of its
- *   expression past 100 ms, and a search past the time limit.
+ *   expression over a line (or of its exclusions' over a path) past 100 ms, and a search past the
+ *   time limit.
  * - `glob` (keys `path`, `hidden`, `gitignore`, `limit`, `i`): GlobTool's output
  *   (packages/coding-agent/src/tools/glob.ts lines 197-375, path-utils.ts's `parseFindPattern`
  *   and `splitDelimitedPathEntry`): `path` (`.` when absent) a pattern, or a list of patterns
@@ -329,10 +333,14 @@
  */
 import { isUtf8 } from "node:buffer";
 import {
+  closeSync,
   existsSync,
+  fstatSync,
   lstatSync,
+  openSync,
   readdirSync,
   readFileSync,
+  readSync,
   realpathSync,
   rmSync,
   type Stats,
@@ -2287,8 +2295,9 @@ const GREP_BINARY_WINDOW = 64 * 1024;
 /** How long one test of a grep call's regular expression, or of its exclusions', may take.
  *  JavaScriptCore stops a backtracking match after a count of its steps (`(a+)+b` over 40 a's, then
  *  `xab`: about 0.7 s on this pod) and gives no match, where the pin's search (Rust's regex, which
- *  does not backtrack) finds one; a test past this may have stopped so, and the call is not
- *  answered, so that the run is made again, never judged on that answer. */
+ *  does not backtrack) finds one; a test past this may have stopped so: one of a line, or of a
+ *  path by the exclusions, leaves the call not answered, so that the run is made again, never
+ *  judged on that answer, and one of a file's whole text has its lines tested (`grepScan`). */
 const REGEX_TEST_MS = 100;
 /** GlobTool's limit when the call gives none, and the largest it takes (glob.ts lines 46-47). */
 const GLOB_LIMIT = 200;
@@ -2699,11 +2708,12 @@ interface GrepMatch {
  *  `cap`, as grep's native search reports them (scan.rs lines 221-385, line mode): none where a
  *  NUL byte is in its first GREP_BINARY_WINDOW bytes; each with up to GREP_CONTEXT_BEFORE lines
  *  before it that no earlier report holds and up to GREP_CONTEXT_AFTER lines after it before the
- *  next matching line; ending before a line to report that holds a NUL byte. Each line is tested
- *  once, and a match line is shown from that test's match. Why not, where a matching line is
- *  shown in a form the runner does not place (`grepMatchLine`), or a test of `regex` took past
- *  REGEX_TEST_MS (`timedExec`). Exported for checkout.test.ts, whose row gives it a regular
- *  expression slow on a second test of a line. */
+ *  next matching line; ending before a line to report that holds a NUL byte. The whole text is
+ *  tested first, and only where that test finds a match, or takes past REGEX_TEST_MS, is each
+ *  line tested, once, a match line shown from that test's match. Why not, where a matching line
+ *  is shown in a form the runner does not place (`grepMatchLine`), or a test of `regex` over a
+ *  line took past REGEX_TEST_MS (`timedExec`). Exported for checkout.test.ts, whose rows give it
+ *  a regular expression slow on a second test of a line, and one that records what it tests. */
 export function grepScan(
   file: string,
   bytes: Buffer,
@@ -2711,8 +2721,23 @@ export function grepScan(
   cap: number
 ): GrepMatch[] | Unanswered {
   if (bytes.length === 0 || bytes.subarray(0, GREP_BINARY_WINDOW).includes(0)) return [];
+  const text = bytes.toString("utf8");
+  // Invariant: a match of a line is a match of the whole text under `regex`'s flags and `m`, so a
+  // whole text with no match holds no matching line, and its lines are neither split nor tested
+  // (splitting a 2 GB checkout's files into lines and testing each took about 5 s on this pod;
+  // testing each whole text, about 1 s). The match's path runs over the same characters in the
+  // whole text: a `^` or `$` it takes at the line's start or end stands after or before a newline
+  // there (or at the text's start or end), and one beside a `\r`, `\u2028` or `\u2029` inside the
+  // line holds under `m` in both; a `\b` or `\B` at the line's edge sees a newline beside it where
+  // the line alone sees nothing, neither a word character; a back-reference repeats what that
+  // path captured; and a look-around, the one form that could look past the line and fail there,
+  // is refused (grepAnswer). `regex` has no `g` or `y`, so neither test reads its `lastIndex`. A
+  // test past REGEX_TEST_MS may have stopped early with no match (see there), so the lines are
+  // then tested as before.
+  const whole = regex.flags.includes("m") ? regex : new RegExp(regex.source, `${regex.flags}m`);
+  if (timedExec(whole, text) === null) return [];
   const utf8 = isUtf8(bytes);
-  const lines = textLines(bytes.toString("utf8"));
+  const lines = textLines(text);
   const out: GrepMatch[] = [];
   // The last line reported, and the match whose after-context lines are still owed.
   let reported = 0;
@@ -2897,17 +2922,17 @@ function grepExclusions(
 }
 
 /** The files grep's native search reads under the directory `root` of the checkout (run.rs lines
- *  573-690): every regular file below it, no symbolic link followed, `.git`, `.jj` (which a
- *  colocated copy's own `.gitignore` leaves out) and `node_modules` not entered, and each file or
- *  directory `exclude` matches (its path below `root`) left out; in path order, a file past
- *  GREP_FILE_BYTES after all others. Why not, where a test of `exclude` took past REGEX_TEST_MS
- *  (`timedExec`). */
+ *  573-690), each its path inside the checkout: every regular file below it, no symbolic link
+ *  followed, `.git`, `.jj` (which a colocated copy's own `.gitignore` leaves out) and
+ *  `node_modules` not entered, and each file or directory `exclude` matches (its path below
+ *  `root`) left out; in path order (`grepReads` puts a file past GREP_FILE_BYTES after all
+ *  others). Why not, where a test of `exclude` took past REGEX_TEST_MS (`timedExec`). */
 function grepFiles(
   copy: CheckoutCopy,
   root: string,
   exclude: RegExp | undefined
-): { inside: string; oversized: boolean }[] | Unanswered {
-  const found: { inside: string; below: string; oversized: boolean }[] = [];
+): string[] | Unanswered {
+  const found: string[] = [];
   let slow: Unanswered | undefined;
   const walk = (at: string, below: string) => {
     for (const entry of readdirSync(path.join(copy.dir, at), { withFileTypes: true })) {
@@ -2923,19 +2948,54 @@ function grepFiles(
       if (excluded !== null) continue;
       if (entry.isDirectory()) {
         if (entry.name !== "node_modules") walk(inside, under);
-      } else if (entry.isFile()) {
-        const oversized = statSync(path.join(copy.dir, inside)).size > GREP_FILE_BYTES;
-        found.push({ inside, below: under, oversized });
-      }
+      } else if (entry.isFile()) found.push(inside);
     }
   };
   walk(root, "");
   if (slow !== undefined) return slow;
-  return found.sort(
-    (a, b) =>
-      Number(a.oversized) - Number(b.oversized) ||
-      (a.below < b.below ? -1 : a.below > b.below ? 1 : 0)
-  );
+  // Each path is `root`'s, then its path below it, so the paths' order is that of those below it.
+  return found.sort();
+}
+
+/** The files `files` (each a path inside the checkout) as grep's native search reads them, in its
+ *  order (run.rs lines 573-690): each of at most GREP_FILE_BYTES whole, in the order given, then
+ *  each past it over its first GREP_FILE_BYTES (`cut`), in the order given. A file's size is read
+ *  from the descriptor it is read through (`bytesWithin`), not by a stat of its path, a second
+ *  lookup of it: on this pod a stat of each of the 115,940 files of a 2 GB checkout took 12.6 s,
+ *  and reading them all about 15 s. */
+function* grepReads(
+  copy: CheckoutCopy,
+  files: readonly string[]
+): Generator<{ inside: string; bytes: Buffer; cut: boolean }> {
+  const past: string[] = [];
+  for (const inside of files) {
+    const bytes = bytesWithin(path.join(copy.dir, inside), GREP_FILE_BYTES);
+    if (bytes === undefined) past.push(inside);
+    else yield { inside, bytes, cut: false };
+  }
+  for (const inside of past) {
+    yield { inside, bytes: bytesAt(path.join(copy.dir, inside), 0, GREP_FILE_BYTES), cut: true };
+  }
+}
+
+/** The bytes of the file `file`, or undefined where it holds more than `limit`: its size read from
+ *  the descriptor opened to read it. */
+function bytesWithin(file: string, limit: number): Buffer | undefined {
+  const fd = openSync(file, "r");
+  try {
+    const size = fstatSync(fd).size;
+    if (size > limit) return undefined;
+    const bytes = Buffer.allocUnsafe(size);
+    let at = 0;
+    while (at < size) {
+      const read = readSync(fd, bytes, at, size - at, at);
+      if (read === 0) break;
+      at += read;
+    }
+    return bytes.subarray(0, at);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /** Where a `grep` call searches (grep.ts lines 673-746 and 826-918, path-utils.ts lines 1050-1133
@@ -3077,7 +3137,7 @@ function grepAnswer(
   const seen = new Set<string>();
   let totalCapReached = false;
   for (const root of scope.roots) {
-    let files = [{ inside: root.inside, oversized: false }];
+    let files = [root.inside];
     if (root.dir) {
       const exclude = grepExclusions(copy, scope.exclusions, root.inside);
       if ("why" in exclude) return exclude;
@@ -3086,16 +3146,13 @@ function grepAnswer(
       files = found;
     }
     let emitted = 0;
-    for (const file of files) {
-      // A file past GREP_FILE_BYTES is searched over its first GREP_FILE_BYTES alone.
-      const local = path.join(copy.dir, file.inside);
-      const bytes = file.oversized ? bytesAt(local, 0, GREP_FILE_BYTES) : readFileSync(local);
-      if (!root.dir && bytes.length > GREP_FILE_BYTES) {
+    for (const file of grepReads(copy, files)) {
+      if (!root.dir && file.cut) {
         return {
           why: `${file.inside} passes the ${GREP_FILE_BYTES} bytes grep reads into memory, past which it streams the file`,
         };
       }
-      const found = grepScan(file.inside, bytes.subarray(0, GREP_FILE_BYTES), regex, cap + 1);
+      const found = grepScan(file.inside, file.bytes, regex, cap + 1);
       if ("why" in found) return found;
       const taken = found.slice(0, GREP_TOTAL_MATCHES - emitted);
       emitted += taken.length;

@@ -1890,6 +1890,86 @@ test("grep inline flag: a flag group elsewhere in the pattern, scoped, negated, 
   }
 }, 60_000);
 
+// Catches: a grep that tests each file's whole text before its lines (the lines of a file with no
+// match neither split nor tested, about 5 s of a 2 GB checkout's search on this pod) losing a
+// match a test of a line finds: one past the first line, one anchored by `^` and `$` (which a
+// whole-text test without the `m` flag finds only at the text's start and end), one at a word
+// boundary by a newline, one of a case-insensitive search; or answering a whole-text match that
+// only a newline or a `\r` before one makes, which no line holds.
+test("grep speed: a file's whole text is tested before its lines and no match is lost, one on a later line, anchored by ^ and $, at a word boundary or of case false; a match only across a line's end is none", async () => {
+  const copy = filesCopy("grep-speed", {
+    "docs/crlf.md": "alpha\r\nbeta\r\n",
+    "docs/later.md": "one\ntwo\nthree\nfour\nfive\nsix target\nseven\n",
+    "docs/none.md": "nothing to find\n",
+  });
+  const found = " 5|five\n*6|six target\n 7|seven";
+  for (const [input, answer] of [
+    [{ pattern: "target", path: "docs/later.md" }, found],
+    [{ pattern: "^six target$", path: "docs/later.md" }, found],
+    [{ pattern: "\\bsix target\\b", path: "docs/later.md" }, found],
+    [{ pattern: "SIX TARGET", path: "docs/later.md", case: false }, found],
+    [{ pattern: "target", path: "docs" }, `# docs/\n## later.md\n${found}`],
+    [{ pattern: "five\\s+six", path: "docs/later.md" }, "No matches found"],
+    [{ pattern: "(?s)five.six", path: "docs" }, "No matches found"],
+    [{ pattern: "alpha$", path: "docs/crlf.md" }, "No matches found"],
+  ] as const) {
+    expect({ input, answer: await grepText(copy, input) }).toEqual({ input, answer });
+  }
+}, 60_000);
+
+// Catches: a grep that splits each file into lines and tests each line where a test of the
+// file's whole text finds no match, which means no line holds one: with the reads, a search of a
+// 2 GB checkout so ran past the 30 s limit.
+test("grep speed: the lines of a text whose whole holds no match are not tested; those of one whose whole matches are each tested once", () => {
+  const tested: string[] = [];
+  class Recorded extends RegExp {
+    override exec(text: string): RegExpExecArray | null {
+      tested.push(text);
+      return super.exec(text);
+    }
+  }
+  const regex = new Recorded("x", "u");
+  expect(grepScan("none.txt", Buffer.from("a\nb\nc\n"), regex, 20)).toEqual([]);
+  expect(tested).toEqual([]);
+  expect(grepScan("some.txt", Buffer.from("a\nx\nc\n"), regex, 20)).toEqual([
+    {
+      file: "some.txt",
+      n: 2,
+      text: "x",
+      cut: false,
+      before: [{ n: 1, text: "a" }],
+      after: [{ n: 3, text: "c" }],
+    },
+  ]);
+  expect(tested).toEqual(["a", "x", "c"]);
+});
+
+// Catches: a grep that reads each file's size from the descriptor it reads the file through (a
+// stat of each path, a second lookup of it, took 12.6 s of a 2 GB checkout's search on this pod)
+// losing the order the native search reads files in: a file past 4 MiB after every other, over
+// its first 4 MiB; or answering such a file named alone, which the pin streams.
+test("grep speed: a file past 4 MiB is searched over its first 4 MiB after every other file of its directory, and one named alone is not answered", async () => {
+  const copy = filesCopy("grep-speed-sizes", {
+    "big/a.txt": `kind 1\n${"filler\n".repeat(600_000)}kind 2\n`,
+    "big/b.txt": "kind 3\n",
+  });
+  expect(await grepText(copy, { pattern: "kind", path: "big" })).toBe(
+    [
+      "# big/",
+      "## b.txt",
+      "*1|kind 3",
+      "## a.txt",
+      "*1|kind 1",
+      " 2|filler",
+      " 3|filler",
+      " 4|filler",
+    ].join("\n")
+  );
+  expect(await grepText(copy, { pattern: "kind", path: "big/a.txt" })).toEqual({
+    why: expect.stringContaining("passes the 4194304 bytes grep reads into memory"),
+  });
+}, 60_000);
+
 // Catches: a glob's matching (Bun.Glob's, of every path under its base) run in the runner's own
 // thread with no time limit: a long pattern against each path of a large checkout takes seconds to
 // minutes, which stops every run of the process meanwhile.
