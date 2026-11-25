@@ -141,7 +141,7 @@ func (w waits) outsideOf(id, need string) (string, bool) {
 		return "", false
 	}
 	outside := from
-	for k := len(w.up) - 1; k >= 0; k-- {
+	for k := 0; k < 1; k++ {
 		if above := w.up[k][outside]; above >= 0 && !w.holds(w.names[above], id) {
 			outside = above
 		}
