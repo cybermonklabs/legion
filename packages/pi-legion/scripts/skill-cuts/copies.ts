@@ -171,7 +171,7 @@
  *    <name>/` for a pool an `ensure_vendor` clone holds, and `**\/<dir>/<pool>/skills/<name>/`
  *    for one in a clone the configuration's `clones` states at `<dir>`, whose copies are the
  *    cloned repository's). Then, from the prepack script's versions during the count's window
- *    (one GraphQL history read, `prepackVersions`), each path a version staged a skill at and the
+ *    (one GraphQL history read, `fileVersions`), each path a version staged a skill at and the
  *    script read stages it at no longer, with the rows of its package's unit
  *    (`formerStagePrefixes`). Each row maps the prefix to its repository copy: the copy at the
  *    directory the script staged from, or, where the tree read holds none, the copy at the
@@ -183,7 +183,14 @@
  *    staged, its former name. A skill git removed, or renamed to a directory the tree read holds
  *    no copy at, gets no row, and its note says so. The cache keeps each of those reads (the
  *    commit, keyed by repository, commit read, file and window start; the files, keyed by
- *    repository and commit), so a run started again makes neither again. A row whose
+ *    repository and commit), so a run started again makes neither again. The same holds for the
+ *    plugin cache of a marketplace of a target repository (`formerMarketplacePrefixes`): from the
+ *    versions of its manifest during the window (`fileVersions`), each plugin a version names by
+ *    a directory of the repository, with the marketplace's name and its own, has the cache
+ *    locations above for each skill that sat in its `skills/`; a skill still there, whose
+ *    marketplace or plugin the manifest names no more, is mapped to the copy the tree read holds
+ *    there, and one git moved (a commit that changed the manifest lists its SKILL.md as
+ *    `renamed`, `readCommitFiles`) to the copy at the directory it went to. A row whose
  *    repository the configuration's `targets` do not name is left out of the table and reported
  *    in `skill-copies.md`, so the operator can add that repository to `targets`.
  * 7. Same-job pairs and the follow-the-code sentence are not found here, and no model is called:
@@ -206,16 +213,21 @@
  *                     one matcher), repository, path, name (the copy's; for a row of a path a
  *                     prepack script staged a skill at under a name git renamed since, that former
  *                     name), via (the unit and manifest it comes from).
- *   former-stages.tsv `FORMER_STAGES_COLUMNS` (`formerStagePrefixes`): each path a prepack script
- *                     staged a skill at during the count's window and stages no longer, one row
- *                     per location of its package's unit (a prefix pattern; empty when the package
- *                     is no unit of the script's repository): prefix, script_repository,
- *                     script_path, package, skill (the name it staged), until (the commit from
- *                     which the script stages it there no longer), renamed_to (the directory git
- *                     renamed the staged directory's SKILL.md to, or empty), repository and path
- *                     (the copy its prefix-table.tsv row maps it to, empty when no row does), note
- *                     (why its rows map it there, or why no row maps it). attribute.ts reads it to
- *                     count a read under a former name and to say why a path has no row.
+ *   former-stages.tsv `FORMER_STAGES_COLUMNS` (`formerStagePrefixes`, `formerMarketplacePrefixes`):
+ *                     each path a prepack script staged a skill at during the count's window and
+ *                     stages no longer, and each cache location of a skill a target repository's
+ *                     marketplace gave it and gives no more, one row per location (a prefix
+ *                     pattern; empty when the package is no unit of the script's repository):
+ *                     prefix, script_repository, script_path (the prepack script, or the
+ *                     marketplace manifest), package (the script's package, or the former plugin
+ *                     `plugin:<plugin>@<marketplace>`), skill (the name it staged, or the name of
+ *                     the directory the plugin held), until (the commit from which the script
+ *                     stages it there no longer, or the plugin no longer holds it there),
+ *                     renamed_to (the directory git renamed the staged directory's SKILL.md to, or
+ *                     empty), repository and path (the copy its prefix-table.tsv row maps it to,
+ *                     empty when no row does), note (why its rows map it there, or why no row
+ *                     maps it). attribute.ts reads it to count a read under a former name and to
+ *                     say why a path has no row.
  *   repositories.tsv  `REPOSITORIES_COLUMNS`: each repository read, its commit, fork and archived
  *                     marks, how its tree was read, its skills, or the error.
  *   loaders.tsv       `LOADERS_COLUMNS`: each file outside a skill that names a skill: repository,
@@ -3542,10 +3554,7 @@ export function resolveInstallers(
             ...(own?.fact.skills ?? []),
           ]);
     const id = `plugin:${fact.plugin}@${fact.marketplace}`;
-    const locations = [
-      `**/plugins/cache/plugins/${fact.marketplace}___${fact.plugin}___*/`,
-      `**/plugins/cache/${fact.marketplace}/${fact.plugin}/*/`,
-    ];
+    const locations = marketplaceLocations(fact.marketplace, fact.plugin);
     if (fact.npm !== "" && built(repository, root)) locations.push(imageRoot(fact.npm));
     const unit: Unit = {
       id,
@@ -3946,9 +3955,18 @@ function unitVia(unit: Unit): string {
   return `${unit.id} (${unit.manifest.repository}:${unit.manifest.path})`;
 }
 
-/** One version of a prepack script that held during the count's window (`prepackVersions`): the
- *  commit of the repository's default branch that made it, that commit's date, and its text. */
-export interface PrepackVersion {
+/** Where Oh My Pi's plugin cache and Claude Code's hold the plugin `plugin` of the marketplace
+ *  `marketplace`: the two prefix patterns a plugin's skills sit under. */
+function marketplaceLocations(marketplace: string, plugin: string): string[] {
+  return [
+    `**/plugins/cache/plugins/${marketplace}___${plugin}___*/`,
+    `**/plugins/cache/${marketplace}/${plugin}/*/`,
+  ];
+}
+
+/** One version of a file that held during the count's window (`fileVersions`): the commit of the
+ *  repository's default branch that made it, that commit's date, and its text. */
+export interface FileVersion {
   readonly commit: string;
   readonly date: string;
   readonly text: string;
@@ -3987,7 +4005,7 @@ function sourceSaid(source: FormerSource, file: string): string {
  *  directory of its repository that it staged from (`sourceOf`, `readFormerSource`). */
 export interface PrepackScript {
   readonly manifest: Manifest;
-  readonly versions: readonly PrepackVersion[];
+  readonly versions: readonly FileVersion[];
   readonly sourceOf: (from: string) => Promise<FormerSource>;
 }
 
@@ -4036,7 +4054,7 @@ export async function formerStagePrefixes(
     // Each path staged before and not now, with each run of versions that staged it.
     const former = new Map<
       string,
-      { staged: Staged; runs: { from: PrepackVersion; until: PrepackVersion }[] }
+      { staged: Staged; runs: { from: FileVersion; until: FileVersion }[] }
     >();
     for (const [at, version] of versions.entries()) {
       const next = versions[at + 1];
@@ -4142,6 +4160,215 @@ export async function formerStagePrefixes(
     }
   }
   return { prefixes, notes, stages };
+}
+
+/** The files a commit changed (`readCommitFiles`), each `[filename, status, previous filename]`
+ *  (the last empty unless the file was renamed), or why they could not be read. */
+export type CommitFiles =
+  | { readonly kind: "files"; readonly files: readonly (readonly [string, string, string])[] }
+  | { readonly kind: "failed"; readonly error: string };
+
+/** A marketplace manifest read (`manifest`, at the commit read) with its versions during the count's
+ *  window (`versions`, oldest first, the last the one read) and the reader of the files a commit
+ *  of its repository changed (`filesOf`, `readCommitFiles`). */
+export interface MarketplaceHistory {
+  readonly manifest: Manifest;
+  readonly versions: readonly FileVersion[];
+  readonly filesOf: (commit: string) => Promise<CommitFiles>;
+}
+
+/**
+ * The prefix rows of each place a marketplace's plugin cache held a skill of the repository during
+ * the count's window and holds it no longer, with the former-stages.tsv row of each and a note for
+ * each plugin. A plugin entry of the repository itself (a path source) of an older version of the
+ * manifest is a plugin by its marketplace's name, its own name and its directory. Where a skill
+ * sat in that directory's `skills/`, its cache location was `**\/plugins/cache/plugins/<marketplace>___
+ * <plugin>___*\/skills/<name>/` (Oh My Pi's) and `**\/plugins/cache/<marketplace>/<plugin>/*\/
+ * skills/<name>/` (Claude Code's); it maps to the copy the tree read holds now, in two cases:
+ * - the skill is still at that directory, but the manifest names its marketplace or plugin no
+ *   longer (`renamed_to` empty): the copy is the one that `index` holds under the plugin's old
+ *   directory;
+ * - git moved the skill's directory (`renamed_to` the copy's directory): a commit that changed
+ *   the manifest within the window (`filesOf`) lists its SKILL.md as `renamed` from a directory
+ *   under a plugin's `skills/` that the plugin's marketplace named before that commit, and the
+ *   directory it went to, or one a later such commit moved it to, holds a copy now. A move is seen
+ *   only in a commit that changed the manifest. A skill git removed has a former-stages.tsv row
+ *   with no copy.
+ * The row's `name` is the directory's name where the plugin held the skill, its former name when
+ * the move changed it.
+ */
+export async function formerMarketplacePrefixes(
+  histories: readonly MarketplaceHistory[],
+  index: CopyIndex
+): Promise<{ prefixes: PrefixRow[]; notes: ManifestNote[]; stages: FormerStageRow[] }> {
+  const prefixes = new Map<string, PrefixRow>();
+  const notes: ManifestNote[] = [];
+  const stages: FormerStageRow[] = [];
+  for (const { manifest, versions, filesOf } of histories) {
+    const { repository } = manifest;
+    const note = (text: string) => notes.push({ repository, path: manifest.path, note: text });
+    /** The plugins of the repository's own directories that each version names, by version;
+     *  undefined for a version that does not parse. */
+    const plugins = versions.map((version) => {
+      try {
+        return parseManifest("claude-marketplace", manifest.path, version.text).facts.flatMap(
+          (fact) =>
+            fact.type === "marketplace-plugin" && fact.root !== undefined
+              ? [{ marketplace: fact.marketplace, plugin: fact.plugin, root: fact.root }]
+              : []
+        );
+      } catch (error) {
+        note(`its version at ${version.commit} does not parse: ${(error as Error).message}`);
+        return undefined;
+      }
+    });
+    const named = new Map<
+      string,
+      { marketplace: string; plugin: string; root: string; first: number; last: number }
+    >();
+    for (const [at, list] of plugins.entries()) {
+      for (const item of list ?? []) {
+        const id = `${item.marketplace}\0${item.plugin}\0${item.root}`;
+        const known = named.get(id);
+        named.set(id, { ...item, first: known?.first ?? at, last: at });
+      }
+    }
+    const lastAt = plugins.findLastIndex((list) => list !== undefined);
+    const current = new Set(
+      (plugins[lastAt] ?? []).map((item) => `${item.marketplace}\0${item.plugin}`)
+    );
+    // The SKILL.md renames and removals of each commit that changed the manifest within the window.
+    const moves: { commit: string; date: string; from: string; to: string }[] = [];
+    for (const version of versions.slice(1)) {
+      const changed = await filesOf(version.commit);
+      if (changed.kind === "failed") {
+        note(`the files of its version at ${version.commit} could not be read (${changed.error})`);
+        continue;
+      }
+      for (const [filename, status, previous] of changed.files) {
+        const renamed =
+          status === "renamed" && filename.endsWith("/SKILL.md") && previous.endsWith("/SKILL.md");
+        const removed = status === "removed" && filename.endsWith("/SKILL.md");
+        if (!renamed && !removed) continue;
+        moves.push({
+          commit: version.commit,
+          date: version.date,
+          from: path.posix.dirname(renamed ? previous : filename),
+          to: renamed ? path.posix.dirname(filename) : "",
+        });
+      }
+    }
+    /** `move` and each later move of the directory it went to, oldest first: where git put the
+     *  skill directory last within the window, or removed it (`to` empty). */
+    const chainOf = (move: (typeof moves)[number]) => {
+      const steps = [move];
+      for (let at = move; at.to !== ""; ) {
+        const from = at;
+        const next = moves.find((each) => each.from === from.to && each.date > from.date);
+        if (next === undefined) break;
+        steps.push(next);
+        at = next;
+      }
+      return steps;
+    };
+    for (const item of named.values()) {
+      const unit = `plugin:${item.plugin}@${item.marketplace}`;
+      const via = `${unit} (${repository}:${manifest.path})`;
+      const first = versions[item.first];
+      const until = versions[item.last + 1];
+      let moved = 0;
+      let stayed = 0;
+      let gone = 0;
+      const record = (
+        child: string,
+        copy: SkillCopy | undefined,
+        renamedTo: string,
+        untilCommit: string,
+        why: string
+      ) => {
+        for (const location of marketplaceLocations(item.marketplace, item.plugin)) {
+          const prefix = `${location}skills/${child}/`;
+          if (copy !== undefined) {
+            const row = { prefix, repository: copy.repository, path: copy.path, name: child, via };
+            prefixes.set(prefixRowKey(row), row);
+          }
+          stages.push({
+            prefix,
+            scriptRepository: repository,
+            scriptPath: manifest.path,
+            package: unit,
+            skill: child,
+            until: untilCommit,
+            renamedTo,
+            repository: copy?.repository ?? "",
+            path: copy?.path ?? "",
+            note: why,
+          });
+        }
+      };
+      const skills = path.posix.join(item.root, "skills");
+      for (const move of moves) {
+        if (
+          path.posix.dirname(move.from) !== skills ||
+          first === undefined ||
+          first.date >= move.date
+        )
+          continue;
+        const steps = chainOf(move);
+        const end = steps[steps.length - 1] ?? move;
+        const child = path.posix.basename(move.from);
+        const said = `${unit} (${item.root}) held ${move.from}/SKILL.md, and git ${steps
+          .map((step) =>
+            step.to === ""
+              ? `removed it at ${step.commit} (${step.date})`
+              : `renamed it to ${step.to}/SKILL.md at ${step.commit} (${step.date})`
+          )
+          .join(", and then ")}`;
+        const copy = end.to === "" ? undefined : index.at(repository, end.to);
+        if (copy === undefined) {
+          gone++;
+          record(
+            child,
+            undefined,
+            end.to,
+            move.commit,
+            `${said}; no prefix row maps that path${end.to === "" ? "" : `: the tree read holds no SKILL.md at ${end.to}`}`
+          );
+          continue;
+        }
+        moved++;
+        record(
+          child,
+          copy,
+          copy.path,
+          move.commit,
+          `${said}; the prefix rows map it to ${repository} ${copy.path}`
+        );
+      }
+      // The skills still under the plugin's directory, whose plugin or marketplace the manifest
+      // names no longer: the copies the tree read holds there, under the cache location the
+      // manifest gave them.
+      if (!current.has(`${item.marketplace}\0${item.plugin}`)) {
+        for (const member of index.membersAt(repository, item.root, ["skills"])) {
+          stayed++;
+          const child = path.posix.basename(member.rel);
+          record(
+            child,
+            member.copy,
+            "",
+            until?.commit ?? "",
+            `${unit} (${item.root}) held it from ${first?.commit ?? "the window's start"} until ${until?.commit ?? "the commit read"}, where the manifest names that marketplace or plugin no longer; the prefix rows map it to ${repository} ${member.copy.path}, where it still is`
+          );
+        }
+      }
+      if (moved + stayed + gone > 0) {
+        note(
+          `${unit} (${item.root}) is named so from ${first?.commit ?? "the window's start"} (${first?.date ?? ""}) to ${versions[item.last]?.commit ?? ""}${until === undefined ? "" : `, and no more from ${until.commit} (${until.date})`}; its former-path prefix rows map ${moved} skills git moved out of ${skills}/ to their copies, and ${stayed} skills still there, and ${gone} skills that git removed or moved to no copy of the tree read have none (former-stages.tsv says which)`
+        );
+      }
+    }
+  }
+  return { prefixes: [...prefixes.values()], notes, stages };
 }
 
 function escapeRegExp(text: string): string {
@@ -5542,7 +5769,7 @@ async function readPinned(
   }
 }
 
-/** One commit of GitHub's GraphQL history of a path (`prepackVersions`), with the file there. */
+/** One commit of GitHub's GraphQL history of a path (`fileVersions`), with the file there. */
 const HistoryNode = z.looseObject({
   oid: z.string(),
   committedDate: z.string(),
@@ -5554,7 +5781,7 @@ const HistoryNode = z.looseObject({
     })
     .nullable(),
 });
-const PrepackHistory = z.looseObject({
+const FileHistory = z.looseObject({
   data: z.looseObject({
     repository: z.looseObject({
       object: z.looseObject({
@@ -5567,10 +5794,10 @@ const PrepackHistory = z.looseObject({
     }),
   }),
 });
-/** A prepack script's history as the cache keeps it: whether more commits changed it in the
+/** A file's history as the cache keeps it: whether more commits changed it in the
  *  window than were read, and each version oldest first, its text `""` where the commit holds no
  *  such file and null where GitHub gives no whole text of it. */
-const CachedPrepackHistory = z.object({
+const CachedFileHistory = z.object({
   more: z.boolean(),
   versions: z.array(
     z.object({ commit: z.string(), date: z.string(), text: z.string().nullable() })
@@ -5578,37 +5805,34 @@ const CachedPrepackHistory = z.object({
 });
 
 /**
- * The versions of the prepack script `manifest` of `repo` that held during the count's window,
- * oldest first, the last the one at the commit read (`repo.commit`): the one in effect at
- * `windowStart` and each one a commit of the default branch made since, each with its commit,
- * date and text. One GraphQL read gives them (`history(path:)` of the commit read, its first 100
- * commits since `windowStart` and its last one before, each with the file), routed by the owner as
- * `graphqlArgs` routes a batch, and the cache keeps it. A read that fails, more than 100 commits
- * in the window, or a version whose text GitHub does not give whole, goes to `failures`, and the
- * versions read whole are kept without it; a commit that holds no such file stages nothing.
+ * The versions of the file `file` of `repo` that held during the count's window (a prepack script,
+ * a marketplace manifest), oldest first, the last the one at the commit read (`repo.commit`): the
+ * one in effect at `windowStart` and each one a commit of the default branch made since, each
+ * with its commit, date and text. One GraphQL read gives them (`history(path:)` of the commit
+ * read, its first 100 commits since `windowStart` and its last one before, each with the file),
+ * routed by the owner as `graphqlArgs` routes a batch, and the cache keeps it. A read that fails,
+ * more than 100 commits in the window, or a version whose text GitHub does not give whole, goes
+ * to `failures`, and the versions read whole are kept without it; a commit that holds no such
+ * file has the text `""`.
  */
-async function prepackVersions(
+async function fileVersions(
   github: Github,
   cache: ReadCache,
   repo: Repository,
-  manifest: Manifest,
+  file: string,
   windowStart: string,
   failures: string[]
-): Promise<PrepackVersion[]> {
-  const what = `the versions of ${repo.repository}:${manifest.path} since ${windowStart}`;
-  const key = `${repo.repository}\0${repo.commit}\0${manifest.path}\0${windowStart}`;
-  let history = cache.get("prepack-history", key, CachedPrepackHistory);
+): Promise<FileVersion[]> {
+  const what = `the versions of ${repo.repository}:${file} since ${windowStart}`;
+  const key = `${repo.repository}\0${repo.commit}\0${file}\0${windowStart}`;
+  let history = cache.get("file-history", key, CachedFileHistory);
   if (history === undefined) {
-    const file = JSON.stringify(manifest.path);
-    const fields = `oid committedDate file(path: ${file}) { object { ... on Blob { text isTruncated } } }`;
-    const query = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { object(oid: ${JSON.stringify(repo.commit)}) { ... on Commit { inWindow: history(path: ${file}, since: ${JSON.stringify(windowStart)}, first: 100) { pageInfo { hasNextPage } nodes { ${fields} } } before: history(path: ${file}, until: ${JSON.stringify(windowStart)}, first: 1) { nodes { ${fields} } } } } } }`;
-    let answer: z.infer<typeof PrepackHistory>;
+    const quoted = JSON.stringify(file);
+    const fields = `oid committedDate file(path: ${quoted}) { object { ... on Blob { text isTruncated } } }`;
+    const query = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { object(oid: ${JSON.stringify(repo.commit)}) { ... on Commit { inWindow: history(path: ${quoted}, since: ${JSON.stringify(windowStart)}, first: 100) { pageInfo { hasNextPage } nodes { ${fields} } } before: history(path: ${quoted}, until: ${JSON.stringify(windowStart)}, first: 1) { nodes { ${fields} } } } } } }`;
+    let answer: z.infer<typeof FileHistory>;
     try {
-      answer = await github.json(
-        graphqlArgs(repo.repository, query),
-        PrepackHistory,
-        repo.repository
-      );
+      answer = await github.json(graphqlArgs(repo.repository, query), FileHistory, repo.repository);
     } catch (error) {
       rethrowStop(error);
       failures.push(`${what} could not be read: ${(error as Error).message}`);
@@ -5626,7 +5850,7 @@ async function prepackVersions(
       return [{ commit: node.oid, date: node.committedDate, text }];
     });
     history = { more: inWindow.pageInfo.hasNextPage, versions };
-    cache.put("prepack-history", key, history);
+    cache.put("file-history", key, history);
   }
   if (history.more) {
     failures.push(`${what}: more than 100 commits changed it, and only the last 100 are read`);
@@ -5658,6 +5882,41 @@ const COMMIT_FILES_JQ =
 const COMMIT_PAGE_FILES = 300;
 /** A commit's files as the cache keeps them, each `[filename, status, previous filename]`. */
 const CachedCommitFiles = z.object({ files: z.array(CompareFile) });
+
+/**
+ * The files the commit `commit` of `repo` changed (`repos/<r>/commits/<sha>` through
+ * COMMIT_FILES_JQ), kept by the cache by repository and commit; a read that fails, or whose answer
+ * is not of its shape, is not kept and gives `failed`, with why. A list of COMMIT_PAGE_FILES files
+ * may be cut: GitHub lists a commit's files a page at a time.
+ */
+async function readCommitFiles(
+  github: Github,
+  cache: ReadCache,
+  repo: Repository,
+  commit: string
+): Promise<CommitFiles> {
+  const key = `${repo.repository}\0${commit}`;
+  const cached = cache.get("commit-files", key, CachedCommitFiles);
+  if (cached !== undefined) return { kind: "files", files: cached.files };
+  let lines: string[];
+  try {
+    const text = await github.text(
+      ["api", `repos/${repo.repository}/commits/${commit}`, "--jq", COMMIT_FILES_JQ],
+      repo.repository
+    );
+    lines = text.split("\n").filter((line) => line !== "");
+  } catch (error) {
+    rethrowStop(error);
+    return { kind: "failed", error: `the files of ${commit}: ${(error as Error).message}` };
+  }
+  const [count = "", ...rest] = lines;
+  const files = rest.map((line) => CompareFile.safeParse(parseJson(line)));
+  if (!/^\d+$/.test(count) || Number(count) !== rest.length || files.some((f) => !f.success))
+    return { kind: "failed", error: `the files of ${commit} are not of their shape` };
+  const listed = { files: files.flatMap((parsed) => (parsed.success ? [parsed.data] : [])) };
+  cache.put("commit-files", key, listed);
+  return { kind: "files", files: listed.files };
+}
 
 /**
  * What git did to `<from>/SKILL.md` of `repo` since `windowStart` (`FormerSource`): the newest
@@ -5704,27 +5963,8 @@ async function readFormerSource(
   }
   const commit = newest.commit;
   if (commit === null) return { kind: "unchanged", since: windowStart };
-  const filesKey = `${repo.repository}\0${commit}`;
-  let listed = cache.get("commit-files", filesKey, CachedCommitFiles);
-  if (listed === undefined) {
-    let lines: string[];
-    try {
-      const text = await github.text(
-        ["api", `repos/${repo.repository}/commits/${commit}`, "--jq", COMMIT_FILES_JQ],
-        repo.repository
-      );
-      lines = text.split("\n").filter((line) => line !== "");
-    } catch (error) {
-      rethrowStop(error);
-      return failed(`the files of ${commit}: ${(error as Error).message}`);
-    }
-    const [count = "", ...rest] = lines;
-    const files = rest.map((line) => CompareFile.safeParse(parseJson(line)));
-    if (!/^\d+$/.test(count) || Number(count) !== rest.length || files.some((f) => !f.success))
-      return failed(`the files of ${commit} are not of their shape`);
-    listed = { files: files.flatMap((parsed) => (parsed.success ? [parsed.data] : [])) };
-    cache.put("commit-files", filesKey, listed);
-  }
+  const listed = await readCommitFiles(github, cache, repo, commit);
+  if (listed.kind === "failed") return failed(listed.error);
   const found = listed.files.find(([filename, status, previous]) =>
     status === "renamed" ? previous === file : filename === file
   );
@@ -6178,35 +6418,62 @@ async function readAll(
     }
   }
 
-  // 6. The prefix table: the installers' rows, and the rows of each path a prepack script staged a
+  // 6. The prefix table: the installers' rows, the rows of each path a prepack script staged a
   // skill at during the count's window and stages no longer (`formerStagePrefixes`, with git's
-  // renames, `readFormerSource`), held to the configuration's targets.
+  // renames, `readFormerSource`), and the rows of each cache location a target repository's
+  // marketplace gave a skill of its own during the window and gives no more
+  // (`formerMarketplacePrefixes`), held to the configuration's targets.
+  const targets = new Set(config.targets.map((target) => target.toLowerCase()));
   const scripts: PrepackScript[] = [];
+  const marketplaces: MarketplaceHistory[] = [];
   for (const manifest of read) {
-    if (manifest.kind !== "prepack-script") continue;
+    const prepack = manifest.kind === "prepack-script";
+    if (
+      !prepack &&
+      !(manifest.kind === "claude-marketplace" && targets.has(manifest.repository.toLowerCase()))
+    )
+      continue;
     const repo = repositories.find((each) => each.repository === manifest.repository);
     if (repo === undefined || repo.commit === "") continue;
-    const versions = await prepackVersions(
+    const versions = await fileVersions(
       github,
       cache,
       repo,
-      manifest,
+      manifest.path,
       config.windowStart,
       failures
     );
-    scripts.push({
+    if (prepack) {
+      scripts.push({
+        manifest,
+        versions,
+        sourceOf: (from) =>
+          readFormerSource(github, cache, repo, from, config.windowStart, failures),
+      });
+      continue;
+    }
+    marketplaces.push({
       manifest,
       versions,
-      sourceOf: (from) => readFormerSource(github, cache, repo, from, config.windowStart, failures),
+      filesOf: async (commit) => {
+        const files = await readCommitFiles(github, cache, repo, commit);
+        if (files.kind === "failed") failures.push(files.error);
+        return files;
+      },
     });
   }
-  const former = await formerStagePrefixes(scripts, resolved, index);
+  const formerScripts = await formerStagePrefixes(scripts, resolved, index);
+  const formerPlugins = await formerMarketplacePrefixes(marketplaces, index);
+  const former = {
+    prefixes: [...formerScripts.prefixes, ...formerPlugins.prefixes],
+    notes: [...formerScripts.notes, ...formerPlugins.notes],
+    stages: [...formerScripts.stages, ...formerPlugins.stages],
+  };
   const known = new Set(resolved.prefixes.map(prefixRowKey));
   const table = [
     ...resolved.prefixes,
     ...former.prefixes.filter((row) => !known.has(prefixRowKey(row))),
   ].sort(byPrefix);
-  const targets = new Set(config.targets.map((target) => target.toLowerCase()));
   const prefixes = table.filter((row) => targets.has(row.repository.toLowerCase()));
   const mapped = new Set(prefixes.map((row) => row.repository.toLowerCase()));
   const formerStages = former.stages.map((row) =>

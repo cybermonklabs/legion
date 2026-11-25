@@ -729,6 +729,23 @@ place its package is installed: the script, the package, the skill's name there,
 which the script stages it there no longer, the directory git renamed it to, the copy its prefix
 row maps it to (empty for none) and why.
 
+`copies` also writes the former cache locations of a marketplace's plugin, for each target
+repository whose marketplace manifest changed during the window. It reads the manifest's versions
+in the window (one GraphQL read of its history), and for each plugin a version names by a
+directory of the repository (its marketplace's name, its own, its directory) it writes the cache
+locations Oh My Pi's plugin cache and Claude Code's gave the skills in that directory's
+`skills/`: `**/plugins/cache/plugins/<marketplace>___<plugin>___*/skills/<name>/` and
+`**/plugins/cache/<marketplace>/<plugin>/*/skills/<name>/`. A skill still in that directory,
+whose marketplace or plugin the manifest names no more, maps to the copy now there. A skill git
+moved (a commit that changed the manifest lists its `SKILL.md` as renamed; a later move of the
+same skill is followed) maps to the copy at the directory it went to, with `renamed_to` set in
+`former-stages.tsv`, so `attribute` counts those reads under `former_name_sessions`. A skill git
+removed, or moved to a directory with no copy now, has a `former-stages.tsv` row with no copy, and
+`attribute` says in the outcome of a read there that the plugin held it then and no longer.
+The limit: a move is seen only in a commit that also changed the marketplace manifest, so a skill
+moved by a commit that left the manifest alone keeps no former row. Each file list of a commit is
+read once and cached by repository and commit.
+
 ### `attribute`
 
 ```
@@ -748,6 +765,24 @@ It infers which units each group installed from those reads. It places a new rea
 that group supplies one copy of the name. It does not borrow copies from another profile
 in the same store. If `roots.txt` does not identify the session's profile, this step cannot
 place the read. `attribute` refuses a count output without the corresponding `roots.txt`.
+The default profile of a `devbox` store also has each unit that the dev box's own installers
+install into Oh My Pi, whether or not the session read from it. The dev box's repository is the
+one repository of `manifests.tsv` that holds both an installer script (`installers/*.sh`) and
+`.claude/settings.json`, and its units are the `installers.tsv` rows of that repository with host
+`omp` and the action ships, stages, links or installs (the same rule as the dev-box profile's
+in `build-cases`). So `/home/<user>/.agents/skills/gh/`, which cli/cli's `gh` and another
+repository's `gh` both end, goes to cli/cli's, which the dev box installs with `gh skill install`.
+A session of another profile has none of these units.
+A read inside a project skills directory (`.omp/skills`, `.claude/skills`, `.agent/skills`,
+`.agents/skills`, `.codex/skills`, `.opencode/skills`, `.github/skills`) of a checkout is a
+project skill, whether the path is absolute or relative to the session's working directory. A
+home directory's own skills directory (`/home/<user>/.claude/skills`, `~/.agents/skills`) is a
+user's and is not a project's. The checkout rule places a project skill only at a copy in such a
+directory too, and the profile never places it: a plugin that happens to hold a skill of the
+same name is not that project's skill, and a copy at `skills/<name>` of another repository is
+not either. A project skill that the copies output holds no copy of is unattributed, and its
+outcome says it is a project skill. `build-cases` places each read by the same code, so a read of
+a project skill installs no plugin in a case's profile.
 A read placed by a Git rename's prefix row (a `former-stages.tsv` row with a `renamed_to`) counts
 in the renamed copy's `sessions` and `former_name_sessions`. Outside the worker image, if the
 prefix table does not decide a read that matches a former-name row, the context can choose the
@@ -1001,18 +1036,27 @@ file's: `legion/Pulumi.prod.yaml`). A nested map's `image:` and the `daemonImage
 that line. The commit is the one that
 GitHub's build provenance of the image's digest names (`gh api
 repos/<repository>/attestations/sha256:<digest>`, the `gitCommit` of its first resolved
-dependency). For an image that names no digest, or whose digest has no provenance there (GitHub
-answers 404, as for an image that a deployment builds on the Legion image in another registry),
-the comment lines right above its `image:` line decide, by the first of their words, in their
-order, that names a commit:
+dependency). For an image whose digest has no provenance there (GitHub answers 404, as for an
+image that a deployment builds on the Legion image in another registry), the image itself decides:
+the build reads its OCI config from the registry by digest (the manifest and the config blob of a
+public GHCR image, with the anonymous pull token the registry gives; no layer is pulled). The
+`org.opencontainers.image.revision` label decides when it is a commit of the repository. Else the
+`org.opencontainers.image.version` label decides, as the release tag `v<version>` or
+`<name>-v<version>` (the first words of the image's name, the longest first) that the repository
+has, at the tag's last commit at or before the read. A label that names no commit or tag of the
+repository decides nothing. Failing that, the comment lines right above its `image:` line decide,
+by the first of their words, in their order, that names a commit:
 an image digest whose provenance names one (the base the image was built on), a commit of the
 repository (a word of 7 to 40 hex digits, letters and digits both), or a tag of the repository (a
 word of the form `<name>-v<version>` or `v<version>`, such as `legion-v15.2.0`, at the tag's last
 commit at or before the deployment's read). The order matters: a comment that names the image's
 base commit first and an older release after it ("before it …") is read at the base commit. Where
 none of these gives a commit (no `image:` line in the project file and no config file at that
-commit, no entry or `image:` line for the project, or a comment that names none), the
-repository is read at its default branch at the session's start. The evidence item `the worker
+commit, no entry or `image:` line for the project, an image no source dates, or a comment that
+names none), the image's commit is not known. The repository's default branch is a guess, so no
+profile is built on it: the case or task is not measurable, and is left out with that reason
+(`build-cases` exits 1 naming the case; `build-tasks` lists the task as left out). A version file
+inside an image layer is not read. The evidence item `the worker
 image's commit of <repository>` says which rule decided, with each read; the image's units are
 resolved from the repository's tree at that commit, and their copies and plugin directories name
 it. The rest of that repository is still read at the session's start: a Legion workspace of the

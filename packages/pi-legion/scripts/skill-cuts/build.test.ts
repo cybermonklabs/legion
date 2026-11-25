@@ -1244,8 +1244,7 @@ const REPOSITORIES: Record<string, Record<string, string>> = {
   // the release v1.0.0 of acme/rel as an Oh My Pi plugin under /opt/memo.
   "acme/infra": { "legion/projects/10-ACME.yaml": "key: ACME\ninstructions: acme.md\n" },
   "acme/deploy": {
-    "legion/projects/10-ACME.yaml":
-      "key: ACME\ninstructions: acme.md\nverificationSkillsLeaveOut: [beta-tools]\n",
+    "legion/projects/10-ACME.yaml": `key: ACME\ninstructions: acme.md\nimage: registry.example/acme/worker@sha256:${"3".repeat(64)}\nverificationSkillsLeaveOut: [beta-tools]\n`,
     "legion/acme-setup.sh": [
       "#!/bin/sh",
       "repo=acme/catalog",
@@ -1635,6 +1634,9 @@ const io = (lines: string[]): BuildIo => ({
   out: (text) => lines.push(text),
   err: (line) => lines.push(line),
   npm: async (name, version) => TARBALLS[`${name}@${version}`]?.(),
+  // The suite's worker images carry the label of the commit its repositories are read at (SHA),
+  // since an image no source dates is left out and never read at its repository's default branch.
+  imageConfig: async () => ({ env: [], labels: { "org.opencontainers.image.revision": SHA } }),
   gh: async (args) => {
     ghCalls.push([...args]);
     const route = args.find((arg) => arg.startsWith("repos/")) ?? "";
@@ -1685,7 +1687,11 @@ const io = (lines: string[]): BuildIo => ({
       return ok(`${PINNED[`${repo}@${ref}`]?.sha ?? SHA}\n`);
     }
     if (route === "repos/acme/infra/contents/legion/projects/10-ACME.yaml") {
-      return ok("key: ACME\ninstructions: acme.md\n");
+      // The image is the one whose labels `io` gives (the revision SHA): a deployment that names
+      // none gives no commit of its repository to read it at.
+      return ok(
+        `key: ACME\ninstructions: acme.md\nimage: registry.example/acme/worker@sha256:${"3".repeat(64)}\n`
+      );
     }
     const [, owned = "", file = ""] = /^repos\/([^/]+\/[^/]+)\/contents\/(.+)$/.exec(route) ?? [];
     const text = REPOSITORIES[owned]?.[decodeURIComponent(file)];
@@ -5704,7 +5710,7 @@ test("build-tasks with no bound writes the pinned bytes: the tasks, the summary,
     "model summary": "830ba5a3c2d161a489386c91ee25396de33d21df9deabfb10e8e915059c49c48",
     "model printed": "8d8a65fe70015b199ecc51a86a5803ef39c5cacbddbe124b22460e6d36a2971b",
     "profiles tasks": "c29cedaadf7a508a1449548b98da93ab14b079a002eb834365c81cc2f70e79f6",
-    "profiles summary": "68429a7056cf70785dbdf9cf36bddcae33f5a57446ccfb3cc08bfcab6220e209",
+    "profiles summary": "b67f0730cfd20dcb7c07567fa1a38f26a1bf31d41f07ca270e97dc5557ed2377",
     "profiles printed": "9ceae9fd265f889f404904ada8fe26a18ca2cbde3e9141337bd67b87b1aa1b0b",
     "profiles profiles": "26bf1079e50926d2c9e1bdc9482bca041b0a71392fb091f4352c437ab81932c4",
   });
@@ -5746,7 +5752,12 @@ const POD_BUILD = "d5".repeat(20);
 async function podProfile(
   name: string,
   profileName: string,
-  { task = false, label = true, legion = false } = {}
+  {
+    task = false,
+    label = true,
+    legion = false,
+    readAt,
+  }: { task?: boolean; label?: boolean; legion?: boolean; readAt?: string } = {}
 ) {
   const file = `/home/fixture/.omp/${profileName === "" ? "" : `profiles/${profileName}/`}agent/sessions/--work--/${name}.jsonl`;
   const db = legion ? "store_b" : "store_a";
@@ -5757,7 +5768,7 @@ async function podProfile(
     const oldRoot = legion ? "/opt/legion/pi-acme/dist/skills/alpha" : `${F1_SKILLS}/alpha`;
     const readRoot = legion
       ? `${target}/.omp/skills/alpha`
-      : "/opt/legion/pi-acme/dist/skills/alpha";
+      : (readAt ?? "/opt/legion/pi-acme/dist/skills/alpha");
     const store = files[db] ?? {};
     store[file] = inDirectory(text, target).replaceAll(oldRoot, readRoot);
   });
@@ -5841,7 +5852,7 @@ async function podProfile(
         legion ? "/opt/legion/pi-acme/dist/skills/alpha" : `${F1_SKILLS}/alpha`,
         legion
           ? "/legion/workspaces/acme/skills/ACME-12/.omp/skills/alpha"
-          : "/opt/legion/pi-acme/dist/skills/alpha"
+          : (readAt ?? "/opt/legion/pi-acme/dist/skills/alpha")
       )
     )
   );
@@ -5902,6 +5913,23 @@ test("session context row 5: without an OCI revision or pin evidence the pod is 
   const result = await podProfile("unresolved-base", "legion", { label: false });
   expect(result.code).toBe(EXIT.failed);
   expect(result.lines.join("\n")).toContain("not measurable");
+}, 60_000);
+
+// Catches: vskills-293's porting-released-proofs, whose read of the project's own
+// .claude/skills/porting-released-proofs/SKILL.md the context rule placed at a plugin holding a skill
+// of that name, so the profile installed that plugin whole (20 of the 21 names it added).
+test("session context row 6: a read inside the session checkout's own .claude/skills is that project's skill, and installs no unit that holds a skill of its name", async () => {
+  const project = await podProfile("project-skill-read", "", {
+    readAt: "/work/.claude/skills/alpha",
+  });
+  // The read installs no unit, so the profile has no alpha of acme/skills: the case is left out.
+  expect(project.code).toBe(EXIT.failed);
+  expect(project.lines.join("\n")).toContain(
+    "left out: the profile installs no alpha of acme/skills at the session's start"
+  );
+  // The same read at the plugin's own install location installs it, as row 1's does.
+  const plugin = await podProfile("plugin-skill-read", "");
+  expect((plugin.profile?.skills ?? []).map((skill) => skill.name)).toContain("beta");
 }, 60_000);
 
 /** `text`, a session's transcript, with its header's working directory `cwd`. */
@@ -6464,13 +6492,106 @@ test("build-cases --reprofile of a Legion pane reads the worker image's packages
   );
   expect(tagged.worker).toContain(` is ${IMAGE_SHA}${atImage}`);
 
-  // Neither: the package is read at the default branch at the session's start.
-  const none = await reprofiled("none", pulumi(["worker-plus of this week."], plus));
-  expect(none.skills).toEqual([`alpha ${SHA}`, `beta ${SHA}`]);
-  expect(none.worker).toStartWith(
-    `${config0} ${plus}, whose digest has no build provenance that names a commit (gh api repos/acme/skills/attestations/sha256:${digest(2)}); the comment right above its image: line names no image digest whose build provenance names a commit, no commit and no tag of acme/skills, so acme/skills is read at its default branch's commit at the session's start: a Legion pod runs the worker image`
+  // Neither, and no label: the image's commit is not known, so the case is left out, and the
+  // package is not read at the default branch at the session's start.
+  const none = await reprofiledLegion("none", {
+    pulumi: pulumi(["worker-plus of this week."], plus),
+    attested: { [attested]: IMAGE_SHA },
+    refused: true,
+  });
+  expect({ code: none.code, written: none.written }).toEqual({ code: EXIT.failed, written: false });
+  expect(none.said).toContain(
+    `pod profile not measurable: the worker image's commit of acme/skills is not known, and the repository's default branch is a guess, so the profile is not built: ${config0} ${plus}, whose digest has no build provenance that names a commit (gh api repos/acme/skills/attestations/sha256:${digest(2)}); the comment right above its image: line names no image digest whose build provenance names a commit, no commit and no tag of acme/skills: a Legion pod runs the worker image`
   );
 }, 240_000);
+
+// Catches: legion-4447's 4 role cases, whose worker image ghcr.io/…/legion-worker@sha256:25f7f0ab…
+// has no build provenance and no comment above its line, read at the head of the repository's main
+// at the session's start: a newer pi-envoy and pi-legion than the image held (dispatch-brainstorming
+// missing, dispatch-writing-specs and leading-a-work-stream added).
+describe("build-cases --reprofile of a Legion pane whose image has no build provenance", () => {
+  const digest = "2".repeat(64);
+  const pulumiOf = (image: string) =>
+    [
+      "config:",
+      "  legion:projects:",
+      "    - key: ACME",
+      "      instructions: acme.md",
+      `      image: ${image}`,
+      "",
+    ].join("\n");
+  const config0 = `acme/infra:legion/Pulumi.prod.yaml at ${SHA} gives the project ACME the image`;
+  const imaged = [`alpha ${IMAGE_SHA}`, `beta ${IMAGE_SHA}`, `omicron ${IMAGE_SHA}`];
+  const without = `, whose digest has no build provenance that names a commit (gh api repos/acme/skills/attestations/sha256:${digest})`;
+  const atImage = `, so the image's units of acme/skills are read at ${IMAGE_SHA}: a Legion pod runs the worker image`;
+
+  test("the image's own revision label, a commit of the repository, decides the commit its units are read at, though the label's source names no repository the build knows", async () => {
+    const image = `registry.example/acme/worker-plus@sha256:${digest}`;
+    const built = await reprofiledLegion("label-revision", {
+      pulumi: pulumiOf(image),
+      attested: {},
+      labels: {
+        "org.opencontainers.image.revision": IMAGE_SHA,
+        "org.opencontainers.image.source": "https://github.com/acme/skills-before-its-rename",
+      },
+    });
+    expect(built.skills).toEqual(imaged);
+    expect(built.plugins).toContain(`pi-acme ${IMAGE_SHA} packages/pi-acme`);
+    expect(built.registryReads).toContain(image);
+    expect(built.worker).toStartWith(
+      `${config0} ${image}${without}; the OCI config of ${image}, read from its registry by digest, labels org.opencontainers.image.revision ${IMAGE_SHA}, a commit of acme/skills (gh api repos/acme/skills/commits?sha=${IMAGE_SHA}&until=`
+    );
+    expect(built.worker).toContain(atImage);
+  }, 120_000);
+
+  test("a version label with no revision label is the release tag <name>-v<version> of the repository, the longest name first", async () => {
+    const image = `registry.example/acme/acme-image-worker@sha256:${digest}`;
+    const built = await reprofiledLegion("label-version", {
+      pulumi: pulumiOf(image),
+      attested: {},
+      labels: { "org.opencontainers.image.version": "2.0.0" },
+    });
+    expect(built.skills).toEqual(imaged);
+    expect(built.worker).toStartWith(
+      `${config0} ${image}${without}; the OCI config of ${image}, read from its registry by digest, labels org.opencontainers.image.version 2.0.0, so the release acme-image-v2.0.0, a tag of acme/skills (gh api repos/acme/skills/git/matching-refs/tags/acme-image-v2.0.0), whose last commit at or before `
+    );
+    expect(built.worker).toContain(atImage);
+  }, 120_000);
+
+  test.each([
+    [
+      "a revision label that is no commit of the repository",
+      {
+        "org.opencontainers.image.revision": "0b".repeat(20),
+      },
+      "labels org.opencontainers.image.revision " +
+        "0b".repeat(20) +
+        ", which name no commit or release tag of acme/skills",
+    ],
+    ["an image config with neither label", {}, "holds neither label"],
+  ] as const)(
+    "%s, and no comment above the image: line, leave the case out: it is not read at the repository's default branch",
+    async (_name, labels, said) => {
+      const image = `registry.example/acme/worker-plus@sha256:${digest}`;
+      const built = await reprofiledLegion("label-none", {
+        pulumi: pulumiOf(image),
+        attested: {},
+        labels,
+        refused: true,
+      });
+      expect({ code: built.code, written: built.written }).toEqual({
+        code: EXIT.failed,
+        written: false,
+      });
+      expect(built.registryReads).toContain(image);
+      expect(built.said).toContain(
+        `pod profile not measurable: the worker image's commit of acme/skills is not known, and the repository's default branch is a guess, so the profile is not built: ${config0} ${image}${without}, and the OCI config of ${image}, read from its registry by digest, ${said}, and no comment line is right above its image: line: a Legion pod runs the worker image`
+      );
+      expect(built.said).not.toContain("is read at its default branch's commit");
+    },
+    120_000
+  );
+});
 
 // Catches: an image comment that names the base's commit first and an older release after it
 // ("before it …") read at the older release.
@@ -6521,13 +6642,18 @@ function attestationOf(commit: string): string {
  *  to ACME's project file (`project`; the suite's own when undefined) and to each attestation of
  *  acme/skills (`attested`, the commit by digest; a 404 for another digest): the profile's skills
  *  of acme/skills (`<name> <commit>`) and plugins of it (`<name> <commit> <path>`), and the
- *  sources of its evidence items of the worker image's and the daemon image's commits. */
+ *  sources of its evidence items of the worker image's and the daemon image's commits. `labels`
+ *  are the OCI config labels the registry gives each image (no config when undefined, as for an
+ *  image it does not hold), and `registryReads` the images asked; `refused` says the build is
+ *  expected to leave the case out (exit 1) instead of writing it. */
 async function reprofiledLegion(
   name: string,
   answers: {
     readonly pulumi?: string;
     readonly project?: string;
     readonly attested: Readonly<Record<string, string>>;
+    readonly labels?: Readonly<Record<string, string>>;
+    readonly refused?: true;
   }
 ) {
   const legion = await profileCase("legion");
@@ -6538,6 +6664,7 @@ async function reprofiledLegion(
   const fresh = path.join(dir, "reprofiled.jsonl");
   const lines: string[] = [];
   const standin = io(lines);
+  const registryReads: string[] = [];
   const missing = { code: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)\n" };
   const code = await main(
     [
@@ -6546,6 +6673,10 @@ async function reprofiledLegion(
     ],
     {
       ...standin,
+      imageConfig: async (image) => {
+        registryReads.push(image);
+        return answers.labels === undefined ? undefined : { env: [], labels: answers.labels };
+      },
       gh: async (args) => {
         const route = args.find((arg) => arg.startsWith("repos/")) ?? "";
         if (route === "repos/acme/infra/contents/legion/Pulumi.prod.yaml") {
@@ -6554,12 +6685,14 @@ async function reprofiledLegion(
             ? { code: 0, stdout: answers.pulumi, stderr: "" }
             : missing;
         }
-        if (
-          route === "repos/acme/infra/contents/legion/projects/10-ACME.yaml" &&
-          answers.project !== undefined
-        ) {
+        // ACME's project file names no image unless the test gives one, so the Pulumi config does.
+        if (route === "repos/acme/infra/contents/legion/projects/10-ACME.yaml") {
           ghCalls.push([...args]);
-          return { code: 0, stdout: answers.project, stderr: "" };
+          return {
+            code: 0,
+            stdout: answers.project ?? "key: ACME\ninstructions: acme.md\n",
+            stderr: "",
+          };
         }
         const digest = /^repos\/acme\/skills\/attestations\/sha256:([0-9a-f]{64})$/.exec(
           route
@@ -6575,13 +6708,19 @@ async function reprofiledLegion(
       },
     }
   );
-  expect({ code, said: code === EXIT.ok ? "" : lines.join("\n") }).toEqual({
-    code: EXIT.ok,
-    said: "",
-  });
-  const [c] = loadCases(fresh, old);
+  if (answers.refused !== true) {
+    expect({ code, said: code === EXIT.ok ? "" : lines.join("\n") }).toEqual({
+      code: EXIT.ok,
+      said: "",
+    });
+  }
+  const [c] = code === EXIT.ok ? loadCases(fresh, old) : [];
   const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
   return {
+    code,
+    said: lines.join("\n"),
+    written: c !== undefined,
+    registryReads,
     skills: (c?.profile.skills ?? [])
       .filter((skill) => skill.repo === "acme/skills")
       .map((skill) => `${skill.name} ${skill.commit}`)

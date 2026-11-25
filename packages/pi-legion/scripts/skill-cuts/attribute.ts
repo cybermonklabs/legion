@@ -72,14 +72,26 @@
  *      directory on names; when it names none, step 3 decides.
  *   3. The session's profile. For each store and Oh My Pi profile, infer the installed units
  *      from that group's step-1 reads. Their copies are the installers.tsv rows of those units
- *      and the prefix rows' own copies. Place the read only when these units have one copy of
- *      the name, or one of the copies in a checkout tie. A matching former-name row can also
- *      name the copy if one of its units is in the group. With no known profile, this step
- *      cannot place the read. A read under a former name counts in `former_name_sessions`.
+ *      and the prefix rows' own copies. For the default profile of a devbox store, the units
+ *      are also each unit that the dev box's own installers install into Oh My Pi (installers.tsv
+ *      rows of the one repository of manifests.tsv that holds an installer script and
+ *      `.claude/settings.json`, host `omp`, action ships, stages, links or installs), whether or
+ *      not the session read from it: `/home/<user>/.agents/skills/gh/` ties cli/cli with another
+ *      repository's gh, and the dev box installs cli/cli's. Place the read only when these units
+ *      have one copy of the name, or one of the copies in a checkout tie. A matching former-name
+ *      row can also name the copy if one of its units is in the group. With no known profile, this
+ *      step cannot place the read. A read under a former name counts in `former_name_sessions`.
  *      A row whose path is inside an `ensure_vendor` clone (`<dir>/vendor/<name>/`) goes to no copy
  *      by this step: no prefix row maps that clone, so the copies output's end time holds no
  *      installer that makes it, and the copies the context installs then are other copies than
  *      the clone the read came from.
+ *      A project skill is read inside a project skills directory (`PROJECT_SKILL_DIRS`: `.omp/skills`,
+ *      `.claude/skills`, `.agent/skills`, `.agents/skills`, `.codex/skills`, `.opencode/skills`,
+ *      `.github/skills`) of a checkout, not of a home directory: an absolute path, or one
+ *      relative to the session's working directory. Step 2 places it only at a copy that is in
+ *      such a directory too, and this step never places it (apart from a step-2 tie among such
+ *      copies): no plugin or other unit that holds a skill of the same name is the project's
+ *      skill. With no such copy in the copies output it is unattributed, with that reason.
  *   4. Otherwise the row is unattributed for its skill name: a step-2 tie with the reason of the
  *      tie and of the context.
  *   `placer` is these four steps, and the one place a read's copy is decided: `attribute` counts
@@ -809,7 +821,9 @@ export type LoadersRow = Columns<typeof LOADERS_COLUMNS>;
 export type RepositoriesRow = Columns<typeof REPOSITORIES_COLUMNS>;
 export type ManifestsRow = Columns<typeof MANIFESTS_COLUMNS>;
 
-/** The tables of the copies output (copies.ts) this file reads. */
+/** The tables of the copies output (copies.ts) this file reads. `manifests` (manifests.tsv) is
+ *  what the dev box's own repository is found from (`devboxRepository`); without it no dev box is
+ *  known. */
 export interface R4Tables {
   readonly copies: readonly SkillCopiesRow[];
   readonly prefixes: readonly PrefixTableRow[];
@@ -817,10 +831,11 @@ export interface R4Tables {
   readonly installers: readonly InstallersRow[];
   readonly loaders: readonly LoadersRow[];
   readonly repositories: readonly RepositoriesRow[];
+  readonly manifests?: readonly ManifestsRow[];
 }
 
 /** The copies output as `readR4` reads it: the tables the attribution reads, and manifests.tsv,
- *  which build.ts's profiles read. */
+ *  which build.ts's profiles read too. */
 export interface R4Output extends R4Tables {
   readonly manifests: readonly ManifestsRow[];
 }
@@ -879,6 +894,70 @@ export const INSTALL_ACTIONS: Readonly<Record<string, true>> = {
   links: true,
   enables: true,
 };
+
+/** The installers.tsv actions by which a unit's own manifest ships a skill (INSTALL_ACTIONS but
+ *  `enables`, which turns on a plugin another manifest ships). */
+export const MEMBER_ACTIONS: Readonly<Record<string, true>> = {
+  ships: true,
+  stages: true,
+  links: true,
+  installs: true,
+};
+
+/** Claude Code's settings file in a repository, which with an installer script marks the dev
+ *  box's own repository. */
+export const CLAUDE_SETTINGS = ".claude/settings.json";
+
+/** The repositories of manifests.tsv that hold both an installer script (`installers/*.sh`) and
+ *  Claude Code's settings (`.claude/settings.json`), sorted: the dev box's own repository is the
+ *  one of them when there is one alone (DEVBOX_INSTALLERS_RULE in build.ts). */
+export function devboxRepositories(
+  manifests: readonly Pick<ManifestsRow, "repository" | "path" | "kind">[]
+): string[] {
+  const holding = (kind: string, file?: string) =>
+    new Set(
+      manifests
+        .filter((row) => row.kind === kind && (file === undefined || row.path === file))
+        .map((row) => row.repository)
+    );
+  const settings = holding("claude-settings", CLAUDE_SETTINGS);
+  return [...holding("installer-script")].filter((repo) => settings.has(repo)).sort();
+}
+
+/** The skills directories in which Oh My Pi 18.18.6 lists the skills of a project (a checkout's
+ *  own, build.ts's PROJECT_SKILLS with the source of each): the ones a home directory holds are a
+ *  user's, which a plugin or an installer may fill (`~/.claude/skills`, `~/.agents/skills`). */
+export const PROJECT_SKILL_DIRS = [
+  ".omp/skills",
+  ".claude/skills",
+  ".agent/skills",
+  ".agents/skills",
+  ".codex/skills",
+  ".opencode/skills",
+  ".github/skills",
+] as const;
+
+/** A home directory: where a user's own skills directories sit (`/home/<user>`, `/root`,
+ *  `/Users/<user>`, `~`). */
+const HOME_DIRECTORY = /^(?:~|\/root|\/home\/[^/]+|\/Users\/[^/]+)$/;
+
+/**
+ * The project skills directory (`PROJECT_SKILL_DIRS`) that the copy-path prefix `prefix`
+ * (`copyPrefix`, ending with the skill's own directory) is directly inside, when the directory
+ * above it is no home directory: the read is of a project's own skill, in a checkout (an absolute
+ * path, or one relative to the session's working directory). Undefined for a user's skills
+ * directory, a path in none, and a `skill://` prefix.
+ */
+export function projectSkillDir(prefix: string): string | undefined {
+  if (prefix.startsWith("skill://")) return undefined;
+  const skills = path.posix.dirname(prefix.replace(/\/+$/, ""));
+  for (const dir of PROJECT_SKILL_DIRS) {
+    if (skills !== dir && !skills.endsWith(`/${dir}`)) continue;
+    const above = skills.slice(0, skills.length - dir.length).replace(/\/+$/, "");
+    return HOME_DIRECTORY.test(above) ? undefined : dir;
+  }
+  return undefined;
+}
 
 /** Skills that code puts into every session, by name, with what does it. */
 export const INJECTED_SKILLS: Readonly<Record<string, string>> = {
@@ -1323,7 +1402,8 @@ export interface Placer {
 export function placer(
   outputs: readonly QueryOutput[],
   r4: R4Tables,
-  profiles: SessionProfiles
+  profiles: SessionProfiles,
+  devboxStores: ReadonlySet<string> = new Set()
 ): Placer {
   const counted = countOnce(outputs);
   const copies = new Map<string, SkillCopiesRow>();
@@ -1376,6 +1456,11 @@ export function placer(
     })
   );
   const checkout = checkoutRule(r4.copies);
+  // A project skill is of the checkout it is read in, so only a copy in a project skills directory
+  // can be it (a read of `.claude/skills/x` is no read of another repository's `skills/x`).
+  const checkoutProjects = checkoutRule(
+    r4.copies.filter((row) => projectSkillDir(row.path) !== undefined)
+  );
 
   // Step 3's units: those each store's own mapped reads come from, with their sessions.
   const storeUnits = new Map<string, Map<string, Set<string>>>();
@@ -1397,6 +1482,25 @@ export function placer(
       }
     }
   }
+  // The dev box's own installers (DEVBOX_INSTALLERS_RULE): a default-profile session of a devbox
+  // store has each unit they install into Oh My Pi, whether or not it read from it.
+  const [home, ...otherHomes] = devboxRepositories(r4.manifests ?? []);
+  if (home !== undefined && otherHomes.length === 0) {
+    const installed = new Set<string>();
+    for (const row of r4.installers) {
+      if (
+        row.manifest_repository === home &&
+        row.host === "omp" &&
+        Object.hasOwn(MEMBER_ACTIONS, row.action) &&
+        row.copy_path !== ""
+      )
+        installed.add(unitKey(row.unit, row.manifest_repository, row.manifest_path));
+    }
+    for (const store of devboxStores) {
+      const units = entry(profileUnits, sessionKey(store, "default"), () => new Set<string>());
+      for (const unit of installed) units.add(unit);
+    }
+  }
   const contextCopies = new Map<string, Map<string, Set<string>>>();
   const installedInContext = new Set<string>();
   for (const [group, units] of profileUnits) {
@@ -1409,6 +1513,13 @@ export function placer(
     }
     contextCopies.set(group, byName);
   }
+
+  /** What a former-stages.tsv row that no prefix row maps says of a path it names: a prepack
+   *  script staged the skill there, or a marketplace named a plugin as holding it there. */
+  const formerSaid = (row: FormerStagesRow) =>
+    row.package.startsWith("plugin:")
+      ? `${row.script_repository}'s ${row.script_path} named ${row.package} as holding ${row.skill} here until ${row.until.slice(0, 8)}, and holds it there no longer; ${row.note}`
+      : `${row.script_repository}'s ${row.script_path} staged ${row.skill} for ${row.package} here until ${row.until.slice(0, 8)}, and stages it there no longer; ${row.note}`;
 
   const place = (store: string, copyPath: string, skill: string, profile: string): Placement => {
     const prefix = copyPrefix(copyPath, skill);
@@ -1430,10 +1541,7 @@ export function placer(
       const reasons: string[] = [];
       if (prefixTie !== "") reasons.push(prefixTie);
       for (const { pattern, row } of unmappedStages) {
-        if (!pattern.test(copyPath)) continue;
-        reasons.push(
-          `${row.script_repository}'s ${row.script_path} staged ${row.skill} for ${row.package} here until ${row.until.slice(0, 8)}, and stages it there no longer; ${row.note}`
-        );
+        if (pattern.test(copyPath)) reasons.push(formerSaid(row));
       }
       if (reasons.length === 0) reasons.push("no prefix row maps the path");
       return {
@@ -1445,7 +1553,8 @@ export function placer(
       };
     }
     const table = prefixTie === "" ? "" : `${prefixTie}, and `;
-    const byCheckout = checkout(prefix);
+    const project = projectSkillDir(prefix);
+    const byCheckout = (project === undefined ? checkout : checkoutProjects)(prefix);
     if (byCheckout?.copy !== undefined) {
       return {
         prefix,
@@ -1465,6 +1574,18 @@ export function placer(
         copy: undefined,
         rule: undefined,
         outcome: `unattributed: ${table}${byCheckout?.why ?? `no copy's skill directory ends the path, which is inside ${clone}/, a clone an installer makes`}; no prefix row maps it, and the context rule claims no copy for a read inside a clone`,
+        formerName: undefined,
+      };
+    }
+    // A project's own skill is placed by a copy in a project skills directory alone (the checkout
+    // rule above, or the context among such copies a checkout tie leaves): never by a unit the
+    // profile installs, a plugin that holds a skill of the same name least of all.
+    if (project !== undefined && byCheckout?.tied === undefined) {
+      return {
+        prefix,
+        copy: undefined,
+        rule: undefined,
+        outcome: `unattributed: ${table}${byCheckout?.why ?? "no copy in a project skills directory ends the path"}; the path is of a project skill (${project} of a checkout, not of a home directory), which only a copy in such a directory places, so no unit's copy of ${skill} is it`,
         formerName: undefined,
       };
     }
@@ -1502,14 +1623,18 @@ export function placer(
         : installed.length === 0
           ? "none of them"
           : `${installed.length} of them (${installed.map(shown).join(", ")})`;
+    const formerNote = unmappedStages
+      .filter(({ pattern }) => pattern.test(copyPath))
+      .map(({ row }) => `; ${formerSaid(row)}`)
+      .join("");
     return {
       prefix,
       copy: undefined,
       rule: undefined,
       outcome:
         profile === "unknown"
-          ? `unattributed: ${why}; the session's Oh My Pi profile is unknown`
-          : `unattributed: ${why}, and its context installs ${contextSaid}`,
+          ? `unattributed: ${why}; the session's Oh My Pi profile is unknown${formerNote}`
+          : `unattributed: ${why}, and its context installs ${contextSaid}${formerNote}`,
       formerName: undefined,
     };
   };
@@ -1525,7 +1650,15 @@ export function attribute(
   r4: R4Tables,
   profiles: SessionProfiles
 ): Attribution {
-  const { place, storeUnits, members, installedInContext, counted } = placer(outputs, r4, profiles);
+  const devboxStores = new Set(
+    config.stores.filter((store) => store.context === "devbox").map((store) => store.name)
+  );
+  const { place, storeUnits, members, installedInContext, counted } = placer(
+    outputs,
+    r4,
+    profiles,
+    devboxStores
+  );
 
   // Each copy's sessions, and each skill name's sessions no copy got, by the row's kind.
   const copySessions = {
@@ -2267,7 +2400,7 @@ export function readCountMarkdown(report: Report): string {
     "",
     `1. The prefix table (prefix-table.tsv): a read goes to the copy that all matching rows agree on. Only the prefix table places reads under the worker image's install location (${code(IMAGE_ROOT)}). A miss or tie leaves an image read unattributed, with its former-stage note if there is one. Neither checkout nor context can substitute a copy. A former-stage row for a Git rename maps the old path to the renamed copy. Its reads count in both the copy's total sessions and its sessions under a former name (former_name_sessions).`,
     "2. A checkout, for a path not under the worker image's install location: a read whose path ends with a copy's skill directory in its repository (with a path boundary before it) is a read of that copy in a checkout of its repository; the longest such directory wins. Copies of several repositories at that directory are told apart by the path before it, in this order: the one whose owner and name are two directories of it in a row; else the one whose name is a directory of it; else the one whose owner is a directory followed by one that holds its name; else the one whose name a directory holds (`.dotfiles` holds `dotfiles`). An exact name always wins over a directory that only holds it. A tie left goes to step 3, among the tied copies alone. A skill directory of one segment (a skill at its repository's root) counts only when the path names its repository. A path inside a copy of another repository that an installer writes (`<dir>/vendor/<name>/`, an `ensure_vendor` clone; a package under `node_modules/`; a plugin under `plugins/cache/`) is a checkout only of a repository that the path from that copy's own directory on names; when it names none, step 3 decides.",
-    "3. The session's profile: use its profile from roots.txt. For each store and profile, infer installed units from the prefix-table reads of that group. Use the copies of those units alone, including former names from matching prefix rows. A profile must supply exactly one copy of the name (or one of the tied copies). An unknown profile does not place the read.",
+    "3. The session's profile: use its profile from roots.txt. For each store and profile, infer installed units from the prefix-table reads of that group; the default profile of a devbox store also has each unit the dev box's own installers install into Oh My Pi (installers.tsv). Use the copies of those units alone, including former names from matching prefix rows. A profile must supply exactly one copy of the name (or one of the tied copies). An unknown profile does not place the read. A read inside a project skills directory of a checkout (not of a home directory) is a project skill: only a copy in such a directory places it (step 2), never this step, so no plugin's copy of its name is it.",
     "4. Otherwise the read is unattributed for its skill name.",
     "",
     "Two copies of one name are a tie when their sessions differ by at most that name's unattributed sessions.",

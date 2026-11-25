@@ -18,6 +18,7 @@ import {
   modelCount,
   modelId,
   notAnthropicShare,
+  PROJECT_SKILL_DIRS,
   type PrefixTableRow,
   parseModelOutput,
   parseQueryOutput,
@@ -35,6 +36,7 @@ import {
   sessionModel,
   sessionModels,
 } from "./attribute";
+import { PROJECT_SKILLS } from "./build";
 import { loadConfig, parseConfig } from "./config";
 import {
   CopyIndex,
@@ -528,6 +530,223 @@ test.each([
   );
   // The context installs one alpha (acme/skills'), whose sessions stay H1's and H2's.
   expect(countOf(attribution, ALPHA).sessions).toBe(2);
+});
+
+// A plugin of another repository holds zeta at plugins/acme-plugs/skills/zeta and theta beside it;
+// a session of a Legion workspace of acme/proj reads zeta in the workspace's own .claude/skills.
+const PLUGS: Unit = plugin("acme-plugs", "acme/plugs");
+const PLUGS_ZETA = copyRow("acme/plugs", "plugins/acme-plugs/skills/zeta", "zeta");
+const PLUGS_THETA = copyRow("acme/plugs", "plugins/acme-plugs/skills/theta", "theta");
+const PROJECT_ZETA = copyRow("acme/proj", ".claude/skills/zeta", "zeta");
+const THETA_READ = "/home/dev/.claude/plugins/cache/m/acme-plugs/1.0.0/skills/theta/SKILL.md";
+const PROJECT_READS = {
+  workspace: "/legion/workspaces/acme/proj/p-1/.claude/skills/zeta/SKILL.md",
+  relative: ".claude/skills/zeta/SKILL.md",
+  home: "/home/dev/.claude/skills/zeta/SKILL.md",
+};
+function projectWorld(copies: readonly SkillCopiesRow[]): R4Tables {
+  return {
+    copies: [PLUGS_ZETA, PLUGS_THETA, ...copies],
+    installers: [installs(PLUGS, PLUGS_ZETA), installs(PLUGS, PLUGS_THETA)],
+    prefixes: [prefixRow("**/plugins/cache/m/acme-plugs/*/skills/theta/", PLUGS_THETA, PLUGS)],
+    formerStages: [],
+    loaders: [],
+    repositories: [repositoryRow("acme/plugs"), repositoryRow("acme/proj")],
+  };
+}
+/** The reads of the project skill: a session that read theta from the plugin's cache (so its
+ *  context installs the plugin), and one session each of the three reads of zeta. */
+function projectReads() {
+  return query("store_a", "2026-11-22", [
+    { skill: "theta", copy: THETA_READ, hashes: ["1111111111111111"] },
+    { skill: "zeta", copy: PROJECT_READS.workspace, hashes: ["2222222222222222"] },
+    { skill: "zeta", copy: PROJECT_READS.relative, hashes: ["3333333333333333"] },
+    { skill: "zeta", copy: PROJECT_READS.home, hashes: ["4444444444444444"] },
+  ]);
+}
+
+// Catches: vskills-293's porting-released-proofs, 9 cases whose read of the project's own
+// .claude/skills/porting-released-proofs/SKILL.md went to the plugin that holds a skill of that
+// name, by the store's context, so the profile installed that plugin whole (20 of the 21 names
+// it added).
+test("a read inside a checkout's own .claude/skills is that project's skill: no plugin or other unit's copy of its name takes it, and a home directory's .claude/skills is still a user's", () => {
+  const unplaced = attribute(CONFIG, [projectReads()], projectWorld([]));
+  const why =
+    "a project skill (.claude/skills of a checkout, not of a home directory), which only a copy in such a directory places, so no unit's copy of zeta is it";
+  expect(outcomesOf(unplaced, copyPrefix(PROJECT_READS.workspace, "zeta"))).toEqual([
+    {
+      outcome: `store_a: unattributed: no copy in a project skills directory ends the path; the path is of ${why}`,
+      sessions: 1,
+    },
+  ]);
+  expect(outcomesOf(unplaced, copyPrefix(PROJECT_READS.relative, "zeta"))).toEqual([
+    {
+      outcome: `store_a: unattributed: no copy in a project skills directory ends the path; the path is of ${why}`,
+      sessions: 1,
+    },
+  ]);
+  // The plugin's zeta has the user-level read alone; the two project reads are nobody's.
+  expect(countOf(unplaced, PLUGS_ZETA)).toMatchObject({ sessions: 1, unattributed: 2 });
+  expect(
+    unplaced.copies.find((count) => count.repository === "acme/proj")?.sessions
+  ).toBeUndefined();
+  // Where the copies output lists the project's own copy, both project reads are of it (the home
+  // directory's read has no project, and the checkout rule, which names no home, takes it there).
+  const listed = attribute(CONFIG, [projectReads()], projectWorld([PROJECT_ZETA]));
+  const reading = countOf(listed, PROJECT_ZETA).readSessions;
+  expect(reading.has(sessionKey("store_a", "2222222222222222"))).toBe(true);
+  expect(reading.has(sessionKey("store_a", "3333333333333333"))).toBe(true);
+  expect(countOf(listed, PLUGS_ZETA).readSessions.size).toBe(0);
+  expect(outcomesOf(listed, copyPrefix(PROJECT_READS.workspace, "zeta"))).toEqual([
+    {
+      outcome:
+        "store_a: checkout: to acme/proj .claude/skills/zeta: the path ends with .claude/skills/zeta/, its skill directory",
+      sessions: 1,
+    },
+  ]);
+});
+
+test("the project skills directories attribute.ts places by are the ones build.ts lists a session repository's project skills from", () => {
+  expect([...PROJECT_SKILL_DIRS]).toEqual(PROJECT_SKILLS.flatMap((kind) => kind.dirs));
+});
+
+// Catches: R1 on r4/main15 at 4eea3c9f, where /home/<user>/.agents/skills/gh/ (3,263 dev-box
+// sessions) tied cli/cli and a second repository's gh, and the default profile's context
+// installed neither, though the dev box's own installers install cli/cli's gh (`gh skill install`).
+test("a default-profile session of a devbox store has the units the dev box's own installers install, so it breaks a checkout tie in their favour, and a session of another profile has none", () => {
+  const GH = copyRow("cli/cli", "skills/gh", "gh");
+  const OTHER_GH = copyRow("acme/sessions", "skills/gh", "gh");
+  const installer: Unit = {
+    unit: "gh-skill:gh",
+    manifest_repository: "acme/dotfiles",
+    manifest_path: "installers/omp.sh",
+    kind: "installer-script",
+    action: "installs",
+    host: "omp",
+  };
+  const manifest = (file: string, kind: string) => ({
+    repository: "acme/dotfiles",
+    path: file,
+    kind,
+    source: "tree",
+    rows: "1",
+    says: "",
+    error: "",
+  });
+  const world: R4Tables = {
+    copies: [GH, OTHER_GH],
+    installers: [installs(installer, GH)],
+    prefixes: [],
+    formerStages: [],
+    loaders: [],
+    repositories: [repositoryRow("cli/cli"), repositoryRow("acme/sessions")],
+    manifests: [
+      manifest("installers/omp.sh", "installer-script"),
+      manifest(".claude/settings.json", "claude-settings"),
+    ],
+  };
+  const read = "/home/dev/.agents/skills/gh/SKILL.md";
+  const reads = query("store_a", "2026-11-22", [
+    { skill: "gh", copy: read, hashes: ["1111111111111111", "2222222222222222"] },
+  ]);
+  const profiles = new Map([
+    [sessionKey("store_a", "1111111111111111"), "default"],
+    [sessionKey("store_a", "2222222222222222"), "legion"],
+  ]);
+  const attribution = attributeByProfile(CONFIG, [reads], world, profiles);
+  const tie =
+    "the path ends with skills/gh/, the skill directory of 2 repositories (cli/cli, acme/sessions), and no directory of the path names just one of them";
+  expect(outcomesOf(attribution, copyPrefix(read, "gh"))).toEqual([
+    {
+      outcome: `store_a: context: to cli/cli skills/gh: ${tie}, and its context installs that one of them`,
+      sessions: 1,
+    },
+    {
+      outcome: `store_a: unattributed: ${tie}, and its context installs none of them`,
+      sessions: 1,
+    },
+  ]);
+  expect(countOf(attribution, GH)).toMatchObject({ sessions: 1, unattributed: 1 });
+  expect(countOf(attribution, OTHER_GH)).toMatchObject({ sessions: 0, unattributed: 1 });
+});
+
+// Catches: the dev-box sessions' reads of verification-skills' plugin cache at its older layout
+// (`<marketplace>___dev-infra___*/skills/running-heavy-jobs/`, 719 paths under another dropped
+// plugin's directories), unattributed for want of a prefix row: running-heavy-jobs fell from
+// 2,218 read sessions to 494. copies.ts now writes a former-path row for each such location.
+test("a read at a plugin cache location the marketplace held a skill at and holds no more is counted for the copy git moved it to, under its former directory; one of a skill git removed is unattributed, and its outcome names the former location", () => {
+  const MOVED_TOOL = copyRow("acme/skills", "plugins/acme-tools/skills/tool-loop", "tool-loop");
+  const GAMMA = copyRow("acme/skills", "plugins/plugin-gamma/skills/gamma-one", "gamma-one");
+  const KIT: Unit = {
+    unit: "plugin:acme-kit@acme-old",
+    manifest_repository: "acme/skills",
+    manifest_path: ".claude-plugin/marketplace.json",
+    kind: "claude-marketplace",
+    action: "ships",
+    host: "claude-code",
+  };
+  const UNTIL_MOVE = "3fe9b7821784751173ab41a052b2e320c6c538fc";
+  const cache = (plugin: string, skill: string) =>
+    `**/plugins/cache/plugins/acme-old___${plugin}___*/skills/${skill}/`;
+  const stage = (
+    prefix: string,
+    skill: string,
+    copy: SkillCopiesRow | undefined,
+    renamedTo: string,
+    note: string
+  ): FormerStagesRow => ({
+    prefix,
+    script_repository: "acme/skills",
+    script_path: ".claude-plugin/marketplace.json",
+    package: KIT.unit,
+    skill,
+    until: UNTIL_MOVE,
+    renamed_to: renamedTo,
+    repository: copy?.repository ?? "",
+    path: copy?.path ?? "",
+    note,
+  });
+  const world: R4Tables = {
+    copies: [MOVED_TOOL, GAMMA],
+    installers: [installs(plugin("acme-tools", "acme/skills"), MOVED_TOOL)],
+    prefixes: [
+      { ...prefixRow(cache("acme-kit", "tool-loop"), MOVED_TOOL, KIT) },
+      { ...prefixRow(cache("plugin-gamma", "gamma-one"), GAMMA, KIT), name: "gamma-one" },
+    ],
+    formerStages: [
+      stage(cache("acme-kit", "tool-loop"), "tool-loop", MOVED_TOOL, MOVED_TOOL.path, "renamed"),
+      stage(cache("plugin-gamma", "gamma-one"), "gamma-one", GAMMA, "", "still there"),
+      stage(cache("acme-kit", "gone"), "gone", undefined, "", "git removed it"),
+    ],
+    loaders: [],
+    repositories: [repositoryRow("acme/skills")],
+  };
+  const base = "/home/dev/.dotfiles/omp/plugins/cache/plugins/acme-old___";
+  const moved = `${base}acme-kit___0.2.36/skills/tool-loop/SKILL.md`;
+  const stayed = `${base}plugin-gamma___0.1.0/skills/gamma-one/SKILL.md`;
+  const removed = `${base}acme-kit___0.2.36/skills/gone/SKILL.md`;
+  const reads = query("store_a", "2026-11-22", [
+    { skill: "tool-loop", copy: moved, hashes: ["1111111111111111"] },
+    { skill: "gamma-one", copy: stayed, hashes: ["2222222222222222"] },
+    { skill: "gone", copy: removed, hashes: ["3333333333333333"] },
+  ]);
+  const attribution = attribute(CONFIG, [reads], world);
+  expect(countOf(attribution, MOVED_TOOL)).toMatchObject({
+    sessions: 1,
+    unattributed: 0,
+    formerNameSessions: 1,
+  });
+  expect(countOf(attribution, GAMMA)).toMatchObject({
+    sessions: 1,
+    unattributed: 0,
+    formerNameSessions: 0,
+  });
+  expect(outcomesOf(attribution, copyPrefix(removed, "gone"))).toEqual([
+    {
+      outcome: `store_a: unattributed: no copy's skill directory ends the path, and its context installs no copy of gone; acme/skills's .claude-plugin/marketplace.json named ${KIT.unit} as holding gone here until 3fe9b782, and holds it there no longer; git removed it`,
+      sessions: 1,
+    },
+  ]);
 });
 
 // A repository and its fork each hold a copy at skills/dispatch, as cybermonklabs/legion and

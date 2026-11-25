@@ -524,8 +524,11 @@ import {
 } from "../skill-scenarios/transcript";
 import { HASHLINE_HEADER, pathFormFault } from "./arms";
 import {
+  CLAUDE_SETTINGS,
+  devboxRepositories,
   type InstallersRow,
   type ManifestsRow,
+  MEMBER_ACTIONS,
   modelId,
   type Placement,
   type Placer,
@@ -849,10 +852,9 @@ const WORKSPACE_DIR = /\/--legion-workspaces-[A-Za-z0-9._-]*?-([a-z][a-z0-9]*)-(
 const LEFT_OUT_CUSTOM = new Set(["prewalk-plan", "vibe-mode-context"]);
 /** Where a Legion pod's worker image installs its Oh My Pi packages (worker.Dockerfile). */
 const IMAGE_ROOT = "/opt/legion/";
-/** Claude Code's settings in its config directory, as copies.ts reads them (its claude-settings
- *  manifest), and the user memory file beside them, which Oh My Pi reads as its user-level context
- *  file (discovery/claude.ts at the pinned tag). */
-const CLAUDE_SETTINGS = ".claude/settings.json";
+/** The user memory file beside Claude Code's settings (CLAUDE_SETTINGS, as copies.ts reads them
+ *  from its claude-settings manifest), which Oh My Pi reads as its user-level context file
+ *  (discovery/claude.ts at the pinned tag). */
 const USER_CONTEXT_FILE = ".claude/CLAUDE.md";
 /** A Legion workspace: `/legion/workspaces/<owner>/<name>/<workspace>`. */
 const LEGION_WORKSPACE = /^\/legion\/workspaces\/([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+)(?:\/|$)/;
@@ -3137,14 +3139,7 @@ const CLAUDE_PLUGIN_RULE =
 /** The dev box's repository by DEVBOX_INSTALLERS_RULE, or undefined, with the evidence of why,
  *  when no repository or more than one holds both. */
 function devboxHome(copies: Copies, evidence: Evidence[]): string | undefined {
-  const holding = (kind: string, file?: string) =>
-    new Set(
-      copies.manifests
-        .filter((row) => row.kind === kind && (file === undefined || row.path === file))
-        .map((row) => row.repository ?? "")
-    );
-  const settings = holding("claude-settings", CLAUDE_SETTINGS);
-  const homes = [...holding("installer-script")].filter((repo) => settings.has(repo)).sort();
+  const homes = devboxRepositories(copies.manifests);
   const [home] = homes;
   if (homes.length === 1 && home !== undefined) return home;
   evidence.push({
@@ -3208,7 +3203,7 @@ function legionCatalog(
 }
 
 /** Which commit of its repository a Legion pod's worker image carries. */
-const LEGION_IMAGE_RULE = `a Legion pod runs the worker image that the deployment names for its project at the deployment's commit of the session's start: the top-level image: line of the project file, else the image: line of the project's entry in the deployment's Pulumi config (Pulumi.prod.yaml in the directory above the project file's, the entry - key: <project>); that image carries the packages of its repository (the prefix-table.tsv rows under ${IMAGE_ROOT}) as the repository was at the commit the image was built from: the commit that the build provenance of the image's digest names (gh api repos/<repository>/attestations/sha256:<digest>, the gitCommit of its first resolved dependency); for an image whose digest has no such provenance there, the comment lines right above its image: line decide, by the first of their words, in their order, that names a commit: an image digest whose provenance names one (the base the image was built on), a commit of the repository (a word of 7 to 40 hex digits, letters and digits both), or a tag of the repository (a word of the form <name>-v<version> or v<version>, at the tag's last commit at or before the deployment's read); where none of these gives a commit, the repository is read at its default branch's commit at the session's start, as any other`;
+const LEGION_IMAGE_RULE = `a Legion pod runs the worker image that the deployment names for its project at the deployment's commit of the session's start: the top-level image: line of the project file, else the image: line of the project's entry in the deployment's Pulumi config (Pulumi.prod.yaml in the directory above the project file's, the entry - key: <project>); that image carries the packages of its repository (the prefix-table.tsv rows under ${IMAGE_ROOT}) as the repository was at the commit the image was built from: the commit that the build provenance of the image's digest names (gh api repos/<repository>/attestations/sha256:<digest>, the gitCommit of its first resolved dependency); for an image whose digest has no such provenance there, the image itself decides, by the labels of its OCI config (read from the registry by digest, the config blob alone and no layer: org.opencontainers.image.revision, a commit of the repository, else org.opencontainers.image.version, mapped to the release tag v<version> or <name>-v<version> that the repository has); failing that, the comment lines right above its image: line decide, by the first of their words, in their order, that names a commit: an image digest whose provenance names one (the base the image was built on), a commit of the repository (a word of 7 to 40 hex digits, letters and digits both), or a tag of the repository (a word of the form <name>-v<version> or v<version>, at the tag's last commit at or before the deployment's read); where none of these gives a commit, the image's commit is not known, the repository's default branch is a guess that no profile is built on, and the case or task is not measurable`;
 
 /** At which commit of the worker image's repository a Legion pod's daemon composed its role
  *  prompt (context.ts reads the item DAEMON_IMAGE_ITEM that names it). */
@@ -3279,11 +3274,93 @@ function projectFileImage(
   return { image: unquoted(value), comment: commentAbove(lines, at, 0) };
 }
 
+const OCI_REVISION = "org.opencontainers.image.revision";
+const OCI_VERSION = "org.opencontainers.image.version";
+
+/**
+ * The commit of `imageRepo` that the OCI config of the image `image` (a digest-pinned GHCR
+ * reference; `GithubReads.imageConfig` reads its manifest and config blob from the registry,
+ * which gives a public image's anonymous pull token, and pulls no layer) names: the commit of its
+ * `org.opencontainers.image.revision` label that `imageRepo` holds at or before `when.at`; else
+ * the last commit at or before `when.at` of the release tag its `org.opencontainers.image.version`
+ * label names (`v<version>`, or `<name>-v<version>` for the first words of the image's name, the
+ * longest first), the first of them that `imageRepo` has. `how` says what was read, and, with no
+ * `sha`, why no label decided; it is empty when the registry gave no config (not a GHCR image, or
+ * no anonymous pull). A commit or tag that `imageRepo` does not have, such as a label that names
+ * another repository's build, decides nothing.
+ */
+async function labelCommit(
+  github: GithubReads,
+  read: {
+    readonly image: string;
+    readonly imageRepo: string;
+    readonly when: { readonly at: string; readonly words: string };
+  }
+): Promise<{ readonly sha?: string; readonly how: string }> {
+  const { image, imageRepo, when } = read;
+  const config = await github.imageConfig(image);
+  if (config === undefined) return { how: "" };
+  const found = `the OCI config of ${image}, read from its registry by digest,`;
+  const revision = config.labels[OCI_REVISION];
+  const version = config.labels[OCI_VERSION];
+  /** The commit of `imageRepo` that `ref` (a commit or a tag) names, or undefined when it names
+   *  none there at or before `when.at`. */
+  const resolve = async (ref: string) => {
+    try {
+      return await github.commitAt(imageRepo, ref, when.at);
+    } catch (error) {
+      if (transientFailure(error)) throw error;
+      return undefined;
+    }
+  };
+  if (revision !== undefined && /^[0-9a-f]{40}$/.test(revision)) {
+    const commit = await resolve(revision);
+    if (commit === revision) {
+      return {
+        sha: commit,
+        how: `${found} labels ${OCI_REVISION} ${revision}, a commit of ${imageRepo} (${commitsRead(imageRepo, revision, when.at)})`,
+      };
+    }
+  }
+  if (version !== undefined && version !== "") {
+    const words = (
+      image
+        .replace(/@.*$/, "")
+        .replace(/:[^/]*$/, "")
+        .split("/")
+        .pop() ?? ""
+    ).split("-");
+    const tags = [
+      `v${version}`,
+      ...words.map((_, at) => `${words.slice(0, words.length - at).join("-")}-v${version}`),
+    ];
+    for (const tag of new Set(tags)) {
+      if (!(await github.hasTag(imageRepo, tag))) continue;
+      const commit = await resolve(tag);
+      if (commit === undefined) continue;
+      return {
+        sha: commit,
+        how: `${found} labels ${OCI_VERSION} ${version}, so the release ${tag}, a tag of ${imageRepo} (gh api repos/${imageRepo}/git/matching-refs/tags/${tag}), whose last commit at or before ${when.words} ${when.at} is ${commit}`,
+      };
+    }
+  }
+  const labels = [OCI_REVISION, OCI_VERSION]
+    .flatMap((name) =>
+      config.labels[name] === undefined ? [] : [`${name} ${config.labels[name]}`]
+    )
+    .join(" and ");
+  return {
+    how: `${found} ${labels === "" ? "holds neither label" : `labels ${labels}, which name no commit or release tag of ${imageRepo}`}`,
+  };
+}
+
 /** The commit of `imageRepo` that the image the `key:` line names for the project `project` was
  *  built from, read from `deployment` at `sha` by LEGION_IMAGE_RULE: the project file's top-level
  *  `key:` line, else the one of the project's entry in the Pulumi config; `how` gives the reads
- *  that decided it, or, with no `sha`, why no rule gave one. Throws when a GitHub read fails other
- *  than with a 404 of the project file, of the config file or of a provenance. */
+ *  that decided it, or, with no `sha`, why no source gave one: the build provenance of the image's
+ *  digest, then the OCI config labels of the image itself (`labelCommit`), then the comment lines
+ *  above its line. Throws when a GitHub read fails other than with a 404 of the project file, of
+ *  the config file or of a provenance. */
 async function imageCommit(
   github: GithubReads,
   read: {
@@ -3335,6 +3412,13 @@ async function imageCommit(
     }
     without = `, whose digest has no build provenance that names a commit (${asked})`;
   }
+  // The image itself: the labels of its OCI config, read from the registry by digest, name the
+  // commit it was built from, or the release it is.
+  const labelled = await labelCommit(github, { image: entry.image, imageRepo, when });
+  if (labelled.sha !== undefined) {
+    return { sha: labelled.sha, how: `${named}${without}; ${labelled.how}` };
+  }
+  if (labelled.how !== "") without = `${without}, and ${labelled.how}`;
   if (entry.comment.length === 0) {
     return { how: `${named}${without}, and no comment line is right above its ${line}` };
   }
@@ -4137,7 +4221,7 @@ function sessionRepository(
  *  its own priority). Each scan takes a directory entry or a symbolic link of each skill
  *  (discovery/helpers.ts, scanSkillsFromDir, lines 579-580 and 594-596), so a link a skills
  *  directory holds is followed. */
-const PROJECT_SKILLS = [
+export const PROJECT_SKILLS = [
   {
     dirs: [".omp/skills"],
     at: "each",
@@ -4298,14 +4382,6 @@ const PROJECT_LEVEL_DIRS = [
 
 /** What every profile of one build reads. */
 type ProfileRun = Pick<CaseRun, "config" | "copies" | "github" | "placer">;
-
-/** The installers.tsv actions by which a unit's own manifest ships a skill. */
-const MEMBER_ACTIONS: Readonly<Record<string, true>> = {
-  ships: true,
-  stages: true,
-  links: true,
-  installs: true,
-};
 
 /** Whether the resolved installer row `row` (copies.ts's `resolveInstallers`) ships a copy as a
  *  member of its unit: it names the copy, by one of MEMBER_ACTIONS. */
@@ -4963,20 +5039,12 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   if (deployment !== undefined && imageRepo !== undefined) {
     const depSha = commits.get(deployment);
     if (moreImageRepos.length > 0 || depSha === undefined) {
-      const why =
-        moreImageRepos.length > 0
-          ? `the worker image's packages come from ${imageRepositories.size} repositories (the prefix-table.tsv rows under ${IMAGE_ROOT}), so which one the image's commit is of is not known`
-          : `${deployment} has no commit at the session's start`;
-      const repos = [...imageRepositories].sort().join(", ");
-      evidence.push(
-        {
-          item: `the worker image's commit of ${repos}`,
-          source: `${why}, so each is read at its default branch's commit at the session's start: ${LEGION_IMAGE_RULE}`,
-        },
-        {
-          item: `${DAEMON_IMAGE_ITEM}${repos}`,
-          source: `${why}, so the role prompt is composed at the commit the profile reads each repository's plugins at: ${LEGION_DAEMON_RULE}`,
-        }
+      throw new PodNotMeasurable(
+        `${
+          moreImageRepos.length > 0
+            ? `the worker image's packages come from ${imageRepositories.size} repositories (the prefix-table.tsv rows under ${IMAGE_ROOT}), so which one the image's commit is of is not known`
+            : `${deployment} has no commit at the session's start, so it names no image`
+        }, and a repository's default branch is a guess, so the profile is not built: ${LEGION_IMAGE_RULE}`
       );
     } else {
       const read = {
@@ -4989,13 +5057,15 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       };
       const worker = await imageCommit(github, { ...read, key: "image" });
       const daemon = await imageCommit(github, { ...read, key: "daemonImage" });
+      if (worker.sha === undefined) {
+        throw new PodNotMeasurable(
+          `the worker image's commit of ${imageRepo} is not known, and the repository's default branch is a guess, so the profile is not built: ${worker.how}: ${LEGION_IMAGE_RULE}`
+        );
+      }
       evidence.push(
         {
           item: `the worker image's commit of ${imageRepo}`,
-          source:
-            worker.sha === undefined
-              ? `${worker.how}, so ${imageRepo} is read at its default branch's commit at the session's start: ${LEGION_IMAGE_RULE}`
-              : `${worker.how}, so the image's units of ${imageRepo} are read at ${worker.sha}: ${LEGION_IMAGE_RULE}`,
+          source: `${worker.how}, so the image's units of ${imageRepo} are read at ${worker.sha}: ${LEGION_IMAGE_RULE}`,
         },
         {
           item: `${DAEMON_IMAGE_ITEM}${imageRepo}`,
@@ -6903,7 +6973,14 @@ function readCopiesAndPlacer(
       config.stores.map((store) => store.name)
     );
     outputs = count.outputs.length;
-    placing = placer(count.outputs, r4, count.profiles);
+    placing = placer(
+      count.outputs,
+      r4,
+      count.profiles,
+      new Set(
+        config.stores.filter((store) => store.context === "devbox").map((store) => store.name)
+      )
+    );
   } catch (error) {
     throw new Refused(
       `--count ${countDir} and --copies ${copiesDir} do not place reads as attribute.ts does: ${messageFor(error)}`
