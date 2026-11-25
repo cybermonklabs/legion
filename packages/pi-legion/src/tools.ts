@@ -175,7 +175,7 @@ function pausedClaimName(
  * The summary's line on the project's pause, in the words `legion state` prints for an operator
  * (`pausedSummary` and `lastPauseSummary` in `packages/daemon/cmd/legion/project.go`), so the
  * controller and an operator read the same words, but for the token beside a claim, which this line
- * gives by the summary's rule (`unreachedToken`). The times are not the same text: `legion
+ * gives by the summary's rule (`pausedClaimName`). The times are not the same text: `legion
  * state` prints each at whole seconds, and this line prints the daemon's own string. While the
  * project is paused: the pause, since when, by whom and why, the claims whose stop it still waits
  * on, each by its issue and role and, where they do not reach it, its token, and how many rows it
