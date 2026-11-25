@@ -92,6 +92,19 @@ func (r *checkStatesRig) newSettler(t *testing.T, caller string) *checkStatesSet
 	return &checkStatesSettler{server: r.served, leases: leases, exclusive: duty.Exclusive, schedule: checkStatesTestSchedule}
 }
 
+// oneRound is settler with a schedule of one round, sharing its lease reservation; a test runs it
+// where settler itself runs nothing. A test that holds a settle and asserts what its round decided,
+// or left undecided, settles with it, so the assertion reads the round the test held. A round that
+// leaves a read unfinished keeps its marks due minGap on, from the start of its own transaction,
+// and a settle runs another round while a mark is due: on a loaded machine the round's end can
+// come later than that, and the next round reads GitHub again, deciding what the assertion means
+// to find undecided, or starting a read the test holds and never releases.
+func oneRound(settler *checkStatesSettler) *checkStatesSettler {
+	held := *settler
+	held.schedule.rounds = 1
+	return &held
+}
+
 // fileIssue files one more issue of project ACME, with no Verification document, and answers it.
 func (r *checkStatesRig) fileIssue(t *testing.T, title string) string {
 	t.Helper()
