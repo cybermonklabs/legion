@@ -1616,12 +1616,13 @@ func (r *podGoneAfterTheDriftRead) PodDrift(ctx context.Context, k runtime.Known
 // which only Resume sets, and the worker is told so in the prompt every role reads
 // (internal/prompts/go/worker-common.md, "Your process is shorter than your session").
 //
-// What does prompt it is the daemon's silence sweep, a bound after that last turn: it finds a
-// phase worker nothing will prompt and sends the phase's task again
-// (TestSilentPhaseWorkerGetsItsTaskAgainAfterAPodReplacement). The two tests are the two halves
-// of one truth — the round's end prompts nobody, and the sweep is what does — and neither
-// stands without the other: this one advances no clock and runs no sweep, so what it reads is
-// the end of the round alone.
+// What does prompt it is its relaunch's ready, a workflow fact that gives a phase worker holding
+// nothing its phase's task once its new process is ready
+// (TestAReplacedPhaseWorkerGetsItsUnfinishedTaskOnceWhenItsNewProcessIsReady), and, a bound
+// after that last turn, the daemon's silence sweep, which finds a phase worker nothing has
+// prompted and sends the phase's task again
+// (TestSilentPhaseWorkerGetsItsTaskAgainAfterAPodReplacement). This rig binds no ready as a fact,
+// advances no clock and runs no sweep, so what it reads is the end of the round alone.
 func TestPodUpdateTellsItsWorkerNothingHoweverTheRoundEnds(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
