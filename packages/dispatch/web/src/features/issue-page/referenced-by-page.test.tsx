@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, setSystemTime, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -21,6 +21,7 @@ import { stateForIssue } from "../issue/pins";
 import { MarginProvider } from "../margin/margin-context";
 import { issue as marginIssue } from "../margin/margin-fixture";
 import type { BlockItemKind } from "../refs/block-reference";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ReferencedBy } from "../refs/ReferencedBy";
 import { buildDispatchReference } from "../refs/routes";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
@@ -45,8 +46,32 @@ const CREATED_AT = "2026-11-16T10:00:00Z";
 // holds `Date` alone; the timers the cases wait on (React Query's, `waitFor`'s) run on the real
 // clock as before.
 const NOON = new Date(2026, 10, 19, 12, 0, 0, 0);
+// Excerpts of citing posts draw through the shared Markdown renderer, whose engine loads lazily.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 beforeEach(() => setSystemTime(NOON));
 afterEach(() => setSystemTime());
+
+/** A query client that already holds the summaries of the issues `WORDS` cites (CORE-1, CORE-2),
+ *  as `ReferencedBy.test.tsx`'s `renderPanel` seeds them, so the renderer reads a bare key in a
+ *  citing comment's excerpt without hitting the network. */
+function clientWithSummaries(): QueryClient {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  for (const [key, title] of [
+    ["CORE-1", "The target issue"],
+    ["CORE-2", "The citing issue"],
+  ] as const) {
+    client.setQueryData(["issue-summary", key], {
+      documents: [],
+      key,
+      project: "CORE",
+      status: "in_progress",
+      title,
+    });
+  }
+  return client;
+}
 
 const OWN_COMMENT = "11111111-1111-4111-8111-111111111111";
 const OWN_ASK = "22222222-2222-4222-8222-222222222222";
@@ -114,7 +139,7 @@ const READ: GraphReferences = {
 
 test("with page false an issue's own comment that references it is listed, and with page true it, a block of it, an own ask and an own message are left out while another issue's comment is kept", async () => {
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(READ);
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = clientWithSummaries();
   const panel = (page: boolean) => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
@@ -126,7 +151,9 @@ test("with page false an issue's own comment that references it is listed, and w
 
   try {
     const list = await screen.findByRole("region", { name: "Referenced by" });
-    expect(await within(list).findByText(WORDS.ownComment)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(list.textContent).toContain("CORE-1 The target issue's own comment cites it.")
+    );
     expect(within(list).getByRole("link", { name: "Comment · CORE-1" })).toHaveAttribute(
       "href",
       `/issues/CORE-1/comments/${OWN_COMMENT}`
@@ -135,22 +162,18 @@ test("with page false an issue's own comment that references it is listed, and w
 
     view.rerender(panel(true));
     const pageList = screen.getByRole("region", { name: "Referenced by" });
-    expect(
-      within(pageList).queryByText(WORDS.ownComment),
-      "the page lists the issue's own comment"
-    ).toBeNull();
-    expect(
-      within(pageList).queryByText(WORDS.ownBlock),
-      "the page lists a block of the issue's own comment"
-    ).toBeNull();
-    expect(
-      within(pageList).queryByText(WORDS.ownAsk),
-      "the page lists the issue's own ask"
-    ).toBeNull();
-    expect(
-      within(pageList).queryByText(WORDS.ownMessage),
-      "the page lists the issue's own message"
-    ).toBeNull();
+    expect(pageList.textContent, "the page lists the issue's own comment").not.toContain(
+      "own comment cites it"
+    );
+    expect(pageList.textContent, "the page lists a block of the issue's own comment").not.toContain(
+      "A block of"
+    );
+    expect(pageList.textContent, "the page lists the issue's own ask").not.toContain(
+      "own ask cites it"
+    );
+    expect(pageList.textContent, "the page lists the issue's own message").not.toContain(
+      "own message cites it"
+    );
     const sources = pageList.querySelectorAll<HTMLElement>(":scope > ul > li");
     expect(sources).toHaveLength(1);
     const kept = within(sources[0] as HTMLElement);
@@ -158,7 +181,11 @@ test("with page false an issue's own comment that references it is listed, and w
       "href",
       `/issues/CORE-2/comments/${OTHER_COMMENT}`
     );
-    expect(kept.getByText(WORDS.otherComment)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(sources[0]?.textContent).toContain(
+        "CORE-2 The citing issue's comment cites CORE-1 The target issue."
+      )
+    );
     expect(within(pageList).getByRole("heading")).toHaveTextContent("Referenced by (1)");
     // Every colour the list draws in Details is the page's: its link and its
     // excerpt as much as its heading and its lines, so no element carries the application's.
@@ -190,7 +217,7 @@ test("Details' Referenced by Retry pressed by keyboard after the list's first re
   const getReferences = spyOn(api, "getReferences").mockRejectedValue(
     new Error("the references are down")
   );
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = clientWithSummaries();
   const view = render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
@@ -217,7 +244,11 @@ test("Details' Referenced by Retry pressed by keyboard after the list's first re
     await act(async () => {
       again.resolve(READ);
     });
-    await within(list).findByText(WORDS.otherComment);
+    await waitFor(() =>
+      expect(list.textContent).toContain(
+        "CORE-2 The citing issue's comment cites CORE-1 The target issue."
+      )
+    );
     expect(within(list).queryByRole("button", { name: "Retry" })).toBeNull();
   } finally {
     restoreFocus?.();
@@ -330,15 +361,13 @@ test("Details' Referenced by reads no count until its list is read, then the row
 // open it. With `page`, Details draws each citing comment's excerpt whole, with no clamp and no
 // Show more, since a row of Details' references is no place the page shortens.
 test("with page each excerpt is drawn whole, with no clamp and no Show more, and without page it is clamped as before", async () => {
-  const excerpt = Array.from(
-    { length: 6 },
-    (_, index) => `Line ${index + 1} of CORE-2's comment cites CORE-1.`
-  ).join("\n");
+  const lines = Array.from({ length: 6 }, (_, index) => `Line ${index + 1} of the citing comment.`);
+  const excerpt = lines.join("\n");
   const getReferences = spyOn(api, "getReferences").mockResolvedValue({
     ...READ,
     edges: [itemEdge("CORE-2", "comment", OTHER_COMMENT, excerpt)],
   });
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = clientWithSummaries();
   const panel = (page: boolean) => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
@@ -348,17 +377,23 @@ test("with page each excerpt is drawn whole, with no clamp and no Show more, and
   );
   const view = render(panel(false));
   const list = () => screen.getByRole("region", { name: "Referenced by" });
-  const drawnExcerpt = () =>
-    [...list().querySelectorAll("p")].find((line) => line.textContent === excerpt);
+  const preview = () => list().querySelector<HTMLElement>("[data-markdown-preview]");
+  const body = () =>
+    list().querySelector<HTMLElement>(".dispatch-markdown:not([data-markdown-preview])");
 
   try {
-    await waitFor(() => expect(drawnExcerpt(), "the list draws no excerpt").toBeDefined());
-    expect(drawnExcerpt()).toHaveClass("line-clamp-3");
+    await waitFor(() =>
+      expect(preview()?.textContent, "the list draws no excerpt").toContain(lines[0])
+    );
+    expect(preview()).toHaveClass("line-clamp-3");
     expect(within(list()).getByRole("button", { name: "Show more" })).toBeInTheDocument();
 
     view.rerender(panel(true));
-    expect(drawnExcerpt(), "Details does not draw the excerpt whole").toBeDefined();
-    expect(drawnExcerpt(), "Details clamps the excerpt").not.toHaveClass("line-clamp-3");
+    await waitFor(() =>
+      expect(body()?.textContent, "Details does not draw the excerpt whole").toContain(lines[5])
+    );
+    expect(preview(), "Details clamps the excerpt").toBeNull();
+    expect(body(), "Details clamps the excerpt").not.toHaveClass("line-clamp-3");
     expect(
       within(list()).queryByRole("button", { name: /^Show (more|less)$/u }),
       "Details offers more of an excerpt it draws whole"

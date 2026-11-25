@@ -117,6 +117,7 @@ export type DispatchReadingSurface =
   | "node-row-chip"
   | "outline-crumb"
   | "issue-pin"
+  | "issue-page-history-turn"
   | "plan-task-line"
   | "document-page-title"
   | "agent-artifact-page-title"
@@ -664,6 +665,13 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: true,
     rendered: false,
     surface: "issue-pin",
+  },
+  {
+    files: ["packages/dispatch/web/src/features/issue-page/history-entries.tsx"],
+    reach: "/issues/<ISSUE>/activity with the new issue page on, a turn in Details' History",
+    record: true,
+    rendered: true,
+    surface: "issue-page-history-turn",
   },
   {
     cannotCarry: NODE_LINE_NO_QUESTION_ID,

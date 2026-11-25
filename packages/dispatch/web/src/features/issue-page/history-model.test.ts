@@ -4,7 +4,7 @@ import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import type { Actor, Artifact, Comment, DispatchEvent, MessageRead } from "../../api/types";
 import { dayLabel } from "../activity/activity-model";
-import { buildIssuePath, buildReferencePath, parseNodeReference } from "../refs/routes";
+import { buildIssuePath, parseNodeReference, referenceHref } from "../refs/routes";
 import {
   buildHistory,
   type HistoryBlock,
@@ -1046,8 +1046,9 @@ test("a refused check is named by its words where its id is a UUID, and by its i
 /** The page address of the check `BLOCKS` names by its words: its `ref`, read as a route. */
 function checkPath(): string {
   const route = parseNodeReference(`dispatch://${KEY}/artifact/verification-md#b-${CHECK_BLOCK}`);
-  if (route === undefined) throw new Error("the check's ref reads as no route");
-  return buildReferencePath(route);
+  const href = route === undefined ? undefined : referenceHref(route);
+  if (href === undefined) throw new Error("the check's ref reads as no page address");
+  return href;
 }
 
 test("a block whose id is a UUID that no node carries reads as a block that is gone", () => {

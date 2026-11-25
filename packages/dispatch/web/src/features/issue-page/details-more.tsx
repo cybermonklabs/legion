@@ -257,10 +257,12 @@ export function DetailsFocusedNode({ issue, state }: DetailsMoreProps): ReactNod
   const node: FocusedNode = focusedNode ?? {
     id: issue.key,
     state: issueStatusWord(issue.status),
-    title: issue.title,
+    text: issue.title,
     type: "issue",
   };
-  return <FocusedNodeFacts issueKey={issue.key} node={node} state={state} />;
+  return (
+    <FocusedNodeFacts issueKey={issue.key} issueTitle={issue.title} node={node} state={state} />
+  );
 }
 
 /**

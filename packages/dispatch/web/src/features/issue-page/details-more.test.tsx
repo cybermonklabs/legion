@@ -167,7 +167,7 @@ test("Edit on the reader's own comment sets the writer to edit it", async () => 
     id: "comment-1",
     item: { id: "comment-1", kind: "comment" },
     reference: `dispatch://${KEY}/comment/comment-1`,
-    title: OWN_COMMENT.body,
+    text: OWN_COMMENT.body,
     type: "comment",
   };
   const facts = (
@@ -875,7 +875,7 @@ test("the facts name the focused node's kind, state and author, and draw no firs
     author: { id: "bob", kind: "user" },
     id: "ask-1",
     state: NODE_STATE_WORDS.ask.open,
-    title: "Which store holds the drafts?",
+    text: "Which store holds the drafts?",
     type: "ask",
   };
   const view = render(
@@ -909,7 +909,7 @@ test("the facts name the focused node's kind, state and author, and draw no firs
       [`${PROPERTY_LABELS.status}:`, NODE_STATE_WORDS.ask.open],
       [`${CONTROL_LABELS.written_by}:`, "bob"],
     ]);
-    expect(facts.textContent, "the facts drew the row's first line").not.toContain(question.title);
+    expect(facts.textContent, "the facts drew the row's first line").not.toContain(question.text);
   } finally {
     view.unmount();
   }
@@ -977,7 +977,7 @@ const PLANNERS_NODE: FocusedNode = {
   id: "ask-7",
   item: { id: "ask-7", kind: "ask" },
   state: NODE_STATE_WORDS.ask.open,
-  title: PLANNERS_QUESTION.question,
+  text: PLANNERS_QUESTION.question,
   type: "ask",
 };
 
@@ -1181,7 +1181,7 @@ function commentNode(comment: Comment): FocusedNode {
     author: comment.author,
     id: comment.id,
     item: { id: comment.id, kind: "comment" },
-    title: comment.body,
+    text: comment.body,
     type: "comment",
   };
 }
@@ -1608,7 +1608,7 @@ test("a delivery that could not reach its agent reads Not delivered with Retry, 
         author: thread.message.author,
         id: "message-1",
         item: { id: "message-1", kind: "message" },
-        title: thread.message.body,
+        text: thread.message.body,
         type: "message",
       })
     );

@@ -6,7 +6,8 @@ import type {
   MessageWithTrees,
 } from "../../../api/types";
 import { isBlockItemKind } from "../../refs/block-reference";
-import type { DispatchReferenceRoute } from "../../refs/routes";
+import { isPartyRoute } from "../../refs/party-references";
+import type { DispatchReferenceRoute, PartyRoute } from "../../refs/routes";
 import { wordsOf } from "../../refs/tree-fragment";
 import { NODE_REFERENCES_WORDS } from "../page-words";
 import { knownIssueKeys, rowReferences, rowReferenceWords } from "../row-references";
@@ -141,12 +142,14 @@ function blockItem(node: GraphEdge["node"]): NonNullable<GraphEdge["node"]["pare
  * issue by their ids (`issueItemWords`). A citing item among them carries all of its words, with
  * no cut (`namedWords`), its references named from `names`, the page's one batched read of what
  * its references point at, by reference (`reference-names.tsx`); every other node, and an item
- * whose words the page does not hold yet, carries none.
+ * whose words the page does not hold yet, carries none. `issue` is the focused node's own issue,
+ * which those items are of.
  */
 export function referenceRows(
   itemWords: ReadonlyMap<string, string>,
   edges: readonly GraphEdge[],
-  names: ReadonlyMap<string, string> = NO_NAMES
+  names: ReadonlyMap<string, string> = NO_NAMES,
+  issue?: string
 ): ReferenceRow[] {
   const rows = new Map<string, ReferenceRow>();
   // The issues the page's names know, which a citing item's words tell their references by: read
@@ -167,7 +170,7 @@ export function referenceRows(
       nodeKind,
       ref: item?.ref ?? edge.node.ref,
       source: edge.node.issue_key ?? edge.node.project,
-      words: words === undefined ? "" : namedWords(words, names, issues),
+      words: words === undefined ? "" : namedWords(words, names, issues, issue),
     });
   }
   return [...rows.values()];
@@ -176,27 +179,30 @@ export function referenceRows(
 /**
  * The words a citing item is named by: all of them, with no cut, since a row of a node's
  * references is no place the page shortens, its runs of white space one space each, with each
- * reference they write named as the outline's row names it (`rowReferenceWords`): an issue by its
- * key and its title, anything else by its target's words. The server's reading of a bare
- * `dispatch://` reference is a link whose words are the address itself, so the words write it as
- * typed; a reference the read has not named is drawn by the page's word for what it names
- * (`unnamedWords`), since an address is no name, and the rest of the words stay. `issues` is
- * `knownIssueKeys(names)`.
+ * reference they write named as the outline's row names it (`rowReferenceWords`), `issue` being
+ * the issue the item is of: an issue by its key and its title, a party by the name its own read
+ * gives it, anything else by its target's words. The server's reading of a bare `dispatch://`
+ * reference is a link whose words are the address itself, so the words write it as typed; a
+ * reference the read has not named is drawn by the page's word for what it names
+ * (`unnamedWords`), since an address is no name, and the rest of the words stay. The batched read
+ * names no party, so a party nothing names reads as its author wrote it, as the outline's row
+ * reads it. `issues` is `knownIssueKeys(names)`.
  */
 function namedWords(
   words: string,
   names: ReadonlyMap<string, string>,
-  issues: readonly string[]
+  issues: readonly string[],
+  issue: string | undefined
 ): string {
   const whole = words.replace(/\s+/gu, " ").trim();
   let written = "";
   let at = 0;
   for (const one of rowReferences(whole, issues)) {
     written += whole.slice(at, one.start);
-    if ((names.get(one.reference) ?? "").trim() === "") {
+    if ((names.get(one.reference) ?? "").trim() === "" && !isPartyRoute(one.route)) {
       written += unnamedWords(one.route);
     } else {
-      const named = rowReferenceWords(one, names);
+      const named = rowReferenceWords(one, names, issue);
       written += named.key === undefined ? named.words : `${named.key} ${named.words}`;
     }
     at = one.end;
@@ -209,11 +215,11 @@ function namedWords(
  * an issue by its key alone, as the outline's row draws one whose title has not come
  * (`rowReferenceWords`), and anything else by the page's word for its kind, as the list names a
  * node it holds no words of (`NODE_REFERENCES_WORDS.kinds`): a question, a comment or a message
- * by its own word, a block of any of them by its item's, and a document, a block of one or an
- * agent's file by the word for a document. Never its address, its slug, its id or a document's
- * file name.
+ * by its own word, a block of any of them by its item's, a document, a block of one or an
+ * agent's file by the word for a document, and a component by its own. Never its address, its
+ * slug, its id or a document's file name.
  */
-function unnamedWords(route: DispatchReferenceRoute): string {
+function unnamedWords(route: Exclude<DispatchReferenceRoute, PartyRoute>): string {
   switch (route.kind) {
     case "ask":
     case "comment":
@@ -227,6 +233,8 @@ function unnamedWords(route: DispatchReferenceRoute): string {
     case "spec":
     case "verification":
       return NODE_REFERENCES_WORDS.kinds.artifact;
+    case "component":
+      return NODE_REFERENCES_WORDS.kinds.component;
     default:
       return route.key;
   }

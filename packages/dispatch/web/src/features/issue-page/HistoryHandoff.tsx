@@ -145,7 +145,7 @@ function HandoffFields({ handoffId, id }: { handoffId: string; id: string }): Re
       tabIndex={-1}
       {...authorText}
     >
-      {fields.map(({ entry, field, json, label, text }) => {
+      {fields.map(({ entry, field, label, shape, text }) => {
         const known = Object.hasOwn(KNOWN_FIELDS, field) ? KNOWN_FIELDS[field] : undefined;
         // The element keeps the field's key, which a reader of the page selects by; the label
         // is the page's name for the field, or the words its key spells.
@@ -163,7 +163,7 @@ function HandoffFields({ handoffId, id }: { handoffId: string; id: string }): Re
               )}
             </dt>
             <dd className="min-w-0">
-              {json ? (
+              {shape === "json" ? (
                 <pre className={handoffPre}>{text}</pre>
               ) : (
                 <span className="break-words whitespace-pre-wrap">{text}</span>

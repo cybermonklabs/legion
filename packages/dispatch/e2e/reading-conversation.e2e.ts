@@ -2,6 +2,7 @@ import type { Locator } from "@playwright/test";
 
 import { createAsk, createComment, createHandoff, createIssueArtifact, createMessage } from "./api";
 import { nodeRow, openIssue, READER, rowWords } from "./issue-page-g";
+import { historyItem } from "./issue-page-m";
 import { withIssuePage } from "./issue-page-option";
 import {
   expectReadsReferences,
@@ -288,3 +289,23 @@ async function expectRowReadsForms(scope: Locator, world: ReadingWorld): Promise
   }
   await expect(scope).not.toContainText("dispatch://");
 }
+
+// SLOW(>=2s): seeds the reading world and a Legion daemon's message, then loads the new issue
+// page at `/activity`, which opens Details' History and resolves each reference the turn holds.
+test("issue-page-history-turn: an agents' thread turn in the new page's history draws a stored key, an address and a party through the renderer", async ({
+  page,
+}) => {
+  const world = await seedReadingWorld();
+  // A message the project's Legion daemon writes with no target opens a thread the new page's
+  // history holds whole (`agents-only.ts`).
+  const turn = await createMessage(
+    world.host.key,
+    { body: readingText(world) },
+    { actor: { id: "legion-daemon:CORE", kind: "session" }, as: "agent" }
+  );
+
+  await withIssuePage(page.context(), READER);
+  await page.goto(`/issues/${world.host.key}/activity`);
+
+  await expectReadsReferences(historyItem(page, turn.id).locator(RENDERED_BODY), world, "link");
+});
