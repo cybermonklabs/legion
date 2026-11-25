@@ -3999,8 +3999,9 @@ case_result "a page with two Verdict lines naming two verdicts fails --shape, na
 # and --citations passes it.
 for figure in 12,618 12,617; do
     dir="$(fresh "figure-$figure")"
-    sed -i "s/^The Envoy field\\.\$/The Envoy field. Its count reads $figure rows [f-behaviour-1, f-figure-1]./" "$dir/judgement.md"
-    grep -qF "Its count reads $figure rows [f-behaviour-1, f-figure-1]." "$dir/judgement.md" || {
+    envoy_line="$(grep -m1 '^The Envoy field' "$dir/judgement.md")"
+    sed -i "s|^The Envoy field.*\$|& Its count reads $figure rows [f-behaviour-1, f-figure-1].|" "$dir/judgement.md"
+    [ -n "$envoy_line" ] && grep -qxF -- "$envoy_line Its count reads $figure rows [f-behaviour-1, f-figure-1]." "$dir/judgement.md" || {
         printf 'FAIL the sentence stating %s could not be planted in the fixture judgement\n' "$figure"
         exit 1
     }
@@ -4033,8 +4034,9 @@ for form in marked aside unmarked beside; do
     beside) sentence='It costs about 9 engineer-days by our estimate, and its count reads 12,618 rows [f-figure-1].' ;;
     esac
     dir="$(fresh "estimate-$form")"
-    sed -i "s/^The Envoy field\\.\$/The Envoy field. $sentence/" "$dir/judgement.md"
-    grep -qxF "The Envoy field. $sentence" "$dir/judgement.md" || {
+    envoy_line="$(grep -m1 '^The Envoy field' "$dir/judgement.md")"
+    sed -i "s|^The Envoy field.*\$|& $sentence|" "$dir/judgement.md"
+    [ -n "$envoy_line" ] && grep -qxF -- "$envoy_line $sentence" "$dir/judgement.md" || {
         printf 'FAIL the %s sentence could not be planted in the fixture judgement\n' "$form"
         exit 1
     }
@@ -7582,6 +7584,24 @@ dir="$(fresh published-landed-file)"
 one_failure_result "a landed step's file the default branch's commit lacks fails published-tree alone, naming the file" published-tree \
     '^1 of 2 assertions failed: published-tree$' '^FAIL published-tree: the default branch at [0-9a-f]+ does not carry skills/legion-worker/references/pr-body\.md$' \
     "$(fixture_published "$dir")"
+
+# 240. A recorded command reads nothing on its input, so it can neither read the rows --replay
+# has not run yet nor take them from the loop that runs them. At 8944c0af run_recorded ran each
+# command with the loop's input, the rest of the rows file, as its own: omp -p reads its input
+# and puts it before its prompt, so the first prompt of i-skills-run's session, of 1551525
+# characters, held the 778 rows after it, and none of those rows ran (the fresh-clone --replay of
+# 8944c0af, its transcript kept). The case appends two rows to the fixture: f-stdin-1, whose
+# command counts the bytes on its input and must print 0, then f-stdin-2, whose command prints
+# what its row does not claim. --replay must fail replay-command naming f-stdin-2 alone. At
+# 8944c0af f-stdin-1 read f-stdin-2's line, failed, and f-stdin-2 never ran.
+dir="$(fresh stdin-row)"
+printf '%s\n' \
+    '{"id":"f-stdin-1","requirement":"r7","source":"this tree'"'"'s measurement","kind":"behaviour","claim":"The command reads nothing on its input.","mark":"verified","evidence":{"surface":"cli"},"command":"wc -c","expect":{"equals":"0"},"output":"0","note":"ran again"}' \
+    '{"id":"f-stdin-2","requirement":"r7","source":"this tree'"'"'s measurement","kind":"behaviour","claim":"The script prints ran once.","mark":"verified","evidence":{"surface":"cli"},"command":"printf '"'"'ran twice\\n'"'"'","expect":{"contains":"ran once"},"output":"ran once","note":"ran again"}' \
+    >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+one_failure_result "a row whose command reads its input reads nothing, and the rows after it run: the row after it fails replay-command alone, naming itself" replay-command \
+    '^1 of 18 assertions failed: replay-command$' '^FAIL replay-command: f-stdin-2 ran ' \
+    "$(fixture_run "$dir" --replay)"
 
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending

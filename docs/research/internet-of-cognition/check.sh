@@ -2676,7 +2676,9 @@ run_recorded() {
     # run_recorded <command> <output-file> <row>; the variables env.sh exported are already
     # in this shell's environment and reach the command through it. The command runs with
     # TMPDIR set to <output-file>.tmp, an empty directory of its own beside its output, so
-    # it reads nothing an earlier run or an earlier row left under the caller's TMPDIR.
+    # it reads nothing an earlier run or an earlier row left under the caller's TMPDIR, and
+    # with /dev/null as its input, so it reads nothing its caller's input holds (a loop's rows
+    # among them) and a program that reads its input, as omp -p does, reads an empty one.
     #
     # Every program the command runs records its own status when it fails, as one line of
     # <output-file>.failed with four fields, separated by tabs: the status, the status the
@@ -2755,7 +2757,7 @@ run_recorded() {
     rm -rf "$out.tmp" && mkdir -p "$out.tmp"
     (
         cd "$ROOT" || exit 1
-        __IOC_FAILED="$out.failed" IOC_CLONES="$CLONES" EVIDENCE="$EVIDENCE" TMPDIR="$out.tmp" bounded_run "$BOUND_ROW" bash "$script" 9>"$out.pipe"
+        __IOC_FAILED="$out.failed" IOC_CLONES="$CLONES" EVIDENCE="$EVIDENCE" TMPDIR="$out.tmp" bounded_run "$BOUND_ROW" bash "$script" 9>"$out.pipe" </dev/null
         status=$?
         printf '%s|%s\n' "$BOUND_TOOK" "$BOUND_ENDED" >"$out.ended"
         exit "$status"
@@ -5146,9 +5148,10 @@ mode_replay() {
     }
     # The loop reads the rows from a file, since a program that fed it through a pipe would
     # wait on the loop's reading as long as every row runs, past its own bound (the header's
-    # "Every child the gate waits on ends").
+    # "Every child the gate waits on ends"), and on descriptor 3, so that nothing the loop runs
+    # can read the rows it has not reached yet from its input.
     claims >"$work/rows"
-    while IFS= read -r row; do
+    while IFS= read -r -u 3 row; do
         id="$(printf '%s' "$row" | jq -r '.id')"
         kind="$(printf '%s' "$row" | jq -r '.kind // ""')"
         mark="$(printf '%s' "$row" | jq -r '.mark // ""')"
@@ -5263,7 +5266,7 @@ mode_replay() {
             command_failures="$command_failures $id"
             fail replay-command "$id ran '$command' and its output does not meet $expect${IOC_BOUND_READ:+ (the bound read $IOC_BOUND_READ)}: $(head -c 160 "$work/$id.out" | tr '\n' ' ')"
         fi
-    done <"$work/rows"
+    done 3<"$work/rows"
 
     # unpinned_installs runs the reader reader_load loaded above, so one that stops here
     # stopped on a row the one parse read, a failure of the gate and no mode that cannot run.

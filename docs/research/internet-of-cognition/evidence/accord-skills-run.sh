@@ -137,7 +137,11 @@ for v in HTTPS_PROXY HTTP_PROXY NO_PROXY https_proxy http_proxy no_proxy NODE_EX
     [ -z "$val" ] || set -- "$@" "$v=$val"
 done
 
-(cd "$WORK" && env -i "$@" omp --help) >"$RUN/help.txt" 2>&1
+# Every omp call reads /dev/null as its input: omp -p puts what its input holds before its
+# prompt, so a run whose caller's input held anything, a loop's rows or a terminal, would
+# hand that to the session (the fresh-clone --replay of 8944c0af, whose first prompt, of
+# 1551525 characters, held the 778 rows of claims.jsonl after the row's own).
+(cd "$WORK" && env -i "$@" omp --help </dev/null) >"$RUN/help.txt" 2>&1
 for flag in --max-cost --max-time --mode --no-session --no-title --no-lsp --no-context-files \
     --approval-mode --thinking --model; do
     grep -q -E -- "(^|[^a-z-])$flag([^a-z-]|\$)" "$RUN/help.txt" ||
@@ -162,19 +166,19 @@ End with one line: ACCORD-RESULT: <the status of the last handle result>
 EOF
 )
 
-printf '%s\n' "accord-skills-run: cognition-protocols $COMMIT, $(env -i "$@" omp --version 2>/dev/null | head -n 1), model $MODEL, --max-cost $MAX_COST"
+printf '%s\n' "accord-skills-run: cognition-protocols $COMMIT, $(env -i "$@" omp --version </dev/null 2>/dev/null | head -n 1), model $MODEL, --max-cost $MAX_COST"
 INSTALLED=
 for d in accord-initiator accord-receiver; do
     INSTALLED="$INSTALLED $d ($(find "$AGENT/skills/$d" -type f | wc -l | tr -d ' ') files)"
 done
 printf 'installed in ~/.omp/agent/skills of the new HOME:%s\n' "$INSTALLED"
-(cd "$WORK" && env -i "$@" omp skill list --json 2>/dev/null) >"$RUN/skills.json"
+(cd "$WORK" && env -i "$@" omp skill list --json </dev/null 2>/dev/null) >"$RUN/skills.json"
 
 # The prompt has the orchestrator write any file it needs inside the working directory, never
 # under /tmp, so that whatever the session writes is under the run's own TMPDIR.
 (cd "$WORK" && env -i "$@" timeout -k 30 1500 omp -p --mode json --no-session --no-title --no-lsp \
     --no-context-files --approval-mode yolo --thinking low --model "$MODEL" \
-    --max-cost "$MAX_COST" --max-time 20m "$PROMPT") >"$RUN/events.jsonl" 2>"$RUN/omp.err"
+    --max-cost "$MAX_COST" --max-time 20m "$PROMPT" </dev/null) >"$RUN/events.jsonl" 2>"$RUN/omp.err"
 OMP_STATUS=$?
 
 python3 - "$RUN/skills.json" "$RUN/events.jsonl" "$RUN/omp.err" "$WORK/.accord/state.json" "$OMP_STATUS" >"$RUN/report" <<'PY'
