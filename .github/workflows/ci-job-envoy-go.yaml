@@ -147,8 +147,8 @@ jobs:
       # delivery 4.106 s (INFRA-636), and the documents package's line, with fifteen of its tests,
       # took 55.972 s (job 137362821700). The API line also runs the issue list's 200 ms bound,
       # TestAPriorityListAnswersWithinItsBoundOnEveryPlan, which seeds 13,298 issues and makes
-      # about 840 timed reads: 37 s on an eight-CPU build pod (INFRA-5609). 10 minutes each is
-      # ample.
+      # about 840 timed reads: 37 s on an eight-CPU build pod (INFRA-5609), and the whole API line
+      # took 106.397 s in this job (job 139092511342). 10 minutes each is ample.
       - name: Test what the race build cannot run at all or at full size
         run: |
           go test -count=1 -timeout 10m -run '^(TestXidWindowAttributionMoveRecorded|TestXidWindowDeployedEventRecorded)$' ./internal/dispatch/delivery
