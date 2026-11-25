@@ -119,7 +119,7 @@ var readRowDrives = map[string]rowDrive{
 	// shown to nobody would answer P, its own reader, an empty 200, which the list's absence alone
 	// tells apart.
 	"GET /api/v1/people/{login}/nodes": {target: "/api/v1/people/$person/nodes",
-		statement: statementOf(`\bjoin\s+comments\s+c\s+on\s+r\.from_kind\b`)},
+		statement: statementOf(`\bjoin\s+comments\s+c\s+on\s+h\.from_kind\b`)},
 	"GET /api/v1/whoami": {target: "/api/v1/whoami", fromMemory: "it answers the credential the request resolved", credential: &credentialAnswer{
 		reason:  "whoami answers the credential's own scopes: a read-only one's hold read and never approve, its writer's do not hold read",
 		members: []string{"scopes"},
