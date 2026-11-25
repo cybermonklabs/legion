@@ -18,7 +18,7 @@ The output is `kg.jsonld`, a knowledge graph document that conforms to the MAS o
 
 It is a trace-analysis library and not a store of record [m-kg-artifact].
 
-Its own prose says the core does not import the rest of mas-lab [m-kg-selfcontained].
+Its own prose says the normalisation and validation code does not import `mas.lab.*`, `mas.ctl.*` or `mas.runtime.*` [m-kg-selfcontained].
 
 ## The store
 

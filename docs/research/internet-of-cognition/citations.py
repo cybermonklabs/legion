@@ -27,7 +27,7 @@ deliverable and the gate's own derivation of what the deliverable must cover.
 occur, read by the same pattern and trim `extract` reads them by. It is the one definition
 of a reference: check.sh collects every reference of this directory through it.
 
-The three readings this rule settles, each of which a reader could settle another way:
+The four readings this rule settles, each of which a reader could settle another way:
 
 One. A citation that occurs more than once is one row, and the row lists every place it
 occurs. So the gate's rule, that every citation has a row of claims.jsonl with a mark,
@@ -42,13 +42,25 @@ invariants`, `nineteen fields` and `thirty-four tables` as measured numbers, fro
 list below, beside the digits. `--self-test` plants one word-number, so an extractor that
 reads digits alone fails there.
 
+Four. The measurements the interview states are rows of R2 and not of R1, as R1 of the
+specification says, so a number the record gives as one of them is no citation of the
+record. The record gives them in one sentence, which opens with `His measured claims:`,
+its words free to break across a line. Every number from those words to the full stop
+that ends the sentence is the interview's: `extract` prints no row of it, and its rows are
+R2's, the `i-measure-*` rows of claims.jsonl. Each is numbered where it occurs, as any
+number is, so a citation's id does not change with the requirement that holds the rows of
+the numbers before it. `--self-test` plants such a sentence across a line break, so a rule
+that reads its numbers as citations, or that numbers the citations after it without them,
+fails there.
+
 What makes a number a citation, and what does not. A number is a citation when it carries
 a per-cent sign, when the word right after it is an ordinary word (a unit or the thing
 counted), or when it is a decimal below one, which in these records is a score or a
 threshold. A number inside a code span, inside an address, inside a date, inside a commit
 hash and inside a line range is not a citation: the code span, the address and the file
-citation are the citation there. This is the whole of the rule, and a number it does not
-read is read by nobody, which is what `--coverage` prints.
+citation are the citation there. A number of the sentence that gives the interview's
+measured claims is not a citation either: it is R2's (Four). This is the whole of the
+rule, and a number it does not read is read by nobody, which is what `--coverage` prints.
 """
 
 from __future__ import annotations
@@ -163,6 +175,21 @@ DIGIT_NUMBER = re.compile(r"(?<![\w.])(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)(%?)")
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 HEX40 = re.compile(r"\b[0-9a-f]{40}\b")
 HEX_SHORT = re.compile(r"\b[0-9a-f]{7,40}\b")
+# Reading Four: the words that open the record's sentence of the interview's measured
+# claims, which may break across a line, and the full stop, question mark or exclamation
+# mark, with any closing mark after it, before a space or the end, that ends a sentence.
+MEASURED_CLAIMS = re.compile(r"\bHis\s+measured\s+claims:")
+SENTENCE_END = re.compile(r"[.!?][\"')\]]*(?=\s|$)")
+
+
+def measured_spans(text: str) -> list[tuple[int, int]]:
+    """Each stretch of `text` that gives the interview's measured claims, as (start, end)
+    offsets: from the words that open the sentence to the mark that ends it (reading Four)."""
+    spans = []
+    for lead in MEASURED_CLAIMS.finditer(text):
+        end = SENTENCE_END.search(text, lead.end())
+        spans.append((lead.start(), end.end() if end else len(text)))
+    return spans
 
 
 def word_number(words: list[str]) -> tuple[int, int] | None:
@@ -194,12 +221,17 @@ class Extractor:
         self.rows: dict[str, dict] = {}
         self.order: list[str] = []
         self.counter = 0
+        # The keys of the readings that are the interview's measurements (reading Four),
+        # numbered as any reading is and printed by no extract.
+        self.measured: set[str] = set()
 
-    def key(self, kind: str, text: str) -> str:
-        return f"{kind}\u0000{text}"
+    def key(self, kind: str, text: str, measured: bool = False) -> str:
+        # A measurement the interview states is a reading of its own, so the same text
+        # outside its sentence is still a citation of the record.
+        return f"{kind}\u0000{text}" + ("\u0000measured" if measured else "")
 
-    def add(self, kind: str, text: str, line_no: int, section: str, **fields) -> None:
-        key = self.key(kind, text)
+    def add(self, kind: str, text: str, line_no: int, section: str, measured: bool = False, **fields) -> None:
+        key = self.key(kind, text, measured)
         row = self.rows.get(key)
         if row is None:
             self.counter += 1
@@ -212,12 +244,21 @@ class Extractor:
             row.update(fields)
             self.rows[key] = row
             self.order.append(key)
+            if measured:
+                self.measured.add(key)
         row["occurrences"].append({"line": line_no, "section": section})
 
     def extract(self, text: str) -> list[dict]:
+        spans = measured_spans(text)
         section = ""
         last_file: dict[str, str | None] = {"section": "", "file": None}
-        for line_no, raw in enumerate(text.splitlines(), start=1):
+        start = 0
+        for line_no, line in enumerate(text.splitlines(keepends=True), start=1):
+            raw = line.splitlines()[0]
+            # The stretches of this line that give the interview's measured claims, as
+            # columns of the line.
+            measured = [(a - start, b - start) for a, b in spans if a < start + len(raw) and b > start]
+            start += len(line)
             heading = HEADING.match(raw)
             if heading:
                 section = heading.group(2)
@@ -233,8 +274,8 @@ class Extractor:
             for span in CODE_SPAN.findall(masked):
                 self.read_code_span(span, line_no, section, last_file)
             masked = CODE_SPAN.sub(lambda m: " " * (len(m.group(1)) + 2), masked)
-            self.read_numbers(masked, line_no, section)
-        return [self.rows[key] for key in self.order]
+            self.read_numbers(masked, line_no, section, measured)
+        return [self.rows[key] for key in self.order if key not in self.measured]
 
     def read_code_span(self, span: str, line_no: int, section: str, last_file: dict) -> None:
         token = span.strip().strip("()[]")
@@ -274,25 +315,31 @@ class Extractor:
         if IDENTIFIER.match(token):
             self.add("symbol", token, line_no, section, symbol=token)
 
-    def read_numbers(self, text: str, line_no: int, section: str) -> None:
+    def read_numbers(self, text: str, line_no: int, section: str, measured: list[tuple[int, int]] = ()) -> None:
+        # measured: the columns of the line that give the interview's measured claims, each
+        # (from, to); a number that starts there is the interview's (reading Four).
+        def inside(column: int) -> bool:
+            return any(start <= column < end for start, end in measured)
+
         masked = DATE.sub(lambda m: " " * len(m.group(0)), text)
         masked = HEX_SHORT.sub(lambda m: " " * len(m.group(0)), masked)
         for match in DIGIT_NUMBER.finditer(masked):
             raw = match.group(1)
             percent = match.group(2)
             after = masked[match.end() :]
+            stated = inside(match.start())
             if percent:
-                self.add("number", raw + percent, line_no, section, number=raw)
+                self.add("number", raw + percent, line_no, section, measured=stated, number=raw)
                 continue
             value = float(raw.replace(",", ""))
             if 0 < value < 1 and "." in raw:
-                self.add("number", raw, line_no, section, number=raw)
+                self.add("number", raw, line_no, section, measured=stated, number=raw)
                 continue
             follower = re.match(r"[-\s]+([A-Za-z][A-Za-z-]*)", after)
             if follower and follower.group(1).lower() not in NUMBER_STOPWORDS:
-                self.add("number", f"{raw} {follower.group(1)}", line_no, section, number=raw)
-        words = re.split(r"(\s+)", masked)
-        plain = [w for w in words if w.strip()]
+                self.add("number", f"{raw} {follower.group(1)}", line_no, section, measured=stated, number=raw)
+        words = [(m.group(0), m.start()) for m in re.finditer(r"\S+", masked)]
+        plain = [word for word, _ in words]
         for index, word in enumerate(plain):
             read = word_number(plain[index:])
             if read is None:
@@ -307,7 +354,7 @@ class Extractor:
             if follower in NUMBER_STOPWORDS or follower in WORD_NUMBERS:
                 continue
             text_of = " ".join(plain[index:follower_index] + [plain[follower_index].strip(",.;:()")])
-            self.add("number", text_of, line_no, section, number=str(value))
+            self.add("number", text_of, line_no, section, measured=inside(words[index][1]), number=str(value))
 
 
 SELF_TEST_INPUT = """\
@@ -321,7 +368,9 @@ It then writes a bare range `:188-196` under that file, and names a symbol
 
 It reports thirteen normative invariants, 85.2% of 350 runs, a score of 0.944, and
 `https://example.org/a` and dispatch://INFRA-1098/spec, and a block at a version,
-dispatch://INFRA-3134/spec#b-r-lands@v5.
+dispatch://INFRA-3134/spec#b-r-lands@v5. His measured
+claims: 61% of runs failed, and two misalignments took it to 42%. After
+that sentence, 17 seconds pass.
 
 # Two
 
@@ -399,6 +448,18 @@ def self_test() -> int:
         "160" not in digits and "166" not in digits,
         f"numbers={sorted(digits)}",
     )
+    stated = sorted(extractor.rows[key]["text"] for key in extractor.order if key in extractor.measured)
+    check(
+        "a measurement the interview states is no citation of the record",
+        stated == ["42%", "61%", "two misalignments"] and not {"61", "42", "2"} & digits,
+        f"the interview's={stated} numbers={sorted(digits)}",
+    )
+    after = [r["cid"] for r in by_kind.get("number", []) if r["text"] == "17 seconds"]
+    check(
+        "a number after that sentence is a citation, numbered counting the measurements before it",
+        after == ["t-14"],
+        f"cids={after}",
+    )
     if failures:
         print(f"citations.py --self-test: {len(failures)} of {len(ran)} assertions failed")
         return 1
@@ -415,7 +476,7 @@ def main() -> int:
         help="the record to read, or - for standard input; refs reads every file named",
     )
     parser.add_argument("--label", default="x", help="the prefix of each citation id")
-    parser.add_argument("--self-test", action="store_true", help="prove the three readings above")
+    parser.add_argument("--self-test", action="store_true", help="prove the four readings above")
     args = parser.parse_args()
     if args.self_test:
         return self_test()

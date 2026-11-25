@@ -7167,6 +7167,41 @@ for form in field backslash quote field-other name; do
     esac
 done
 
+# 224. A measurement the interview states is a row of R2 and not of R1 (R1 of the
+# specification; the architect's acceptance at 3e1e50ce, item 7). citations.py read every
+# number of a record under check as a citation of it, so at 3e1e50ce the reconciliation's
+# rows r-1 to r-10 carried the interview's figures as rows of R1, beside the i-measure-* rows
+# of R2 that are this issue's only rows for those numbers, and citation-row passed them. The
+# case writes into the fixture's record under check a sentence of his measured claims, its
+# opening words broken across a line as the reconciliation breaks them, holding 85%, and
+# writes the row u-3 of R1 for that number, u-2's row with its claim changed, running --replay
+# over it: citation-row must fail, naming u-3 as no citation the record carries. Beside it the
+# same record with no row u-3 must pass citation-row, since the number is no citation of R1
+# and so no citation without its row. At 3e1e50ce the first passed citation-row and the
+# second failed it, naming the citation u-3 as one with no row.
+for form in row no-row; do
+    dir="$(fresh "interview-measurement-$form")"
+    evidence="$dir/repo/docs/research/internet-of-cognition"
+    printf '\nHis measured\nclaims: 85%% of his sessions failed.\n' >>"$evidence/records/under-check.md"
+    if [ "$form" = row ]; then
+        jq -c 'select(.id == "u-2") | .id = "u-3" | .claim = "The record repeats his measurement that 85% of his sessions failed."' \
+            "$evidence/claims.jsonl" >"$dir/u-3.jsonl" && cat "$dir/u-3.jsonl" >>"$evidence/claims.jsonl"
+    fi
+    grep -qx 'claims: 85% of his sessions failed.' "$evidence/records/under-check.md" &&
+        [ "$(grep -c '"id":"u-3"' "$evidence/claims.jsonl")" = "$([ "$form" = row ] && echo 1 || echo 0)" ] || {
+        printf 'FAIL the interview measurement could not be planted in the fixture record, form %s\n' "$form"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --replay)"
+    case "$form" in
+    row)
+        case_result "a measurement the interview states, planted as the row u-3 of R1, fails citation-row as no citation of the record" \
+            'citation-row: the row u-3 is no citation the record labelled u carries' "$out"
+        ;;
+    no-row) honest_result "a measurement the interview states with no row of R1 passes citation-row" citation-row "$out" ;;
+    esac
+done
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this

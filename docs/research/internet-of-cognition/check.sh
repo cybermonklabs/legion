@@ -2319,7 +2319,7 @@ prepare_env() {
 # refused, or when a line here differs from what it measured; --self-test runs it.
 #
 #   form                            rows  what it is
-#   &&                               224  runs the next pipeline when this one exits 0
+#   &&                               220  runs the next pipeline when this one exits 0
 #   ||                                 9  runs the next pipeline when this one fails
 #   |                                471  joins the commands of a pipeline
 #   ;                                 73  ends a pipeline
@@ -2335,9 +2335,9 @@ prepare_env() {
 #   in                                21  comes before a for loop's words
 #   do                                21  comes before a for loop's body
 #   done                              21  closes a for loop
-#   simple command                   664  a command word and its arguments
+#   simple command                   656  a command word and its arguments
 #   pipeline                         471  two or more commands joined by |
-#   list                             261  two or more pipelines joined by ;, &&, || or newline
+#   list                             257  two or more pipelines joined by ;, &&, || or newline
 #   group                             28  { list; }, whose status is its last command's
 #   subshell                           2  ( list ), whose status is its last command's
 #   for loop                          21  for NAME in words; do list; done
@@ -2358,7 +2358,7 @@ prepare_env() {
 #   assigns o                          1  a name the rows assign
 #   assigns p                          5  a name the rows assign
 #   assigns r                          5  a name the rows assign
-#   program awk                       32  wrapped in a function that records its status
+#   program awk                       35  wrapped in a function that records its status
 #   program cat                       25  wrapped in a function that records its status
 #   program cd                        76  wrapped in a function that records its status
 #   program cmp                        2  wrapped in a function that records its status
@@ -2367,16 +2367,16 @@ prepare_env() {
 #   program cut                        8  wrapped in a function that records its status
 #   program dispatch                  76  wrapped in a function that records its status
 #   program echo                      31  wrapped in a function that records its status
-#   program git                      388  wrapped in a function that records its status
+#   program git                      378  wrapped in a function that records its status
 #   program go                         2  wrapped in a function that records its status
-#   program grep                     246  wrapped in a function that records its status
-#   program jq                        74  wrapped in a function that records its status
+#   program grep                     242  wrapped in a function that records its status
+#   program jq                        76  wrapped in a function that records its status
 #   program mkdir                      1  wrapped in a function that records its status
 #   program mktemp                     1  wrapped in a function that records its status
 #   program printf                    15  wrapped in a function that records its status
 #   program python3                   37  wrapped in a function that records its status
 #   program rm                         2  wrapped in a function that records its status
-#   program sed                      311  wrapped in a function that records its status
+#   program sed                      308  wrapped in a function that records its status
 #   program sh                         1  wrapped in a function that records its status
 #   program sha256sum                  8  wrapped in a function that records its status
 #   program sort                      33  wrapped in a function that records its status
@@ -2385,7 +2385,7 @@ prepare_env() {
 #   program tr                        11  wrapped in a function that records its status
 #   program uniq                      19  wrapped in a function that records its status
 #   program uv                         8  wrapped in a function that records its status
-#   program wc                        66  wrapped in a function that records its status
+#   program wc                        64  wrapped in a function that records its status
 #   program xargs                      5  wrapped in a function that records its status
 #   variable $IOC_PY                  43  a program variable, whose shim records its status
 #   variable $IOC_MASLAB_PY            4  a program variable, whose shim records its status
@@ -2401,7 +2401,7 @@ prepare_env() {
 #   uv run python                      4  uv run's python, whose status uv run exits with
 #   sh running a script file           1  the script's status reaches the row as sh's
 #   true                               9  a command whose status is no read
-#   $NAME or ${NAME}                 454  a parameter, its name in braces or not
+#   $NAME or ${NAME}                 456  a parameter, its name in braces or not
 #   $?                                27  the status of the last command
 #   $( )                              15  a command substitution
 #   a literal $                        2  a $ that starts no expansion, left as it stands
@@ -6465,8 +6465,9 @@ symbol_refused() {
 #          holds when each name after the run stands in it, the class or attribute
 #          `engine.Engine.match` writes and then the local part, or fails naming the first it
 #          does not hold (module_held). A module is a Python file alone: a .py file, a .pyi
-#          stub, a .py coming before a .pyi of its name as Python's import takes the .py, or a
-#          package's __init__.py, or its __init__.pyi stub where no __init__.py stands. A file
+#          stub, a .py coming before a .pyi of its name among the files the citation names,
+#          as Python's import takes the .py, or a package's __init__.py, or its __init__.pyi
+#          stub where no __init__.py stands among the files the citation names. A file
 #          of any other extension is never read as a module, and a part whose run names only
 #          such a file is read as the next reading gives it (cases 210, 211). A run names a
 #          file the citation names when it ends with the file's stem, its name without .py or
