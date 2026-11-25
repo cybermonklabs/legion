@@ -64,6 +64,7 @@ import type {
   MessageReplyResult,
   MyRepliesResponse,
   OpenAsksResponse,
+  PostHistoryRead,
   Priorities,
   Project,
   ProjectPlans,
@@ -75,6 +76,8 @@ import type {
   SpecCheckResult,
   SpecCheckResultInput,
   SpecCheckResults,
+  StatusChangeAnswer,
+  StatusChangeInput,
   Suggestions,
   UpdateIssueInput,
   Version,
@@ -136,18 +139,34 @@ export class DispatchServiceError extends Error {
    * false for an answer something in Dispatch's place wrote (`DispatchGatewayError`).
    */
   readonly fromDispatch: boolean = true;
+  readonly candidates: DispatchServiceErrorShape["candidates"] | undefined;
+  readonly current: DispatchServiceErrorShape["current"] | undefined;
+  readonly mismatches: DispatchServiceErrorShape["mismatches"] | undefined;
+  /** A `409 PARENT_STATUS_CONFLICT`'s issues: each one the write would leave out of line. */
+  readonly issues: DispatchServiceErrorShape["issues"] | undefined;
+  /** A status change's refusal: the entry of each step that wrote before it. */
+  readonly changed: DispatchServiceErrorShape["changed"] | undefined;
 
   constructor(
     readonly code: string,
     readonly status: number,
     message: string,
-    readonly candidates?: DispatchServiceErrorShape["candidates"],
-    readonly current?: DispatchServiceErrorShape["current"],
-    readonly mismatches?: DispatchServiceErrorShape["mismatches"],
+    /** The members of Dispatch's refusal beside its message that a caller reads off the error:
+     *  its answer's JSON, or another refusal whose members it keeps. */
+    details: {
+      readonly [Member in "candidates" | "changed" | "current" | "issues" | "mismatches"]?:
+        | DispatchServiceErrorShape[Member]
+        | undefined;
+    } = {},
     /** The wait the answer's `Retry-After` names, and null where it names none. */
     readonly retryAfterMs: number | null = null
   ) {
     super(message);
+    this.candidates = details.candidates;
+    this.current = details.current;
+    this.mismatches = details.mismatches;
+    this.issues = details.issues;
+    this.changed = details.changed;
   }
 }
 
@@ -260,11 +279,16 @@ export class DispatchWriteUnsettledError extends Error {
  * A write Dispatch made whose answer is gone, so the caller cannot be shown what it made: a repeat
  * under its key answered `409 IDEMPOTENCY_KEY_COMMITTED` (the write landed before its answer was
  * lost, and Dispatch will not run it again), a replayed 2xx reading
- * `IDEMPOTENCY_ANSWER_NOT_KEPT` (its first answer was larger than Dispatch keeps), or a 2xx that
- * names the call's key back and whose body gives no row (`DISPATCH_ANSWER_LOST`, `#writePayload`).
- * The write took effect, so this is
- * no refusal and deliberately no `DispatchServiceError`; it is never asked again. Its message is
- * the one line a session reads: what was made, that its answer was lost, and to read it back.
+ * `IDEMPOTENCY_ANSWER_NOT_KEPT` (Dispatch gives no copy of its first answer: one larger than the
+ * 1 MiB a key keeps, or a success that holds a comment or a message that was deleted, or a
+ * document version name a delete replaced, which would give back text the delete withdrew), or a
+ * 2xx that names the call's key back and whose body gives no row (`DISPATCH_ANSWER_LOST`,
+ * `#writePayload`). The write took effect, so this is no refusal and deliberately no
+ * `DispatchServiceError`; it is never asked again. Its message is the one line a session reads:
+ * what was made, why its answer is gone, and to read it back. A call that writes nothing
+ * (`rowStores`) made nothing, so its answer that is not its row is no landing: its replayed
+ * `IDEMPOTENCY_ANSWER_NOT_KEPT` is a `DispatchAnswerNotKeptError`, and its other such answers,
+ * its `409 KEY_COMMITTED` naming its key back among them, a `DispatchAnswerMissingError`.
  */
 export class DispatchWriteLandedError extends Error {
   override readonly name = "DispatchWriteLandedError";
@@ -280,13 +304,43 @@ export class DispatchWriteLandedError extends Error {
   ) {
     const lost =
       code === IDEMPOTENCY_ANSWER_NOT_KEPT
-        ? "Dispatch kept no copy of its answer, which was too large"
+        ? "Dispatch gives no copy of its answer, which was too large to keep or holds a comment " +
+          "or a message that was deleted, or a document version name a delete replaced"
         : "its answer was lost on the way back";
     const request = `${method} ${shownUrl}`;
     super(
       `${request} was made, but ${lost} (${code}), so this command cannot print what it ` +
         "made: read it back with `dispatch read`, or with the matching list for something it created.",
       options
+    );
+  }
+}
+
+/**
+ * A call that writes nothing (`markdownRoundTrip`, `related`, `dryRunResult`) whose repeat under
+ * its key Dispatch answered with a replayed 2xx reading `IDEMPOTENCY_ANSWER_NOT_KEPT`: Dispatch
+ * kept no copy of the answer, and the call made nothing, so there is nothing to read back and no
+ * landing. The client asks such a call once more under a new key before it throws this
+ * (`#writingNothing`); this is what reaches the caller when that ask is answered the same way. It
+ * is no refusal, so it is no `DispatchServiceError`, and no `DispatchWriteLandedError`, which says
+ * a write was made. Its message is the one line a session reads: the call wrote nothing, Dispatch
+ * kept no copy of its answer, and to run the command again, which asks under a new key.
+ */
+export class DispatchAnswerNotKeptError extends Error {
+  override readonly name = "DispatchAnswerNotKeptError";
+  readonly code = IDEMPOTENCY_ANSWER_NOT_KEPT;
+
+  constructor(
+    /** The first answer's own 2xx, which the replay carries. */
+    readonly status: number,
+    method: string,
+    /** The request's URL as a text names it (`requestForText`). */
+    shownUrl: string
+  ) {
+    super(
+      `${method} ${shownUrl} wrote nothing, and Dispatch kept no copy of its answer ` +
+        `(${IDEMPOTENCY_ANSWER_NOT_KEPT}), so this command has no answer to print: run it again, ` +
+        "which asks under a new key."
     );
   }
 }
@@ -399,6 +453,23 @@ function resultDryRunNoRouteRefusal(baseUrl: string, route: string): DispatchSer
   );
 }
 
+/**
+ * What `changeIssueStatus` throws once the Dispatch at `baseUrl` answered no route for `route` each
+ * time the write was sent: a build older than the status change route. The code and status are
+ * that answer's. The PATCH is never sent in its place, since a PATCH takes no option and would
+ * write the status without what the option asks for, so the message says that nothing changed.
+ */
+function statusChangeNoRouteRefusal(baseUrl: string, route: string): DispatchServiceError {
+  return new DispatchServiceError(
+    "NOT_FOUND",
+    404,
+    `Dispatch at ${urlForText(baseUrl, DISPATCH_URL_SETTING)} answered no route for ${route} each ` +
+      "time the status change was sent. This build is older than that route, so it takes no " +
+      "include_children, unlink_children or include_parent, and nothing changed. No PATCH was " +
+      "sent in its place, since a PATCH would write the status without the option."
+  );
+}
+
 export interface ListIssuesOptions {
   readonly project?: string;
   readonly status?: string;
@@ -458,13 +529,16 @@ function requestSignal(signal: AbortSignal | undefined, deadlineMs: number): Abo
  * `pausesMs` is the wait before each retry in turn, so the write makes at most one attempt more than
  * it has entries, and no retry starts once `withinMs` has passed since the first attempt began. An
  * answer's `Retry-After` longer than the scheduled pause is waited instead. An attempt that goes
- * `silenceMs` without progress before its answer begins - none of its body taken by the connection
- * in that time - is cut off and asked again like one that failed in transport, so a write Dispatch
- * is slow to finish is asked again under its key (and answered `409 KEY_IN_FLIGHT`, then replayed)
- * rather than waited on for the call's whole deadline, while an upload still going out is never
- * cut. Once an attempt of a body under `STREAMED_BODY_MIN` was cut off for silence or answered
- * `409 KEY_IN_FLIGHT`, Dispatch may still be running the write, and its keyed layer finishes that
- * run whatever the client does, so the write keeps asking until it gets the run's stored answer:
+ * `silenceMs` without progress before its answer begins - no read of its body in that time - is
+ * cut off and asked again like one that failed in transport, so a write Dispatch is slow to finish
+ * is asked again under its key (and answered `409 KEY_IN_FLIGHT`, then replayed) rather than
+ * waited on for the call's whole deadline. A body of `STREAMED_BODY_MIN` or more is read a chunk at
+ * a time as the connection's buffers take it, and they hold megabytes, so an upload on a slow line
+ * can be cut off while it is still going out: when its next read, or the rest of its bytes and the
+ * answer after its last read, take longer than `silenceMs` (README, "Dispatch"). Once an attempt of
+ * a body under `STREAMED_BODY_MIN` was cut off for silence or answered `409 KEY_IN_FLIGHT`, Dispatch
+ * may still be running the write, and its keyed layer finishes that run whatever the client does,
+ * so the write keeps asking until it gets the run's stored answer:
  * every `inFlightPauseMs` at most, unless a shorter pause of the schedule's or a longer
  * `Retry-After` applies, with no retry starting once `inFlightWithinMs` has passed. An upload keeps
  * the schedule alone, since each repeat sends its whole body again. No retry of any write starts
@@ -546,7 +620,7 @@ interface EncodedBody {
 
 /**
  * The size from which an attempt's body goes out as a stream read a chunk at a time
- * (`STREAMED_BODY_CHUNK`), so the connection taking each chunk counts as the attempt's progress.
+ * (`STREAMED_BODY_CHUNK`), so each read of a chunk counts as the attempt's progress.
  * A smaller body leaves in one write to the connection, so there is no progress of it to see.
  */
 const STREAMED_BODY_MIN = 1 << 20;
@@ -554,8 +628,8 @@ const STREAMED_BODY_CHUNK = 64 << 10;
 
 /**
  * What one attempt sends for `body`: its bytes as they are when they are smaller than
- * `STREAMED_BODY_MIN`, or else a stream of them that calls `progress` each time the connection reads
- * a chunk (fetch reads a stream body only as the connection takes it), with the `Content-Length`
+ * `STREAMED_BODY_MIN`, or else a stream of them that calls `progress` each time fetch reads a chunk
+ * (fetch reads a stream body only as the connection's buffers take it), with the `Content-Length`
  * they add up to, so the request on the wire is the one the bytes make.
  */
 function attemptBody(
@@ -729,7 +803,7 @@ async function writeAnswer(response: Response, echoed: boolean): Promise<WriteAn
   };
 }
 
-/** Whether `storedStatus` (request_keys.go:1016-1019) keeps this answer under the key. */
+/** Whether `storedStatus` (request_keys.go) keeps this answer under the key. */
 function isStoredKeyStatus(status: number): boolean {
   return status >= 400 && status < 500 && status !== 401 && status !== 408 && status !== 429;
 }
@@ -988,8 +1062,9 @@ export type DispatchLandedCode = IdempotencyLandedCode | typeof DISPATCH_ANSWER_
 /**
  * An answer of a POST that stores nothing (`rowStores`: Dispatch's parse of a text, the
  * related-item check, a result's dry run) that is not this call's answer: a 2xx with no JSON, an
- * empty body, JSON that is not its row, a replay whose first answer Dispatch did not keep, or an
- * answer naming another request's key back, and a `409 IDEMPOTENCY_KEY_COMMITTED`. A bodiless 204
+ * empty body, JSON that is not its row, or an answer naming another request's key back, and a
+ * `409 IDEMPOTENCY_KEY_COMMITTED`; a replay whose first answer Dispatch did not keep is a
+ * `DispatchAnswerNotKeptError` instead (`#writingNothing`). A bodiless 204
  * or 205 the write table settled on is its answer, "" (`#writePayload`). The call made nothing,
  * so this is no landing and leaves no outcome unknown, and asking again is safe. `code` is
  * `DISPATCH_ANSWER_LOST`.
@@ -1380,10 +1455,9 @@ export class DispatchClient {
   /** `POST /api/v1/markdown/round-trip`: the markdown Dispatch would store for this text. The
    *  route writes nothing: it parses the text and renders it again, as a document write does, so
    *  a caller compares the answer with the text it holds and refuses a text the store would
-   *  change. */
+   *  change. An answer Dispatch kept no copy of is asked for again (`#writingNothing`). */
   async markdownRoundTrip(markdown: string): Promise<string> {
-    const answer: MarkdownRoundTripResponse = await this.#write(
-      "POST",
+    const answer: MarkdownRoundTripResponse = await this.#writingNothing(
       ["api", "v1", "markdown", "round-trip"],
       WRITE_ROWS.markdownRoundTrip,
       { markdown }
@@ -1464,10 +1538,10 @@ export class DispatchClient {
   }
 
   /** `POST /api/v1/projects/{key}/related`: the related-item check over a title and a text,
-   *  writing nothing. A blank title and text answer `outcome: "not_made"` with the reason. */
+   *  writing nothing. A blank title and text answer `outcome: "not_made"` with the reason. An
+   *  answer Dispatch kept no copy of is asked for again (`#writingNothing`). */
   async related(project: string, input: RelatedCheckInput): Promise<Suggestions> {
-    return this.#write(
-      "POST",
+    return this.#writingNothing(
       ["api", "v1", "projects", project, "related"],
       WRITE_ROWS.related,
       input
@@ -1487,6 +1561,28 @@ export class DispatchClient {
       input.components === undefined ? WRITE_ROWS.updateIssue : WRITE_ROWS.updateIssueComponents,
       input
     );
+  }
+
+  /**
+   * `POST /api/v1/issues/{key}/status-change`: writes the issue's status and, with an option, what
+   * happens to the open issues under it or to the issues above it, so each parent's status stays
+   * in line with its children's. The answer is the issue and one `changed` entry for each issue
+   * whose status or parent the call changed, in the order the steps ran. A refusal carries
+   * `changed` too: the entries of the steps that wrote before it (`DispatchServiceError`).
+   *
+   * A build without the route answers no route each time the write is sent (`#write` asks again
+   * as for every write), and this then throws `statusChangeNoRouteRefusal`'s refusal. No PATCH is
+   * sent in its place, since a PATCH would write the status without the option.
+   */
+  async changeIssueStatus(issue: string, input: StatusChangeInput): Promise<StatusChangeAnswer> {
+    const path = ["api", "v1", "issues", await this.#resolveIssue(issue), "status-change"];
+    try {
+      return await this.#write("POST", path, WRITE_ROWS.changeIssueStatus, input);
+    } catch (error) {
+      throw this.#refusalOfNoRoute(error, path, (route) =>
+        statusChangeNoRouteRefusal(this.#baseUrl, route)
+      );
+    }
   }
 
   /** `POST /api/v1/issues/{key}/claim`: this session takes the issue. 409 ISSUE_CLAIMED when a
@@ -1836,9 +1932,9 @@ export class DispatchClient {
     try {
       return await this.#write("POST", path, WRITE_ROWS.reviewArtifact, body);
     } catch (error) {
-      if (!(error instanceof DispatchNoRouteError) && !isNoRoute(error)) throw error;
-      const route = `POST /${path.map((segment) => encodeURIComponent(segment)).join("/")}`;
-      throw reviewNoRouteRefusal(this.#baseUrl, route, version);
+      throw this.#refusalOfNoRoute(error, path, (route) =>
+        reviewNoRouteRefusal(this.#baseUrl, route, version)
+      );
     }
   }
 
@@ -1859,18 +1955,16 @@ export class DispatchClient {
   /**
    * The dry run of `recordResult`: Dispatch refuses the body as the record refuses it before it
    * writes, and answers the pull-request body line the record would answer, recording nothing.
+   * An answer Dispatch kept no copy of is asked for again (`#writingNothing`).
    */
   async dryRunResult(issue: string, input: RecordCheckResultInput): Promise<CheckResultDryRun> {
     const path = ["api", "v1", "issues", await this.#resolveIssue(issue), "results", "dry-run"];
     try {
-      const { payload } = await this.#jsonAnswer<CheckResultDryRun>("POST", path, input, {
-        row: WRITE_ROWS.dryRunResult,
-      });
-      return payload;
+      return await this.#writingNothing<CheckResultDryRun>(path, WRITE_ROWS.dryRunResult, input);
     } catch (error) {
-      if (!(error instanceof DispatchNoRouteError) && !isNoRoute(error)) throw error;
-      const route = `POST /${path.map((segment) => encodeURIComponent(segment)).join("/")}`;
-      throw resultDryRunNoRouteRefusal(this.#baseUrl, route);
+      throw this.#refusalOfNoRoute(error, path, (route) =>
+        resultDryRunNoRouteRefusal(this.#baseUrl, route)
+      );
     }
   }
 
@@ -2085,9 +2179,52 @@ export class DispatchClient {
   /** `GET /api/v1/messages/{id}`: the conversation a message belongs to, by any message id in
    *  it - the root and every reply. It takes no issue, so it reads a human's direct message to
    *  a session and the replies to it, which belong to none. It reads as `session`; which
-   *  threads a session may read is the route's rule (`GET /api/v1` describes it). */
-  async getMessageThread(id: string, session: string): Promise<MessageRead> {
-    return this.#json("GET", ["api", "v1", "messages", id], undefined, { session });
+   *  threads a session may read is the route's rule (`GET /api/v1` describes it). A caller with
+   *  no session of its own names none, as `messageHistory` does: a thread on an issue follows
+   *  the issue's rule, and a direct one is then refused (400 SESSION_REQUIRED). */
+  async getMessageThread(id: string, session?: string): Promise<MessageRead> {
+    return this.#json(
+      "GET",
+      ["api", "v1", "messages", id],
+      undefined,
+      session === undefined ? undefined : { session }
+    );
+  }
+
+  /** `PATCH /api/v1/messages/{id}`: the author replaces the body of its own issue message whole.
+   *  Dispatch keeps the body it replaces, which `messageHistory` reads. */
+  async editMessage(
+    id: string,
+    input: { readonly body: string; readonly actor: Actor }
+  ): Promise<Message> {
+    return this.#write("PATCH", ["api", "v1", "messages", id], WRITE_ROWS.editMessage, input);
+  }
+
+  /** `DELETE /api/v1/messages/{id}`: the author withdraws its own issue message. The row and its
+   *  place in the thread stay, and the answer carries `deleted_at`, `deleted_by` and no body. */
+  async deleteMessage(id: string, actor: Actor): Promise<Message> {
+    return this.#json("DELETE", ["api", "v1", "messages", id], { actor });
+  }
+
+  /** `GET /api/v1/messages/{id}/history`: each entry an edit or a delete of the message wrote,
+   *  newest first: with the body an edit replaced while the message stands, and with the deleted
+   *  mark and no body once it is deleted. It is read under
+   *  `GET /api/v1/messages/{id}`'s rule, so the session goes in the query as `messageBlocks`
+   *  sends it. */
+  async messageHistory(id: string, session?: string): Promise<PostHistoryRead> {
+    return this.#json(
+      "GET",
+      ["api", "v1", "messages", id, "history"],
+      undefined,
+      session === undefined ? undefined : { session }
+    );
+  }
+
+  /** `GET /api/v1/issues/{key}/messages`: the issue's message threads, each root with its
+   *  replies. It is read to resolve a `dispatch://KEY/message/<id>` reference whose id is a
+   *  prefix; a reference carrying a full id needs no listing. */
+  async issueMessages(issue: string): Promise<MessageRead[]> {
+    return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "messages"]);
   }
 
   /** `POST /api/v1/messages/{id}/deliveries/{attempt}/accept`: this session records that it took
@@ -2260,6 +2397,31 @@ export class DispatchClient {
     );
   }
 
+  /** `PATCH /api/v1/comments/{id}`: the author replaces the comment's body whole. A Dispatch of
+   *  this release keeps the body it replaces, which `commentHistory` reads. On an older build a
+   *  person's own credential can edit that person's own comment here too, and that build keeps
+   *  nothing of the body it replaces (`throughPostCorrections`). */
+  async editComment(
+    id: string,
+    input: { readonly body: string; readonly actor: Actor }
+  ): Promise<Comment> {
+    return this.#write("PATCH", ["api", "v1", "comments", id], WRITE_ROWS.editComment, input);
+  }
+
+  /** `DELETE /api/v1/comments/{id}`: the author withdraws its own comment. The row and its place
+   *  in the thread stay, and the answer carries `deleted_at`, `deleted_by` and no body. */
+  async deleteComment(id: string, actor: Actor): Promise<Comment> {
+    return this.#json("DELETE", ["api", "v1", "comments", id], { actor });
+  }
+
+  /** `GET /api/v1/comments/{id}/history`: each entry an edit or a delete of the comment wrote,
+   *  newest first: with the body an edit replaced while the comment stands, and with the deleted
+   *  mark and no body once it is deleted. Any authenticated caller
+   *  reads it, as it reads `getComment`. */
+  async commentHistory(id: string): Promise<PostHistoryRead> {
+    return this.#json("GET", ["api", "v1", "comments", id, "history"]);
+  }
+
   async getComments(issue: string): Promise<Comment[]> {
     return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "comments"]);
   }
@@ -2403,8 +2565,10 @@ export class DispatchClient {
 
   /**
    * What a write's answer that is not its row is, by the one rule of a landing: a route that
-   * stores nothing (`rowStores`) made nothing, so its answer is missing, a
-   * `DispatchAnswerMissingError`; an answer that names the call's key back is Dispatch's word that
+   * stores nothing (`rowStores`) made nothing, so its replay whose first answer Dispatch did not
+   * keep is a `DispatchAnswerNotKeptError` (`code` `IDEMPOTENCY_ANSWER_NOT_KEPT`) and any other
+   * such answer is missing, a `DispatchAnswerMissingError`; an answer that names the call's key
+   * back is Dispatch's word that
    * the write committed under it, a landing whose answer is gone (`code`). Any other (a 2xx that
    * names no key back or another request's, a `409 IDEMPOTENCY_KEY_COMMITTED` that names none) is
    * no verdict of Dispatch's on this write, which may have reached Dispatch behind what answered
@@ -2423,7 +2587,9 @@ export class DispatchClient {
   ): Error {
     const shown = requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING);
     if (!write.writes)
-      return new DispatchAnswerMissingError(response.status, method, shown, { cause });
+      return code === IDEMPOTENCY_ANSWER_NOT_KEPT
+        ? new DispatchAnswerNotKeptError(response.status, method, shown)
+        : new DispatchAnswerMissingError(response.status, method, shown, { cause });
     if (keyEchoed(response, write.key))
       return new DispatchWriteLandedError(code, response.status, method, shown, { cause });
     const names =
@@ -2577,6 +2743,18 @@ export class DispatchClient {
     });
   }
 
+  /** What the catch of a `POST` of `path` throws: the refusal `refuse` writes for that route where
+   *  `error` is an answer of no route each time it was sent (a build older than the route), else
+   *  `error` as it came. It returns rather than throws, so the throw stays at the catch. */
+  #refusalOfNoRoute(
+    error: unknown,
+    path: readonly string[],
+    refuse: (route: string) => DispatchServiceError
+  ): unknown {
+    if (!(error instanceof DispatchNoRouteError) && !isNoRoute(error)) return error;
+    return refuse(`POST /${path.map((segment) => encodeURIComponent(segment)).join("/")}`);
+  }
+
   /**
    * A write's one key and what its attempts have shown, made once per call, so every attempt of
    * the call goes under one `Idempotency-Key`: the caller's own, where it has one intent across
@@ -2647,6 +2825,29 @@ export class DispatchClient {
     return this.#noRoute(async () =>
       this.#response<T>(method, url, await this.#send(method, url, body))
     );
+  }
+
+  /**
+   * A `POST` of JSON to a route that writes nothing (`markdownRoundTrip`, `related`,
+   * `dryRunResult`), `row` its row of the write table, which stores nothing (`rowStores`). It is
+   * sent as a write is, under a key of its own, so an attempt with no definitive answer is asked
+   * again under that key (`#jsonAnswer`). Such a repeat can come back as a replayed 2xx reading
+   * `IDEMPOTENCY_ANSWER_NOT_KEPT`: an earlier attempt ran, and Dispatch kept no copy of its
+   * answer. `#writePayload` reads that replay of a route that stores nothing as a
+   * `DispatchAnswerNotKeptError`, no landing, since this request wrote nothing: it is asked once
+   * more under a new key, which `#writeCall` mints, and which runs it afresh and can double
+   * nothing. That ask's answer is the call's, and a second such replay is thrown as it came
+   * rather than asked again, so the call is asked under at most two keys. Every other error, a
+   * `DispatchAnswerMissingError` among them, is thrown as it came.
+   */
+  async #writingNothing<T>(path: readonly string[], row: WriteRow, body: unknown): Promise<T> {
+    for (let keys = 1; ; keys++) {
+      try {
+        return (await this.#jsonAnswer<T>("POST", path, body, { row })).payload;
+      } catch (error) {
+        if (!(error instanceof DispatchAnswerNotKeptError) || keys === 2) throw error;
+      }
+    }
   }
 
   /**
@@ -3040,9 +3241,9 @@ export class DispatchClient {
 
   /**
    * One attempt of a write, under `limit` (the call's signal and the client's) and a silence bound
-   * of its own: once `silenceMs` pass before its answer begins with none of its body taken by the
-   * connection in that time, it is cut off and fails as `WriteAttemptSilent`. The bound ends with
-   * the answer's headers; its body is read under `limit` alone.
+   * of its own: once `silenceMs` pass before its answer begins with no read of its body in that
+   * time, it is cut off and fails as `WriteAttemptSilent`. The bound ends with the answer's
+   * headers; its body is read under `limit` alone.
    */
   async #attempt(
     url: string,
@@ -3191,10 +3392,12 @@ export class DispatchClient {
    * bodiless 204 or 205: every answer Dispatch gives a route this client reads as JSON is JSON
    * (`WriteJSON`), so such a 2xx is something in its place, a captive portal's 200 page for one,
    * and never the route's answer (the acceptance of #4140 at be17859eca: a portal's 200 text page
-   * read as `open-asks`' answer told a session that nothing waited on it). A write Dispatch made
-   * whose answer is gone — `409 IDEMPOTENCY_KEY_COMMITTED`, or a replayed 2xx reading
-   * `IDEMPOTENCY_ANSWER_NOT_KEPT` (`answerNotKept`) — is a `DispatchWriteLandedError`, neither a
-   * refusal nor a payload.
+   * read as `open-asks`' answer told a session that nothing waited on it). A replayed refusal is
+   * the refusal Dispatch first gave, read as any other. A write Dispatch made whose answer is
+   * gone — `409 IDEMPOTENCY_KEY_COMMITTED`, or a replayed 2xx reading `IDEMPOTENCY_ANSWER_NOT_KEPT`
+   * (`answerNotKept`) — is a `DispatchWriteLandedError`, neither a refusal nor a payload. A call
+   * that writes nothing made nothing, so `#writingNothing` reads that replayed 2xx as no landing
+   * and asks again.
    */
   async #response<T>(method: string, url: string, response: Response): Promise<T> {
     const text = await response.text();
@@ -3225,9 +3428,7 @@ export class DispatchClient {
           error.code ?? `HTTP_${response.status}`,
           response.status,
           error.error,
-          error.candidates,
-          error.current,
-          error.mismatches,
+          error,
           retryAfterMs(response) || null
         );
       }

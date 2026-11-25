@@ -238,6 +238,23 @@ export const WRITE_ROWS = {
     claim: z.looseObject({ at: z.string() }).nullable(),
     legion_managed_status: z.boolean().optional(),
   }),
+  /** `statusChangeCommand` reads each changed issue's key, status and parent, and the named
+   *  issue's status and the URLs of its links, the links behind a `?? []` of its own. */
+  changeIssueStatus: z.looseObject({
+    changed: z
+      .array(
+        z.looseObject({
+          key: issueFields.key,
+          status: issueFields.status,
+          parent: z.string().nullable(),
+        })
+      )
+      .nullable(),
+    issue: z.looseObject({
+      status: issueFields.status,
+      external_links: z.array(externalLink).nullish(),
+    }),
+  }),
   ask: askWrite,
   artifactAsk: askWrite,
   editAsk: z.looseObject({ ...ask, question: askFields.question }),
@@ -312,7 +329,15 @@ export const WRITE_ROWS = {
     issue_key: commentFields.issue_key,
     artifact_id: commentFields.artifact_id,
   }),
+  /** `editCommentCommand` reads what `resolveCommentCommand` reads of its answer. */
+  editComment: z.looseObject({
+    id: commentFields.id,
+    issue_key: commentFields.issue_key,
+    artifact_id: commentFields.artifact_id,
+  }),
   message: z.looseObject({ id: messageFields.id, advice }),
+  /** `editMessageCommand` reads the id and the issue, which it refuses when null. */
+  editMessage: z.looseObject({ id: messageFields.id, issue_key: messageFields.issue_key }),
   agentMessage: z.looseObject({
     id: messageFields.id,
     deliveries: z

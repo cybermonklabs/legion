@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"reflect"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -263,7 +262,10 @@ func TestMovedApprovalRequestIsAbsentWhenNoRequestNamesTheDocument(t *testing.T)
 // agent's turn, so the edit's answer names it nowhere.
 func TestMovedApprovalRequestIsAbsentWhenTheWritesOwnCarryAnsweredIt(t *testing.T) {
 	t.Parallel()
-	handler, _, documents := settlingCarryDocuments(t, time.Second)
+	// Settling past the run (pastTheRun), so no settlement timer versions alice's answer before the
+	// agent's edit does: the edit's own transaction is what versions it, and carries the approval
+	// there, however long a loaded machine takes between the two requests.
+	handler, _, documents := settlingCarryDocuments(t, pastTheRun)
 	issue := createInteractionIssue(t, handler, "TEST", "Carried, not moved", "Context\n")
 	insertDecisionMarkdown(t, handler, issue.PrimaryArtifactID, waveAsk+"\n"+regionAsk, 2)
 	asks := settledDecisionBlocks(t, handler, documents, issue.Key, issue.PrimaryArtifactID,

@@ -105,6 +105,7 @@ func serveHostsLocally(t *testing.T, byHost map[string]string) {
 // DISPATCH_EMBEDDER=azure - which TestResolveBootConfigRefusesEveryEmbedderShapeItCannotUse holds
 // for every one of them, under the default and under bedrock alike.
 func TestNewAnswererOnAzureBesideABedrockEmbedderSignsInAtTheConfiguredScope(t *testing.T) {
+	// Not parallel: it swaps http.DefaultClient.
 	if azureChatScope == embed.DefaultEntraScope {
 		t.Fatalf("the configured scope is %s, the embedder's own: this test says nothing unless they differ", azureChatScope)
 	}

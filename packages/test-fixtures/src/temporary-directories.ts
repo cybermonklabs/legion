@@ -135,7 +135,10 @@ export type TemporaryDirectoryMaker = (suffix?: string) => string;
  *
  * The `afterEach` attempts every directory even when one of them cannot be removed, since the
  * directories are independent and one refusal must not leave the rest on disk, and reports the
- * refusals together at the end.
+ * refusals together at the end. It removes them asynchronously, so a removal waiting on a loaded
+ * disk holds the hook alone, never the process's event loop. Like every hook, it states no bound of
+ * its own (`docs/testing.md`): its bound is the command's `--timeout`, or the default a file whose
+ * package sets no measured one takes from `@legion/test-fixtures/hang-guard` above its first row.
  */
 export function temporaryDirectories(
   prefix: string,
@@ -143,8 +146,8 @@ export function temporaryDirectories(
 ): TemporaryDirectoryMaker {
   const root = options.root ?? tmpdir();
   const made: string[] = [];
-  afterEach(() => {
-    removeEvery(made.splice(0));
+  afterEach(async () => {
+    await removeEvery(made.splice(0));
   });
   return (suffix) => {
     const directory = mkdtempSync(join(root, nameTemplate(prefix, suffix)));
@@ -194,9 +197,9 @@ export function temporaryDirectory(
   beforeAll(() => {
     mkdirSync(directory, { mode: 0o700 });
   });
-  afterAll(() => {
+  afterAll(async () => {
     if (options.removeInBackground === true) removeInBackground(directory);
-    else removeTree(directory);
+    else await removeTree(directory);
   });
   return directory;
 }
@@ -244,11 +247,11 @@ function nameTemplate(prefix: string, suffix: string | undefined): string {
  * later directory behind and name only the one it stopped on (the behaviour
  * `packages/envoy-client/test/temp-dir.ts` had, which this fixture took over from it).
  */
-function removeEvery(directories: readonly string[]): void {
+async function removeEvery(directories: readonly string[]): Promise<void> {
   const failures: string[] = [];
   for (const directory of [...directories].reverse()) {
     try {
-      removeTree(directory);
+      await removeTree(directory);
     } catch (error) {
       failures.push(`${directory}: ${error instanceof Error ? error.message : String(error)}`);
     }

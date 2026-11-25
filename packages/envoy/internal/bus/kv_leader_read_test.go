@@ -74,6 +74,7 @@ const noRequestFor = 500 * time.Millisecond
 // a direct get for a key it has not applied yet. Who answers each request is nats-server's, and
 // it turns on nothing but the subject the request was sent to.
 func TestTheLeaderReadSendsTheStreamMessageGetWhereGetSendsTheDirectGet(t *testing.T) {
+	t.Parallel()
 	const bucket = "kv_leader_wire"
 	const key = "ses_live"
 	stream := "KV_" + bucket
@@ -138,6 +139,7 @@ func TestTheLeaderReadSendsTheStreamMessageGetWhereGetSendsTheDirectGet(t *testi
 // marker are nats.ErrKeyNotFound, and a key no read may name is refused with the error Get
 // refuses it with, word for word, before anything is sent.
 func TestTheLeaderReadAnswersAKeyAsGetDoes(t *testing.T) {
+	t.Parallel()
 	const bucket = "kv_leader_answers"
 	_, kv := leaderReadBucket(t, bucket)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -202,6 +204,7 @@ func TestTheLeaderReadAnswersAKeyAsGetDoes(t *testing.T) {
 // put is answered as GetFromLeader answers it, and a key the stream holds no message for is
 // nats.ErrKeyNotFound.
 func TestTheNewestLeaderReadAnswersAMarkerAtTheSequenceItIsStoredAt(t *testing.T) {
+	t.Parallel()
 	const bucket = "kv_leader_newest"
 	_, kv := leaderReadBucket(t, bucket)
 	conn := kv.Streams().Conn()

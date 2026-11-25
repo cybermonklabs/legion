@@ -103,6 +103,12 @@ const CASES: readonly WriteRowCase[] = [
     call: (client) => client.claimIssue("ACME-1", { actor }),
   },
   {
+    method: "changeIssueStatus",
+    route: "POST /api/v1/issues/{key}/status-change",
+    call: (client) =>
+      client.changeIssueStatus("ACME-1", { status: "in_progress", include_parent: true, actor }),
+  },
+  {
     method: "ask",
     route: "POST /api/v1/issues/{key}/asks",
     call: (client) => client.ask("ACME-1", { question: "Which?", actor }),
@@ -268,6 +274,16 @@ const CASES: readonly WriteRowCase[] = [
     method: "resolveComment",
     route: "POST /api/v1/comments/{id}/resolve",
     call: (client) => client.resolveComment("comment-1", actor),
+  },
+  {
+    method: "editComment",
+    route: "PATCH /api/v1/comments/{id}",
+    call: (client) => client.editComment("comment-1", { body: "Corrected.", actor }),
+  },
+  {
+    method: "editMessage",
+    route: "PATCH /api/v1/messages/{id}",
+    call: (client) => client.editMessage("message-1", { body: "Corrected.", actor }),
   },
   {
     method: "writeHandoff",

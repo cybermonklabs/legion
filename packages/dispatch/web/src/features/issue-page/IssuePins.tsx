@@ -5,6 +5,7 @@ import { Link } from "react-router-dom";
 import type { DispatchEvent, DisplayTree } from "../../api/types";
 import { PinButton } from "../../components/PinButton";
 import { pageInkText, pageMutedText, pageQuietText } from "../../theme/classes";
+import { EventEditedMark } from "../activity/EventBody";
 import { eventDescription } from "../issue/event-description";
 import { writePin } from "../issue/pin-write";
 import {
@@ -15,10 +16,13 @@ import {
   pinnedEventIds,
 } from "../issue/pins";
 import { AgentParts } from "../refs/AgentName";
+import { EditedMark } from "../refs/PostBody";
+import { postDeletion } from "../refs/post-marks";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { buildIssuePath } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
 import { drawnLine, firstLineOf } from "./issue-tree";
+import { DeletedLine } from "./NodeRow";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, NODE_TYPE_NAMES } from "./page-words";
 import { ROW_LINK } from "./row-references";
@@ -44,6 +48,17 @@ import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIss
  * history has read - the pin is drawn by the page's word for its kind and never by its id. Until
  * the reader's own state has answered, which pins there are is not known: the section draws its
  * heading alone, and says None only once that state holds no pin.
+ *
+ * A comment or a message its author corrected carries its mark here as its row in the outline
+ * does (INFRA-1523, R2 and R3), read from the same answer as its words: one its author deleted
+ * is drawn as the deleted line (`NodeRow.tsx`'s `DeletedLine`), from the delete and never from
+ * its words, its actor named as the page names an author, and stays a link to the post; one its
+ * author edited says ` · edited` after its line (`EditedMark`), as a parent line in the outline
+ * says it (`ParentLink`). A line of the history whose post its author edited since says
+ * ` · edited` after the line (`EventEditedMark`), as the margin's Pinned tab says it; the line
+ * of a deleted post's event already says who deleted it (`eventDescription`). Both marks are the
+ * page's own words (`CONTROL_LABELS.post_deleted_by`, `CONTROL_LABELS.post_edited`), marked as
+ * its chrome.
  */
 export function IssuePins({
   dismissed,
@@ -68,20 +83,26 @@ export function IssuePins({
     queryKey: ["events", issueKey],
   });
   const events = eventPins.length === 0 ? [] : (log.data?.pages.flat() ?? []);
-  const pinWords = (kind: ConversationPinKind, id: string): string | undefined => {
+  // A pin's words as the read that holds them answered them, and for a comment or a message the
+  // post itself, whose author's corrections of it (`edited_at`, `deleted_at`, `deleted_by`) its
+  // line is marked by. `undefined` where that read has not answered or holds no such record, and
+  // for a handoff, which no read here holds.
+  const pinned = (kind: ConversationPinKind, id: string) => {
     if (kind === "ask") {
       const ask = asks.data?.find((one) => one.id === id);
-      return ask === undefined ? undefined : recordWords(ask.question, ask.question_tree);
+      return ask === undefined
+        ? undefined
+        : { post: undefined, words: recordWords(ask.question, ask.question_tree) };
     }
-    if (kind === "comment") {
-      const comment = comments.data?.find((one) => one.id === id);
-      return comment === undefined ? undefined : recordWords(comment.body, comment.body_tree);
-    }
-    if (kind !== "message") return undefined;
-    const message = (messages.data ?? [])
-      .flatMap((thread) => [thread.message, ...(thread.replies ?? [])])
-      .find((one) => one.id === id);
-    return message === undefined ? undefined : recordWords(message.body, message.body_tree);
+    const post =
+      kind === "comment"
+        ? comments.data?.find((one) => one.id === id)
+        : kind === "message"
+          ? (messages.data ?? [])
+              .flatMap((thread) => [thread.message, ...(thread.replies ?? [])])
+              .find((one) => one.id === id)
+          : undefined;
+    return post === undefined ? undefined : { post, words: recordWords(post.body, post.body_tree) };
   };
   const list = useRef<HTMLUListElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
@@ -118,8 +139,9 @@ export function IssuePins({
         <ul className="mt-1 flex min-w-0 flex-col gap-0.5" ref={list}>
           {pins.map((pin) => {
             const id = conversationItemId(pin.kind, pin.id);
-            const words = pinWords(pin.kind, pin.id);
-            const line = words === undefined ? "" : drawnLine(firstLineOf(words));
+            const record = pinned(pin.kind, pin.id);
+            const deleted = postDeletion(record?.post);
+            const line = record === undefined ? "" : drawnLine(firstLineOf(record.words));
             return (
               <li className="flex min-w-0 items-center gap-2 text-sm" data-pin={id} key={id}>
                 <Link
@@ -130,10 +152,15 @@ export function IssuePins({
                       : buildIssuePath({ id: pin.id, key: issueKey, kind: pin.kind })
                   }
                 >
-                  {line === "" ? (
+                  {deleted !== null ? (
+                    <DeletedLine deleted={deleted} />
+                  ) : line === "" ? (
                     <span {...pageChrome}>{NODE_TYPE_NAMES[pin.kind]}</span>
                   ) : (
-                    <span {...authorText}>{line}</span>
+                    <>
+                      <span {...authorText}>{line}</span>
+                      <EditedMark at={record?.post?.edited_at} marks={pageChrome} />
+                    </>
                   )}
                 </Link>
                 <PinButton label={CONTROL_LABELS.unpin} onClick={() => unpin(id)} pinned quiet />
@@ -146,11 +173,16 @@ export function IssuePins({
             return (
               <li className="flex min-w-0 items-center gap-2 text-sm" data-pin={id} key={id}>
                 {event === undefined ? null : (
-                  <span
-                    className={`min-w-0 flex-1 [overflow-wrap:anywhere] ${pageMutedText}`}
-                    {...authorText}
-                  >
-                    <AgentParts parts={[{ actor: event.actor }, " ", ...eventDescription(event)]} />
+                  <span className={`min-w-0 flex-1 [overflow-wrap:anywhere] ${pageMutedText}`}>
+                    <span {...authorText}>
+                      <AgentParts
+                        parts={[{ actor: event.actor }, " ", ...eventDescription(event)]}
+                      />
+                    </span>
+                    {/* ` · edited` is the page's own word, as a row's edited mark is. */}
+                    <span {...pageChrome}>
+                      <EventEditedMark event={event} />
+                    </span>
                   </span>
                 )}
                 <Link

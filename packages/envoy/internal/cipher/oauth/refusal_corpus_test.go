@@ -44,6 +44,9 @@ var corpusRefusals = []corpusRefusal{
 	{oauth2.ErrInvalidGrant, "The machine login has ended.", nil, "provider.go"},
 	{oauth2.ErrInvalidGrant, "Another live machine login holds the key this proof was signed with. A machine makes a key of its own.", nil, "exchange.go"},
 	{oauth2.ErrInvalidGrant, "Another live machine login holds the key this proof was signed with. A sign-in makes a box key of its own.", nil, "exchange.go"},
+	// The two trades that write a launcher credential refuse a key a live read token is bound to
+	// with one hint (exchange.go's keyBindsReadTokenHint).
+	{oauth2.ErrInvalidGrant, "A live read token is bound to the key this proof was signed with. Make a new key.", nil, "exchange.go"},
 	{oauth2.ErrInvalidRequest, "%s is a restricted member, whose token names its projects: set AGENT_SECRETS_PROJECTS to the projects this session works on.", []any{corpusPerson}, "exchange.go"},
 	{oauth2.ErrInvalidRequest, "The token names a project its person cannot see: %s.", []any{corpusProject}, "exchange.go"},
 	{oauth2.ErrInvalidRequest, "The subject token was refused: its entry names the project %s, which its person %s cannot see.", []any{corpusProject, corpusPerson}, "exchange.go"},
@@ -60,6 +63,24 @@ var corpusRefusals = []corpusRefusal{
 	// another daemon holds, the second for a name bound to none.
 	{oauth2.ErrInvalidGrant.WithDescription(oauthwire.SessionNameNotThisRegistrars + ":"), "The session name '%s' belongs to another daemon: a pod trades only under a session name the daemon that registered it holds.", []any{corpusSession}, "exchange.go"},
 	{oauth2.ErrInvalidGrant.WithDescription(oauthwire.SessionNameNotThisRegistrars + ":"), "The session name '%s' is bound to no daemon: a pod trades only under a session name the daemon that registered it holds.", []any{corpusSession}, "exchange.go"},
+	// A read trade's refusals (exchange.go): its holder proof, the credential a person's read trade
+	// names, the launcher credential it may not ask for, and its cut.
+	{oauth2.ErrInvalidRequest, "A person's read trade sends a DPoP-Holder proof: the box key proves the sign-in and is bound to no read token, so the token is bound to a key made for its holder.", nil, "exchange.go"},
+	{oauth2.ErrInvalidRequest, "The DPoP-Holder header binds a read token to its holder's key, and this trade does not ask for the scope read. Ask for it, or send no DPoP-Holder header.", nil, "exchange.go"},
+	{oauth2.ErrInvalidRequest, "The DPoP-Holder proof was refused: a trade sends one, a DPoP proof of this request signed with the key it embeds, spent nowhere before.", nil, "exchange.go"},
+	{oauth2.ErrInvalidRequest, "The DPoP-Holder proof is signed with the key the DPoP proof is signed with, and the holder's key is a key of its own.", nil, "exchange.go"},
+	{oauth2.ErrInvalidGrant, "%s's sign-in on this machine holds no launcher credential yet, and a read trade makes none. Sign in with `agent-secrets login` first.", []any{corpusPerson}, "exchange.go"},
+	{oauth2.ErrInvalidGrant, "%s's sign-in on this machine holds a launcher credential that has lapsed, and a read trade renews none. One ordinary trade of the sign-in renews it, as `agent-secrets` makes; then trade for read again.", []any{corpusPerson}, "exchange.go"},
+	{oauth2.ErrInvalidRequest, "A read trade makes or moves no launcher credential, so it cannot send %s=true. Trade for read without the parameter.", []any{oauthwire.FormLauncherCredential}, "exchange.go"},
+	{oauth2.ErrInvalidRequest, "The '%s' parameter names a cut, and only a trade that asks for the scope %s may name one.", []any{oauthwire.FormAsOf, oauthwire.ScopeRead}, "exchange.go"},
+	{oauth2.ErrInvalidRequest, "The '%s' parameter is not an RFC 3339 time with at most six fractional digits.", []any{oauthwire.FormAsOf}, "exchange.go"},
+	{oauth2.ErrInvalidRequest, "The '%s' parameter names the zero time, which is no cut: a trade that reads the present names no cut.", []any{oauthwire.FormAsOf}, "exchange.go"},
+	{oauth2.ErrInvalidRequest, "The '%s' parameter names a time later than this trade, and a cut is a time that has passed.", []any{oauthwire.FormAsOf}, "exchange.go"},
+	// A read token refused a key a live launcher credential is bound to, as the store refuses it
+	// (oauthstore.Store.CreateAccessTokenSession): a trade that asked for read, and the read
+	// entry's trade that asked for no scope.
+	{oauth2.ErrInvalidRequest, "The key this read token would be bound to signs launcher proofs: a live launcher credential is bound to it, and no read token is bound to such a key. Send a DPoP-Holder proof by a key made for the token's holder, and the token is bound to that key.", nil, "../oauthstore/store.go"},
+	{oauth2.ErrInvalidRequest, "The key this proof was signed with signs launcher proofs: a live launcher credential is bound to it, and no read token is bound to such a key. Ask for the scope read with a DPoP-Holder proof by a key made for the token's holder, or trade with a key that holds no launcher credential.", nil, "../oauthstore/store.go"},
 }
 
 // The exchange policy's refusals of a subject token, which the broker hands on as "The subject

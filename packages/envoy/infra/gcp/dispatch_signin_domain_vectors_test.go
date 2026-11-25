@@ -1,5 +1,10 @@
 package gcp_test
 
+// infra/gcp/imports_test.go moved to infra/internal/textcheck/gcp_imports_test.go in this
+// change, and main's entry for the old path came with the forward merge; the guard's own
+// entry is under its new path below.
+//ci:reads packages/envoy/cmd/dispatch/testdata/signin-domain-vectors.json readDispatchDomainVectors reads it with os.ReadFile ../../cmd/dispatch/testdata/signin-domain-vectors.json
+
 import (
 	"encoding/json"
 	"fmt"

@@ -20,26 +20,40 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
 
-// gitHubAppFieldRemovedMessage is the refusal of a body carrying github_app, the narrowing a
-// command line of an earlier release sends (refuseGitHubApp).
-const gitHubAppFieldRemovedMessage = "github_app was removed: name a profile and narrow it with --target ACCOUNT[/REPOSITORY]"
-
-// refuseGitHubApp answers 400 GITHUB_APP_FIELD_REMOVED, and reports true, when a body readJSON has
-// read carries a top-level github_app, field being that field as read: any value of it, null
-// included, since encoding/json hands a JSON null to a json.RawMessage as the bytes "null" and
-// leaves it nil only when the body has no such field. The field is declared on each body that
-// refuses it, rather than left to readJSON's refusal of a field the body does not take, because
-// that refusal is 400 INVALID_REQUEST on POST /v1/requests: agent-secrets of an earlier release
-// reads that code as a broker from before github_app and sends the same request again without it,
-// which would run its command with a token wider than the one it asked for. A body that carries
-// github_app beside a field the route does not take is refused at that field first, since the
-// body is read once; no released command line sends such a body.
-func refuseGitHubApp(w http.ResponseWriter, field json.RawMessage) bool {
-	if field == nil {
+// writeGitHubAppRefusal answers a github_app field the broker does not answer
+// (requests.ErrGitHubAppFieldRefused) 400 GITHUB_APP_FIELD_REMOVED, and reports true: every one
+// with BROKER_GITHUB_APP_FIELD=off, with the message a broker before the answer gave, and one the
+// broker cannot serve, naming why. The field is declared on each body that takes it, rather than
+// left to readJSON's refusal of a field the body does not take, because that refusal is 400
+// INVALID_REQUEST on POST /v1/requests: agent-secrets of an earlier release reads that code as a
+// broker from before github_app and sends the same request again without it, which would run its
+// command with a token wider than the one it asked for. A body that carries github_app beside a
+// field the route does not take is refused at that field first, since the body is read once; no
+// released command line sends such a body.
+func writeGitHubAppRefusal(w http.ResponseWriter, err error) bool {
+	if !errors.Is(err, requests.ErrGitHubAppFieldRefused) {
 		return false
 	}
-	writeError(w, http.StatusBadRequest, "GITHUB_APP_FIELD_REMOVED", gitHubAppFieldRemovedMessage)
+	writeError(w, http.StatusBadRequest, "GITHUB_APP_FIELD_REMOVED", err.Error())
 	return true
+}
+
+// gitHubAppAnswer is the github_app object a release answers for a body that carried one: the
+// narrowing it applied, as the body named it, which a released client compares with what it
+// asked for before it runs anything.
+type gitHubAppAnswer struct {
+	// The one GitHub account whose installation the token was minted for, lowercased, as the
+	// body's github_app named it.
+	Owner string `json:"owner"`
+	// The repositories of that account the token reaches, without the account, sorted and each
+	// once; absent when the body named none, which is every repository of that account the
+	// profile the request was served as reaches.
+	Repositories []string `json:"repositories,omitempty"`
+	// True when the body's read_only asked for a token that reads alone: the broker then mints
+	// each of actions, checks, contents, metadata, pull_requests and statuses at read where the
+	// profile holds it, and none it does not. Absent otherwise, when the token holds the
+	// profile's own permissions.
+	ReadOnly bool `json:"read_only,omitempty"`
 }
 
 // writeProfileRefusal answers the refusals of a GitHub profile that POST /v1/requests and the
@@ -103,9 +117,11 @@ type createRequestBody struct {
 	Request string `json:"request"`
 	// Optional: the Envoy session the broker notifies if this request expires undecided.
 	SessionID *string `json:"session_id"`
-	// Removed: the narrowing of a github-app secret an earlier release took. A body carrying it,
-	// with any value, null included, is refused 400 GITHUB_APP_FIELD_REMOVED, and nothing is
-	// requested; a profile names the scope now, and --target narrows it.
+	// Optional: the narrowing of a stored github-app secret an agent-secrets of a release before
+	// --target sends. The request is served as a profile of that secret the profiles file grants
+	// the caller at once, narrowed to its account and repositories (requests.Machine.CreateNarrowed).
+	// With BROKER_GITHUB_APP_FIELD=off, and where the broker cannot serve it, it is refused 400
+	// GITHUB_APP_FIELD_REMOVED, and nothing is requested.
 	GitHubApp json.RawMessage `json:"github_app"`
 }
 
@@ -162,11 +178,21 @@ type createRequestResponse struct {
 // this handler) names the secrets, the reason, and — implicitly, via the policy — the approver.
 func (s *server) createRequest(w http.ResponseWriter, r *http.Request, enrollmentID string) {
 	var body createRequestBody
-	if !readJSON(w, r, &body, "INVALID_REQUEST") || refuseGitHubApp(w, body.GitHubApp) {
+	if !readJSON(w, r, &body, "INVALID_REQUEST") {
 		return
 	}
-	req, err := s.deps.Machine.Create(r.Context(), enrollmentID, body.Request, derefOr(body.SessionID, ""))
-	if writeProfileRefusal(w, err) {
+	var req requests.Request
+	var err error
+	if body.GitHubApp != nil {
+		narrowing, refused := s.deps.Machine.GitHubAppNarrowing(body.GitHubApp)
+		if writeGitHubAppRefusal(w, refused) {
+			return
+		}
+		req, err = s.deps.Machine.CreateNarrowed(r.Context(), enrollmentID, body.Request, derefOr(body.SessionID, ""), narrowing)
+	} else {
+		req, err = s.deps.Machine.Create(r.Context(), enrollmentID, body.Request, derefOr(body.SessionID, ""))
+	}
+	if writeGitHubAppRefusal(w, err) || writeProfileRefusal(w, err) {
 		return
 	}
 	switch {
@@ -310,9 +336,12 @@ type grantValuesBody struct {
 	// release. A broker from before this field refuses a body that holds it, as
 	// INVALID_NARROWING naming the unknown field, and releases nothing.
 	Reason string `json:"reason"`
-	// Removed: the narrowing of a github-app secret an earlier release took. A body carrying it,
-	// with any value, null included, is refused 400 GITHUB_APP_FIELD_REMOVED, and nothing is
-	// released; a profile names the scope now, and the grant's request its target.
+	// Optional: the narrowing of a stored github-app secret an agent-secrets of a release before
+	// --target sends. The grant's one GitHub profile, whose target must be this narrowing's, is
+	// released in the installations form under the stored secret's name, outside the airlock, and
+	// the answer echoes it in github_app (requests.Machine.ValuesNarrowed). With
+	// BROKER_GITHUB_APP_FIELD=off, and for a grant of another shape, it is refused 400
+	// GITHUB_APP_FIELD_REMOVED, and nothing is released.
 	GitHubApp json.RawMessage `json:"github_app"`
 }
 
@@ -340,6 +369,9 @@ type grantValuesResponse struct {
 	// no granted name is behind the airlock, which is every release of a broker with no rules
 	// file.
 	Airlock *oauthwire.AirlockRelease `json:"airlock,omitempty"`
+	// The narrowing this release applied, as a body's github_app field named it; absent for a
+	// body with no github_app. A released client that asked for one compares it before it runs.
+	GitHubApp *gitHubAppAnswer `json:"github_app,omitempty"`
 }
 
 // requestWaitStep is how often a held read reads its request again.
@@ -519,11 +551,24 @@ func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentI
 		return
 	}
 	var body grantValuesBody
-	if r.ContentLength != 0 && (!readJSON(w, r, &body, "INVALID_RELEASE") || refuseGitHubApp(w, body.GitHubApp)) {
+	if r.ContentLength != 0 && !readJSON(w, r, &body, "INVALID_RELEASE") {
 		return
 	}
-	release, err := s.deps.Machine.Values(r.Context(), id, enrollmentID, requests.ReleaseCall{Command: body.Command, Reason: body.Reason})
-	if writeProfileRefusal(w, err) {
+	call := requests.ReleaseCall{Command: body.Command, Reason: body.Reason}
+	var release requests.Release
+	var err error
+	var narrowing *requests.GitHubAppNarrowing
+	if body.GitHubApp != nil {
+		asked, refused := s.deps.Machine.GitHubAppNarrowing(body.GitHubApp)
+		if writeGitHubAppRefusal(w, refused) {
+			return
+		}
+		narrowing = &asked
+		release, err = s.deps.Machine.ValuesNarrowed(r.Context(), id, enrollmentID, call, asked)
+	} else {
+		release, err = s.deps.Machine.Values(r.Context(), id, enrollmentID, call)
+	}
+	if writeGitHubAppRefusal(w, err) || writeProfileRefusal(w, err) {
 		return
 	}
 	switch {
@@ -568,6 +613,13 @@ func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentI
 	values := release.Values
 	if values == nil {
 		values = map[string]string{}
+	}
+	if narrowing != nil {
+		// The answer a released client reads: its values and the narrowing applied, nothing
+		// it does not know.
+		writeJSON(w, http.StatusOK, grantValuesResponse{ExpiresAt: release.Expires, Values: values,
+			GitHubApp: &gitHubAppAnswer{Owner: narrowing.Owner, Repositories: narrowing.Repositories, ReadOnly: narrowing.ReadOnly}})
+		return
 	}
 	answer := grantValuesResponse{ExpiresAt: release.Expires, Values: values, GitHubLeftOut: release.GitHubLeftOut, Locations: release.Locations}
 	answer.Airlock = airlockReleaseOf(release.Airlock)

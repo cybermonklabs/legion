@@ -3,16 +3,18 @@
 //
 // 1. ci_job_reads.py's own convention, from its docstring: a why cites the step (at()) or the
 //    source line that reads it. Where a why cites a line of a file that imports the read, that
-//    line holds the import. ci_job_reads.py itself lists every Read of GATES and RULES. A cited
-//    line that holds another line is wrong whatever the convention, so the lint job runs this rule.
-// 2. A comment of ci.yaml, of a job file it calls (`ci-job-*.yaml`) or of `.github/ci-filters.yaml`
-//    names a helper under a package's test/ directory, which other packages' tests import, by a
-//    name `grep` finds and never by a line number. Each run of consecutive comment lines is read as
-//    one text, so a citation wrapped onto the next line is read whole.
+//    line holds the import. ci_job_reads.py lists every Read of GATES, which it loads from the
+//    files of `.github/ci-gates`, and of RULES. A cited line that holds another line is wrong
+//    whatever the convention, so the lint job runs this rule.
+// 2. A comment of ci.yaml, of a job file it calls (`ci-job-*.yaml`) or of a file of
+//    `.github/ci-gates` names a helper under a package's test/ directory, which other packages'
+//    tests import, by a name `grep` finds and never by a line number. Each run of consecutive
+//    comment lines is read as one text, so a citation wrapped onto the next line is read whole.
 // 3. With CITATIONS_BASE set to the commit a change starts from (HEAD_REF, the commit it ends at,
 //    is HEAD unless set): no comment line, and no line of a Markdown or text file, that the change
-//    adds cites another file by a line number, but in ci_job_reads.py, whose own convention is
-//    rule 1. A line the change also removes is a move, not an addition.
+//    adds cites another file by a line number, but in ci_job_reads.py and the files of
+//    `.github/ci-gates`, whose own convention is rule 1. A line the change also removes is a move,
+//    not an addition.
 // Rules 2 and 3 hold the convention of the pull request that added this file
 // (cybermonklabs/legion#4184), which its reviews enforce, and are not a rule of this repository,
 // so they run only where a reader sets the base, and no CI step sets it:
@@ -115,13 +117,17 @@ test("each line ci_job_reads.py cites in a file that imports the read holds that
   expect(wrong).toEqual([]);
 });
 
-/** The CI files whose comments rule 2 reads: ci.yaml, the job files it calls, and the filters. */
+/** The CI files whose comments rule 2 reads: ci.yaml, the job files it calls, and the gates. */
 function ciFiles(): string[] {
   const workflows = readdirSync(path.join(root, ".github/workflows"))
     .filter((name) => /^ci(?:-job-[\w-]+)?\.yaml$/.test(name))
     .sort()
     .map((name) => `.github/workflows/${name}`);
-  return [...workflows, ".github/ci-filters.yaml"];
+  const gates = readdirSync(path.join(root, ".github/ci-gates"))
+    .filter((name) => name.endsWith(".py"))
+    .sort()
+    .map((name) => `.github/ci-gates/${name}`);
+  return [...workflows, ...gates];
 }
 
 test.skipIf(base === "")(
@@ -200,7 +206,10 @@ test.skipIf(base === "")(
     }
     expect(files).toBeGreaterThan(0);
     const hits = added
-      .filter(({ file }) => file !== ".github/scripts/ci_job_reads.py")
+      .filter(
+        ({ file }) =>
+          file !== ".github/scripts/ci_job_reads.py" && !file.startsWith(".github/ci-gates/")
+      )
       .filter(({ text }) => !removed.has(text.trim()))
       .filter(({ file, text }) => isText(file, text) && CITE.test(text))
       .map(({ file, text }) => `${file}: ${text.trim()}`);

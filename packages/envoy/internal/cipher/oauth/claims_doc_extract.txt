@@ -22,4 +22,5 @@ projects
 project
 scope
 ci
+as_of
 credential_id

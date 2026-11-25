@@ -315,6 +315,15 @@ type messageReplyQuery struct {
 	FollowUp bool `query:"follow_up"`
 }
 
+// postHistoryQuery is the query GET /api/v1/comments/{id}/history and
+// GET /api/v1/messages/{id}/history share: where the page after the first one starts.
+type postHistoryQuery struct {
+	// Before answers the rows written strictly before this RFC3339 time, which is how the
+	// caller reads the page after one of 200 rows: the oldest edited_at it was answered.
+	// Anything that is not an RFC3339 time is 400 INVALID_QUERY.
+	Before string `query:"before"`
+}
+
 // inboxQuery is GET /api/v1/inbox's query.
 type inboxQuery struct {
 	// Project keeps the open asks of one project.
@@ -710,17 +719,34 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/issues": {
 		Status: http.StatusCreated, Response: model.Issue{}, Request: createIssueInput{}, Advice: writeAdvice{},
 		// A ref whose external issue already has a Dispatch issue answers that issue, 200.
-		Also:     []routeAnswer{{Status: http.StatusOK, Body: model.Issue{}}},
-		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: issueDuplicateError{}}},
+		Also: []routeAnswer{{Status: http.StatusOK, Body: model.Issue{}}},
+		// A 409 is a possible duplicate, or, with DISPATCH_PARENT_STATUS_RULE on, a create under a
+		// done parent (parent_status_rule.go).
+		Refusals: []routeAnswer{
+			{Status: http.StatusConflict, Body: issueDuplicateError{}},
+			{Status: http.StatusConflict, Body: parentStatusConflictBody{}},
+		},
 	},
 	"GET /api/v1/issues/resolve":       {Status: http.StatusOK, Response: issueRefResolved{}, Params: issueResolveQuery{}},
 	"GET /api/v1/issues/{key}":         {Status: http.StatusOK, Response: issueDetail{}},
 	"GET /api/v1/issues/{key}/summary": {Status: http.StatusOK, Response: issueSummary{}},
 	"PATCH /api/v1/issues/{key}": {
 		Status: http.StatusOK, Response: model.Issue{}, Request: updateIssueInput{}, Advice: writeAdvice{},
-		// An acceptance write that asks for the open-child check (refuse_open_foreign_children)
-		// over an open child of another project (refuseOpenForeignChildren).
-		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: foreignChildOpenError{}}},
+		Refusals: []routeAnswer{
+			// An acceptance write that asks for the open-child check (refuse_open_foreign_children)
+			// over an open child of another project (refuseOpenForeignChildren).
+			{Status: http.StatusConflict, Body: foreignChildOpenError{}},
+			// With DISPATCH_PARENT_STATUS_RULE on, a status or a parent that breaks the rule.
+			{Status: http.StatusConflict, Body: parentStatusConflictBody{}},
+		},
+	},
+	"POST /api/v1/issues/{key}/status-change": {
+		Status: http.StatusOK, Response: statusChangeAnswer{}, Request: statusChangeInput{},
+		Refusals: []routeAnswer{
+			{Status: http.StatusConflict, Body: statusChangeConflict{}},
+			{Status: http.StatusConflict, Body: statusChangeRefusal{}},
+			{Status: http.StatusForbidden, Body: statusChangeRefusal{}},
+		},
 	},
 	"POST /api/v1/issues/{key}/claim": {
 		Status: http.StatusOK, Response: claimAnswer{}, Request: claimIssueInput{},
@@ -786,6 +812,7 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: issueRoleHolders{}, Request: issueRoleHoldersInput{},
 	},
 	"GET /api/v1/issues/{key}/role-holders": {Status: http.StatusOK, Response: issueRoleHolders{}},
+	"GET /api/v1/issues/{key}/legion":       {Status: http.StatusOK, Response: legionIssueResponse{}},
 	"PUT /api/v1/issues/{key}/steps/{id}": {
 		Status: http.StatusOK, Response: model.StepRecord{}, Request: stepRecordInput{},
 	},
@@ -802,6 +829,13 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/handoffs/{id}":        {Status: http.StatusOK, Response: model.Handoff{}},
 	"GET /api/v1/messages/{id}":        {Status: http.StatusOK, Response: messageRead{}},
 	"GET /api/v1/messages/{id}/blocks": {Status: http.StatusOK, Response: model.ItemBlocks{}},
+	"GET /api/v1/messages/{id}/history": {
+		Status: http.StatusOK, Response: postHistoryRead{}, Params: postHistoryQuery{},
+	},
+	"PATCH /api/v1/messages/{id}": {Status: http.StatusOK, Response: model.Message{}, Request: editMessageInput{}},
+	"DELETE /api/v1/messages/{id}": {
+		Status: http.StatusOK, Response: model.Message{}, Request: actorInput{}, OptionalRequest: true,
+	},
 	"POST /api/v1/messages/{id}/deliveries": {
 		Status: http.StatusCreated, Response: model.MessageDelivery{}, Request: createDeliveryInput{},
 	},
@@ -901,6 +935,7 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/comments/{id}/reopen":  {Status: http.StatusOK, Response: shapedComment{}},
 	"GET /api/v1/comments/{id}":          {Status: http.StatusOK, Response: commentRead{}},
 	"GET /api/v1/comments/{id}/blocks":   {Status: http.StatusOK, Response: model.ItemBlocks{}},
+	"GET /api/v1/comments/{id}/history":  {Status: http.StatusOK, Response: postHistoryRead{}, Params: postHistoryQuery{}},
 	"POST /api/v1/comments/{id}/deliveries": {
 		Status: http.StatusCreated, Response: model.CommentDelivery{}, Request: createCommentDeliveryInput{},
 	},
@@ -915,6 +950,9 @@ var routeShapes = map[string]routeShape{
 	},
 	"POST /api/v1/comments/{id}/accept": {Status: http.StatusOK, Response: acceptedComment{}, Request: actorInput{}, OptionalRequest: true},
 	"PATCH /api/v1/comments/{id}":       {Status: http.StatusOK, Response: shapedComment{}, Request: editCommentInput{}},
+	"DELETE /api/v1/comments/{id}": {
+		Status: http.StatusOK, Response: model.Comment{}, Request: actorInput{}, OptionalRequest: true,
+	},
 	"POST /api/v1/comments/{id}/reject": {Status: http.StatusOK, Response: shapedComment{}, Request: actorInput{}, OptionalRequest: true},
 	"GET /api/v1/artifacts/{id}/asks":   {Status: http.StatusOK, Response: []shapedAsk{}, Params: artifactAsksQuery{}},
 	"POST /api/v1/artifacts/{id}/asks": {

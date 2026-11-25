@@ -1731,7 +1731,9 @@ func TestPlainStateSummarizesTheHeldLifecycleRows(t *testing.T) {
 // An operator reading plain `legion state` is told which agents are in a tool call right now:
 // each by issue and role with the call its stream named and when that call started, read from
 // each claim view's `step`. A call whose end the daemon received is over, so the claim that made
-// it is in none; with no agent in a call the line says so.
+// it is in none; with no agent in a call the line says so. Only a working claim's agent is in a
+// turn: a retired or suspended claim keeps the step it was last in on its record, on purpose, so
+// a call open there is no agent in a call, and the line names only the working claims.
 func TestPlainStateSummarizesTheAgentsInAToolCall(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
@@ -1741,11 +1743,28 @@ func TestPlainStateSummarizesTheAgentsInAToolCall(t *testing.T) {
 		`"callId":"toolu_impl_3","argsBytes":128,"argsHash":"9b2e45c0d1f8a673","startedAt":"2026-09-23T01:14:00Z"}`
 	ended := `"step":{"at":"2026-09-23T01:12:00Z","turnStartedAt":"2026-09-23T01:10:00Z","tool":"read",` +
 		`"callId":"toolu_arch_2","argsBytes":74,"argsHash":"3f7c1a9d62b40e58","startedAt":"2026-09-23T01:11:00Z","endedAt":"2026-09-23T01:12:00Z"}`
-	stepping := `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress",` +
-		`"architect":{"session":"ses_a","state":"working","pluginContract":0,` + ended + `},` +
-		`"workers":{"implementer":{"claim":{"session":"ses_i","state":"working","pluginContract":0,` + open + `},"rounds":1}}}}`
-	idle := `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress",` +
-		`"architect":{"session":"ses_a","state":"working","pluginContract":0,` + ended + `},"workers":{}}}`
+	// claim is one claim view in a state with a step; issue is LEGION-208 with its architect's
+	// claim and, unless implementer is empty, an implementer's claim on its first round. Each row
+	// below names only its claims' states and steps.
+	claim := func(session, state, step string) string {
+		return `{"session":"` + session + `","state":"` + state + `","pluginContract":0,` + step + `}`
+	}
+	issue := func(architect, implementer string) string {
+		workers := `{}`
+		if implementer != "" {
+			workers = `{"implementer":{"claim":` + implementer + `,"rounds":1}}`
+		}
+		return `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress",` +
+			`"architect":` + architect + `,"workers":` + workers + `}}`
+	}
+	stepping := issue(claim("ses_a", "working", ended), claim("ses_i", "working", open))
+	idle := issue(claim("ses_a", "working", ended), "")
+	// The architect's claim is retired and the implementer's working, each with a call that has a
+	// start and no end: the retired claim's call is the one its record kept, not an agent in one.
+	openArchitect := `"step":{"at":"2026-09-22T18:40:00Z","turnStartedAt":"2026-09-22T18:30:00Z","tool":"edit",` +
+		`"callId":"toolu_arch_7","argsBytes":96,"argsHash":"5d0e8a1c7b3f2946","startedAt":"2026-09-22T18:40:00Z"}`
+	retiredBeside := issue(claim("ses_a", "retired", openArchitect), claim("ses_i", "working", open))
+	noneWorking := issue(claim("ses_a", "retired", openArchitect), claim("ses_i", "suspended", open))
 	for _, tc := range []struct {
 		name, issues, want string
 	}{
@@ -1753,6 +1772,16 @@ func TestPlainStateSummarizesTheAgentsInAToolCall(t *testing.T) {
 			name:   "one agent in a call, one whose call ended",
 			issues: stepping,
 			want:   "agents in a tool call: 1 — LEGION-208 implementer \"bash toolu_impl_3 since 2026-09-23T01:14:00Z\"\n",
+		},
+		{
+			name:   "a working claim in a call beside a retired claim whose record keeps one",
+			issues: retiredBeside,
+			want:   "agents in a tool call: 1 — LEGION-208 implementer \"bash toolu_impl_3 since 2026-09-23T01:14:00Z\"\n",
+		},
+		{
+			name:   "open calls only on retired and suspended claims",
+			issues: noneWorking,
+			want:   "agents in a tool call: none\n",
 		},
 		{name: "every call ended", issues: idle, want: "agents in a tool call: none\n"},
 		{name: "no issues", issues: `{}`, want: "agents in a tool call: none\n"},
@@ -2086,10 +2115,10 @@ func TestTheShippedWordsNameTheWaitingLineCount(t *testing.T) {
 // it exists to catch. (INFRA-2554.)
 func TestTheShippedWordsNameTheWaitingLineBlock(t *testing.T) {
 	const (
-		returned = "Its work came back at 2026-10-03T09:58:11Z. It is 1st of 1 issue whose work came back," +
-			" and it takes the free slots first."
-		starting = "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank," +
-			" and 1 issue whose work came back stands ahead of all of them."
+		returned = "Its work came back at 2026-10-03T09:58:11Z. It waits at P1, its own priority. It is 1st of 1 issue at P1 whose work came back," +
+			" and it takes the free slots before the issues at P1 that have not started."
+		starting = "It has not started. It waits at P1, its own priority. It is 1st of 1 issue at P1 that has not started, by its own Dispatch rank," +
+			" and 1 issue at P1 whose work came back stands ahead of all of them."
 	)
 	waiting := []string{"WIDGETS-14", "WIDGETS-15"}
 	issues := map[string]api.Issue{
@@ -2736,6 +2765,87 @@ func TestPlainStateGivesEachDurableConsumersLag(t *testing.T) {
 				t.Fatalf("consumerLines =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(tc.want, "\n"))
 			}
 		})
+	}
+}
+
+// An operator reading plain `legion state` is told, one line per consumer with an open give-up,
+// how many it has and the newest stream sequence among them, which `legion intake` takes as
+// --through-seq; then the newest give-ups, at most plainStateGiveUps, each with its id, consumer,
+// subject, sequence, when and after how many deliveries it was given up, why, and the first line of
+// its error. With none open the one line says so.
+func TestPlainStateGivesTheOpenGiveUps(t *testing.T) {
+	gaveUpAt := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	t.Run("none", func(t *testing.T) {
+		if got := intakeGiveUpLines(api.IntakeGiveUpsView{}); !slices.Equal(got, []string{"intake give-ups: none"}) {
+			t.Fatalf("intakeGiveUpLines = %q, want the one line saying none", got)
+		}
+	})
+	t.Run("twelve open across two consumers print the counts and ten records", func(t *testing.T) {
+		giveUps := api.IntakeGiveUpsView{Consumers: []api.IntakeGiveUpCountView{
+			{Name: "legion-go-LEGION-dispatch", Open: 11, NewestSeq: 6044896},
+			{Name: "legion-go-LEGION-github", Open: 1, NewestSeq: 812004},
+		}}
+		for i := range 12 {
+			giveUps.Newest = append(giveUps.Newest, api.IntakeGiveUpView{
+				ID: int64(60 - i), Consumer: "legion-go-LEGION-dispatch", Subject: fmt.Sprintf("notifications.dispatch.issue.LEGION-%d.issue.updated", 300-i),
+				StreamSeq: uint64(6044896 - i), Deliveries: 21, GaveUpAt: gaveUpAt.Add(-time.Duration(i) * time.Minute), Reason: "bound",
+				LastError: "apply the issue event: context deadline exceeded\ngoroutine 7 [running]",
+			})
+		}
+		got := intakeGiveUpLines(giveUps)
+		want := []string{
+			"intake give-ups legion-go-LEGION-dispatch: 11 open, newest seq 6044896",
+			"intake give-ups legion-go-LEGION-github: 1 open, newest seq 812004",
+		}
+		for i := range plainStateGiveUps {
+			want = append(want, fmt.Sprintf("intake give-up %d legion-go-LEGION-dispatch notifications.dispatch.issue.LEGION-%d.issue.updated seq %d gave up %s after 21 deliveries (bound): apply the issue event: context deadline exceeded",
+				60-i, 300-i, 6044896-i, gaveUpAt.Add(-time.Duration(i)*time.Minute).Format(time.RFC3339)))
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("intakeGiveUpLines =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+	})
+}
+
+// A give-up's subject is the publisher's text, which Envoy and NATS refuse only for whitespace,
+// and its error can quote that text. So plain `legion state` writes each character of the subject
+// and of the error that does not print as its Go escape: an ESC or a BEL in them reaches the
+// operator's terminal as text, and does not clear the screen or set the window title. The rest of
+// the line stays as the guides show it.
+func TestPlainStatePrintsNoControlCharacterOfAGiveUp(t *testing.T) {
+	giveUps, err := json.Marshal(api.IntakeGiveUpsView{
+		Consumers: []api.IntakeGiveUpCountView{{Name: "legion-go-LEGION-dispatch", Open: 1, NewestSeq: 48213}},
+		Newest: []api.IntakeGiveUpView{{
+			ID: 412, Consumer: "legion-go-LEGION-dispatch", Subject: "notifications.dispatch.issue.\x1b[2J.issue.updated",
+			StreamSeq: 48213, Deliveries: 1, GaveUpAt: time.Date(2026, 10, 3, 8, 55, 2, 0, time.UTC), Reason: "undecodable",
+			LastError: "issue name \x1b]0;x\x07 is in neither form\ngoroutine 7 [running]",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := `{"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[],"blocked":[]},"issues":{},"pendingStatusWrites":[],"intakeGiveUps":` + string(giveUps) + `}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(served))
+	}))
+	defer server.Close()
+	t.Chdir(t.TempDir())
+	t.Setenv("LEGION_DAEMON_URL", server.URL)
+	t.Setenv("LEGION_ISSUE", "")
+
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+		t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+	}
+	if i := bytes.IndexAny(out.Bytes(), "\x1b\x07"); i >= 0 {
+		t.Fatalf("legion state printed the byte %q of a give-up to the terminal, in %q", out.Bytes()[i], out.String())
+	}
+	want := `intake give-up 412 legion-go-LEGION-dispatch notifications.dispatch.issue.\x1b[2J.issue.updated seq 48213 ` +
+		`gave up 2026-10-03T08:55:02Z after 1 deliveries (undecodable): issue name \x1b]0;x\a is in neither form` + "\n"
+	if !strings.Contains(out.String(), want) {
+		t.Fatalf("legion state printed %q, want the line %q", out.String(), want)
 	}
 }
 
