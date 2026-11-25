@@ -211,8 +211,10 @@ type ruleIssue struct {
 }
 
 // issueWriteRow is an issue's row as the builder of a plan reads it to fill in its steps. project
-// is the project the issue belongs to, which a status change holds a scoped caller to
-// (refuseStepsOutsideCallerProject).
+// is the project the issue belongs to, which a status change asks access.CredentialCovers about
+// for a caller whose credential names one project (planStatusChangeUnderLocks), under the owner
+// locks and before its first step, a dry run as well: a step's issue may be of another project,
+// since a parent may be one (validateIssueParent).
 type issueWriteRow struct {
 	key, title, status, project string
 	parent                      *string

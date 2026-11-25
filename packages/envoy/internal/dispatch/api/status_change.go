@@ -43,6 +43,7 @@ import (
 	"unicode"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -350,15 +351,17 @@ func (read statusChangeRead) steps(change statusChange) []statusChangeStep {
 // writes nothing, takes the owner locks of every step's issue and of each step's current and
 // new parent in one store.LockOwners call. Under them it loads the issue the call names and
 // decides expected_sequence first (409 ISSUE_CHANGED), then the closed-issue gate as the PATCH has
-// it (409 ISSUE_CLOSED), reads the plan again, refuses a step outside callerProject, the one
-// project the request's credential may write (refuseStepsOutsideCallerProject, 403
-// PROJECT_SCOPE), and checks the whole plan (refuseIssueWritePlan). A plan whose issues moved
-// between the two reads, so that it needs a lock the transaction does not hold, starts over with
-// what the second read found, as lockPatchOwnersAndParent does, and a plan that moves at every
-// attempt is 409 PARENT_CONTENDED with nothing applied. The transaction rolls back before the
-// first step, and each step takes its own locks in its own transaction. resumed is the recovery
-// point of an earlier attempt that this attempt resumes, nil for a first attempt: it changes the
-// fence, the gate and the plan as planStatusChangeUnderLocks says.
+// it (409 ISSUE_CLOSED), reads the plan again, asks access.CredentialCovers about each step's issue
+// where the request's credential names one project, callerProject (refuseUncoveredProject, 403
+// PROJECT_SCOPE), and checks the whole plan (refuseIssueWritePlan). A step's issue may be of
+// another project than the issue the call names, since a parent may be one (validateIssueParent),
+// and each is asked about under the owner locks, before the first step, a dry run's plan as well.
+// A plan whose issues moved between the two reads, so that it needs a lock the transaction does
+// not hold, starts over with what the second read found, as lockPatchOwnersAndParent does, and a
+// plan that moves at every attempt is 409 PARENT_CONTENDED with nothing applied. The transaction
+// rolls back before the first step, and each step takes its own locks in its own transaction.
+// resumed is the recovery point of an earlier attempt that this attempt resumes, nil for a first
+// attempt: it changes the fence, the gate and the plan as planStatusChangeUnderLocks says.
 func (s *server) planStatusChange(
 	ctx context.Context, key string, change statusChange, writer issueWriter, callerProject string, resumed *statusChangeRecovery,
 ) (statusChangePlan, error) {
@@ -443,44 +446,31 @@ func (s *server) planStatusChangeUnderLocks(
 		steps[index].title, steps[index].lastSeq = row.title, row.lastSeq
 		writes.steps = append(writes.steps, steps[index].issueWriteStep)
 	}
-	if err := refuseStepsOutsideCallerProject(callerProject, steps, rows); err != nil {
-		return statusChangePlan{}, nil, err
+	// A credential that names one project writes, in a step, an issue of every project that
+	// access.CredentialCovers covers. The one exception is a private project it does not name. The
+	// route's pre-handler check reads only the project of the issue the path names
+	// (project_scope.go), and a parent may be an issue of another project (validateIssueParent),
+	// so an ancestor that include_parent moves and a descendant that include_children moves or
+	// unlink_children unlinks can each belong to another. Each step's issue is asked about here,
+	// as its row was read under the owner locks, before the first step and for a dry run as well,
+	// so no step of a call writes an issue the credential may not write.
+	if callerProject != "" {
+		for _, step := range steps {
+			project := rows[step.key].project
+			if !access.CredentialCovers(access.Credential{Listed: []string{callerProject}}, project, false) {
+				what := "issue " + step.key
+				if step.option != "" {
+					what = step.option + "'s issue " + step.key
+				}
+				return statusChangePlan{}, nil, refuseUncoveredProject(callerProject, what, project)
+			}
+		}
 	}
 	conflict, err := s.refuseIssueWritePlan(ctx, tx, writer, writes)
 	if err != nil {
 		return statusChangePlan{}, nil, err
 	}
 	return statusChangePlan{named: named, steps: steps, conflict: conflict}, nil, nil
-}
-
-// refuseStepsOutsideCallerProject refuses, with 403 PROJECT_SCOPE, a status change one of whose
-// steps writes an issue outside callerProject, the one project the request's credential may
-// write; a credential that names none (callerProject empty) is refused nothing. The route's
-// pre-handler check holds only the issue the path names to that project (project_scope.go), and
-// a parent may be an issue of another project (validateIssueParent), so an ancestor that
-// include_parent moves and a descendant that include_children moves or unlink_children unlinks
-// can each belong to another. The whole call is refused before its first step, a dry run as well,
-// as every other write of such a credential outside its project is refused: no step of it writes
-// an issue the credential may not write. rows are the steps' issues as the plan read them under
-// their owner locks, and a step whose issue no row answers is refused too, as the pre-handler
-// check fails closed.
-func refuseStepsOutsideCallerProject(callerProject string, steps []statusChangeStep, rows map[string]issueWriteRow) error {
-	if callerProject == "" {
-		return nil
-	}
-	for _, step := range steps {
-		project := rows[step.key].project
-		if project == callerProject {
-			continue
-		}
-		writes := "the issue this status change names"
-		if step.option != "" {
-			writes = "an issue this status change's " + step.option + " writes"
-		}
-		return errorf(http.StatusForbidden, codeProjectScope,
-			"this request's credential may write project %s; %s, %s, belongs to project %s", callerProject, writes, step.key, project)
-	}
-	return nil
 }
 
 // statusChangeRun is one attempt of a status change that runs its steps. callerName is the caller
