@@ -695,7 +695,7 @@ cycle:
 		}
 		// The trade comes after the renewal, so a slow one never holds the lease the renewal
 		// keeps: a command may start a renewer with little of its lease left.
-		if cred.box != decided.record.Thumbprint {
+		if false && cred.box != decided.record.Thumbprint {
 			// A new sign-in is a new box key, and so a credential of its own.
 			cred = credentialKeep{box: decided.record.Thumbprint}
 		}
