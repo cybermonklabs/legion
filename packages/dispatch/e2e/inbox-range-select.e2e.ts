@@ -829,18 +829,18 @@ test("a range action whose rows stood above the view hands the focus to the firs
     await expect(rows(page).first()).toHaveAttribute("aria-setsize", String(count));
     const drawn = await drawnIds(box);
     expect(drawn.length, "the Dismissed window draws at least ten rows").toBeGreaterThanOrEqual(10);
-    // The reading pane shows the first row. The range leaves it out: where a press takes the
-    // selected row away, the Inbox selects the next row and scrolls it into view, which is the
-    // selection's own rule, not the bar's return.
+    // The reading pane shows the first row, and the range holds it: the press takes the selected
+    // row away with the others, the selection moves to a row that stays, and neither that move
+    // nor the bar's return scrolls the list or the window.
     await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", drawn[0] ?? "");
-    const range = drawn.slice(1, 5);
+    const range = drawn.slice(0, 4);
     await mark(page, range[0] ?? "").click();
     await mark(page, range[3] ?? "").click({ modifiers: ["Shift"] });
     await expectCount(page, 4);
     expect(await markedIds(page)).toEqual(range);
 
-    // Leave the tenth row just inside the top edge. The selected row, the range and the row
-    // after it stay drawn above the edge, so only the forward search can reach a row in sight.
+    // Leave the tenth row just inside the top edge. The range, the selected row among it, and the
+    // row after it stay drawn above the edge, so only the forward search can reach a row in sight.
     await row(page, drawn[9] ?? "").evaluate((node) => {
       const list = node.closest<HTMLElement>('[data-testid="inbox-list"]');
       if (list === null) throw new Error("the tenth row is not in the Inbox list");
@@ -854,13 +854,16 @@ test("a range action whose rows stood above the view hands the focus to the firs
         .map((node) => node.dataset.inboxRow);
     });
     expect(
-      above.slice(0, 6),
-      "the selected row, the four marks and the row after them stand wholly above sight"
-    ).toEqual(drawn.slice(0, 6));
+      above.slice(0, 5),
+      "the four marks, the selected row among them, and the row after them stand wholly above sight"
+    ).toEqual(drawn.slice(0, 5));
     const before = await scrollPositions(page);
     await bar(page).getByRole("button", { name: "Move to Inbox selected threads" }).click();
     for (const id of range) await expect(row(page, id)).toHaveCount(0);
     await frameAndTask(page);
+    await expect(selectedRow(page)).toHaveCount(1);
+    const selected = await selectedRow(page).getAttribute("data-inbox-row");
+    expect(range, "the selection moved to a row that stays").not.toContain(selected);
 
     const first = await firstMarkInSight(page);
     expect(first, "there is a surviving row in sight").toBeDefined();

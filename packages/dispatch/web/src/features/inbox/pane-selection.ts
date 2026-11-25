@@ -126,8 +126,14 @@ export function usePaneSelection({
    *  can act on. */
   const nextAfterSelected = (): string | undefined =>
     stoodBetween.current.below ?? stoodBetween.current.above;
+  /** Whether the selection's next change brings its row into view. Every move of the reader's
+   *  does: a step, a pick, an address, an answer they recorded. A hand-on from a row that left the
+   *  bands does not: the reader did not move, and a press that took rows standing above the view
+   *  scrolls nothing (R4), as a row the server took away scrolls nothing. */
+  const revealNext = useRef(true);
 
   const select = (id: string | undefined): void => {
+    revealNext.current = true;
     setSelectedId(id);
     selectedNow.current = id;
     shownItem.current = id;
@@ -266,6 +272,7 @@ export function usePaneSelection({
       const wanted = listedRows.current.find((placed) => rowId(placed.row) === filter.item);
       if (wanted !== undefined) {
         const id = rowId(wanted.row);
+        revealNext.current = true;
         setSelectedId(id);
         if (!visible.some((placed) => rowId(placed.row) === id)) openFoldedBand(wanted.group);
         return;
@@ -280,9 +287,11 @@ export function usePaneSelection({
     if (paneSubject.current?.kept === true) {
       return;
     }
-    // The row the selection was on has left the bands - the reader deferred it, the server
-    // took it away - so the selection goes where that row was heading and the address follows
-    // it, down to naming no row at all when the list has none left to show.
+    // The row the selection was on has left the bands - the reader deferred it, a press of theirs
+    // took it with others, the server took it away - so the selection goes where that row was
+    // heading and the address follows it, down to naming no row at all when the list has none
+    // left to show. The list stays where it stands: the row the selection moves to is not
+    // scrolled to.
     const next = nextAfterSelected();
     const first = visible[0];
     select(
@@ -292,12 +301,15 @@ export function usePaneSelection({
           ? undefined
           : rowId(first.row)
     );
+    revealNext.current = false;
   });
 
   // The selected row is kept on screen as the reader walks the list: the column beside it shows
-  // the row they cannot see otherwise.
+  // the row they cannot see otherwise. A hand-on (revealNext) scrolls nothing.
   useEffect(() => {
-    if (!paneShown || selectedId === undefined) {
+    const reveal = revealNext.current;
+    revealNext.current = true;
+    if (!reveal || !paneShown || selectedId === undefined) {
       return;
     }
     selectedRow()?.scrollIntoView?.({ block: "nearest" });
