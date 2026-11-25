@@ -11,11 +11,12 @@
 //
 // A second client is the plugin of the release before, which the driver builds itself
 // (olderClient): the newest commit of main's first-parent line whose daemon API contract is below
-// this one's, taken with `git archive` and given its own `bun install`. Its tester registers at that
-// contract and reads the answers of this daemon through that tree's client and schemas. That
-// release is whatever main deployed last, so its contract moves as main's does: what its client
-// must have and what the daemon must serve it are read from the contract its own tree declares,
-// never from a contract this file names for it.
+// this one's, taken with `git archive` and given its own `bun install`. Its tester registers at this
+// daemon's contract, the store records the claim at that tree's contract before a restart, and the
+// tester reads the answers of this daemon through that tree's client and schemas. Which commit that
+// is follows main's contract and this checkout's, so what its client must have and what the daemon
+// must serve it are read from the contract its own tree declares, never from a contract this file
+// names for it.
 //
 // Each check prints `== <name>`, what the client answered, and `ok <name>`; each control runs the
 // same check's predicate on an answer it must refuse, and fails the run unless it does.
@@ -327,9 +328,9 @@ func newOwnerStepsClientLive(t *testing.T) *ownerStepsClientLive {
 	}
 	proof := newLiveProof(t, "scripts/e2e/owner-steps-client.sh")
 	// The plugin's client reads the state's settings with review_round_cap above 0, which the
-	// loader's default (3, config's keytable) always gives a deployment; the package's test config
-	// leaves the field 0, so the run names the default the loader would.
-	proof.cfg.ReviewRoundCap = 3
+	// loader's default always gives a deployment; the package's test config leaves the field 0, so
+	// the run names the default the loader would.
+	proof.cfg.ReviewRoundCap = config.DefaultReviewRoundCap
 	root := liveCLICheckout(t)
 	rig := newOwnerStepsRig(t, proof, startHandoffDispatch(t, root).scratchDispatch, 4, config.Project{DefaultSteps: steps})
 	return &ownerStepsClientLive{ownerStepsRig: rig, root: root}
@@ -356,9 +357,10 @@ func (l *ownerStepsClientLive) olderClient() {
 }
 
 // releaseBefore answers the newest commit of main's first-parent line whose DaemonAPIVersion is
-// below this daemon's, its contract, and the ref the walk read main from. That is what is deployed
-// before this checkout: in a pull request's run, the main it merges into; on main, the commit
-// before the last change of the contract. main is origin/main in a clone that holds its history;
+// below this daemon's, its contract, and the ref the walk read main from. That is the release before
+// this checkout's contract: in a run of a pull request that changes the contract, the main it merges
+// into; in a run of one that keeps main's contract, and on main, the commit before the last change of
+// the contract. main is origin/main in a clone that holds its history;
 // a shallow clone (CI's checkout) fetches main from origin, deeper each time the walk reaches the
 // end of what it fetched, and the whole of main's history once 4096 commits hold no such commit:
 // how far back the last change of the contract is depends on how long main has kept it, which no

@@ -5686,9 +5686,9 @@ The driver is `TestOwnerStepsClientLive` (`internal/daemon/owner_steps_client_li
 Each call is one run of `scripts/e2e/owner-steps-client.ts` under bun: it imports `packages/pi-shared` from the tree it is given, makes the call as `packages/pi-legion/src/tools.ts` and `packages/pi-shared/src/legion-phase-ops.ts` make it, and prints what the client answered or threw as one JSON line.
 
 The plugin of the release before is built by the driver itself, in the first check: the newest commit of main's first-parent line whose `DaemonAPIVersion` is below this checkout's.
-In a pull request's run that is the main it merges into; on main it is the commit before the last change of the contract.
+In a run of a pull request that changes the contract, that is the main it merges into; in a run of one that keeps main's contract, and on main, it is the commit before the last change of the contract.
 A clone that holds main's history reads `origin/main` as it stands and fetches nothing; a shallow clone, as CI's checkout is, fetches main from origin 64 commits deep, then 256, 1024 and 4096, then main's whole history, until the walk finds such a commit.
-That release is whatever main deployed last, so its contract moves as main's does, and the driver holds it only to what its own contract says: the contract it reads from that tree's `internal/api/version.go`, never one the driver names for it.
+Which commit that is follows main's contract and this checkout's, so the driver holds that release only to what its own contract says: the contract it reads from that tree's `internal/api/version.go`, never one the driver names for it.
 The commit is taken with `git archive` into a directory of the run's own and given `bun install --frozen-lockfile` there, as [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh) takes its base tree, and the directory goes when the run ends.
 
 | check | driven by | read back as | its control, which must fail the check |
