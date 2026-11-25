@@ -513,8 +513,9 @@ const TYPED_OPENER = /^(:{3,})([A-Za-z0-9_-]+)\{.*\}$/s;
 export function askOpenerLines(markdown: string): string[] {
   const lines = markdown.split("\n").map((line) => line.replace(/\r$/, ""));
   const typedOpener = (text: string) => {
-    const opener = TYPED_OPENER.exec(text);
-    return opener === null ? undefined : { colons: opener[1].length, name: opener[2] };
+    // Both groups are in each match, so they are undefined only where `text` does not match.
+    const [, colons, name] = TYPED_OPENER.exec(text) ?? [];
+    return colons === undefined || name === undefined ? undefined : { colons: colons.length, name };
   };
   return readAskBlocks(lines, { frontMatter: true, typedOpener }).map((block) => block.opener);
 }
@@ -544,7 +545,10 @@ export function askOpenerBlockId(line: string): string | undefined {
   let end: number;
   if (attributes.startsWith("#")) {
     end = 1;
-    while (end < attributes.length && !TYPED_BLOCK_ID_SHORTCUT_EXCLUDED.includes(attributes[end])) {
+    while (
+      end < attributes.length &&
+      !TYPED_BLOCK_ID_SHORTCUT_EXCLUDED.includes(attributes.charAt(end))
+    ) {
       end++;
     }
     id = attributes.slice(1, end);
