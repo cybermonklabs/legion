@@ -138,8 +138,6 @@ func (a Address) Route(route string) string {
 	if err != nil || !a.Clean() {
 		return redact.NotPrinted
 	}
-	// A clean address holds no user information, query or fragment, and the route's words print
-	// as written (Path, not EscapedPath), the way the route spells the id it leaves out.
 	return joined.Scheme + "://" + joined.Host + joined.Path
 }
 
