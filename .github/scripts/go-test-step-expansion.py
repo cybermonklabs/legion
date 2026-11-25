@@ -107,7 +107,7 @@ How it reads a step:
     behind them: neither changes which test functions run. A value holding `$` and a wrapper that
     tuple does not name are refused rather than guessed at;
   * a step whose run: is the path of a script AUDITED_SCRIPTS names
-    (`packages/envoy/scripts/database-skips.sh`, `packages/envoy/scripts/backend-count.sh`), alone
+    (`packages/envoy/scripts/database-skips.sh` and `packages/envoy/scripts/backend-count.sh`), alone
     or followed by one of the argument lists
     its entry reads, is read as the `go test` command that entry gives for those arguments, in
     the module it names. A step whose run: holds that script's file name anywhere else, or with
