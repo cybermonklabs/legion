@@ -39,7 +39,7 @@ import { treeRead } from "./spec-filter/tree-read";
 import { coverageStatements } from "./tree-drafts";
 import { useTreeRead } from "./tree-read/tree-read";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
-import { issueAsksQuery, issueCommentsQuery } from "./useIssueTree";
+import { issueAskThreadsQuery, issueCommentsQuery } from "./useIssueTree";
 import { type WaitingPress, waitingOnReader } from "./waiting";
 
 /**
@@ -97,7 +97,7 @@ export function IssuePropertiesRow({
   const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });
   const comments = useQuery({ ...issueCommentsQuery(issue.key), ...EVENT_FRESH });
-  const asks = useQuery(treeRead(issueAsksQuery(issue.key)));
+  const asks = useQuery(treeRead(issueAskThreadsQuery(issue.key)));
   const tree = useTreeRead(issue).answer;
   const isCoverageStatement = useMemo(
     () => coverageStatements(issue, coverage.data),
