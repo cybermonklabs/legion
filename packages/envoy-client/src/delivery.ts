@@ -1042,8 +1042,9 @@ function encodeWithin(value: unknown, maxBytes: number): string | undefined {
 
 /** The `dispatch` block of a card, all of which a card shown as text writes: where the event is
  *  (`owner`), what it is, who did it, why it reached this session (`relation`), and what a host
- *  lays out from it - the payload, or in its place the fields of a compact ask record
- *  (CompactDispatchRecord: `question`, `reply`, `state`, `ask` and the rest). */
+ *  lays out from it - the payload, or in its place a compact record (`dispatchCompact`'s: an
+ *  ask's `question`, `reply`, `state` and the rest, a human edit's `edit`), with `ask` beside it
+ *  when the envelope is uncorrelated. */
 type DispatchCardEvent = {
   readonly owner: string;
   readonly type: string;
@@ -1478,9 +1479,9 @@ export function renderInbound(
   // lays out in bytes that grow with the square of its depth: a 20 KB array chain made a 100 MB
   // card. Either way the payload is the text its sender sent, so the card shows it as that text,
   // as it shows a payload that is no JSON, and the host takes the frame. That text is bounded as
-  // every message's is: by the frame, at most the hub's 1 MiB. A Dispatch card shows the event its
-  // reader read as text instead (`dispatchCardAsText`). A payload that already is text is bounded
-  // so already, and a throw the payload is not behind is thrown as before.
+  // every message's is: by the frame, at most the hub's 1 MiB. A Dispatch card shows its
+  // `dispatch` block as JSON text instead (`dispatchCardAsText`). A payload that already is text
+  // is bounded so already, and a throw the payload is not behind is thrown as before.
   const payloadValue = dispatchRendered ? dispatchEvent : message;
   // A layout holds about as many bytes as the text it lays out, and a body Dispatch's API gave
   // whole (`wholeBody`) is text the frame did not carry, so a card may hold twice that text when
