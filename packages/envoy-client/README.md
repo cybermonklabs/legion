@@ -932,9 +932,11 @@ replayed 2xx is no landing: the client asks the call once more under a new key, 
 afresh, and a second such answer is a `DispatchAnswerNotKeptError` (`code` `ANSWER_NOT_KEPT`,
 `status`), no `DispatchServiceError`. Its message says the call wrote nothing, that Dispatch kept
 no copy of its answer, and to run the command again, which asks under a new key: `dispatch related`
-and a `dispatch result --dry-run` exit 1 on one, and `dispatch artifact` refuses the upload its
-stored-text check could not run, saying to send it again. A replayed refusal is the refusal
-Dispatch first gave, thrown as any other.
+and a `dispatch result --dry-run` exit 1 on one. `dispatch artifact` refuses an upload of inline
+text that is not blank when the check of that text got such an answer, saying to send it again;
+blank inline text and a Markdown `--path` file go up unchecked when their check gets no answer, as
+the account of the dry run further down says. A replayed refusal is the refusal Dispatch first
+gave, thrown as any other.
 
 Successful write responses may include `advice`. The executor preserves that object as
 `details.advice` and appends short pointers after the subscription/follow suffix: a primary spec

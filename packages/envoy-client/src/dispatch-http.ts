@@ -673,10 +673,10 @@ interface WriteCall {
   readonly key: string;
   readonly request: string;
   /**
-   * Whether the call writes: false for a conversion (`markdownRoundTrip`, `fileRoundTrip`),
-   * which Dispatch runs without storing anything. Its table state never leaves `nothing-sent`
-   * (`writeStep`), so it keeps the answers it had before the table existed: a no route to the end
-   * is the route absent, and a refusal is the refusal.
+   * Whether the call writes: false for a conversion (`markdownRoundTrip`, `fileRoundTrip`) and for
+   * a dry run (`dryRunResult`), which Dispatch runs without storing anything. Its table state
+   * never leaves `nothing-sent` (`writeStep`), so it keeps the answers it had before the table
+   * existed: a no route to the end is the route absent, and a refusal is the refusal.
    */
   readonly writes: boolean;
   readonly progress: WriteProgress;
@@ -2221,9 +2221,9 @@ export class DispatchClient {
 
   /** `#json` with the status Dispatch answered, for a route whose status says what it did.
    *  `signal` aborts the call beside the client's own signal. `writes: false` marks a POST that
-   *  writes nothing (a conversion, `markdownRoundTrip` or `fileRoundTrip`): it is sent as a POST
-   *  is, under one key with its retries, but never read as a write that may have landed
-   *  (`WriteCall.writes`). */
+   *  writes nothing (a conversion, `markdownRoundTrip` or `fileRoundTrip`, or a dry run,
+   *  `dryRunResult`): it is sent as a POST is, under one key with its retries, but never read as a
+   *  write that may have landed (`WriteCall.writes`). */
   async #jsonAnswer<T>(
     method: string,
     path: readonly string[],
