@@ -14,21 +14,22 @@ body: |-
   moved, in each repository's figures its rows reach; the day-row refresher's pass builds each
   build's whole set of figures once, and then each new day's ranges, and marks a project built
   once the first whole walk of its figures is done (`eval_figures_built`). A move of a project's
-  default repository folds the figures of the projects' own rows again in the commit that
-  publishes it, and marks stale the figures of each repository it moves rows of, the old and the
-  new default's and those of the repositories of the owner keys a project gains or loses
-  (`eval_figure_cuts_stale`), naming the evals whose rows it moved there: of the two defaults'
-  figures, the evals that hold Legion rows under `:default`. The refresher's pass that publishes
-  the move folds those evals again: first, in a short batch of its own, the figures a first paint
-  of such a repository reads (each offered window ending today, tomorrow or the day after, with a
-  compare range one window back, and their days), and then every other day, newest first. Until
-  that first batch commits a read of such a repository folds their day rows; from then on its
-  first paint reads every eval from the stored figures, and a read of an older range reads them
-  once the refold has come down past it and folds their day rows until then. Every other eval is
-  read from the stored figures throughout. A process folds the first paint of every marked
-  repository before it serves, or waits for the process whose refresher holds the lease to fold
-  it, for up to 30 s, and the next day's first paint is folded before the rest of a refold, so the
-  first read after a restart, a deploy or a midnight reads the stored figures too. A register
+  default repository marks stale, in the commit that publishes it, the figures of each cut it
+  moves rows of: the old and the new default's, and, of the owner keys a project gains or loses,
+  those of their repositories and of the project's own rows (`eval_figure_cuts_stale`), naming
+  the evals whose rows it moved there: of the two defaults' figures, the evals that hold Legion
+  rows under `:default`. The same commit folds those evals' figures a first paint of each such cut
+  reads (each offered window ending today, tomorrow or the day after, with a compare range one
+  window back, and their days), and no other day, and the refresher's pass that publishes the move
+  folds every other day of them, newest first. A first paint of every cut a move touches, the
+  project's own rows among them, reads the stored figures from the move's commit on; a read of an
+  older range reads them once the refold has come down past it, and folds their day rows until
+  then. Every other eval is read from the stored figures throughout. A cut marked otherwise (the
+  boot's rename pass marks the renamed repository's cuts) has its first paint folded first, in a
+  short batch of its own; a process folds the first paint of every such mark before it serves, or
+  waits for the process whose refresher holds the lease to fold it, for up to 30 s, and the next
+  day's first paint is folded before the rest of a refold, so the first read after a restart, a
+  deploy or a midnight reads the stored figures too. A register
   write that moves what an eval folds by is folded by the refresher's next pass, which reads the
   change log from a cursor of its own. Both reads fold each eval's rows in one order, by day and
   within a day by the key each row is stored under, its repository and its series, so a sum of

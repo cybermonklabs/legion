@@ -345,7 +345,7 @@ func (s *Store) foldFiguresOfDays(ctx context.Context, build, project string, sp
 		return fmt.Errorf("begin the stored figures of %s: %w", project, err)
 	}
 	defer tx.Rollback(ctx)
-	folded, ok, err := refoldProject(ctx, tx, build, project, false, spans)
+	folded, ok, err := refoldProject(ctx, tx, build, project, spans)
 	if err != nil || !ok {
 		return err
 	}
@@ -560,7 +560,7 @@ func (b builtCut) refolded(window Range, compare *Range) bool {
 
 // figuresThrough reads in q, for each of projects whose stored figures are built, the last end day
 // they are built through (eval_figures_built), which of its evals a mark of its cut of repo ("" for
-// its own rows, which no mark holds) names stale (eval_figure_cuts_stale), and what the mark's
+// its own rows) names stale (eval_figure_cuts_stale), and what the mark's
 // generation has folded again of them (its ready_through and next_day, builtCut): a read of the
 // cut over a range of FigureLengths ending on or before that day may read the stored figures of
 // every eval no mark names (figures.go), whichever build serves the read and whichever folded
@@ -811,16 +811,10 @@ func FoldFirstPaint(ctx context.Context, pool *store.Pool, build, project, repo 
 }
 
 // foldFirstPaint is a first-paint batch of cut in tx, whose mark reads mark and whose project's
-// figures are folded through scope.through: it folds again the first paint of that end day
-// (firstPaintOf) of the evals the mark names, every eval of the project where it names none, under
-// the locks of the logged evals among them (lockLogged), with the folds and the deletes of the rows
-// that no row holds any more that every batch of the refold makes (buildFigureEnds of the one cut),
-// and records scope.through with the mark (ready_through) where its generation is the one read: a
-// move that marked the cut again since leaves its first paint owed (markStaleCuts). The first
-// paint's figures stay true to their rows after it as every stored figure does: each write of day
-// rows folds the figures of the days it moved in every cut the rows reach, a stale one among them
-// (foldFiguresInTx, refoldProject, which no mark keeps from a cut). It answers what it folded, and
-// when it took the locks, the zero time where it took none.
+// figures are folded through scope.through: it reads the evals the mark names, every eval of the
+// project where it names none, takes the locks of the logged evals among them (lockLogged), and
+// folds their first paint under them (foldFirstPaintOf). It answers what it folded, and when it
+// took the locks, the zero time where it took none.
 func foldFirstPaint(ctx context.Context, tx pgx.Tx, scope figureScope, cut staleCut, mark cutMark) (FirstPaint, time.Time, error) {
 	entries, err := readEntries(ctx, tx, scope.project, mark.evals)
 	if err != nil {
@@ -834,14 +828,30 @@ func foldFirstPaint(ctx context.Context, tx pgx.Tx, scope figureScope, cut stale
 	if took {
 		locked = time.Now()
 	}
+	paint, err := foldFirstPaintOf(ctx, tx, scope, cut, mark, entries)
+	return paint, locked, err
+}
+
+// foldFirstPaintOf folds again, in tx, the first paint of scope.through (firstPaintOf) of entries,
+// the evals cut's mark names (every eval of the project where it names none), with the folds and
+// the deletes of the rows that no row holds any more that every batch of the refold makes
+// (buildFigureEnds of the one cut), and records scope.through with the mark (ready_through) where
+// its generation is the one read: a move that marked the cut again since leaves its first paint
+// owed (markStaleCuts). It takes no lock: its caller holds the locks of the logged evals of entries
+// (lockLogged), a lone cut's (foldFirstPaint) or those of every cut a move's commit folds, in one
+// take (foldMarkedFirstPaints). The first paint's figures stay true to their rows after it as every
+// stored figure does: each write of day rows folds the figures of the days it moved in every cut
+// the rows reach, a stale one among them (foldFiguresInTx, refoldProject, which no mark keeps from
+// a cut).
+func foldFirstPaintOf(ctx context.Context, tx pgx.Tx, scope figureScope, cut staleCut, mark cutMark, entries []Entry) (FirstPaint, error) {
 	if err := buildFigureEnds(ctx, tx, scope, entriesByID(entries), &cut.repo, mark.evals == nil, firstPaintOf(scope.through)); err != nil {
-		return FirstPaint{}, locked, err
+		return FirstPaint{}, err
 	}
 	if _, err := tx.Exec(ctx, `update eval_figure_cuts_stale set ready_through = $3 where project_key = $1 and repo = $2 and generation = $4`,
 		cut.project, cut.repo, scope.through, mark.generation); err != nil {
-		return FirstPaint{}, locked, fmt.Errorf("record the first paint of %s's stale cut of %s: %w", cut.project, cut.repo, err)
+		return FirstPaint{}, fmt.Errorf("record the first paint of %s's stale cut of %s: %w", cut.project, cut.repo, err)
 	}
-	return FirstPaint{Folded: true, Through: scope.through, Evals: len(entries)}, locked, nil
+	return FirstPaint{Folded: true, Through: scope.through, Evals: len(entries)}, nil
 }
 
 // logFirstPaint logs the first-paint batch of cut that folded paint, as refoldStaleBatch logs a

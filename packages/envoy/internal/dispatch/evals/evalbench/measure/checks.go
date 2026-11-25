@@ -551,17 +551,20 @@ func (c *headChecks) fallback(measured []measuredCase, catalog map[int64]bool) {
 	}
 }
 
-// staleReads is the fallback's measurement, made under the refresher's lease, under two marks of
-// the project's cut of the deploy repository, its published default, one after the other
-// (staleMarkReads): the mark a move of the project's default away from it makes, naming the evals
+// staleReads is the fallback's measurement, made under the refresher's lease, under three marks,
+// one after the other (staleMarkReads): two of the project's cut of the deploy repository, its
+// published default, the mark a move of the project's default away from it makes, naming the evals
 // whose rows the move moves out of the cut (defaultRowEvals), the read a person's move of the
-// default meets, its reads named with -stale; and one naming every eval (null), the mark of the
-// boot's rename pass and the worst case, its reads named with -stale-all. Each read of the paint
-// is compared with the paint's own read of the stored figures; the read one window back (pastCase)
-// with the same read made first, with no mark, from the stored figures, its line named
-// list-84d-compare-repo-past. The first paint is folded as the server's build (serverBuild), as
-// the server's own refresher would fold it. A project that publishes another default, or a move
-// that names no eval of the cut, fails beside the first mark, which then states no read.
+// default meets, its reads named with -stale, and one naming every eval (null), the mark of the
+// boot's rename pass and the worst case, its reads named with -stale-all; and one of the project's
+// own rows (""), which the main Evals page reads and a move marks for the evals of the owner keys
+// it moves, naming every eval, its worst case, its reads (list-84d-compare, list-28d and the first
+// one window back) named with -stale-all. Each read of the paint is compared with the paint's own
+// read of the stored figures; each read one window back (pastCase) with the same read made first,
+// with no mark, from the stored figures, its line named with -past. The first paint is folded as
+// the server's build (serverBuild), as the server's own refresher would fold it. A project that
+// publishes another default, or a move that names no eval of the cut, fails beside the first mark,
+// which then states no read.
 func (c *headChecks) staleReads(ctx context.Context, measured []measuredCase, catalog map[int64]bool) {
 	repo := evalbench.Repos[0]
 	build, err := serverBuild(ctx, c.o.url)
@@ -569,29 +572,10 @@ func (c *headChecks) staleReads(ctx context.Context, measured []measuredCase, ca
 		c.r.fail("k16 fallback: read the server's build, which the first paint is folded as: %v", err)
 		return
 	}
-	var cases []staleCase
-	for _, name := range []string{"list-84d-compare-repo", "list-28d-repo"} {
-		index := slices.IndexFunc(measured, func(one measuredCase) bool { return one.name == name })
-		if index < 0 {
-			c.r.fail("k16 fallback: the paint has no case %s", name)
-			continue
-		}
-		cases = append(cases, staleCase{read: measured[index].paintCase, stored: measured[index]})
-	}
-	if len(cases) > 0 && cases[0].read.name == "list-84d-compare-repo" {
-		past, err := c.pastCase(cases[0].read)
-		if err != nil {
-			c.r.fail("k16 fallback: %v", err)
-			return
-		}
-		stored, err := measure(ctx, c.pool, c.client, c.o, past, catalog)
-		if err != nil {
-			c.r.fail("k16 fallback: %s: %v", past.name, err)
-			return
-		}
-		c.r.result("k16 fallback case=%s marked_evals=none status=%d db_ms=%.2f statements=%d server_ms=%.0f body_bytes=%d gzip_bytes=%d",
-			past.name, stored.status, dbMs(stored.own), len(stored.own), stored.serverMs, len(stored.body), gzipSize(stored.body))
-		cases = append(cases, staleCase{read: past, stored: stored, past: true})
+	cases, ok := c.staleCases(ctx, measured, catalog, "list-84d-compare-repo", "list-28d-repo")
+	own, ownOK := c.staleCases(ctx, measured, catalog, "list-84d-compare", "list-28d")
+	if !ok || !ownOK {
+		return
 	}
 	moved, err := c.defaultRowEvals(ctx, repo)
 	switch {
@@ -603,6 +587,39 @@ func (c *headChecks) staleReads(ctx context.Context, measured []measuredCase, ca
 		c.staleMarkReads(ctx, catalog, repo, build, moved, "", cases)
 	}
 	c.staleMarkReads(ctx, catalog, repo, build, nil, "-all", cases)
+	c.staleMarkReads(ctx, catalog, "", build, nil, "-all", own)
+}
+
+// staleCases is the reads of the paint named names a mark's reads make (staleMarkReads), each with
+// the paint's own measurement of it from the stored figures, and after them the first of them one
+// window back (pastCase), measured once here, with no mark, from the stored figures, its RESULT
+// line stated. ok is false where the paint holds none of names or a read fails, which it states.
+func (c *headChecks) staleCases(ctx context.Context, measured []measuredCase, catalog map[int64]bool, names ...string) ([]staleCase, bool) {
+	var cases []staleCase
+	for _, name := range names {
+		index := slices.IndexFunc(measured, func(one measuredCase) bool { return one.name == name })
+		if index < 0 {
+			c.r.fail("k16 fallback: the paint has no case %s", name)
+			continue
+		}
+		cases = append(cases, staleCase{read: measured[index].paintCase, stored: measured[index]})
+	}
+	if len(cases) == 0 || cases[0].read.name != names[0] {
+		return cases, len(cases) > 0
+	}
+	past, err := c.pastCase(cases[0].read)
+	if err != nil {
+		c.r.fail("k16 fallback: %v", err)
+		return nil, false
+	}
+	stored, err := measure(ctx, c.pool, c.client, c.o, past, catalog)
+	if err != nil {
+		c.r.fail("k16 fallback: %s: %v", past.name, err)
+		return nil, false
+	}
+	c.r.result("k16 fallback case=%s marked_evals=none status=%d db_ms=%.2f statements=%d server_ms=%.0f body_bytes=%d gzip_bytes=%d",
+		past.name, stored.status, dbMs(stored.own), len(stored.own), stored.serverMs, len(stored.body), gzipSize(stored.body))
+	return append(cases, staleCase{read: past, stored: stored, past: true}), true
 }
 
 // defaultRowEvals is the evals a move of the project's default repository away from repo names in
@@ -655,8 +672,9 @@ func (s staleCase) names(tag string) (string, string) {
 	return s.read.name + "-stale" + tag, s.read.name + "-stale" + tag + "-ready"
 }
 
-// pastCase is stored, the paint's 84-day read of the repository with a compare range, moved one
-// window back, as a person who steps back a window reads it: its window the 84 days ending 84 days
+// pastCase is stored, the paint's 84-day read with a compare range, of the repository or of the
+// project's own rows, moved one window back, as a person who steps back a window reads it: its
+// window the 84 days ending 84 days
 // before the live view's window end (through-1-84, through being the last end day the figures are
 // built through, FigureLead days after today), and its compare range the 84 days before that. Its
 // compare range and most of its window's days are none of the cut's first paint (evals'
@@ -762,8 +780,8 @@ func (c *headChecks) staleMarkReads(ctx context.Context, catalog map[int64]bool,
 			c.o.project, repo, names, paint.Through.Format(time.DateOnly))
 		return
 	}
-	c.r.result("k16 fallback first-paint marked_evals=%s evals=%d through=%s transaction_ms=%d locks_held_ms=%d",
-		names, paint.Evals, paint.Through.Format(time.DateOnly), paint.Transaction.Milliseconds(), paint.LocksHeld.Milliseconds())
+	c.r.result("k16 fallback first-paint repo=%q marked_evals=%s evals=%d through=%s transaction_ms=%d locks_held_ms=%d",
+		repo, names, paint.Evals, paint.Through.Format(time.DateOnly), paint.Transaction.Milliseconds(), paint.LocksHeld.Milliseconds())
 	for _, read := range reads {
 		c.r.result("%s", read.line)
 		if !read.equal {

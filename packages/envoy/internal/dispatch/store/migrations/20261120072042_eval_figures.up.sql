@@ -73,29 +73,29 @@
 --   built_by    the build whose walk first built them.
 --   updated_at  when through last moved.
 --
--- eval_figure_cuts_stale holds one row per cut of a repository (every deploy repository of it)
--- whose figures a move of its project's default repository moved, from the commit that publishes
--- the move (evals.publishDefaults) until the refresher has folded again every range and day of the
--- evals it names (evals.refoldStaleCuts), from the pass that publishes the move on, batch after
--- batch, each a short transaction: first the ranges and days a first paint of the cut reads
--- (evals.firstPaintOf), in a batch of their own, which the boot folds too before it serves
--- (evals.FoldFirstPaintsAtBoot), and then every end day of the cut, newest first. A read of the cut
--- folds those evals' day rows until the stored rows it reads of them are folded again: a first
--- paint's from its first-paint batch on, an older window's once the refold has come down past it
--- (evals.figuresThrough). It reads every other eval's stored figures throughout, and every other
--- cut stays served. The move's commit folds the project's own rows itself, so no row names the
--- cut ''.
+-- eval_figure_cuts_stale holds one row per cut ('' for the project's own rows, or a repository's
+-- name; every deploy repository of it) whose figures a move of its project's default repository
+-- moved, from the commit that publishes the move (evals.publishDefaults) until the refresher has
+-- folded again every range and day of the evals it names (evals.refoldStaleCuts). The move's
+-- commit folds the ranges and days a first paint of the cut reads (evals.firstPaintOf) of those
+-- evals; the refresher's passes then fold every end day of the cut, newest first, batch after
+-- batch, each a short transaction, and fold a first paint the mark still owes (a new UTC day's,
+-- or a rename's) first, in a batch of its own, which the boot folds too before it serves
+-- (evals.FoldFirstPaintsAtBoot). A read of the cut folds those evals' day rows until the stored
+-- rows it reads of them are folded again: a first paint's from its first-paint fold on, an older
+-- window's once the refold has come down past it (evals.figuresThrough). It reads every other
+-- eval's stored figures throughout, and every other cut stays served.
 --   generation  1 for the first mark, one more for each move that marks the cut again, which sets
---               ready_through and next_day back to null: the first-paint batch records its
+--               ready_through and next_day back to null: the first-paint fold records its
 --               ready_through, and the refold's batch that reaches the cut's first end day deletes
 --               the row, each only where the generation is the one the batch read, so a move
 --               during a refold leaves the cut stale, its first paint owed, until the refold of
 --               its generation is done.
 --   ready_through
 --               the last end day the project's figures were folded through (evals.readFigureScope)
---               when the first-paint batch of this generation folded its first paint, which names
+--               when the first-paint fold of this generation folded its first paint, which names
 --               the windows ending on the three end days up to it and their compare ranges; null
---               until that batch commits. A UTC day that moves the figures on owes the first
+--               until that fold commits. A UTC day that moves the figures on owes the first
 --               paint of the new last end day, which the refresher's next pass folds first.
 --   next_day    the newest end day the refold of this generation has not folded, null while it is
 --               to begin at the last end day the project's figures are folded through; every end
@@ -175,7 +175,7 @@ create table eval_figures_built (
 
 create table eval_figure_cuts_stale (
     project_key text not null references projects (key) on delete cascade,
-    repo text not null check (repo <> ''),
+    repo text not null,
     generation bigint not null check (generation > 0),
     ready_through date,
     next_day date,

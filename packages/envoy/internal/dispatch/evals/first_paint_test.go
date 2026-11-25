@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -61,10 +62,9 @@ func readsOf(shapes []readShape) []paintRead {
 
 // movePierToQuay writes seedPierAndQuay's history with a logged eval of each project whose readings
 // of acme/web are rows of its cut of it, builds it whole, and moves PIER's default to acme/quay,
-// which a page alone publishes (pageAlone): its commit marks PIER's and QUAY's cuts of acme/quay
-// stale, their first paints and their refolds to begin, and leaves some stored figures of the evals
-// the marks name other than the fold of the rows that stand. It answers the evals each mark names,
-// by cut.
+// which a page alone publishes (pageAlone): its commit marks PIER's and QUAY's own cuts ("") and
+// their cuts of acme/quay stale, folds the first paint of each and leaves their refolds to begin
+// (expectMarks). It answers the evals each mark names, by cut.
 func movePierToQuay(t *testing.T, r *refresherRig) map[staleCut][]string {
 	t.Helper()
 	day := seedPierAndQuay(t, r)
@@ -76,25 +76,64 @@ func movePierToQuay(t *testing.T, r *refresherRig) map[staleCut][]string {
 	r.exec(t, "move PIER's default repository", `update projects set default_repo = $1 where key = 'PIER'`, quayRepo)
 	r.pageAlone(t)
 	marked := markedEvals(r.staleMarks(t))
-	if cuts := slices.SortedFunc(maps.Keys(marked), compareStaleCuts); !slices.Equal(cuts, []staleCut{{project: "PIER", repo: quayRepo}, {project: "QUAY", repo: quayRepo}}) {
-		t.Fatalf("PIER's move to %s marked the cuts %v, and the check needs PIER's and QUAY's %s alone", quayRepo, cuts, quayRepo)
+	moves := []staleCut{{project: "PIER"}, {project: "PIER", repo: quayRepo}, {project: "QUAY"}, {project: "QUAY", repo: quayRepo}}
+	if cuts := slices.SortedFunc(maps.Keys(marked), compareStaleCuts); !slices.Equal(cuts, moves) {
+		t.Fatalf("PIER's move to %s marked the cuts %v, and the check needs PIER's and QUAY's own rows and %s alone", quayRepo, cuts, quayRepo)
 	}
 	r.expectMarks(t, "the page that published PIER's move to "+quayRepo, marked)
-	if staleOf := staleFiguresOf(t, r.storedFigures(t), r.truthFigures(t)); len(staleOf) == 0 {
-		t.Fatalf("the move left every stored figure the fold of the rows that stand, and the check needs it to move some")
+	return marked
+}
+
+// renameLegionDefault writes the delivery and Legion histories (seedHistories), gives the Legion
+// project acme/legion as its default repository, builds it whole, and renames acme/legion to
+// acme/legion-next by the boot's rename pass (store.RewriteRenamedRepositories), which marks the
+// project's cuts of the old and the new name stale for every eval, their first paints owed: the new
+// name's stored figures hold none of the project's ':default' rows, which its read now folds, and
+// the old name's hold them. It answers the marks, by cut, each naming every eval (nil).
+func renameLegionDefault(t *testing.T, r *refresherRig) map[staleCut][]string {
+	t.Helper()
+	ctx, pool := t.Context(), r.database.Pool
+	_, legion := r.seedHistories(t)
+	project := legion.Project
+	r.exec(t, "give the Legion project a default repository", `update projects set default_repo = $2 where key = $1`, project, "acme/legion")
+	r.settle(t)
+	r.expectBuilt(t, "the first whole build", refresherToday)
+	r.exec(t, "declare the rename of acme/legion", `insert into repo_projects (repo, project, created_by, renamed_to)
+		values ('acme/legion', $1, '{"kind":"user","id":"alice"}', 'acme/legion-next')`, project)
+	pairs, err := store.ReadRepoRenames(ctx, pool)
+	if err != nil {
+		t.Fatalf("read the rename pairs: %v", err)
+	}
+	if pass := store.RewriteRenamedRepositories(ctx, pool, pairs); pass.Err() != nil || pass.Failures != 0 {
+		t.Fatalf("the boot's rename pass = %+v (%v), want no failure", pass, pass.Err())
+	}
+	marked := map[staleCut][]string{}
+	for cut, mark := range r.staleMarks(t) {
+		if mark.ready != nil || mark.evals != nil {
+			t.Fatalf("the rename pass left %s's cut of %s marked at %s, want every eval named and its first paint owed", cut.project, cut.repo, mark)
+		}
+		marked[cut] = nil
+	}
+	if want := []staleCut{{project: project, repo: "acme/legion"}, {project: project, repo: "acme/legion-next"}}; !slices.Equal(slices.SortedFunc(maps.Keys(marked), compareStaleCuts), want) {
+		t.Fatalf("the rename pass marked the cuts %v, want %v", slices.SortedFunc(maps.Keys(marked), compareStaleCuts), want)
 	}
 	return marked
 }
 
-// expectReads makes each of reads of each cut of marked, and checks that each eval of the cut's
-// mark is stated from the stored figures where stored answers true for the cut, and from its day
-// rows where it answers false, every eval of each read the fold of its day rows.
+// expectReads makes each of reads of each cut of marked, of its one repository or of none for the
+// project's own rows, and checks that each eval of the cut's mark is stated from the stored figures
+// where stored answers true for the cut, and from its day rows where it answers false, every eval
+// of each read the fold of its day rows.
 func (r *refresherRig) expectReads(t *testing.T, what string, marked map[staleCut][]string, reads []paintRead, stored func(staleCut) bool) {
 	t.Helper()
 	for _, cut := range slices.SortedFunc(maps.Keys(marked), compareStaleCuts) {
 		fromStored := stored(cut)
+		var repos []string
+		if cut.repo != "" {
+			repos = []string{cut.repo}
+		}
 		for _, read := range reads {
-			stated, folded, fromFigures := r.listValues(t, cut.project, []string{cut.repo}, read.window, read.compare)
+			stated, folded, fromFigures := r.listValues(t, cut.project, repos, read.window, read.compare)
 			for _, id := range slices.Sorted(maps.Keys(folded)) {
 				if (marked[cut] == nil || slices.Contains(marked[cut], id)) && fromFigures[id] != fromStored {
 					t.Errorf("%s: the read of %s's %s over %s states %s, which its mark names, from the stored figures %t, want %t",
@@ -191,28 +230,28 @@ func (r *refresherRig) foldFirstPaints(t *testing.T, marked map[staleCut][]strin
 	}
 }
 
-// TestAFirstPaintIsReadFromTheStoredFiguresOnceItsBatchCommits: over seedPierAndQuay's history,
-// PIER's default moves to acme/quay and a page alone publishes it (movePierToQuay), which marks
-// PIER's and QUAY's cuts of acme/quay stale, their first paints owed, and leaves some stored
-// figures of the evals the marks name folded from the rows before the move. Every read a first
-// paint of either cut names (firstPaintReads: each window of FigureLengths ending on each of the
-// last three end days, with no compare range and with one ending each of FigureLengths days before
-// it) states those evals from their day rows until the first-paint batch of the cut commits; once
-// it has, with no later batch of the refold, every such read states them from the stored figures,
-// each the fold of its day rows, and every stored row of the first paint is the fold of the rows
-// that stand (expectPaintTruth). A read of a window ending a day before the earliest a first paint
-// names, or of a first paint's window with a compare range no first paint names (pastShapes),
-// still states them from their day rows, each the fold of those rows. Red where a mark with no
-// first paint is read as one whose first paint is folded: the reads before the batch then state
-// the stored figures of the rows before the move, which differ from the fold of the rows that
-// stand. Red too where the first paint leaves out a window end a first paint names, the bench's
-// first paint ending today among them, or a compare range one window back of one, or folds too
-// few of its days; and where a read serves the stored figures of a past window the first paint
-// did not fold.
+// TestAFirstPaintIsReadFromTheStoredFiguresOnceItsBatchCommits: over the delivery and Legion
+// histories, the boot's rename pass renames the Legion project's published default
+// (renameLegionDefault), which marks its cuts of the old and the new name stale for every eval,
+// their first paints owed, and leaves the new name's stored figures without the project's
+// ':default' rows that its read now folds. Every read a first paint of either cut names
+// (firstPaintReads: each window of FigureLengths ending on each of the last three end days, with no
+// compare range and with one ending each of FigureLengths days before it) states every eval from
+// its day rows until the first-paint batch of the cut commits; once it has, with no later batch of
+// the refold, every such read states them from the stored figures, each the fold of its day rows,
+// and every stored row of the first paint is the fold of the rows that stand (expectPaintTruth). A
+// read of a window ending a day before the earliest a first paint names, or of a first paint's
+// window with a compare range no first paint names (pastShapes), still states them from their day
+// rows, each the fold of those rows. Red where a mark with no first paint is read as one whose
+// first paint is folded: the reads before the batch then state the stored figures folded before
+// the rename, which differ from the fold of the rows that stand. Red too where the first paint
+// leaves out a window end a first paint names, the bench's first paint ending today among them, or
+// a compare range one window back of one, or folds too few of its days; and where a read serves
+// the stored figures of a past window the first paint did not fold.
 func TestAFirstPaintIsReadFromTheStoredFiguresOnceItsBatchCommits(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
-	marked := movePierToQuay(t, r)
+	marked := renameLegionDefault(t, r)
 	through := refresherToday.AddDate(0, 0, FigureLead)
 	reads := firstPaintReads(through)
 	never := func(staleCut) bool { return false }
@@ -220,23 +259,96 @@ func TestAFirstPaintIsReadFromTheStoredFiguresOnceItsBatchCommits(t *testing.T) 
 	r.foldFirstPaints(t, marked, through)
 	for cut, mark := range r.staleMarks(t) {
 		if mark.generation != 1 || mark.ready == nil || !mark.ready.Equal(through) || mark.next != nil {
-			t.Errorf("the first-paint batch left %s's cut of %s marked at %+v, want generation 1 with its first paint folded through %s and its refold to begin",
+			t.Errorf("the first-paint batch left %s's cut of %s marked at %s, want generation 1 with its first paint folded through %s and its refold to begin",
 				cut.project, cut.repo, mark, through.Format(time.DateOnly))
 		}
 	}
 	expectPaintTruth(t, "after the first-paint batch", through, marked, r.storedFigures(t), r.truthFigures(t))
 	r.expectReads(t, "after the first-paint batch", marked, reads, func(staleCut) bool { return true })
 	r.expectReads(t, "after the first-paint batch, of the past", marked, readsOf(pastShapes()), never)
-	t.Logf("%d reads of each of %d cuts of a first paint, %v marked", len(reads), len(marked), marked)
+	t.Logf("%d reads of each of %d cuts of a first paint", len(reads), len(marked))
+}
+
+// TestAMovesCommitFoldsTheFirstPaintOfEveryCutItMarks: over seedPierAndQuay's history, PIER's
+// default moves to acme/quay, and a page alone publishes it (movePierToQuay), with no refresher
+// pass after it: its commit marks every cut the move moves rows of, PIER's and QUAY's own rows
+// ("") among them, with its first paint folded through the last end day (expectMarks), every stored
+// row of each first paint is the fold of the rows that stand under the new defaults
+// (expectPaintTruth), and every read a first paint of each cut names (firstPaintReads) states every
+// eval from the stored figures, each the fold of its day rows. Red where the commit leaves the own
+// rows unmarked, folded as before or not at all, and where it folds no first paint: the reads then
+// fold the day rows, or, served the stored figures anyway, state the figures of the defaults before
+// the move.
+func TestAMovesCommitFoldsTheFirstPaintOfEveryCutItMarks(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	marked := movePierToQuay(t, r)
+	through := refresherToday.AddDate(0, 0, FigureLead)
+	expectPaintTruth(t, "right after the move's commit", through, marked, r.storedFigures(t), r.truthFigures(t))
+	r.expectReads(t, "right after the move's commit", marked, firstPaintReads(through), func(staleCut) bool { return true })
+}
+
+// TestAMovesCommitFoldsNoDayOutsideItsFirstPaints: over seedPierAndQuay's history, once it is built
+// whole, a stored day row of PIER's pr-open-to-merge 400 days back, which no day row holds, is put
+// in PIER's own cut and in its cut of acme/quay, as a write long past might have left one: a fold of
+// the cut's history would find it and delete it. PIER's default then moves to acme/quay and a page
+// alone publishes it (movePierToQuay's move): its commit marks both cuts, naming pr-open-to-merge,
+// and folds their first paints, and leaves both rows standing, and every stored row it writes or
+// deletes is one of the first paint of a cut it marked (firstPaintOf): it reads none of the cuts'
+// history. Once the refresher settles, its refold has come down to the rows 400 days back and
+// deleted them, and the stored figures are the fold of the rows that stand. Red where the commit
+// folds again every day of the project's delivery evals, as it did before the first paints: the
+// stamp read of every day finds the rows, which it deletes.
+func TestAMovesCommitFoldsNoDayOutsideItsFirstPaints(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	seedPierAndQuay(t, r)
+	r.settle(t)
+	r.expectBuilt(t, "the first whole build", refresherToday)
+	evalID, longPast := EvalID("PIER", SlugPROpenToMerge), refresherToday.AddDate(0, 0, -400)
+	cuts := []staleCut{{project: "PIER"}, {project: "PIER", repo: quayRepo}}
+	for _, cut := range cuts {
+		r.exec(t, "put a stored day row long past", `insert into eval_day_figures (project_key, repo, day, eval_id, fold_key, figures, rows_stamp, built_by)
+			values ($1, $2, $3, $4, 1, '\x00', 1, 'test')`, cut.project, cut.repo, longPast, evalID)
+	}
+	before := r.storedFigures(t)
+	r.exec(t, "move PIER's default repository", `update projects set default_repo = $1 where key = 'PIER'`, quayRepo)
+	r.pageAlone(t)
+	marks := r.staleMarks(t)
+	through := refresherToday.AddDate(0, 0, FigureLead)
+	for _, cut := range cuts {
+		if mark, held := marks[cut]; !held || !slices.Contains(mark.evals, evalID) || mark.ready == nil || !mark.ready.Equal(through) {
+			t.Fatalf("the move's commit left %s's cut %q marked %t at %s, and the check needs it to name %s with its first paint folded", cut.project, cut.repo, held, mark, evalID)
+		}
+	}
+	after := r.storedFigures(t)
+	for _, cut := range cuts {
+		if _, held := after[dayFigureLine(cut.project, cut.repo, "", longPast, evalID)]; !held {
+			t.Errorf("the move's commit deleted the stored day row of %s 400 days back in %s's cut %q: it read the cut's history", evalID, cut.project, cut.repo)
+		}
+	}
+	paint := firstPaintOf(through)
+	for _, line := range writtenFigures(before, after) {
+		cut, _, day, ranged := figureLineKey(t, line)
+		_, marked := marks[cut]
+		if !marked || ranged && !paint.holds(day) || !ranged && (day.Before(paint.days.From) || !day.Before(paint.days.To)) {
+			t.Errorf("the move's commit wrote or deleted %s, no row of the first paint of a cut it marked", line)
+		}
+	}
+	r.settle(t)
+	if marks := r.staleMarks(t); len(marks) != 0 {
+		t.Errorf("the passes after the move settled with the cuts %v stale", marks)
+	}
+	expectTruth(t, "once the refresher settled", r.storedFigures(t), r.truthFigures(t))
 }
 
 // TestAWriteAfterTheFirstPaintKeepsItsStoredFiguresTheFoldOfTheRows: over movePierToQuay's move,
-// once the first-paint batch of both marked cuts has folded and before any later batch of their
+// whose commit folded the first paint of every cut it marked, and before any batch of their
 // refold, acme/quay#1, a pull request whose rows the move moved into PIER's cut of acme/quay, is
 // opened two hours earlier, and the page that reads the change writes its day rows (pageAlone):
 // the write folds the figures of the days it moved in every cut its rows reach, the stale ones
 // among them (foldFiguresInTx), so it rewrites stored rows of PIER's first paint, every stored row
-// of both first paints is the fold of the rows that stand (expectPaintTruth), and a first paint of
+// of every first paint is the fold of the rows that stand (expectPaintTruth), and a first paint of
 // each cut states every eval from the stored figures, each the fold of its day rows. Red where a
 // write folds the figures of its project's own rows alone, or leaves a stale cut to its refold:
 // the first paint then states PIER's pr-open-to-merge from figures of the rows before the write.
@@ -246,7 +358,6 @@ func TestAWriteAfterTheFirstPaintKeepsItsStoredFiguresTheFoldOfTheRows(t *testin
 	ctx, pool := t.Context(), r.database.Pool
 	marked := movePierToQuay(t, r)
 	through := refresherToday.AddDate(0, 0, FigureLead)
-	r.foldFirstPaints(t, marked, through)
 	painted := r.storedFigures(t)
 	day := refresherToday.AddDate(0, 0, -1)
 	if err := delivery.UpsertPullRequest(ctx, pool, delivery.DeliveryPullRequest{
@@ -275,24 +386,23 @@ func TestAWriteAfterTheFirstPaintKeepsItsStoredFiguresTheFoldOfTheRows(t *testin
 	t.Logf("the write rewrote %d stored rows of the evals PIER's mark names in its stale cut of %s", written, quayRepo)
 }
 
-// TestANewDaysFirstPaintIsFoldedFirstAndReadOnceItIs: over movePierToQuay's move, once the
-// first-paint batch of both marked cuts has folded the first paint of today's last end day, a new
-// UTC day comes and the figures walk folds the new last end day of every cut (walkFigures, alone
-// of the pass): a read of a window ending on it, with a compare range one window back, no stored
-// row of the old first paint, states the evals each mark names from their day rows. The pass of
-// the new day under an owed wake folds the new day's first paint of the first cut, PIER's, before
-// any batch of its refold, and stops; from then on those reads of PIER's cut state every eval from
-// the stored figures, and those of QUAY's still from the day rows, until the next pass folds its
-// first paint too. Each read answers the fold of its day rows. Red where a mark whose first paint
-// was folded on an earlier day owes none: the new day's reads then fold the day rows until the
-// refold, newest end day first, has come down past their compare ranges.
+// TestANewDaysFirstPaintIsFoldedFirstAndReadOnceItIs: over movePierToQuay's move, whose commit
+// folded the first paint of today's last end day of every cut it marked, a new UTC day comes and
+// the figures walk folds the new last end day of every cut (walkFigures, alone of the pass): a read
+// of a window ending on it, with a compare range one window back, no stored row of the old first
+// paint, states the evals each mark names from their day rows. Each pass of the new day under an
+// owed wake folds the new day's first paint of the next cut in the byte order of their keys, before
+// any batch of a refold, and stops; those reads of each cut state every eval from the stored figures
+// once its first paint is folded, and from the day rows before. Each read answers the fold of its
+// day rows. Red where a mark whose first paint was folded on an earlier day owes none: the new
+// day's reads then fold the day rows until the refold, newest end day first, has come down past
+// their compare ranges.
 func TestANewDaysFirstPaintIsFoldedFirstAndReadOnceItIs(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
 	ctx := t.Context()
 	marked := movePierToQuay(t, r)
 	through := refresherToday.AddDate(0, 0, FigureLead)
-	r.foldFirstPaints(t, marked, through)
 	r.now = r.now.AddDate(0, 0, 1)
 	next := through.AddDate(0, 0, 1)
 	pass := r.registry.newRefresh(r.build, r.now, r.batch)
@@ -308,32 +418,31 @@ func TestANewDaysFirstPaintIsFoldedFirstAndReadOnceItIs(t *testing.T) {
 		compare := rangeOf(n, next.AddDate(0, 0, -n))
 		reads = append(reads, paintRead{name: fmt.Sprintf("the live %d days just after the new midnight", n), window: rangeOf(n, next), compare: &compare})
 	}
-	pier, quay := staleCut{project: "PIER", repo: quayRepo}, staleCut{project: "QUAY", repo: quayRepo}
-	r.expectReads(t, "before the new day's first paint", marked, reads, func(staleCut) bool { return false })
-	r.owedPass(t, &gapBatch{})
-	marks := r.staleMarks(t)
-	if mark := marks[pier]; mark.ready == nil || !mark.ready.Equal(next) || mark.next != nil {
-		t.Fatalf("the new day's first pass left PIER's cut of %s marked at %+v, want its first paint folded through %s first, its refold to begin", quayRepo, mark,
-			next.Format(time.DateOnly))
+	cuts := slices.SortedFunc(maps.Keys(marked), compareStaleCuts)
+	r.expectReads(t, "before the new day's first paints", marked, reads, func(staleCut) bool { return false })
+	for folded := range cuts {
+		r.owedPass(t, &gapBatch{})
+		marks := r.staleMarks(t)
+		for index, cut := range cuts {
+			want := through
+			if index <= folded {
+				want = next
+			}
+			if mark := marks[cut]; mark.ready == nil || !mark.ready.Equal(want) || mark.next != nil {
+				t.Fatalf("pass %d of the new day left %s's cut %q marked at %s, want its first paint folded through %s, its refold to begin", folded+1, cut.project, cut.repo,
+					mark, want.Format(time.DateOnly))
+			}
+		}
+		r.expectReads(t, fmt.Sprintf("after pass %d of the new day", folded+1), marked, reads, func(cut staleCut) bool { return slices.Index(cuts, cut) <= folded })
 	}
-	if mark := marks[quay]; mark.ready == nil || !mark.ready.Equal(through) {
-		t.Fatalf("the new day's first pass left QUAY's cut of %s marked at %+v, and the check needs its first paint of %s still owed", quayRepo, mark, through.Format(time.DateOnly))
-	}
-	r.expectReads(t, "once PIER's first paint of the new day is folded", marked, reads, func(cut staleCut) bool { return cut == pier })
-	r.owedPass(t, &gapBatch{})
-	if mark := r.staleMarks(t)[quay]; mark.ready == nil || !mark.ready.Equal(next) || mark.next != nil {
-		t.Fatalf("the new day's second pass left QUAY's cut of %s marked at %+v, want its first paint folded through %s, its refold to begin", quayRepo, mark,
-			next.Format(time.DateOnly))
-	}
-	r.expectReads(t, "once both first paints of the new day are folded", marked, reads, func(staleCut) bool { return true })
 }
 
 // TestTheBootFoldsTheFirstPaintOfEveryMarkBeforeItServes: over movePierToQuay's move, with each
-// mark naming every eval as the boot's rename pass marks a cut (evals null), and no first paint
-// folded, a read of a first paint of either cut states no eval from the stored figures. The boot's
+// mark naming every eval as the boot's rename pass marks a cut (evals null), and its first paint
+// owed, a read of a first paint of each cut states no eval from the stored figures. The boot's
 // fold (FoldFirstPaintsAtBoot), with no process holding the refresher's lease, takes it and folds
-// the first paint of both marks, every eval of each, waiting for no one: no mark owes a first paint
-// once it returns, every stored row of both first paints is the fold of the rows that stand, and a
+// the first paint of every mark, every eval of each, waiting for no one: no mark owes a first paint
+// once it returns, every stored row of every first paint is the fold of the rows that stand, and a
 // first paint of each cut states every eval from the stored figures, each the fold of its day rows.
 // Red where the boot folds nothing, or skips a mark that names every eval.
 func TestTheBootFoldsTheFirstPaintOfEveryMarkBeforeItServes(t *testing.T) {
@@ -341,7 +450,7 @@ func TestTheBootFoldsTheFirstPaintOfEveryMarkBeforeItServes(t *testing.T) {
 	r := newRefresherRig(t)
 	ctx, pool := t.Context(), r.database.Pool
 	marked := movePierToQuay(t, r)
-	r.exec(t, "name every eval of each mark, as the rename pass marks a cut", `update eval_figure_cuts_stale set evals = null`)
+	r.exec(t, "name every eval of each mark and owe its first paint, as the rename pass marks a cut", `update eval_figure_cuts_stale set evals = null, ready_through = null`)
 	every := map[staleCut][]string{}
 	for cut := range marked {
 		every[cut] = nil
@@ -364,20 +473,21 @@ func TestTheBootFoldsTheFirstPaintOfEveryMarkBeforeItServes(t *testing.T) {
 	r.expectReads(t, "after the boot", every, firstPaintReads(through), func(staleCut) bool { return true })
 }
 
-// TestABootWaitsForTheFirstPaintsTheProcessHoldingTheLeaseFolds: over movePierToQuay's move, while
-// another session holds the refresher's lease, as another process's refresher pass holds it, the
-// boot's fold (FoldFirstPaintsAtBoot) neither folds nor skips: given a context that ends, it
-// answers the context's error once it ends, having waited, the first paints still owed; given one
-// that does not, it is still waiting seconds later, the first paints still owed, and once the
-// holder folds them (FoldFirstPaint, as its pass folds them first) and gives the lease back, it
-// answers, having waited and folded none itself, with no mark owing a first paint. Red where a
-// boot that finds the lease held goes on at once: the server would then serve a first paint the
-// fold of the day rows.
+// TestABootWaitsForTheFirstPaintsTheProcessHoldingTheLeaseFolds: over movePierToQuay's move, its
+// marks' first paints owed again, while another session holds the refresher's lease, as another
+// process's refresher pass holds it, the boot's fold (FoldFirstPaintsAtBoot) neither folds nor
+// skips: given a context that ends, it answers the context's error once it ends, having waited, the
+// first paints still owed; given one that does not, it is still waiting seconds later, the first
+// paints still owed, and once the holder folds them (FoldFirstPaint, as its pass folds them first)
+// and gives the lease back, it answers, having waited and folded none itself, with no mark owing a
+// first paint. Red where a boot that finds the lease held goes on at once: the server would then
+// serve a first paint the fold of the day rows.
 func TestABootWaitsForTheFirstPaintsTheProcessHoldingTheLeaseFolds(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
 	ctx, pool := t.Context(), r.database.Pool
 	marked := movePierToQuay(t, r)
+	r.exec(t, "owe each mark's first paint", `update eval_figure_cuts_stale set ready_through = null`)
 	held, release, released := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 	var freed sync.Once
 	free := func() { freed.Do(func() { close(release) }) }

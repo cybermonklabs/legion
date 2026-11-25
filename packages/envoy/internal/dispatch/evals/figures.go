@@ -74,27 +74,31 @@ import (
 // two short index ranges and writes nothing.
 //
 // A move of a project's default repository moves no day row, and moves what some of its cuts
-// fold: the old and the new default's (the rows stored under legionfacts.DefaultRepo), and the
-// cut of the repository of each owner key whose reading by the project it gains, loses or
-// reads otherwise through the repository. At INFRA's size the two defaults' cuts hold about
-// 290,000 range rows, which no write folds again inside R14's 2 s for a move to reach every view.
-// So the move's own commit (publishDefaults) folds again the project's own rows alone, and marks
-// each cut it moves stale (eval_figure_cuts_stale, with a generation each mark moves), naming the
-// evals whose rows it moved there, read from the stored rows (staleMarksOf): at INFRA, 6 of its 40
-// evals hold rows under legionfacts.DefaultRepo. The refresher's pass folds those evals of each
-// stale cut again: first, in a batch of its own, the ranges and days a first paint of the cut
-// reads (firstPaintOf), and then every range and day of them, newest end day first, batch after
-// batch, each batch a short transaction (refoldCut, one function a transaction calls), and clears
-// its mark in the transaction that reaches the cut's first end day unless a later move marked it
-// again (refoldStaleCuts). The pass that publishes the move begins the refold, a pass stops it
-// between two batches only for an owed wake, whose pass goes on with it, and a boot folds the
-// first paint of every mark that owes one before it serves (FoldFirstPaintsAtBoot). Until the
-// first-paint batch commits, a read of the stale cut folds the day rows of the evals its mark
-// names, which answer the same bytes; from then on it reads their stored figures where every
-// stored row it reads is one the mark's generation has folded again, of its first paint or of the
-// end days its refold has done, and folds their day rows otherwise (figuresThrough). It reads
-// every other eval's stored figures throughout, which fold rows no move moved, and every other cut
-// stays served.
+// fold: the old and the new default's (the rows stored under legionfacts.DefaultRepo), and, of
+// each owner key whose reading by the project it gains, loses or reads otherwise through the
+// repository, the cut of the key's repository and the project's own (""). At INFRA's size the
+// two defaults' cuts hold about 290,000 range rows, and on the farm at ten times INFRA's rate,
+// Postgres just restarted, the fold of the own cut alone over every day of its delivery evals took
+// 3.45 s: no write folds a cut's history again inside R14's 2 s for a move to reach every view. So
+// the move's own commit (publishDefaults) marks each cut it moves stale (eval_figure_cuts_stale,
+// with a generation each mark moves), the own cut among them, naming the evals whose rows it moved
+// there, read from the stored rows (staleMarksOf): at INFRA, 6 of its 40 evals hold rows under
+// legionfacts.DefaultRepo. The same commit folds those evals of each cut it marks over the ranges
+// and days a first paint of the cut reads (firstPaintOf, foldMarkedFirstPaints), so a first paint
+// reads the stored figures from the commit on. The refresher's pass folds the rest of them again,
+// every range and day, newest end day first, batch after batch, each batch a short transaction
+// (refoldCut, one function a transaction calls), and clears its mark in the transaction that
+// reaches the cut's first end day unless a later move marked it again (refoldStaleCuts); a mark
+// that owes a first paint, a new UTC day's, a rename's (store.markRenamedCuts), or one whose
+// commit folded none, is folded first in a batch of its own. The pass that publishes the move
+// begins the refold, a pass stops it between two batches only for an owed wake, whose pass goes
+// on with it, and a boot folds the first paint of every mark that owes one before it serves
+// (FoldFirstPaintsAtBoot). Until a mark's first paint is folded, a read of the stale cut folds the
+// day rows of the evals its mark names, which answer the same bytes; from then on it reads their
+// stored figures where every stored row it reads is one the mark's generation has folded again, of
+// its first paint or of the end days its refold has done, and folds their day rows otherwise
+// (figuresThrough). It reads every other eval's stored figures throughout, which fold rows no move
+// moved, and every other cut stays served.
 //
 // The writers are the refresher's writes of a project's day (writeProjectDay), its unowned-p0 row
 // (WriteUnownedP0Day), its logged zero fill (fillLoggedZeros) and its rewrite of a settings change
@@ -340,8 +344,8 @@ type stampedRow struct {
 // nothing, such as a new build's rebuild of rows whose values stood, leaves it; and a publishing
 // of the default repositories that moves which project reads an owner key's rows, or whether it
 // reads them through the repository, moves the rows a project's day holds or the via_repository
-// it reads of them (publishDefaults, which folds the project's own rows again and marks each other
-// cut it moves stale). So the stamp moves exactly when what the day folds does, whichever build
+// it reads of them (publishDefaults, which marks each cut it moves stale and folds its first
+// paint). So the stamp moves exactly when what the day folds does, whichever build
 // wrote the rows.
 func rowsStamp(rows []stampedRow) int64 {
 	slices.SortFunc(rows, func(a, b stampedRow) int {
@@ -535,15 +539,10 @@ func (f figureEnds) rows() Range {
 // later. Every range ending on or before it may be stored, whichever build folded it, so every
 // write keeps each of them true to its rows; no range ending after it is written, nor the day row
 // of a day on or after it: those are the walks' to fold, from the rows that stand when they do.
-// own is whether the write folds the figures of the project's own rows alone (the cut of repo
-// ""), as the commit that publishes a move of the default repositories does, which marks the cuts
-// it moves stale for their refold instead (publishDefaults); every other write folds each cut its
-// rows reach.
 type figureScope struct {
 	build   string
 	project string
 	through time.Time
-	own     bool
 }
 
 // readFigureScope reads, in q, how far project's stored figures are folded (figureScope), for a
@@ -659,9 +658,8 @@ type figureGroupKey struct {
 // via_repository as the project reads it, and each row in the cut cutOf names) is not the one the
 // day's stored row of the cut recorded, which holds rows and no stored row or a stored row and no
 // rows, or whose stored row was folded under another fold key than the eval's definition now has
-// (a register write). A scope of the project's own rows alone (figureScope.own) reads the cut of
-// repo "" alone. Which build folded a stored row is no part of the test: a figure whose rows stand
-// is the fold every build of these folds answers. A day on or after scope.through is the figures
+// (a register write). Which build folded a stored row is no part of the test: a figure whose rows
+// stand is the fold every build of these folds answers. A day on or after scope.through is the figures
 // walks', and none of it is read. The days of an eval are those any of spans names, each read once
 // (spansOf), and none between two spans of it that none names. Each of its two reads is one range
 // of an index for each of those spans, every cut's rows in it: eval_days_stamps of the rows'
@@ -687,16 +685,12 @@ func movedFigureDays(ctx context.Context, q delivery.Querier, scope figureScope,
 		group figureGroupKey
 		day   time.Time
 	}
-	ownRows, ownFigures := "", ""
-	if scope.own {
-		ownRows, ownFigures = ` and d.repo = ''`, ` and f.repo = ''`
-	}
 	rows, err := q.Query(ctx, `
 		select given.eval_id, d.deploy_repo, cut.repo, d.day, d.series, d.updated_at, `+viaAsRead("d.via_repository")+`
 		from unnest($2::text[], $3::text[], $4::date[], $5::date[]) as given(eval_id, writer, first_day, last_day)
 		cross join eval_project_owners o
 		join eval_days d on d.project_key = o.owner and d.eval_id = `+evalIDAs("o.owner", "given.eval_id", "$1")+`
-			and d.writer = given.writer and d.day >= given.first_day and d.day <= given.last_day and d.listed`+ownRows+`
+			and d.writer = given.writer and d.day >= given.first_day and d.day <= given.last_day and d.listed
 		cross join lateral (select `+cutOf("d", "$1")+` as repo) cut
 		where o.project_key = $1 and cut.repo is not null
 	`, scope.project, evalIDs, writers, firsts, lasts)
@@ -717,7 +711,7 @@ func movedFigureDays(ctx context.Context, q delivery.Querier, scope figureScope,
 		select f.eval_id, f.deploy_repo, f.repo, f.day, f.fold_key, f.rows_stamp
 		from unnest($2::text[], $3::date[], $4::date[]) as given(eval_id, first_day, last_day)
 		join eval_day_figures f on f.project_key = $1 and f.eval_id = given.eval_id
-			and f.day >= given.first_day and f.day <= given.last_day`+ownFigures+`
+			and f.day >= given.first_day and f.day <= given.last_day
 	`, scope.project, evalIDs, firsts, lasts)
 	if err != nil {
 		return nil, fmt.Errorf("read the stored day figures of %s: %w", scope.project, err)
@@ -1196,7 +1190,7 @@ func foldFiguresInTx(ctx context.Context, tx pgx.Tx, build string, written map[s
 		}
 	}
 	for _, project := range slices.Sorted(maps.Keys(folds)) {
-		if _, _, err := refoldProject(ctx, tx, build, project, false, folds[project]...); err != nil {
+		if _, _, err := refoldProject(ctx, tx, build, project, folds[project]...); err != nil {
 			return err
 		}
 	}
@@ -1206,15 +1200,14 @@ func foldFiguresInTx(ctx context.Context, tx pgx.Tx, build string, written map[s
 // refoldProject folds again, in tx, by build, project's stored figures of the days of spans (each
 // by eval id) whose rows moved, where any of its figures are folded (readFigureScope), over its
 // evals that spans name (readEntries), and of every range that holds one (refoldMoved), in every
-// cut the rows reach, or in the project's own rows alone where own is set (figureScope.own):
-// folded is, by eval, the span of the days whose figures it folded again, and ok is false where
-// none of the project's figures are folded, which it then folds none of.
-func refoldProject(ctx context.Context, tx pgx.Tx, build, project string, own bool, spans ...map[string]daySpan) (map[string]daySpan, bool, error) {
+// cut the rows reach, a cut a move marked stale among them: folded is, by eval, the span of the
+// days whose figures it folded again, and ok is false where none of the project's figures are
+// folded, which it then folds none of.
+func refoldProject(ctx context.Context, tx pgx.Tx, build, project string, spans ...map[string]daySpan) (map[string]daySpan, bool, error) {
 	scope, ok, err := readFigureScope(ctx, tx, build, project)
 	if err != nil || !ok {
 		return nil, false, err
 	}
-	scope.own = own
 	entries, err := readEntries(ctx, tx, project, spannedEvals(spans))
 	if err != nil {
 		return nil, false, err

@@ -641,16 +641,23 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 			return err
 		}
 	}
+	var published *movePublished
 	if work.defaults != nil {
-		if err := publishDefaults(ctx, tx, r.build, work.defaults); err != nil {
+		move, err := publishDefaults(ctx, tx, r.build, work.defaults)
+		if err != nil {
 			return err
 		}
+		published = &move
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit the eval day-row refresher's cursors: %w", err)
 	}
+	committed := time.Now()
 	r.committed(spans)
-	logSpans(spans, time.Since(began))
+	logSpans(spans, committed.Sub(began))
+	if published != nil {
+		published.log(began, committed)
+	}
 	if applied {
 		r.settingsApplied = true
 	}
