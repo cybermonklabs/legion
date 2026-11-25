@@ -19,6 +19,7 @@ import (
 // nats:2.10, v2.10.29, is such a server. The control is the package's own server, the hub's
 // v2.15.1, on which the same call opens the consumers.
 func TestOpenConsumersRefusesAServerThatSkipsAFilter(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 

@@ -305,13 +305,17 @@
 -- 20261124143026_issue_release_teardown and 20261124182040_issue_pod_disks, above all five, need
 -- nothing: none carries a way back, since an earlier release names none of the columns and tables
 -- they add (each migration's header), and none reads what 20261122160000's way back or this block
--- drops or writes back. The release before this one carries the other thirty-one: it is contract
--- 275, the one whose internal/api/version.go carries the entry for dispatch://INFRA-4425,
--- cybermonklabs/legion#4392's daemon that writes to Dispatch as itself under
--- dispatch_token_broker, as main releases it after #5014, which names the experiment and the
+-- drops or writes back. The release before this one carries the other thirty-one: it is main's
+-- build that carries contract entry 20261125161436 (#4580's role-identities, which adds no
+-- migration), after contract 275, the one whose internal/api/version.go carries the entry for
+-- dispatch://INFRA-4425, cybermonklabs/legion#4392's daemon that writes to Dispatch as itself
+-- under dispatch_token_broker, as main releases it after #5014, which names the experiment and the
 -- variant on each step record and adds no migration, its newest migration #4392's
 -- 20261124182040_issue_pod_disks, so the rollback to it runs 20261122160000's way back and this
--- block and leaves the thirty-one standing. A rollback to contract 256, or to any release before
+-- block and leaves the thirty-one standing. A rollback to contract 275, or to any release before
+-- it, also crosses contract entry 20261125161436, which takes no step of its own beyond
+-- re-pinning the earlier release, except that the operator of a tmux daemon deletes
+-- <state_dir>/bin/jj (docs/kubernetes.md). A rollback to contract 256, or to any release before
 -- it, crosses contract 275, which takes no step of its own beyond pinning the worker image with the
 -- daemon, since its migration, 20261124182040_issue_pod_disks, needs nothing, except where
 -- legion.yaml sets either of its two keys, dispatch_token_broker and

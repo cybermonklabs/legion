@@ -40,6 +40,7 @@ var errAlwaysFails = errors.New("the handler always fails")
 // first. It is then terminated and not delivered again. The nak lines and the give-up line carry
 // the delivery count.
 func TestAMessageWhoseHandlerAlwaysFailsIsGivenUpAfterItsCountAndItsHour(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	js, stream := testJetStream(t)
 	logs := &lockedBuffer{}
@@ -95,6 +96,7 @@ func TestAMessageWhoseHandlerAlwaysFailsIsGivenUpAfterItsCountAndItsHour(t *test
 // end and the bound is reached, it is given up before its handler runs again: the handler would
 // end the daemon again. A give-up whose commit fails naks the message and still runs no handler.
 func TestAMessageWhoseHandlingNeverEndsIsGivenUpWithoutRunningItAgain(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name string
 		// refuseCommit refuses the commit of the first give-up the delivery after the third tries.
@@ -161,6 +163,7 @@ func TestAMessageWhoseHandlingNeverEndsIsGivenUpWithoutRunningItAgain(t *testing
 // failure, with the reason retention; so is one whose first delivery a daemon stop ended, on a
 // context the stop does not end.
 func TestAMessageTheStreamWouldDeleteBeforeItsNextDeliveryIsGivenUpAtOnce(t *testing.T) {
+	// Not parallel: its first delivery has to come before the stream's 3 s MaxAge deletes the message, a margin the load of tests beside it can eat.
 	for _, row := range []struct {
 		name string
 		stop bool
@@ -209,6 +212,7 @@ func TestAMessageTheStreamWouldDeleteBeforeItsNextDeliveryIsGivenUpAtOnce(t *tes
 // failure and the last error. A NUL and a byte that is no UTF-8, in the payload and in a header
 // value, are kept as they came.
 func TestAGiveUpRecordHoldsTheWholeMessage(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name    string
 		data    []byte
@@ -277,6 +281,7 @@ func waitEntered(t *testing.T, entered <-chan struct{}, what string) {
 // hold, which waits for the floor, no longer waits for it, and the issue event behind it applies
 // once.
 func TestAGivenUpMessageMovesTheFloorAndTheMessagesBehindItApply(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, _ := testJetStream(t)
@@ -321,6 +326,7 @@ func TestAGivenUpMessageMovesTheFloorAndTheMessagesBehindItApply(t *testing.T) {
 // that a client takes after the stop and never handles, as a stopping one can. After the restart
 // the handler runs once for each delivery the bound has left.
 func TestTheCountAndTheFirstFailureSurviveARestartOfTheConsumers(t *testing.T) {
+	// Not parallel: it stops and restarts its consumers mid-test and counts the handler's runs, work a broker may repeat, exactly at consumerSpec's 200 ms acknowledgement window; the margin such a count rests on (docs/testing.md, "A test asserts no count of work a broker may repeat") closes under the load of tests beside it.
 	for _, row := range []struct {
 		name string
 		// taken is how many deliveries a client takes after the stop and never handles.
@@ -417,6 +423,7 @@ func takeDelivery(t *testing.T, consumer jetstream.Consumer) {
 // holding the whole message and the time, and applies at a later delivery, whose transaction
 // deletes the open failure: no record is left.
 func TestAFactThatFailsBelowTheBoundAppliesAndLeavesNoRecord(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
@@ -462,6 +469,7 @@ func TestAFactThatFailsBelowTheBoundAppliesAndLeavesNoRecord(t *testing.T) {
 // its subject before its envelope is read, in either form of its name: it is acknowledged, and no
 // record is made of it, as every daemon hears every project's issue events.
 func TestAnotherProjectsUndecodableIssueEventMakesNoRecord(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
@@ -487,6 +495,7 @@ func TestAnotherProjectsUndecodableIssueEventMakesNoRecord(t *testing.T) {
 // consumer, and for one a consumer made again at an older stored position delivers once more,
 // with a delivery count of 1.
 func TestAnAppliedFactDeletesItsOpenFailureInItsOwnTransaction(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name string
 		// remade makes the durable again, at the position of a fact applied before the failing

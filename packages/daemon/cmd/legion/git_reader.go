@@ -14,10 +14,11 @@ import (
 // This file holds the reads that the helper git answers for a commit: the git 2.47.3 commands that
 // read what git commit reads itself (config, rev-parse, log, var, stripspace, interpret-trailers).
 
-// gitReader runs the helper git for the reads of a commit: with the caller's global options, with
-// env as its environment (the process's own when env is nil), and with standard input from
-// /dev/null unless the read hands it text. Its standard error goes nowhere, since a read prints
-// nothing of its own.
+// gitReader runs the helper git for the reads of a commit, and the git on the push's PATH for the
+// comparison of legion jj's step (jjStep.gitMoved): with the caller's global options, with env as
+// its environment (the process's own when env is nil), and with standard input from /dev/null
+// unless the read hands it text. Its standard error goes nowhere, since a read prints nothing of
+// its own.
 type gitReader struct {
 	path    string
 	globals []string
@@ -210,22 +211,30 @@ func (g gitReader) commitConfig() (cfg commitConfig, ok bool) {
 	return cfg, true
 }
 
-// gitBool is git_config_bool for a value without a unit: no value is true, an empty one false,
-// yes, on, true, no, off and false in any case, and else an integer that is true when it is not
-// zero. ok is false for anything else, which git dies on.
+// gitBool is git_config_bool for a value without a unit: no value is true, one of git's words
+// what gitBoolWord says, and else an integer that is true when it is not zero. ok is false for
+// anything else, which git dies on.
 func gitBool(value string, hasValue bool) (b, ok bool) {
-	switch {
-	case !hasValue:
+	if !hasValue {
 		return true, true
-	case value == "":
-		return false, true
-	case strings.EqualFold(value, "true") || strings.EqualFold(value, "yes") || strings.EqualFold(value, "on"):
-		return true, true
-	case strings.EqualFold(value, "false") || strings.EqualFold(value, "no") || strings.EqualFold(value, "off"):
-		return false, true
+	}
+	if b, ok := gitBoolWord(value); ok {
+		return b, true
 	}
 	n, err := strconv.Atoi(value)
 	return n != 0, err == nil
+}
+
+// gitBoolWord is git_parse_maybe_bool_text for a value: true, yes and on are true, and false, no,
+// off and the empty string false, in any case. ok is false for any other value.
+func gitBoolWord(value string) (b, ok bool) {
+	switch strings.ToLower(value) {
+	case "true", "yes", "on":
+		return true, true
+	case "", "false", "no", "off":
+		return false, true
+	}
+	return false, false
 }
 
 // gitPaths is where git commit reads its files. top is the top of the work tree, the directory
