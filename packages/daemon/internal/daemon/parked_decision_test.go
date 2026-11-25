@@ -225,6 +225,7 @@ func TestGatedStepsKeepADecisionForEachDocumentAPersonReviewed(t *testing.T) {
 // its executor ends it, as the runner finishes it, so the second is not held behind the first. The
 // newer decision stays kept, at its own time, and claimed, and the controller has the one notice.
 func TestALateChangesRequestLeavesTheNewerParkedDecision(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

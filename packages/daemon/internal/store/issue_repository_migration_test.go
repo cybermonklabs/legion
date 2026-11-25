@@ -9,6 +9,7 @@ import (
 // default branch empty, for the next boot to fill from Dispatch and GitHub (the daemon's
 // backfillRepositories), and the record store refuses to write an empty one from then on.
 func TestIssuesPredating0047MigrateWithNoRepository(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 46)
@@ -37,6 +38,7 @@ func TestIssuesPredating0047MigrateWithNoRepository(t *testing.T) {
 // subscribes to the repository's events (the daemon's backfillRepositories): SQL cannot know it,
 // since the record's spelling may be a clone's and differ from GitHub's in case.
 func TestIssuesPredating0048MigrateWithNoGitHubSpelling(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 47)

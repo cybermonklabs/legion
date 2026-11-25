@@ -123,6 +123,7 @@ func (r *keptRig) row(ref string) (stands bool, claimedBy int64, heldBy, heldDel
 // back puts it back, held by the delivery again, and its resend names it. A second telling is the
 // worst case, never a loss.
 func TestADeliveryWrittenBackUnconfirmedHoldsWhatItsConfirmationTold(t *testing.T) {
+	t.Parallel()
 	r := newKeptRig(t)
 	const tree, ref = "LEGION-300", "dispatch://LEGION-300/ask/ask-1"
 	r.issue(tree, "")
@@ -156,6 +157,7 @@ func TestADeliveryWrittenBackUnconfirmedHoldsWhatItsConfirmationTold(t *testing.
 // start the other tree's architect now holds it under, is that delivery's: a rewrite of the old
 // tree's delivery (a take-back after a death) must not steal it back.
 func TestADeliveryRewriteDoesNotTakeARowAnotherTreeHolds(t *testing.T) {
+	t.Parallel()
 	r := newKeptRig(t)
 	const old, moved, ref = "LEGION-310", "LEGION-311", "dispatch://LEGION-311/ask/ask-1"
 	r.issue(old, "")
@@ -200,6 +202,7 @@ func TestADeliveryRewriteDoesNotTakeARowAnotherTreeHolds(t *testing.T) {
 // the hold, so even a row that carried both would keep the claim that counts, and a later
 // hand-over finds it.
 func TestAHoldReleaseLeavesAClaimThatCounts(t *testing.T) {
+	t.Parallel()
 	r := newKeptRig(t)
 	const old, moved, ref = "LEGION-320", "LEGION-321", "dispatch://LEGION-321/ask/ask-1"
 	r.issue(old, "")
@@ -291,6 +294,7 @@ func keptRefs(kept record.KeptDecisions) []string {
 // first's claim and names nothing; it never names a decision it does not claim, and never takes
 // over a claim the first made.
 func TestTwoComposersNeverBothNameOneKeptDecision(t *testing.T) {
+	t.Parallel()
 	r := newKeptRig(t)
 	const tree, ref = "LEGION-330", "dispatch://LEGION-330/ask/ask-1"
 	r.issue(tree, "")
@@ -393,6 +397,7 @@ func TestTwoComposersNeverBothNameOneKeptDecision(t *testing.T) {
 // This test drives no goroutine, so it needs no race detector: internal/store runs in CI's plain
 // test step, not its race step (.github/workflows/ci.yaml).
 func TestADeliveryWrittenOverNoConfirmationDoesNotPutBackADecisionAnotherRowTold(t *testing.T) {
+	t.Parallel()
 	r := newKeptRig(t)
 	const tree, ref = "LEGION-340", "dispatch://LEGION-340/ask/ask-1"
 	r.issue(tree, "")

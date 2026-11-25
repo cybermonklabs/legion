@@ -119,6 +119,7 @@ func writeOf(payload record.OutboxPayload) (what, route string) {
 // What this cannot show is the earlier daemon running: its binary is not here, so its decode is
 // the copy above (stepRecordBeforeTheRating).
 func TestThePlanRatingsWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	if _, err := store.Migrate(ctx); err != nil {
@@ -326,6 +327,7 @@ func TestThePlanRatingsWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 // The control runs the same block with the project's predicate cut out of both deletes, over the
 // same rows queued again: it leaves none of OTHER's rows, so the predicate is what keeps them.
 func TestThePlanRatingsWayBackDeletesOnlyTheRowsOfTheProjectThatRollsBack(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	at := time.Date(2026, 11, 17, 3, 0, 0, 0, time.UTC)
 	steps := []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}

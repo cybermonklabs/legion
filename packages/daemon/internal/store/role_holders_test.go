@@ -90,6 +90,7 @@ func publishingStore(t *testing.T) *Store {
 // start and end, and a second write of an ended claim. A pending row of the issue is made due
 // again rather than queued beside, so the outbox never holds two.
 func TestAClaimWriteThatChangesTheRoleHolderQueuesThePublicationWithIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := publishingStore(t)
 	openIssueLifecycle(t, s, holderIssue)
@@ -151,6 +152,7 @@ func TestAClaimWriteThatChangesTheRoleHolderQueuesThePublicationWithIt(t *testin
 // The controller holds no role of an issue, and neither does a claim on no issue, so no write of
 // either queues a publication.
 func TestAClaimOfNoIssueRoleQueuesNoPublication(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := publishingStore(t)
 	controller := supervise.Claim{Token: claim.ControllerToken("legion"), Project: "legion", Role: claim.RoleController,
@@ -175,6 +177,7 @@ func TestAClaimOfNoIssueRoleQueuesNoPublication(t *testing.T) {
 // as it stands, its lease and its due time unchanged. The same writes of a claim of this project's
 // issue queue its own.
 func TestAClaimOfAnotherProjectsIssueQueuesNoPublication(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := publishingStore(t)
 	const theirs = "OTHERPROJECT-9"
@@ -228,6 +231,7 @@ func TestAClaimOfAnotherProjectsIssueQueuesNoPublication(t *testing.T) {
 // queued there would be neither sent nor deleted. The same writes on a store that publishes queue
 // one row, the control that these writes are ones that change a holder.
 func TestAStoreThatDoesNotPublishQueuesNothing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, publishes := range []bool{false, true} {
 		s := migratedStore(t)
@@ -291,6 +295,7 @@ func tracedStore(t *testing.T, s *Store, publishes bool) (*Store, *transactionsB
 // write of the project's controller, of a claim on no issue, or of another project's issue).
 // The last row can queue, so it also checks that the transaction writes the publication with the claim.
 func TestEveryClaimWriteOpensOneTransaction(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := migratedStore(t)
 	quiet, quietBegun := tracedStore(t, s, false)
@@ -340,6 +345,7 @@ func TestEveryClaimWriteOpensOneTransaction(t *testing.T) {
 // its own. A write that queues nothing tells nobody, and neither does a write whose transaction
 // rolled back: it queued nothing that stands.
 func TestTheStoreTellsTheIssueOnceItsQueuedPublicationCommits(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := publishingStore(t)
 	openIssueLifecycle(t, s, holderIssue)
@@ -403,6 +409,7 @@ func refuseRoleHoldersQueue(t *testing.T, s *Store) {
 // owes such a write as it owes any other (supervise's writeOwed), and its repair queues the row
 // when it lands. A write that changes no holder queues nothing, so the refusal does not reach it.
 func TestAClaimWriteAndThePublicationItQueuesCommitTogether(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := publishingStore(t)
 	openIssueLifecycle(t, s, holderIssue)

@@ -22,6 +22,7 @@ import (
 // with (record.FirstFence), as every row carries one. The two give-ups come from two of the
 // project's consumers, so the row they join is the project's, not one consumer's.
 func TestTheIntakeGaveUpNoticeReachesTheControllerTopic(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

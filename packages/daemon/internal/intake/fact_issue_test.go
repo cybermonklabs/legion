@@ -7,6 +7,7 @@ import "testing"
 // all, so the compiler, not this test, holds that each type is decided; this test holds what each
 // answers.
 func TestIssueOfAnswersEachFactThatNamesOneIssue(t *testing.T) {
+	t.Parallel()
 	const issue = "LEGION-1"
 	namesOne := map[string]Fact{
 		"DispatchIssue":           DispatchIssue{Key: issue},

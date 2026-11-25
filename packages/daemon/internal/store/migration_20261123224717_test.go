@@ -37,6 +37,7 @@ const membersOwedRelease = "the release that brings a re-admitted tree's members
 // members back. Its way back, the last paragraph of the migration's header, drops the column and
 // deletes the migration's version row, and the roll-forward marks the same roots again.
 func TestTheMembersOwedMarkComesOnlyOnRootsWhoseReadmissionHasStillToRun(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, membersOwedVersion-1)

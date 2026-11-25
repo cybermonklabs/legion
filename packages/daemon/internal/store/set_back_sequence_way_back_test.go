@@ -69,6 +69,7 @@ func decodedBeforeTheSequence(payload []byte) error {
 // What this cannot show is the earlier daemon running: its binary is not here, so its decode is the
 // copy above (statusWriteBeforeTheSequence).
 func TestTheSetBackSequenceWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	if _, err := store.Migrate(ctx); err != nil {

@@ -17,6 +17,7 @@ import (
 // and the take-back of C2 leaves the row as it stood before either. The same confirmation written
 // a second time changes nothing.
 func TestASecondConfirmationOverAConfirmationWhoseTakeBackWasLostCreditsOnlyItsOwnCopy(t *testing.T) {
+	t.Parallel()
 	r := newToldRig(t)
 	r.seedTold()
 	first := r.newsTask("outbox:7")

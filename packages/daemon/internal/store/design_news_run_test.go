@@ -24,6 +24,7 @@ import (
 // one it was told to. In every case the fold of the turn's result writes what the read counted and
 // no more, so the rows stand as the read left them.
 func TestACopyCountsAndFoldsOnlyWhileTheRecordHoldsTheRunItWasRenderedIn(t *testing.T) {
+	t.Parallel()
 	childSeed := map[record.DesignStep]int{record.DesignStepSpec: 3}
 	rootSeed := map[record.DesignStep]int{record.DesignStepSpec: 5}
 	rootTold := map[record.DesignStep]int{record.DesignStepSpec: 5, record.DesignStepCriteria: 2}
