@@ -5,18 +5,13 @@ description: "Use when you are about to send or publish text a person reads (an 
 
 # Say the literal thing
 
-Every text you send says what literally happens, with none of the empty verb phrases agents keep using.
-
-**Done when:** you fixed each term that a fresh session, given only what the reader has, listed as one it cannot define.
-
-Delete the empty verb phrases agents keep using. Write what literally happens instead. Run this over every text before you send it.
+Delete the empty verb phrases agents keep using, and write what literally happens instead. Run this over every text before you send it.
 
 ## Answering a question
 
 1. Answer the exact question, only it, in the order it was asked: anything else reads as evasion.
 2. Start from what happens, not from a setting, a flag or a name.
-3. Define each term where you first use it, in literal words.
-4. Use no analogy: the reader cannot tell which part of one is true.
+3. Define each term where you first use it, in literal words. No analogy: the reader cannot tell which part of one is true.
 
 ## The test
 
@@ -31,10 +26,9 @@ Take the verb phrase out and ask: what literally happens? Write that. If you can
 | carry it to X, carry the finding | tell X; send it to X; put it on the issue |
 | this shows the gap, the number shows | the gap is 12 of 30; the number is 1.17 |
 
-- If you cannot say whether a thing merged, released or deployed, say that: "it is approved and not merged".
-- On the "name the X" row, delete "name". If the sentence then says nothing, decide the action and write it.
-- Keep plain verbs that name a real action (merge, delete, send, read, measure).
-- Keep a term of art that is the literal name of the thing (a merge queue merges).
+If you cannot say whether a thing merged, released or deployed, say that: "it is approved and not merged". On the "name the X" row, delete "name"; if the sentence then says nothing, decide the action and write it.
+
+Plain verbs that name a real action stay (merge, delete, send, read, measure), and so does a term of art that is the literal name of the thing (a merge queue merges).
 
 ## Cut what marks text as an agent's
 
@@ -46,20 +40,15 @@ Take the verb phrase out and ask: what literally happens? Write that. If you can
 6. A word that rates the thing ("comprehensive", "seamless"): give the measurement instead.
 7. A paragraph whose first and last sentences say the same thing: delete one.
 
-- Write no ALL-CAPS headings or phrases.
-- Bold only a number, a name, a choice the reader must find again, or, in a skill, the label that starts a rule.
-- Cut a passage that needs a shouted handle instead, in a brief to another agent too.
+No ALL-CAPS headings or phrases. Bold only a number, a name, a choice the reader must find again, or, in a skill, the label that starts a rule. A passage that needs a shouted handle needs cutting instead, in a brief to another agent too.
 
 ## Before you send
 
-1. **Give a fresh session only what the reader has.** Have it remove what the reader does not need and list every term it cannot define.
-2. **Fix each listed term.**
-
-Run this on the text going to the reader, never on your instructions to that session or on its reply.
+Give a fresh session only what the reader has. It removes what the reader does not need and lists every term it cannot define; fix each listed term. Run this on the text going to the reader, never on your instructions to that session or on its reply.
 
 ## Other passes
 
-- Use `skill://asd-ste100` for sentence structure (one instruction per sentence, active voice, simple tenses, short noun stacks).
-- Also follow `skill://outside-message` on an outside message.
-- Also follow a form skill your stream's brief names for a kind of text (a comment to another project's maintainers, a document a buyer reads).
+- For sentence structure (one instruction per sentence, active voice, simple tenses, short noun stacks), use `skill://asd-ste100`.
+- On an outside message, also follow `skill://outside-message`.
+- A form skill your stream's brief names for a kind of text (a comment to another project's maintainers, a document a buyer reads) applies as well.
 - Where your session installs a fuller pass of its own over AI writing tells, run it after this skill's "Cut what marks text as an agent's".
