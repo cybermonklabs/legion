@@ -2,6 +2,8 @@ package eval
 
 import (
 	"testing"
+
+	"github.com/sjawhar/envoy/going/chips"
 )
 
 // TestAnAnswerIsRenderedAsTheBarDrawsItsLinks: on the seed, each link the bar draws as an item is
@@ -106,6 +108,28 @@ func TestATimeLinkIsRenderedWithTheDateItsHoverShows(t *testing.T) {
 				t.Errorf("RenderAnswer(%q)\n= %q\nwant %q", c.answer, got, c.want)
 			}
 		})
+	}
+}
+
+// TestAnAnswerWhoseLinksKeepTheirWordsRendersThem: the server stores an answer with the words of
+// each link that say more than its chip draws written beside the chip (chips.KeepLinkWords), so
+// the judge reads them where it read the chip alone (c13 at 9ae5605b): a session's name written
+// as the words of a link to its issue, a comment's words past the head the bar cuts its text to,
+// and words a message's head does not hold. A link whose words are the item's key stays a chip.
+func TestAnAnswerWhoseLinksKeepTheirWordsRendersThem(t *testing.T) {
+	seed, err := LoadSeed(Files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer := "[Reviewer of DEMO-22](dispatch://DEMO-22) is reviewing [DEMO-22](dispatch://DEMO-22); " +
+		"[chen@example.com wants to split this epic into CSV export and PDF export](dispatch://DEMO-12/comment/" + ItemID("comment", "c01") + "), " +
+		"and [the planner waits on the ask about saving the order](dispatch://DEMO-7/message/" + ItemID("message", "m01") + ")."
+	want := "Reviewer of DEMO-22 ([DEMO-22 · Needs review · Export: progress bar for large exports]) is reviewing " +
+		"[DEMO-22 · Needs review · Export: progress bar for large exports]; " +
+		"chen@example.com wants to split this epic into CSV export and PDF export ([The CSV and PDF halves share nothing but the export menu. I…]), " +
+		"and the planner waits on the ask about saving the order ([Plan draft: 1) a drag handle on each column header, 2) save…])."
+	if got := RenderAnswer(chips.KeepLinkWords(answer, seed), seed); got != want {
+		t.Errorf("RenderAnswer of the stored answer\n= %q\nwant %q", got, want)
 	}
 }
 

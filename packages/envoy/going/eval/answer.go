@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/going/chips"
 )
 
 // answer.go reads an answer task's answer for what no judge is asked: the items it links and the
@@ -223,14 +225,14 @@ func sameLabel(value, label string) bool {
 
 // inLines reports whether a line of the prose holds the label and, once the label is taken out,
 // the count as a number of its own. A status's label is its value or the page's words for it
-// (statusWords, which grade_test.go holds to the status rows of
+// (chips.StatusWords, which grade_test.go holds to the status rows of
 // packages/contracts/fixtures/shown-values.json), each whole, on word bounds, and no other: the
 // agent writes a status by the page's words, so chart-15 of the eval wrote "1 in progress" for
 // in_progress and was read as not giving it, while "to do", which is not the page's "Todo", is
 // still not todo.
 func inLines(lines []string, row ChartRow) bool {
 	forms := []string{strings.ToLower(row.Label)}
-	words, isStatus := statusWords[row.Label]
+	words, isStatus := chips.StatusWords[row.Label]
 	if isStatus && !strings.EqualFold(words, row.Label) {
 		forms = append(forms, strings.ToLower(words))
 	}

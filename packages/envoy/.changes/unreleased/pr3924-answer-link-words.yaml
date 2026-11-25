@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  The command bar's answer no longer hides the words the model gave a link to an item. The bar
+  draws each such link as the item's chip in place of its words, so "[Implementer of
+  OPS-4](dispatch://OPS-4) is unresponsive" reached the person as the chip of OPS-4 and "is
+  unresponsive", and a comment's words written as the words of its link as the comment's head, cut
+  at 60 characters; the eval's judge, which reads an answer as the bar draws it, lost them too.
+  The server now stores the `reply` frame of an answer with each link whose words say more than
+  its chip draws - more than the issue's key, its status and its title, the key with the title,
+  the head of an ask's, a comment's or a message's text, a document's name, or the link's own
+  reference, case and punctuation aside - written as those words and then, in parentheses, the
+  link with the item's short form as its words: "Implementer of OPS-4 ([OPS-4](dispatch://OPS-4))
+  is unresponsive". It reads each item as the run's person may see it. A time, a web address, a
+  picture, an autolink, code and a reply frame of tool calls are stored as they came. The agent's
+  prompt names comments and messages in its rule that every fact goes outside the link.

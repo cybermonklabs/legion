@@ -1041,7 +1041,9 @@ func stopGoingRunIn(ctx context.Context, tx pgx.Tx, run, reason string, offers [
 // step saves one step of a run and appends its frames to the run's events, in sequence, in one
 // transaction that holds the run's row for share and checks, under it, that the request's lease
 // token is the run's and the run works: a stale owner's step is refused and nothing of it is
-// written. A second try of a step already saved saves nothing again, and answers the events'
+// written. The text of a reply frame that answers is appended so the words the model gave a link
+// to an item stand beside the item's chip (goingKeepLinkWords), each item read in the same
+// transaction. A second try of a step already saved saves nothing again, and answers the events'
 // sequence as they stand. A new step of a suspect run ends its suspicion (settleSuspect).
 func (a *AgentListener) step(ctx context.Context, request agentwire.StepRequest) (agentwire.StepAnswer, *agentwire.Error) {
 	if refusal := goingRunID(request.Run, request.LeaseToken); refusal != nil {
@@ -1071,6 +1073,9 @@ func (a *AgentListener) step(ctx context.Context, request agentwire.StepRequest)
 		return agentwire.StepAnswer{}, goingAgentFailed(agentwire.CallStep, err)
 	}
 	if tag.RowsAffected() > 0 {
+		if err := goingKeepLinkWords(ctx, tx, request.Run, request.Frames); err != nil {
+			return agentwire.StepAnswer{}, goingAgentFailed(agentwire.CallStep, err)
+		}
 		if err := appendGoingRunFrames(ctx, tx, request.Run, request.Frames); err != nil {
 			return agentwire.StepAnswer{}, goingAgentFailed(agentwire.CallStep, err)
 		}

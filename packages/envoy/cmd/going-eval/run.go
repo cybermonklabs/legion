@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/going/agentwire"
+	"github.com/sjawhar/envoy/going/chips"
 	"github.com/sjawhar/envoy/going/eval"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 )
@@ -665,7 +666,7 @@ func readCalls(ctx context.Context, conn *pgx.Conn, serverURL string) (map[strin
 // judgedAnswer is an answer as the judge reads it: its prose with each link rendered as the bar
 // draws it from items, the store the try left (eval.RenderAnswer), then each block it drew with
 // the rows the server filled it with.
-func judgedAnswer(outcome tryOutcome, items eval.Items) string {
+func judgedAnswer(outcome tryOutcome, items chips.Items) string {
 	var text strings.Builder
 	text.WriteString(eval.RenderAnswer(outcome.Answer, items))
 	for _, block := range outcome.Blocks {

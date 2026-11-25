@@ -1,0 +1,129 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"reflect"
+	"testing"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/going/agentwire"
+)
+
+// TestAnAnswerIsStoredWithTheWordsOfItsLinks: the bar draws each link of an answer to an item as
+// the item's chip in place of the link's words, and the eval's answers lost what they wrote as
+// those words (c13 at 9ae5605b): a session's name written as the words of a link to its issue, and
+// a comment's words past the head the bar cuts its text to. The server stores the reply frame of
+// an answer with such words written beside the link, which then reads as the item's short form,
+// and every other field of the frame as the agent sent it. Words the chip draws - the issue's key,
+// its title, a run of the comment's head - stay a link, as do a time and a web address; and a
+// reply frame of tool calls, whose text the bar writes as plain words over its calls, is stored
+// as it came. Each item is read as the run's person may see it: a comment reserved for another
+// author is one the server reads nothing of, so the words of a link to it stay beside it, though
+// they are the comment's own.
+func TestAnAnswerIsStoredWithTheWordsOfItsLinks(t *testing.T) {
+	t.Parallel()
+	rig := newGoingAgentRig(t, nil)
+	issue := rig.issue(t, "Rotate the signing keys")
+	commentRef := "dispatch://" + issue + "/comment/" + createThreadComment(t, rig.mux, issue, map[string]any{
+		"body": "p95 has stayed under 200 ms since the cache change landed on Monday, and the error rate is flat.",
+	}, "alice").ID
+	messageRef := "dispatch://" + issue + "/message/" + createIssueMessage(t, rig.mux, issue, map[string]any{
+		"body": "Pushed the rotation script; the staging run is green.",
+	}, "alice").ID
+
+	t.Run("an answer's links keep the words their chips do not draw", func(t *testing.T) {
+		run, token := rig.working(t, "alice", "who works on "+issue)
+		header := map[string]any{"step": 1, "text": "Reading [Implementer of " + issue + "](dispatch://" + issue + ")…",
+			"tools": []string{"dispatch_read"}, "labels": []string{"Reading " + issue}, "waits_for_person": false, "model_ms": 40}
+		answer := map[string]any{"step": 3, "tools": []string{}, "labels": []string{}, "waits_for_person": false, "model_ms": 120,
+			"text": "[Implementer of " + issue + "](dispatch://" + issue + ") is unresponsive; bob@example.com wrote " +
+				"[p95 has stayed under 200 ms since the cache change landed on Monday](" + commentRef + "), and " +
+				"[Implementer of " + issue + " says the staging run is green](" + messageRef + "). " +
+				"[" + issue + "](dispatch://" + issue + "), [Rotate the signing keys](/issues/" + issue + "), " +
+				"[p95 has stayed under 200 ms](" + commentRef + "), [5 days ago](dispatch-time:2026-11-18T11:35:00Z) and " +
+				"[the runbook](https://dispatch.example/issues/" + issue + ") stay as written."}
+		storeReply(t, rig, run, token, 1, header)
+		storeReply(t, rig, run, token, 3, answer)
+		want := map[string]any{}
+		for field, value := range answer {
+			want[field] = value
+		}
+		want["text"] = "Implementer of " + issue + " ([" + issue + "](dispatch://" + issue + ")) is unresponsive; bob@example.com wrote " +
+			"p95 has stayed under 200 ms since the cache change landed on Monday ([" + issue + " comment](" + commentRef + ")), and " +
+			"Implementer of " + issue + " says the staging run is green ([" + issue + " message](" + messageRef + ")). " +
+			"[" + issue + "](dispatch://" + issue + "), [Rotate the signing keys](/issues/" + issue + "), " +
+			"[p95 has stayed under 200 ms](" + commentRef + "), [5 days ago](dispatch-time:2026-11-18T11:35:00Z) and " +
+			"[the runbook](https://dispatch.example/issues/" + issue + ") stay as written."
+		requireStoredReplies(t, rig, run, header, want)
+	})
+
+	t.Run("a link to a comment the person may not see keeps its words", func(t *testing.T) {
+		private := createThreadComment(t, rig.mux, issue, map[string]any{"body": "A private remark about the vault."}, "bob").ID
+		if reserved := rig.count(t, `
+			with reserved as (update graph_nodes set visibility = 'author' where kind = 'comment' and id = $1 returning 1)
+			select count(*) from reserved
+		`, private); reserved != 1 {
+			t.Fatalf("reserved %d graph nodes of comment %s for its author, want its one", reserved, private)
+		}
+		privateRef := "dispatch://" + issue + "/comment/" + private
+		run, token := rig.working(t, "alice", "what did bob say on "+issue)
+		answer := map[string]any{"step": 1, "tools": []string{}, "labels": []string{}, "waits_for_person": false, "model_ms": 90,
+			"text": "bob wrote [A private remark about the vault.](" + privateRef + ") on [" + issue + "](dispatch://" + issue + ")."}
+		storeReply(t, rig, run, token, 1, answer)
+		want := map[string]any{}
+		for field, value := range answer {
+			want[field] = value
+		}
+		want["text"] = "bob wrote A private remark about the vault. ([" + issue + " comment](" + privateRef + ")) on [" + issue + "](dispatch://" + issue + ")."
+		requireStoredReplies(t, rig, run, want)
+	})
+}
+
+// storeReply saves step of run, a model step, with its one reply frame, reply.
+func storeReply(t *testing.T, rig goingAgentRig, run, token string, step int, reply map[string]any) {
+	t.Helper()
+	data, err := json.Marshal(reply)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rig.client.Step(context.Background(), agentwire.StepRequest{Run: run, LeaseToken: token, Step: step,
+		Kind: agentwire.StepModel, Body: json.RawMessage(`{}`), Note: "a reply",
+		Frames: []agentwire.Frame{{Name: goingReplyFrame, Data: data}}}); err != nil {
+		t.Fatalf("save step %d of run %s: %v", step, run, err)
+	}
+}
+
+// requireStoredReplies fails t unless the reply frames of run's events are want, in order, each
+// read as JSON.
+func requireStoredReplies(t *testing.T, rig goingAgentRig, run string, want ...map[string]any) {
+	t.Helper()
+	rows, err := rig.database.Pool.Query(context.Background(), `select data from going_run_events where run_id = $1::uuid and name = 'reply' order by sequence`, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (map[string]any, error) {
+		var data []byte
+		var frame map[string]any
+		if err := row.Scan(&data); err != nil {
+			return nil, err
+		}
+		return frame, json.Unmarshal(data, &frame)
+	})
+	if err != nil {
+		t.Fatalf("read the reply frames of run %s: %v", run, err)
+	}
+	// Read through JSON, so each wanted number and list is what a stored one decodes to.
+	encoded, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wanted []map[string]any
+	if err := json.Unmarshal(encoded, &wanted); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(stored, wanted) {
+		t.Errorf("run %s stored the reply frames\n%v\nwant\n%v", run, stored, wanted)
+	}
+}

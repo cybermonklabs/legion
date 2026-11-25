@@ -1,6 +1,6 @@
 package eval
 
-//ci:reads packages/contracts/fixtures/shown-values.json os.ReadFile (../../../contracts/fixtures/shown-values.json): TestEachStatusWordIsThePagesWord holds the eval's status words (answer.go statusWords) to the words the web writes
+//ci:reads packages/contracts/fixtures/shown-values.json os.ReadFile (../../../contracts/fixtures/shown-values.json): TestEachStatusWordIsThePagesWord holds the eval's status words (chips.StatusWords) to the words the web writes
 
 import (
 	"context"
@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/going/chips"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -317,7 +318,7 @@ func TestATablesCountIsReadInTheColumnItsChainWrites(t *testing.T) {
 // TestEachStatusWordIsThePagesWord: packages/contracts/fixtures/shown-values.json holds the words
 // the board and the issue page write for each status, which the web's board-model.test.ts holds
 // to its statusLabels. The eval renders a status's chip and reads a status's count in the prose by
-// the same words (statusWords), so the eval and the page name each status alike.
+// the same words (chips.StatusWords), so the eval and the page name each status alike.
 func TestEachStatusWordIsThePagesWord(t *testing.T) {
 	raw, err := os.ReadFile("../../../contracts/fixtures/shown-values.json")
 	if err != nil {
@@ -339,8 +340,8 @@ func TestEachStatusWordIsThePagesWord(t *testing.T) {
 			held[fmt.Sprint(row.Value)] = row.Shown
 		}
 	}
-	if !maps.Equal(held, statusWords) {
-		t.Errorf("the fixture's statuses are written %v, and the eval reads them as %v; want one set of words", held, statusWords)
+	if !maps.Equal(held, chips.StatusWords) {
+		t.Errorf("the fixture's statuses are written %v, and the eval reads them as %v; want one set of words", held, chips.StatusWords)
 	}
 }
 

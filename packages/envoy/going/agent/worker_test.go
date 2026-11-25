@@ -1287,13 +1287,16 @@ func TestAReadTheRulesNameNeedsNoLookup(t *testing.T) {
 // beside the value (shownResult); and each model call is told the time now, from which a time is
 // written as the issue page writes it. A time is a link whose words are the page's and whose
 // address is the time the read gives, which the page shows with its full date on hover, and its
-// words are the time itself, with its zone and year, where the words ask when.
+// words are the time itself, with its zone and year, where the words ask when. The eval's answers
+// wrote a comment's words as the words of its link, which its chip hides as it hides an issue's
+// (c13 at 9ae5605b), so the prompt names comments and messages in that rule too.
 func TestTheAnswerReadsAsTheIssuePageShowsIt(t *testing.T) {
 	for _, said := range []string{
 		"the direct answer in one or two sentences, then at most a short list",
 		"under 120 words unless the person asks for more",
 		"Name each item once, by its link alone",
 		"never what it shows, such as an issue's title or status",
+		"The words of a link to a comment or a message are not shown either: its author and what it says go outside the link, never into its words.",
 		"never a correction of yourself or your working",
 		"Say each fact once: never say again, in other words, what the answer or its list already said",
 		"without saying what you read or how",
