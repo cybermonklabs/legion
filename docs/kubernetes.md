@@ -1057,6 +1057,7 @@ There is no silent default, because a default would be a deployment that boots a
 A kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)) does not change this rule: a reset and each suspension of the issue delete that volume, and the issue's sessions must outlive both.
 **So the deployment names its store and that store's key before this release boots**, and the database is reachable from the pods:
 an upgrade that applies the image first has a daemon that refuses its own configuration at load ([Cutting over to the pod-owned disk](#cutting-over-to-the-pod-owned-disk)).
+The session database's server must be PostgreSQL 16.4, 15.8, 14.13, 13.16 or 12.20 or later in its major, or any 17 or later (the August 2024 minor releases added `restrict_nonsystem_relation_kind`, which every transaction Legion runs on that database sets), or every session read and write fails with `unrecognized configuration parameter`.
 
 Each kind names its own key and refuses the other's, an inert key being refused and never ignored:
 `runtime.kubernetes.session_dsn_secret is not used when runtime.kubernetes.session_store is
@@ -1642,15 +1643,20 @@ Its Sandbox goes, and its volume and session go with it, so step 5 clears the se
 
    For each claim with a recorded session file the import reads that file from the volume (its path below the agents' sessions directory, below `<tree-volume>/sessions`; without `--tree-volume` it reads the recorded path itself) and writes it as one row keyed by that recorded path: the whole file as `content`, `byte_len` its size, `mtime_ms` the file's, no title and no parts, which is how Oh My Pi reads a row an older release of it wrote.
    When `issue_close` already cleared a claim's resume path, the importer finds `*_<session>.jsonl` below the volume's sessions directory from the retained session id; exactly one match imports, none names the claim and session as missing, and several are refused by name.
-   It creates the two tables with Oh My Pi's statements for them, each table named bare where Oh My Pi names it `public.<table>`, when the database has none.
+   It creates the two tables with Oh My Pi's statements for them, each table named `public.<table>` as Oh My Pi names it, when the database has none.
    It prints one line per claim of the tree — `copied`, `copied before (identical …)`, `recorded no session`, `failed` (a file or retained session the volume does not hold) or `refused` (several files for one retained session id, or a table row with other content, which it leaves as it is) — then a `missing` line for every claim of the whole list, any tree's, whose recorded session the table does not hold, then a count of each.
    It exits 1 on any `failed` or `refused`, on a `missing` of the claims it was asked to copy (another tree's is reported only), and when `--tree` selects no claim of the list, which is a mistyped key.
+
+   - Every statement it runs, like every statement of the launcher's session lookups and Claude Code saves, runs in a transaction whose first statement is `SET LOCAL search_path = pg_catalog, pg_temp`, which then sets `restrict_nonsystem_relation_kind` to `'view, foreign-table'`, and names each table `public.<table>`; a read-only one also sets `row_security` off.
+     So no function, operator or table that another login planted in `public`, or in a schema named for the login, resolves in those statements; a view another login made at a table's own name fails the statement rather than runs in it, and the import refuses a relation at either name that is no table; and a row-security policy on the tables fails a read rather than runs in it.
+     The pin covers name lookup and those relations alone: a trigger, a rule, a default or a constraint that the tables' owner attaches still runs as whoever writes.
+     It is set in each transaction because a PgBouncer pool in transaction mode refuses `search_path` as a startup parameter.
 
 4. **Copy every tree again.**
    Each run must print only `copied before` or `recorded no session` for its tree's claims, and its `missing` lines may name only claims step 5 is to clear: one whose volume was gone before step 3 (the cleared controller's, or a claim of a tree closed earlier), or a `failed` you cannot fix.
    A `refused` here means a writer was still running: the session grew on its volume after step 3 copied it, and the import never overwrites a row it already holds, so it refuses the file it now finds.
    Going on would resume the agent from the older row and lose every turn after it.
-   Go back to step 1 instead: scale the earlier daemon back up, suspend whatever runs, save the list again, and scale it to 0 at once (step 2); then delete that row and its parts (`DELETE FROM omp_session_files_parts WHERE path = '<path>'; DELETE FROM omp_session_files WHERE path = '<path>'`) and copy again.
+   Go back to step 1 instead: scale the earlier daemon back up, suspend whatever runs, save the list again, and scale it to 0 at once (step 2); then delete that row and its parts in one transaction pinned as the import's own are, `BEGIN; SET LOCAL search_path = pg_catalog, pg_temp; SET LOCAL restrict_nonsystem_relation_kind = 'view, foreign-table'; DELETE FROM public.omp_session_files_parts WHERE path = '<path>'; DELETE FROM public.omp_session_files WHERE path = '<path>'; COMMIT;`, and copy again.
    Nothing writes a row under SQL storage before the switch, so in this runbook a `refused` has no other cause.
 
 5. **Roll out the new daemon, then clear only sessions the import reported missing.**
@@ -2894,6 +2900,46 @@ What the rollback costs: an issue drawn into an arm whose `plan` is `default` be
 Rolling forward does not undo that: such an issue's row still reads `default`, so a run that started on its owner's plan while the earlier release ran goes on with that plan, since its first step does not run again, and from then on each later version of the plan and each `stop_task` on the issue is answered `409 PLAN_NOT_TAKEN`, so its owner can neither change nor stop the plan it gave.
 That lasts until the issue's next run, whose first step passes the plan over, or until the issue leaves the workflow, which ends the run.
 Rolling forward again also costs the window the other way: an issue the earlier release drew while it ran reads the empty word afterwards and runs as an issue with no experiment does.
+
+#### Rolling back the release that names the variant on each step record
+
+This release adds no outbox kind and no migration.
+Where a draw put an issue in an experiment's group, by an arm that sets `plan`, it writes that experiment and the variant drawn as two more members, `experiment` and `variant`, of the issue's `step_record` rows, and the daemon sends the two after the record, on the record's experiment route (`PUT /api/v1/issues/{key}/steps/{id}/experiment`), from the same row.
+A draw of the `memory` experiment, or of an experiment whose arms set no `plan`, was never on a record, so the rollback costs it nothing.
+The daemon and Dispatch deploy in either order: a Dispatch without the experiment route takes the record on its step route or its rating route, answers the experiment route `404 NOT_FOUND` "no route for …", and the row waits as a role holders' publication does ([Rolling back the release that publishes each issue's role sessions to Dispatch](#rolling-back-the-release-that-publishes-each-issues-role-sessions-to-dispatch)), logging `outbox row waits` and no ERROR line, until Dispatch has the route.
+Each run of a waiting row sends the record again before the variant, which changes nothing Dispatch holds, since Dispatch keeps each field a record already holds.
+The daemon also keeps each start's whole write in `step_starts.record`, so a kept start carries the two members too.
+
+**A queued row and a kept start must lose the pair before the earlier image is pinned.**
+An earlier release decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`) and knows neither `experiment` nor `variant`, so a `step_record` row still carrying them fails its decode at every attempt, logs the failure each time and is retried on its backoff until the roll forward, and its record reaches Dispatch only where this release's run had already written it.
+A kept start can become such a row later.
+A rollback past the release that records each step re-arms that release's roll forward ([Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step)).
+At the next roll forward, `20261117064152_step_starts_roll_forward` copies the kept start of each run an earlier release ended into a new `step_record` row.
+Every image from the release that records each step on applies that migration, so a release older than this one would refuse such a row at every attempt.
+Run this with the daemon of the project that rolls back stopped, before its earlier image is pinned, with `<PROJECT>` replaced by the project's key: `project` in its `legion.yaml`, the part of each of its issue keys before the hyphen, such as `LEGION`:
+
+```sql
+-- The experiment and the variant of the step records one project still has queued.
+update outbox set payload = payload - 'experiment' - 'variant'
+where kind = 'step_record' and (payload ? 'experiment' or payload ? 'variant')
+  and split_part(issue, '-', 1) = '<PROJECT>';
+-- The experiment and the variant of the starts one project keeps.
+update step_starts set record = record - 'experiment' - 'variant'
+where (record ? 'experiment' or record ? 'variant')
+  and split_part(issue, '-', 1) = '<PROJECT>';
+```
+
+This block is the one source of its statements.
+`internal/store`'s `TestTheStepVariantWayBackLeavesWhatTheReleaseBeforeReads` runs it over queued rows and kept starts of two projects, from the copy `internal/store/step_variant_way_back_extract.txt`, and reads each row and each kept start of the project that rolls back as the release before this one reads it and each of the other project's as this release left it; `internal/textcheck`'s `TestTheStepVariantWayBackExtractIsTheGuidesBlock` holds that copy to this block, so change the two in one commit.
+
+The block deletes no row and changes no other member of a payload or a kept start, so each row keeps its retry state and then writes its record, with its rating where it carries one, under the earlier release.
+Each project rolls back on its own, as for the release that rates each plan ([Rolling back the release that rates each plan](#rolling-back-the-release-that-rates-each-plan)): each statement names the project, and a daemon left on this release still sends its own variants.
+What it costs is the variant of each of those records that had not reached Dispatch: the read of that issue's steps and the read of the project's finished issues name no variant for that run, and nothing else of the issue changes.
+An end the daemon writes later from a kept start the block changed names no variant either.
+That costs nothing more: Dispatch keeps the variant the run's start sent, so a read misses it only where that start's own variant had not reached Dispatch.
+The records the earlier release writes while it runs name no variant either, and nothing writes them again after the roll forward.
+Where the earlier release wrote every record of an issue's newest run, those two reads name no variant for that run after the roll forward.
+A variant that reached Dispatch before the rollback stays there; its row can still be queued when the daemon stopped, or failed to record the row as done, after the write (it runs such a row again when its lease expires, `settle` in `daemon/outbox.go`).
 
 #### Rolling back the release that lets the owning architect's status stand
 
@@ -9439,7 +9485,7 @@ each issue's pod (every role of it alike) and the image probe's.
   The controller is in no memory group whatever the mode says, since a memory group is a tree's and the controller runs in none;
   a role of a tree drawn `none` is told exactly what it was told before the block existed; and a block with no `instructions` appends nothing.
   The launch follows the record, not the mode:
-  a tree the daemon drew into the memory group keeps its overlays and its instructions while the block still names them, whatever the mode is now, so `mode: off` stops new draws and takes memory from no tree already running with it.
+  a tree the daemon drew into the memory group keeps its overlays and its instructions while the block still names them, whatever the mode is now, so `mode: off` gives every new tree no arm and takes memory from no tree already running with it.
   Taking the files away is removing them from the block.
   The memory overlays take part in everything `role_config_files` takes part in:
   the mount check at load (a file under no `pod.volume_mounts` mount is refused, naming `projects.<KEY>.memory.config_files`), the image probe's per-role value (they are passed for every workflow role and never for the controller, and a file the probe cannot read refuses the boot), the pod drift, and what a kept pod's role is told.
@@ -9466,7 +9512,11 @@ each issue's pod (every role of it alike) and the image probe's.
 - **`projects.<KEY>.experiments`** declares the experiments the project draws its trees and its issues into, as a mapping of an experiment's name to its block, read and kept in the file's order.
   An experiment's name is 1 to 32 characters of `a-z`, `0-9` and `-`, and the project names it once:
   every draw records it.
-  `mode` is `off`, `on` or `random`: `off` draws for no unit and is what a block with no mode gets, `on` gives every new unit the arm `on_variant` names, and `random` draws among the arms by their weights (`crypto/rand`).
+  `mode` is `off`, `on` or `random`, and a block with no mode gets `off`.
+  `off` gives every new unit no arm, and the daemon records that unit at the empty arm, with the mode `off` and the instant.
+  The record keeps that arm as `""`, and `legion state --json` shows `""` too.
+  The plain `legion state` line prints it as `none`.
+  `on` gives every new unit the arm `on_variant` names, and `random` draws among the arms by their weights (`crypto/rand`).
   `unit` is `tree`, the default, which draws once for a whole tree and gives every issue of it the same arm, or `issue`, which draws for each issue of the project on its own.
   `roles` lists the issue roles whose launches load the experiment's arms, each once, and every issue role where the block names none: a launch of a role the list leaves out loads none of this experiment's overlays or instructions while its unit keeps the arm it drew (the operator's and the role's own overlays, and other experiments' arms that reach it, still apply), so an experiment can leave the roles that judge the work (the reviewer, the tester, the architect who accepts it) out of what it changes.
   `variants` are the arms it compares, and a mode other than `off` needs at least two of them, since a draw among one arm measures nothing.
@@ -9520,7 +9570,7 @@ each issue's pod (every role of it alike) and the image probe's.
   A unit opened before an experiment was declared holds no row for it and runs in no arm of it.
   An operator's spawn whose tree has no issue record records no answer and runs in no arm; nothing is refused and no record is invented.
   The launch follows the record, not the mode:
-  a unit the daemon drew into an arm keeps that arm's overlays and its instructions while the project's file still names the arm, whatever the mode is now, so moving a mode to `off` stops new draws and takes nothing from a unit already running.
+  a unit the daemon drew into an arm keeps that arm's overlays and its instructions while the project's file still names the arm, whatever the mode is now, so moving a mode to `off` gives every new unit no arm and takes nothing from a unit already running.
   A unit whose recorded arm the file no longer names runs as a unit in no experiment does, and its row stays, so naming the arm again gives the unit the arm it was drawn into.
 
 - **What a role of a drawn unit is given.**
