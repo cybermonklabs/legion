@@ -514,11 +514,13 @@ func TestIntakeKeepsUpWithABurstOfDeliveryEvents(t *testing.T) {
 }
 
 // TestIntakeDrainsABacklogPublishedBeforeItBinds pins what the server does with events that
-// arrive while no subscriber is attached: the window between the durable being created and the
-// subscription attaching to it, and the whole time the process is down. The backlog is held
-// undelivered rather than pushed at an inbox nobody is reading, so one larger than
-// intakeMaxAckPending drains in full once the intake comes up, with nothing waiting on the ack
-// wait to be redelivered.
+// arrive while no subscriber is attached to the durable: the whole time the process is down. The
+// backlog is held undelivered rather than pushed at an inbox nobody is reading, so one larger
+// than intakeMaxAckPending drains in full once the intake comes up, with nothing waiting on the
+// ack wait to be redelivered. A first intake makes the durable and stops before the backlog is
+// published: the durable's first bind starts at the stream's next message
+// (TestAFirstBindStartsAtTheStreamsNextMessageAndATakeOverKeepsThatStart), so what the stream held
+// before the durable existed is no backlog of the durable's.
 func TestIntakeDrainsABacklogPublishedBeforeItBinds(t *testing.T) {
 	t.Parallel()
 	shrinkIntakeFlowControl(t)
@@ -536,6 +538,9 @@ func TestIntakeDrainsABacklogPublishedBeforeItBinds(t *testing.T) {
 	})
 
 	natsClient := intakeTestClient(t)
+	stopFirst := runIntake(t, newIntake(tuningFor(t), intakeTestClient(t), pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	awaitBoundDurable(t, natsClient)
+	stopFirst()
 	for i := range backlog {
 		publishWorkflowEnvelope(t, natsClient, "acme", "widgets", settings.DeployWorkflowPath, int64(5000+i))
 	}
