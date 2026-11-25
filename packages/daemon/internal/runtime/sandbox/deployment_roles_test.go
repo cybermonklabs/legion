@@ -177,10 +177,10 @@ func TestAnOperatorVolumeMayNotTakeADeploymentRolesVolumeName(t *testing.T) {
 	legion := append(slices.Clone(claim.Roles), claim.RoleController)
 	withChecker := append(slices.Clone(legion), "checker")
 	want := "runtime.kubernetes.pod.volumes[0].name launcher-checker is a volume Legion puts in every pod"
-	if err := CheckPod(pod, withChecker, nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false); err == nil || err.Error() != want {
+	if err := CheckPod(pod, withChecker, nil, testOptions().Tools, nil, nil, ompsessions.Store{}, NoExchange); err == nil || err.Error() != want {
 		t.Errorf("CheckPod with the checker among the roles = %v, want %q", err, want)
 	}
-	if err := CheckPod(pod, legion, nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false); err != nil {
+	if err := CheckPod(pod, legion, nil, testOptions().Tools, nil, nil, ompsessions.Store{}, NoExchange); err != nil {
 		t.Errorf("CheckPod with no checker among the roles = %v, want it taken", err)
 	}
 	if warnings := PodVolumeWarnings(pod, legion); len(warnings) != 0 {
