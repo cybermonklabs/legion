@@ -74,7 +74,7 @@ func seedStepsAt(t *testing.T, h *harness, key string, words []string, place int
 			name, agentKey, _ := strings.Cut(word, ":")
 			steps = append(steps, record.PlanStep{Issue: key, Generation: 1, Task: "a", Position: i + 1, Role: name, AgentKey: agentKey, Type: builtin[name].Type})
 		}
-		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, record.NameAgents(nil, steps)); err != nil {
+		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, record.NameAgents(nil, steps, nil)); err != nil {
 			return err
 		}
 		for at := range len(words) + 1 {
