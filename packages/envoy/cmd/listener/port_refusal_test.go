@@ -28,6 +28,7 @@ import (
 // answered before anything is stored, so neither the session's interests nor its session entry
 // appear.
 func TestARegistrationWithAPortIsAnswered400NamingThePortField(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 
 	for index, port := range []int{1, 4242, 65535} {
@@ -65,6 +66,7 @@ func TestARegistrationWithAPortIsAnswered400NamingThePortField(t *testing.T) {
 // released client parses it (packages/envoy-client/src/transport.ts). The stored entry records
 // port 0 too, and the host the registration carried, which nothing dials, as it came.
 func TestARegistrationWithNoPortIsAcceptedAndListedAtPortZero(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	// The list is joined from the interest copy and the session copy, and each answers the
 	// refilling 503 rather than a list that could be missing a live agent until it has completed
@@ -130,6 +132,7 @@ func TestARegistrationWithNoPortIsAcceptedAndListedAtPortZero(t *testing.T) {
 // warned about exactly once, by name, so the operator reading the log knows what to remove, and
 // neither is read for anything else.
 func TestAListenerStartedWithTheDeletedVariablesWarnsOncePerVariableAndServes(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	machineID := "ignored-env-" + id.New()
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, machineID,

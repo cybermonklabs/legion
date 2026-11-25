@@ -32,6 +32,7 @@ import (
 // kept lane alone. Every other row is a case: such a build gives the role's next holder none of the
 // messages, and it has no seam to force a row's fault, so a row that waits for its seam fails there.
 func TestATakeoverCopyThatStopsOrRunsAgainLosesNothing(t *testing.T) {
+	t.Parallel()
 	t.Run("1 a listener stopped after the claim write leaves the copy to the next sweep", crashStoppedAfterTheClaimWrite)
 	t.Run("1b a record whose claim never landed leaves the holder that kept the role its own messages", crashRecordWhoseClaimNeverLanded)
 	t.Run("1c an older pass paused before its last write leaves a newer takeover of the holder to copy", crashOlderPassPausedBeforeItsLastWrite)
