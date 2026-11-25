@@ -318,8 +318,8 @@ Dispatch read them, delete the files, then install every App from
   used whatever the pod had free, so the pod's peak must fit its reservation: an issue pod that
   still ran its own builds, measured at 1-minute resolution, used its whole 19Gi for minutes while
   its reviewer ran a review (2026-10-21). A cpu or memory request the file leaves out equals the
-  limit, so a deployment that
-  sets none runs only `Guaranteed` pods. A lower request — `issue: {memory: 32Gi, memory_request:
+  limit, so a deployment that sets none runs only `Guaranteed` pods.
+  A lower request — `issue: {memory: 32Gi, memory_request:
   8Gi}` for issues whose memory comes in bursts — makes the issue pod `Burstable`: more pods fit a
   node and a cluster that bills by requests bills less, but under node memory pressure the kubelet
   evicts a `Burstable` pod using more than its request before any `Guaranteed` one, or the kernel
@@ -350,7 +350,7 @@ Dispatch read them, delete the files, then install every App from
   reason and tries again every 5 minutes, serving nothing until the probe passes, and the
   `pool-capacity` row of `legion state`'s capability report then records how many attempts waited
   and why, open until `capabilities.decided.pool-capacity` names a reason. An issue pod reserves
-  2 CPU and 8 GiB at the defaults, its disk limits to 80Gi over 6Gi requested. A container
+  2 CPU and 8 GiB at the defaults, with a disk limit of 80Gi over a 6Gi request. A container
   past its disk limit has its own pod evicted, the offending issue's alone, rather than the node
   reaching `DiskPressure` where another tree's pod can go; the 1Gi request reserves almost no disk,
   so a node's root volume can be oversubscribed by the pods' limits — an operator who knows the
@@ -360,9 +360,8 @@ Dispatch read them, delete the files, then install every App from
   shares none, so the
   scheduler places it wherever the pool has room and Karpenter
   adds nodes under the pool's limits. Concurrent issue pods are bounded by what the pool's
-  `limits.cpu` and `limits.memory` leave for pods of that reservation (three per 8-vCPU floor
-  node, about 120 at `limits.cpu: 256`, or `limits.memory` / 8 GiB when that is smaller) once the
-  probe pod and,
+  `limits.cpu` and `limits.memory` leave for pods of that size (three per 8-vCPU floor node, about
+  120 at `limits.cpu: 256`, or `limits.memory` / 8 GiB when that is smaller) once the probe pod and,
   under `controller: daemon`, the controller's pod are counted; `admission_cap` counts the issues
   the daemon has started rather than the pods, since an issue keeps its pod where it holds no slot —
   through `accepting`, `retro` and `merging`, which hold none, on to its own close — and an issue
