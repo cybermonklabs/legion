@@ -7,7 +7,8 @@ Stopping a task, a later version of a plan Legion runs, and the `task-stopped`, 
 
 ## The task block
 
-You choose which of Legion's steps each issue of your tree runs.
+You choose which steps each issue of your tree runs.
+An issue whose experiment's group runs the project's default steps is the exception ("What Legion refuses", below).
 The plan is the issue's `plan.md` document (`dispatch artifact` on the issue).
 In this release it holds one `plan_task` block, the issue's one task:
 
@@ -22,49 +23,70 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
   A change of `serves` alone changes no task.
 
 - To have one agent work several steps, give each of them the same key after its role, as `steps="implementer:a tester:a reviewer"`.
-  Legion runs the steps of one key as one agent, in one claim and one session, whatever role each step is on; a step with no key is an agent of its own.
+  Legion runs the steps of one key as one agent, in one claim and one session, whatever their roles; a step with no key is an agent of its own.
+  The agent of the step whose role your `Production check` line names keeps its session past the close, for that check; where no step of the task has that role, the check starts a fresh agent of it.
   A key other than `owner` may stand on any role but `acceptance`, and `owner` on `acceptance` alone.
   A role may stand at two steps, of one agent where both steps carry one key, or of two.
   Each agent is named for the role of its first step, and an agent whose role's name another agent of the plan holds takes a numbered name of its own:
   `steps="implementer reviewer implementer"` runs step 3 as a fresh agent, `implementer-2`, in a claim and a session of its own.
-  Under `runtime: kubernetes` that agent runs in a slot of the issue pod that carries its name, and where the pod was built without that slot, step 3 waits until the pod's update round or its release replaces the pod.
-  A key keeps its name in every version: a later version that names the key again runs its steps in the same agent and session, and while a version leaves the key out, no other agent takes its name, so the agent that would have taken it takes a numbered name and a slot of its own, whose start can wait for the pod's update round.
-  A name that only agents with no key held is free again once no agent of the version holds it: a later agent of their role can take it, in a session of its own, and an agent of another role never does.
+  Under `runtime: kubernetes` it runs in a slot of the issue pod named for it; where the pod has no such slot, step 3 waits until the pod's update round or release replaces the pod.
+  A later version's agent names: `skill://legion-architect/references/plan-changes.md`.
 
 ## The roles and their order
+
+Name the steps in `steps` in the order they run.
+A step names one of Legion's roles in the table below, or a role this deployment defines: your `Legion addressing` line lists both ("The roles of this deployment"), each with the type of its step.
+A `planner` step may stand at any place, and the task's first `implementer` step stands before each `tester`, `reviewer` and `acceptance:owner` step: a plan that names one of them with no `implementer` step before it is refused with a reason that ends `This release of Legion does not carry it out yet.`
+A later `implementer` step may stand after them, as step 3 of `implementer:a reviewer implementer:a` does.
+A role this deployment defines runs where its step stands in your plan, at the phase `step`, and reports pass or fail.
+It reads no pull request, so it may stand at any place too.
+A role of the type implementation is the one exception: it stands before the task's first `implementer` step.
+The table lists Legion's steps in the default steps' order:
 
 | Step | Type | Phase | What leaving it out means |
 | --- | --- | --- | --- |
 | `planner` | planning | `planning` | No implementation plan and no plan review: the steps work from your task's text and the spec. |
-| `implementer` | implementation | `implementing` | Required. It also works the retro, and a failed step returns to it unless the failed step names an earlier one. |
-| `tester` | testing | `testing` | Only the implementer records results against the checks, and nobody runs them again. |
-| `reviewer` | review | `reviewing` | No review: on a base whose rules require an approving review, the merger waits and tells you. |
-| `acceptance:owner` | review | `accepting` | Your step. Without it the last step's pass starts the retro, and nothing waits for you to read the evidence. |
+| `implementer` | implementation | `implementing` | Required: it also works the retro, and a failed step that names no earlier one returns to the first step of the type implementation before it, the implementer or a role of this deployment of that type where one stands before the implementer. |
+| `tester` | testing | `testing` | Only the implementer records results against the checks, and no other step runs them again, except where a parent's pull request merged before its last round: you, or a subagent you dispatch, then run and record them (`skill://legion-architect/references/acceptance.md`, *The last round*). |
+| `reviewer` | review | `reviewing` | No reviewer's approval: on a base whose rules require an approving review, the merger waits and tells you. |
+| `acceptance:owner` | review | `accepting` | Your step. Without it the last step's pass starts the retro, or holds a parent before it while issues beneath it are in the workflow, and nothing waits for you to read the evidence. |
 
-Without `acceptance:owner`, two steps still hold the checks:
-a reviewer step approves only once a pass stands for every `before_merge` check at the head, and retro's first step sends back a check with no pass standing there, except a `ci_check` whose run has not concluded or cannot be read, which moves nothing back (`skill://legion-retro`).
+Without `acceptance:owner`, retro holds the checks (`skill://legion-retro`), and so does a reviewer step where the task has one.
+A reviewer step approves only once a pass stands for every `before_merge` check at the head.
+And retro's first step sends back a check with no pass standing there, except a `ci_check` whose run has not concluded or cannot be read, whose derived result is a fail, whose name no run answers (`absent`), or whose `run` is a whole test suite.
 So on a task with no reviewer step and no `acceptance:owner`, such a check holds the merge only where it is among the checks the base branch requires.
+A step of a role of this deployment runs and holds the checks only where its prompt file asks it to.
 
 ## What Legion refuses
 
 `register_plan` answers `409 PLAN_REFUSED` with `reasons: [{task, reason}]`, one reason for each cause, its `task` empty for a cause of the whole plan.
 Fix each reason and give a new version.
-A reason that ends `This release of Legion does not carry it out yet.` names a plan a later release takes: write it again within the table above.
+A reason that ends `This release of Legion does not carry it out yet.` names a plan a later release takes: write it again within the rules above.
+Among them, a role of this deployment of the type implementation after the implementer's step: `task <id> names <role> at step <i>, a step of the type implementation after the step implementer at step <j>, and Legion's retro is done by the implementer in this release.`
+A step that names a role neither Legion nor this deployment defines is refused `step <i> of task <id> names the role <role>, which neither the deployment nor the plan defines.`, and no release takes it.
+
+An issue whose experiment's group runs the project's default steps takes no plan: give it none, and it runs the default steps.
+Once the daemon records such an issue, `register_plan` on it answers `409 PLAN_NOT_TAKEN`, which is no fault of the plan.
+`read_record` shows such an issue: one of its `assignments` has `plan` `default`.
 
 The reasons a version gets for where its task stands are in `skill://legion-architect/references/plan-changes.md`.
 
 ## When to give it
 
-- **A root:** before `register_gate`, because the gate's opening starts the root's first step.
+- **A root:** before `register_gate`, because the root's first step can start as soon as the gate opens.
 
 - **A child:** before `release_children` releases it.
   The daemon has not recorded the child yet, so Legion keeps the plan until the release;
-  the answer, as for any plan it takes, is the plan's `version` and each task with its `steps`.
+  the answer is the plan's `version` and each task with its `steps`.
+  A project's experiment draws the child when the daemon records it.
+  If the child's group runs the project's default steps, its first step passes your plan over (`plan-not-taken`).
   A child the daemon has not recorded is refused once its Dispatch status is none of `triage`, `backlog`, `icebox` and `todo` (`ISSUE_ALREADY_RELEASED`).
   The child's first step can start in the same admission pass as its release, so a plan given after it comes too late.
 
-A `plan.md` that a planner of the default steps wrote holds that planner's task blocks.
-The version you give replaces them with your own one block: delete theirs, and put what the next steps still need from the planner's plan into your task's text.
+## A root with no code of its own
+
+When every change lands through children, the root's implementer opens its pull request on an empty commit.
+Plan no code for the root, and create no child only to give it a commit.
 
 ## Reading how plans went
 

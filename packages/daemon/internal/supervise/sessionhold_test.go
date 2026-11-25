@@ -1096,12 +1096,12 @@ func TestARetryOrDeliveryOfASessionTheClaimDoesNotHoldIsRefused(t *testing.T) {
 }
 
 // A death's relaunch of a claim recording a session another claim holds is refused by start's own
-// hold (Machine.start) and charged to the launch budget like any refused launch (launchNow), so at
+// hold (Machine.start) and charged to the launch budget like any refused launch (launchTries), so at
 // the budget the claim fails rather than relaunching at the probe interval for ever. No resume
 // reaches the runtime. The resume, retry and delivery routes refuse such a claim before start
 // (resumeRefusal); a death has no route to refuse, so this row is what reads start's charge.
 //
-// The control (the pull request records the run): launchNow sending start's refusal down the
+// The control (the pull request records the run): launchTries sending start's refusal down the
 // retry that charges nothing, as it sends errHoldUnanswered: the claim is left launching.
 func TestADeathsRelaunchIntoAHeldSessionIsChargedToTheLaunchBudget(t *testing.T) {
 	const other = claim.Token("legion-legion-LEGION-209-tester")
@@ -1109,7 +1109,7 @@ func TestADeathsRelaunchIntoAHeldSessionIsChargedToTheLaunchBudget(t *testing.T)
 	h.reach(StateReady)
 	h.store.setHold(sessionID(session), other)
 	// The death itself is charged one launch failure (relaunchAfterFailure), and the relaunch start
-	// refuses is charged the second, which spends the budget (launchNow).
+	// refuses is charged the second, which spends the budget (launchTries).
 	h.deps.Limits.LaunchFailures = 2
 	h.restart()
 	resumes := len(h.calls("Resume"))
@@ -1157,5 +1157,52 @@ func TestARuleResumeOfASessionTheClaimDoesNotHoldLeavesItSuspended(t *testing.T)
 	}
 	if lines := h.logs.lines("not resumed by rule: the claim records a session it does not hold"); len(lines) != 1 {
 		t.Fatalf("the rule's refusal wrote %d lines, want one: %v", len(lines), lines)
+	}
+}
+
+// IsSessionHeldElsewhere matches the resume refusal of a name held for another claim or for none,
+// whichever of the session's names was refused — its id here, its file's name there — and neither
+// of the hold's two other refusals, a session file no hold can cover and a claim at the cap of held
+// names, though all three are 409s of one type (claim.Refusal). Each refusal here is resumeRefusal's
+// own, the RefusedError a retry or a resume answers with, which is the chain the controller keeper
+// reads (internal/daemon's controllerKeeper.keep).
+func TestIsSessionHeldElsewhereMatchesTheHeldRefusalAlone(t *testing.T) {
+	const other = claim.Token("legion-legion-LEGION-209-tester")
+	for _, tc := range []struct {
+		name          string
+		hold          func(*harness)
+		session, file string
+		refusal       claim.Refusal
+		held          bool
+	}{
+		{"the session id held for another claim", func(h *harness) { h.store.setHold(sessionID("ses_held"), other) },
+			"ses_held", "/state/sessions/held.jsonl", claim.SessionHeldRefusal("ses_held"), true},
+		{"the session file's name held for no claim", func(h *harness) { h.store.setHold(Hold{Kind: HoldFileName, Name: "taken.jsonl"}, "") },
+			"ses_mine", "/state/sessions/taken.jsonl", claim.SessionHeldRefusal("taken.jsonl"), true},
+		{"a session file no hold can cover", func(*harness) {},
+			"ses_mine", "/state/sessions//mine.jsonl", claim.SessionNameUnheldRefusal("session file"), false},
+		{"a claim at the cap of held names", func(h *harness) { h.store.fillHolds(h.token, MaxHeldNamesPerClaim) },
+			"ses_new", "/state/sessions/new.jsonl", claim.HeldNamesCapRefusal(MaxHeldNamesPerClaim), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			tc.hold(h)
+			h.m.mu.Lock()
+			h.m.claim.Session, h.m.claim.SessionFile = tc.session, tc.file
+			err := h.m.resumeRefusal(h.ctx, "retry")
+			h.m.mu.Unlock()
+
+			var refused *RefusedError
+			var refusal claim.Refusal
+			if !errors.As(err, &refused) || !errors.As(err, &refusal) || refusal != tc.refusal {
+				t.Fatalf("the resume's refusal = %v, want a RefusedError carrying %v", err, tc.refusal)
+			}
+			if got := IsSessionHeldElsewhere(err); got != tc.held {
+				t.Fatalf("IsSessionHeldElsewhere(%v) = %t, want %t", err, got, tc.held)
+			}
+		})
+	}
+	if IsSessionHeldElsewhere(nil) {
+		t.Fatal("IsSessionHeldElsewhere(nil) = true, want false")
 	}
 }

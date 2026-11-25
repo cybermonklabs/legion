@@ -26,6 +26,7 @@ import (
 // started before the change (plan D9). TestAChildsArchitectFirstStartWaitsForItsTreeToRunAgain
 // reads the held start act.
 func TestAChildsArchitectFirstStartHeldByALingerIsQueuedWhenTheTreeReopens(t *testing.T) {
+	t.Parallel()
 	rig := newChildArchitectRig(t)
 	rig.written("release", childAt("todo", 2))
 	if got := readIssue(t, rig.pool, doorChild); got.Phase != phase.Planning {

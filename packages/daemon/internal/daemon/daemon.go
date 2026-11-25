@@ -65,7 +65,7 @@ const (
 	// load for as long as that lasts (pluginGate) — nor are the store's open, the GitHub Apps'
 	// logins and key proof, and the image probe, which wait out a connection error the next attempt
 	// can clear, GitHub's transient trouble and the cluster's within retries of their own
-	// (storeOpenRetry, appMintRetry, imageProbeRetry); the work after each has a budget anew.
+	// (storeOpenRetry, appCallBounds.retry, imageProbeRetry); the work after each has a budget anew.
 	bootTimeout = 30 * time.Second
 	// storeOpenAttempt bounds one attempt to open the store (storeOpenRetry). With no
 	// connect_timeout in the DSN, pgxpool bounds a connection it opens at two minutes, so without
@@ -83,10 +83,13 @@ const (
 	// drain, which starts with the stop, gets the budget's first four fifths (8 s): a decision a
 	// route asked for runs on until the drain ends, so an operator's suspension whose process is
 	// already exiting is recorded rather than undone at the next boot. The last fifth leaves room
-	// for the work the drain's end cuts short to return before the budget runs out. Work still
-	// running at the budget's end, a call into a process that does not answer, is logged with each
-	// claim still deciding and not waited on: the next boot re-adopts each process a claim records
-	// and relaunches each launch left unrecorded. natsCloseTimeout bounds the close of the
+	// for the work the drain's end cuts short to return before the budget runs out. A commit whose
+	// caller's context the stop or the drain's end cancels waits at most store.CommitSettleBound
+	// more for its outcome, counted from that cancel (store.Transact), which fits the budget's last
+	// fifth (TestTheCommitSettleFitsTheStopsLastFifth). Work still running at the budget's end, a
+	// call into a process that does not answer, is logged with each claim still deciding and not
+	// waited on: the next boot re-adopts each process a claim records and relaunches each launch
+	// left unrecorded. natsCloseTimeout bounds the close of the
 	// workflow's NATS connection, stampTimeout the stamp, and storeCloseTimeout the store's close
 	// after it, so the daemon returns at most
 	// stopBudget+natsCloseTimeout+stampTimeout+storeCloseTimeout (24 s) after its stop begins,
@@ -176,6 +179,9 @@ type overrides struct {
 	environ []string
 	// orphanSweep is how often orphans are reconciled; zero is orphanSweepInterval.
 	orphanSweep time.Duration
+	// outboxSweep is how often the outbox sweeps its lanes (outbox.sweepEvery, which attach hands
+	// it); zero is outboxLease.
+	outboxSweep time.Duration
 	// controllerRetry is the first wait before a failed daemon-launched controller is retried; zero
 	// is controllerRetryFirst.
 	controllerRetry time.Duration
@@ -195,6 +201,17 @@ type overrides struct {
 	// production mergeStateLadderWait. A whole-daemon test of those reads shortens it, so it waits
 	// out its own wait rather than half a minute a read.
 	mergeStateRetry time.Duration
+	// catchUpRetry is the wait between two reads of one root the boot's catch-up makes after
+	// Dispatch refused it with an error it may stop giving (workflowRuntime.catchUpRetryDelay);
+	// zero is the production catchUpRetryDelay. A whole-daemon test whose Dispatch stand-in refuses
+	// the catch-up's reads shortens it, so each of its boots does not wait out two seconds a read.
+	catchUpRetry time.Duration
+	// appCalls are the bounds of the start's App calls (appCallBounds): their attempt, the retry
+	// between attempts that failed transiently, the rate-limit policy, and the clock every wait of
+	// theirs reads and waits on; nil is productionAppCalls. A test of the boot's App calls shortens
+	// them, or puts their waits on a clock of its own, for the daemons it boots alone, so it runs
+	// beside every other test.
+	appCalls *appCallBounds
 	// entrySweep is how often the daemon converges the phase entries with no fact arriving
 	// (workflowRuntime.entrySweep); zero is the production minute, entrySweepInterval. A test of
 	// the sweep shortens it, so it waits out its own period rather than the daemon's.
@@ -221,6 +238,11 @@ type overrides struct {
 	// serves the socket `legion start` inherited from LEGION_LISTEN_FD (handed); a test's hands
 	// over a listener it holds.
 	listen func(network, address string) (net.Listener, error)
+	// streamListen takes the worker stream's listener for the address the stream binds
+	// (stream.Options.Listen); nil, in production, binds it. A test whose two daemons must listen
+	// on one worker_stream_port hands over a socket it holds across both, so the port is never free
+	// between its pick and a bind (controllerSandboxRig).
+	streamListen func(network, address string) (net.Listener, error)
 	// strandedReported runs once the boot's report of the claims nothing will wake has finished,
 	// whether it logged or not (reportStranded); nil, in production, is nothing. The report runs
 	// beside the API, so a test that asserts on its line waits for this rather than for /healthz.
@@ -265,6 +287,13 @@ type overrides struct {
 	// the decision would hold the machine's lock, which an agent's request waits on at its grant
 	// check (supervise.Machine.Claim).
 	beforeDecision func(claim.Token, supervise.Event)
+	// experimentSource is the random source admission and the workflow draw every `random`
+	// experiment with: admission's draw of each tree and issue it records, and the workflow's of
+	// each child it records (experiment.Draw). nil, in production, is experiment.CryptoSource; a
+	// test that compares a run's draws with a seed's hands in a source of that seed. The API's draw
+	// at an operator's spawn keeps its own: it draws only the tree-unit experiments, and an
+	// experiment that sets how an issue is done draws for each issue (config's checkExperimentPlans).
+	experimentSource func(uint64) (uint64, error)
 }
 
 // Run is the daemon. It refuses what it cannot run on before it touches anything — the
@@ -415,10 +444,15 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// would let their wakes out on the same instants, and the organization they share would see
 	// both bursts in one minute. A rate of zero is the pacing off, and each lane is handed no
 	// Reserve at all rather than one that paces nothing, which is how both read the pacing off
-	// (workflow.Config.Reserve, supervise.WakePace.Reserve).
-	var reserveWake func(time.Time) time.Time
+	// (workflow.Config.Reserve, supervise.WakePace.Reserve). wakeInterval is what one wake of it
+	// costs, which the gate reads a launch's lateness by (supervise.WakePace.Interval).
+	var (
+		reserveWake  func(time.Time) time.Time
+		wakeInterval time.Duration
+	)
 	if cfg.WorkerWakesPerMinute > 0 {
-		reserveWake = wakepace.New(cfg.WorkerWakesPerMinute, cfg.WorkerWakeBurst, rand.N[time.Duration]).Reserve
+		limiter := wakepace.New(cfg.WorkerWakesPerMinute, cfg.WorkerWakeBurst, rand.N[time.Duration])
+		reserveWake, wakeInterval = limiter.Reserve, limiter.Interval()
 	}
 	// The one gate of the stale-plugin refresh lane, built here because K is that same rate: the
 	// lane may hold one minute of the pacing at a time, and the sweep a minute later admits the
@@ -427,13 +461,13 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// gate to hand the machines and the refresh pass, and one place that reads a rate of zero.
 	refreshGate := supervise.NewRefreshGate(cfg.WorkerWakesPerMinute)
 	// The Apps' logins and the proof of each App's key wait out GitHub's transient failures within
-	// appMintRetry and its rate limit until the time GitHub names, within the start's own bound
-	// (startRateLimits), and the boot budget bounds neither, as it does not bound the plugin gate
+	// the start's retry and its rate limit until the time GitHub names, within the start's own bound
+	// (appCallBounds), and the boot budget bounds neither, as it does not bound the plugin gate
 	// or the image probe: the work after them has a budget of its own. The key proof under the
 	// App's JWT mints no token for an owner (proveAppKeys); every other step of the boot that reads
 	// GitHub or writes a cache's credential mints the token that step needs. The fill of a record
 	// that lacks its repository columns (backfillRepositories) makes one read per such record,
-	// bounded by installReadAttempt, and a read that fails leaves the record for the refresher
+	// bounded by the read attempt bound (repositoryReadBounds.attempt), and a read that fails leaves the record for the refresher
 	// rather than refusing the boot. The one-time rename pass (renameAtBoot, below) reads GitHub for
 	// a configured pair only while a stored row still names the pair's `from` (renamePass.run). The
 	// refresher prepares the records' repositories once the API serves (prepareAtStart), beside
@@ -441,7 +475,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// The workflow reads the machines' clock (overrides.clock, the wall clock in production), so a
 	// test clock moves the engine's deadlines and the idle, wake and stuck passes with the
 	// machines (dispatch://INFRA-3759).
-	workflow, err := openWorkflow(ctx, cfg, st, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, plan.installed, log, o.workflowTokens, o.githubAPI, reserveWake, plan.clock.Now)
+	workflow, err := openWorkflow(ctx, cfg, st, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, plan.installed, log, o.workflowTokens, o.githubAPI, reserveWake, plan.clock.Now, o.experimentSource, o.appCalls)
 	if err != nil {
 		st.Close()
 		if ctx.Err() != nil {
@@ -457,6 +491,8 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		boot, cancelAfterMint = bootBudget(ctx)
 		defer cancelAfterMint()
 		workflow.controllerFirstWake, workflow.idleTick, workflow.mergeStateRetry, workflow.entrySweep = o.controllerFirstWake, o.idleTick, o.mergeStateRetry, o.entrySweep
+		workflow.outboxSweep = o.outboxSweep
+		workflow.catchUpRetryDelay = o.catchUpRetry
 		plan.identity = workflow.identity
 		plan.repository, plan.launchRepository = workflow.issueRepository, workflow.launchRepository
 		plan.ensureWorkspace = workflow.ensureWorkspace
@@ -469,8 +505,9 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// from; Stage 2's supervision runs on claims alone, where every delivery holds and every
 		// tree closes.
 		plan.phaseHolds, plan.rootHears, plan.treeClosable = workflow.phaseHolds, workflow.rootHears, workflow.treeClosable
+		plan.phaseRole = workflow.phaseRole
 		plan.cacheRepositories = workflow.cacheRepositories
-		plan.rootTask = workflow.rootTask
+		plan.rootTask, plan.designNews = workflow.rootTask, workflow.designNews
 		plan.taskConfirmed = workflow.taskConfirmed
 		plan.sessionLost, plan.sessionStoreFault = workflow.sessionLost, workflow.sessionStoreFault
 		plan.podRefused = workflow.podRefused
@@ -479,7 +516,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// at once rather than at its next sweep. Only a daemon with a workflow runs an outbox to send
 		// the row, so only this one turns the publication on (store.PublishRoleHolders). It is turned
 		// on before supervision restores a claim, so no claim write of this boot is left out.
-		st.PublishRoleHolders(func(issue string) { workflow.wakeOutbox(issue, record.OutboxKindRoleHoldersPublish) })
+		st.PublishRoleHolders(workflow.wakeRoleHolders)
 		plan.providerErrorRunReached = workflow.providerErrorRunReached
 		// The project's pause (dispatch://INFRA-3759) runs its stops on this runtime's outbox, so
 		// it is built with the workflow, before supervision: the machines are handed its flag, its
@@ -545,12 +582,18 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	if workflow != nil {
 		apps, pauses = workflow.apps, workflow.pauses
 	}
-	s, err := openSupervision(boot, cfg, log, plan, st, apps, reserveWake, refreshGate, pauses)
+	s, err := openSupervision(boot, cfg, log, plan, st, apps, reserveWake, wakeInterval, refreshGate, pauses)
 	if err != nil {
 		listener.Close()
 		workflow.stop()
 		st.Close()
 		return err
+	}
+	// The Sandbox runtime's launches read the update round over a pod they would keep through the
+	// supervision, which exists only now; the runtime was built inside openSupervision before it
+	// (launchRounds). No machine exists yet, so no launch has asked.
+	if plan.launchRounds != nil {
+		plan.launchRounds.bind(s.roundPodEndsAtLaunch)
 	}
 	if plan.probe != nil {
 		report, err := plan.probe(ctx, s.runtime)
@@ -883,13 +926,18 @@ type plan struct {
 	// repository state's own (repositories.renames, which is cfg.RepositoryRenames). Never nil,
 	// as installed is not.
 	left *appauth.LeftOut
-	// phaseHolds, rootHears, rootTask and treeClosable are the workflow's answers to the
-	// supervisor's predicates; nil without a workflow, where every delivery is sent as it was
+	// phaseHolds, rootHears, rootTask, designNews and treeClosable are the workflow's answers to
+	// the supervisor's predicates; nil without a workflow, where every delivery is sent as it was
 	// queued and every tree closes.
 	phaseHolds   func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error)
 	rootHears    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error)
-	rootTask     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
+	rootTask     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, []byte, error)
+	designNews   func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
 	treeClosable func(ctx context.Context, c supervise.Claim) (bool, error)
+	// phaseRole is the workflow's answer to which role works an issue's current phase, which the
+	// pod start gate puts first among the starts no request raised (supervise.Deps.PhaseRole); nil
+	// without a workflow, where no role is the phase worker.
+	phaseRole func(ctx context.Context, issue string) (claim.Role, error)
 	// cacheRepositories is the repositories the runtime keeps a repository cache of: those of the
 	// project's live issue records and of the launches since their last read
 	// (workflowRuntime.cacheRepositories). A daemon with no workflow keeps none.
@@ -902,6 +950,12 @@ type plan struct {
 	// factory built before the workflow opens and the boot that fills it once it has hold the
 	// one holder. Nil under tmux, and for a replaced runtime, where no launcher reports.
 	volumeReports *volumeTrimReports
+	// launchRounds is how the Kubernetes runtime's launches read the update round over a pod
+	// they would keep (launchRounds, prepareSandbox, sandbox.Options.RoundPodEnds): a pointer, so
+	// the runtime built inside openSupervision and the boot that fills it once the supervision is
+	// open hold the one holder. Nil under tmux, whose panes run in no pod, and for a replaced
+	// runtime, which is handed no such reading.
+	launchRounds *launchRounds
 	// taskConfirmed tells the workflow each agent that took its task; nil without a workflow.
 	taskConfirmed func(c supervise.Claim)
 	// sessionLost and sessionStoreFault tell the workflow that a claim forgot its recorded session
@@ -910,9 +964,10 @@ type plan struct {
 	sessionLost       func(c supervise.Claim, cause supervise.SessionLoss, detail string)
 	sessionStoreFault func(c supervise.Claim, detail string)
 	// podRefused tells the workflow that a claim's launch was refused because its issue pod cannot
-	// run it until that pod is replaced, and whether to queue a start of the claim; nil without a
-	// workflow, where nobody is told and nothing is queued.
-	podRefused func(c supervise.Claim, pod, detail string, queue bool)
+	// run it until that pod is replaced, and the workflow queues a start of the claim wherever its
+	// outbox holds none that brings the claim back; nil without a workflow, where nobody is told and
+	// nothing is queued.
+	podRefused func(m *supervise.Machine, c supervise.Claim, pod, detail string)
 	// providerErrorRunReached tells the project's controller of a claim whose turns keep ending
 	// in a provider error; nil without a workflow, where nobody is told.
 	providerErrorRunReached func(c supervise.Claim, reason string)
@@ -924,8 +979,12 @@ type plan struct {
 	secrets       map[string]string
 	// nats is the user the daemon's own NATS connection authenticates as (natsConnection); no launch
 	// carries its seed unless it is the pane seed.
-	nats         natsConnection
-	instructions string
+	nats natsConnection
+	// instructions is the path of the daemon's copy of the deployment's instructions, "" when the
+	// configuration names none, and instructionsCopies every copy of an instructions file, which
+	// each launch reads again first (writeInstructionsCopies).
+	instructions       string
+	instructionsCopies *instructionsCopies
 	// dispatchToken is the Dispatch bearer dispatch_token_file names; "" without Dispatch.
 	dispatchToken string
 	// hookPrompts are the words boot read for each hook whose `prompt_file` names a file, by
@@ -999,6 +1058,8 @@ type plan struct {
 	streamWaitBegan func(claim.Token)
 	// beforeDecision is overrides.beforeDecision; nil runs nothing.
 	beforeDecision func(claim.Token, supervise.Event)
+	// streamListen is overrides.streamListen; nil binds the worker stream's address.
+	streamListen func(network, address string) (net.Listener, error)
 }
 
 // appOwners is, for a daemon of runtimeName, the owner accounts the addressing of every launch
@@ -1096,22 +1157,9 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		return plan{}, fmt.Errorf("construct role prompts: %w", err)
 	}
 
-	instructions := ""
-	if reads.instructions != nil {
-		if instructions, err = config.WriteDeploymentInstructions(reads.instructions, cfg.StateDir, cfg.Project); err != nil {
-			return plan{}, err
-		}
-	}
-
-	// One copy per declared variant that names an instructions file, each under its experiment's
-	// own directory, since two names may hold `-` and neither may hold `/`, and the `memory`
-	// block's arm at the block's own `memory-instructions.md` (config.VariantInstructionsFile,
-	// which is where a launch's arms read the copies back from: experiment.Launch). Boot writes
-	// them before the first pane opens.
-	for _, read := range reads.variantInstructions {
-		if err := config.WriteVariantInstructions(read.contents, cfg.StateDir, cfg.Project, read.experiment, read.variant); err != nil {
-			return plan{}, err
-		}
+	copies, instructions, err := writeInstructionsCopies(cfg, reads, log)
+	if err != nil {
+		return plan{}, err
 	}
 
 	clock := o.clock
@@ -1138,13 +1186,13 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 	}
 	p := plan{
 		repositories: newRepositories(cfg.Project, cfg.RepositoryRenames), installed: appauth.NewInstalled(), left: appauth.NewLeftOut(),
-		project: reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, nats: reads.nats, instructions: instructions,
+		project: reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, nats: reads.nats, instructions: instructions, instructionsCopies: copies,
 		dispatchToken: reads.dispatchToken, hookPrompts: reads.hookPrompts, prompts: composer, roleReferences: prompts.RoleReferences(),
 		tools: reads.tmux.tools, clock: clock, orphanSweep: orphanSweep, controllerRetry: controllerRetry, stopBudget: stop,
 		secretsEnroller: secretsEnroller, secretsRegistrar: secretsRegistrar, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
-		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision,
+		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision, streamListen: o.streamListen,
 	}
 	if cfg.Runtime.Name == "kubernetes" {
 		err = prepareSandbox(cfg, o, reads.sandbox, &p)
@@ -1302,7 +1350,7 @@ func launchVariants(st *store.Store, declared []config.Experiment, stateDir stri
 			return experiment.Arms{}, nil
 		}
 		var recorded map[string][]record.Assignment
-		if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := store.TransactWith(ctx, st.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			recorded, err = records.AssignmentsFor(ctx, tx, keys)
 			return err
@@ -1486,6 +1534,10 @@ type supervision struct {
 	// hand gives it supervise.NewRefreshGate(0), the gate of a daemon that paces nothing, which
 	// grants every refresh.
 	refreshGate supervise.RefreshAdmitter
+	// afterRefreshAdmit is a test's seam between Admit and supervisor.post in
+	// refreshStalePlugins, run for each admitted claim with no lock held; nil runs nothing. A
+	// test sets it on the supervision it builds by hand, and no production path sets it.
+	afterRefreshAdmit func(claim.Token, *supervise.RefreshCredit)
 	// pauses is the project's pause (projectPause), nil without a workflow: the boot loads its
 	// flag before it restores any claim, and asks the stop of every claim it finds live while the
 	// project is paused (start).
@@ -1496,6 +1548,12 @@ type supervision struct {
 	// passed (kubernetes), so the image rows of the capability report read present.
 	imageReport bootprobe.ImageReport
 	probed      bool
+	// cacheStatuses is the runtime's repository caches, each with its last health read, which the
+	// tick's capability report reads their room from (caches) and the state route reads once a
+	// request (source.caches): repositoryCachesOf(runtime), nil under any runtime but the Sandbox
+	// runtime, which alone keeps caches. A field, so that a test gives the report caches of its own
+	// without a cluster.
+	cacheStatuses func() []sandbox.CacheStatus
 	// reportMu guards reportedGaps and reports: the tick's reads, the API's readies and boot's run
 	// on different goroutines. reportedGaps are the open capabilities the last report logged
 	// (reportCapabilities). reports is each claim's latest capability report (LEGION-663), as its
@@ -1504,13 +1562,14 @@ type supervision struct {
 	reportMu     sync.Mutex
 	reportedGaps []string
 	reports      map[claim.Token]capabilities.Report
-	// podUpdateMu guards podUpdateOpenedAt and podUpdateOpened, the whole of what the update-round
-	// sweep keeps between ticks (reconcilePodUpdates): when this daemon last opened a pod round,
-	// and the rounds it has opened whose claims have not recorded one yet, by issue. The two pace
-	// the sweep's openings under `pod_update_rounds_per_minute` and `pod_update_max_open_rounds`;
-	// nothing of either is in the store, because neither decides a round, and a daemon that has
-	// just booted opens its first round at its first sweep. The sweep is one goroutine, and the
-	// mutex is what makes that a fact of this code rather than of its caller.
+	// podUpdateMu guards podUpdateOpenedAt and podUpdateOpened, what the update-round sweep keeps
+	// between ticks to pace its openings (reconcilePodUpdates): when this daemon last opened a pod
+	// round, and the rounds it has opened whose claims have not recorded one yet, by issue. The two
+	// pace the sweep's openings under `pod_update_rounds_per_minute` and
+	// `pod_update_max_open_rounds`; nothing of either is in the store, because neither decides a
+	// round, and a daemon that has just booted opens its first round at its first sweep. The sweep
+	// is one goroutine, and the mutex is what makes that a fact of this code rather than of its
+	// caller.
 	podUpdateMu       sync.Mutex
 	podUpdateOpenedAt time.Time
 	podUpdateOpened   map[string]string
@@ -1523,6 +1582,50 @@ type supervision struct {
 	// neither waits on what the other is doing.
 	podUpdateRoundsMu sync.Mutex
 	podUpdateRounds   api.PodUpdateRounds
+	// podUpdateWorkspaceMu guards podUpdateWorkspace, what the update-round sweep keeps between
+	// ticks of a round's read of its issue's workspace: the one read that a round made before its
+	// pod's replacement (readRoundWorkspace), by issue, naming the round it was made for and
+	// holding the answer or the read's error. A replacement the read stood in front of can be
+	// refused under the pod's launch turn or can fail, and the next sweep that reaches the same
+	// round's replacement reuses the answer rather than read again, so the round reads the
+	// workspace once and its line and message name that read. The entry goes where the sweep ends
+	// the round (endPodUpdates) and where the sweep finds the issue in another round or in none
+	// (forgetWorkspaceReads). Nothing of it is in the store, because it decides nothing: the
+	// replacement is made whatever the read found. A restart forgets it, and the round's next
+	// replacement reads the workspace again. A mutex of its own, because it has nothing to do with
+	// the pace podUpdateMu guards; the sweep is its one goroutine all the same.
+	podUpdateWorkspaceMu sync.Mutex
+	podUpdateWorkspace   map[string]workspaceRead
+	// podUpdateEndedMu guards podUpdateEnded, what the update-round sweep keeps between ticks of
+	// the rounds it has ended: by issue, the round whose end the sweep last posted to the round's
+	// members (endPodUpdates). The post is asynchronous (supervisor.post), and a member whose
+	// machine is in a relaunch takes it only once that relaunch is done, so its claim records the
+	// round until then. While a claim of the issue records that round, the sweep reads the claim
+	// as the end leaves it and decides nothing of that round again (reconcileIssuePodUpdate), and
+	// the round holds no open-round slot (beginPodUpdateSweep). The entry goes at the first sweep
+	// where no claim of the issue records the round (endedRounds). Within one daemon a post to a
+	// machine's queue is never lost (inbox), so the end reaches every member. Nothing of it is in
+	// the store: a restart forgets it with the posts not taken yet, and the next boot makes the end
+	// once more for a claim the store still holds in the round (dispatch://INFRA-3276 R5). A mutex
+	// of its own, for the reason podUpdateWorkspaceMu has one.
+	podUpdateEndedMu sync.Mutex
+	podUpdateEnded   map[string]string
+	// podUpdateLaunchMu guards podUpdateLaunchReplaced, what the launches into an issue's pod
+	// decided of the update round open over it (roundPodEndsAtLaunch, launchRound): by issue, the
+	// round, whether a launch replaced its pod as the round's own replacement and what that launch
+	// read of the round's end, and each claim whose launch into the pod the hook kept the pod for.
+	// The hook writes it inside a launching machine's decision and under the pod's launch turn; the
+	// next launch into the pod reads the claims it kept the pod for (dispatch://INFRA-4109 R7), and
+	// the sweep that reads a replaced pod gone, or another pod in its place, ends the round as the
+	// replacement the round made (endRoundALaunchReplaced). The entry goes where the sweep ends the
+	// round (endPodUpdates), where the hook writes one of another round of the issue, and at the
+	// first sweep that finds no claim of the issue that has not retired (forgetLaunchRounds).
+	// Nothing of it is in the store: a restart forgets it, and the sweep then reads a pod a launch
+	// replaced as a pod gone, whose message names the same members. A mutex of its own, never held
+	// across a runtime call, because the hook runs on a launching machine's goroutine beside the
+	// sweep.
+	podUpdateLaunchMu       sync.Mutex
+	podUpdateLaunchReplaced map[string]*launchRound
 	// reportStore persists each report as it arrives (store.Store), so a restart renders the
 	// sessions it re-adopts without waiting for them to report again.
 	reportStore capabilityReportStore
@@ -1678,8 +1781,9 @@ func pacedCatchUps(ctx context.Context, tx pgx.Tx, records record.Store, project
 // reserve is the daemon's one wake limiter as the machines reach it (run builds it, before the
 // workflow, which reserves from the same one): the moment each launch may run, and nil while the
 // operator paces nothing, which is the gate's reading of the pacing off (supervise's
-// reserveWake). The rate and the burst go with it for the line every wake writes, never for that
-// decision (supervise.WakePace).
+// reserveWake). interval is that limiter's Interval, and it must come from the same limiter: the
+// gate reads how late a launch whose turn the boot reserved may run by it (supervise.WakePace). The
+// rate and the burst go with them for the line every wake writes, never for that decision.
 //
 // refreshGate is the daemon's one stale-plugin refresh gate, threaded exactly as reserve is and
 // from the same place (run builds both, from the one rate): it goes on the machines' Deps, so
@@ -1691,7 +1795,8 @@ func pacedCatchUps(ctx context.Context, tx pgx.Tx, records record.Store, project
 // (Deps.Paused, the service's one atomic load), write a pause's stop through its stop transaction
 // (Deps.PauseStopped) and stamp each paced launch's let-out moment through it (Deps.WakeLetOut);
 // it reads the machines this supervisor holds for its catch-up and its resume.
-func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, p plan, st *store.Store, apps appauth.Source, reserve func(time.Time) time.Time, refreshGate supervise.RefreshAdmitter, pauses *projectPause) (*supervision, error) {
+func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, p plan, st *store.Store, apps appauth.Source,
+	reserve func(time.Time) time.Time, interval time.Duration, refreshGate supervise.RefreshAdmitter, pauses *projectPause) (*supervision, error) {
 	claims, err := st.Claims(boot)
 	if err != nil {
 		return nil, err
@@ -1708,7 +1813,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	sup := newSupervisor(supervising, st, p.project, cfg.StateDir, log)
 	sup.beforeDecision = p.beforeDecision
 	listener, err := stream.Listen(draining, p.stream,
-		sup.helloResolver(tokens, cfg.WorkerRPCTimeout), stream.Options{RPCTimeout: cfg.WorkerRPCTimeout, Log: log})
+		sup.helloResolver(tokens, cfg.WorkerRPCTimeout), stream.Options{RPCTimeout: cfg.WorkerRPCTimeout, Log: log, Listen: p.streamListen})
 	if err != nil {
 		cancel()
 		endDrain()
@@ -1739,11 +1844,11 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Conns:   listener,
 		Store:   pruning(gateLaunch(tokens.Recording(st), p.checkLaunch), runtime.SecretsDir(cfg.StateDir), log),
 		Specs: specs{
-			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, secrets: p.secrets, prompts: p.prompts,
+			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, copies: p.instructionsCopies, secrets: p.secrets, prompts: p.prompts,
 			roles:    cfg.Roles,
 			identity: p.identity, repository: p.launchRepository, owner: p.owner, stepWorkers: p.stepWorkers,
 			appOwners:   p.appOwners(cfg.Runtime.Name, deploymentApps(cfg.Roles)),
-			designSteps: cfg.Gates.Steps(), slackChannels: cfg.Projects[cfg.Project].SlackChannels,
+			designSteps: cfg.Gates.Steps(), productionCheck: cfg.Projects[cfg.Project].ProductionCheck, slackChannels: cfg.Projects[cfg.Project].SlackChannels,
 			runtimeName: cfg.Runtime.Name, plugins: p.plugins,
 			commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos, same: p.repositories.same,
 			backend: cfg.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
@@ -1754,8 +1859,10 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Secrets:                 p.secretsEnroller,
 		Registrar:               p.secretsRegistrar,
 		PhaseHolds:              p.phaseHolds,
+		PhaseRole:               p.phaseRole,
 		RootHears:               p.rootHears,
 		RootTask:                p.rootTask,
+		DesignNews:              p.designNews,
 		TreeClosable:            p.treeClosable,
 		ClaimActivity:           st.ClaimActivity,
 		TaskConfirmed:           p.taskConfirmed,
@@ -1770,6 +1877,10 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		// A timer that fires and a prompt's send each apply their decision on a goroutine of
 		// their own, beside the machine's feeding goroutine, so each takes a hold mark of its own.
 		Worker: store.ForConcurrentWorker,
+		// A claim write's bound counts from its connection: a boot relaunches every unfinished
+		// claim at once through the one pool, and a bound that counted the queue for it cut the
+		// last writes for the writes ahead of them (supervise.Deps.BoundWrite).
+		BoundWrite: store.BoundAfterAcquire,
 		Limits: supervise.Limits{
 			LaunchFailures: cfg.LaunchFailureLimit,
 			PromptFailures: cfg.PromptFailureLimit,
@@ -1784,11 +1895,13 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			LaunchBackoff:         launchBackoffFirst,
 		},
 		WakePace: supervise.WakePace{
-			Reserve: reserve,
-			Rate:    cfg.WorkerWakesPerMinute,
-			Burst:   cfg.WorkerWakeBurst,
+			Reserve:  reserve,
+			Interval: interval,
+			Rate:     cfg.WorkerWakesPerMinute,
+			Burst:    cfg.WorkerWakeBurst,
 		},
 		RefreshGate:        refreshGate,
+		PodStarts:          podStarts(cfg, p.clock),
 		PluginContract:     api.DaemonAPIVersion,
 		PluginRelaunchable: p.pluginRelaunchable,
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
@@ -1802,7 +1915,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		cfg: cfg, log: log, plan: p, stream: listener, runtime: rt, supervisor: sup, tokens: tokens, claims: claims,
 		reports: reportsOfClaims(reports, claims), reportStore: st, refreshGate: refreshGate, pauses: pauses,
 		cancel: cancel, draining: draining, endDrain: endDrain, decided: api.NewRouteDecisions(),
-		stopping: stopping, beginStop: beginStop, sessionStops: &sessionStops,
+		stopping: stopping, beginStop: beginStop, sessionStops: &sessionStops, cacheStatuses: repositoryCachesOf(rt),
 	}
 	// The machines' report of a stalled turn they ended goes to supervision, which is built
 	// after their deps: the one callback whose receiver is supervision itself, set here before
@@ -2037,8 +2150,10 @@ func (s sessionStop) send(session string, goneAt time.Time) {
 // launch_uncertain until the bounded retry succeeds. The relaunches run after hellos are
 // resolved, on a goroutine of their own, so start returns, and the API serves, without waiting for
 // any (relaunchUnfinished): every re-adopted claim on another plugin contract is posted its boot
-// stale-plugin relaunch first (refreshStalePlugins), over every one before any of them is
-// relaunched; a claim a refused attempt leaves stale is retried at the orphan sweep's own cadence
+// stale-plugin relaunch (refreshStalePlugins) before any claim is relaunched, but for one whose
+// record says its process died (recordedDeaths), which is relaunched for that death in the
+// unfinished launches' own pass and order, on this daemon's contract; a claim a refused attempt
+// leaves stale is retried at the orphan sweep's own cadence
 // from then on (reconcileOrphans), not just at this boot pass. A daemon that leaves the controller
 // to its operator first stops the controller's claim an earlier
 // boot under `controller: daemon` left (stopLaunchedController), which leaves it absent or
@@ -2130,9 +2245,19 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 		s.reconcileOrphans(store.ForConcurrentWorker(s.supervisor.ctx))
 	}()
 	s.endPluginRounds(s.claims)
-	s.refreshStalePlugins(s.claims, "boot")
-	if len(unfinished) > 0 {
-		s.relaunchUnfinished(unfinished, reconciled)
+	// A claim whose record says its process died is relaunched for that death in the boot's pass
+	// over the unfinished launches, in their order (relaunchUnfinished), and that launch is on this
+	// daemon's contract; a stale-plugin relaunch posted to it first would raise its launch outside
+	// that order and leave the turn the pass reserves it spent. The orphan sweep's own stale-plugin
+	// posts pass over a claim whose relaunch waits (parkedWakes), so this is the one post to skip.
+	deaths := recordedDeaths(s.claims)
+	s.refreshStalePlugins(slices.DeleteFunc(slices.Clone(s.claims), func(c supervise.Claim) bool { return slices.Contains(deaths, c.Token) }), "boot")
+	if len(deaths) > 0 {
+		s.log.Info("supervise: the previous daemon found these claims' processes dead and their relaunches waiting; this boot raises each relaunch again",
+			"claims", len(deaths))
+	}
+	if len(unfinished) > 0 || len(deaths) > 0 {
+		s.relaunchUnfinished(unfinished, deaths, reconciled)
 	}
 	return nil
 }
@@ -2155,9 +2280,11 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 // It runs before the stale-plugin pass rather than after it, and one machine's inbox is FIFO
 // (supervisor.inbox: "unbounded … and in order, so a claim sees its events as its sources
 // reported them"), so the StalePlugin that pass posts a moment later is decided behind this
-// end. That is what makes the order right: the refresh reads a claim already out of its round,
-// and the pass's own skip is by round kind for the same reason (refreshStalePlugins), since the
-// claims both passes walk are the boot's own reading, where the round still stands.
+// end. That is what makes the order right: the refresh's own decision reads a claim already out
+// of its round. The pass's skip is by round kind for the same reason (refreshStalePlugins): this
+// pass walks the boot's own reading, where the round still stands, and the refresh pass reads each
+// claim as its machine last published it, which still shows the round until the machine has
+// decided this end, so either pass can find the round standing.
 //
 // A retired claim is posted nothing it needs: its round went with it (supervise's retire calls
 // clearUpdate), and the end is ignored in that state anyway. A worker that answers such a round
@@ -2226,27 +2353,25 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // admissions have had their turns — posts the next K. Nothing of the refresh is lost by a
 // refusal, since this pass re-reads every stale claim at every sweep, which is why the refused
 // claim is passed over in silence rather than remembered anywhere. The admission is taken
-// before the post, never after the machine has decided, so a refresh in flight is counted: that
-// is what the gate's own floor is for (Correct). The gate is put right before any of this, from
-// the refresh wakes the machines really hold — the lane's own kind, the one kind only this lane
-// parks (supervise.WakePluginRefresh, parkedWakes). That correction is what takes back a credit
-// lost to a path that returns none, which the gate itself names: a machine gives its credit
-// back at the end of the decision that holds it, unless a refresh wake of its own is waiting,
-// and what is left to the correction is a post to a claim this daemon stopped supervising
-// (supervise.RefreshGate, supervise's endRefreshLane). It is the pass's own first act rather
-// than part of the read it counts from, because it resets the gate's admission window: a second
-// caller asking which claims hold a wake — a question parkedWakes is named for and nothing of
-// the gate's — would reset that window mid-sweep and let the lane admit a second K. The boot
-// pass corrects an empty gate, which is what a restart leaves: no machine of this daemon holds
-// a wake yet, so the reading is zero and the fleet's refresh starts with every credit free
-// (supervise.RefreshGate.Correct, which states what each half of it costs).
+// before the post, never after the machine has decided, so a refresh in flight is counted: the
+// gate counts every credit it has granted and not had back (supervise.RefreshGate, its rule of
+// return). The pass gives back the credit of a post the supervisor drops, because no machine ever
+// decides that post (supervisor.post). Before any of this the gate is corrected: it takes back
+// each credit, granted before its previous correction, that the machine holding it no longer
+// holds for a refresh wake of its own, which is the backstop for a credit lost to a path
+// that gives none back, and then sets its count from the refresh wakes the machines really hold
+// — the lane's own kind, the one kind only this lane parks (supervise.WakePluginRefresh,
+// parkedWakes) — which raises the count when the lane holds wakes no admission is behind, and
+// otherwise leaves it at the credits out. The boot pass corrects an empty gate, which is what a
+// restart leaves: no machine of this daemon holds a wake yet, so the reading is zero and the
+// fleet's refresh starts with every credit free (supervise.RefreshGate.Correct).
 //
 // A claim whose machine already holds a waiting wake is passed over before the gate is asked at
 // all, read from the same snapshot the correction counts (parkedWakes). The machine decides such
 // a claim nothing — refreshPlugin returns over a claim that already holds a wake of any kind, and
 // gives back whatever credit the post carried — so asking for one here would spend an admission
-// on a claim that raises no relaunch, and spend it for the whole of the pass, since the machine's
-// release lands after the pass has walked every claim. At a fleet's worth of stale claims that is
+// on a claim that raises no relaunch, and spend it for most of the pass, since the machine's
+// release lands only when its own goroutine decides the post. At a fleet's worth of stale claims that is
 // the lane admitting the K claims it already has waiting and none of the ones it has not, which
 // is the drain this change exists to shorten standing still for a sweep.
 //
@@ -2264,13 +2389,25 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // turn as the wave drains, and the last idle stragglers would wait sweeps behind credits that
 // raised nothing.
 //
-// The skip is as imperfect as the one above it, and costs exactly what that one costs. This
-// pass reads the claims of a snapshot, and the machine decides the post as the claim stands
-// then: a claim read idle can have started a turn by the time its post is decided, and one read
-// working can have ended it. The first is posted a credit the machine gives straight back
-// (refreshPlugin, endRefreshLane) and is relaunched at that turn's end or at a later sweep; the
-// second is posted none, and raises its relaunch at the next sweep, which is one minute. One
-// sweep is what an imperfect skip costs here, as it is for the wake the parked skip reads.
+// Every term of the lane is read of each claim as its machine last published it
+// (supervise.Machine.Published), not as claims holds it: claims says which claims to walk. A
+// sweep reads them before its orphan reconciliation, which under Kubernetes lists every Sandbox,
+// so by the time this pass walks them a claim can have been suspended, failed or retired, had its
+// relaunch start, started a turn, or registered this daemon's contract. A credit posted to such a
+// claim comes back only as its machine decides the post, which a machine deciding something else
+// first holds until that decision ends — a relaunch waits minutes for its pod — and until then the
+// gate counts it out and this pass refuses every claim after it: the lane spends the credit on
+// nothing for a sweep or more (dispatch://INFRA-3904). The published claim is the one the machine
+// decides the post against unless a decision lands in between, so what is left of that window is
+// one decision long rather than a reconciliation long.
+//
+// The skip of a claim in a turn is as imperfect as the parked skip above, and costs what that one
+// costs. The machine decides the post as the claim stands when the post reaches it: a claim read
+// idle can have started a turn by then, and one read working can have ended it. The first is
+// posted a credit the machine gives straight back (refreshPlugin, endRefreshLane) and is
+// relaunched at that turn's end or at a later sweep; the second is posted none, and its machine
+// asks the gate for a credit of its own as it decides the post (refreshPlugin's guard), so it is
+// relaunched then if a credit is free and at the next sweep otherwise.
 //
 // One line is written for the refusals of a pass, naming how many claims are left for a later
 // sweep, rather than one per claim: a boot over a fleet of several hundred refuses hundreds at
@@ -2289,6 +2426,9 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 	s.refreshGate.Correct(refreshes)
 	refused := 0
 	for _, c := range claims {
+		if m, supervised := s.supervisor.Machine(c.Token); supervised {
+			c = m.Published()
+		}
 		if !staleForTheLane(c, noInstall) {
 			continue
 		}
@@ -2309,11 +2449,17 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 			s.supervisor.post(c.Token, supervise.StalePlugin{Claim: c.Token, Trigger: trigger})
 			continue
 		}
-		if !s.refreshGate.Admit() {
+		credit := s.refreshGate.Admit()
+		if credit == nil {
 			refused++
 			continue
 		}
-		s.supervisor.post(c.Token, supervise.StalePlugin{Claim: c.Token, Trigger: trigger, Admitted: true})
+		if s.afterRefreshAdmit != nil {
+			s.afterRefreshAdmit(c.Token, credit)
+		}
+		if !s.supervisor.post(c.Token, supervise.StalePlugin{Claim: c.Token, Trigger: trigger, Credit: credit}) {
+			credit.Release()
+		}
 	}
 	if refused > 0 {
 		s.log.Info("supervise: the stale-plugin refresh gate is full; these claims are left to a later sweep",
@@ -2338,16 +2484,18 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 // A claim in a plugin round is in the set, and the term is by round kind for that reason. The
 // boot's own de-round pass has posted such a claim its end a moment before the refresh pass
 // runs (endPluginRounds), and one machine's inbox is FIFO, so that end is decided ahead of the
-// post and the machine sees a claim in no round at all. What that pass reads is the claims the
-// boot restored, where the round still stands, so a term of "in any round" would pass over
-// exactly the claims the de-round pass has just freed and leave each of them a sweep — a whole
-// minute, and a credit of the gate each — behind the rest of the fleet, and would have the
-// count hide that work at the one moment it exists to be read: a boot over a fleet an earlier
-// daemon left mid-round. A claim whose plugin round is somehow still standing when its machine
-// takes the post is decided nothing wrong by it either: refreshPlugin relaunches it, and no
-// plugin round holds a relaunch back, since the ask that did was deleted with the round. A
-// claim that left its round at a registration speaking this daemon's contract (supervise's
-// endCurrentPluginRound) is no longer stale at all, and the contract term above passes over it.
+// post and the machine sees a claim in no round at all. What that pass reads is each claim as its
+// machine last published it, which still shows the round until the machine has decided that end,
+// and the count reads the claims the store holds, where the round stands until that end's own
+// write. So a term of "in any round" would pass over exactly the claims the de-round pass has just
+// freed and leave each of them a sweep — a whole minute, and a credit of the gate each — behind
+// the rest of the fleet, and would have the count hide that work at the one moment it exists to
+// be read: a boot over a fleet an earlier daemon left mid-round. A claim whose plugin round is
+// somehow still standing when its machine takes the post is decided nothing wrong by it either:
+// refreshPlugin relaunches it, and no plugin round holds a relaunch back, since the ask that did
+// was deleted with the round. A claim that left its round at a registration speaking this
+// daemon's contract (supervise's endCurrentPluginRound) is no longer stale at all, and the
+// contract term above passes over it.
 //
 // noPluginInstall nil is every launch installing a plugin, which only a source a test builds by
 // hand holds: serve gives the state's source the rule over this deployment's configuration and
@@ -2422,9 +2570,9 @@ func (s *supervision) parkedWakes() (map[claim.Token]bool, int) {
 // noPluginInstall is c's launch installing no plugin at all, whatever contract the claim records:
 // the runtime is Kubernetes and the claim's role runs on Claude Code, whose plugin there is the
 // worker image's own claude-envoy. No install reaches it (specs.stalePluginInstall installs none
-// for that backend, and no workflow releases claude-envoy) and no relaunch moves it, because the
-// launch keeps the pod the claim already runs in: only a new image carries another claude-envoy,
-// which is what the pod round replaces the pod for.
+// for that backend, and no npm install reaches the image's own) and no relaunch moves it, because
+// the launch keeps the pod the claim already runs in: only a new image carries another
+// claude-envoy, which is what the pod round replaces the pod for.
 //
 // Under tmux a Claude Code role is exempt from nothing. Its pane loads the claude-envoy held at
 // LEGION_CLAUDE_PLUGIN_DIR (resolveClaude; tmux's ClaudeLaunch, whose MCP configuration and
@@ -2443,6 +2591,18 @@ func (s *supervision) parkedWakes() (map[claim.Token]bool, int) {
 // (api.Options.NoPluginInstall, api's staleClaim).
 func noPluginInstall(cfg config.Config, c supervise.Claim) bool {
 	return cfg.Runtime.Name == "kubernetes" && runtime.Of(cfg.BackendFor(c.Role)) == runtime.BackendClaude
+}
+
+// podStarts is the gate the machines of this daemon start their roles' processes through
+// (supervise.Deps.PodStarts, dispatch://INFRA-5297): one per daemon, on the machines' own clock,
+// under the Kubernetes runtime alone, where every role of an issue runs in the issue's one pod
+// under one memory limit. tmux runs each role in a pane of the host's, with no pod for two loads
+// to meet in, so it gets none and no start waits.
+func podStarts(cfg config.Config, clock supervise.Clock) *supervise.PodStarts {
+	if cfg.Runtime.Name != "kubernetes" {
+		return nil
+	}
+	return supervise.NewPodStarts(clock)
 }
 
 // reconcileBootOrphans retries only the boot reconciliation, boundedly. A listing error does not
@@ -2475,109 +2635,6 @@ func (s *supervision) reconcileBootOrphans(ctx context.Context) bool {
 		}
 	}
 	return false
-}
-
-// launchUnfinished starts only claims that remain queued with no locator, each on a goroutine of
-// its own, and returns once every one has: one relaunch never waits out another's launch, which
-// under a Sandbox can take minutes. A still-live old pane can reconnect while reconciliation was
-// uncertain; its hello changes the state before a later retry, and it must never be joined by a
-// second pane. It returns the claims whose release the store did not take, outside the daemon's
-// stop: each is still launch_uncertain, in memory as in the store, and nothing else in this boot
-// releases it, so the caller retries it (relaunchUnfinished). ctx is the relaunches' context; each
-// relaunch derives a context of its own from it.
-func (s *supervision) launchUnfinished(ctx context.Context, tokens []claim.Token) []claim.Token {
-	refused := make([]bool, len(tokens))
-	var launching sync.WaitGroup
-	for i, token := range tokens {
-		m, ok := s.supervisor.Machine(token)
-		if !ok {
-			continue
-		}
-		launching.Add(1)
-		go func() {
-			defer launching.Done()
-			// Each relaunch runs on a goroutine of its own beside the others, so each takes a
-			// hold mark of its own rather than ctx's.
-			refused[i] = s.launchUnfinishedClaim(store.ForConcurrentWorker(ctx), token, m)
-		}()
-	}
-	launching.Wait()
-	var failed []claim.Token
-	for i, token := range tokens {
-		if refused[i] {
-			failed = append(failed, token)
-		}
-	}
-	return failed
-}
-
-// launchUnfinishedClaim releases one unfinished launch and launches it again, both on ctx, and
-// reports whether the store refused the release (launchUnfinished).
-func (s *supervision) launchUnfinishedClaim(ctx context.Context, token claim.Token, m *supervise.Machine) bool {
-	released, err := m.ReleaseUncertainLaunch(ctx)
-	if err != nil {
-		return s.supervisor.decisionFailed(token, "release of an uncertain launch", err,
-			"supervise: release an uncertain launch; retrying at the next orphan sweep")
-	}
-	c := m.Claim()
-	if !released || c.State != supervise.StateQueued || c.Locator != nil {
-		s.log.Info("supervise: unrecorded launch settled without relaunch", "claim", token, "state", c.State)
-		return false
-	}
-	s.log.Warn("supervise: launching again a launch the previous daemon did not finish", "claim", token)
-	spawn := supervise.RequestSpawn{Claim: token}
-	if err := m.Handle(ctx, spawn); err != nil {
-		s.supervisor.decisionFailed(token, fmt.Sprintf("%T", spawn), err, "supervise: launch an unfinished launch again")
-	}
-	return false
-}
-
-// relaunchUnfinished launches tokens' unfinished launches on a goroutine of its own, never on the
-// boot: at once when the boot reconciliation succeeded (reconciled), then on the normal orphan-sweep
-// cadence, until none is left or the daemon stops. A relaunched worker reaches the daemon only once
-// the daemon is up — a Sandbox pod's launcher dials it through its Service, which routes only to a
-// pod whose probes pass, so only once the API answers /healthz, and a shim's hello is resolved only
-// once restoration has closed — so a relaunch the boot waited on could not register: it spent its
-// whole launch budget, launch_failure_limit × worker_boot_timeout_seconds, with the API unanswered.
-//
-// The pre-restart process of such a launch, when one still runs, may now say hello before its
-// relaunch writes the next generation, and be admitted: its claim, launch_uncertain or queued until
-// then, ignores the hello and refuses its registration, and at the next generation the fence drops
-// it. Its connection holds the claim's stream slot only while that process lives, and the relaunch
-// ends it before it starts the next generation: a tmux boot's reconciliation kills every pane no
-// claim records, and a Sandbox relaunch stops its launcher's earlier generation first. Once the next
-// generation is written, the old process's boot token resolves stale.
-//
-// Until the boot reconciliation has succeeded, each sweep retries it first — each reconciliation
-// has the bounded retry above, and only a success releases these claims to launch; once it has, a
-// sweep retries only the releases the store did not take (launchUnfinished), since the
-// reconciliation's proof that no predecessor runs still holds.
-func (s *supervision) relaunchUnfinished(tokens []claim.Token, reconciled bool) {
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
-		// The relaunches run on a goroutine of their own beside the machines and the orphan sweep,
-		// so this goroutine takes a hold mark of its own.
-		relaunching := store.ForConcurrentWorker(s.supervisor.ctx)
-		if reconciled {
-			tokens = s.launchUnfinished(relaunching, tokens)
-		}
-		ticker := time.NewTicker(s.plan.orphanSweep)
-		defer ticker.Stop()
-		for len(tokens) > 0 {
-			select {
-			case <-s.supervisor.ctx.Done():
-				return
-			case <-ticker.C:
-			}
-			if !reconciled {
-				if reconciled = s.reconcileBootOrphans(relaunching); !reconciled {
-					continue
-				}
-			}
-			tokens = s.launchUnfinished(relaunching, tokens)
-		}
-	}()
 }
 
 // reconcileOrphans ends, every sweep interval, whatever the runtime holds that belongs to none of
@@ -2739,6 +2796,10 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	// daemon without one leaves pauses the nil interface, which the API reads as no pause service
 	// and answers every pause and resume PAUSE_UNAVAILABLE.
 	var pauses api.PauseService
+	// The replay and the discard of the intake's give-ups, which a daemon with no workflow runs
+	// no intake for: the API answers their routes 503 then. It is left a nil interface rather than
+	// a nil *intake.GiveUps, which the API would read as an intake.
+	var giveUps api.GiveUps
 	if workflow != nil {
 		records, handlers, client, tokens, grants = workflow.records, workflow.handlers, workflow.dispatch, workflow.apps, workflow.grants
 		claimReady, prepare, unread, await = workflow.claimReady, workflow.prepareObserved, workflow.repositoryUnread, workflow.awaitRecovery
@@ -2748,6 +2809,13 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		consumerLag = workflow.consumers.Lag
 		pauses = workflow.pauses.service
 		architectStalls = workflow.admission.ArchitectStallArms
+		// A replay applies a stored message through the handlers a live delivery runs, on the
+		// consumers' pool and spec, so it is judged as the same message delivered now would be.
+		replays, err := intake.NewGiveUps(workflow.consumers.Records(), workflow.handlers...)
+		if err != nil {
+			return fmt.Errorf("build the replay of the intake's give-ups: %w", err)
+		}
+		giveUps = replays
 	}
 	// Under `controller: daemon` the keeper launches and keeps the project's controller, and takes
 	// its ready. The liveness sweep runs beside it under either mode, never behind it.
@@ -2770,11 +2838,11 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			startedAt:    startedAt,
 			now:          p.clock.Now,
 			secretsLogin: p.secretsLogin,
-			deployment:   s.deployment,
+			deployment:   s.deploymentWith,
 			reports:      s.capabilityReports,
 			wakes:        s.waitingWakes,
 			repositories: p.repositories,
-			caches:       repositoryCachesOf(s.runtime),
+			caches:       s.cacheStatuses,
 			gatedSteps:   cfg.Gates.Steps(),
 			experiments:  cfg.ExperimentsDeclared(),
 			settings:     api.SettingsOf(cfg),
@@ -2784,8 +2852,8 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			noPluginInstall: func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
 			architectStalls: architectStalls,
 		},
-		StateTransactions:  st,
 		ConsumerLag:        consumerLag,
+		Intake:             giveUps,
 		CallerPod:          callerPodOf(s.runtime),
 		Ready:              ready.serving,
 		Supervisor:         s.supervisor,
@@ -2807,6 +2875,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		Decisions:          s.decided,
 		Log:                s.log,
 		Pool:               st.Pool(),
+		StateTransactions:  st.Pool(),
 		Handlers:           handlers,
 		PrepareRepository:  prepare,
 		RepositoryUnread:   unread,
@@ -2937,9 +3006,9 @@ type source struct {
 	// secretsLogin is the daemon's own agent-secrets token login client (newSecretsLogin), read
 	// through LoginStatus for the state route; nil when the deployment enrolls no pod.
 	secretsLogin *cipher.Client
-	// deployment is the deployment's capabilities as this boot knows them (supervision.deployment),
-	// whose report the state carries.
-	deployment func() capabilities.Deployment
+	// deployment is the deployment's capabilities as this boot knows them with the repository
+	// caches it is handed (supervision.deploymentWith), whose report the state carries.
+	deployment func([]sandbox.CacheStatus) capabilities.Deployment
 	// reports is each claim's latest capability report (supervision.capabilityReports), which the
 	// projection shows on the claim's view whatever process reported it.
 	reports func() map[claim.Token]capabilities.Report
@@ -2950,10 +3019,13 @@ type source struct {
 	// workflow, whose state serves no repository.
 	repositories *repositories
 	// caches is the Kubernetes runtime's repository caches with their last health reads
-	// (sandbox.Runtime.RepositoryCaches); nil under a runtime that keeps none.
+	// (supervision.cacheStatuses, sandbox.Runtime.RepositoryCaches); nil under a runtime that keeps
+	// none. State reads it once and hands that read to deployment and to the repositories' view
+	// alike, so the capability row and `repositories` describe one read.
 	caches func() []sandbox.CacheStatus
-	// gatedSteps are the design-gate steps the deployment gates (config.Gates.Steps), which every
-	// root of the state answers its own state of; the empty list gates none.
+	// gatedSteps are the design-gate steps the deployment gates (config.Gates.Steps). Every root
+	// of the state answers the steps its tree is gated on, which these steps and the root's gate
+	// rows make (record.TreeSteps); the empty list gates none.
 	gatedSteps []record.DesignStep
 	// experiments are the project's declared experiments (config.Project.ExperimentsDeclared),
 	// whose order every issue's `assignments` ride in; the empty list declares none. It is read
@@ -3015,17 +3087,18 @@ type source struct {
 //
 // It is also where the outbox learns of its rows: every write that makes a row due — Enqueue, and
 // ExpediteOutbox — wakes the row's lane (outbox.wake) once the transaction has committed, through
-// the transaction's commit hooks (intake.OnCommit), so no lane runs a row it cannot yet read, and
+// the transaction's commit hooks (store.OnCommit), so no lane runs a row it cannot yet read, and
 // no lane polls for one. wake is nil where there is no workflow to wake, or where the writer wakes
 // its own lanes once it commits: the API-only daemon, the state route's reads, the stranded report
 // and the project's pause (projectPause.stopped).
 //
 // And it is where the refresher learns that the live records may have changed: each write that can
 // add a record to the live set or take one out of it — PutIssue, which writes an issue's phase and
-// status, and ReleaseSlot and ReleaseSlotForWait, which take an issue's slot away, the tree's
-// close among them — asks for one read of the live records once its transaction commits (live,
-// the workflow's wakeLive, which holds one request at most), so the repository caches and legion
-// state follow the records without a timer. live is nil where no refresher runs.
+// status, and ReleaseSlot, ReleaseSlotForWait and ReleaseTreeSlots, which take slots away, the
+// tree's close and its root's re-admission among them — asks for one read of the live records once
+// its transaction commits (live, the workflow's wakeLive, which holds one request at most), so the
+// repository caches and legion state follow the records without a timer. live is nil where no
+// refresher runs.
 type projectRecords struct {
 	record.Store
 	project string
@@ -3060,15 +3133,24 @@ func (s projectRecords) ReleaseSlotForWait(ctx context.Context, tx pgx.Tx, issue
 	return nil
 }
 
+func (s projectRecords) ReleaseTreeSlots(ctx context.Context, tx pgx.Tx, tree string) ([]string, error) {
+	released, err := s.Store.ReleaseTreeSlots(ctx, tx, tree)
+	if err != nil {
+		return nil, err
+	}
+	s.liveOnCommit(ctx)
+	return released, nil
+}
+
 // liveOnCommit asks for a read of the live records once the transaction that wrote one commits
-// (intake.OnCommit), and at once for a write outside a commit scope, whose read then finds the
+// (store.OnCommit), and at once for a write outside a commit scope, whose read then finds the
 // write or a later one does.
 func (s projectRecords) liveOnCommit(ctx context.Context) {
 	if s.live == nil {
 		return
 	}
-	if intake.CommitScoped(ctx) {
-		intake.OnCommit(ctx, s.live)
+	if store.CommitScoped(ctx) {
+		store.OnCommit(ctx, s.live)
 		return
 	}
 	s.live()
@@ -3259,8 +3341,11 @@ func (s projectRecords) ClearGeneration(ctx context.Context, tx pgx.Tx, issue st
 	return s.Store.ClearGeneration(ctx, tx, issue, now)
 }
 
-// ClearTreeGeneration is ClearGeneration for every issue of tree, each of which is of tree's
-// project: a record takes its root's project when the workflow writes it.
+// ClearTreeGeneration empties the generation-scoped facts of every issue of tree, as
+// ClearGeneration does for one issue, and folds the phases rows and clears the steps of the root
+// alone, the issue whose generation a re-admission raises (record.Postgres.ClearTreeGeneration).
+// Each issue of tree is of tree's project: a record takes its root's project when the workflow
+// writes it.
 func (s projectRecords) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error {
 	if !s.ownsKey(record.OutboxKindDesignGatesPublish, tree) {
 		return nil
@@ -3285,7 +3370,7 @@ func (s projectRecords) PutSlot(ctx context.Context, tx pgx.Tx, slot record.Slot
 }
 
 // wakeOnCommit wakes the row's lane once the transaction that wrote it commits. A write made
-// outside a commit scope (intake.WithCommitHooks) has no commit to wait for: its lane is woken at
+// outside a commit scope (store.Transact) has no commit to wait for: its lane is woken at
 // once, and the write is logged with its caller, since a lane woken before the row is visible
 // finds nothing and the row then waits for the sweep — every transaction that writes a row is
 // meant to be scoped, and one that is not is a bug to fix where the log names.
@@ -3293,8 +3378,8 @@ func (s projectRecords) wakeOnCommit(ctx context.Context, row record.OutboxRow) 
 	if s.wake == nil {
 		return
 	}
-	if intake.CommitScoped(ctx) {
-		intake.OnCommit(ctx, func() { s.wake(row.Issue, row.Kind) })
+	if store.CommitScoped(ctx) {
+		store.OnCommit(ctx, func() { s.wake(row.Issue, row.Kind) })
 		return
 	}
 	// Caller 2 is the caller of Enqueue or ExpediteOutbox, past this helper and the method.
@@ -3304,17 +3389,18 @@ func (s projectRecords) wakeOnCommit(ctx context.Context, row record.OutboxRow) 
 	s.wake(row.Issue, row.Kind)
 }
 
-// serializedTx runs write in one transaction under the lock every fact applies under
+// serializedTx runs write in one Transact under the lock every fact applies under
 // (intake.SerializeFacts), so no fact applies with a copy of a record read before write wrote it
 // or read it: the backfill's writes (fillRepositories, nameRepositories), the rename pass's
-// (renamePass.write) and the refresher's read of the live records (refreshLive). A lock not taken
+// (renamePass.write) and the refresher's read of the live records (refreshLive). write runs on
+// the transaction's context, where its commit hooks register (store.OnCommit). A lock not taken
 // is the error what names, wrapping the lock's own.
-func serializedTx(ctx context.Context, pool *store.Pool, what string, write func(pgx.Tx) error) error {
-	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+func serializedTx(ctx context.Context, pool *store.Pool, what string, write func(ctx context.Context, tx pgx.Tx) error) error {
+	return store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := intake.SerializeFacts(ctx, tx); err != nil {
 			return fmt.Errorf("%s: %w", what, err)
 		}
-		return write(tx)
+		return write(ctx, tx)
 	})
 }
 
@@ -3397,6 +3483,21 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 			}
 		}
 	}
+	// The standing hold of each issue's pod, read from pod_holds in the same snapshot, one
+	// statement for the whole project. The idle rule writes it to that table alone, so this is the
+	// one surface that says why a quiet pod still runs. pod_holds is
+	// keyed on the claim token's spelling of the project, as the idle pass writes it
+	// (releaseUnownedPods says why the two spellings differ).
+	holds, err := s.store.StandingPodHoldsTx(ctx, tx, s.projectToken)
+	if err != nil {
+		return api.State{}, nil, err
+	}
+	for key, hold := range holds {
+		if view, shown := state.Issues[key]; shown {
+			view.PodHold = api.PodHoldViewOf(hold)
+			state.Issues[key] = view
+		}
+	}
 	state.ClaimsToRefresh = claimsToRefresh(claims, s.noPluginInstall)
 	// The project's pause, read through tx as every other durable fact here (api.PauseStateTx):
 	// `paused` with the roles it waits on and the rows it holds while the project is paused, and
@@ -3421,7 +3522,11 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	if s.secretsLogin != nil {
 		state.AgentSecretsLogin = &api.AgentSecretsLoginView{State: s.secretsLogin.LoginStatus().State}
 	}
-	state.Capabilities = api.CapabilityStatesOf(s.deployment().Report())
+	var caches []sandbox.CacheStatus
+	if s.caches != nil {
+		caches = s.caches()
+	}
+	state.Capabilities = api.CapabilityStatesOf(s.deployment(caches).Report())
 	if s.repositories != nil {
 		// The repositories the block lists are those of the live records this same transaction
 		// reads, so the list and the issues the body shows agree by construction rather than
@@ -3433,10 +3538,6 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 		live, err := repositoriesOf(issues)
 		if err != nil {
 			return api.State{}, nil, err
-		}
-		var caches []sandbox.CacheStatus
-		if s.caches != nil {
-			caches = s.caches()
 		}
 		state.Repositories = s.repositories.view(live, caches)
 	}

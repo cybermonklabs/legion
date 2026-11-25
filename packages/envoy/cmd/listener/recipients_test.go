@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -13,7 +14,6 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -184,9 +185,8 @@ type countedCopy interface {
 // before any route has read either store.
 func (rig *recipientRig) watchCopiesOn(t *testing.T, clock *listenerClock) map[string]countedCopy {
 	t.Helper()
-	unwrapped := func(kv jetstream.KeyValue) jetstream.KeyValue { return kv }
-	replaceWatcher(t, rig.harness.registry, "interest registry", unwrapped, kvwatch.WithNow(clock.Now))
-	replaceWatcher(t, rig.harness.sessions, "session registry", unwrapped, kvwatch.WithNow(clock.Now))
+	replaceWatcher(t, rig.harness.registry, "watcher", "interest registry", unwrappedKV, kvwatch.WithNow(clock.Now))
+	replaceWatcher(t, rig.harness.sessions, "watcher", "session registry", unwrappedKV, kvwatch.WithNow(clock.Now))
 	copies := map[string]countedCopy{"interest": rig.harness.registry, "session": rig.harness.sessions}
 	awaitCopiesServable(t, copies, "the interest and session copies to complete their first reads")
 	return copies
@@ -213,6 +213,7 @@ func awaitCopiesServable(t *testing.T, copies map[string]countedCopy, what strin
 // stored, a team topic and a topic of another of the stream's subjects alike, and both carry the
 // counts.
 func TestAPublishCountsEverySessionTheTopicIsForOtherThanItsSender(t *testing.T) {
+	t.Parallel()
 	rig := newRecipientRig(t)
 	const topic = "notifications.team.recipient-count"
 	if !bus.StreamCaptures(topic) {
@@ -273,6 +274,7 @@ func TestAPublishCountsEverySessionTheTopicIsForOtherThanItsSender(t *testing.T)
 // filter (TestARefollowWritesTheKnownSessionRecord). After a clean stop nothing registers again,
 // so a record left stale here keeps the wrong count for the record's whole 30 days.
 func TestASessionThatUnsubscribesStopsBeingCounted(t *testing.T) {
+	t.Parallel()
 	rig := newRecipientRig(t)
 	const topic = "notifications.slack.channel.c-unsubscribed-count"
 	if !bus.StreamCaptures(topic) {
@@ -302,6 +304,7 @@ func TestASessionThatUnsubscribesStopsBeingCounted(t *testing.T) {
 // A role topic carries neither count: its answer names the holder the message was forwarded to,
 // which is what a role send's sender reads.
 func TestAPublishToARoleTopicCarriesNeitherCount(t *testing.T) {
+	t.Parallel()
 	rig := newRecipientRig(t)
 	const role = "recipient-count-holder"
 	claimRoleFor(t, rig.harness.registry, rig.harness.sessions, "ses_holder", role, nil)
@@ -328,6 +331,7 @@ func TestAPublishToARoleTopicCarriesNeitherCount(t *testing.T) {
 // with the live sessions alone: its sender sees an answer with no count key at all. The same
 // session, on a listener whose store answers, is counted, so the absence is the store's.
 func TestAListenerWithNoKnownSessionStoreCarriesNeitherCount(t *testing.T) {
+	t.Parallel()
 	rig := newRecipientRig(t)
 	const topic = "notifications.team.degraded-count"
 	rig.register(t, "ses_subscriber", []string{topic})
@@ -346,6 +350,7 @@ func TestAListenerWithNoKnownSessionStoreCarriesNeitherCount(t *testing.T) {
 // known-session store answers throughout, so each absence is the stale copy's, and a read of the
 // bucket that completes serves that copy, and both counts, again.
 func TestAPublishCountsOnlyFromCopiesThatCanBeServed(t *testing.T) {
+	t.Parallel()
 	for _, stale := range []string{"session", "interest"} {
 		t.Run(stale+" copy", func(t *testing.T) {
 			rig := newRecipientRig(t)
@@ -386,9 +391,12 @@ func TestAPublishCountsOnlyFromCopiesThatCanBeServed(t *testing.T) {
 }
 
 // The counts cost no JetStream API request: 100 publishes over warm caches send none, and the
-// probe proves it is watching by seeing the one call the test makes itself.
+// probe proves it is watching by seeing the one call the test makes itself. The rig's connection
+// sends nothing else in the window (newQuietKnownSessionRig), so what the probe counts is the
+// publish path's, however long the publishes take.
 func TestAHundredPublishesSendNoJetStreamAPIRequest(t *testing.T) {
-	rig := newRecipientRig(t)
+	t.Parallel()
+	rig := &recipientRig{knownSessionRig: newQuietKnownSessionRig(t)}
 	const topic = "notifications.team.recipient-count-api-free"
 	rig.register(t, recipientSender, []string{topic})
 	// One session the known-session records alone name, stopped so that it is counted and not
@@ -407,11 +415,7 @@ func TestAHundredPublishesSendNoJetStreamAPIRequest(t *testing.T) {
 		assertCounts(t, rig.publish(t, topic, "api-free-"+strconv.Itoa(i)), 2, 1)
 	}
 
-	control := "$JS.API.STREAM.INFO." + bus.Stream
-	if _, err := rig.harness.client.JS().StreamInfo(bus.Stream); err != nil {
-		t.Fatalf("the probe's control call: %v", err)
-	}
-	if calls := probe.awaitCall(t, control); len(calls) > 0 {
+	if calls := probe.callsBeforeControl(t, rig.harness.client.JS()); len(calls) > 0 {
 		t.Fatalf("100 publishes sent %d JetStream API requests: %v", len(calls), calls)
 	}
 }
@@ -419,13 +423,22 @@ func TestAHundredPublishesSendNoJetStreamAPIRequest(t *testing.T) {
 // jetStreamAPIProbe watches the JetStream API requests one connection sends. A second connection
 // to the same server subscribes to the API subjects given, and each request is attributed to its
 // sender by the response inbox it carries, which is one connection's alone
-// (jetStreamInboxPrefix): a NATS message says nothing else about who sent it. A route that must
-// answer from memory asserts the probe took none of its calls while it ran.
+// (jetStreamInboxPrefix): a NATS message says nothing else about who sent it, so the probe also
+// takes what runs beside the routes on that connection, which a row's rig holds off
+// (newQuietKnownSessionRig). A route that must answer from memory asserts the probe took none of
+// its calls while it ran (callsBeforeControl).
 type jetStreamAPIProbe struct {
 	mu       sync.Mutex
 	observed []string
 	prefix   string
 }
+
+// jetStreamAPIControlStream is the stream the probe's control call asks about
+// (callsBeforeControl). No server holds it and nothing else names it, so the call is answered
+// "stream not found" and only that call ends a count. A control on a stream the listener reads
+// would end the count at the first read of it the connection made on its own, and hide every
+// request the route sent after that.
+const jetStreamAPIControlStream = "JETSTREAM_API_PROBE_CONTROL"
 
 // watchJetStreamAPI starts a probe of the JetStream API calls conn sends on subjects, over a
 // connection of its own to uri, and returns it ready: its subscriptions are flushed, so every call
@@ -455,29 +468,28 @@ func watchJetStreamAPI(t *testing.T, uri string, conn *natsgo.Conn, subjects ...
 	return probe
 }
 
-// awaitCall waits for a call on subject, the control call its caller makes to show the probe is
-// watching, and returns every call the probe took before it. The server hands one connection's
-// messages on in the order it took them, so once the control call has arrived every call that
-// connection sent before it has arrived too.
-func (p *jetStreamAPIProbe) awaitCall(t *testing.T, subject string) []string {
+// callsBeforeControl sends the probe's control call through js, the watched connection's
+// JetStream context, waits for the probe to see it, and returns every call the probe took before
+// it. The server hands one connection's messages on in the order it took them, so once the control
+// call has arrived every call that connection sent before it has arrived too.
+func (p *jetStreamAPIProbe) callsBeforeControl(t *testing.T, js natsgo.JetStreamContext) []string {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		p.mu.Lock()
-		index := slices.Index(p.observed, subject)
-		var before []string
-		if index >= 0 {
-			before = slices.Clone(p.observed[:index])
-		}
-		p.mu.Unlock()
-		if index >= 0 {
-			return before
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the probe did not see the control call on %s within 5s, so it is watching nothing", subject)
-		}
-		time.Sleep(10 * time.Millisecond)
+	if _, err := js.StreamInfo(jetStreamAPIControlStream); !errors.Is(err, natsgo.ErrStreamNotFound) {
+		t.Fatalf("the probe's control call answered %v, want %v", err, natsgo.ErrStreamNotFound)
 	}
+	subject := "$JS.API.STREAM.INFO." + jetStreamAPIControlStream
+	var before []string
+	testwait.Eventually(t, "the probe to see the control call on "+subject+", without which it watches nothing", func() bool {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		index := slices.Index(p.observed, subject)
+		if index < 0 {
+			return false
+		}
+		before = slices.Clone(p.observed[:index])
+		return true
+	})
+	return before
 }
 
 // jetStreamInboxPrefix is the prefix every response inbox conn puts on a request carries, which no

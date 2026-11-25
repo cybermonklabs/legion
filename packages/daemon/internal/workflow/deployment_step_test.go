@@ -44,22 +44,18 @@ func deploymentEngine() *Engine { return withDeployment(returnEngine()) }
 const stepHead = "0123456789abcdef0123456789abcdef01234567"
 
 // workerOr is the claim role's phases row of key now names on the step it runs, the claim a real
-// route's grant carries (the step's worker), or fallback where the row runs no step or names no
-// claim: a completion from any other claim of the role is refused (HANDOFF_NOT_THE_STEPS_WORKER).
-// The row now is the role's row with the highest entry (record.PhaseRowOf), since a role that
-// stands at two steps keeps a row for each.
+// route's grant carries (the step's worker), or fallback where the row names no agent of its own
+// (record.NamesItsAgent): a completion from any other claim of the role is refused,
+// HANDOFF_NOT_THE_STEPS_WORKER, or HANDOFF_NOT_CURRENT_PHASE where it is of an entry that claim
+// served on a step the task has left (intake.AnotherAgentsStep). The row now is the role's row with
+// the highest entry (record.PhaseRowOf), since a role that stands at two steps keeps a row for
+// each. It is record.WorkerClaim's rule, with fallback in place of the role's own token.
 func workerOr(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role, fallback claim.Token) claim.Token {
 	t.Helper()
-	var token string
-	if err := pool.QueryRow(t.Context(), `select coalesce((select claim from phases
-		where issue = $1 and role = $2 and step_task <> '' and claim <> ''
-		order by entry desc, step_task desc, step_place desc limit 1), '')`, key, string(role)).Scan(&token); err != nil {
-		t.Fatalf("read the worker on %s's %s step: %v", key, role, err)
+	if row := storedPhaseRow(t, pool, key, role); record.NamesItsAgent(row) {
+		return row.Claim
 	}
-	if token == "" {
-		return fallback
-	}
-	return claim.Token(token)
+	return fallback
 }
 
 // stepReports applies role's completion of key at its generation 1 with verdict ("" for none),
@@ -373,13 +369,9 @@ func TestARetryOfADeploymentStepRestartsItsRole(t *testing.T) {
 		engine := deploymentEngine()
 		root := checkerAtStep2(t, pool)
 		applyRefusingNothing(t, pool, engine, intake.ClaimFailed{Issue: root.Key, Role: "checker", Reason: "the pane died"})
-		project, err := claim.ProjectToken(root.Project)
+		checker, err := stepClaim(root, root.Key, "checker")
 		if err != nil {
-			t.Fatalf("the project token: %v", err)
-		}
-		checker, err := claim.NewToken(project, root.Key, "checker")
-		if err != nil {
-			t.Fatalf("the checker's token: %v", err)
+			t.Fatal(err)
 		}
 
 		applyRefusingNothing(t, pool, engine, intake.RetryOrEscalate{Issue: root.Key, Decision: intake.RetryDecision, Claim: checker})
@@ -446,7 +438,7 @@ func TestTheStartOfADeploymentStepNamesItsAgent(t *testing.T) {
 	}
 }
 
-// A move back that names returnTo goes to the place it names (ruling 11), judged by the one judge
+// A move back that names returnTo goes to the place it names, judged by the one judge
 // of a named place the fail path uses (returnStep): in `implementer checker linter
 // acceptance:owner` at accepting, the owner's move to step with returnTo 2 starts the checker, and
 // with returnTo 3 the linter; a to that is not the phase the named step runs as is refused, and so
@@ -738,6 +730,150 @@ func TestABootStopsATaskWhoseRoleTheDeploymentLost(t *testing.T) {
 	applyRefusingNothing(t, kept, deploymentEngine(), intake.DaemonBooted{Boot: 1})
 	if task := taskOf(t, kept, deploymentEngine(), defined.Key); task.State != record.TaskRunning {
 		t.Fatalf("task a under a deployment that defines the checker = %s (%q) after the boot, want running", task.State, task.StoppedReason)
+	}
+}
+
+// A keyed agent runs in the slot of its name, the role of its first step (record.NameAgents), so
+// in `implementer checker:a tester:a` key a's agent is named checker and runs the tester's step in
+// the checker's slot. A daemon that restarts with settings that no longer define the checker,
+// while the task stands at that tester step, stops the task at its boot as it stops a step of the
+// checker itself: the reason names the step, the agent and its slot's role, and the owner is told
+// once, in a task-stopped notice that names the checker. The control is the same task under a
+// deployment that defines the checker, which the boot leaves running.
+func TestABootStopsATaskWhoseAgentIsNamedForARoleTheDeploymentLost(t *testing.T) {
+	keyedAtTester := func(t *testing.T, pool *pgxpool.Pool) record.Issue {
+		t.Helper()
+		root := stepRoot(t, pool, phase.Testing)
+		seedStepsAt(t, pool, root.Key, root.Generation, 3, map[string]string{"checker": "testing"}, "implementer", "checker:a", "tester:a")
+		seedTreeLifecycle(t, pool, root.Key)
+		return root
+	}
+	pool := migratedPool(t)
+	engine := lostChecker()
+	root := keyedAtTester(t, pool)
+
+	applyRefusingNothing(t, pool, engine, intake.DaemonBooted{Boot: 1})
+
+	const why = "step 3 is the work of the agent checker, which runs in the slot of the role checker, which the deployment no longer defines"
+	if task := taskOf(t, pool, engine, root.Key); task.State != record.TaskStopped || task.StoppedReason != why {
+		t.Fatalf("task a after the boot = %s stopped with %q, want stopped with %q", task.State, task.StoppedReason, why)
+	}
+	stopped := noticesOf(t, pool, root.Key, "task-stopped")
+	if len(stopped) != 1 || stopped[0].Role != "checker" || stopped[0].Reason != "task a of LEGION-208 was stopped: "+why {
+		t.Fatalf("the task-stopped notices = %+v, want exactly one, naming the checker, with the reason", stopped)
+	}
+
+	kept := migratedPool(t)
+	defined := keyedAtTester(t, kept)
+	applyRefusingNothing(t, kept, deploymentEngine(), intake.DaemonBooted{Boot: 1})
+	if task := taskOf(t, kept, deploymentEngine(), defined.Key); task.State != record.TaskRunning {
+		t.Fatalf("task a under a deployment that defines the checker = %s (%q) after the boot, want running", task.State, task.StoppedReason)
+	}
+}
+
+// A second or later agent of a role takes a numbered name of that role (claim.NumberedAgentRole),
+// `implementer-2` or `checker-2`, which is no role itself: its slot is lost only where its role
+// is. The fault: the name was read as a role, so a second implementer's step stopped its task as
+// the work of a role the deployment no longer defines. The controls: an agent named for the lost
+// checker itself, and a numbered agent of it, are lost; a step of the key owner, with no name, is
+// not.
+func TestANumberedAgentIsLostOnlyWhereItsRoleIs(t *testing.T) {
+	withChecker := plan.BuiltinRoles()
+	withChecker["checker"] = plan.RoleDef{Name: "checker", Type: plan.TypeTesting}
+	defined, lost := plan.Deployment{Roles: withChecker}, plan.Deployment{Roles: plan.BuiltinRoles()}
+	for _, tc := range []struct {
+		name claim.Agent
+		d    plan.Deployment
+		lost bool
+	}{
+		{name: "implementer-2", d: lost},
+		{name: "checker-2", d: defined},
+		{name: "checker", d: defined},
+		{name: "checker", d: lost, lost: true},
+		{name: "checker-2", d: lost, lost: true},
+		{name: "", d: lost},
+	} {
+		if got := lostAgent(tc.name, tc.d); got != tc.lost {
+			t.Errorf("lostAgent(%q) under a deployment that defines the checker = %t: %t, want %t", tc.name, tc.d.Defines("checker"), got, tc.lost)
+		}
+	}
+}
+
+// A person's todo on a root held for its stopped task starts nothing while a step of the task names
+// a role the deployment no longer defines: the task stays stopped, its reason now the lost step's,
+// the issue stays held as it was, the status the record keeps is written back over the todo with
+// that reason, and the owner is told again in a task-stopped notice that names the role. It holds
+// for a task the boot stopped for the lost role, for one its owner stopped before the role was lost
+// (which the boot leaves as it stands), and for one stopped before its first step went out.
+func TestATodoStartsNoRoleTheDeploymentLost(t *testing.T) {
+	const why = "step 1 names the role checker, which the deployment no longer defines"
+	for _, tc := range []struct {
+		name string
+		stop func(t *testing.T, pool *pgxpool.Pool) record.Issue
+	}{
+		{"a task the boot stopped", func(t *testing.T, pool *pgxpool.Pool) record.Issue {
+			root := stepRoot(t, pool, phase.Step)
+			seedStepsAt(t, pool, root.Key, root.Generation, 1, map[string]string{"checker": "testing"}, "checker", "implementer")
+			seedTreeLifecycle(t, pool, root.Key)
+			applyRefusingNothing(t, pool, lostChecker(), intake.DaemonBooted{Boot: 1})
+			return root
+		}},
+		{"a task its owner stopped before the role was lost", func(t *testing.T, pool *pgxpool.Pool) record.Issue {
+			root := stepRoot(t, pool, phase.Step)
+			seedStepsAt(t, pool, root.Key, root.Generation, 1, map[string]string{"checker": "testing"}, "checker", "implementer")
+			if result := applyFacts(t, pool, deploymentEngine())("stop", ownersStop(t, root, "a")); result.Refusal != nil {
+				t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
+			}
+			seedTreeLifecycle(t, pool, root.Key)
+			applyRefusingNothing(t, pool, lostChecker(), intake.DaemonBooted{Boot: 1})
+			return root
+		}},
+		{"a task stopped before its first step", func(t *testing.T, pool *pgxpool.Pool) record.Issue {
+			root := stepRoot(t, pool, phase.Admitted)
+			seedStepsPlan(t, pool, root.Key, root.Generation, "checker", "implementer")
+			if result := applyFacts(t, pool, deploymentEngine())("stop", ownersStop(t, root, "a")); result.Refusal != nil {
+				t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
+			}
+			return root
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := lostChecker()
+			root := tc.stop(t, pool)
+			held := issueOf(t, pool, engine, root.Key)
+			if held.Phase != phase.Held || !record.HeldFor(held, record.HoldTaskStopped) {
+				t.Fatalf("%s before the todo stands in %s with hold %+v, want held for its stopped task", root.Key, held.Phase, held.Hold)
+			}
+			told := len(noticesOf(t, pool, root.Key, "task-stopped"))
+
+			if result := applyFacts(t, pool, engine)("todo", personsTodo(root.Key)); result.Refusal != nil {
+				t.Fatalf("the todo was refused: %+v", result.Refusal)
+			}
+
+			if starts := roleStartsOf(t, pool, root.Key, "checker"); len(starts) != 0 {
+				t.Fatalf("the todo started the checker %+v, want none: the deployment no longer defines it", starts)
+			}
+			issue := issueOf(t, pool, engine, root.Key)
+			if issue.Phase != phase.Held || issue.Hold == nil || *issue.Hold != *held.Hold {
+				t.Fatalf("%s after the todo stands in %s with hold %+v, want held %+v as it stood", root.Key, issue.Phase, issue.Hold, *held.Hold)
+			}
+			if issue.Status != held.Status || issue.DispatchStatus != "todo" || issue.LastDispatchSeq != 2 {
+				t.Fatalf("%s after the todo has status %q, Dispatch at %q and sequence %d, want %q kept, todo and 2 recorded",
+					root.Key, issue.Status, issue.DispatchStatus, issue.LastDispatchSeq, held.Status)
+			}
+			if task := taskOf(t, pool, engine, root.Key); task.State != record.TaskStopped || task.StoppedReason != why {
+				t.Fatalf("task a after the todo = %s stopped with %q, want stopped with %q", task.State, task.StoppedReason, why)
+			}
+			said := "task a of LEGION-208 was stopped: " + why
+			stopped := noticesOf(t, pool, root.Key, "task-stopped")
+			if len(stopped) != told+1 || stopped[told].Role != "checker" || stopped[told].Reason != said {
+				t.Fatalf("the task-stopped notices = %+v, want one more after the todo, the checker's, with %q", stopped, said)
+			}
+			if writes := statusWrites(t, pool, root.Key); len(writes) == 0 || writes[len(writes)-1] != record.OrdinaryStatusWrite(held.Status, "todo", said) {
+				t.Fatalf("the status writes are %+v, want the last to write %q back over the todo with the stop's reason", writes, held.Status)
+			}
+		})
 	}
 }
 

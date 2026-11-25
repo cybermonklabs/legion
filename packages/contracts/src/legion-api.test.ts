@@ -29,6 +29,10 @@ import {
   LegionHandoffCompleteResponse,
   LegionHealthResponse,
   LegionInstant,
+  LegionIntakeDiscardRequest,
+  LegionIntakeDiscardResponse,
+  LegionIntakeReplayRequest,
+  LegionIntakeReplayResponse,
   LegionIssueRecordResponse,
   LegionIssueStatusRequest,
   LegionOperatorClaimResponse,
@@ -146,7 +150,7 @@ const schemas: Record<string, z.ZodType> = {
   // pushed everything it wants kept and its process may be replaced.
   "ready-for-update.json": LegionReadyForUpdateRequest,
   // `claim.TurnOutcomeResponse`: what a producer's report of one turn comes back as, the run of
-  // refused turns the claim now ends with and whether this report failed it.
+  // refused turns the claim now ends with (`LegionTurnOutcomeResponse` says what `failed` holds).
   "turn-outcome.json": LegionTurnOutcomeResponse,
   // What a pod reads of its deployment's idle release: every release, resume and hold of the
   // window it named (`api.ReleaseRecordsResponse`).
@@ -169,9 +173,8 @@ const schemas: Record<string, z.ZodType> = {
   "phase-retry.json": LegionEmptyResponse,
   "signoff.json": LegionEmptyResponse,
   "root-close.json": LegionEmptyResponse,
-  "child-park.json": LegionEmptyResponse,
   "child-rerun.json": LegionEmptyResponse,
-  // The owner's plan (contract 211): what register_plan took, and stop_task's empty answer.
+  // The owner's plan (contract 219): what register_plan took, and stop_task's empty answer.
   "plan-register.json": LegionPlanRegisterResponse,
   "task-stop.json": LegionEmptyResponse,
   // The project pause (contract 178), each written from what the route itself answers
@@ -188,6 +191,11 @@ const schemas: Record<string, z.ZodType> = {
   "project-pause-refused.json": LegionPauseFailureResponse,
   "project-paused.json": LegionPauseFailureResponse,
   "project-resume-refused.json": LegionPauseFailureResponse,
+  // The replay and the discard of the intake's give-ups (contract 228), written by internal/api's
+  // TestIntakeReplayAnswerGolden and TestIntakeDiscardAnswerGolden from what each route answers:
+  // a replay with one record of each outcome and one left, and the ids a discard closed.
+  "intake-replay.json": LegionIntakeReplayResponse,
+  "intake-discard.json": LegionIntakeDiscardResponse,
   // No route answers this one: it is the contract number the daemon's boot gate requires of the
   // installed plugin (`internal/api/version.go`), and the plugin's own test pins its manifest's
   // `legion.daemonApiVersion` to it.
@@ -263,8 +271,8 @@ const schemas: Record<string, z.ZodType> = {
   // as `*`, so `issues.*.pullRequest.fixAttempts` is one path, whichever issues the body holds
   // and whichever of them carries a pull request. `noBody` says the answer writes no body at
   // all, which reads differently from a body whose set of key paths is empty: the four routes
-  // that answer 204 are `"noBody": true` with no path, and the empty object the eight fact
-  // routes answer is `"noBody": false` with no path.
+  // that answer 204 are `"noBody": true` with no path, and the empty object the fact routes
+  // answer is `"noBody": false` with no path.
   //
   // `domains` is the other half of a record: for each field of that answer the daemon's table
   // declares enumerated (`enumerated-fields.json`), under the field's own key path, the sorted
@@ -306,6 +314,16 @@ const schemas: Record<string, z.ZodType> = {
   "stale-entry.json": z.strictObject({
     code: z.literal("HANDOFF_STALE_ENTRY"),
     instruction: z.string().min(1),
+  }),
+  // Nor this one: the rules for ending a child (`record.EndChildRule` in
+  // `internal/record/project.go`) and the sentence on a status the daemon has not taken yet
+  // (`record.StatusNotTakenYet`), which the daemon's refusals and notices over children carry,
+  // written by `internal/api`'s TestTheEndChildRuleGolden so that
+  // `packages/pi-legion/src/tools.test.ts` can hold the `legion` tool's description to the
+  // daemon's own text, word for word.
+  "end-child-rule.json": z.strictObject({
+    rule: z.string().min(1),
+    notTakenYet: z.string().min(1),
   }),
   // `api.HandoffCompleteRequest` as the completion that ends the retro sends it, rated: the one
   // request of the route a plugin at contract 168 must send, written by `internal/api`'s
@@ -395,7 +413,7 @@ test("every Go-written fixture parses to a value equal to the file", () => {
 });
 
 // Each start that waits for the issue's pod, by its role and the token of the claim it starts
-// (`api.Issue.StartWaitsForPod`, contract 245): a plugin parses the state through `legionIssue`,
+// (`api.Issue.StartWaitsForPod`, contract 285): a plugin parses the state through `legionIssue`,
 // which strips a key it does not name, so a mirror without the line, or without a key of an
 // entry, would drop it in silence. Two claims of one issue can hold one role, so the role's own
 // start and a second agent's start of the role are two entries, told apart by their tokens.
@@ -423,7 +441,7 @@ test("a served issue keeps each start that waits for its pod, by its role and it
 // brought it and the fixture above. Every answer schema the module exports must therefore be the
 // schema of some golden, and the roster is derived (`exportedSchemas`), so the next answer
 // schema added with no fixture fails here by its own name. `LegionEmptyResponse` is the schema
-// of eight fact-route goldens, so it is a value of the map eight times over and passes as any
+// of the fact-route goldens, so it is a value of the map once per fact route and passes as any
 // other does.
 test("every answer schema the module exports is the schema of a golden", () => {
   const held = new Set(Object.values(schemas));
@@ -455,11 +473,12 @@ interface EnumeratedFieldRow {
 
 /** The answer schema this module parses each answer of the daemon's table with, by the id the
  * table writes it under (`internal/api/answers.go`). An answer whose id no entry here names
- * fails the case below, so an enumerated field of a fourth answer is read rather than skipped. */
+ * fails the case below, so an enumerated field of that answer is read rather than skipped. */
 const ANSWER_SCHEMAS: Record<string, z.ZodType> = {
   state: LegionStateResponse,
   "issue-record": LegionIssueRecordResponse,
   register: LegionRegisterResponse,
+  "intake-replay": LegionIntakeReplayResponse,
 };
 
 /** One step of a path from a schema's root to a node below it: the field `key` of an object,
@@ -739,7 +758,7 @@ test("the gate names a key no schema names, and is blind under the loose blocks"
 // `workers` is keyed by a plain string, so the schema no longer holds the role names and the gate
 // above cannot see a role the Go side adds. The key list it held is held here instead: every
 // worker key of every golden is a role of the step grammar, one of Legion's six or a role of the
-// deployment (contract 221), as LEGION-241's `checker` is.
+// deployment (contract 258), as LEGION-241's `checker` is.
 test("every golden's worker keys are roles of the step grammar", () => {
   const states = Object.keys(schemas).filter((name) => schemas[name] === LegionStateResponse);
   expect(states.length).toBeGreaterThan(0);
@@ -932,7 +951,7 @@ test("a backward move rejects future read-only phases", () => {
 
 // Contract 40: `awaiting_person`, a root that keeps its slot while its architect waits on a
 // person, follows `admitted`, and no backward move reaches it. Contract 33: the architect accepts
-// before the merge, in `accepting`, between `reviewing` and `retro`; the merger merges in
+// before the merge, in `accepting`, which the list holds between `reviewing` and `retro`; the merger merges in
 // `merging`, the daemon closes the issue when it reads that merge (`done`), and the production
 // check after the close is no phase, so no phase follows `integrating` but the close itself.
 test("the phase lists are the daemon's, with awaiting_person after admitted and accepting before retro", () => {
@@ -974,10 +993,10 @@ test("the phase lists are the daemon's, with awaiting_person after admitted and 
   ).toBeTrue();
 });
 
-// Contract 221: a step of a role of the deployment runs as the phase `step`, and the issue names
+// Contract 258: a step of a role of the deployment runs as the phase `step`, and the issue names
 // the role that works it, `stepRole`, at `step` and while a hold keeps it out of that step. An
 // issue whose pod was built before that role names the start of it in `startWaitsForPod`, by the
-// role and the token of the claim it starts (contract 245), and holds no claim of it; a held issue
+// role and the token of the claim it starts (contract 285), and holds no claim of it; a held issue
 // keeps the failed claim of that role as its worker.
 test("the state golden carries an issue at step and the role of the deployment that works it", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
@@ -992,7 +1011,7 @@ test("the state golden carries an issue at step and the role of the deployment t
   expect(Object.keys(held?.workers ?? {})).toEqual(["checker"]);
 });
 
-// Contract 221: a move back may go to `step` and name the step it returns to by its place,
+// Contract 258: a move back may go to `step` and name the step it returns to by its place,
 // 1 for the task's first (`api.PhaseBackwardRequest.ReturnTo`), as a failed completion does.
 test("a move back may go to step and name the place it returns to", () => {
   const move = { grantId: "grant-208", to: "step", reason: "the check failed", returnTo: 2 };
@@ -1136,6 +1155,12 @@ test("the state golden carries the experiments each issue was drawn for", () => 
   ]);
   // An issue no experiment has reached carries no key.
   expect(issueOf("LEGION-211").assignments).toBeUndefined();
+  // The group an experiment that sets how its issues are done gave the child, as its draw
+  // recorded it: the parse keeps it, and a group that is no string is refused.
+  const planned = LegionStateResponse.parse(state).issues["LEGION-209"]?.assignments?.find(
+    (row) => row.experiment === "planning"
+  );
+  expect(planned?.plan).toBe("default");
 
   const parses = () => LegionStateResponse.safeParse(state).success;
   expect(parses()).toBeTrue();
@@ -1163,7 +1188,60 @@ test("the state golden carries the experiments each issue was drawn for", () => 
   expect(parses()).toBeTrue();
   drawn.assignments = [{ experiment: "memory", variant: "memory" }];
   expect(parses()).toBeTrue();
+  // A group that is no string, and an empty one: the daemon leaves the key off where the arm
+  // named no group.
+  drawn.assignments = [{ experiment: "planning", variant: "b", mode: "random", plan: 1 }];
+  expect(parses()).toBeFalse();
+  drawn.assignments = [{ experiment: "planning", variant: "b", mode: "random", plan: "" }];
+  expect(parses()).toBeFalse();
   drawn.assignments = held;
+  expect(parses()).toBeTrue();
+});
+
+// Contract 246: the state golden carries LEGION-219, whose quiet pod the idle rule has held for
+// background work since the evening before: the reason in the rule's own word, the first and the
+// newest pass of the streak, and the kind the session reported. An issue whose pod no hold stands
+// on carries no key at all, as does every issue of the body served a caller before 246, so the
+// field is optional; a daemon before this contract sent none, and its state must still parse.
+test("the state golden carries a held pod's standing hold", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, Record<string, unknown>>;
+  };
+  const kept = state.issues["LEGION-219"];
+  if (kept === undefined) {
+    throw new Error("state fixture lacks LEGION-219");
+  }
+  expect(kept.podHold).toEqual({
+    reason: "background_work",
+    firstAt: "2026-09-21T22:04:00Z",
+    at: "2026-09-22T09:17:00Z",
+    detail: "async-job",
+  });
+  expect(state.issues["LEGION-208"]?.podHold).toBeUndefined();
+
+  const parses = () => LegionStateResponse.safeParse(state).success;
+  expect(parses()).toBeTrue();
+
+  // A state from a daemon before contract 246, and one served to a caller below it.
+  const held = kept.podHold;
+  delete kept.podHold;
+  expect(parses()).toBeTrue();
+  // A reason a later daemon adds is read rather than refused, and a hold with no detail is the
+  // shape of every hold whose record holds none.
+  kept.podHold = {
+    reason: "a_later_hold",
+    firstAt: "2026-09-21T22:04:00Z",
+    at: "2026-09-22T09:17:00Z",
+  };
+  expect(parses()).toBeTrue();
+  // An empty reason, a reason that is no string, and a pass time that is no time.
+  kept.podHold = { reason: "", firstAt: "2026-09-21T22:04:00Z", at: "2026-09-22T09:17:00Z" };
+  expect(parses()).toBeFalse();
+  kept.podHold = { reason: 7, firstAt: "2026-09-21T22:04:00Z", at: "2026-09-22T09:17:00Z" };
+  expect(parses()).toBeFalse();
+  kept.podHold = { reason: "image", firstAt: "the evening", at: "2026-09-22T09:17:00Z" };
+  expect(parses()).toBeFalse();
+  kept.podHold = held;
   expect(parses()).toBeTrue();
 });
 
@@ -1413,7 +1491,7 @@ test("the request schema takes exactly the ratings the daemon takes", () => {
   expect(parted).toEqual([]);
 });
 
-// Contract 211: a step that failed names the step its task returns to, `returnTo`, by its place in
+// Contract 219: a step that failed names the step its task returns to, `returnTo`, by its place in
 // the task, 1 for its first. Only a completion with the verdict fail names one
 // (RETURN_TO_NEEDS_FAIL), and a place below 1 is none (INVALID_RETURN_TO). A completion that
 // names none stays what it was.
@@ -1431,7 +1509,7 @@ test("a failed step's completion names the step its task returns to", () => {
   }
 });
 
-// Contract 211: register_plan answers the plan it took, its version and each task with the steps
+// Contract 219: register_plan answers the plan it took, its version and each task with the steps
 // its block names as the plan writes them (`role` or `role:key`). A task whose block names none
 // runs the project's default steps and is answered with no step, an empty list and never null.
 // No plugin code reads a field of the answer, so the reader takes each as optional and refuses
@@ -1455,9 +1533,9 @@ test("register_plan answers each task of the plan it took with its steps", () =>
   ).toBeFalse();
 });
 
-// Contract 211 widens one value set: a held issue's `holdReason` is `escalated`, `task-stopped`
-// (its owner stopped its task with stop_task) or `children` (a parent whose plan has no
-// acceptance step waits, before its retro, for the issues beneath it). A state with a stopped
+// Contract 219 widens one value set: a held issue's `holdReason` is `escalated`, `task-stopped`
+// (its owner stopped its task with stop_task) or `children` (a parent whose task's last step is
+// not the owner's acceptance waits, before its retro, for the issues beneath it). A state with a stopped
 // task and a held parent parses, each reason kept; a reason outside the three is refused.
 test("a state with a stopped task and a parent held for its children parses", () => {
   const state = fixture("state.json") as {
@@ -1476,7 +1554,7 @@ test("a state with a stopped task and a parent held for its children parses", ()
   expect(LegionStateResponse.safeParse(state).success).toBeFalse();
 });
 
-// Contract 211 gives each of those two holds its own word in `admission.held`:
+// Contract 219 gives each of those two holds its own word in `admission.held`:
 // `children_before_retro`, a parent held before its retro, whose `heldBy` names each issue beneath
 // it still in the workflow, and `task_stopped`, a stopped task that keeps no slot, with no
 // `heldBy`. A state whose held rows carry them parses, each row kept as served; a word outside
@@ -1812,6 +1890,40 @@ test("a claim carries the leak check's cause beside its failure", () => {
   expect(LegionOperatorClaimsResponse.safeParse(listing).success).toBeFalse();
 });
 
+// A claim whose refused launch's fact the store has not taken carries `unrecordedRefusal` on the
+// operator routes (`api.OperatorClaim.UnrecordedRefusal`): when the first failed try failed, how
+// many tries have failed, and the last try's error. The daemon writes it only while such a fact
+// fails, and the schema must name it, since a key it does not name is stripped. A count below one
+// or an empty error, which the daemon never writes, is refused.
+test("an operator claim carries a refusal the store has not recorded", () => {
+  const listing = fixture("operator-claims.json") as {
+    claims: {
+      token: string;
+      unrecordedRefusal?: { since: string; attempts: number; error: string };
+    }[];
+  };
+  const testerClaim = "legion-legion-legion-211-tester";
+  const tester = listing.claims.find((claim) => claim.token === testerClaim);
+  if (tester === undefined) {
+    throw new Error(`operator-claims fixture lacks ${testerClaim}`);
+  }
+  const unrecorded = {
+    since: "2026-11-23T17:00:00Z",
+    attempts: 3,
+    error: `apply fact supervise/pod-refused:${testerClaim}:1: the database did not answer`,
+  };
+  tester.unrecordedRefusal = unrecorded;
+  expect(
+    LegionOperatorClaimsResponse.parse(listing).claims.find((claim) => claim.token === testerClaim)
+      ?.unrecordedRefusal
+  ).toEqual(unrecorded);
+
+  tester.unrecordedRefusal = { ...unrecorded, attempts: 0 };
+  expect(LegionOperatorClaimsResponse.safeParse(listing).success).toBeFalse();
+  tester.unrecordedRefusal = { ...unrecorded, error: "" };
+  expect(LegionOperatorClaimsResponse.safeParse(listing).success).toBeFalse();
+});
+
 // The mark of the narrowing, the last key of contract 75: the body the daemon serves a caller at
 // or above the contract carries the two numbers — the contract the daemon declares and the one
 // it shaped the body to — and the body it narrows for a caller below it carries no such key at
@@ -1936,6 +2048,36 @@ test("every request the plugin sends parses and names its required fields", () =
       { grantId: "controller-grant-1", reason: "the model provider is refusing every turn" },
     ],
     ["project resume", LegionProjectResumeRequest, { grantId: "controller-grant-1" }],
+    // Each give-up route takes one record by its id, or a consumer through a stream sequence.
+    [
+      "replay one give-up",
+      LegionIntakeReplayRequest,
+      { grantId: "controller-grant-1", giveUp: 41 },
+    ],
+    [
+      "replay a consumer's give-ups",
+      LegionIntakeReplayRequest,
+      { grantId: "controller-grant-1", consumer: "legion-go-LEGION-dispatch", throughSeq: 6044896 },
+    ],
+    [
+      "discard one give-up",
+      LegionIntakeDiscardRequest,
+      {
+        grantId: "controller-grant-1",
+        giveUp: 41,
+        reason: "the listener published a non-JSON body",
+      },
+    ],
+    [
+      "discard a consumer's give-ups",
+      LegionIntakeDiscardRequest,
+      {
+        grantId: "controller-grant-1",
+        consumer: "legion-go-LEGION-dispatch",
+        throughSeq: 6044896,
+        reason: "the listener published a non-JSON body",
+      },
+    ],
     // The operator's pause is the CLI's body, not the plugin's; it is held here as the mirror of
     // the Go shape, as the escalation below is.
     [
@@ -2339,8 +2481,10 @@ test("the state golden carries each issue's repository and the repositories its 
 // the deployment renders each as `unchecked` with its citation (contract 21) — and the report is
 // never absent from a state. `installed` left the status set at contract 25: it was codegraph's
 // until LEGION-629, and no row has carried it since. Each deployment row carries `source`
-// (contract 25): `configuration` (what legion.yaml alone decides) or `boot` (what boot measured);
-// a live row carries none.
+// (contract 25): `configuration` (what legion.yaml alone decides) or `boot` (what boot measured),
+// or, on `repository-cache-room`, `caches` (contract 213), what the repository caches' last health
+// reads said of their room: the golden's one cache ran out of room, so that row is open too. A
+// live row carries none.
 test("the state golden carries the deployment's capability report", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
 
@@ -2385,18 +2529,34 @@ test("the state golden carries the deployment's capability report", () => {
   }
   expect(statuses).not.toContain("installed");
 
+  expect(rows["repository-cache-room"]).toMatchObject({
+    status: "open",
+    configLine: 'capabilities.decided.repository-cache-room: "<reason>"',
+    source: "caches",
+  });
+  expect(rows["repository-cache-room"].detail).toContain("acme/widgets on a 20.0 GiB volume");
+
   const deploymentRows = [
     rows.secrets,
     rows["model-fallback"],
     rows["resource-limits"],
     rows["pool-capacity"],
+    rows["repository-cache-room"],
   ];
   for (const row of deploymentRows) {
-    expect(["configuration", "boot"]).toContain(row.source ?? "");
+    expect(["configuration", "boot", "caches"]).toContain(row.source ?? "");
   }
 
   const emptied = fixture("state-stage3.json") as { capabilities: unknown[] };
   expect(emptied.capabilities).toEqual([]);
+});
+
+// `source` is a finite set, so the schema names its three words and no other: a fourth word is
+// refused with the whole state, as `caches` was before it joined the enum at contract 213.
+test("a capability row whose source is a word the schema does not name is refused", () => {
+  const unknownSource = fixture("state.json") as { capabilities: { source?: string }[] };
+  unknownSource.capabilities = [{ ...unknownSource.capabilities[0], source: "volume" }];
+  expect(LegionStateResponse.safeParse(unknownSource).success).toBeFalse();
 });
 
 test("a capability row's status is one the report renders, and the report may be left out", () => {
@@ -2636,9 +2796,9 @@ test("a reader at the previous contract parses the state body this daemon serves
   const golden = fixture("state.json") as {
     strandedClaims: { issue: string; role: string; state: string; token?: string }[];
   };
-  // Each entry names its claim's token since contract 222, a key the 45 reader does not know: a
+  // Each entry names its claim's token since contract 259, a key the 45 reader does not know: a
   // strict object refuses the entry, and so the whole state body, over it. That is why the state
-  // route serves a pod below 222 every entry without it (`api`'s `withoutStrandedTokens`, pinned
+  // route serves a pod below 259 every entry without it (`api`'s `withoutStrandedTokens`, pinned
   // on the Go side), and the entries below are read as such a pod is served them.
   const withToken = golden.strandedClaims[0];
   if (withToken?.token === undefined) {
@@ -2677,9 +2837,9 @@ test("a reader at the previous contract parses the state body this daemon serves
     expect(refused.error?.issues[0]?.path).toEqual(["state"]);
   }
 
-  // A claim of a role of the deployment (contract 221), LEGION-241's checker, is the other entry
+  // A claim of a role of the deployment (contract 258), LEGION-241's checker, is the other entry
   // this reader cannot take: its role enum names Legion's six. That is why the state route serves
-  // a pod below 221 the report without it (`api`'s row of `stateNarrowings` for the roles of a
+  // a pod below 258 the report without it (`api`'s row of `stateNarrowings` for the roles of a
   // deployment, pinned on the Go side) rather than the body it would refuse.
   const deployed = state.strandedClaims.filter((stranded) => !builtin.has(stranded.role));
   expect(deployed).toEqual([{ issue: "LEGION-241", role: "checker", state: "failed" }]);
@@ -2713,17 +2873,24 @@ test("a reader at the previous contract parses the state body this daemon serves
   expect(droppedFromState(served)).toBe("strandedClaims[0].suspendedBy");
 });
 
-// A plugin below 202 reads the repositories block with contract 152's schema
+// A plugin from 152 to 189 reads the repositories block with contract 152's schema
 // (`repositoriesAt152`), which requires `owners`, `mapped`, `refused` and `withoutWebhookApp`: the
-// block this contract writes refuses there, and with it the whole state, so the route serves that
-// caller the block in 152's shape, written from the same entries, and leaves every other key as
+// block this contract writes refuses there, and with it the whole state. A plugin from 193 on reads
+// every key of the block as optional (#3659), and the route serves every caller below 202 the
+// block in 152's shape all the same, written from the same entries, and leaves every other key as
 // the contract it serves the caller at writes it. `state-narrowed-repositories.json` is the body
-// served to a caller that states 201 (`internal/api`'s TestStateNarrowedRepositoriesGolden), and
-// the drift gate above holds every key of it to that copy. The entries land where 152 put them:
-// `owners` and `mapped` are the ones both role Apps are installed on, under the name each is
-// served under, every `default` false; `refused` is each other entry with why; `withoutWebhookApp`
-// is this contract's own list.
+// served to a caller that states the contract before 202 (`internal/api`'s
+// TestStateNarrowedRepositoriesGolden), and the drift gate above holds every key of it to that
+// copy. The entries land where 152 put them: `owners` and `mapped` are the ones both role Apps are
+// installed on, under the name each is served under, every `default` false; `refused` is each
+// other entry with why; `withoutWebhookApp` is this contract's own list.
 test("a reader at contract 152 parses the repositories block served below 202", () => {
+  // The caller states the contract before 202, the one whose entry made the block live
+  // (`repositoriesLiveContract` in `internal/api/shaping.go`), and the `contract` mark below names
+  // the highest contract the records hold below 202 (`recordedContractAtOrBelow`). The bound is
+  // 202 and not `daemonApiVersion`: the records hold an entry at 202 itself, so a bound at the
+  // daemon's own contract would name 202 as soon as a later contract lands.
+  const repositoriesLiveContract = 202;
   const served = fixtureBody("state-narrowed-repositories.json");
   const written = served.repositories;
   expect(isJsonObject(written) ? Object.keys(written).sort() : written).toEqual([
@@ -2773,23 +2940,37 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   ]);
   expect(block.data?.caches).toEqual(live.caches);
 
-  // Every other key is the state golden's own, the `contract` mark and `lowestPluginContract`
-  // aside: the mark names the contract the caller is served at, 199, the recorded contract below
-  // the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which moved no answer's
-  // shape, and the lowest plugin contract reports the claims of the snapshot the route projected
-  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Four bands stand
-  // above 199: the repositories block's, the roles of a deployment's (contract 221), which serves
-  // the state golden's issues at step and its claims of a role of the deployment as a caller below
-  // 221 reads them (`belowDeploymentRoles`), contract 222's, which serves each claim nothing will
-  // wake and each claim view without its `token`, and each issue without its `otherClaims`
-  // (`withoutStrandedTokens`, `withoutClaimTokens`), and contract 245's, which serves each issue's
-  // `startWaitsForPod` as the roles of its starts (`withoutStartWaitTokens`), a list the band of 221
-  // already leaves off. So the narrowing changes this one block and, beside it, only what the bands
-  // of 221 and 222 change.
+  // Every other key is the state golden's own, the `contract` mark, `lowestPluginContract` and
+  // `intakeGiveUps` aside: the mark names the contract the caller is served at, 199, the recorded
+  // contract below the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which
+  // moved no answer's shape, and the lowest plugin contract reports the claims of the snapshot the
+  // route projected the body from, a pod at 201, which `state.json`'s own fixture does not hold.
+  // Nine bands stand above 199: the repositories block's at 202; contract 220's, which takes
+  // `plan` off each assignment, so the golden's rows are compared without it; the intake's
+  // give-ups' at 228, so the narrowing leaves `intakeGiveUps` off; the pod hold's at 246, which
+  // leaves `podHold` off every issue (`withoutPodHold`); contract 250's, which takes `priority`
+  // off each issue and off its `waitingLine`; contract 256's, which takes `lastDeathAt` and
+  // `lastStartFailureAt` off each claim view; the roles of a deployment's (contract 258), which
+  // serves the state golden's issues at step and its claims of a role of the deployment as a
+  // caller below 258 reads them (`belowDeploymentRoles`); contract 259's, which serves each
+  // claim nothing will wake and each claim view without its `token`, and each issue without its
+  // `otherClaims` (`withoutStrandedTokens`, `withoutClaimTokens`); and contract 285's, which
+  // serves each issue's `startWaitsForPod` as the roles of its starts
+  // (`withoutStartWaitTokens`), a list the band of 258 already leaves off. So the narrowing
+  // changes this one block and, beside it, only what the other eight bands change. One value
+  // strip stands above 199 as well: `caches`, the source of the repository-cache-room row,
+  // arrived at contract 213, so that row is served here without its `source`, every other field
+  // of it and every other row as the state golden holds them.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
-  expect(served.contract).toEqual({ daemon: daemonApiVersion, caller: 199 });
+  const recordedBelow = z
+    .array(z.object({ contract: z.number() }))
+    .parse(fixture("contract-shapes.json"))
+    .map((record) => record.contract)
+    .filter((contract) => contract < repositoriesLiveContract);
+  expect(served.contract).toEqual({ daemon: daemonApiVersion, caller: Math.max(...recordedBelow) });
+  expect("intakeGiveUps" in served).toBeFalse();
   const {
     repositories: _narrowedBlock,
     contract: _narrowedMark,
@@ -2800,16 +2981,63 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     repositories: _block,
     contract: _mark,
     lowestPluginContract: _lowest,
+    intakeGiveUps: _giveUps,
     ...rest
   } = fixtureBody("state.json");
-  const below = belowDeploymentRoles(rest) as Record<string, unknown>;
+  const withoutCauseTimes = (view: unknown): unknown => {
+    if (!isJsonObject(view)) {
+      return view;
+    }
+    const { lastDeathAt: _deathAt, lastStartFailureAt: _startFailureAt, ...kept } = view;
+    return kept;
+  };
+  const issues = Object.fromEntries(
+    Object.entries(rest.issues as Record<string, Record<string, unknown>>).map(([key, issue]) => {
+      const { podHold: _podHold, priority: _priority, ...kept } = issue;
+      const narrowed: Record<string, unknown> = { ...kept };
+      const line = kept.waitingLine;
+      if (isJsonObject(line)) {
+        const { priority: _placed, ...placed } = line;
+        narrowed.waitingLine = placed;
+      }
+      if (kept.assignments !== undefined) {
+        narrowed.assignments = (kept.assignments as Record<string, unknown>[]).map(
+          ({ plan: _plan, ...row }) => row
+        );
+      }
+      if (kept.architect !== undefined) {
+        narrowed.architect = withoutCauseTimes(kept.architect);
+      }
+      if (isJsonObject(kept.workers)) {
+        narrowed.workers = Object.fromEntries(
+          Object.entries(kept.workers).map(([role, worker]) => [
+            role,
+            isJsonObject(worker) && worker.claim !== undefined
+              ? { ...worker, claim: withoutCauseTimes(worker.claim) }
+              : worker,
+          ])
+        );
+      }
+      return [key, narrowed];
+    })
+  );
+  const capabilities = z.array(z.record(z.string(), z.unknown())).parse(rest.capabilities);
+  expect(capabilities.some((row) => row.source === "caches")).toBeTrue();
+  const withoutCachesSource = capabilities.map((row) => {
+    if (row.source !== "caches") {
+      return row;
+    }
+    const { source: _source, ...kept } = row;
+    return kept;
+  });
+  const below = belowDeploymentRoles({ ...rest, issues, capabilities: withoutCachesSource });
   const stranded = below.strandedClaims as Record<string, unknown>[] | undefined;
   const withoutToken = (view: unknown): unknown => {
     if (typeof view !== "object" || view === null) return view;
     const { token: _token, ...kept } = view as Record<string, unknown>;
     return kept;
   };
-  const issues = Object.fromEntries(
+  const issuesWithoutTokens = Object.fromEntries(
     Object.entries((below.issues ?? {}) as Record<string, Record<string, unknown>>).map(
       ([key, { otherClaims: _others, architect, workers, ...issue }]) => [
         key,
@@ -2831,15 +3059,15 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   );
   expect(narrowedRest).toEqual({
     ...below,
-    issues,
+    issues: issuesWithoutTokens,
     ...(stranded === undefined
       ? {}
       : { strandedClaims: stranded.map(({ token: _token, ...kept }) => kept) }),
   });
 
-  // What serving the current block would do, and why it is not served: the reader of 152 refuses
-  // it for the three keys it requires beside the `withoutWebhookApp` and `caches` the block keeps,
-  // so a caller below 202 would lose its whole state.
+  // What serving the current block would do: the reader of 152 refuses it for the three keys it
+  // requires beside the `withoutWebhookApp` and `caches` the block keeps, so a caller from 152 to
+  // 189 would lose its whole state.
   const current = repositoriesAt152.safeParse(fixtureBody("state.json").repositories);
   expect(current.success).toBeFalse();
   expect(current.error?.issues.map((issue) => issue.path[0]).sort()).toEqual([
@@ -2850,7 +3078,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
 });
 
 /** `state` as the state route serves it to a caller below the roles of a deployment (contract
- * 221, `withoutDeploymentRoles` and `withoutDeploymentRoleClaims` in `internal/api/shaping.go`):
+ * 258, `withoutDeploymentRoles` and `withoutDeploymentRoleClaims` in `internal/api/shaping.go`):
  * an issue at `step` at `implementing`, a hold from `step` as one from `implementing`, a pending
  * task at `step` as one at `implementing`, no `stepRole` and no `startWaitsForPod`; and no
  * stranded claim, waiting wake or pause stop of a role outside Legion's six. An issue's workers
@@ -3005,11 +3233,12 @@ test("the state golden shows a claim's capability report beside its locator", ()
 
 // The claims nothing will wake (contract 23): the golden's list is written by hand, one entry for
 // each claim state the rule can name (internal/api's state_golden_test.go says so): LEGION-210's
-// failed implementer, whose issue is held, LEGION-211's suspended one, and LEGION-212's retired
+// failed implementer, whose issue is held, LEGION-211's suspended one, LEGION-212's retired
 // tester, which only a start of the phase it owns — one no rule the daemon runs queues — would
-// relaunch (contract 56) — four keys each, neither the suspended nor the retired one wider than
-// the failed one, the fourth the claim's token, which tells two claims of one role on one issue
-// apart — and a state with none carries an empty list rather than none.
+// relaunch (contract 56), and LEGION-241's failed checker, a role of the deployment (contract 258)
+// — four keys each, neither the suspended nor the retired one wider than the failed one, the
+// fourth the claim's token, which tells two claims of one role on one issue apart — and a state
+// with none carries an empty list rather than none.
 test("the state golden names the claims nothing will wake, and the list may be left out", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
   // Each claim is the one named for its role, so its token is that role's own (`roleToken`).
@@ -3310,6 +3539,82 @@ test("a pause rejects an empty reason", () => {
   expect(LegionOperatorProjectPauseRequest.safeParse({ reason: "" }).success).toBeFalse();
 });
 
+// The intake's open give-ups (contract 228). The golden counts two consumers' and lists three
+// records, one that did not decode, whose event id is null. Every other state golden is of an
+// intake with none open and carries two empty lists rather than no key, but for
+// state-narrowed-repositories.json, a body served below 228, which carries no key and still
+// parses. A count with no newest sequence is refused, since the controller's summary prints it
+// (`LEGION_ANSWER_READS`); a listed record with no id is read, since no plugin code reads one; and
+// a record whose reason the enumeration does not name is refused.
+test("the state golden counts and lists the intake's open give-ups, and a state without them parses", () => {
+  const state = LegionStateResponse.parse(fixture("state.json"));
+  expect(state.intakeGiveUps?.consumers).toEqual([
+    { name: "legion-go-LEGION-dispatch", open: 2, newestSeq: 6044896 },
+    { name: "legion-go-LEGION-github", open: 1, newestSeq: 812004 },
+  ]);
+  expect(state.intakeGiveUps?.newest?.map((giveUp) => [giveUp.id, giveUp.eventId])).toEqual([
+    [43, null],
+    [42, "github-9b2c71e0"],
+    [41, "dispatch-6044801"],
+  ]);
+  expect(LegionStateResponse.parse(fixture("state-stage3.json")).intakeGiveUps).toEqual({
+    consumers: [],
+    newest: [],
+  });
+
+  expect(
+    stateWithRepositoriesAt152.parse(fixture("state-narrowed-repositories.json")).intakeGiveUps
+  ).toBeUndefined();
+
+  const countless = fixture("state.json") as {
+    intakeGiveUps: { consumers: Record<string, unknown>[] };
+  };
+  delete countless.intakeGiveUps.consumers[0]?.newestSeq;
+  expect(LegionStateResponse.safeParse(countless).success).toBeFalse();
+  const idless = fixture("state.json") as { intakeGiveUps: { newest: Record<string, unknown>[] } };
+  delete idless.intakeGiveUps.newest[0]?.id;
+  expect(LegionStateResponse.safeParse(idless).success).toBeTrue();
+  const unnamed = fixture("state.json") as {
+    intakeGiveUps: { newest: Record<string, unknown>[] };
+  };
+  const first = unnamed.intakeGiveUps.newest[0];
+  if (first === undefined) {
+    throw new Error("state fixture lists no give-up");
+  }
+  first.reason = "a reason no build names";
+  expect(LegionStateResponse.safeParse(unnamed).success).toBeFalse();
+});
+
+// A replay or a discard names one record by its id, or a consumer through a stream sequence, and
+// never both or neither, as the daemon takes it (`GIVE_UP_REQUEST_INVALID`); a discard says why.
+test("a replay or a discard names one form of selection, and a discard names its reason", () => {
+  const grantId = "controller-grant-1";
+  const reason = "the listener published a non-JSON body";
+  const refused = [
+    { grantId },
+    { grantId, giveUp: 41, consumer: "legion-go-LEGION-dispatch", throughSeq: 6044896 },
+    { grantId, consumer: "legion-go-LEGION-dispatch" },
+    { grantId, throughSeq: 6044896 },
+    { grantId, consumer: "legion-go-LEGION-dispatch", throughSeq: 0 },
+    { grantId, giveUp: 0 },
+  ];
+  for (const selection of refused) {
+    expect(
+      LegionIntakeReplayRequest.safeParse(selection).success,
+      JSON.stringify(selection)
+    ).toBeFalse();
+    expect(
+      LegionIntakeDiscardRequest.safeParse({ ...selection, reason }).success,
+      JSON.stringify(selection)
+    ).toBeFalse();
+  }
+  expect(LegionIntakeDiscardRequest.safeParse({ grantId, giveUp: 41 }).success).toBeFalse();
+  expect(
+    LegionIntakeDiscardRequest.safeParse({ grantId, giveUp: 41, reason: "" }).success
+  ).toBeFalse();
+  expect(LegionIntakeReplayRequest.safeParse({ grantId, giveUp: 41, reason }).success).toBeFalse();
+});
+
 // The daemon's resolved legion.yaml (contract 35): the golden carries the file's
 // `review_round_cap` and `worker_boot_timeout_seconds` and its GitHub Apps' ids and
 // installations with no key, a Stage 3 state carries the defaults, the two typed keys are
@@ -3506,7 +3811,7 @@ test("a claim's registration and the controller's are told apart by their schema
   expect(LegionControllerRegisterResponse.safeParse(claim).success).toBeFalse();
 });
 
-// A role of the deployment (contract 221): a claim of it registers, an operator acts on it, and
+// A role of the deployment (contract 258): a claim of it registers, an operator acts on it, and
 // the state names it among the claims nothing will wake, the wakes the pacing holds and the stops
 // an open pause waits on. The controller's claim holds no issue, so no request of a claim recovery
 // may name it.

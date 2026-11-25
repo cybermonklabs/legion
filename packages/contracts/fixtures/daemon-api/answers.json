@@ -99,7 +99,6 @@
       "POST /legion/v1/phase/retry",
       "POST /legion/v1/signoff",
       "POST /legion/v1/roots/close",
-      "POST /legion/v1/children/park",
       "POST /legion/v1/children/rerun"
     ],
     "since": 46,
@@ -164,7 +163,23 @@
     "routes": [
       "POST /legion/v1/plans/register"
     ],
-    "since": 211,
+    "since": 219,
+    "noBody": false
+  },
+  {
+    "id": "intake-replay",
+    "routes": [
+      "POST /legion/v1/intake/replay"
+    ],
+    "since": 228,
+    "noBody": false
+  },
+  {
+    "id": "intake-discard",
+    "routes": [
+      "POST /legion/v1/intake/discard"
+    ],
+    "since": 228,
     "noBody": false
   }
 ]

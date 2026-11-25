@@ -674,36 +674,110 @@ func TestMetadataLogsEachPathItDoesNotServeOnce(t *testing.T) {
 	}
 }
 
-// The endpoint is a microVM issue pod's container's alone, and named whole: a gVisor pod reaches
-// the node's metadata server, which the endpoint would shadow, the controller's pod is never a
-// microVM's, and the pool and the identity provider together make the exchange's audience.
-func TestMetadataIsRefusedOutsideAMicroVMIssuePodOrNamedInPart(t *testing.T) {
+// The endpoint is a microVM pod's container's alone, in either of the launcher's forms, and named
+// whole: a gVisor pod reaches the node's metadata server, which the endpoint would shadow, and the
+// pool and the identity provider together make the exchange's audience. A microVM issue pod's
+// roles container and a microVM controller pod's single role each serve it; either form without
+// --microvm, or with the endpoint named in part, is refused.
+func TestMetadataIsRefusedOutsideAMicroVMPodOrNamedInPart(t *testing.T) {
 	issuePod := func() Config {
 		return Config{
 			Connect: "tcp://127.0.0.1:1", Sandbox: "legion-legion-legion-208", PodUID: "pod-1", RolesDir: "/roles", Roles: []string{"tester"},
 			MicroVM: true, Metadata: &MetadataConfig{WorkloadPool: testWorkloadPool, IdentityProvider: testIdentityProvider},
 		}
 	}
+	controllerPod := func() Config {
+		return Config{
+			Connect: "tcp://127.0.0.1:1", Sandbox: "legion-legion-controller", PodUID: "pod-1", Token: "launcher-token", Role: "controller", PrivateDir: "/private",
+			MicroVM: true, Metadata: &MetadataConfig{WorkloadPool: testWorkloadPool, IdentityProvider: testIdentityProvider},
+		}
+	}
 	if err := issuePod().validate(); err != nil {
 		t.Fatalf("a microVM issue pod's endpoint was refused: %v", err)
 	}
+	if err := controllerPod().validate(); err != nil {
+		t.Fatalf("a microVM controller pod's endpoint was refused: %v", err)
+	}
 	for _, tc := range []struct {
 		name   string
+		pod    func() Config
 		change func(*Config)
 		want   string
 	}{
-		{"the pool alone", func(c *Config) { c.Metadata.IdentityProvider = "" }, "launcher: the metadata endpoint is named in part: no --metadata-identity-provider"},
-		{"the identity provider alone", func(c *Config) { c.Metadata.WorkloadPool = "" }, "launcher: the metadata endpoint is named in part: no --metadata-workload-pool"},
-		{"a gVisor pod", func(c *Config) { c.MicroVM = false }, "launcher: the metadata endpoint serves a microVM's pod: it needs --microvm"},
-		{"the controller's pod", func(c *Config) {
-			c.RolesDir, c.Roles, c.Token, c.Role, c.PrivateDir = "", nil, "launcher-token", "controller", "/private"
-		}, "launcher: the metadata endpoint is an issue pod's container: it needs --roles-dir"},
+		{"the pool alone", issuePod, func(c *Config) { c.Metadata.IdentityProvider = "" }, "launcher: the metadata endpoint is named in part: no --metadata-identity-provider"},
+		{"the identity provider alone", issuePod, func(c *Config) { c.Metadata.WorkloadPool = "" }, "launcher: the metadata endpoint is named in part: no --metadata-workload-pool"},
+		{"a gVisor pod", issuePod, func(c *Config) { c.MicroVM = false }, "launcher: the metadata endpoint serves a microVM's pod: it needs --microvm"},
+		{"the controller's pool alone", controllerPod, func(c *Config) { c.Metadata.IdentityProvider = "" }, "launcher: the metadata endpoint is named in part: no --metadata-identity-provider"},
+		{"a gVisor controller pod", controllerPod, func(c *Config) { c.MicroVM = false }, "launcher: the metadata endpoint serves a microVM's pod: it needs --microvm"},
 	} {
-		cfg := issuePod()
+		cfg := tc.pod()
 		tc.change(&cfg)
 		if err := cfg.validate(); err == nil || err.Error() != tc.want {
 			t.Errorf("%s: %v, want %q", tc.name, err, tc.want)
 		}
+	}
+}
+
+// The controller's launcher, the single-role form, in a microVM pod whose deployment names the
+// endpoint (INFRA-4567), serves it as an issue pod's launcher does: it listens before the role's
+// first connection, and so before its first generation, names the address it bound in its own
+// environment, exchanges what the token file holds for a token of the pool it was named, and
+// tells each generation that address in both variables, over whatever the daemon's start command
+// carried. Where no test names a token file, it reads the one the daemon mounts in the
+// controller's pod, under FixedRoot, since that pod has no roles directory; an issue pod's
+// launcher reads its own under its roles directory. Both paths are read from the configuration the
+// launcher would serve (Config.servedMetadata) without listening: that one listens on
+// MetadataAddress, which no test holds.
+func TestTheControllersLauncherServesTheMetadataEndpoint(t *testing.T) {
+	named := func() *MetadataConfig {
+		return &MetadataConfig{WorkloadPool: testWorkloadPool, IdentityProvider: testIdentityProvider}
+	}
+	controller := Config{Token: "launcher-token", Role: "controller", PrivateDir: "/private", MicroVM: true, Metadata: named()}
+	if got := controller.servedMetadata(); got.tokenFile != "/var/run/legion/workload-identity/token" || got.listenAddress() != MetadataAddress {
+		t.Errorf("the controller's endpoint reads the token %q and listens at %q, want /var/run/legion/workload-identity/token and %q",
+			got.tokenFile, got.listenAddress(), MetadataAddress)
+	}
+	issuePod := Config{RolesDir: "/roles", Roles: []string{"tester"}, MicroVM: true, Metadata: named()}
+	if got := issuePod.servedMetadata().tokenFile; got != "/roles/workload-identity/token" {
+		t.Errorf("an issue pod's endpoint reads the token %q, want /roles/workload-identity/token", got)
+	}
+
+	holdMetadataVariables(t, "")
+	tokenFile := filepath.Join(t.TempDir(), WorkloadIdentityTokenFile)
+	writeSubjectToken(t, tokenFile, "fake-subject-token-1")
+	sts := &fakeSTS{t: t, tokenFile: tokenFile, expiresIn: 3600}
+	service := httptest.NewServer(sts)
+	t.Cleanup(service.Close)
+	metadata := named()
+	metadata.address, metadata.tokenFile, metadata.tokenURL = "127.0.0.1:0", tokenFile, service.URL
+	// The rig has taken the launcher's first connection, and no generation has started.
+	g := newSessionRig(t, Config{StopGrace: 2 * time.Second, MicroVM: true, Metadata: metadata})
+	address := servedMetadataAddress(t)
+	if got := os.Getenv(MetadataIPVariable); got != address {
+		t.Errorf("the launcher's own %s=%q once its role connected, want %q as %s", MetadataIPVariable, got, address, MetadataHostVariable)
+	}
+	if strings.Contains(g.stderr.String(), "launcher: metadata: ") {
+		t.Errorf("the launcher logged a metadata line, want none: %s", g.stderr.String())
+	}
+	response, body := getMetadata(t, "http://"+address, tokenPath, flavor)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("a token request at %s answered %d %q, want 200", address, response.StatusCode, redacted(body))
+	}
+	var token metadataToken
+	if err := json.Unmarshal([]byte(body), &token); err != nil {
+		t.Fatalf("a token request answered no token: %v", err)
+	}
+	if exchanges := sts.answered(); len(exchanges) != 1 || exchanges[0].subject != "fake-subject-token-1" || exchanges[0].token != token.AccessToken {
+		t.Fatalf("the endpoint made %d exchanges, want one of the token file's contents whose token it answered", len(exchanges))
+	}
+	const expansion = "${" + MetadataHostVariable + "-unset}|${" + MetadataIPVariable + "-unset}"
+	want := address + "|" + address
+	carried := []string{MetadataHostVariable + "=169.254.169.254", MetadataIPVariable + "=169.254.169.254"}
+	if got := g.told(1, expansion, carried, ""); got != want {
+		t.Errorf("a generation whose start command carried the node's address ran with %q, want %q", got, want)
+	}
+	if got := g.told(2, expansion, nil, ""); got != want {
+		t.Errorf("a generation whose start command named no address ran with %q, want %q", got, want)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -48,6 +49,7 @@ import (
 // (record.Store.EnqueueStart): the start then finishes without giving the worker anything,
 // which this test reads at the claim's pending task.
 func TestAStartWrittenOverAnOwedRowStillReachesTheWorker(t *testing.T) {
+	t.Parallel()
 	const firstTask, nextTask = "Implement the plan.", "Implement it again. Reason: the checks went red."
 	const firstEntry, nextEntry int64 = 1, 2
 	ctx := context.Background()
@@ -94,7 +96,7 @@ func TestAStartWrittenOverAnOwedRowStillReachesTheWorker(t *testing.T) {
 	// way the engine writes one (workflow.Engine.started), both in its own transaction.
 	next := record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleImplementer,
 		Generation: issue.Generation, Phase: issue.Phase, Task: nextTask, Entry: nextEntry}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: token,
 			Entry: nextEntry, EntryTask: nextTask, EntryRaisedAt: clock}); err != nil {
 			return err
@@ -125,7 +127,7 @@ func TestAStartWrittenOverAnOwedRowStillReachesTheWorker(t *testing.T) {
 			got, nextTask)
 	}
 	if got.Pending.Task != nextTask || got.Pending.Entry != nextEntry {
-		t.Fatalf("the task the start gave = %+v, want %q of entry %d: a completion of any entry behind it is refused HANDOFF_STALE_ENTRY",
+		t.Fatalf("the task the start gave = %+v, want %q of entry %d: a completion of an entry behind it is refused HANDOFF_STALE_ENTRY at any head but the one the record holds (intake.EntryFence)",
 			got.Pending, nextTask, nextEntry)
 	}
 	if len(runtime.Calls()) != 0 {

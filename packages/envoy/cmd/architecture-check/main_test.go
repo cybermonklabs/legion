@@ -5,6 +5,8 @@
 // one breaks tools that read paths a line at a time.
 package main
 
+//ci:reads packages/envoy/internal/dispatch/architecture/notes/testdata/** testdataDir joins ../../internal/dispatch/architecture/notes/testdata, which TestTheBuiltBinary's built binary reads
+
 import (
 	"bytes"
 	"context"
@@ -21,6 +23,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 )
+
+func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
 
 // The bound refuses a set holding a note of notes.MaxFileSize + 1 bytes before any note is read,
 // so the note beside it, whose front matter holds an unknown key, is never parsed and its problem
@@ -243,13 +247,16 @@ const binaryLimit = 20 * time.Second
 
 // runBinary runs the built binary with args in the working directory dir, the test's own when
 // empty, and answers its exit status and output. A run past binaryLimit is killed and fails the
-// test.
+// test. The binary runs on one P (GOMAXPROCS=1): the parallel rows keep every run alive at once,
+// and a run left to size GOMAXPROCS to the host starts a thread for each P its collector's idle
+// mark workers take, about 80 on a 288-CPU host.
 func runBinary(t *testing.T, binary, dir string, args ...string) result {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), binaryLimit)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOMAXPROCS=1")
 	var stdout, stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()

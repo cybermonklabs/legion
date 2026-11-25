@@ -28,8 +28,8 @@ func writeLaunchPrompt(t *testing.T, spec runtime.SpawnSpec, host Host) string {
 // `--model @default`, `--resume=<file>` when resuming, `--mode rpc` (processes.test.ts:1126 fresh,
 // :3950 resumed), then `--append-system-prompt` on the path of the claim's prompt file, one word
 // quoted for the pane's shell when it needs to be, never the prompt's text. The model flag rides
-// both launches: a resumed session would otherwise run its recorded model rather than the one the
-// pod's overlay puts on the `default` role. From Oh My Pi 18.18.6 of the fork
+// both launches, `--model <model>` for a role of `roles` that names one: a resumed session would
+// otherwise run its recorded model rather than the one the pod's overlay puts on the `default` role. From Oh My Pi 18.18.6 of the fork
 // (upstream oh-my-pi #18534), a resumed launch under the role alias appends a replacement
 // `model_change` for its resolved model, which later launches without the flag read.
 func TestInnerCommand(t *testing.T) {

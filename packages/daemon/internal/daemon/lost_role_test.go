@@ -25,9 +25,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// Ruling 10 (R1-4): the daemon boots with checker defined; issue A stands at step 2 of `implementer
-// checker` with its checker at work, issue B at step 1 of the same plan with checker next, and
-// issue C of the default steps has its planner at work. The daemon restarts with checker taken out
+// A task whose role the deployment no longer defines stops. The daemon boots with checker defined;
+// issue A stands at step 2 of `implementer checker` with its checker at work, issue B at step 1 of
+// the same plan with checker next, and issue C of the default steps has its planner at work. The
+// daemon restarts with checker taken out
 // of the settings. It boots; A's task and B's are stopped with `step 2 names the role checker,
 // which the deployment no longer defines`, each issue held task-stopped from the phase its task
 // stood in, its owner told once; A's checker claim, in its turn, holds the daemon's suspension for
@@ -40,6 +41,7 @@ import (
 // without its call of stopLostRoles (workflow/resume.go, after sweepMerged). At the restart A's
 // task is then not stopped and holds no task-stopped hold, and the assertion of A's stop fails.
 func TestARestartWithoutARoleStopsItsTasksAndBoots(t *testing.T) {
+	t.Parallel()
 	roles := deploymentRoles(t)
 	r := newDeploymentRolesRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), roles,
 		[]string{"Running checker loses its role", "Implementer waits before dropped verifier", "Default walk finishes after restart"})

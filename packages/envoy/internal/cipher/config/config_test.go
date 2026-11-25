@@ -1,6 +1,8 @@
 // packages/envoy/internal/cipher/config/config_test.go
 package config
 
+//ci:reads packages/envoy/docker/rds-global-bundle.pem TestLoadSignsInByIAMOnlyForAPasswordlessRDSURL and TestLoadLeavesAPasswordLibpqSuppliesToSignIn Load the URL whose sslrootcert is this bundle (rdsBundle), which pgx reads to build the root pool
+
 import (
 	"maps"
 	"net/netip"
@@ -400,17 +402,17 @@ func TestLoadReadsTrustedProxyHeaderOptionally(t *testing.T) {
 	}
 }
 
-// TestLoadReadsTheAirlockRulesFileOptionally pins that BROKER_AIRLOCK_RULES_FILE is optional —
-// unset is "", a deployment with no airlock — and that a path given is read as written. Load
-// opens nothing: the broker reads the file itself at start, where a file it cannot read refuses
-// the boot.
-func TestLoadReadsTheAirlockRulesFileOptionally(t *testing.T) {
+// TestLoadReadsTheProfilesFileOptionally pins that BROKER_PROFILES_FILE is optional — unset is
+// "", a deployment with no profiles and so no proxy — and that a path given is read as written.
+// Load opens nothing: the broker reads the file itself at start, where a file it cannot read
+// refuses the boot.
+func TestLoadReadsTheProfilesFileOptionally(t *testing.T) {
 	cfg, err := Load(env(validEnv()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.AirlockRulesFile != "" {
-		t.Fatalf("AirlockRulesFile = %q, want empty when BROKER_AIRLOCK_RULES_FILE is unset", cfg.AirlockRulesFile)
+	if cfg.ProfilesFile != "" {
+		t.Fatalf("ProfilesFile = %q, want empty when BROKER_PROFILES_FILE is unset", cfg.ProfilesFile)
 	}
 
 	e := airlockEnv()
@@ -418,50 +420,86 @@ func TestLoadReadsTheAirlockRulesFileOptionally(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.AirlockRulesFile != "/etc/broker/airlock.json" {
-		t.Fatalf("AirlockRulesFile = %q, want /etc/broker/airlock.json", cfg.AirlockRulesFile)
+	if cfg.ProfilesFile != "/etc/broker/profiles.json" {
+		t.Fatalf("ProfilesFile = %q, want /etc/broker/profiles.json", cfg.ProfilesFile)
 	}
 }
 
-// airlockEnv is validEnv with the airlock in force: a rules file and the three settings its
-// proxy cannot run without.
+// TestLoadRefusesTheAirlockRulesFileSetting: the airlock's rules are the proxy blocks of the
+// profiles file now, so a deployment still setting BROKER_AIRLOCK_RULES_FILE is refused naming
+// the setting that replaces it, rather than started with no proxy and every name the old file
+// held back released as its value. It is refused beside the new setting too.
+func TestLoadRefusesTheAirlockRulesFileSetting(t *testing.T) {
+	for name, e := range map[string]map[string]string{"alone": validEnv(), "beside BROKER_PROFILES_FILE": airlockEnv()} {
+		e["BROKER_AIRLOCK_RULES_FILE"] = "/etc/broker/airlock.json"
+		_, err := Load(env(e))
+		if err == nil || err.Error() != "BROKER_AIRLOCK_RULES_FILE is removed; replaced by BROKER_PROFILES_FILE" {
+			t.Errorf("Load with BROKER_AIRLOCK_RULES_FILE set %s = %v; want it refused, naming BROKER_PROFILES_FILE", name, err)
+		}
+	}
+}
+
+// airlockEnv is validEnv with the airlock in force: a profiles file and the three settings the
+// proxy of its proxy blocks cannot run without.
 func airlockEnv() map[string]string {
 	e := validEnv()
-	e["BROKER_AIRLOCK_RULES_FILE"] = "/etc/broker/airlock.json"
+	e["BROKER_PROFILES_FILE"] = "/etc/broker/profiles.json"
 	e["BROKER_AIRLOCK_PROXY_URL"] = "http://broker.legion.svc:13381"
 	e["BROKER_AIRLOCK_CA_CERT_FILE"] = "/etc/broker/airlock-ca/tls.crt"
 	e["BROKER_AIRLOCK_CA_KEY_FILE"] = "/etc/broker/airlock-ca/tls.key"
 	return e
 }
 
-// TestTheAirlocksProxySettingsAreRequiredWithItsRulesFile: a broker that reads the rules but
-// cannot proxy would hold back every name the file names and release nothing in their place, so
-// each missing setting refuses the boot by name. With no rules file there is no proxy and the
-// four are ignored, whatever they say.
-func TestTheAirlocksProxySettingsAreRequiredWithItsRulesFile(t *testing.T) {
-	if _, err := Load(env(airlockEnv())); err != nil {
+// TestTheAirlocksProxySettingsAreRequiredForAProxyBlock: a broker whose profiles hold a proxy
+// block but that cannot proxy would hold back every name such a block names and release nothing
+// in its place, so each missing setting refuses the boot by name, beside the profiles whose proxy
+// blocks need it. A profiles file is not a proxy block: Load takes one with none of the settings,
+// and RequireAirlock of profiles with no proxy block - a deployment that serves GitHub Apps and
+// runs no airlock - asks for none of them. With no profiles file there is no proxy and the four
+// are ignored, whatever they say.
+func TestTheAirlocksProxySettingsAreRequiredForAProxyBlock(t *testing.T) {
+	proxied := []string{"DEEL_API_KEY", "STORED_TOKEN_READ"}
+	cfg, err := Load(env(airlockEnv()))
+	if err != nil {
 		t.Fatalf("Load with the airlock fully configured: %v", err)
+	}
+	if err := cfg.RequireAirlock(proxied); err != nil {
+		t.Fatalf("RequireAirlock with the airlock fully configured: %v", err)
 	}
 	for _, missing := range []string{"BROKER_AIRLOCK_PROXY_URL", "BROKER_AIRLOCK_CA_CERT_FILE", "BROKER_AIRLOCK_CA_KEY_FILE"} {
 		e := airlockEnv()
 		delete(e, missing)
-		_, err := Load(env(e))
-		if err == nil || !strings.Contains(err.Error(), "BROKER_AIRLOCK_RULES_FILE") || !strings.Contains(err.Error(), "missing "+missing) {
-			t.Errorf("Load without %s = %v; want a refusal naming the rules file and the missing setting", missing, err)
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatalf("Load without %s = %v; want it taken, since a profiles file need not hold a proxy block", missing, err)
+		}
+		err = cfg.RequireAirlock(proxied)
+		if err == nil || !strings.Contains(err.Error(), "BROKER_PROFILES_FILE") || !strings.Contains(err.Error(), "DEEL_API_KEY, STORED_TOKEN_READ") || !strings.Contains(err.Error(), "missing "+missing) {
+			t.Errorf("RequireAirlock without %s = %v; want a refusal naming the profiles file, the profiles with a proxy block and the missing setting", missing, err)
 		}
 	}
 
-	// No rules file: the same configuration minus the file, and minus every proxy setting, is
-	// accepted, and so is one that still names the listen address and the idle bound.
+	// A profiles file whose profiles hold no proxy block, with none of the proxy's settings.
 	e := validEnv()
+	e["BROKER_PROFILES_FILE"] = "/etc/broker/profiles.json"
+	if cfg, err = Load(env(e)); err != nil {
+		t.Fatalf("Load with a profiles file and none of the proxy's settings: %v", err)
+	}
+	if err := cfg.RequireAirlock(nil); err != nil {
+		t.Fatalf("RequireAirlock of profiles with no proxy block and none of the proxy's settings: %v; want nil", err)
+	}
+
+	// No profiles file: the same configuration minus the file, and minus every proxy setting, is
+	// accepted, and so is one that still names the listen address and the idle bound.
+	e = validEnv()
 	e["BROKER_AIRLOCK_LISTEN_ADDR"] = "127.0.0.1:13999"
 	e["BROKER_AIRLOCK_IDLE_SECONDS"] = "60"
-	cfg, err := Load(env(e))
+	cfg, err = Load(env(e))
 	if err != nil {
-		t.Fatalf("Load with no rules file: %v", err)
+		t.Fatalf("Load with no profiles file: %v", err)
 	}
 	if cfg.AirlockProxyURL != "" || cfg.AirlockCACertFile != "" || cfg.AirlockCAKeyFile != "" {
-		t.Errorf("with no rules file the proxy settings read %q, %q, %q; want none", cfg.AirlockProxyURL, cfg.AirlockCACertFile, cfg.AirlockCAKeyFile)
+		t.Errorf("with no profiles file the proxy settings read %q, %q, %q; want none", cfg.AirlockProxyURL, cfg.AirlockCACertFile, cfg.AirlockCAKeyFile)
 	}
 	if cfg.AirlockListenAddr != "127.0.0.1:13999" || cfg.AirlockIdleSeconds != 60 {
 		t.Errorf("airlock listen addr = %q and idle = %d; want 127.0.0.1:13999 and 60", cfg.AirlockListenAddr, cfg.AirlockIdleSeconds)
@@ -592,12 +630,22 @@ func TestLoadRefusesAClusterRangeItCannotRead(t *testing.T) {
 }
 
 // TestTheClusterRangesMustHoldTheKubernetesServiceAddress: in a cluster, which Kubernetes says by
-// setting KUBERNETES_SERVICE_HOST in every container, a broker with the airlock on refuses to start
-// unless BROKER_AIRLOCK_CLUSTER_RANGES holds that address, the kubernetes Service's ClusterIP, so a
-// deployment that forgot the setting or gave the wrong range cannot pass silently. Each refusal
-// names both variables. Outside a cluster, and in a cluster with no airlock, the setting is
-// optional.
+// setting KUBERNETES_SERVICE_HOST in every container, a broker whose profiles hold a proxy block
+// refuses to start unless BROKER_AIRLOCK_CLUSTER_RANGES holds that address, the kubernetes
+// Service's ClusterIP, so a deployment that forgot the setting or gave the wrong range cannot pass
+// silently. Each refusal names both variables. Outside a cluster, and in a cluster with no proxy
+// block, whether or not there is a profiles file, the setting is optional.
 func TestTheClusterRangesMustHoldTheKubernetesServiceAddress(t *testing.T) {
+	// requireAirlock loads e, which must load, and answers RequireAirlock of proxied over it.
+	requireAirlock := func(t *testing.T, e map[string]string, proxied []string) error {
+		t.Helper()
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatalf("Load(KUBERNETES_SERVICE_HOST=%q, BROKER_AIRLOCK_CLUSTER_RANGES=%q): %v; want it taken, since the ranges are required by the profiles the boot reads", e["KUBERNETES_SERVICE_HOST"], e["BROKER_AIRLOCK_CLUSTER_RANGES"], err)
+		}
+		return cfg.RequireAirlock(proxied)
+	}
+	proxied := []string{"DEEL_API_KEY"}
 	for _, row := range []struct{ name, host, ranges, want string }{
 		{"the setting missing", "34.118.224.1", "", "BROKER_AIRLOCK_CLUSTER_RANGES is required"},
 		{"a KUBERNETES_SERVICE_HOST that is not an address", "kubernetes.default.svc", "34.118.224.0/20", "KUBERNETES_SERVICE_HOST is not an IP address"},
@@ -613,9 +661,9 @@ func TestTheClusterRangesMustHoldTheKubernetesServiceAddress(t *testing.T) {
 			e := airlockEnv()
 			e["KUBERNETES_SERVICE_HOST"] = row.host
 			e["BROKER_AIRLOCK_CLUSTER_RANGES"] = row.ranges
-			_, err := Load(env(e))
+			err := requireAirlock(t, e, proxied)
 			if err == nil {
-				t.Fatalf("Load(KUBERNETES_SERVICE_HOST=%q, BROKER_AIRLOCK_CLUSTER_RANGES=%q) = nil; want a refusal", row.host, row.ranges)
+				t.Fatalf("RequireAirlock(KUBERNETES_SERVICE_HOST=%q, BROKER_AIRLOCK_CLUSTER_RANGES=%q) = nil; want a refusal", row.host, row.ranges)
 			}
 			for _, want := range []string{"BROKER_AIRLOCK_CLUSTER_RANGES", "KUBERNETES_SERVICE_HOST", row.want} {
 				if !strings.Contains(err.Error(), want) {
@@ -642,16 +690,23 @@ func TestTheClusterRangesMustHoldTheKubernetesServiceAddress(t *testing.T) {
 			e := airlockEnv()
 			e["KUBERNETES_SERVICE_HOST"] = row.host
 			e["BROKER_AIRLOCK_CLUSTER_RANGES"] = row.ranges
-			if _, err := Load(env(e)); err != nil {
-				t.Fatalf("Load(KUBERNETES_SERVICE_HOST=%q, BROKER_AIRLOCK_CLUSTER_RANGES=%q): %v", row.host, row.ranges, err)
+			if err := requireAirlock(t, e, proxied); err != nil {
+				t.Fatalf("RequireAirlock(KUBERNETES_SERVICE_HOST=%q, BROKER_AIRLOCK_CLUSTER_RANGES=%q): %v", row.host, row.ranges, err)
 			}
 		})
 	}
 	t.Run("starts in a cluster with no airlock and no ranges", func(t *testing.T) {
 		e := validEnv()
 		e["KUBERNETES_SERVICE_HOST"] = "34.118.224.1"
-		if _, err := Load(env(e)); err != nil {
-			t.Fatalf("Load with no rules file in a cluster: %v", err)
+		if err := requireAirlock(t, e, nil); err != nil {
+			t.Fatalf("RequireAirlock with no profiles file in a cluster: %v", err)
+		}
+	})
+	t.Run("starts in a cluster with a profiles file that holds no proxy block and no ranges", func(t *testing.T) {
+		e := airlockEnv()
+		e["KUBERNETES_SERVICE_HOST"] = "34.118.224.1"
+		if err := requireAirlock(t, e, nil); err != nil {
+			t.Fatalf("RequireAirlock of profiles with no proxy block in a cluster: %v", err)
 		}
 	})
 }
@@ -1067,12 +1122,14 @@ func TestVMServicesNeedTheGoogleAudience(t *testing.T) {
 	}
 }
 
-// TestGoogleAPIAccountsAndVMServicesAreIndependent pins that either kind of Google caller, a
+// TestGoogleAPIAccountsAndVMServicesAreIndependent pins that either kind of Google caller here, a
 // google: entry in BROKER_API_ACCOUNTS or a BROKER_VM_SERVICES entry, is enough for the Google
-// audience and needs it, and that an audience with neither, a Kubernetes API caller being no
-// Google caller, is refused at boot naming the audience and both ways to give it a caller.
+// audience and needs it, and that an audience with none, a Kubernetes API caller being no Google
+// caller, is refused at boot naming the audience and all three ways to give it a caller. The
+// third, a google: edge-listener entry in BROKER_NATS_SERVICES, has its rows in
+// TestNATSCalloutSettings.
 func TestGoogleAPIAccountsAndVMServicesAreIndependent(t *testing.T) {
-	const noGoogleCaller = "BROKER_GOOGLE_OIDC_AUDIENCE needs a Google caller: a google: entry in BROKER_API_ACCOUNTS or a VM service in BROKER_VM_SERVICES"
+	const noGoogleCaller = "BROKER_GOOGLE_OIDC_AUDIENCE needs a Google caller: a google: entry in BROKER_API_ACCOUNTS, a VM service in BROKER_VM_SERVICES or a google: edge-listener entry in BROKER_NATS_SERVICES"
 	for _, row := range []struct {
 		name                                string
 		api, kubernetes, audience, services bool
@@ -1630,7 +1687,7 @@ func TestSessionAccountPairsRefuseABadEntry(t *testing.T) {
 // TestLoadRefusesTheRulesFileVariables pins that a deployment still configured for the rules file
 // refuses to start naming the variable, rather than running with its rules silently ignored. The
 // reason names both halves of what replaced it: the tags each secret's owner and tier come from,
-// and BROKER_AIRLOCK_RULES_FILE, the file the broker does read, for the other question.
+// and BROKER_PROFILES_FILE, the file the broker does read, for the other question.
 func TestLoadRefusesTheRulesFileVariables(t *testing.T) {
 	for name, value := range map[string]string{
 		"BROKER_RULES_FILE":           "/r.yaml",
@@ -1640,8 +1697,8 @@ func TestLoadRefusesTheRulesFileVariables(t *testing.T) {
 		e := validEnv()
 		e[name] = value
 		_, err := Load(env(e))
-		if err == nil || !strings.HasPrefix(err.Error(), name+" is removed; ") || !strings.Contains(err.Error(), "tags") || !strings.Contains(err.Error(), "BROKER_AIRLOCK_RULES_FILE") {
-			t.Fatalf("Load(%s set) = %v, want a refusal naming it, the tags that replace it and BROKER_AIRLOCK_RULES_FILE", name, err)
+		if err == nil || !strings.HasPrefix(err.Error(), name+" is removed; ") || !strings.Contains(err.Error(), "tags") || !strings.Contains(err.Error(), "BROKER_PROFILES_FILE") {
+			t.Fatalf("Load(%s set) = %v, want a refusal naming it, the tags that replace it and BROKER_PROFILES_FILE", name, err)
 		}
 	}
 }
@@ -2097,9 +2154,11 @@ func TestLoadReadsTheAccessTokenLifetime(t *testing.T) {
 // TestLoadReadsTheExchangeAccounts pins BROKER_EXCHANGE_ACCOUNTS: whitespace-separated
 // <account>=<project>=<person>[=<session>] entries in order, none when unset, a session that may
 // itself carry "=", an empty project (the shared public-session account's entry, whose named
-// tokens name no project), and refusals naming the entry for one that is not of that form, has a
-// blank account or person, names a namespace's default account or lists an account twice. It
-// needs the cluster issuer and the exchange audience, whose tokens its pods present.
+// tokens name no project), an empty project and person (a job's own account, whose tokens act as
+// the account itself), and refusals naming the entry for one that is not of that form, has a
+// blank account, names a project and no person, names a namespace's default account or lists an
+// account twice. It needs the cluster issuer and the exchange audience, whose tokens its pods
+// present.
 func TestLoadReadsTheExchangeAccounts(t *testing.T) {
 	cfg, err := Load(env(validEnv()))
 	if err != nil {
@@ -2116,7 +2175,8 @@ func TestLoadReadsTheExchangeAccounts(t *testing.T) {
 	e := withExchange()
 	e["BROKER_EXCHANGE_ACCOUNTS"] = "system:serviceaccount:example-ns:example-worker=EXAMPLE=ada@example.com\n" +
 		" system:serviceaccount:example-ns:example-daemon=EXAMPLE=ada@example.com=legion-daemon:EXAMPLE=1 " +
-		"system:serviceaccount:example-ns:example-public==ada@example.com"
+		"system:serviceaccount:example-ns:example-public==ada@example.com " +
+		"system:serviceaccount:example-ns:example-job== system:serviceaccount:example-ns:example-probe===example-probe-session"
 	cfg, err = Load(env(e))
 	if err != nil {
 		t.Fatal(err)
@@ -2125,6 +2185,8 @@ func TestLoadReadsTheExchangeAccounts(t *testing.T) {
 		{Account: "system:serviceaccount:example-ns:example-worker", Project: "EXAMPLE", Person: "ada@example.com"},
 		{Account: "system:serviceaccount:example-ns:example-daemon", Project: "EXAMPLE", Person: "ada@example.com", Session: "legion-daemon:EXAMPLE=1"},
 		{Account: "system:serviceaccount:example-ns:example-public", Project: "", Person: "ada@example.com"},
+		{Account: "system:serviceaccount:example-ns:example-job"},
+		{Account: "system:serviceaccount:example-ns:example-probe", Session: "example-probe-session"},
 	}
 	if !slices.Equal(cfg.ExchangeAccounts, want) {
 		t.Fatalf("ExchangeAccounts = %v, want %v", cfg.ExchangeAccounts, want)
@@ -2139,6 +2201,12 @@ func TestLoadReadsTheExchangeAccounts(t *testing.T) {
 		if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_ACCOUNTS") || !strings.Contains(err.Error(), strconv.Quote(bad)) {
 			t.Errorf("BROKER_EXCHANGE_ACCOUNTS = %q: err = %v, want a refusal naming the setting and the entry", bad, err)
 		}
+	}
+	// An entry naming a project and no person is refused naming that rule, not only its form.
+	e = withExchange()
+	e["BROKER_EXCHANGE_ACCOUNTS"] = "system:serviceaccount:example-ns:example-worker=EXAMPLE="
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "names no person only when it names no project either") {
+		t.Errorf("BROKER_EXCHANGE_ACCOUNTS naming a project and no person: err = %v, want a refusal naming the rule", err)
 	}
 	e = withExchange()
 	e["BROKER_EXCHANGE_ACCOUNTS"] = "system:serviceaccount:x:y=A=ada@example.com system:serviceaccount:x:y=B=ada@example.com"
@@ -2947,6 +3015,111 @@ func TestProjectAccessSettingsComeTogether(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "BROKER_PROJECT_ACCESS_URL") || !strings.Contains(err.Error(), "absolute http(s) URL") {
 			t.Errorf("Load(BROKER_PROJECT_ACCESS_URL=%q) = %v; want a refusal naming the variable", bad, err)
 		}
+	}
+}
+
+// TestTheDirectoryURLIsGooglesUnlessSet pins BROKER_DIRECTORY_URL: unset, the broker reads no
+// address of its own, so the group reader calls Google's Directory API; set, it is read without
+// the slashes it ends in, as a test's stand-in is named; and a value that is no absolute https URL,
+// or http to a loopback host, refuses the start naming the setting: a group read sends the reader
+// account's token to it, which only a run on one machine may send in plain text.
+func TestTheDirectoryURLIsGooglesUnlessSet(t *testing.T) {
+	cfg, err := Load(env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DirectoryURL != "" {
+		t.Fatalf("with BROKER_DIRECTORY_URL unset the broker reads %q; want nothing, so the reader calls Google's own address", cfg.DirectoryURL)
+	}
+
+	for value, want := range map[string]string{
+		" https://directory.internal.example:8443// ": "https://directory.internal.example:8443",
+		"http://127.0.0.1:8080/":                      "http://127.0.0.1:8080",
+		"http://localhost:8080":                       "http://localhost:8080",
+	} {
+		e := validEnv()
+		e["BROKER_DIRECTORY_URL"] = value
+		if cfg, err = Load(env(e)); err != nil {
+			t.Fatalf("Load(BROKER_DIRECTORY_URL=%q) = %v; want it taken", value, err)
+		}
+		if cfg.DirectoryURL != want {
+			t.Fatalf("BROKER_DIRECTORY_URL %q is read as %q; want %q, without its spaces and trailing slashes", value, cfg.DirectoryURL, want)
+		}
+	}
+
+	for _, bad := range []string{"directory.internal.example", "//directory.internal.example", "ftp://directory.internal.example", "http://", "http://%zz", "http://directory.internal.example:8080", "https://"} {
+		e := validEnv()
+		e["BROKER_DIRECTORY_URL"] = bad
+		_, err := Load(env(e))
+		if err == nil || !strings.Contains(err.Error(), "BROKER_DIRECTORY_URL") || !strings.Contains(err.Error(), "absolute https URL, or http to a loopback host") {
+			t.Errorf("Load(BROKER_DIRECTORY_URL=%q) = %v; want a refusal naming the variable and the rule", bad, err)
+		}
+	}
+}
+
+// groupReaderAccount is the reader account a deployment names in BROKER_DIRECTORY_ACCOUNT.
+const groupReaderAccount = "group-reader@example-project.iam.gserviceaccount.com"
+
+// TestTheDirectoryAccountIsAServiceAccount pins BROKER_DIRECTORY_ACCOUNT: unset, the broker loads
+// and names no reader account, so it reads no group; set, it is read as given, without spaces;
+// and an address that is no user-managed Google service account, the only kind generateAccessToken
+// mints for, refuses the start naming the setting: a person, a capitalised address, a list and a
+// Google-managed service agent, which Google's own services run as.
+func TestTheDirectoryAccountIsAServiceAccount(t *testing.T) {
+	cfg, err := Load(env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DirectoryAccount != "" {
+		t.Fatalf("with BROKER_DIRECTORY_ACCOUNT unset the broker reads %q; want no reader account", cfg.DirectoryAccount)
+	}
+
+	e := validEnv()
+	e["BROKER_DIRECTORY_ACCOUNT"] = " " + groupReaderAccount + "\n"
+	if cfg, err = Load(env(e)); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DirectoryAccount != groupReaderAccount {
+		t.Fatalf("BROKER_DIRECTORY_ACCOUNT is read as %q; want %q", cfg.DirectoryAccount, groupReaderAccount)
+	}
+
+	for _, c := range []struct{ name, account, want string }{
+		{"a person", "reader@example.com", "user-managed Google service account"},
+		{"an upper-case address", "Group-Reader@example-project.iam.gserviceaccount.com", "user-managed Google service account"},
+		{"a list", groupReaderAccount + " other-reader@example-project.iam.gserviceaccount.com", "user-managed Google service account"},
+		{"a service agent", "service-123456789012@gcp-sa-example.iam.gserviceaccount.com", "Google-managed service agent"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := validEnv()
+			e["BROKER_DIRECTORY_ACCOUNT"] = c.account
+			_, err := Load(env(e))
+			if err == nil || !strings.Contains(err.Error(), "BROKER_DIRECTORY_ACCOUNT") || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("Load(BROKER_DIRECTORY_ACCOUNT=%q) = %v; want a refusal naming the setting and %q", c.account, err, c.want)
+			}
+		})
+	}
+}
+
+// TestADirectoryAccountThatASecretBindsIsRefused: a reader account that BROKER_SERVICE_ACCOUNT_SECRETS
+// binds to a secret refuses the start, naming the secret, since a grant of that secret would
+// release the token the group read uses; a reader account that no secret binds loads beside
+// those bindings.
+func TestADirectoryAccountThatASecretBindsIsRefused(t *testing.T) {
+	e := validEnv()
+	e["BROKER_SERVICE_ACCOUNT_SECRETS"] = "GCP_ADMIN=gcp-admin@example-project.iam.gserviceaccount.com GROUP_READER=" + groupReaderAccount
+	e["BROKER_DIRECTORY_ACCOUNT"] = groupReaderAccount
+	_, err := Load(env(e))
+	if err == nil || !strings.Contains(err.Error(), "the directory account is bound to a secret") || !strings.Contains(err.Error(), "GROUP_READER") || !strings.Contains(err.Error(), "BROKER_DIRECTORY_ACCOUNT") {
+		t.Fatalf("Load with BROKER_DIRECTORY_ACCOUNT bound to GROUP_READER = %v; want a refusal saying the directory account is bound to a secret, naming it", err)
+	}
+
+	e["BROKER_SERVICE_ACCOUNT_SECRETS"] = "GCP_ADMIN=gcp-admin@example-project.iam.gserviceaccount.com"
+	cfg, err := Load(env(e))
+	if err != nil {
+		t.Fatalf("Load with a reader account no secret binds = %v; want it loaded", err)
+	}
+	if cfg.DirectoryAccount != groupReaderAccount {
+		t.Fatalf("BROKER_DIRECTORY_ACCOUNT is read as %q; want %q", cfg.DirectoryAccount, groupReaderAccount)
 	}
 }
 

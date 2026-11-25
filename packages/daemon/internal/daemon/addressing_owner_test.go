@@ -25,6 +25,7 @@ import (
 // architect's own included, is told the root's architect, as before. Every other part of the
 // sentence is the one a claim was always told.
 func TestTheAddressingNamesTheIssuesOwnArchitect(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	st, err := store.Open(ctx, pool.Config().ConnString())
@@ -116,6 +117,7 @@ func TestTheAddressingNamesTheIssuesOwnArchitect(t *testing.T) {
 // with the case it holds in (each role its own agent until the issue runs a plan) and the read
 // that names the agent of each step of a plan it runs later.
 func TestTheAddressingNamesTheAgentOfEachStep(t *testing.T) {
+	t.Parallel()
 	steps := []record.PlanStep{
 		{Issue: "LEGION-209", Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation", AgentKey: "a", Agent: "implementer"},
 		{Issue: "LEGION-209", Generation: 1, Task: "a", Position: 2, Role: "tester", Type: "testing", AgentKey: "a", Agent: "implementer"},

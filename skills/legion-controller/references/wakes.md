@@ -6,7 +6,7 @@ Read this when the skill's wake table sends you here. Wakes come on `notificatio
 
 Run the every-turn steps and the parked-root walk. Name in the day's report, and take nothing for: each `openCapabilities` row (the operator decides a deployment row, whose `configLine` names its `legion.yaml` line; the operator or the issue's architect fixes a live row's session), each `blocked` and `held` row, and each `silent` entry with its role and how long it has been quiet (with `backgroundSince`, how long its background work has stood).
 
-A `silent` entry is a phase worker nothing will prompt: the daemon sends its task again and tells its architect. When that architect is itself not answering, read the tree's root claim (`issues.<ROOT>.architect`, `<ROOT>` the entry's `tree`). When it reads `failed`, act as [`worker-died`](#worker-died-architect) says. When the owning architect's claim does not read `failed` and the Envoy registry shows its session `gone`, `fresh_session` that architect.
+A `silent` entry is a phase worker nothing will prompt: the daemon sends its task again (with `backgroundSince`, it sends nothing) and tells its architect. When that architect is itself not answering, read the tree's root claim (`issues.<ROOT>.architect`, `<ROOT>` being `issues.<KEY>.tree` and `<KEY>` the entry's `issue`). When it reads `failed`, act as [`worker-died`](#worker-died-architect) says. When the owning architect's claim does not read `failed` and the Envoy registry shows its session `gone`, `fresh_session` that architect.
 
 ## `awaiting-person`
 
@@ -14,7 +14,7 @@ A root that waits only on a person keeps its slot: do not park it or take anythi
 
 ## `tree-stalled`
 
-Nothing of the tree has moved for `stalled_tree_notice_hours` and no agent of it works; the daemon starts nothing and tells you once per stop. Read the tree and decide: ask a role what it waits on (`envoy_publish` to its role topic), move an issue back a phase nobody works, or, for a tree that waits on an event outside Legion, ask whether to park it (`skill://legion-controller/references/park-asks.md`).
+Nothing of the tree has moved for `stalled_tree_notice_hours` and no agent of it works; the daemon starts nothing and tells you once per stop. Read the tree and decide: ask a role what it waits on (`envoy_publish` to its role topic), or, for a tree that waits on an event outside Legion, ask whether to park it (`skill://legion-controller/references/park-asks.md`).
 
 ## `architect-stalled`
 
@@ -34,7 +34,7 @@ The root's architect ran out of launches or prompts. When the root's `phase` is 
 
 ## `worker-stalled` (architect)
 
-The daemon ended a stalled turn of the tree's architect; the notice says what became of the process and what the owed task waits on. Do nothing, unless it names the failed end (its `worker-died` follows) or a stop the runtime did not confirm, which is a finding for a person, as are repeated stalls of one architect.
+The daemon ended a stalled turn of the tree's architect, took the turn off its claim, or took back its task without ending the turn; the notice says what became of the process and what the owed task waits on. Do nothing, unless it names the failed end (its `worker-died` follows) or a stop the runtime did not confirm, which is a finding for a person, as are repeated stalls of one architect.
 
 ## `pod-wait-held`
 
@@ -46,4 +46,4 @@ Six turns of `role` in a row ended in a provider error; the daemon keeps prompti
 
 ## GitHub mentions
 
-Answer a mention that asks for triage or for what `read_state` or Dispatch holds. Send any other to the owning architect: `envoy_publish` its URL, its text and the issue key to that architect's role, never to a token built from a partial issue reference. A person who asks how to pass a design gate approves, in Dispatch, the document of each step your `Design gate steps:` line names; a project that wants no gate sets `gates.design: []` in `legion.yaml`.
+Answer a mention that asks for triage or for what `read_state` or Dispatch holds. Send any other to the owning architect: `envoy_publish` its URL, its text and the issue key to that architect's role, never to a token built from a partial issue reference. A person who asks how to pass a design gate approves, in Dispatch, the document of each step your `Design gate steps:` line names, and the Verification document where the root registered it as `criteria`; a project that wants no gate sets `gates.design: []` in `legion.yaml`.

@@ -61,9 +61,10 @@ func podWaitRunner(t *testing.T, lacks map[claim.Role]string) (*outbox, *supervi
 
 // A start of a role that the issue's pod was built before waits on its row and makes no claim:
 // the launch, not the pod's round or its release, would otherwise decide the pod, and a launch
-// into it would replace it with the issue's disk (ruling 18). Where the pod holds the role, the
+// into it would replace it with the issue's disk. Where the pod holds the role, the
 // same row creates the claim and spawns it.
 func TestAStartOfARoleThePodLacksWaitsAndMakesNoClaim(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		lacks map[claim.Role]string
@@ -111,6 +112,7 @@ func TestAStartOfARoleThePodLacksWaitsAndMakesNoClaim(t *testing.T) {
 // start waits on its row where the pod lacks either, its text naming the one it lacks, and asks
 // the runtime for nothing: a launch refused for the role would be charged as a launch failure.
 func TestAKeyedAgentsStartWaitsWhereThePodLacksItsSlotOrTheRoleOfItsStep(t *testing.T) {
+	t.Parallel()
 	implementer, err := claim.NewToken("legion", "LEGION-208", claim.RoleImplementer)
 	if err != nil {
 		t.Fatal(err)
@@ -193,10 +195,11 @@ func outboxPodWaitHeld(t *testing.T, runner *outbox, issue string) []string {
 // Under a deployment with no idle release (idle_minutes: 0), main's rule never ends a wait for a
 // pod built before a role, and where no claim records a process in that pod no update round opens
 // over it either: nothing ends the wait until an operator acts, so the controller is told, once
-// for each wait that finds no process in the pod (ruling 19 as the lead corrected it on R3-1).
+// for each wait that finds no process in the pod.
 // Where a claim records a process there, the round asks each role to push and replaces the pod,
 // and the controller is told nothing; where the idle release is on, main's rule ends the wait.
 func TestAWaitUnderADeploymentWithNoIdleReleaseIsToldOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	implementer, err := claim.NewToken("legion", "LEGION-208", claim.RoleImplementer)
 	if err != nil {

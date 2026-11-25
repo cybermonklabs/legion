@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // seededArchitectTask is the work the architect's seeded entry names: the text the transition
@@ -75,8 +76,8 @@ func architectStartOf(t *testing.T, pool *pgxpool.Pool) record.SuperviseRequest 
 // raise that does not say it clears it.
 //
 // The row is the architect's own: the entry of a phase worker of the same issue stands where it
-// was, because the record counts the entries handed on each row, numbered across the rows that
-// name the same claim, and the architect's claim is no worker's.
+// was, because each raise writes only the row of the role it starts, at one above every row of
+// the issue, and the architect's claim is no worker's.
 func TestTheRootArchitectEntryIsRaisedWithItsTaskAndTheMomentItWasRaised(t *testing.T) {
 	pool := migratedPool(t)
 	root := architectEntryRoot()
@@ -214,10 +215,11 @@ func TestResumeAwaitedRootRaisesTheArchitectEntryForBothOfItsCallers(t *testing.
 		waiting := record.Awaiting{Ask: "ask-1", Since: record.EventMark{Seq: 5}, AnsweredAt: &answeredAt,
 			AnsweredBy: record.AnsweredByAsk}
 
-		seedRecord(t, pool, func(tx pgx.Tx) error {
-			ctx, _ := intake.WithCommitHooks(context.Background())
+		if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 			return engine.ResumeAwaitedRoot(ctx, tx, root, waiting)
-		})
+		}); err != nil {
+			t.Fatalf("resume the answered root: %v", err)
+		}
 
 		assertArchitectEntryRaised(t, pool, engine, seededEntry+1)
 	})

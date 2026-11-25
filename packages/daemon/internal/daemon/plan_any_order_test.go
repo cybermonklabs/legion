@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -35,6 +36,7 @@ import (
 // the walk at done. The control is a second issue given the same steps as `implementer tester
 // reviewer`: it launches its tester before its reviewer, and the same check of the order must fail.
 func TestAPlanInAnyOrderRunsToDone(t *testing.T) {
+	t.Parallel()
 	r := newOwnerStepsRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), 2, config.Project{})
 	walked, control := r.issues[0].key, r.issues[1].key
 	order := []claim.Role{claim.RoleImplementer, claim.RoleReviewer, claim.RoleTester}
@@ -128,6 +130,7 @@ func joinRoles(roles []claim.Role) string {
 // planner starts after that completion with the pull request recorded open, and the retro and the
 // merge end the walk at done.
 func TestAStepThatReadsAPullRequestWaitsForAnImplementer(t *testing.T) {
+	t.Parallel()
 	r := newOwnerStepsRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), 1, config.Project{})
 	r.testerFirstRefused()
 
@@ -184,9 +187,9 @@ func (r *ownerStepsRig) testerFirstRefused() string {
 func (r *ownerStepsRig) pullRequest() *record.PullRequest {
 	r.t.Helper()
 	var pr *record.PullRequest
-	if err := r.st.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.TransactWith(context.Background(), r.st.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		pr, err = r.records.PullRequest(context.Background(), tx, r.key)
+		pr, err = r.records.PullRequest(ctx, tx, r.key)
 		return err
 	}); err != nil {
 		r.t.Fatalf("read the pull request of %s: %v", r.key, err)
@@ -211,6 +214,7 @@ const releaseBeforeTaskText = "Make the change the issue asks for."
 // before the boot: it walks today's line, the approval moves it to accepting, and the same check of
 // the move into the retro must fail on it.
 func TestAnIssueOfTheReleaseBeforeGoesOn(t *testing.T) {
+	t.Parallel()
 	r := newReleaseBeforeRig(t)
 	walked := r.walks[0]
 	r.on(walked.key)
@@ -301,7 +305,7 @@ func newReleaseBeforeRig(t *testing.T) *inFlightRig {
 	}
 	r.cfg.DispatchURL = r.dispatch.base
 	r.person(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Release before"}, http.StatusCreated, nil)
-	r.person(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
+	r.person(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
 	status := workflow.PhaseStatus(phase.Reviewing)
 	// Two titles of the in-flight run, which Dispatch takes as two issues of no near-copy title.
 	for place, title := range []string{inFlightTitles[3], inFlightTitles[7]} {

@@ -93,7 +93,7 @@ func ghDriftReasons(t *testing.T, g *rig, loc runtime.Locator, role claim.Role) 
 	t.Helper()
 	name := roleVolume(ghVolume, role)
 	var named []string
-	for _, reason := range driftOf(t, g.ctx, g.r, loc) {
+	for _, reason := range driftOf(t, g, g.r, loc) {
 		if strings.Contains(reason, name) {
 			named = append(named, reason)
 		}
@@ -146,7 +146,7 @@ func TestAnOwnerEveryLeaseIsRefusedForIsNoDriftForThePodWithoutIt(t *testing.T) 
 	}
 }
 
-// The six roles of an issue pod run as two GitHub Apps, and each App's installations answer for
+// The roles of an issue pod run as two GitHub Apps, and each App's installations answer for
 // themselves: one may refuse every lease of an owner the other mints. The pod then projects the
 // directories every role's bundle holds and starts, since a projection item naming a key a
 // role's Secret lacks would stop the pod from starting; a role whose bundle holds more keeps

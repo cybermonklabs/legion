@@ -275,6 +275,7 @@ func (r *stepRecordRig) retriedThenLanded(refused int) []stepPut {
 // answers as the router does, through the daemon's real HTTP client, so the client's reading of
 // that body is what decides.
 func TestAStepRecordWaitsForADispatchThatHasNoRouteForIt(t *testing.T) {
+	t.Parallel()
 	rig := newStepRecordRig(t, nil)
 	rig.runner.log = slog.New(slog.NewJSONHandler(rig.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	route := "/api/v1/issues/" + stepIssue + "/steps/" + stepRecordID
@@ -358,6 +359,7 @@ func TestAStepRecordWaitsForADispatchThatHasNoRouteForIt(t *testing.T) {
 // and the rating. The run (outbox.run) sends each to its own route, and each write carries its own
 // record's value of each field.
 func TestAStepRecordReachesDispatchWithEveryField(t *testing.T) {
+	t.Parallel()
 	recordType, writeType := reflect.TypeFor[record.StepRecord](), reflect.TypeFor[dispatch.StepWrite]()
 	recordFields := map[string]reflect.StructField{}
 	for i := range recordType.NumField() {
@@ -451,6 +453,7 @@ func TestAStepRecordReachesDispatchWithEveryField(t *testing.T) {
 // that 0 through the store, and the write Dispatch gets names it, where a nil would read as a
 // failed merge that returned nowhere.
 func TestAReturnToTheRetroReachesDispatchAsPlaceZero(t *testing.T) {
+	t.Parallel()
 	ended := time.Date(2026, 11, 17, 2, 0, 0, 0, time.UTC)
 	session, model, result, retro := "ses-merger", "anthropic/claude-opus-5", "failed", 0
 	rig := newStepRecordRigOf(t, record.StepRecord{ID: stepRecordID, Task: "default", Kind: "merge", Role: "merger",
@@ -478,6 +481,7 @@ func TestAReturnToTheRetroReachesDispatchAsPlaceZero(t *testing.T) {
 // its failed attempt is the outbox's own Error line and nothing says the record was dropped, and
 // once Dispatch answers again the next run writes the same record under the same id and ends it.
 func TestAStepRecordRetriesAnOutageAndACredential(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		err  error
@@ -504,6 +508,7 @@ func TestAStepRecordRetriesAnOutageAndACredential(t *testing.T) {
 // issue Dispatch does not have, a body Dispatch will never take, a writer the route refuses, and an
 // id of another issue. The row's failure is not logged as a failed attempt besides.
 func TestAStepRecordThatDispatchRefusesEndsWithAWarning(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		err  *dispatch.Error
@@ -532,6 +537,7 @@ func TestAStepRecordThatDispatchRefusesEndsWithAWarning(t *testing.T) {
 // route holds nothing else of the issue: with the record's PUT waiting, the same issue's status
 // write runs on the board lane and lands.
 func TestAStepRecordHoldsNoStatusWrite(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	putOutboxIssue(t, pool, record.NewStore(), claimReleaseRoot())
 	putOutboxIssue(t, pool, record.NewStore(), parkedIssue())
@@ -552,7 +558,7 @@ func TestAStepRecordHoldsNoStatusWrite(t *testing.T) {
 		return slices.Equal(client.statusWrites(), []string{"icebox"})
 	})
 	var left int
-	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
+	if !testwait.Holds(testwait.Remaining(t), testwait.Poll, func() bool {
 		left = outboxRowsOf(t, pool, claimIssue)
 		return left == 1
 	}) {

@@ -41,7 +41,7 @@ func raceShapes(t *testing.T, s *Store, owners fleetOwners, a, b writerShape, ro
 		for _, shape := range []writerShape{a, b} {
 			subset, touch := randomOwners(all)
 			wg.Go(func() {
-				_, err := raceWriter(ctx, s, shape, subset, touch)
+				_, err := raceWriter(ctx, t, s, shape, subset, touch)
 				mu.Lock()
 				defer mu.Unlock()
 				var pgErr *pgconn.PgError
@@ -77,6 +77,7 @@ const raceRounds = 300
 // row-first writer does not, so its rounds must lose an update or deadlock at least once. A race
 // that broke neither would hold the safe pairs to nothing.
 func TestTheOwnerLockModesRaceEachOtherAndTheEarlierBuildsWriter(t *testing.T) {
+	t.Parallel()
 	s, owners := openFleetStore(t)
 	registerFleetProcess(t, s, 0, 0)
 	pairs := []struct {
@@ -125,10 +126,15 @@ const (
 // starts while the arrival waits, or after it, takes the owners' rows. Writers run in both modes,
 // and the arrivals that waited for the gate, and how long, are logged. With the gate taken out of
 // the two arrival triggers, a writer that read no earlier build writes beside that build's
-// writers, and updates are lost.
+// writers, and updates are lost. The registration's own 5 s bound on the gate is not this row's
+// subject, so the row takes it off the function (waitRegistrationsOut): each registration waits as
+// its own transaction allows, until shortly before the test binary's deadline, and one that waits
+// longer behind a slow writer is no failure here.
 func TestTheOwnerLockGateRacesAnEarlierBuildArrivingWritingAndLeaving(t *testing.T) {
+	t.Parallel()
 	s, owners := openFleetStore(t)
 	ctx := context.Background()
+	waitRegistrationsOut(ctx, t, s)
 	mine := registerFleetProcess(t, s, OwnerLockProtocol, 0)
 	all := owners.all()
 	start := ownerSeqs(t, s, all)
@@ -155,14 +161,14 @@ func TestTheOwnerLockGateRacesAnEarlierBuildArrivingWritingAndLeaving(t *testing
 				return
 			case <-time.After(5 * time.Millisecond):
 			}
-			ledger.record(t, "this build's heartbeat", heartbeatAsThisBuild(ctx, s, mine), nil)
+			ledger.record(t, "this build's heartbeat", heartbeatAsThisBuild(ctx, t, s, mine), nil)
 		}
 	})
 
 	var waits []time.Duration
 	timedArrival := func(arrival earlierBuildArrival, key string) {
 		began := time.Now()
-		err := arrive(ctx, s, arrival, key)
+		err := arrive(ctx, t, s, arrival, key)
 		waits = append(waits, time.Since(began))
 		ledger.record(t, "earlier build, "+arrival.name, err, nil)
 	}

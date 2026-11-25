@@ -12,10 +12,12 @@ const yet = " This release of Legion does not carry it out yet."
 var builtin = Deployment{Roles: BuiltinRoles()}
 
 // What no release carries out, as this release checks it: a step that names a role neither the
-// deployment nor the plan defines is refused, naming the step, its task and the role. Legion
-// refuses no plan for a step that it lacks, so each plan of Legion's own roles is taken whatever
-// steps it leaves out. The control is in the second half: a validator that also required a
-// reviewer step would refuse `implementer tester`, and one that required a tester would refuse
+// deployment nor the plan defines is refused, naming the step, its task and the role. Validate
+// refuses no plan for a step that it lacks, so each plan of Legion's own roles passes it whatever
+// steps it leaves out; a task with no implementer step, and a tester, reviewer or acceptance step
+// with no implementer before it, are what this release does not carry out yet, and Supported
+// refuses them. The control is in the second half: a validator that also required a reviewer
+// step would refuse `implementer tester`, and one that required a tester would refuse
 // `implementer reviewer`.
 func TestValidateRefusesARoleThatNobodyDefines(t *testing.T) {
 	d := Deployment{Roles: BuiltinRoles()}
@@ -29,7 +31,7 @@ func TestValidateRefusesARoleThatNobodyDefines(t *testing.T) {
 			t.Fatalf("%v refused: %+v", taken, r)
 		}
 	}
-	// architect, merger and controller are no roles of a step: the step roles are Legion's five.
+	// architect, merger and controller are no roles of a step: Legion's step roles are five, and a deployment adds its own.
 	for _, role := range []string{"architect", "merger", "controller"} {
 		r := Validate(oneTask("a", "implementer "+role), d)
 		want := Refusal{Task: "a", Reason: "step 2 of task a names the role " + role + ", which neither the deployment nor the plan defines."}
@@ -119,9 +121,10 @@ func TestValidateRefusesAPlanWithNoTask(t *testing.T) {
 }
 
 // Each cause this release does not carry out yet (Supported), with its exact text and its task.
-// Each cause gets one reason, so a plan with two causes gets two. The taken plans are the subsets
-// of today's line that keep the implementer, with the owner's acceptance, and with a key on a role
-// but acceptance.
+// Each cause gets one reason, so a plan with two causes gets two. The taken plans keep the
+// implementer before each tester, reviewer and acceptance step, a role of the deployment of the
+// type implementation before the implementer, and the other steps at any place, with the owner's
+// acceptance, and with a key on a role but acceptance.
 func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 	implementer, _ := ParseSteps("implementer")
 	withTask := func(task Task) Plan { return Plan{Tasks: []Task{task}} }
@@ -207,7 +210,9 @@ func TestAKeyOtherThanOwnerIsTaken(t *testing.T) {
 // A role can stand at two steps of a task: the steps of one key are one agent, which takes the role
 // of each step it does, so `implementer:a reviewer implementer:a` is taken; and two agents can
 // start with one role, each with a name of its own (`implementer-2`, record.NameAgents), so
-// `implementer reviewer implementer` is taken too. The fault: a second agent of one role refused.
+// `implementer reviewer implementer` is taken too. The owner has no name, so `implementer
+// acceptance:owner acceptance` is refused for its keyless acceptance alone. The fault: a second
+// agent of one role refused.
 func TestARoleCanStandAtTwoSteps(t *testing.T) {
 	for _, steps := range []string{"implementer:a reviewer implementer:a", "implementer:a reviewer:b implementer:b",
 		"implementer:a tester:a reviewer implementer:a tester:a", "implementer acceptance:owner reviewer acceptance:owner",
@@ -217,6 +222,10 @@ func TestARoleCanStandAtTwoSteps(t *testing.T) {
 		if r := append(Supported(p, builtin), Validate(p, builtin)...); len(r) != 0 {
 			t.Fatalf("%s refused: %+v", steps, r)
 		}
+	}
+	want := []Refusal{{Task: "t", Reason: "step 3 of task t names acceptance with no key, which asks for a fresh agent of the role acceptance." + yet}}
+	if r := Supported(oneTask("t", "implementer acceptance:owner acceptance"), builtin); !reflect.DeepEqual(r, want) {
+		t.Fatalf("Supported(implementer acceptance:owner acceptance) =\n%+v\nwant\n%+v", r, want)
 	}
 }
 

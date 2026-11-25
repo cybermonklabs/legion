@@ -1,5 +1,7 @@
 package admit
 
+//ci:reads packages/daemon/internal/intake/testdata/dispatch/issue-updated.json TestCapturedDispatchTodoEventAdmitsAndProjectsActiveSlot reads the captured event through ../intake/testdata
+
 import (
 	"bytes"
 	"context"
@@ -249,8 +251,8 @@ func TestApplyFactReadmitsLingeringRootAndIgnoresOwnStatusEcho(t *testing.T) {
 // would not be counted here anyway.
 //
 // The testing child's start waits for its issue's admission slot and the retro child's does not:
-// an issue past its review holds no slot (record.KeepsSlot), so the mark the start carries is
-// the phase the start is for (workflow.StartOrOwe) and the retro row is claimable at once.
+// retro keeps no slot (record.KeepsSlot), so the mark the start carries is the phase the start
+// is for (workflow.StartOrOwe) and the retro row is claimable at once.
 func TestReadmissionStartsTheTreesMidPhaseChildren(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -725,13 +727,12 @@ func TestTheBootListingOfATitleHoldingNULWritesNothingTheRecordAlreadyHolds(t *t
 	before := written()
 
 	listed := []intake.DispatchIssue{intake.ListedIssue(dispatch.IssueSummary{Key: "LEGION-3", Title: title, Status: "todo", Rank: "C", HandedOver: handed, LastSeq: 2, ResolvedRepo: "acme/widgets"})}
-	scoped, committed := intake.WithCommitHooks(ctx)
-	if err := pgx.BeginFunc(scoped, facts, func(tx pgx.Tx) error {
-		return admission.Reconcile(scoped, tx, listed, 2, intake.DispatchConsumerPosition{AckFloorStream: 2, Idle: true})
+	if err := store.Transact(ctx, facts, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := admission.Reconcile(ctx, tx, listed, 2, intake.DispatchConsumerPosition{AckFloorStream: 2, Idle: true})
+		return err
 	}); err != nil {
 		t.Fatalf("reconcile the boot listing: %v", err)
 	}
-	committed()
 	if after := written(); after != before {
 		t.Fatalf("the boot listing of the title the record holds wrote the record again (xmin %s, then %s), want no write", before, after)
 	}
@@ -749,10 +750,10 @@ func TestTheBootListingOfATitleHoldingNULWritesNothingTheRecordAlreadyHolds(t *t
 // neither posts a READY with no packet nor moves the child on.
 func TestReadmissionStartsTheNewGenerationWithoutTheOldGenerationsFacts(t *testing.T) {
 	pool := migratedPool(t)
-	// Two slots: the cap counts the issues at work, and this tree has two of them — the carried
-	// child, whose merger resumes with the re-admission, and the root, whose planning starts when
-	// its new gate opens. With one slot the child, whose work came back, would hold it and the
-	// root would wait, which is the line's own order and not what this test is about.
+	// Two slots, so the cap holds nothing back here: the root, whose planning starts when its new
+	// gate opens, takes one at its re-admission, and the carried child, whose merger resumes with
+	// the re-admission, takes none, since it stands in merging, which keeps no slot
+	// (record.KeepsSlot).
 	admission := newAdmission(t, 2, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3, Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 	const key, artifact = "LEGION-LINGER", "4f2a9c1e-8b3d-4e7f-9a60-2c5d8e1b7f34"
@@ -1012,6 +1013,11 @@ func TestReadmissionClearsTheGenerationOfEveryIssueOfTheTree(t *testing.T) {
 		if err := records.PutGate(context.Background(), tx, record.DesignGate{Issue: "LEGION-CHILD", ArtifactID: "artifact-child", LatestVersion: 2}); err != nil {
 			t.Fatalf("seed the child's gate: %v", err)
 		}
+		// What the child's holders took of the old generation's gate goes with that gate.
+		if err := records.RaiseTold(context.Background(), tx, "LEGION-CHILD", record.AudienceHolder,
+			[]record.NewsItem{{Step: record.DesignStepSpec, To: 2}}, fixedNow); err != nil {
+			t.Fatalf("seed what the child's holder took: %v", err)
+		}
 		if err := records.PutPhase(context.Background(), tx, record.PhaseRow{Issue: "LEGION-CHILD", Role: claim.RoleImplementer, Claim: "implementer-claim", HandoffCommit: "abc123", Rounds: 2, Verdict: "pass"}); err != nil {
 			t.Fatalf("seed the child's handoff: %v", err)
 		}
@@ -1036,6 +1042,13 @@ func TestReadmissionClearsTheGenerationOfEveryIssueOfTheTree(t *testing.T) {
 		}
 		if len(gates) != 0 {
 			t.Errorf("the child kept the last generation's design gate: %#v", gates)
+		}
+		told, err := records.TreeTold(context.Background(), tx, "LEGION-LINGER")
+		if err != nil {
+			t.Fatalf("read what the tree's holders took: %v", err)
+		}
+		if len(told) != 0 {
+			t.Errorf("the child kept what its holder took of the last generation's gate: %#v", told)
 		}
 		phases, err := records.Phases(context.Background(), tx, "LEGION-CHILD")
 		if err != nil {

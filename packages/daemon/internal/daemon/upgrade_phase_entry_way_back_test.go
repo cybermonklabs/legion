@@ -57,7 +57,7 @@ const (
 	claimHandshakeMigrationFile          = "internal/store/migrations/20261114020537_claim_entry_handshake.up.sql"
 	entryVerbatimMigrationFile           = "internal/store/migrations/20261114061900_phase_entry_verbatim.up.sql"
 	reviewedHeadMigrationFile            = "internal/store/migrations/20261116234034_phase_reviewed_head.up.sql"
-	planStepAgentMigrationFile           = "internal/store/migrations/20261117213545_plan_step_agent.up.sql"
+	planStepAgentMigrationFile           = "internal/store/migrations/20261124213820_plan_step_agent.up.sql"
 	// wayBackExtract, the copy of the phase entry's block, and architectEntryWayBackExtract, the
 	// copy of contract 146's, are read from this package's own directory, where each file sits
 	// beside the code it is about and needs no declared read of its own.
@@ -234,6 +234,7 @@ func assertOneWayBackText(t *testing.T, file, header, extract string) {
 // TestTheWayBackExtractIsTheGuidesWayBackBlock holds it to the guide. Neither half alone is the
 // guarantee: together they are the one this test gave while it read the guide itself.
 func TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide(t *testing.T) {
+	t.Parallel()
 	header := wayBackBlockOfTheHeader(t, phaseEntryMigrationFile)
 	// The shape of the block is read here as well as where it runs, so a header broken in a tree
 	// with no database still fails this check by name rather than passing it unread.
@@ -255,6 +256,7 @@ func TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide(t *testing.T) {
 // half alone is the guarantee: together they are the one this test gave while it read the guide
 // itself.
 func TestTheArchitectEntryUpgradesWayBackBlockIsOneTextInItsHeadersAndTheGuide(t *testing.T) {
+	t.Parallel()
 	for _, file := range []string{architectStalledNoticesMigrationFile, architectUpgradeMigrationFile, claimHandshakeMigrationFile,
 		entryVerbatimMigrationFile} {
 		assertOneWayBackText(t, file, wayBackBlockOfTheHeader(t, file), architectEntryWayBackExtract)
@@ -575,7 +577,7 @@ func upgradeRollForwardSweepsTheLostTask(t *testing.T, st *store.Store, w *workf
 		Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: key,
 		Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}
 	records := record.NewStore()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, issue); err != nil {
 			return err
 		}
@@ -663,9 +665,9 @@ func upgradeRollForwardSweepsTheLostTask(t *testing.T, st *store.Store, w *workf
 // in the tree. Judging the payloads the strip leaves by this shape answers for 0b297211 too:
 // that release's decoder knows every key this struct knows and freshSession besides, so a
 // payload this one accepts it accepts. A row this branch's release queued can carry `claim`
-// besides, which the way back of 20261117213545_plan_step_agent takes off before this rollback
+// besides, which the way back of 20261124213820_plan_step_agent takes off before this rollback
 // runs (its header, and upgradeRecoveryReadsAnswer runs it), and `agent`, which the way back of
-// 20261122120917_claim_session_agent takes off first of all (its header); the rows this test
+// 20261125053850_claim_session_agent takes off first of all (its header); the rows this test
 // queues name no agent, so no payload this shape judges carries either.
 type preEntrySuperviseRequest struct {
 	Op            record.SuperviseOp    `json:"op"`

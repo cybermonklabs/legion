@@ -6,7 +6,7 @@ Read it when you find a problem your issue does not cover (a defect in another c
 
 A finding outside your issue never becomes a `dispatch issue` you file. Take the first step that fits:
 
-1. **Fix it here.** A defect with a clear fix, in code your tree touches or depends on, goes into your tree's own pull request; say so in your handoff and the PR body.
+1. **Fix it here.** A defect with a clear fix, in code your tree touches or depends on, goes into your tree's own pull request; say so in the PR body.
 2. **Hand it over.** Any other clear defect goes to the controller with its evidence (*Send a finding to the controller*). It gives the work to the tree that owns the code, or files a Legion root when none does.
 3. **Ask.** A finding that needs a person's authority, taste or risk appetite (whether it is wanted, which design, who owns it, a change of scope, cost or risk) is a `dispatch ask` with one recommendation (*What the ask says*).
 
@@ -25,7 +25,7 @@ Search first (`skill://dispatch-first`). An open issue that tracks the problem g
 A publish to a role answers with its live `holder`. When no live session holds the controller role, the answer says Envoy kept the message for one hour (`kept_until`); a keep is not a delivery. An `unresponsive` holder is not a stopped one: release nothing, take nothing from it, and publish no second copy. Treat a kept answer as a controller not taking it, and make the finding an ask on the first of these that holds:
 
 1. **The report issue is open:** ask there, the question opening `Clear defect from <your claim token>` and `--ref` naming your evidence comment, then reply `Asked dispatch://<REPORT KEY>/ask/<id>` under that comment.
-2. **The report issue is missing or closed:** post the evidence on your own issue and ask there, then publish the ask's reference to the architect that owns your issue. It holds your issue's acceptance until a controller takes the ask, since an open ask on a closed issue drops out of the controller's listing.
+2. **The report issue is missing or closed:** post the evidence on your own issue and ask there, then publish the ask's reference to the architect that owns your issue. Where your task has an `acceptance:owner` step, it holds your acceptance until a controller takes the ask. That hold keeps your issue open: an open ask on a closed issue drops out of the controller's listing.
 3. **Your own issue is closed too** (`409 ISSUE_CLOSED`): put the report issue back in reach, then post and ask there, and say in your summary that you did. This is the one lifecycle status you write, and never through the `legion` tool's `set_status`.
    - It exists and is closed: `dispatch issue-update --issue <REPORT KEY> --status icebox`, the status alone (a closed issue refuses a reopening status beside any other field).
    - None exists: `dispatch issue --project <PROJECT> --title 'Legion daily report' --spec-file -`, with the Summary `skill://legion-controller/references/daily-report.md` gives, then `dispatch issue-update --issue <NEW KEY> --status icebox`. It carries no `legion` label.

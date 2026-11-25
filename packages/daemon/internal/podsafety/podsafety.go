@@ -1,6 +1,6 @@
 // Package podsafety is what a Legion pod's Oh My Pi starts with beyond the operator's pod, and
 // nothing in it names a model, a provider, or a route, nor holds a repository's settings off. It is
-// three things. The baseline variables: two of the variables that place a pod's sessions
+// four things. The baseline variables: two of the variables that place a pod's sessions
 // (baseline), set on the agent where the pod leaves them unset — when Oh My Pi would otherwise
 // fill them from the working directory's .env — and never on the shim; the Sandbox runtime
 // refuses them, and OMP_SESSION_SQL_DSN_FILE, in the operator's pod (sandbox.CheckPod).
@@ -19,10 +19,12 @@
 // told the database like every other role). The state-home
 // directory: the one Oh My Pi's state root resolves to under the role's XDG_STATE_HOME
 // (EnsureStateHome), made before Oh My Pi starts, since Oh My Pi reads the variable only where
-// that directory exists. And the scratch directories: each directory the runtime tells a role to
+// that directory exists. The scratch directories: each directory the runtime tells a role to
 // write what it writes without being told where — the temporary directory, the cache and data
 // homes, bun's install cache and the two Go caches (EnsureScratch) — made before Oh My Pi
-// starts, since a role told a temporary directory nothing created cannot run. Apply, the baseline
+// starts, since a role told a temporary directory nothing created cannot run. And the image's gh
+// extensions, linked into gh's extension directory under the data home, the one place gh reads
+// an extension from (EnsureGhExtensions). Apply, the baseline
 // alone, runs only in a pod, for a worker's shim (`legion worker-shim
 // --pod-safety`) and for the image probe (`legion probe-image --pod-safety`), which certifies the
 // baseline a worker's Oh My Pi starts on. The directories are the shim's alone: every slot the
@@ -40,7 +42,9 @@
 package podsafety
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -224,6 +228,58 @@ func EnsureScratch(environ []string) error {
 		}
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return fmt.Errorf("pod safety: make the directory %s names, %s: %w", name, dir, err)
+		}
+	}
+	return nil
+}
+
+// GhExtensionsDir is where the worker image installs the gh extensions it ships
+// (packages/daemon/docker/worker.Dockerfile's ARG GH_STACK_TOOL): one directory per extension,
+// named gh-<name> and holding the extension's executable under that same name, as gh lays out an
+// extension it installs itself. It is root's, so no role changes the copy its siblings run.
+const GhExtensionsDir = "/opt/legion/gh-extensions"
+
+// EnsureGhExtensions links each extension of shipped (GhExtensionsDir in a pod) into gh's own
+// extension directory under environ's XDG_DATA_HOME, `$XDG_DATA_HOME/gh/extensions/gh-<name>`.
+// gh looks for extensions there and nowhere else: under its data directory, which is
+// $XDG_DATA_HOME/gh where that is set (go-gh v2.13.0 pkg/config/config.go, DataDir; cli/cli
+// v2.98.0 pkg/cmd/extension/manager.go, list), and a role's data home is the issue's scratch
+// (sandbox.roleEnvironment), which starts empty in every pod, so without the link gh never sees
+// the image's copy and answers `gh stack` with its offer to install the extension. gh reads a
+// symbolic link there as a local extension, and runs `<link>/gh-<name>`.
+//
+// It runs after EnsureScratch, which makes the data home. An entry already at a link's path —
+// a sibling role's link, or an extension an agent installed itself — is left as it is, and a
+// sibling that links the same entry first is no refusal. A shipped directory that does not exist
+// (an image built before it shipped any), and an XDG_DATA_HOME unset, empty or relative, link
+// nothing, as EnsureScratch makes nothing for them. A link that cannot be made is a refusal naming
+// the extension and the path.
+func EnsureGhExtensions(environ []string, shipped string) error {
+	data := lookup(environ)["XDG_DATA_HOME"]
+	if data == "" || !filepath.IsAbs(data) {
+		return nil
+	}
+	entries, err := os.ReadDir(shipped)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("pod safety: read the image's gh extensions, %s: %w", shipped, err)
+	}
+	extensions := filepath.Join(data, "gh", "extensions")
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "gh-") {
+			continue
+		}
+		if err := os.MkdirAll(extensions, 0o700); err != nil {
+			return fmt.Errorf("pod safety: make gh's extension directory %s: %w", extensions, err)
+		}
+		link := filepath.Join(extensions, entry.Name())
+		if _, err := os.Lstat(link); err == nil {
+			continue
+		}
+		if err := os.Symlink(filepath.Join(shipped, entry.Name()), link); err != nil && !errors.Is(err, fs.ErrExist) {
+			return fmt.Errorf("pod safety: link the gh extension %s at %s: %w", entry.Name(), link, err)
 		}
 	}
 	return nil

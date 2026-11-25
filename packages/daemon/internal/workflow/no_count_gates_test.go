@@ -15,8 +15,8 @@ import (
 // noGateMoves is how many moves back this proof drives: ten times the review round cap it runs
 // under, and six times the every of its hook, so a build that stopped the work at any count the
 // daemon keeps would stop it well before the last move. noGateReviews is how many of them are a
-// review's request for changes, the one kind that opens a review round (recordRound), which is
-// what the cap reads.
+// review's request for changes, the one kind of these moves that opens a review round
+// (recordRound), which is what the cap reads.
 const (
 	noGateMoves   = 30
 	noGateReviews = noGateMoves / 5
@@ -115,7 +115,7 @@ func TestNoCountGatesTheWork(t *testing.T) {
 		t.Fatalf("the implementer's row counts %d passes, want the %d moves back this proof drove: every move back raises the pass, whatever kind it is", pass, noGateMoves)
 	}
 	if rounds, conflicts := implementerRounds(t, pool), implementerConflictRounds(t, pool); rounds != noGateReviews || conflicts != 0 {
-		t.Fatalf("the implementer's row counts %d review rounds of which %d conflict rounds, want the %d reviews of the thirty moves and no conflict round: a review that requested changes is what opens a round (recordRound)", rounds, conflicts, noGateReviews)
+		t.Fatalf("the implementer's row counts %d review rounds of which %d conflict rounds, want the %d reviews of the thirty moves and no conflict round: of these moves a review that requested changes is what opens a round (recordRound)", rounds, conflicts, noGateReviews)
 	}
 	if posted := firingMessages(t, pool); len(posted) != noGateMoves/3 {
 		t.Fatalf("the hook fired %d times over %d moves back, want %d: it fires every 3, and the firings are no gate either", len(posted), noGateMoves, noGateMoves/3)

@@ -638,9 +638,16 @@ func (r *Runtime) track(loc runtime.Locator, issue string, ghRepo ghrepo.Reposit
 	r.trackedMu.Lock()
 	defer r.trackedMu.Unlock()
 	if existing, ok := r.tracked[loc.Incarnation]; ok && existing.issue != "" {
-		issue, ghRepo, ghDefault, role = existing.issue, existing.ghRepo, existing.ghDefault, existing.role
+		r.tracked[loc.Incarnation] = existing.at(loc)
+		return
 	}
 	r.tracked[loc.Incarnation] = &trackedProcess{locator: loc, issue: issue, ghRepo: ghRepo, ghDefault: ghDefault, role: role}
+}
+
+// at is a copy of p, every field as p holds it, located at loc.
+func (p trackedProcess) at(loc runtime.Locator) *trackedProcess {
+	p.locator = loc
+	return &p
 }
 
 func (r *Runtime) untrack(loc runtime.Locator) {
@@ -668,11 +675,11 @@ func (r *Runtime) adoptExactly(located []runtime.Locator) {
 		}
 	}
 	for _, loc := range located {
-		entry := &trackedProcess{locator: loc}
 		if existing, ok := r.tracked[loc.Incarnation]; ok {
-			entry.issue, entry.ghRepo, entry.ghDefault, entry.role = existing.issue, existing.ghRepo, existing.ghDefault, existing.role
+			r.tracked[loc.Incarnation] = existing.at(loc)
+			continue
 		}
-		r.tracked[loc.Incarnation] = entry
+		r.tracked[loc.Incarnation] = &trackedProcess{locator: loc}
 	}
 }
 

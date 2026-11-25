@@ -33,7 +33,7 @@ func TestAzureLoginMintReleasesTheCurrentProjectedToken(t *testing.T) {
 		if err := os.WriteFile(file, []byte("\n "+token+"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		minted, err := minter.Mint(t.Context(), secrets.MintRequest{Name: "AZURE_LOGIN", HumanTier: true, Value: azureLoginValue})
+		minted, err := minter.Mint(t.Context(), secrets.MintRequest{Name: "AZURE_LOGIN", Source: "AZURE_LOGIN", HumanTier: true, Value: azureLoginValue})
 		if err != nil {
 			t.Fatalf("Mint: %v", err)
 		}
@@ -58,7 +58,7 @@ func TestAzureLoginMintRefusesMalformedStoredIdentities(t *testing.T) {
 		`{"client_id":"client-id"}`, `{"tenant_id":" ","client_id":"client-id"}`,
 		`{"tenant_id":"tenant-id","client_id":" "}`, `{"tenant_id":123,"client_id":"client-id"}`,
 	} {
-		got, err := (secrets.AzureLogin{SecretName: "AZURE_LOGIN"}).Mint(t.Context(), secrets.MintRequest{Name: "AZURE_LOGIN", HumanTier: true, Value: value})
+		got, err := (secrets.AzureLogin{SecretName: "AZURE_LOGIN"}).Mint(t.Context(), secrets.MintRequest{Name: "AZURE_LOGIN", Source: "AZURE_LOGIN", HumanTier: true, Value: value})
 		if got.Value != "" || secrets.MintErrorClass(err) != "stored-value" {
 			t.Fatalf("Mint of malformed identity returned class %s, value present %t; want stored-value and no value", secrets.MintErrorClass(err), got.Value != "")
 		}
@@ -70,7 +70,7 @@ func TestAzureLoginMintRefusesMalformedStoredIdentities(t *testing.T) {
 
 func TestAzureLoginMintRefusesUnreadableProjectedTokens(t *testing.T) {
 	for _, file := range []string{filepath.Join(t.TempDir(), "do-not-print-this-token"), t.TempDir()} {
-		got, err := (secrets.AzureLogin{TokenFile: file, SecretName: "AZURE_LOGIN"}).Mint(t.Context(), secrets.MintRequest{Name: "AZURE_LOGIN", HumanTier: true, Value: azureLoginValue})
+		got, err := (secrets.AzureLogin{TokenFile: file, SecretName: "AZURE_LOGIN"}).Mint(t.Context(), secrets.MintRequest{Name: "AZURE_LOGIN", Source: "AZURE_LOGIN", HumanTier: true, Value: azureLoginValue})
 		if got.Value != "" || secrets.MintErrorClass(err) != "upstream" {
 			t.Fatalf("Mint of unreadable file returned class %s, value present %t; want upstream and no value", secrets.MintErrorClass(err), got.Value != "")
 		}
@@ -104,7 +104,7 @@ func TestAzureLoginMintRefusesInvalidOrExpiredProjectedTokensWithoutDisclosingTh
 			if err := os.WriteFile(file, []byte(token), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			got, err := (secrets.AzureLogin{TokenFile: file, SecretName: "AZURE_LOGIN", Now: func() time.Time { return now }}).Mint(t.Context(), secrets.MintRequest{Name: "AZURE_LOGIN", HumanTier: true, Value: azureLoginValue})
+			got, err := (secrets.AzureLogin{TokenFile: file, SecretName: "AZURE_LOGIN", Now: func() time.Time { return now }}).Mint(t.Context(), secrets.MintRequest{Name: "AZURE_LOGIN", Source: "AZURE_LOGIN", HumanTier: true, Value: azureLoginValue})
 			if got.Value != "" || secrets.MintErrorClass(err) != "upstream" {
 				t.Fatalf("Mint returned class %s, value present %t; want upstream and no value", secrets.MintErrorClass(err), got.Value != "")
 			}
@@ -115,6 +115,11 @@ func TestAzureLoginMintRefusesInvalidOrExpiredProjectedTokensWithoutDisclosingTh
 	}
 }
 
+// TestAzureLoginMintRequiresTheConfiguredHumanTierSecret: the token is released only for the
+// stored secret BROKER_AZURE_LOGIN_SECRET names, held human tier. The minter compares that setting
+// with the stored secret the value was read from (MintRequest.Source), so a profile of the
+// configured secret under a name of its own releases it, and a profile of another secret does not,
+// whatever it is called.
 func TestAzureLoginMintRequiresTheConfiguredHumanTierSecret(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "token")
 	token := azureProjectedToken(`{"exp":4102444800}`)
@@ -122,24 +127,27 @@ func TestAzureLoginMintRequiresTheConfiguredHumanTierSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, row := range []struct {
-		name, configured, requested string
-		human, allowed              bool
+		name, configured, requested, source string
+		human, allowed                      bool
 	}{
-		{"disabled by default", "", "AZURE_LOGIN", true, false},
-		{"another human secret", "AZURE_LOGIN", "OTHER_LOGIN", true, false},
-		{"another agent secret", "AZURE_LOGIN", "OTHER_LOGIN", false, false},
-		{"configured agent secret", "AZURE_LOGIN", "AZURE_LOGIN", false, false},
-		{"missing name", "AZURE_LOGIN", "", true, false},
-		{"configured human secret", "AZURE_LOGIN", "AZURE_LOGIN", true, true},
+		{"disabled by default", "", "AZURE_LOGIN", "AZURE_LOGIN", true, false},
+		{"another human secret", "AZURE_LOGIN", "OTHER_LOGIN", "OTHER_LOGIN", true, false},
+		{"another agent secret", "AZURE_LOGIN", "OTHER_LOGIN", "OTHER_LOGIN", false, false},
+		{"configured agent secret", "AZURE_LOGIN", "AZURE_LOGIN", "AZURE_LOGIN", false, false},
+		{"missing name", "AZURE_LOGIN", "", "", true, false},
+		{"configured human secret", "AZURE_LOGIN", "AZURE_LOGIN", "AZURE_LOGIN", true, true},
+		{"a human profile of the configured secret", "AZURE_LOGIN", "AZURE_LOGIN_PROXIED", "AZURE_LOGIN", true, true},
+		{"an agent profile of the configured secret", "AZURE_LOGIN", "AZURE_LOGIN_PROXIED", "AZURE_LOGIN", false, false},
+		{"a profile of another secret named as the configured one", "AZURE_LOGIN", "AZURE_LOGIN", "OTHER_LOGIN", true, false},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			minted, err := (secrets.AzureLogin{TokenFile: file, SecretName: row.configured}).Mint(t.Context(), secrets.MintRequest{
-				Name: row.requested, HumanTier: row.human, Value: azureLoginValue,
+				Name: row.requested, Source: row.source, HumanTier: row.human, Value: azureLoginValue,
 			})
 			if row.allowed {
 				var got map[string]string
 				if err != nil || json.Unmarshal([]byte(minted.Value), &got) != nil || got["federated_token"] != token {
-					t.Fatal("configured human-tier secret did not release the projected token")
+					t.Fatalf("Mint = %v; want the projected token released", err)
 				}
 			} else if minted.Value != "" || secrets.MintErrorClass(err) != "refused" {
 				t.Fatalf("Mint returned class %s, value present %t; want refused and no value", secrets.MintErrorClass(err), minted.Value != "")

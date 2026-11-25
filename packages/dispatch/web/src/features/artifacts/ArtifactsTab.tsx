@@ -1,9 +1,10 @@
+import { graphNodeKey, issueReferenceSections } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useId, useMemo, useState } from "react";
+import { memo, type ReactNode, useId, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
-import type { Artifact, IssueReferences } from "../../api/types";
+import type { Artifact, IssueReferencesAnswer, ReferenceLink } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -21,6 +22,8 @@ import {
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { AgentName } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
+import { DeletedBody, EditedMark } from "../refs/PostBody";
+import { postDeletion } from "../refs/post-marks";
 import {
   buildIssuePath,
   buildProjectPath,
@@ -28,6 +31,7 @@ import {
   documentRoute,
   isAgentArtifact,
   parseIssuePath,
+  parseNodeReference,
 } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { artifactVersionUrl, formatArtifactBytes, versionsNewestFirst } from "./ArtifactHeader";
@@ -100,7 +104,11 @@ function artifactPath(artifact: Artifact): string {
 
 /** Who owns an artifact, as a References row names it: its issue, its project, or the agent
  *  whose conversation holds it. */
-function ArtifactOwner({ artifact }: { artifact: Artifact }): ReactNode {
+function ArtifactOwner({
+  artifact,
+}: {
+  artifact: Pick<Artifact, "issue_key" | "project" | "session_id">;
+}): ReactNode {
   if (artifact.issue_key !== null) return artifact.issue_key;
   if (!isAgentArtifact(artifact)) return artifact.project;
   return (
@@ -110,25 +118,111 @@ function ArtifactOwner({ artifact }: { artifact: Artifact }): ReactNode {
   );
 }
 
-// The issue's reference closure (every artifact reachable by following references, up to 8
-// hops) — a different thing from a single artifact's own "Referenced by" list above. Collapsed
-// by default: it is background context for the issue, not something worth scrolling past on
-// every visit to the tab.
-function References({ references }: { references: IssueReferences }): ReactNode {
-  if ((references.members ?? []).length === 0) {
-    return null;
-  }
-
+/** One of the section's disclosures, collapsed by default: the issue's references are background
+ *  context for it, not something worth scrolling past on every visit to the tab. Its summary names
+ *  its list and counts the list's rows, so the count shows while it is closed. */
+function ReferencesDisclosure({
+  children,
+  count,
+  label,
+}: {
+  children: ReactNode;
+  count: number;
+  label: "References" | "Referenced by";
+}): ReactNode {
   return (
     <details className={`rounded-lg border p-3 ${borderDefault}`}>
       <summary
         className={`min-h-11 cursor-pointer text-sm font-semibold ${textSecondaryOnSurface}`}
       >
-        References ({(references.members ?? []).length})
+        {label} ({count})
       </summary>
+      {children}
+    </details>
+  );
+}
+
+/** One row of the references read: a link to the node at the far end through its own reference,
+ *  named by the words the read gives for it, then the node's kind and the kind of the issue's node
+ *  at the near end, which a row of `links` links from (`via`) and a row of `linked_from` links to
+ *  (`to`). A document's row names its owner first, as a member's row does. A node with no
+ *  reference (a session) has no page to open, so its row names it without a link. A comment or a
+ *  message, or a block of one, carries its post's marks: a deleted one is named by the deleted line
+ *  (`DeletedBody`) and never by the words the read gave, and an edited one says ` · edited` after
+ *  its name (`EditedMark`). */
+function ReferenceLinkRow({
+  alsoReferences,
+  near,
+  row,
+}: {
+  alsoReferences: boolean;
+  near: "via" | "to";
+  row: ReferenceLink;
+}): ReactNode {
+  const { node } = row;
+  const route = node.ref === undefined ? undefined : parseNodeReference(node.ref);
+  const deleted = postDeletion(node);
+  const name =
+    deleted === null ? (
+      <>
+        {row.name}
+        <EditedMark at={node.edited_at} className={`font-normal ${textMutedOnSurface}`} />
+      </>
+    ) : (
+      <DeletedBody deleted={deleted} />
+    );
+  return (
+    <li className={`rounded-lg border p-3 text-sm ${borderDefault}`}>
+      {route === undefined ? (
+        <span className="font-medium">{name}</span>
+      ) : (
+        <Link
+          className={`font-medium underline ${linkText} ${linkHoverText}`}
+          to={buildReferencePath(route)}
+        >
+          {name}
+        </Link>
+      )}
+      <p className={textMutedOnSurface}>
+        {node.kind === "artifact" ? (
+          <>
+            {/* A node names its issue or its project; an agent's artifact has neither and
+                belongs to the session whose conversation holds it. */}
+            <ArtifactOwner
+              artifact={{
+                issue_key: node.issue_key ?? null,
+                project: node.project ?? "",
+                session_id: node.parent?.kind === "session" ? node.parent.id : null,
+              }}
+            />{" "}
+            ·{" "}
+          </>
+        ) : null}
+        {node.kind} · {near} {row.via.kind}
+        {alsoReferences ? " · also references this issue" : null}
+      </p>
+    </li>
+  );
+}
+
+/** The References disclosure of an answer from a build before the one-hop read, drawn as that
+ *  build's walk always was: the documents of its `members`, each with its depth, and a line when
+ *  the walk was cut at 8 hops; nothing when it has no member. This path lasts only while such a
+ *  build is deployed. */
+function MemberReferences({
+  references,
+}: {
+  references: Pick<IssueReferencesAnswer, "members" | "truncated">;
+}): ReactNode {
+  const members = references.members ?? [];
+  if (members.length === 0) {
+    return null;
+  }
+  return (
+    <ReferencesDisclosure count={members.length} label="References">
       <section aria-label="References" className="mt-3 space-y-2">
         <ul className="space-y-2">
-          {(references.members ?? []).map(({ artifact, depth, via }) => (
+          {members.map(({ artifact, depth, via }) => (
             <li className={`rounded-lg border p-3 text-sm ${borderDefault}`} key={artifact.id}>
               <Link
                 className={`font-medium underline ${linkText} ${linkHoverText}`}
@@ -146,9 +240,71 @@ function References({ references }: { references: IssueReferences }): ReactNode 
           <p className={`text-sm ${textMutedOnSurface}`}>more references beyond 8 hops</p>
         ) : null}
       </section>
-    </details>
+    </ReferencesDisclosure>
   );
 }
+
+// The issue's references read, one hop in each direction, drawn as two disclosures, each collapsed
+// by default and each counting its rows in its summary, so each count shows while it is closed:
+// References, each node the issue's own content links to, and under it Referenced by, each node
+// that links to the issue or to its own content. A disclosure with no row is not drawn. A node of
+// both is drawn once, under References, marked as one that also references the issue
+// (`issueReferenceSections`). Each row's node and name come in the answer, so the section reads
+// nothing to draw them, and a one-hop read cuts no walk, so no row has a depth. This is not the
+// issue header's "Referenced by" toggle, which reads the edges into the issue's own node alone. An
+// answer without `links` is drawn by `MemberReferences`. It is memoized: a keystroke in the tab's
+// filter renders the tab again, and the answer, the one prop, is the same object until the read
+// answers anew.
+const References = memo(function References({
+  references,
+}: {
+  references: IssueReferencesAnswer;
+}): ReactNode {
+  if (references.links === undefined) {
+    return <MemberReferences references={references} />;
+  }
+  const sections = issueReferenceSections(references);
+  if (sections.references.length === 0 && sections.referencedBy.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="space-y-3">
+      {sections.references.length === 0 ? null : (
+        <ReferencesDisclosure count={sections.references.length} label="References">
+          <section aria-label="References" className="mt-3">
+            <ul className="space-y-2">
+              {sections.references.map(({ alsoReferences, row }) => (
+                <ReferenceLinkRow
+                  alsoReferences={alsoReferences}
+                  key={graphNodeKey(row.node)}
+                  near="via"
+                  row={row}
+                />
+              ))}
+            </ul>
+          </section>
+        </ReferencesDisclosure>
+      )}
+      {sections.referencedBy.length === 0 ? null : (
+        <ReferencesDisclosure count={sections.referencedBy.length} label="Referenced by">
+          <section aria-label="Referenced by" className="mt-3">
+            <ul className="space-y-2">
+              {sections.referencedBy.map((row) => (
+                <ReferenceLinkRow
+                  alsoReferences={false}
+                  key={graphNodeKey(row.node)}
+                  near="to"
+                  row={row}
+                />
+              ))}
+            </ul>
+          </section>
+        </ReferencesDisclosure>
+      )}
+    </div>
+  );
+});
 
 function ArtifactRow({
   artifact,
@@ -329,7 +485,7 @@ export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): Reac
           </span>
         )}
       </div>
-      {/* A references read that fails - a walk cut at the server's bound among them, which the
+      {/* A references read that fails - a read cut at the server's bound among them, which the
           shared retry policy leaves to this Retry - says so rather than hiding the section. */}
       {references.isError ? (
         <QueryError

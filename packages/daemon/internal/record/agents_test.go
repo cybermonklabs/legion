@@ -20,7 +20,7 @@ func TestNameAgentsGivesOneNameToEachAgentAndKeepsAKeysName(t *testing.T) {
 		{Task: "t", Position: 3, Role: "reviewer"},
 		{Task: "t", Position: 4, Role: "acceptance", AgentKey: "owner"},
 	}
-	got := NameAgents(nil, nil, steps)
+	got := NameAgents(nil, nil, nil, steps)
 	want := []claim.Agent{"implementer", "implementer", "reviewer", ""}
 	for i := range want {
 		if got[i].Agent != want[i] {
@@ -31,7 +31,7 @@ func TestNameAgentsGivesOneNameToEachAgentAndKeepsAKeysName(t *testing.T) {
 		t.Errorf("NameAgents named the steps it was given (%q), want a copy named", steps[0].Agent)
 	}
 	later := []PlanStep{{Task: "u", Position: 1, Role: "tester", AgentKey: "a"}, {Task: "u", Position: 2, Role: "implementer"}}
-	again := NameAgents(got, nil, later)
+	again := NameAgents(got, nil, nil, later)
 	if again[0].Agent != "implementer" {
 		t.Errorf("key a in a later version: name %q, want implementer, the name it had", again[0].Agent)
 	}
@@ -44,12 +44,12 @@ func TestNameAgentsGivesOneNameToEachAgentAndKeepsAKeysName(t *testing.T) {
 // comes before it: every key an earlier row names is named before any new name is given, so the
 // fresh step cannot take it, and a step with no key keeps the name its place had.
 func TestAKeyKeepsItsNameWhenALaterVersionGivesItsRoleToAFreshStep(t *testing.T) {
-	v1 := NameAgents(nil, nil, []PlanStep{
+	v1 := NameAgents(nil, nil, nil, []PlanStep{
 		{Task: "t", Position: 1, Role: "implementer", AgentKey: "a"},
 		{Task: "t", Position: 2, Role: "tester", AgentKey: "a"},
 		{Task: "t", Position: 3, Role: "reviewer"},
 	})
-	v2 := NameAgents(v1, nil, []PlanStep{
+	v2 := NameAgents(v1, nil, nil, []PlanStep{
 		{Task: "t", Position: 1, Role: "implementer"},
 		{Task: "t", Position: 2, Role: "tester", AgentKey: "a"},
 		{Task: "t", Position: 3, Role: "reviewer"},
@@ -76,15 +76,15 @@ func TestASecondAgentOfOneRoleGetsANameOfItsOwn(t *testing.T) {
 		{Task: "t", Position: 2, Role: "reviewer"},
 		{Task: "t", Position: 3, Role: "implementer"},
 	}
-	if got := NameAgents(nil, nil, steps); got[0].Agent != "implementer" || got[2].Agent != "implementer-2" {
+	if got := NameAgents(nil, nil, nil, steps); got[0].Agent != "implementer" || got[2].Agent != "implementer-2" {
 		t.Errorf("implementer reviewer implementer: names %q and %q, want implementer and implementer-2", got[0].Agent, got[2].Agent)
 	}
 	earlier := []PlanStep{{Task: "old", Position: 1, Role: "tester", AgentKey: "b", Agent: "implementer-2"}}
-	if got := NameAgents(earlier, nil, steps); got[2].Agent != "implementer-3" {
+	if got := NameAgents(earlier, nil, nil, steps); got[2].Agent != "implementer-3" {
 		t.Errorf("step 3 beside an earlier row of key b named implementer-2: name %q, want implementer-3", got[2].Agent)
 	}
 	long := strings.Repeat("r", 32)
-	twice := NameAgents(nil, nil, []PlanStep{
+	twice := NameAgents(nil, nil, nil, []PlanStep{
 		{Task: "t", Position: 1, Role: "implementer"},
 		{Task: "t", Position: 2, Role: long},
 		{Task: "t", Position: 3, Role: long},
@@ -113,7 +113,7 @@ func TestTwoKeysThatHeldOneNameInTurnGetTwoNames(t *testing.T) {
 		{Generation: 2, Task: "u", Position: 1, Role: "implementer", AgentKey: "b", Agent: "implementer"},
 		{Generation: 2, Task: "u", Position: 2, Role: "reviewer", Agent: "reviewer"},
 	}
-	got := NameAgents(earlier, nil, []PlanStep{
+	got := NameAgents(earlier, nil, nil, []PlanStep{
 		{Generation: 3, Task: "v", Position: 1, Role: "implementer", AgentKey: "a"},
 		{Generation: 3, Task: "v", Position: 2, Role: "reviewer"},
 		{Generation: 3, Task: "v", Position: 3, Role: "implementer", AgentKey: "b"},
@@ -124,7 +124,7 @@ func TestTwoKeysThatHeldOneNameInTurnGetTwoNames(t *testing.T) {
 	if got[2].Agent != "implementer" || got[0].Agent != "implementer-2" {
 		t.Errorf("key a named %q and key b %q, want key b implementer, the key that held it last, and key a implementer-2", got[0].Agent, got[2].Agent)
 	}
-	if again := NameAgents(append(earlier, got...), nil, []PlanStep{
+	if again := NameAgents(append(earlier, got...), nil, nil, []PlanStep{
 		{Generation: 3, Task: "w", Position: 1, Role: "implementer", AgentKey: "a"},
 		{Generation: 3, Task: "w", Position: 2, Role: "implementer", AgentKey: "b"},
 	}); again[0].Agent != got[0].Agent || again[1].Agent != got[2].Agent {
@@ -142,14 +142,14 @@ func TestTwoKeysThatHeldOneNameInTurnGetTwoNames(t *testing.T) {
 // stopped task's step of its role. The fault: the step with no key of v2 took implementer, so key
 // k's return in v3 found that name's claim holding another agent's session, and started fresh.
 func TestANameAKeyHeldIsKeptForThatKey(t *testing.T) {
-	v1 := NameAgents(nil, nil, []PlanStep{
+	v1 := NameAgents(nil, nil, nil, []PlanStep{
 		{Generation: 1, Task: "a", Position: 1, Role: "implementer", AgentKey: "k"},
 		{Generation: 1, Task: "a", Position: 2, Role: "reviewer"},
 	})
 	if v1[0].Agent != "implementer" {
 		t.Fatalf("key k in version 1: name %q, want implementer", v1[0].Agent)
 	}
-	v2 := NameAgents(v1, nil, []PlanStep{
+	v2 := NameAgents(v1, nil, nil, []PlanStep{
 		{Generation: 1, Task: "a", Position: 1, Role: "implementer"},
 		{Generation: 1, Task: "a", Position: 2, Role: "reviewer"},
 	})
@@ -159,14 +159,14 @@ func TestANameAKeyHeldIsKeptForThatKey(t *testing.T) {
 	}
 	// The version written replaces the steps of the task it gives, so the rows version 3 is named
 	// from are version 2's.
-	v3 := NameAgents(v2, nil, []PlanStep{
+	v3 := NameAgents(v2, nil, nil, []PlanStep{
 		{Generation: 1, Task: "a", Position: 1, Role: "implementer", AgentKey: "k"},
 		{Generation: 1, Task: "a", Position: 2, Role: "reviewer"},
 	})
 	if v3[0].Agent != "implementer" {
 		t.Errorf("key k back in version 3: name %q, want implementer, the name whose claim holds its session", v3[0].Agent)
 	}
-	if other := NameAgents(v1, nil, []PlanStep{
+	if other := NameAgents(v1, nil, nil, []PlanStep{
 		{Generation: 1, Task: "a", Position: 1, Role: "implementer", AgentKey: "j"},
 		{Generation: 1, Task: "a", Position: 2, Role: "reviewer"},
 	}); other[0].Agent != "implementer-2" {
@@ -181,13 +181,13 @@ func TestANameAKeyHeldIsKeptForThatKey(t *testing.T) {
 		{Generation: 2, Task: "a", Position: 1, Role: "implementer", AgentKey: "k", Agent: "implementer"},
 		{Generation: 2, Task: "a", Position: 2, Role: "reviewer", Agent: "reviewer"},
 	}
-	if place := NameAgents(keyed, nil, []PlanStep{
+	if place := NameAgents(keyed, nil, nil, []PlanStep{
 		{Generation: 2, Task: "a", Position: 1, Role: "implementer"},
 		{Generation: 2, Task: "a", Position: 2, Role: "reviewer"},
 	}); place[0].Agent != "implementer-2" {
 		t.Errorf("a step with no key at a place whose name key k took: name %q, want implementer-2", place[0].Agent)
 	}
-	if free := NameAgents(v2, nil, []PlanStep{
+	if free := NameAgents(v2, nil, nil, []PlanStep{
 		{Generation: 1, Task: "p", Position: 1, Role: "reviewer"},
 	}); free[0].Agent != "reviewer" {
 		t.Errorf("control: a new task's reviewer, where only a step with no key held reviewer: name %q, want reviewer", free[0].Agent)
@@ -227,7 +227,7 @@ func TestANameWhoseClaimHoldsAKeysSessionIsKeptForThatKey(t *testing.T) {
 		{Generation: 1, Task: "a", Position: 1, Role: "implementer", Agent: "implementer-2"},
 		{Generation: 1, Task: "a", Position: 2, Role: "reviewer", Agent: "reviewer"},
 	}
-	v3 := NameAgents(v2, sessions, []PlanStep{
+	v3 := NameAgents(v2, nil, sessions, []PlanStep{
 		{Generation: 1, Task: "a", Position: 1, Role: "planner"},
 		{Generation: 1, Task: "a", Position: 2, Role: "implementer"},
 		{Generation: 1, Task: "a", Position: 3, Role: "reviewer"},
@@ -235,13 +235,13 @@ func TestANameWhoseClaimHoldsAKeysSessionIsKeptForThatKey(t *testing.T) {
 	if got := []claim.Agent{v3[0].Agent, v3[1].Agent, v3[2].Agent}; !slices.Equal(got, []claim.Agent{"planner", "implementer-2", "reviewer"}) {
 		t.Fatalf("version 3, beside the claim implementer of key k's session: names %q, want planner, implementer-2 and reviewer", got)
 	}
-	if v4 := NameAgents(v3, sessions, []PlanStep{
+	if v4 := NameAgents(v3, nil, sessions, []PlanStep{
 		{Generation: 1, Task: "a", Position: 1, Role: "implementer", AgentKey: "k"},
 		{Generation: 1, Task: "a", Position: 2, Role: "reviewer"},
 	}); v4[0].Agent != "implementer" {
 		t.Errorf("key k in version 4: name %q, want implementer, the name whose claim holds its session", v4[0].Agent)
 	}
-	if other := NameAgents(v3, sessions, []PlanStep{
+	if other := NameAgents(v3, nil, sessions, []PlanStep{
 		{Generation: 1, Task: "a", Position: 1, Role: "implementer", AgentKey: "j"},
 	}); other[0].Agent == "implementer" {
 		t.Errorf("key j beside the claim implementer of key k's session: name %q, want a name of its own", other[0].Agent)
@@ -272,7 +272,7 @@ func TestAKeyDoesNotTakeANameAnotherKeyHeldAfterItInRowsOfTheReleaseBefore(t *te
 		{name: "control: key b, which held the name last", key: "b", want: "implementer"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := NameAgents(earlier, KeySessions{}, []PlanStep{
+			got := NameAgents(earlier, nil, KeySessions{}, []PlanStep{
 				{Generation: 3, Task: "v", Position: 1, Role: "implementer", AgentKey: tc.key},
 				{Generation: 3, Task: "v", Position: 2, Role: "reviewer"},
 			})
@@ -306,7 +306,7 @@ func TestANumberedNameOnlyAgentsWithNoKeyHeldIsGivenAgain(t *testing.T) {
 				{Generation: 1, Task: "a", Position: 2, Role: "reviewer", Agent: "reviewer"},
 				{Generation: 1, Task: "a", Position: 3, Role: "implementer", AgentKey: tc.key, Agent: "implementer-2"},
 			}
-			got := NameAgents(earlier, nil, []PlanStep{
+			got := NameAgents(earlier, nil, nil, []PlanStep{
 				{Generation: 1, Task: "b", Position: 1, Role: "implementer"},
 				{Generation: 1, Task: "b", Position: 2, Role: "reviewer"},
 				{Generation: 1, Task: "b", Position: 3, Role: "implementer"},
@@ -370,8 +370,8 @@ func TestAnAgentPassesOverANameAnotherRoleHeld(t *testing.T) {
 			want: []claim.Agent{"implementer", "planner", "planner-2"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			first := NameAgents(nil, nil, tc.first)
-			if got := agentNames(NameAgents(first, nil, tc.second)); !slices.Equal(got, tc.want) {
+			first := NameAgents(nil, nil, nil, tc.first)
+			if got := agentNames(NameAgents(first, nil, nil, tc.second)); !slices.Equal(got, tc.want) {
 				t.Errorf("version 2 after version 1 named %q: names %q, want %q", agentNames(first), got, tc.want)
 			}
 		})
@@ -380,7 +380,7 @@ func TestAnAgentPassesOverANameAnotherRoleHeld(t *testing.T) {
 
 // A step with no key takes a name even where the latest earlier row of its task, place and role
 // holds none: its role, or a name of its own where another agent of the version holds the role.
-// The first form of the migration that added plan_steps.agent, 20261117213545, left every row it
+// The first form of the migration that added plan_steps.agent, 20261124213820, left every row it
 // found at the empty string, and a row that holds no name now reads as no name
 // (PlanStep.AgentName), so a database that ran that form holds such rows of steps that are not
 // the owner's. A step named "" has no claim token (StepToken). The control: rows that hold names
@@ -401,7 +401,7 @@ func TestAStepWithNoKeyTakesANameWhereItsPlacesRowHoldsNone(t *testing.T) {
 				{Generation: 1, Task: "t", Position: 2, Role: "reviewer", Agent: tc.earlier[1]},
 				{Generation: 1, Task: "t", Position: 3, Role: "acceptance", AgentKey: "owner"},
 			}
-			got := NameAgents(earlier, nil, []PlanStep{
+			got := NameAgents(earlier, nil, nil, []PlanStep{
 				{Generation: 1, Task: "t", Position: 1, Role: "implementer"},
 				{Generation: 1, Task: "t", Position: 2, Role: "reviewer"},
 				{Generation: 1, Task: "t", Position: 3, Role: "implementer"},
@@ -458,17 +458,17 @@ func agentNames(named []PlanStep) []claim.Agent {
 // takes its first role, implementer; the owner's version of that generation keeps that name, and
 // not the name tester that key a had in generation 1.
 func TestAKeysNameIsItsNewestAcrossGenerations(t *testing.T) {
-	first := ofGeneration(1, NameAgents(nil, nil, []PlanStep{
+	first := ofGeneration(1, NameAgents(nil, nil, nil, []PlanStep{
 		{Task: "t", Position: 1, Role: "tester", AgentKey: "a"},
 		{Task: "t", Position: 2, Role: "implementer"},
 	}))
-	defaults := ofGeneration(2, NameAgents(nil, nil, []PlanStep{
+	defaults := ofGeneration(2, NameAgents(nil, nil, nil, []PlanStep{
 		{Task: "t", Position: 1, Role: "implementer", AgentKey: "a"},
 		{Task: "t", Position: 2, Role: "tester", AgentKey: "a"},
 		{Task: "t", Position: 3, Role: "reviewer"},
 	}))
 	earlier := append(slices.Clone(first), defaults...)
-	got := NameAgents(earlier, nil, []PlanStep{
+	got := NameAgents(earlier, nil, nil, []PlanStep{
 		{Task: "t", Position: 1, Role: "implementer", AgentKey: "a"},
 		{Task: "t", Position: 2, Role: "tester", AgentKey: "a"},
 		{Task: "t", Position: 3, Role: "reviewer"},
@@ -481,12 +481,12 @@ func TestAKeysNameIsItsNewestAcrossGenerations(t *testing.T) {
 // Rows of the key owner in earlier name no agent: the owner's step of a later version still has no
 // name, and no other key or step takes a name from the owner's rows.
 func TestTheOwnersEarlierRowsNameNoAgent(t *testing.T) {
-	earlier := ofGeneration(1, NameAgents(nil, nil, []PlanStep{
+	earlier := ofGeneration(1, NameAgents(nil, nil, nil, []PlanStep{
 		{Task: "t", Position: 1, Role: "implementer"},
 		{Task: "t", Position: 2, Role: "acceptance", AgentKey: "owner"},
 	}))
 	earlier[1].Agent = "acceptance"
-	got := NameAgents(earlier, nil, []PlanStep{
+	got := NameAgents(earlier, nil, nil, []PlanStep{
 		{Task: "t", Position: 1, Role: "implementer", AgentKey: "a"},
 		{Task: "t", Position: 2, Role: "acceptance", AgentKey: "owner"},
 	})
@@ -538,7 +538,7 @@ func TestANameWhoseClaimHoldsAnotherRoleIsNotGivenToAnAgentOfALongRole(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	v2 := NameAgents(nil, nil, []PlanStep{
+	v2 := NameAgents(nil, nil, nil, []PlanStep{
 		{Generation: 1, Task: "t", Position: 1, Role: b},
 		{Generation: 1, Task: "t", Position: 2, Role: "reviewer"},
 	})
@@ -556,11 +556,32 @@ func TestANameWhoseClaimHoldsAnotherRoleIsNotGivenToAnAgentOfALongRole(t *testin
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			claims := KeySessionsOf([]IssueClaim{{Token: token, Role: claim.Role(tc.holds), SessionAgent: "step:2:t"}})
-			got := NameAgents(v2, claims, v3)
+			got := NameAgents(v2, nil, claims, v3)
 			if taken := got[1].Agent == cut; taken != tc.taken {
 				t.Errorf("version 3's step 2, of %s, beside the claim %s of %s: name %q, want %s taken = %v", b, cut, tc.holds,
 					got[1].Agent, cut, tc.taken)
 			}
 		})
+	}
+}
+
+// A name the lasting record (plan_key_names, KeyNames) holds for a key stays that key's even when
+// no earlier row names the key and no claim records its session yet: a step with no key or another
+// key takes a numbered name of its own, and the key takes its held name when it returns.
+func TestANameTheLastingRecordHoldsForAKeyIsKeptForThatKey(t *testing.T) {
+	held := []KeyName{{Name: "implementer", AgentKey: "k", Generation: 1}}
+	v2 := NameAgents(nil, held, nil, []PlanStep{
+		{Generation: 1, Task: "a", Position: 1, Role: "implementer"},
+		{Generation: 1, Task: "a", Position: 2, Role: "reviewer"},
+	})
+	if want := []claim.Agent{"implementer-2", "reviewer"}; !slices.Equal(agentNames(v2), want) {
+		t.Fatalf("version 2 beside held key k: names %q, want %q", agentNames(v2), want)
+	}
+	v3 := NameAgents(v2, held, nil, []PlanStep{
+		{Generation: 1, Task: "a", Position: 1, Role: "implementer", AgentKey: "k"},
+		{Generation: 1, Task: "a", Position: 2, Role: "reviewer"},
+	})
+	if want := []claim.Agent{"implementer", "reviewer"}; !slices.Equal(agentNames(v3), want) {
+		t.Fatalf("key k back beside held record: names %q, want %q", agentNames(v3), want)
 	}
 }

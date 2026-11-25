@@ -1,5 +1,7 @@
 package workflow
 
+//ci:reads skills/legion-worker/references/merge-gate.md TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries reads it under ../../../..
+
 import (
 	"context"
 	"crypto/rand"
@@ -366,23 +368,17 @@ func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
 	}
 }
 
-// reviewerPrompt is the reviewer's composed prompt as its pane reads it (rolePrompt).
+// reviewerPrompt is the reviewer's composed prompt as its pane reads it: every part Compose names,
+// read back and joined in order.
 func reviewerPrompt(t *testing.T) string {
-	t.Helper()
-	return rolePrompt(t, claim.RoleReviewer)
-}
-
-// rolePrompt is role's composed prompt as its pane reads it: every part Compose names, read back
-// and joined in order.
-func rolePrompt(t *testing.T, role claim.Role) string {
 	t.Helper()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
-	parts, err := composer.Compose(role, false)
+	parts, err := composer.Compose(claim.RoleReviewer, false)
 	if err != nil {
-		t.Fatalf("compose the %s's prompt: %v", role, err)
+		t.Fatalf("compose the reviewer's prompt: %v", err)
 	}
 	var prompt strings.Builder
 	for _, path := range parts.RolePromptPaths {
@@ -406,8 +402,9 @@ func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
 	}
 }
 
-// The reviewer is told the commit its later round reads from, and the entry of each round, by
-// the labels its task carries (reviewround.Sentences), and its prompt and the merge gate of
+// The reviewer is told the commit its later round reads from, the entry of each round, and the
+// commit another agent's review read where its own row holds none, by the labels its task carries
+// (reviewround.Sentences, reviewround.AnotherAgentsSentence), and its prompt and the merge gate of
 // skill://legion-worker, which the prompt sends it to, name those fields, so a rename of a label
 // in the writer alone, in the reviewer's prompt alone or in the merge gate alone fails here. The
 // reviewer writes the entry into its review's footer, so a prompt that did not name the field
@@ -419,12 +416,13 @@ func TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries(t *testing.T) {
 		t.Fatalf("read %s, the skill the reviewer's prompt sends it to: %v", mergeGate, err)
 	}
 	prompt := reviewerPrompt(t)
-	sentences := reviewround.Sentences("<sha>", 7)
+	sentences := reviewround.AnotherAgentsSentence("<sha>") + reviewround.Sentences("<sha>", 7)
 	for _, tc := range []struct {
 		field, part string
 	}{
 		{field: reviewround.CommitLabel + ": <sha>", part: " " + reviewround.CommitLabel + ": <sha>. "},
 		{field: reviewround.EntryLabel + ": <n>", part: " " + reviewround.EntryLabel + ": 7."},
+		{field: reviewround.AnotherAgentLabel + ": <sha>", part: " " + reviewround.AnotherAgentLabel + ": <sha>."},
 	} {
 		if !strings.Contains(sentences, tc.part) {
 			t.Fatalf("a task names its round as %q, want it to hold %q", sentences, tc.part)
@@ -803,7 +801,8 @@ func TestAMoveBackIntoPlanningWritesInProgress(t *testing.T) {
 }
 
 // A backward move no backward row serves is refused, and nothing moves or is counted: to the
-// phase the issue is already in or a later one; by a role that does not run the phase, the
+// phase the issue is already in or a later one, where no earlier place of the task runs as that
+// phase, as none does on this issue with no plan rows; by a role that does not run the phase, the
 // implementer's from accepting among them; or to no phase at all, which the row lookup would
 // otherwise take to match any row.
 func TestABackwardMoveNoRowServesIsRefused(t *testing.T) {
@@ -1038,6 +1037,74 @@ func TestABackwardMovesTaskNamesThePullRequestAndTheReason(t *testing.T) {
 		if !strings.Contains(task, want) {
 			t.Fatalf("task = %q, want it to carry %q", task, want)
 		}
+	}
+}
+
+// A merged change never moves back: the backward move of an issue whose pull request has merged
+// is refused BACKWARD_REFUSED with that reason, in whichever phase the issue stands — a root in
+// merging, whose close can wait on the rest of its tree, an issue still in reviewing whose pull
+// request merged early, and an issue in accepting, where an approval of a merged pull request's
+// head ends the review round (TestAnApprovalStandingOnAMergedPullRequestsHeadEndsTheReviewRound)
+// — and nothing moves, is counted or is started. The controls are the same moves on an issue in
+// merging and in accepting whose pull request is still open: each goes back and starts the
+// phase's worker, so the merge alone is what refuses the others.
+func TestABackwardMoveOfAMergedIssueIsRefused(t *testing.T) {
+	const reason = "its pull request has merged; a merged change never moves back"
+	for _, tc := range []struct {
+		name    string
+		from    phase.Phase
+		to      phase.Phase
+		state   record.PullRequestState
+		refused bool
+	}{
+		{"the merger's on a root in merging whose pull request merged", phase.Merging, phase.Reviewing, record.PullRequestMerged, true},
+		{"the reviewer's on an issue in reviewing whose pull request merged early", phase.Reviewing, phase.Implementing, record.PullRequestMerged, true},
+		{"the architect's on an issue in accepting whose pull request merged", phase.Accepting, phase.Implementing, record.PullRequestMerged, true},
+		{"the merger's on an issue in merging whose pull request is open", phase.Merging, phase.Reviewing, record.PullRequestOpen, false},
+		{"the architect's on an issue in accepting whose pull request is open", phase.Accepting, phase.Implementing, record.PullRequestOpen, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			role := phase.RoleFor(tc.from)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "backward", Phase: tc.from, Generation: 1, Status: PhaseStatus(tc.from), Rank: "U"})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: role, Claim: claim.Token(string(role) + "-claim")})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
+			pr := record.PullRequest{State: tc.state, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headOne, Failing: []string{}}
+			if tc.state == record.PullRequestMerged {
+				pr.MergeSHA = "merge-42"
+			}
+			seedPR(t, pool, pr)
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			move := intake.BackwardMove{Issue: "LEGION-208", Requester: role, To: tc.to, Reason: "the spec changed"}
+			if role == claim.RoleArchitect {
+				// An architect's request names the claim, the generation and the run of accepting
+				// its route read, which the workflow judges again (rootsMoveBack).
+				move = rootsMoveBack(t, pool, engine, "LEGION-208", tc.to, "the spec changed")
+			}
+			result, err := intake.ApplyFact(context.Background(), pool, "api", "backward", move, engine, admissionStub{})
+			if err != nil {
+				t.Fatalf("ApplyFact backward: %v", err)
+			}
+			if !tc.refused {
+				if result.Refusal != nil {
+					t.Fatalf("the move = %+v, want it applied: the pull request is open", result.Refusal)
+				}
+				if got, pass := issuePhase(t, pool), implementerPass(t, pool); got != tc.to || pass != 1 {
+					t.Fatalf("phase = %q, pass %d; want %q and one pass", got, pass, tc.to)
+				}
+				if started := superviseRequests(t, pool, "start"); started["LEGION-208/"+string(phase.RoleFor(tc.to))] != 1 {
+					t.Fatalf("the move back to %s started %v, want its %s started once", tc.to, started, phase.RoleFor(tc.to))
+				}
+				return
+			}
+			if refusalCode(result) != "BACKWARD_REFUSED" || !strings.Contains(result.Refusal.Message, reason) {
+				t.Fatalf("the move = %+v; want BACKWARD_REFUSED saying %q", result.Refusal, reason)
+			}
+			if got, pass := issuePhase(t, pool), implementerPass(t, pool); got != tc.from || pass != 0 {
+				t.Fatalf("phase = %q, pass %d; want %q and no pass", got, pass, tc.from)
+			}
+			assertOutboxKinds(t, pool, []string{})
+		})
 	}
 }
 

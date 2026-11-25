@@ -126,7 +126,9 @@ func CancelPodBackstops(ctx context.Context, tx pgx.Tx, project, issue string, t
 // released pod over leaves to do, since a wake's own record is the resume the index holds
 // (TakePodWake).
 func (s *Store) CancelPodBackstopsOf(ctx context.Context, project, issue string, token claim.Token) error {
-	return s.Tx(ctx, func(tx pgx.Tx) error { return CancelPodBackstops(ctx, tx, project, issue, token) })
+	return Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return CancelPodBackstops(ctx, tx, project, issue, token)
+	})
 }
 
 // TakePodWake takes one wake outside any fact transaction, for the wakes the outbox takes: a
@@ -153,7 +155,7 @@ func (s *Store) CancelPodBackstopsOf(ctx context.Context, project, issue string,
 func (s *Store) TakePodWake(ctx context.Context, project, issue string, token claim.Token, role claim.Role, kind string, at time.Time, mark int64) (bool, error) {
 	records := &PodRecords{store: s, project: project}
 	var taken bool
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		pause, _, err := records.PauseOfWake(ctx, tx, issue, token, mark)
 		if err != nil {
 			return err
@@ -168,7 +170,7 @@ func (s *Store) TakePodWake(ctx context.Context, project, issue string, token cl
 // release's own arming of backstops reads, and what a caller outside a fact transaction asks.
 func (s *Store) ReleasedClaimsIn(ctx context.Context, project, issue string) ([]supervise.Claim, error) {
 	var claims []supervise.Claim
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		claims, err = ReleasedClaimsOf(ctx, tx, project, issue)
 		return err
@@ -213,25 +215,27 @@ func (c ClaimStates) MarshalText() ([]byte, error) { return []byte(c.String()), 
 // answers the released claims a wake resumes, and this one answers every claim, since a release
 // whose whole case is that no claim of the issue can take a turn must say so claim by claim.
 //
-// One statement reads it, so it runs on the pool rather than in a transaction of its own: there
-// is nothing here for a transaction to make consistent, and the read is of a pod the release is
-// about to delete anyway.
+// One statement reads it in a read-only transaction of its own: there is nothing here for a wider
+// transaction to make consistent, and the read is of a pod the release is about to delete anyway.
 func (s *Store) ClaimStatesIn(ctx context.Context, project, issue string) (ClaimStates, error) {
-	rows, err := s.pool.Query(ctx, `select role, state from claims
-		where project = $1 and issue = $2 order by role`, project, issue)
-	if err != nil {
-		return nil, fmt.Errorf("read the claim states of %s: %w", issue, err)
-	}
-	defer rows.Close()
 	var states ClaimStates
-	for rows.Next() {
-		var role, state string
-		if err := rows.Scan(&role, &state); err != nil {
-			return nil, fmt.Errorf("read the claim states of %s: %w", issue, err)
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `select role, state from claims
+			where project = $1 and issue = $2 order by role`, project, issue)
+		if err != nil {
+			return err
 		}
-		states = append(states, ClaimRoleState{Role: claim.Role(role), State: supervise.ClaimState(state)})
-	}
-	if err := rows.Err(); err != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var role, state string
+			if err := rows.Scan(&role, &state); err != nil {
+				return err
+			}
+			states = append(states, ClaimRoleState{Role: claim.Role(role), State: supervise.ClaimState(state)})
+		}
+		return rows.Err()
+	})
+	if err != nil {
 		return nil, fmt.Errorf("read the claim states of %s: %w", issue, err)
 	}
 	return states, nil
@@ -255,7 +259,9 @@ type PodWakeBackstop struct {
 // failure arms one backstop and not two; another claim of the same role gets one of its own
 // (pod_wake_backstops_open_claim).
 func (s *Store) ArmPodBackstop(ctx context.Context, b PodWakeBackstop) error {
-	return armPodBackstop(ctx, s.pool, b)
+	return Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return armPodBackstop(ctx, tx, b)
+	})
 }
 
 // ArmPodBackstopTx is ArmPodBackstop inside a caller's transaction: the stop a project's pause
@@ -266,11 +272,11 @@ func ArmPodBackstopTx(ctx context.Context, tx pgx.Tx, b PodWakeBackstop) error {
 	return armPodBackstop(ctx, tx, b)
 }
 
-func armPodBackstop(ctx context.Context, db execer, b PodWakeBackstop) error {
+func armPodBackstop(ctx context.Context, tx pgx.Tx, b PodWakeBackstop) error {
 	if b.Project == "" || b.Issue == "" || b.Claim == "" || b.Role == "" || b.DueAt.IsZero() {
 		return errors.New("a pod wake backstop needs its project, issue, claim, role and due time")
 	}
-	_, err := db.Exec(ctx, `insert into pod_wake_backstops (project, issue, claim, role, release_id, due_at)
+	_, err := tx.Exec(ctx, `insert into pod_wake_backstops (project, issue, claim, role, release_id, due_at)
 		values ($1, $2, $3, $4, $5, $6) on conflict do nothing`,
 		b.Project, b.Issue, string(b.Claim), string(b.Role), b.Release, b.DueAt)
 	if err != nil {
@@ -283,7 +289,13 @@ func armPodBackstop(ctx context.Context, db execer, b PodWakeBackstop) error {
 // pass fires. One that came due while the daemon was down is in this read at the next pass after
 // the daemon starts, which is what makes the backstop a stored row rather than a timer.
 func (s *Store) DuePodBackstops(ctx context.Context, project string, now time.Time) ([]PodWakeBackstop, error) {
-	rows, err := s.pool.Query(ctx, `select id, project, issue, claim, role, release_id, due_at
+	return ReadOnly(ctx, s.pool, "read the due backstops of "+project, func(ctx context.Context, tx pgx.Tx) ([]PodWakeBackstop, error) {
+		return duePodBackstops(ctx, tx, project, now)
+	})
+}
+
+func duePodBackstops(ctx context.Context, tx pgx.Tx, project string, now time.Time) ([]PodWakeBackstop, error) {
+	rows, err := tx.Query(ctx, `select id, project, issue, claim, role, release_id, due_at
 		from pod_wake_backstops where project = $1 and not fired and due_at <= $2 order by due_at, id`,
 		project, now)
 	if err != nil {
@@ -407,15 +419,20 @@ func LatestPodRelease(ctx context.Context, tx pgx.Tx, project, issue string) (in
 // own. It is read rather than remembered so a daemon that restarted between the wake and the
 // first turn still stamps it.
 func (s *Store) OpenPodResume(ctx context.Context, project, issue string, token claim.Token) (id, pause int64, found bool, err error) {
-	return openPodResume(ctx, s.pool, project, issue, token)
+	err = TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		id, pause, found, err = openPodResume(ctx, tx, project, issue, token)
+		return err
+	})
+	return id, pause, found, err
 }
 
-// openPodResume is OpenPodResume through db: the pool, or the transaction of a cancel of a
-// release made while the project is paused, which reads by it whether a wake already owes a claim
-// the release stopped its launch (stopReleasedForPause). Two claims can hold one role, and the
-// wake brought back one of them, so the resume is read for the claim (pod_resumes.claim).
-func openPodResume(ctx context.Context, db queryRower, project, issue string, token claim.Token) (id, pause int64, found bool, err error) {
-	err = db.QueryRow(ctx, `select id, coalesce(pause_id, 0) from pod_resumes
+// openPodResume is OpenPodResume inside a transaction: OpenPodResume's own, or the transaction of
+// a cancel of a release made while the project is paused, which reads by it whether a wake
+// already owes a claim the release stopped its launch (stopReleasedForPause). Two claims can hold
+// one role, and the wake brought back one of them, so the resume is read for the claim
+// (pod_resumes.claim).
+func openPodResume(ctx context.Context, tx pgx.Tx, project, issue string, token claim.Token) (id, pause int64, found bool, err error) {
+	err = tx.QueryRow(ctx, `select id, coalesce(pause_id, 0) from pod_resumes
 		where project = $1 and issue = $2 and claim = $3 and first_turn_at is null and closed_at is null
 		order by id desc limit 1`, project, issue, string(token)).Scan(&id, &pause)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -449,13 +466,18 @@ func CloseRoleOpenResumeTx(ctx context.Context, tx pgx.Tx, project, issue string
 // never moves a clock backwards (greatest): a clock a resume of the project or a later reservation
 // already moved stays. project is the project token, as pod_resumes holds it.
 func (s *Store) SetResumeClock(ctx context.Context, project, issue string, token claim.Token, at time.Time) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `update pod_resumes set clock_at = greatest(clock_at, $3)
-		where project = $1 and issue = $2 and claim = $4 and first_turn_at is null and closed_at is null`,
-		project, issue, at, string(token))
-	if err != nil {
-		return false, fmt.Errorf("set the stuck clock of %s's claim %s: %w", issue, token, err)
-	}
-	return tag.RowsAffected() > 0, nil
+	var changed bool
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `update pod_resumes set clock_at = greatest(clock_at, $3)
+			where project = $1 and issue = $2 and claim = $4 and first_turn_at is null and closed_at is null`,
+			project, issue, at, string(token))
+		if err != nil {
+			return fmt.Errorf("set the stuck clock of %s's claim %s: %w", issue, token, err)
+		}
+		changed = tag.RowsAffected() > 0
+		return nil
+	})
+	return changed, err
 }
 
 // SetProjectResumeClocksTx moves the stuck clock of every open resume of project to at, the
@@ -476,7 +498,9 @@ func SetProjectResumeClocksTx(ctx context.Context, tx pgx.Tx, project string, at
 // it ever has. A daemon that has read no report releases nothing.
 func (s *Store) ListenerReadyAt(ctx context.Context, project string) (time.Time, bool, error) {
 	var at time.Time
-	err := s.pool.QueryRow(ctx, `select ready_at from listener_reports where project = $1`, project).Scan(&at)
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `select ready_at from listener_reports where project = $1`, project).Scan(&at)
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return time.Time{}, false, nil
 	}
@@ -508,7 +532,9 @@ func (s *Store) ListenerLive(ctx context.Context, project string, now time.Time,
 // the woken role's first turn.
 func (s *Store) PodResumeReadyAt(ctx context.Context, id int64) (time.Time, error) {
 	var at *time.Time
-	err := s.pool.QueryRow(ctx, `select pod_ready_at from pod_resumes where id = $1`, id).Scan(&at)
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `select pod_ready_at from pod_resumes where id = $1`, id).Scan(&at)
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return time.Time{}, nil
 	}

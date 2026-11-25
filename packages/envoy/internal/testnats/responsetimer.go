@@ -30,17 +30,23 @@ import (
 // configuration declares none, outlive a reload: each reload gives an account the configuration
 // declares fresh copies of the exports the configuration names (shallowCopy,
 // server/accounts.go:436-446 in v2.15.1), which no request has reached yet. No configuration here
-// declares a system account, so the rig sets that account's exports alone. The cost is the cleanup
-// the threshold drives: the routing nats-server keeps for a response, which this timer drops two
-// minutes on when nothing else has (a response that never came, a streamed export's), stays until
-// its requester drops the reply subscription or the server stops. No test waits two minutes for a
-// response.
+// declares a system account but an operator-mode one, whose account JWT outliveResponseTimers
+// leaves as it is, so the rig sets the implicit system account's exports alone. The cost is the
+// cleanup the threshold drives: the routing nats-server keeps for a response, which this timer
+// drops two minutes on when nothing else has (a response that never came, a streamed export's),
+// stays until its requester drops the reply subscription or the server stops. No test waits two
+// minutes for a response.
 const responseThreshold = time.Duration(math.MaxInt64)
 
 // outliveResponseTimers sets every service export of srv's system account to wait
 // responseThreshold for a response. launch calls it before any client can reach srv: no request
 // has armed a timer yet, which matters because a timer that fires reads the threshold without the
-// lock as well. A server without a system account has no such export.
+// lock as well. A server without a system account has no such export. A system account that is an
+// account JWT, as in operator mode, keeps the thresholds nats-server gives its exports: nats-server
+// refuses SetServiceExportResponseThreshold on a claim-based account (server/accounts.go:2632 in
+// v2.15.1), and a reload of a server with trusted keys, the only server with such an account, does
+// not run configureAccounts, the write the timer races (reloadAuthorization,
+// server/reload.go:2220-2244 in v2.15.1).
 func outliveResponseTimers(srv *natsserver.Server) error {
 	system := srv.SystemAccount()
 	if system == nil {
@@ -49,6 +55,9 @@ func outliveResponseTimers(srv *natsserver.Server) error {
 	accounts, err := srv.Accountz(&natsserver.AccountzOptions{Account: system.GetName()})
 	if err != nil {
 		return fmt.Errorf("list the exports of the system account %s: %w", system.GetName(), err)
+	}
+	if accounts.Account.Jwt != "" {
+		return nil
 	}
 	for _, export := range accounts.Account.Exports {
 		if export.Type != jwt.Service {

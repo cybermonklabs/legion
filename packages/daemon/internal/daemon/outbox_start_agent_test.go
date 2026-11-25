@@ -12,13 +12,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	stepplan "github.com/sjawhar/legion/daemon/internal/plan" // the package's own `plan` type holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // A start that names no agent and makes its claim, which only a start the release before the
 // record of a claim's agent queued is among the starts of a step, records on that claim the agent
-// the steps give the claim's name (claim_agent_from_steps, the rule 20261122120917 fills each claim
+// the steps give the claim's name (claim_agent_from_steps, the rule 20261125053850 fills each claim
 // of the release before by), so the next start of another agent that reaches the claim starts in a
 // session of its own. The migration writes nothing into the start itself, so a daemon of the
 // release before that reads the row finds it as that release wrote it. Here the plan in force runs
@@ -46,8 +47,8 @@ func TestAStartThatNamesNoAgentAndMakesItsClaimRecordsTheAgentTheStepsGive(t *te
 			token := mustClaimToken(t, issue.Key, claim.RoleImplementer)
 			if tc.planned {
 				owner := mustClaimToken(t, issue.Key, claim.RoleArchitect)
-				if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-					steps := record.NameAgents(nil, nil, []record.PlanStep{
+				if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+					steps := record.NameAgents(nil, nil, nil, []record.PlanStep{
 						{Issue: issue.Key, Generation: 1, Task: "p", Position: 1, Role: "implementer", Type: stepplan.TypeImplementation, AgentKey: "k"},
 						{Issue: issue.Key, Generation: 1, Task: "p", Position: 2, Role: "reviewer", Type: stepplan.TypeReview},
 					})
@@ -104,8 +105,8 @@ func TestAStartWhoseFirstTryFailsAfterItMakesItsClaimRecordsTheStepsAgentOnItsRe
 	putOutboxIssue(t, pool, records, issue)
 	token := mustClaimToken(t, issue.Key, claim.RoleImplementer)
 	owner := mustClaimToken(t, issue.Key, claim.RoleArchitect)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		steps := record.NameAgents(nil, nil, []record.PlanStep{
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		steps := record.NameAgents(nil, nil, nil, []record.PlanStep{
 			{Issue: issue.Key, Generation: 1, Task: "p", Position: 1, Role: "implementer", Type: stepplan.TypeImplementation, AgentKey: "k"},
 			{Issue: issue.Key, Generation: 1, Task: "p", Position: 2, Role: "reviewer", Type: stepplan.TypeReview},
 		})

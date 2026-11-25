@@ -17,6 +17,7 @@ import (
 // is read from its refusal of a source it does not take, which names every source it takes, so a
 // source the store gains and a tag lacks fails here rather than in a client the schema refuses it to.
 func TestThePlanSourceTagsNameTheStoresSources(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	response := putPlanRecord(t, handler, issue, uuid.NewString(),

@@ -11,15 +11,15 @@ import (
 	stepplan "github.com/sjawhar/legion/daemon/internal/plan" // the package's own `plan` type holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
-// prepareClaimForStep makes machine's claim, token, ready for the step that the start of a phase
-// entry (payload, phaseEntry) is for, before the start brings the claim back. The steps of one key
-// are one claim, and its next step may be of another role than the claim holds, or of another
-// agent than the one whose session it holds (agent, the start's agent, startAgent, and
-// supervise.Claim.SessionAgent). Either
+// prepareClaimForStep makes machine's claim, token, ready for the start of a phase entry (payload,
+// phaseEntry) before the start brings the claim back. The steps of one key are one claim, and its
+// next step may be of another role than the claim holds, or of another agent than the one whose
+// session it holds (agent, the start's agent, startAgent, and supervise.Claim.SessionAgent). Either
 // way the process the claim may still run was started for the step before it, so the start asks
 // that process to suspend, as the daemon and keeping its session, and is a wait (wait.ErrWaiting)
 // on the row's backoff while the claim still runs: a claim in a turn holds the suspension for the
@@ -30,6 +30,12 @@ import (
 // for another agent, leaves the session behind and records the start's agent
 // (supervise.StartWork.Agent). A claim of the step's role and agent, and a start of no phase entry
 // — a wake, a resume, a role admission brings back — are left as they stand.
+//
+// A start that leaves the session the claim records (work, supervise.Machine.Leaves), the session
+// of a key's agent that the start's agent took the name of, asks the suspension too, where the
+// claim still runs (suspendToLeave): the decision that brings the claim back then leaves that
+// session (supervise's revive). Where the claim is suspended for the re-role or for another
+// agent's session already, that suspension serves it.
 //
 // A start that gives the claim another role waits first for a launcher of the claim's slot that
 // takes the new role's credential (reroleWaitsForCredential).
@@ -44,14 +50,13 @@ import (
 // the judgment it passed when it was asked, and the row waits; its next run carries a standing of
 // its own, judged again by the re-role. So a move back in between costs the claim that one
 // suspension, and the move back's own start resumes it on its session in the role it holds.
-func (r *outbox) prepareClaimForStep(ctx context.Context, machine *supervise.Machine, row record.OutboxRow, issue record.Issue, token claim.Token, payload record.SuperviseRequest, agent stepplan.AgentID) error {
-	if !phaseEntry(payload) {
-		return nil
-	}
+func (r *outbox) prepareClaimForStep(ctx context.Context, machine *supervise.Machine, row record.OutboxRow, issue record.Issue, token claim.Token,
+	payload record.SuperviseRequest, agent stepplan.AgentID, work supervise.StartWork) error {
 	held := machine.Claim()
-	rerole := held.Role != payload.Role
-	if !rerole && !held.SessionOfAnotherAgent(agent) {
-		return nil
+	step := phaseEntry(payload)
+	rerole := step && held.Role != payload.Role
+	if !rerole && !(step && held.SessionOfAnotherAgent(agent)) {
+		return r.suspendToLeave(ctx, machine, token, row, payload, work)
 	}
 	if rerole {
 		if err := r.reroleWaitsForCredential(ctx, row, issue, token, payload.Role); err != nil {
@@ -63,13 +68,11 @@ func (r *outbox) prepareClaimForStep(ctx context.Context, machine *supervise.Mac
 		if rerole {
 			reason = fmt.Sprintf("its agent's next step on %s is the %s's", issue.Key, payload.Role)
 		}
-		err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByDaemon, Reason: reason})
-		var refused *supervise.RefusedError
-		if err != nil && !errors.Is(err, supervise.ErrSuspendHeld) && !errors.As(err, &refused) {
-			return fmt.Errorf("suspend claim %s for its %s step: %w", token, payload.Role, err)
-		}
-		if held = machine.Claim(); !held.RunsNothing() {
+		err := suspendUntilIdle(ctx, machine, token, reason, func(held supervise.Claim) error {
 			return wait.Errorf("the %s step of %s waits for its claim %s to end its turn as %s", payload.Role, issue.Key, token, held.Role)
+		})
+		if err != nil {
+			return err
 		}
 	}
 	if !rerole {
@@ -99,28 +102,44 @@ func (r *outbox) stepStanding(ctx context.Context, row record.OutboxRow, payload
 	return supervise.Standing(ctx, func(ctx context.Context) (bool, error) { return r.stepStands(ctx, row, payload) })
 }
 
+// suspendUntilIdle asks machine's claim to suspend, as the daemon and keeping its session, and is
+// waiting's wait (wait.ErrWaiting) while the claim still runs a process: a claim in a turn holds the
+// suspension for the turn's end and a launching one until its agent is ready (supervise's suspend
+// rows), so the step before is not cut off mid-turn, and the start waits on the row's backoff. A
+// suspension the machine holds (supervise.ErrSuspendHeld) or refuses for the state it is in is no
+// failure: the claim's state answers. ctx carries the start's standing where it has one
+// (supervise.Standing), which the suspension judges under the machine's lock. Its callers are the
+// two suspensions a start asks of a claim that runs: the re-role (prepareClaimForStep) and the leave of a
+// key's session (suspendToLeave).
+func suspendUntilIdle(ctx context.Context, machine *supervise.Machine, token claim.Token, reason string, waiting func(held supervise.Claim) error) error {
+	err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByDaemon, Reason: reason})
+	var refused *supervise.RefusedError
+	if err != nil && !errors.Is(err, supervise.ErrSuspendHeld) && !errors.As(err, &refused) {
+		return fmt.Errorf("suspend claim %s (%s): %w", token, reason, err)
+	}
+	if held := machine.Claim(); !held.RunsNothing() {
+		return waiting(held)
+	}
+	return nil
+}
+
 // stepStands says whether the step a start of a phase entry (payload) is for is still the work its
-// issue asks of the role, read from the record again: the issue runs the generation and stands in
-// the phase the start serves, and the role's phases row now names no later entry than the start's
-// (record.StartLeft). They are the start's own fences (supervise), which the first act the start
-// asks of its claim to pass under the machine's lock — the suspension, the re-role, or the record
-// of its agent on a running claim that records none — judges again there, and so commits the start
-// (stepStanding), since a move back or a later entry can commit between the fences' read and that
-// lock.
+// issue asks of the role, read from the record again: whether every fence of the outbox's run of
+// the row holds (startFenceOf, whose entry fence is record.StartLeft), the one judgment of them.
+// They are the start's own fences (supervise), which the first act the start asks of its claim to
+// pass under the machine's lock — the suspension, the re-role, or the record of its agent on a
+// running claim that records none — judges again there, and so commits the start (stepStanding),
+// since a move or a later entry can commit between the fences' read and that lock.
 func (r *outbox) stepStands(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest) (bool, error) {
 	stands := false
-	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := r.records.Issue(ctx, tx, row.Issue)
-		if err != nil || issue == nil || issue.Generation != payload.Generation || issue.Phase != payload.Phase {
+		if err != nil || issue == nil {
 			return err
 		}
-		rows, err := r.records.Phases(ctx, tx, row.Issue)
-		if err != nil {
-			return err
-		}
-		_, left := record.StartLeft(rows, payload.Role, payload.Entry)
-		stands = !left
-		return nil
+		fence, err := startFenceOf(*issue, payload, func() ([]record.PhaseRow, error) { return r.records.Phases(ctx, tx, row.Issue) })
+		stands = err == nil && fence == fenceHolds
+		return err
 	})
 	if err != nil {
 		return false, fmt.Errorf("read the step of start row %d of %s again: %w", row.ID, row.Issue, err)

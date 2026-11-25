@@ -20,8 +20,8 @@ import { asUser } from "./users";
  * How a browser row opens the new issue page and reads its frame: the
  * page's root, the view row, the icon rail, Details and the Contents pane and sheet.
  *
- * This is part D's file, and no later part changes it (decision 2 of the parts): each later part
- * adds the helpers its own rows read in a file of its own, `e2e/issue-page-<part>.ts`.
+ * A browser row adds the helpers only its own rows read in a file of its own,
+ * `e2e/issue-page-<part>.ts`; a helper the rows of more than one file read is kept here, once.
  *
  * - **The page's root** `[data-issue-page]`, which everything the new page draws is inside, a
  *   refused address included (`IssueOutlinePage.tsx`). `gotoIssue` waits for it.
@@ -44,6 +44,11 @@ import { asUser } from "./users";
 /** The size every row's page opens at. The `iphone` project runs each `@phone` row too, so a
  *  row that asserts another width sets it itself. */
 const DESKTOP = { height: 900, width: 1440 } as const;
+
+/** A viewport of `width`: the desktop height from 768 px up, a phone's below. */
+export function viewportAt(width: number): { height: number; width: number } {
+  return { height: width >= 768 ? 900 : 844, width };
+}
 
 /** The rows that have run a `phase`. The automatic `freshDatabase` fixture (`e2e/test.ts`)
  *  empties the database before each row, so a row's first `phase` seeds it as that fixture left

@@ -16,8 +16,20 @@
 //	                         prints the system prompt a launch of the role starts with
 //	                         (rolePrompt), byte for byte as the daemon writes its prompt file, for
 //	                         the rig's claim on the root issue of its tree or on a child under it;
-//	                         a root architect's prompt ends with the design gate steps of a
-//	                         deployment that sets no `gates.design`, as such a launch's does
+//	                         an architect's addressing goes on with the roles of the rig's
+//	                         deployment (rigRoles, deploymentRolesLine) where the checkout's daemon
+//	                         has the key `roles`, a root architect's then with the design gate
+//	                         steps of a deployment that sets no `gates.design`, and every
+//	                         architect's ends with the production check of one that sets no
+//	                         `production_check` (productionCheckLine) where the daemon has that
+//	                         key, as such a launch's does
+//	prompt step <prompt_file> [<role>]
+//	                         prints the system prompt a launch of a step of a role of the rig's
+//	                         deployment starts with (stepPrompt), the checker's or the role named.
+//	                         That role's prompt_file is the file given. The prompt is for the
+//	                         rig's claim on a child issue, byte for byte as the daemon writes its
+//	                         prompt file. Where the checkout's daemon has no key `roles`, it
+//	                         exits 1 and prints no prompt
 package main
 
 import (
@@ -27,6 +39,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -45,7 +58,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-const usage = "usage: daemon-pane phase <role> | pane < request.json | prompt <role> <root|child>"
+const usage = "usage: daemon-pane phase <role> | pane < request.json | prompt <role> <root|child> | prompt step <prompt_file> [checker|critic]"
 
 func main() {
 	args := os.Args[1:]
@@ -55,6 +68,12 @@ func main() {
 		err = printPhase(claim.Role(args[1]))
 	case len(args) == 1 && args[0] == "pane":
 		err = pane()
+	case (len(args) == 3 || len(args) == 4) && args[0] == "prompt" && args[1] == "step":
+		role := rigRoles[0].name
+		if len(args) == 4 {
+			role = args[3]
+		}
+		err = printStepPrompt(args[2], claim.Role(role))
 	case len(args) == 3 && args[0] == "prompt" && (args[2] == "root" || args[2] == "child"):
 		err = printPrompt(claim.Role(args[1]), args[2] == "root")
 	default:
@@ -67,11 +86,10 @@ func main() {
 	}
 }
 
-// handoffWords is the word of the handoff each handoff phase ends with: this program's one
-// restatement of the daemon, and its own copy rather than the daemon's phase table because one
-// program runs against each label's checkout of the daemon module, and that table has had more
-// than one name (phase.HandoffFile, then phase.Handoff). Every other answer here is the daemon's
-// own function (daemon-pane.ts).
+// handoffWords is the word of the handoff each handoff phase ends with: one of this program's
+// restatements of the daemon (daemon-pane.ts names each), and its own copy rather than the
+// daemon's phase table because one program runs against each label's checkout of the daemon
+// module, and that table has had more than one name (phase.HandoffFile, then phase.Handoff).
 var handoffWords = map[phase.Phase]string{
 	phase.Planning: "plan", phase.Implementing: "implement", phase.Testing: "test", phase.Reviewing: "review",
 }
@@ -94,6 +112,18 @@ const (
 	rigRoot    = "RIG-1"
 	rigChild   = "RIG-2"
 )
+
+// rigRole is a role of the rig's deployment, as a deployment's settings define one
+// (`roles.<name>`): its name, the type of its steps, and its model, "" where the settings name
+// none. It is this program's own type rather than the daemon's config.Role, which an older
+// checkout of the daemon module lacks.
+type rigRole struct{ name, typ, model string }
+
+// rigRoles is the rig's deployment: a checker, whose steps are of the type testing and who works
+// as the implement App (`github_app: implement`), then a critic, of the type review, who works as
+// the review App, the App of a role whose settings name none. Neither names a model. No prompt
+// names a role's App: every claim of the rig is told the one owner of the rig's project.
+var rigRoles = []rigRole{{name: "checker", typ: "testing"}, {name: "critic", typ: "review"}}
 
 // printPrompt prints the system prompt a launch of role starts with (rolePrompt), for the rig's
 // claim on the root issue of its tree (root) or on a child issue under it, and nothing else: no
@@ -120,6 +150,140 @@ func printPrompt(role claim.Role, root bool) error {
 	}
 	_, err = io.WriteString(os.Stdout, prompt)
 	return err
+}
+
+// printStepPrompt prints the system prompt a launch of a step of role, a role of the rig's
+// deployment, starts with (stepPrompt), whose prompt_file is promptFile, for the rig's claim on a
+// child issue, and nothing else, as printPrompt prints a role's. A checkout whose daemon has no key
+// `roles` starts no role of a deployment, so the mode refuses there and prints no prompt.
+func printStepPrompt(promptFile string, role claim.Role) error {
+	if !definesRoles() {
+		return errors.New("this checkout's daemon has no key roles, so no launch of it starts a role of a deployment")
+	}
+	names := make([]string, len(rigRoles))
+	for i, defined := range rigRoles {
+		names[i] = defined.name
+	}
+	if !slices.Contains(names, string(role)) {
+		return fmt.Errorf("%q is no role of the rig's deployment (%s)", role, strings.Join(names, ", "))
+	}
+	file, err := filepath.Abs(promptFile)
+	if err != nil {
+		return err
+	}
+	token, err := claim.NewToken(rigProject, rigChild, role)
+	if err != nil {
+		return err
+	}
+	stateDir, err := os.MkdirTemp("", "daemon-pane-prompt-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(stateDir)
+	prompt, err := stepPrompt(stateDir, rigProject, supervise.Claim{
+		Token: token, Project: rigProject, Tree: rigRoot, Issue: rigChild, Role: role, Generation: 1,
+	}, file)
+	if err != nil {
+		return err
+	}
+	_, err = io.WriteString(os.Stdout, prompt)
+	return err
+}
+
+// definesRoles says whether this checkout's daemon has the top-level key `roles`, the key a
+// deployment defines roles of its own with: an entry of its key table (config.ConfigReference)
+// named so. A nested key of that name, such as a hook's `roles`, stands under an entry's Nested
+// and does not count.
+func definesRoles() bool {
+	for _, key := range config.ConfigReference() {
+		if key.Name == "roles" {
+			return true
+		}
+	}
+	return false
+}
+
+// legionStepRoles are Legion's own five roles of a step, each with the type of its step, in the
+// order the daemon's sentence of the deployment's roles lists them (deploymentRolesLine).
+var legionStepRoles = []rigRole{
+	{name: "planner", typ: "planning"}, {name: "implementer", typ: "implementation"}, {name: "tester", typ: "testing"},
+	{name: "reviewer", typ: "review"}, {name: "acceptance", typ: "review"},
+}
+
+// deploymentRolesLine is the sentence every architect is told after its addressing, the roles a
+// step of its plan may name: Legion's five (legionStepRoles), then each of roles in its order,
+// `<name> (<type>)`, with ` with the model <model>` where the role names one. It restates the
+// daemon's daemon.DeploymentRolesFragment, since one program runs against each label's checkout of
+// the daemon module, and an older one lacks that function and config.Role. It is that function's
+// sentence at the commit this file is part of, which daemon-pane_test.go holds it equal to. A
+// checkout whose daemon tells another is composed with that checkout's own copy of this program.
+func deploymentRolesLine(roles []rigRole) string {
+	entries := make([]string, 0, len(legionStepRoles)+len(roles))
+	for _, role := range slices.Concat(legionStepRoles, roles) {
+		entry := fmt.Sprintf("%s (%s)", role.name, role.typ)
+		if role.model != "" {
+			entry += " with the model " + role.model
+		}
+		entries = append(entries, entry)
+	}
+	return "The roles of this deployment, each with the type of its step: " + strings.Join(entries, ", ") + "."
+}
+
+// rigProductionCheck is the production check of the rig's deployment, which sets no
+// `production_check`: the tester, the role config's readProject gives a project that names no
+// such key. daemon-pane_test.go holds it to the key table's default.
+const rigProductionCheck = claim.RoleTester
+
+// checksProduction says whether this checkout's daemon has the project key `production_check`: a
+// nested key of its key table's entry `projects` (config.ConfigReference), as definesRoles reads
+// `roles`. Where it has the key, every architect is told the production check last in its
+// addressing (productionCheckLine). The key table holds no sign of that sentence itself, so a
+// checkout whose daemon has the key and tells no such sentence, one from the key table
+// (7ed02373162) to the sentence (b537812fb53, #3995), is composed here with the sentence all the
+// same.
+func checksProduction() bool {
+	for _, key := range config.ConfigReference() {
+		if key.Name != "projects" {
+			continue
+		}
+		for _, nested := range key.Nested {
+			if nested.Path == "projects.<KEY>" && nested.Name == "production_check" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// productionCheckLine is the sentence every architect is told last in its addressing, after the
+// roles of its deployment and, for the architect of a tree's root, after the design gate steps:
+// the project's `production_check` (check), the role that works the production check a merge
+// opens, or `off` for the empty role. It restates the daemon's daemon.ProductionCheckFragment,
+// since one program runs against each label's checkout of the daemon module, and an older one
+// lacks that function. It is that function's sentence at the commit this file is part of, which
+// daemon-pane_test.go holds it equal to.
+func productionCheckLine(check claim.Role) string {
+	word := string(check)
+	if word == "" {
+		word = "off"
+	}
+	return "Production check: " + word + "."
+}
+
+// stepPromptPaths is the prompt of a step of a role of the deployment, as the paths of its parts:
+// the headless part every phase worker is told, as prompts.New(stateDir) snapshots it, then
+// promptFile, the role's own prompt (`roles.<name>.prompt_file`), then the daemon's part every
+// phase worker ends with (worker-common.md). It restates prompts.Composer.ComposeStep, since one
+// program runs against each label's checkout of the daemon module, and an older one lacks that
+// method. It is that method's paths at the commit this file is part of, which daemon-pane_test.go
+// holds it equal to. A checkout whose daemon composes a step otherwise is composed with that
+// checkout's own copy of this program.
+func stepPromptPaths(stateDir string, composer *prompts.Composer, promptFile string) []string {
+	return []string{
+		filepath.Join(stateDir, "prompts", "shared", "mechanics", "headless.md"),
+		promptFile,
+		composer.Part("worker-common.md"),
+	}
 }
 
 // paneRequest is the claim a pane is launched for, and the rig's stand-ins for what the daemon
@@ -213,15 +377,17 @@ func pane() error {
 	return json.NewEncoder(os.Stdout).Encode(res)
 }
 
-// rigOwner is the one GitHub owner of the rig's project, a placeholder whose directory of the gh
-// bundle holds the rig's token.
-const rigOwner = "skills-rig"
+// rigOwner is the one GitHub owner of the rig's project, the owner of rigRepository, a placeholder
+// whose directory of the gh bundle holds the rig's token.
+const rigOwner = "example"
 
 // rigRepository and rigDefaultBranch are the repository and default branch a rig worker's
-// addressing names, as a real pane's does for its issue; the branch is not `main`, since the skills
-// tell a worker never to assume one.
+// addressing names, as a real pane's does for its issue. They are the tester-proof world's, which
+// rig.sh names again: rigRepository must equal rig.sh's `worker_repo`, and rigDefaultBranch
+// rig.sh's `worker_default_branch`. The branch is not `main`, since the skills tell a worker never
+// to assume one.
 const (
-	rigRepository    = rigOwner + "/project"
+	rigRepository    = rigOwner + "/widgets"
 	rigDefaultBranch = "trunk"
 )
 
@@ -269,14 +435,10 @@ func firstBytes(path string, n int) ([]byte, error) {
 }
 
 // rolePrompt is the system prompt a launch of c starts with, composed as the daemon composes it
-// (specs.SpawnSpec): the role prompts snapshotted under stateDir, the role's parts concatenated
-// with the newlines that end them dropped, a blank line, then its addressing for the rig's
-// repository, which for the architect of a tree's root ends with the design gate steps of a
-// deployment that leaves `gates.design` unset (config.Gates.Steps), as workerSpawnSpec appends
-// them. It is the prompt of a deployment with no instructions file and no experiment, whose roles
-// run on Oh My Pi, a backend whose launch is told no prompt part of its own. The join is this
-// program's own copy of the daemon's (runtime.ComposePrompt), since the rig runs it against each
-// label's checkout of the daemon module, an older one among them, which lacks it.
+// (specs.SpawnSpec): the role prompts snapshotted under stateDir, then the role's parts and its
+// addressing joined as joinedPrompt joins them. It is the prompt of a deployment with no
+// instructions file and no experiment, whose roles run on Oh My Pi, a backend whose launch is told
+// no prompt part of its own.
 func rolePrompt(stateDir, project string, c supervise.Claim) (string, error) {
 	composer, err := prompts.New(stateDir)
 	if err != nil {
@@ -286,6 +448,31 @@ func rolePrompt(stateDir, project string, c supervise.Claim) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return joinedPrompt(parts.RolePromptPaths, project, c)
+}
+
+// stepPrompt is the system prompt a launch of a step of c's role, a role of the deployment whose
+// prompt_file is promptFile, starts with, composed as the daemon composes it: the role prompts
+// snapshotted under stateDir, then the step's parts (stepPromptPaths) and its addressing joined as
+// joinedPrompt joins them, for the same deployment as rolePrompt's.
+func stepPrompt(stateDir, project string, c supervise.Claim, promptFile string) (string, error) {
+	composer, err := prompts.New(stateDir)
+	if err != nil {
+		return "", err
+	}
+	return joinedPrompt(stepPromptPaths(stateDir, composer, promptFile), project, c)
+}
+
+// joinedPrompt is the text of the files at paths concatenated, with the newlines that end them
+// dropped, a blank line, then c's addressing for the rig's repository. An architect's addressing
+// goes on with the roles of the rig's deployment (deploymentRolesLine) where the checkout's daemon
+// has the key `roles`, that of the architect of a tree's root then with the design gate steps of a
+// deployment that leaves `gates.design` unset (config.Gates.Steps), and every architect's ends with
+// the production check of the rig's deployment (productionCheckLine, rigProductionCheck) where the
+// daemon has the key `production_check`, as workerSpawnSpec appends them. The join is this
+// program's own copy of the daemon's (runtime.ComposePrompt), since the rig runs it against each
+// label's checkout of the daemon module, an older one among them, which lacks it.
+func joinedPrompt(paths []string, project string, c supervise.Claim) (string, error) {
 	repository, err := ghrepo.Parse("the rig's repository", rigRepository)
 	if err != nil {
 		return "", err
@@ -294,11 +481,17 @@ func rolePrompt(stateDir, project string, c supervise.Claim) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if c.Role == claim.RoleArchitect && definesRoles() {
+		addressing += " " + deploymentRolesLine(rigRoles)
+	}
 	if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) {
 		addressing += " " + daemon.DesignGateFragment(config.Gates{}.Steps())
 	}
+	if c.Role == claim.RoleArchitect && checksProduction() {
+		addressing += " " + productionCheckLine(rigProductionCheck)
+	}
 	var body strings.Builder
-	for _, path := range parts.RolePromptPaths {
+	for _, path := range paths {
 		text, err := os.ReadFile(path)
 		if err != nil {
 			return "", fmt.Errorf("prompt file: %w", err)

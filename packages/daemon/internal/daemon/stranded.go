@@ -56,7 +56,7 @@ func strandedReleaseWakes(ctx context.Context, st *store.Store, tx pgx.Tx, proje
 	}
 	wakes := make([]workflow.ReleasedWake, 0, len(resumes))
 	for _, resume := range resumes {
-		wakes = append(wakes, workflow.ReleasedWake{Issue: resume.Issue, Claim: claim.Token(resume.Claim),
+		wakes = append(wakes, workflow.ReleasedWake{Claim: claim.Token(resume.Claim),
 			ClockAt: resume.ClockAt, Stuck: resume.Stuck})
 	}
 	return wakes, nil
@@ -79,7 +79,7 @@ func strandedReleaseWakes(ctx context.Context, st *store.Store, tx pgx.Tx, proje
 // the daemon's one clock, which the wakes' stuck clocks are judged against.
 func reportStranded(ctx context.Context, st *store.Store, records record.Store, project, projectToken string, steps []record.DesignStep, clock func() time.Time, log *slog.Logger) {
 	var stranded []supervise.Claim
-	if err := pgx.BeginTxFunc(ctx, st.Pool(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, st.Pool(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		claims, err := st.ClaimsTx(ctx, tx)
 		if err != nil {
 			return err

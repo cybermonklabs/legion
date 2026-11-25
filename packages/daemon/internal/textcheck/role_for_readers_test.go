@@ -1,5 +1,11 @@
 package textcheck
 
+// The branch of dispatch://INFRA-2614 wrote this check in internal/workflow's role_for_test.go;
+// it moved here because it walks every .go file of the module, test files included, and a row
+// keyed on a file of internal/workflow would put every test file of packages/daemon - this
+// package's and the live tests' among them - on daemon-go's filter (dispatch://INFRA-1413).
+//ci:reads packages/daemon/**/*.go walks every .go file under packages/daemon (../..,) and TestEveryReaderOfRoleForLeavesTheArchitectUnchanged parses each one
+
 import (
 	"go/ast"
 	"go/parser"
@@ -55,17 +61,18 @@ type roleForReader struct {
 // (phase.Of, and the completion route's answerCompletion, which reads the phase LeftBy answers
 // where the role does not work the issue's), or reads only the places of a plan's steps, which
 // admitted never is (reportsBefore, Walk.RoleAt, and Engine.restartTask, which reads its task's
-// first step: a planner's, an implementer's or a role of the deployment's, as plan.Supported takes
-// the acceptance only after an implementer), or reads the retro's own phase (retroHeldNotice and
-// Engine.startHeldRetro, which run only for a parent held before its retro for the issues beneath
-// it), or answers RoleFor's role for every phase but step to the readers this list holds
-// (record.Issue.RoleAt), or reads the phase a held issue's retry restores only past the refusal of
-// a plan's own hold, which is the one hold an issue at admitted takes (Engine.retryOrEscalate, for
-// the retry of a named claim), or reads the roles of the retro and the merge alone, the places that
-// stand after every step, and gives a task at no act, as at admitted, its role's first place
-// (record.RolePlace), or never reads admitted at all because a check before it refuses that phase,
-// which is what each named test holds it to. The owner walk reads no role: where it starts is its
-// caller's to say (record.NoticeStartsAtParent, for a notice).
+// first step: a planner's, an implementer's or a role of the deployment's, as plan.Supported
+// holds every task to an implementer step with each tester, reviewer and acceptance step after
+// it), or reads the retro's own phase (retroHeldNotice and Engine.startHeldRetro, which run only
+// for a parent held before its retro for the issues beneath it), or answers RoleFor's role for
+// every phase but step to the readers this list holds (record.Issue.RoleAt), or reads the phase a
+// held issue's retry restores only past the refusal of a plan's own hold, which is the one hold an
+// issue at admitted takes (Engine.retryOrEscalate, for the retry of a named claim), or reads the
+// roles of the retro and the merge alone, the places that stand after every step, and gives a task
+// at no act, as at admitted, its role's first place (record.RolePlace), or never reads admitted at
+// all because a check before it refuses that phase, which is what each named test holds it to.
+// The owner walk reads no role: where it starts is its caller's to say
+// (record.NoticeStartsAtParent, for a notice).
 //
 // A reader this list does not hold fails the test, so a new one is decided rather than taking
 // whatever RoleFor answers at admitted.
@@ -124,10 +131,14 @@ var roleForReaders = map[roleForSite]roleForReader{
 	// issue with none.
 	{file: "internal/workflow/line.go", fn: "Walk.endingRole"}: {calls: 2, tests: []string{
 		"TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole", "TestAHeldStepOfTheDeploymentNamesItsRole"}},
-	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForward"}: {calls: 1, tests: []string{
-		"TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward", "TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole"}},
-	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForwardLanded"}: {calls: 1, tests: []string{
-		"TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge", "TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole"}},
+	// The worker of the step an issue stands at that a merge forward's hold and landed reach, which
+	// Engine.mergeForward and Engine.mergeForwardLanded both read. At admitted it answers the
+	// architect, whom record.MergeForwardReaches reaches with neither message, so the architect is
+	// told nothing there, as at accepting. A merge forward is never asked at admitted in any case
+	// (classify.MergeForwardStands: admitted stands on no task's line).
+	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForwardWorker"}: {calls: 1, tests: []string{
+		"TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward", "TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge",
+		"TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole", "TestAMergeForwardTellsNoRoleTheDeploymentLost"}},
 	{file: "internal/workflow/plan_stop.go", fn: "Engine.restartTask"}: {calls: 1, tests: []string{
 		"TestATodoOnAStoppedRootStartsItsTaskAtStepOne", "TestARetryOfADeploymentStepRestartsItsRole"}},
 	{file: "internal/workflow/plan_stop.go", fn: "Engine.taskStopped"}: {calls: 1, tests: []string{
@@ -151,6 +162,15 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/wake.go", fn: "OpenRoleOf"}: {calls: 1, tests: []string{
 		"TestAnArchitectGetsNoBackstop", "TestArchitectUnchangedByAReadyWorkerOfAnIssueAtAdmitted",
 		"TestTheBootsResumeReadsRoleForAndStartsNoArchitectAtAdmittedOrAccepting", "TestTheResumePathsGiveTheRunningDeploymentRoleItsWork"}},
+	// The holder of a member's phase that design news reaches, the reason a member is owed none,
+	// and the role the root architect's summary names as the member's holder: each reads the role
+	// of the running step at step (record.Issue.RoleAt).
+	{file: "internal/daemon/design_news_holders.go", fn: "phaseHolder"}: {calls: 1, tests: []string{
+		"TestOnlyAPhaseWorkerHoldsAMembersPhase", "TestDesignNewsReachesTheRoleOfARunningDeploymentStep"}},
+	{file: "internal/daemon/design_news_send.go", fn: "memberDraft.told"}: {calls: 1, tests: []string{
+		"TestTheRootArchitectsSummaryNamesEachMemberAsTheRecordStandsAtItsSend", "TestDesignNewsReachesTheRoleOfARunningDeploymentStep"}},
+	{file: "internal/record/design_news.go", fn: "untold"}: {calls: 1, tests: []string{
+		"TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken", "TestDesignNewsReachesTheRoleOfARunningDeploymentStep"}},
 }
 
 // R2: the reader list is complete and nothing reads RoleFor that this test does not hold. The

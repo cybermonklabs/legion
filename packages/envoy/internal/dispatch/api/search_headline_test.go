@@ -32,6 +32,7 @@ const searchRowShape = `select 1::int, 1::int, 'document'::text, 'issue'::text,
 // too (scanSearchRows' trees), since it reads the headline a second time and a null one is the
 // snippet tree of no text.
 func TestSearchScanTakesARowWithANullHeadline(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 

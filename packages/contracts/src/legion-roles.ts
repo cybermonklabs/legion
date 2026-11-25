@@ -19,7 +19,7 @@ export const LEGION_ROLES = [
 export type LegionRole = (typeof LEGION_ROLES)[number];
 
 /** The role of a phase worker's claim: one of Legion's six, or a role the deployment defines in its
- * settings' `roles` (contract 221), a name of the step grammar (`isStepRole`). */
+ * settings' `roles` (contract 258), a name of the step grammar (`isStepRole`). */
 export type LegionStepRole = LegionRole | string;
 
 /** The design-gate steps a Legion deployment can gate, each naming one document of a root issue
@@ -82,9 +82,11 @@ export function isStepRole(role: string): role is LegionStepRole {
  * The role that works a phase, the TypeScript mirror of the daemon's own table
  * (`packages/daemon/internal/phase/phase.go`, `RoleFor`). A phase no role works —
  * `awaiting_person`, `done`, `held`, `unrecorded` — has none, and so has any value that is not
- * a phase; `admitted` and `accepting` are the architect's, and `retro` is the implementer's
- * second turn on the issue it developed. The one reader here, the phase reminder, runs for a
- * phase worker alone, so the architect's two phases never remind anyone.
+ * a phase; `admitted` and `accepting` are the architect's, and `retro` is the implementer's turn
+ * on the issue it developed after the task's last step, however many steps it worked. `step` has
+ * none either, since the role at work there is the issue's `stepRole`, the role of its running
+ * step, which no phase names. The one reader here, the phase reminder, runs for a phase worker
+ * alone, so the architect's two phases never remind anyone.
  */
 export function roleForPhase(phase: string): LegionRole | undefined {
   switch (phase) {

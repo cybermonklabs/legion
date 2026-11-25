@@ -40,7 +40,7 @@ func Validate(p Plan, d Deployment) []Refusal {
 	for _, task := range p.Tasks {
 		refused := map[string]bool{}
 		for i, step := range task.Steps {
-			if _, ok := d.Roles[step.Role]; ok || defined[step.Role] || refused[step.Role] {
+			if d.Defines(step.Role) || defined[step.Role] || refused[step.Role] {
 				continue
 			}
 			refused[step.Role] = true

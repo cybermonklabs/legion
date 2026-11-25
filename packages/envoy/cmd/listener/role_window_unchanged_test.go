@@ -183,6 +183,7 @@ func (rig *windowRig) awaitHeldForSession(t *testing.T, sessionID, eventID, what
 // routes, with the registry's clock moved past the window, read the holder unresponsive. So the
 // live answers before them come from the registration's age and from nothing else of the rig.
 func TestARoleHolderInsideTheLiveWindowReadsLiveOnEveryRoleRoute(t *testing.T) {
+	t.Parallel()
 	rig := newWindowRig(t)
 	const (
 		holder = "ses_window_holder"
@@ -202,7 +203,7 @@ func TestARoleHolderInsideTheLiveWindowReadsLiveOnEveryRoleRoute(t *testing.T) {
 	// wrote it.
 	standIn := startSessionStandIn(t, rig.url, holder, answerDone)
 	rig.register(t, holder, nil)
-	standIn.conn.Close()
+	standIn.close()
 	awaitNoRelaySubscriber(t, rig.url, holder)
 	// The claim lands after the subscriber stopped. It renews the holder's record, as the claim
 	// route refreshes its claimant's registration, and starts the handover of the role's kept

@@ -174,7 +174,7 @@ func TestEveryBackwardMoveIsCountedByItsPair(t *testing.T) {
 		t.Fatalf("after the four moves back the implementer's row counts %d passes, want 4: every move back raises the pass, whatever kind it is", pass)
 	}
 	if rounds, conflicts := implementerRounds(t, pool), implementerConflictRounds(t, pool); rounds != 1 || conflicts != 0 {
-		t.Fatalf("after the four moves back the implementer's row counts %d review rounds of which %d conflict rounds, want the one review's round and no conflict round: a round is a review that requested changes alone (recordRound), and none of these was made at a conflicting head", rounds, conflicts)
+		t.Fatalf("after the four moves back the implementer's row counts %d review rounds of which %d conflict rounds, want the one review's round and no conflict round: of these moves a review that requested changes alone opens a round (recordRound), and none of these was made at a conflicting head", rounds, conflicts)
 	}
 
 	// The fifth move is made while the record holds the pull request's own head conflicting with
@@ -202,8 +202,52 @@ func TestEveryBackwardMoveIsCountedByItsPair(t *testing.T) {
 	}
 }
 
-// taskCounts is the counts of the returns of key's task a at generation, as recordPass keeps them
-// on its plan_tasks row (record.Store.ReturnCounts).
+// reviewerMovesBack is the reviewer's own move of the issue out of reviewing back to the phase
+// named (request_backward_move): a move back from reviewing that is no review's request for
+// changes.
+func reviewerMovesBack(t *testing.T, pool *pgxpool.Pool, engine *Engine, to phase.Phase) {
+	t.Helper()
+	standsIn(t, pool, phase.Reviewing, "needs_review")
+	applyRefusingNothing(t, pool, engine, intake.BackwardMove{Issue: "LEGION-208", Requester: claim.RoleReviewer, To: to,
+		Reason: "the change needs another pass first"})
+}
+
+// A move back out of reviewing is a review round only when a review requested changes
+// (TriggerReviewRejected, recordRound). The other moves back from reviewing are the reviewer's own
+// backward moves (TriggerBackward, request_backward_move), one to each phase before reviewing in
+// today's line: planning, implementing and testing (backwardRows). Each counts a pass and its own
+// pair (recordPass), and none counts a review round, so none is counted against review_round_cap:
+// with a cap of 1, three such moves leave no round, no conflict round, no cap mark and no pr-blocked
+// notice.
+func TestAReviewersOwnMoveBackCountsItsPairAndNoReviewRound(t *testing.T) {
+	pool := migratedPool(t)
+	engine := workBackEngine(1)
+	seedWorkBackIssue(t, pool, headOne)
+
+	reviewerMovesBack(t, pool, engine, phase.Testing)
+	reviewerMovesBack(t, pool, engine, phase.Implementing)
+	reviewerMovesBack(t, pool, engine, phase.Planning)
+
+	if got, want := backwardMoves(t, pool), map[string]int{"reviewing-testing": 1, "reviewing-implementing": 1, "reviewing-planning": 1}; !maps.Equal(got, want) {
+		t.Fatalf("the moves back counted = %v, want %v: each of the reviewer's own moves counts its own pair", got, want)
+	}
+	if pass := implementerPass(t, pool); pass != 3 {
+		t.Fatalf("after the reviewer's three moves back the implementer's row counts %d passes, want 3", pass)
+	}
+	if rounds, conflicts := implementerRounds(t, pool), implementerConflictRounds(t, pool); rounds != 0 || conflicts != 0 {
+		t.Fatalf("after the reviewer's three moves back the implementer's row counts %d review rounds of which %d conflict rounds, want none: only a review that requested changes opens a round", rounds, conflicts)
+	}
+	if counts := taskCounts(t, pool, engine, "LEGION-208", 1); counts.CapTold != 0 {
+		t.Fatalf("the cap mark after the reviewer's three moves back = %d, want 0: no round reached review_round_cap 1", counts.CapTold)
+	}
+	if notices := noticesOf(t, pool, "LEGION-208", "pr-blocked"); len(notices) != 0 {
+		t.Fatalf("the pr-blocked notices = %+v, want none: no move back reached review_round_cap", notices)
+	}
+}
+
+// taskCounts is the counts of the returns of key's task a at generation, where recordPass keeps
+// them (record.Store.ReturnCounts): on the task's plan_tasks row when key has plan rows at that
+// generation, and on key's implementer's phases row when it has none (record.ImplementerCounts).
 func taskCounts(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, generation uint64) record.ReturnCounts {
 	t.Helper()
 	var counts record.ReturnCounts

@@ -1,7 +1,10 @@
 package record
 
 import (
+	"cmp"
 	"context"
+	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -15,7 +18,9 @@ import (
 // re-admission queued a start naming that claim, `…-tester`, with the role tester. That row is the
 // run of `…-tester` and not the run of key a's `…-implementer`, which works the tester's step: a
 // read of the owner's run that counted it would take it for the owner's own start and skip one the
-// owner needs. A row that names no claim is still the run of the role's token.
+// owner needs. A row that names no claim is the run of the claim it reaches when it runs
+// (WorkerClaim): the claim the role's phases row names while that row runs a step of the plan, and
+// the role's own token otherwise, as for the reviewer here, which has no phases row.
 func TestARoleRunCountsNoQueuedRowThatNamesAnotherClaim(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -103,6 +108,58 @@ func TestTwoKeysOfOneRoleReadTogetherEachKeepTheirOwnRun(t *testing.T) {
 		}
 		if queued := runs[keyed].Queued; len(queued) != 1 {
 			t.Fatalf("key a's run counts %+v, want its own start alone", queued)
+		}
+	})
+}
+
+// A claim's queued rows (ClaimQueued) are its role runs of every role (RoleRun), read alike: one
+// read of the queued rows serves both (readQueued), with only the selection apart, so a row reads
+// the same age, lease and attempts whichever asks. Key a's claim, `…-implementer`, works the
+// implementer's step and the tester's: it has a start of each that names it, the second leased and
+// tried twice, and a start of the implementer that names no claim, which reaches the role's own
+// token, key a's. A start of another generation, one that names the tester's own claim of an
+// earlier version, and a row of the reviewer that does not decode are no row of key a's at
+// generation 1, and neither read decodes the last.
+func TestAClaimsQueuedRowsAreItsRoleRunsOfEveryRole(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	keyed := claim.Token("legion-legion-legion-209-implementer")
+	stale := claim.Token("legion-legion-legion-209-tester")
+	inTx(t, st, func(tx pgx.Tx) {
+		for _, request := range []SuperviseRequest{
+			{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Claim: keyed, Generation: 1, Phase: phase.Implementing, Entry: 1},
+			{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Claim: keyed, Generation: 1, Phase: phase.Testing, Entry: 2},
+			{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 1, Phase: phase.Implementing, Entry: 3},
+			{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Claim: keyed, Generation: 2, Phase: phase.Testing, Entry: 1},
+			{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Claim: stale, Generation: 1, Phase: phase.Testing, Entry: 2},
+		} {
+			row, err := NewOutboxRow("LEGION-209", request, time.Now())
+			must(t, err)
+			must(t, records.Enqueue(ctx, tx, row))
+		}
+		_, err := tx.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+			values ('supervise', 'LEGION-209', '{"op": "bogus", "tree": "LEGION-208", "role": "reviewer", "generation": 1}', 0, now(), '')`)
+		must(t, err)
+		_, err = tx.Exec(ctx, `update outbox set attempts = 2, lease_token = 'lease-1', lease_until = now() + interval '1 hour'
+			where issue = 'LEGION-209' and payload->>'role' = 'tester' and payload->>'claim' = $1 and payload->>'generation' = '1'`, string(keyed))
+		must(t, err)
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		queued, err := records.ClaimQueued(ctx, tx, keyed, "LEGION-209", 1)
+		must(t, err)
+		var runs []QueuedSupervise
+		for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
+			run, err := records.RoleRun(ctx, tx, keyed, "LEGION-209", role, 1)
+			must(t, err)
+			runs = append(runs, run.Queued...)
+		}
+		slices.SortFunc(runs, func(a, b QueuedSupervise) int { return cmp.Compare(a.ID, b.ID) })
+		if len(queued) != 3 || queued[1].Request.Role != claim.RoleTester || !queued[1].Running || queued[1].Attempts != 2 {
+			t.Fatalf("key a's queued rows = %+v, want its three starts at generation 1, the tester's leased and tried twice", queued)
+		}
+		if !reflect.DeepEqual(queued, runs) {
+			t.Fatalf("key a's queued rows = %+v, but its role runs read %+v: the two reads differ", queued, runs)
 		}
 	})
 }

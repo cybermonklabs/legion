@@ -36,7 +36,7 @@ func TestAHandedOverOrphanKeepsItsPlan(t *testing.T) {
 	task := record.PlanTask{Issue: child, Generation: 1, Task: "a", PlanVersion: 2, BlockText: "Build the widget.", State: record.TaskRunning,
 		Place:  record.TaskPlace{Kind: record.PlaceStep, Position: 2},
 		Counts: record.ReturnCounts{Pass: 2, Rounds: 1, ConflictRounds: 1, BackwardMoves: map[string]int{"reviewing-implementing": 1}, CapTold: 1}}
-	steps := record.NameAgents(nil, nil, []record.PlanStep{
+	steps := record.NameAgents(nil, nil, nil, []record.PlanStep{
 		{Issue: child, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 		{Issue: child, Generation: 1, Task: "a", Position: 2, Role: "reviewer", Type: "review"},
 	})

@@ -38,10 +38,32 @@ import (
 // plan.Agent.ID), "" for a start of no step's agent. The admission that brings the claim back
 // leaves the claim's session behind first where it is another agent's, and records Agent as the
 // agent of the session it begins or takes (Claim.SessionAgent, revive).
+//
+// LeaveSession is the session the start's claim must not resume (record.SuperviseRequest's
+// LeaveSession): the session of a key's agent, recorded by the claim of a name that agent held,
+// which a step's agent of a later generation took (workflow's leaveKeySessions). The claim leaves
+// it where it still records it, so that agent starts in a session of its own (revive); a claim
+// that records another session has left it already, and resumes that one.
 type StartWork struct {
-	Phase      phase.Phase
-	Generation uint64
-	Agent      plan.AgentID
+	Phase        phase.Phase
+	Generation   uint64
+	Agent        plan.AgentID
+	LeaveSession string
+}
+
+// Leaves is whether start asks the claim to leave the session it records now (StartWork's
+// LeaveSession): the one test of it, which the machine's own resume and retry ask before they
+// refuse a session the claim does not hold (resumeByRule, retry) and the outbox's start asks
+// before it suspends a claim that still runs that session (internal/daemon's suspendToLeave).
+func (m *Machine) Leaves(start StartWork) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.leaves(start)
+}
+
+// leaves is Leaves under the machine's lock, which every caller inside the machine already holds.
+func (m *Machine) leaves(start StartWork) bool {
+	return start.LeaveSession != "" && m.claim.Session == start.LeaveSession
 }
 
 // ErrStartLeft is a start the machine judged no longer the work of its claim's issue
@@ -69,9 +91,19 @@ func (m *Machine) startHolds(ctx context.Context, start StartWork) error {
 // cannot cross a cleanup confirmation into a later admission. request names the decision that
 // brings the claim back, for a refusal and the line. exempt is whether the request that asked
 // for it is one the wake pacing never makes wait (exemptWake); every caller reads it from its own
-// event, so a request that carries no such field is paced. start is the work a workflow start
-// brings the claim back for, which its caller has judged already (startHolds) and the launch
-// judges again at the turn of a wake the pacing parks it on (launchAfter).
+// event, so a request that carries no such field is paced. turn is the moment the request
+// already reserved for this launch in the pacing (RequestSpawn.Turn), the zero time for every
+// request that reserved none (launchAfter). start is the work a workflow start brings the claim
+// back for, which its caller has judged already (startHolds) and the launch judges again where a
+// park it waits in ends (startLeftWhileParked).
+//
+// A start that leaves the session the claim records (leaves, StartWork's LeaveSession) forgets it
+// once the admission has bound the claim, so the launch spawns a fresh agent, as retry's fresh
+// session does: no agent but the key whose session it is resumes it. Whether the claim may clear
+// it is asked first (mayForget), and a refusal there, as a refused admission, leaves the claim
+// exactly as it was. Every caller reaches it with a claim that runs nothing — queued, suspended,
+// failed or retired — since the outbox suspends a running claim first (internal/daemon's
+// suspendToLeave), so the forget writes no record of a process that still runs.
 //
 // admitted, where a caller gives one, runs once the admission has bound the claim and before
 // anything else of the start: it is where a caller puts what it may change only for a claim
@@ -89,10 +121,13 @@ func (m *Machine) startHolds(ctx context.Context, start StartWork) error {
 // is of still resumes it at its own next start.
 //
 // The claims it starts — spawned, resumed, retried, a suspended claim given a task — record no
-// process, so its launch lets none go and records nothing of one (noEnd).
-func (m *Machine) revive(ctx context.Context, request string, exempt bool, start StartWork, admitted func()) error {
+// process, so its launch lets none go and records nothing of one (noEnd). Each was raised by a
+// request, which the pod's start gate puts first among the starts waiting in the claim's pod
+// (launchAfter's requested, podQueue.next).
+func (m *Machine) revive(ctx context.Context, request string, exempt bool, turn time.Time, start StartWork, admitted func()) error {
 	another := m.claim.SessionOfAnotherAgent(start.Agent)
-	if another {
+	leave := !another && m.leaves(start)
+	if another || leave {
 		if err := m.mayForget(ctx, request); err != nil {
 			return err
 		}
@@ -121,7 +156,11 @@ func (m *Machine) revive(ctx context.Context, request string, exempt bool, start
 	if admitted != nil {
 		admitted()
 	}
-	return m.launchAfter(ctx, false, exempt, noEnd, start)
+	if leave {
+		m.log.Info("supervise: the start leaves the session a key's agent ran in, so it spawns a fresh agent", "session", m.claim.Session)
+		m.forgetSession("its step's agent took a name a key's agent held in an earlier generation, so it starts in a session of its own: this session was that key's")
+	}
+	return m.launchAfter(ctx, false, exempt, true, turn, noEnd, start)
 }
 
 // SessionOfAnotherAgent is whether the claim's session is the session of another agent than agent,
@@ -213,7 +252,7 @@ func (m *Machine) checkLaunch(ctx context.Context) error {
 // refreshStalePlugins in internal/daemon).
 //
 // Two roads reach this line with an intent on the machine, and each is a retry of this lane
-// refused a second time: the retry a failed write of StateLaunching armed (launchNow), and the
+// refused a second time: the retry a failed write of StateLaunching armed (launchTries), and the
 // retry the refused turn of this lane's own parked wake armed (runWake). Both put the intent
 // back as they run and raise the same launch anew from the top, whose own lifecycle check is
 // refused here (launchAfter, retryHolding).

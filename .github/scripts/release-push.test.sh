@@ -1116,6 +1116,7 @@ run_name_step() {
 }
 mkdir -p "$work/wir-bare" "$work/wir-checkout/.github/scripts"
 cp "$release_push" "$work/wir-checkout/.github/scripts/release-push.sh"
+cp "$script_dir/gh-read.sh" "$work/wir-checkout/.github/scripts/gh-read.sh"
 leak_rules_into "$work/wir-checkout"
 run_name_step "$work/wir-bare"
 check "with no checkout: the step exits 127, having called no gh, as every legion release did" \
@@ -1493,6 +1494,8 @@ k7="$work/k7"
 mkdir -p "$k7/none/.github/scripts" "$k7/bad/.github/scripts" "$k7/bad/packages/daemon/internal/leakguard"
 cp "$release_push" "$k7/none/.github/scripts/release-push.sh"
 cp "$release_push" "$k7/bad/.github/scripts/release-push.sh"
+cp "$script_dir/gh-read.sh" "$k7/none/.github/scripts/gh-read.sh"
+cp "$script_dir/gh-read.sh" "$k7/bad/.github/scripts/gh-read.sh"
 printf 'this file is no TOML at all {{{\n' > "$k7/bad/packages/daemon/internal/leakguard/private-names.toml"
 # k7_run <tree>: the `release` create from that tree's copy of the script, against the stub gh.
 k7_run() {
@@ -2357,4 +2360,55 @@ orphans_run
 check "fold-orphans: no package directory is refused" \
   "$(is "$rc|$out|$(contains "$err" '^::error::release-push\.sh fold-orphans: no package directory given')" "1||true")"
 
-summary "release-push.sh version, tagged, tag, pair-version, release, release-section, push-tag, the leak guard over all six of their writes to GitHub, check-built, extract-built, handed, no-credential, fold-notes, fold-check and fold-orphans, and release.yaml's worker_image_release step"
+echo
+echo "Case: release-envoy-listener.yaml's 'Determine latest' reads only buildx's own missing-tag line as no image"
+# The step's image_digest asks `docker buildx imagetools inspect` for <image>:<tag> and reads a
+# refusal as "no such image" only when buildx's last line is the one it prints for a tag the
+# registry does not hold: `ERROR: <image>:<tag>: not found` (buildx v0.38.1, for a missing tag of
+# ghcr.io/cybermonklabs/legion/envoy and for a missing package alike, measured 2026-11-21). Any
+# other refusal ends the step: the job holds release credentials and moves `latest`, so a read it
+# could not make must not read as an image that is not there. Driven 2026-11-21 with buildx v0.38.1
+# against a local registry: a 404 for the tag prints that line; a 500 or a 503 prints
+# `unexpected status from HEAD request to <url>: 500 Internal Server Error` and never the body,
+# though the body said "not found" or "manifest unknown"; and a token endpoint answering 404 prints
+# `failed to authorize: failed to fetch anonymous token: unexpected status from GET request to
+# <url>: 404 Not Found`, which the step's earlier `grep -Eqi 'manifest unknown|name unknown|not
+# found'` read as no image. The function is read out of the step's own `run:` text and run with a
+# stand-in docker.
+listener_workflow="$script_dir/../workflows/release-envoy-listener.yaml"
+latest_step=$(workflow="$listener_workflow" workflow_step_run release_publish "Determine latest")
+image_digest_fn=$(awk '/^image_digest\(\) \{$/ { on = 1 } on { print } on && /^\}$/ { exit }' <<<"$latest_step")
+check "the step defines image_digest" "$(contains "$image_digest_fn" '^image_digest() {$')"
+mkdir -p "$work/buildx-bin"
+cat > "$work/buildx-bin/docker" <<'SH'
+#!/usr/bin/env bash
+# `docker buildx imagetools inspect ... <ref>`, answered from BUILDX_ANSWER: `digest:<digest>`
+# prints the digest; `err:<text>` prints the text on stderr and exits 1, as buildx refuses.
+case $BUILDX_ANSWER in
+  digest:*) echo "${BUILDX_ANSWER#digest:}" ;;
+  err:*) printf '%s\n' "${BUILDX_ANSWER#err:}" >&2; exit 1 ;;
+esac
+SH
+chmod +x "$work/buildx-bin/docker"
+# latest_read <answer>: the step's `if image_digest latest` under the shell the step runs in, with
+# the image the job reads; leaves rc and out (combined).
+latest_read() {
+  set +e
+  out=$(PATH="$work/buildx-bin:$PATH" IMAGE=ghcr.io/example/repo/envoy BUILDX_ANSWER="$1" \
+    bash -e -o pipefail -c "$image_digest_fn"'
+if image_digest latest; then echo "found $IMAGE_DIGEST"; else echo "no latest image"; fi' 2>&1)
+  rc=$?
+  set -e
+}
+latest_read "digest:sha256:$(printf 'e%.0s' $(seq 64))"
+check "an image there: its digest" "$(is "$rc|$out" "0|found sha256:$(printf 'e%.0s' $(seq 64))")"
+latest_read "err:ERROR: ghcr.io/example/repo/envoy:latest: not found"
+check "buildx's missing-tag line: no latest image, and the step goes on" "$(is "$rc|$out" "0|no latest image")"
+latest_read "err:ERROR: failed to authorize: failed to fetch anonymous token: unexpected status from GET request to https://ghcr.io/token?scope=repository%3Aexample%2Frepo%2Fenvoy%3Apull: 404 Not Found"
+check "a refusal quoting another request's 404: the step fails, showing buildx's words" \
+  "$(is "$rc|$(contains "$out" '^no latest image$')|$(contains "$out" '404 Not Found$')" "1|false|true")"
+latest_read "err:ERROR: ghcr.io/example/repo/envoy:sha-1: not found"
+check "the missing-tag line of another reference is no answer about this one" \
+  "$(is "$rc|$(contains "$out" '^no latest image$')" "1|false")"
+
+summary "release-push.sh version, tagged, tag, pair-version, release, release-section, push-tag, the leak guard over all six of their writes to GitHub, check-built, extract-built, handed, no-credential, fold-notes, fold-check and fold-orphans, release.yaml's worker_image_release step, and the image read of release-envoy-listener.yaml's Determine latest step"

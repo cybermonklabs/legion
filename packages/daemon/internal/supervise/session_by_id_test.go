@@ -135,7 +135,7 @@ func (w *spawnWatch) Spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime
 }
 
 // refusingLaunchWrites is the store refusing the next refuse writes of a claim written launching,
-// which is the write of a launch's try (launchNow), and taking every other write, the admission's
+// which is the write of a launch's try (launchTries), and taking every other write, the admission's
 // included: AdmitClaim is memStore's own, which writes through memStore.PutClaim.
 type refusingLaunchWrites struct {
 	*memStore
@@ -186,7 +186,7 @@ func (r *byIDRig) slept() []time.Duration {
 }
 
 // launchWrite is the first claim write that records a process at generation: the write of the
-// launch that started it (launchNow).
+// launch that started it (launchTries).
 func (r *byIDRig) launchWrite(generation uint64) (Claim, bool) {
 	for _, c := range r.store.history() {
 		if c.Generation == generation && c.Locator != nil {

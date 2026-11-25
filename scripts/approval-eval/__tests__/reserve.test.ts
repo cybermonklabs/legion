@@ -723,6 +723,40 @@ describe("the one claim run", () => {
     if (refused.kind === "refused") expect(refused.reason).toContain("reply question");
   });
 
+  test("counts a deleted reply as the start it may have been, so deleting the first start opens no second run", async () => {
+    // The first start, deleted since: Dispatch serves it in its place with its mark and no body.
+    const gone = { ...first, body: "", deleted_at: "2026-11-22T11:00:00Z" };
+    for (const named of ["start-2", "start-1", undefined]) {
+      const refused = await claimRunOf(claim, named, repliesOf(gone, question, second));
+      expect(refused).toEqual({
+        kind: "refused",
+        reason:
+          `reply start-1 to ${claim}, written at 2026-11-22T10:00:00.000001Z, before any start ` +
+          "reply that is not deleted, was deleted at 2026-11-22T11:00:00Z: its words are gone, so " +
+          "it may have started the claim run, whose read spent the final test, and no run reads " +
+          "the reserve under this registration: claim.ts registers the read anew",
+      });
+    }
+    // With no start standing, no claim run can start under the registration either.
+    expect((await claimRunOf(claim, "start-2", repliesOf(gone))).kind).toBe("refused");
+    // A reply deleted after the first start cannot be the first: the first start is the claim run.
+    const later = {
+      ...question,
+      created_at: "2026-11-22T11:30:00Z",
+      body: "",
+      deleted_at: "2026-11-22T11:40:00Z",
+    };
+    const replies = repliesOf(first, later, second);
+    expect(await claimRunOf(claim, "start-1", replies)).toEqual({ kind: "claim", id: "start-1" });
+    const refused = await claimRunOf(claim, "question", replies);
+    expect(refused.kind).toBe("refused");
+    if (refused.kind === "refused") {
+      expect(refused.reason).toContain(
+        "names question, a later reply deleted at 2026-11-22T11:40:00Z"
+      );
+    }
+  });
+
   test("refuses a reference that names no comment, and a thread Dispatch does not serve", async () => {
     expect(registrationCommentOf(claim)).toBe("registration");
     expect(registrationCommentOf("dispatch://INFRA-2897/comment/x#b-1")).toBeNull();

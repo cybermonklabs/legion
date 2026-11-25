@@ -197,8 +197,9 @@ func TestAPhaseRowCarriesItsStep(t *testing.T) {
 // The step a phases row runs is a step of one generation's plan, whose task ids the next
 // generation's plan need not share, so a new generation clears it with the entry's task: the row
 // reads no step until the new generation's own start of the role writes one. Its entry stays, as
-// ClearGeneration keeps every entry. The row reads its step before the clear, which is the
-// control: a store that never kept the step would read none after it too.
+// ClearGeneration keeps each role's highest entry, into which it folds the role's other rows. The
+// row reads its step before the clear, which is the control: a store that never kept the step
+// would read none after it too.
 func TestANewGenerationClearsTheStepOfAPhaseRow(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -378,11 +379,12 @@ func TestArchitectOfTreeIsTheRootsOrAMembersArchitect(t *testing.T) {
 	})
 }
 
-// The plans a first step passes over are each plan of the issue in force whose giver is no
-// architect of the issue's tree now (ArchitectOfTree), with its version and its giver, in the order
-// they were given: a plan of the tree root's architect is not among them, nor a plan of a
-// sub-architect, nor a plan of the default steps, which nobody gave. Once the issue stands in a
-// tree of its own, each of those owners' plans is an earlier owner's.
+// The plans of earlier owners a first step passes over are each plan of the issue in force whose
+// giver is no architect of the issue's tree now (ArchitectOfTree), with its version and its giver,
+// in the order they were given: a plan of the tree root's architect is not among them, nor a plan
+// of a sub-architect, nor a plan of the default steps, which nobody gave. Once the issue stands in
+// a tree of its own, each of those owners' plans is an earlier owner's. (A first step in a group
+// that takes no plan passes its owner's plans over too, which workflow's passOverOwners reads.)
 func TestPlansOfEarlierOwnersLeaveOutEachArchitectOfTheTree(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -533,7 +535,7 @@ func TestMoveTaskAndStopTaskWriteWhereATaskStands(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tx, err := st.Pool().Begin(ctx)
+			tx, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 			must(t, err)
 			defer func() { _ = tx.Rollback(ctx) }()
 			if err := tc.act(tx); err == nil {
@@ -570,7 +572,7 @@ func TestATaskThatLeftTheWorkflowIsNeverStartedAgain(t *testing.T) {
 	}
 	try := func(t *testing.T, act func(tx pgx.Tx) error) error {
 		t.Helper()
-		tx, err := st.Pool().Begin(ctx)
+		tx, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 		must(t, err)
 		defer func() { _ = tx.Rollback(ctx) }()
 		return act(tx)
@@ -760,7 +762,7 @@ func TestReturnCountsLiveOnTheTaskOrOnTheImplementersRow(t *testing.T) {
 			t.Fatalf("the implementer's row of %s = %#v, want the counts on it and every other column kept: %#v", noPlan, got, want)
 		}
 	})
-	tx, err := st.Pool().Begin(ctx)
+	tx, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	must(t, err)
 	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := records.ReturnCounts(ctx, tx, planIssue, 1, "z"); err == nil {

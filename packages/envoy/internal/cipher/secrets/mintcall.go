@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/oauthrefusal"
 	"github.com/sjawhar/envoy/internal/serverwait"
 	"github.com/sjawhar/envoy/internal/tlsalert"
 )
@@ -26,10 +27,11 @@ import (
 const mintResponseLimit = 1 << 20
 
 // mintStatusError is an upstream answer whose status is not the one the call wanted. It wraps
-// ErrMintRefused for a 4xx and ErrMintUpstream for anything else, a rate-limited 4xx among them,
-// from every minter call (GitHub's installation list, token requests narrowed or not, and revokes,
-// and Google's refresh): a rate limit is no verdict on the App, the login or a narrowing, and
-// lifts by itself, so it is not the App owner's to fix. It names the numeric status alone: an
+// ErrMintRefused for a refusal (refused) and ErrMintUpstream for anything else, a 408, a 5xx and a
+// rate-limited 4xx among them, from every minter call (GitHub's installation list, token requests
+// narrowed or not, and revokes, Google's refresh and Google's service-account token): a 408 is the
+// upstream timing the request out and a rate limit lifts by itself, so neither is a verdict on the
+// App, the login or a narrowing, nor the App owner's to fix. It names the numeric status alone: an
 // upstream's reason phrase is its own text, which a malformed or hostile answer can fill with what
 // the request sent.
 type mintStatusError struct {
@@ -50,14 +52,21 @@ func (e *mintStatusError) Error() string {
 }
 
 func (e *mintStatusError) Unwrap() error {
-	if e.code >= 400 && e.code < 500 && !e.rateLimited {
+	if e.refused() {
 		return ErrMintRefused
 	}
 	return ErrMintUpstream
 }
 
+// refused reports whether the answer is the upstream refusing the request: a status
+// oauthrefusal.Refuses (any 4xx but 408 and 429, the rule the module reads a token endpoint's
+// refusal by) that is no rate limit, which GitHub can also answer with a 403 (rateLimited).
+func (e *mintStatusError) refused() bool {
+	return oauthrefusal.Refuses(e.code) && !e.rateLimited
+}
+
 // mintTransportError is an attempt that got no answer it could read: the call failed, or the
-// read of its body did. It is named by its class alone (transportFailure) and wraps
+// read of its body did. It is named by its class alone (TransportFailure) and wraps
 // ErrMintUpstream.
 type mintTransportError struct {
 	what, who, class string
@@ -157,7 +166,7 @@ func serverWait(header http.Header, rateLimited bool, now time.Time) (time.Durat
 // and is sent again as any failed call is. what names the call and who the upstream in its
 // errors. No error quotes the request, the answer or the transport's own text: Go's HTTP client
 // quotes a malformed status line, and a status line or body can echo the credential the request
-// carried, so a failed call is named by its class alone (transportFailure). A status other than
+// carried, so a failed call is named by its class alone (TransportFailure). A status other than
 // want is a *mintStatusError, returned with the body, so a caller can read the upstream's own
 // reason from it; an answer whose body was read in part, or past limit, is returned with as much
 // of it as was read; every other failure wraps ErrMintUpstream. answered, where it is not nil,
@@ -223,12 +232,12 @@ func mintAttempt(client *http.Client, request *http.Request, attempt int, now fu
 	response, err := client.Do(sent)
 	if err != nil {
 		noConnection := tracesConnections(client) && askedConnection.Load() && !gotConnection.Load()
-		return nil, &mintTransportError{what: what, who: who, class: transportFailure(request.Context(), err), sent: !noConnection && !beforeConnection(err)}
+		return nil, &mintTransportError{what: what, who: who, class: TransportFailure(request.Context(), err), sent: !noConnection && !beforeConnection(err)}
 	}
 	defer response.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
-		return body, &mintTransportError{what: what, who: who, class: transportFailure(request.Context(), err), read: true, sent: true, status: response.StatusCode}
+		return body, &mintTransportError{what: what, who: who, class: TransportFailure(request.Context(), err), read: true, sent: true, status: response.StatusCode}
 	}
 	if int64(len(body)) > limit {
 		return body[:limit], &mintOversizeError{what: what, who: who, limit: limit, status: response.StatusCode}
@@ -291,10 +300,10 @@ func tracesConnections(client *http.Client) bool {
 }
 
 // classify is the one rule for what an attempt's failure was, as broker_mint_attempts_total
-// names it, and whether the call is made again. A 5xx, a rate limit and a call or body read that
-// failed while the caller's context lives are retried; a 4xx that is no rate limit, a call the
-// caller's context ended (cancelled or past its deadline), an answer past its cap and a 2xx or
-// 3xx the call did not want are not.
+// names it, and whether the call is made again. A 5xx, a 408, a rate limit and a call or body read
+// that failed while the caller's context lives are retried; a refusal (mintStatusError.refused), a
+// call the caller's context ended (cancelled or past its deadline), an answer past its cap and a
+// 2xx or 3xx the call did not want are not.
 func classify(ctx context.Context, err error) (outcome string, retry bool) {
 	var status *mintStatusError
 	var transport *mintTransportError
@@ -305,9 +314,10 @@ func classify(ctx context.Context, err error) (outcome string, retry bool) {
 		switch {
 		case status.rateLimited:
 			return attemptRateLimited, true
-		case status.code >= 500:
+		case oauthrefusal.Outage(status.code):
+			// Every 429 is rateLimited (rateLimited), so this is a 5xx or a 408.
 			return attemptUpstream, true
-		case status.code >= 400:
+		case status.refused():
 			return attemptRefused, false
 		}
 		return attemptUpstream, false
@@ -339,13 +349,14 @@ func beforeConnection(err error) bool {
 	return false
 }
 
-// transportFailure names the class of a failed call or body read, never its text: the request was
+// TransportFailure names the class of a failed call or body read, never its text: the request was
 // cancelled or ran out of time, the upstream's name did not resolve, its TLS handshake failed, it
 // answered with a TLS alert or met one this side sent (tlsalert.In, which reads the *net.OpError
 // crypto/tls returns one as over TCP: its Op is no dial's), it could not be reached, or its answer
 // ended early. Any other failure, such as a status line that is not HTTP, "gave no usable HTTP
-// answer".
-func transportFailure(ctx context.Context, err error) string {
+// answer". The minters name their failed calls by it, and so does the group reader
+// (groups.Reader), whose calls carry the reader account's token.
+func TransportFailure(ctx context.Context, err error) string {
 	var dns *net.DNSError
 	var op *net.OpError
 	var certificate *tls.CertificateVerificationError

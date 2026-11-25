@@ -29,6 +29,7 @@ import (
 
 	"authelia.com/provider/oauth2"
 	"authelia.com/provider/oauth2/compose"
+	"authelia.com/provider/oauth2/handler/rfc9449"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
@@ -73,10 +74,11 @@ type Provider struct {
 	strategy *codeStrategy
 	// exchange is Config.Exchange, which the exchange's own step decides by.
 	exchange ExchangeConfig
-	// deviceGrant is whether Config.VerificationURL named a page, so the RFC 8628 factories are
-	// composed: what the broker mounts its device authorization route on, and what its metadata
-	// document says.
-	deviceGrant bool
+	// verificationURL is Config.VerificationURL, and "" when it named no page, so the RFC 8628
+	// factories are not composed: what the broker mounts its device authorization route on, what
+	// its metadata document says, and the page a device authorization on the broker's own address
+	// sends a person to.
+	verificationURL string
 	// grantTypes is every grant type composed below, subjectTokenTypes every token type the
 	// exchange registered as a subject token, and dpopAlgorithms every algorithm a DPoP proof
 	// may be signed with. All three are read where the provider is composed, so the metadata
@@ -87,6 +89,13 @@ type Provider struct {
 	// reservations are the session names the exchange's entries fix, each mapped to the
 	// principal it belongs to, which reserveSessions holds before this provider's first exchange.
 	reservations map[string]string
+	// holderProofs checks a read trade's DPoP-Holder proof (oauthwire.HeaderDPoPHolder) with the
+	// library's own DPoP strategy on the provider's configuration and store: the DPoP skew and
+	// lifespan the token endpoint's own proof check uses, and the same replay table
+	// (oauth_dpop_proofs). holderNonce is whether that configuration asks a proof for the
+	// server's nonce.
+	holderProofs *rfc9449.DefaultStrategy
+	holderNonce  bool
 	// reserved says reserveSessions has held them; reserving serializes the first exchanges
 	// while it does.
 	reserved  atomic.Bool
@@ -96,7 +105,12 @@ type Provider struct {
 // DeviceGrant reports whether this provider serves the device authorization grant (RFC 8628),
 // which it does only when it was built with a verification URL. The broker mounts POST
 // /v1/oauth/device_authorization only when it does.
-func (p *Provider) DeviceGrant() bool { return p.deviceGrant }
+func (p *Provider) DeviceGrant() bool { return p.verificationURL != "" }
+
+// VerificationURL is the page this provider was built to send a person to (Config.VerificationURL),
+// "" for one that serves no device grant: the verification_uri a device authorization on the
+// broker's own address answers (DeviceAuthorize).
+func (p *Provider) VerificationURL() string { return p.verificationURL }
 
 // GrantTypes is every grant type this provider serves, as RFC 8414's grant_types_supported
 // lists them, read off the factories New composed.
@@ -124,6 +138,12 @@ var ErrLoginEnded = errors.New("the machine login has ended")
 // Any other error from it is a 500 server_error.
 var ErrMachineKeyTaken = errors.New("another live machine login holds this key")
 
+// ErrMachineKeyBindsReadToken is the ExchangeConfig.MachineCredentials error (wrapped or not)
+// that refuses a trade invalid_grant because a live read token is bound to the key the request's
+// DPoP proof presented, and a read token's key signs no launcher proof
+// (enroll.ErrKeyBindsReadToken). Its hint names the read token and the cure, a new key.
+var ErrMachineKeyBindsReadToken = errors.New("a live read token is bound to this key")
+
 // ErrSignInRevoked and ErrSignInMachineChanged are the two ExchangeConfig.PersonSignIns errors
 // (wrapped or not) that refuse a person's trade invalid_grant: that person has revoked the
 // sign-in this box key belongs to, and the sign-in this box key belongs to was made on another
@@ -137,20 +157,32 @@ var (
 // TokenHooks are the broker's own steps around a token request the library has validated.
 type TokenHooks struct {
 	// Before runs before either grant issues anything, with the grant type and the login's session
-	// extra; ErrLoginEnded refuses the request invalid_grant, and any other error answers
-	// server_error.
+	// extra; ErrLoginEnded refuses the request invalid_grant, a *Refusal is answered as that
+	// refusal (WriteRefusal), and any other error answers server_error.
 	Before func(ctx context.Context, grant oauth2.GrantType, extra map[string]any) error
 	// After runs once tokens are issued, with the grant type and the session extra; its map is
 	// merged into the token response.
 	After func(ctx context.Context, grant oauth2.GrantType, extra map[string]any) (map[string]any, error)
+	// Trade runs on the RFC 8693 trade of one of the broker's own access tokens, once the library
+	// has validated the request and before the exchange decides anything, with the subject token's
+	// claims as the library read them from the stored token: its sub, its client_id and its
+	// session extra. A *Refusal is answered as that refusal, and any other error answers
+	// server_error. Nil runs nothing: the broker's own address trades every token the exchange
+	// policy takes, and only its edge holds a trade to more (api.RegisterEdge).
+	Trade func(ctx context.Context, subjectToken map[string]any) error
 }
 
-// Refusal is an onRequest error the device authorization endpoint answers as
+// Refusal is an error the broker answers as
 // {"error": "invalid_request", "error_description": "<Code>: <Message>", "code": "<Code>"} with
-// Status, and with Retry-After when RetryAfter (seconds) is set. Any other onRequest error is a
-// 500 server_error.
+// Status, and with Retry-After when RetryAfter (seconds) is set: an onRequest error of the device
+// authorization endpoint, and a TokenHooks.Before or TokenHooks.Trade error of the token
+// endpoint. Any other error of those is a 500 server_error. OAuthError names another of RFC
+// 6749's error codes in place of invalid_request, for a refusal a client's OAuth library must
+// read as that one: the broker's edge answers a grant it does not take unsupported_grant_type,
+// and a refresh of a login it does not serve invalid_grant.
 type Refusal struct {
 	Status     int
+	OAuthError string
 	Code       string
 	Message    string
 	RetryAfter int
@@ -262,13 +294,15 @@ func New(c Config, store *oauthstore.Store) (*Provider, error) {
 	}
 	p := &Provider{
 		oauth: provider, store: store, strategy: strategy, exchange: c.Exchange,
-		deviceGrant: deviceGrant, grantTypes: grantTypes,
+		verificationURL: c.VerificationURL, grantTypes: grantTypes,
 		subjectTokenTypes: subjectTokenTypes(cfg.RFC8693TokenTypes),
 		// Read from the configuration the provider was composed with rather than written down
 		// again here, so the document names what the proof check will take. The library's own
 		// configuration ignores the context this lookup takes.
 		dpopAlgorithms: cfg.GetDPoPAllowedJWSAlgorithms(context.Background()),
 		reservations:   reservations,
+		holderProofs:   rfc9449.NewDefaultStrategy(cfg, store),
+		holderNonce:    cfg.GetDPoPNonceRequired(context.Background()),
 	}
 	// A provider built with no store serves no request at all and is only ever inspected, as the
 	// broker's route wiring test inspects it, so there is nothing there to give the decision or the
@@ -286,8 +320,11 @@ func New(c Config, store *oauthstore.Store) (*Provider, error) {
 // DeviceAuthorize is the device authorization endpoint. It validates the request, mints and stores
 // the device code and user code, and hands onRequest the request's form and user code, all in one
 // transaction (onRequest's ctx carries it: oauthstore.TxFrom), which commits only when onRequest
-// succeeds. The answer omits verification_uri_complete: a person always types the code.
-func (p *Provider) DeviceAuthorize(w http.ResponseWriter, r *http.Request, onRequest func(ctx context.Context, form url.Values, userCode string) error) {
+// succeeds. The answer's verification_uri is verificationURI, the page of the listener the request
+// reached: VerificationURL on the broker's own address, and BROKER_EDGE_MACHINE_LOGIN_URL at its
+// edge, since a person a machine reaches through the edge decides on a page they can reach. It
+// omits verification_uri_complete: a person always types the code.
+func (p *Provider) DeviceAuthorize(w http.ResponseWriter, r *http.Request, verificationURI string, onRequest func(ctx context.Context, form url.Values, userCode string) error) {
 	ctx := r.Context()
 	request, err := p.oauth.NewRFC862DeviceAuthorizeRequest(ctx, r)
 	if err != nil {
@@ -325,6 +362,7 @@ func (p *Provider) DeviceAuthorize(w http.ResponseWriter, r *http.Request, onReq
 	}
 	committed = true
 	body := resp.ToMap()
+	body["verification_uri"] = verificationURI
 	delete(body, "verification_uri_complete")
 	writeOAuthJSON(w, http.StatusOK, body)
 }
@@ -374,9 +412,10 @@ func (p *Provider) ApproveDevice(ctx context.Context, userCode string, approved 
 
 // Token is the token endpoint: the device code grant, the refresh grant and the RFC 8693 token
 // exchange, each with a DPoP proof from the key the grant is bound to. An exchange is answered by
-// exchange, which runs none of the hooks: they are the machine login's own steps, and an
-// exchanged token follows no login. Either login grant runs hooks.Before first (ErrLoginEnded
-// refuses it invalid_grant, any other error is server_error); every issued pair
+// exchange, which runs only hooks.Trade, on the trade of one of the broker's own access tokens:
+// Before and After are the machine login's own steps, and an exchanged token follows no login.
+// Either login grant runs hooks.Before first (ErrLoginEnded refuses it invalid_grant, a *Refusal
+// is answered as that refusal, any other error is server_error); every issued pair
 // runs hooks.After, whose fields the answer carries. The hooks and the issued tokens share one
 // transaction (their ctx carries it: oauthstore.TxFrom), committed only once the answer is built,
 // so a row Before locks stays locked until the new tokens are stored. Validating the request stays
@@ -388,7 +427,7 @@ func (p *Provider) Token(w http.ResponseWriter, r *http.Request, hooks TokenHook
 	// the exchange needs its whole request in one transaction; a body the library cannot parse
 	// is left for it to refuse in its own words.
 	if err := r.ParseForm(); err == nil && r.PostForm.Get("grant_type") == string(oauth2.GrantTypeTokenExchange) {
-		p.exchangeGrant(w, r)
+		p.exchangeGrant(w, r, hooks.Trade)
 		return
 	}
 	request, err := p.oauth.NewAccessRequest(ctx, r, &oauth2.DefaultSession{})
@@ -414,6 +453,11 @@ func (p *Provider) Token(w http.ResponseWriter, r *http.Request, hooks TokenHook
 		}
 	}()
 	if err := hooks.Before(txCtx, grant, extra); err != nil {
+		var refused *Refusal
+		if errors.As(err, &refused) {
+			WriteRefusal(w, refused)
+			return
+		}
 		refusal := oauth2.ErrServerError
 		if errors.Is(err, ErrLoginEnded) {
 			refusal = oauth2.ErrInvalidGrant.WithHint("The machine login has ended.")
@@ -530,8 +574,16 @@ func (p *Provider) ReleasePodSessions(ctx context.Context, registrar string, ses
 	return p.store.ReleasePodSessions(ctx, registrar, sessions)
 }
 
-// writeError answers err as the library's OAuth error JSON, logging a server error's cause.
+// writeError answers err as the library's OAuth error JSON, logging a server error's cause. A
+// request the store refused to keep (oauthstore.ErrUnstorableText, however the library wrapped it)
+// is the caller's, not the broker's: it is answered 400 invalid_request REQUEST_INVALID and logs
+// nothing.
 func (p *Provider) writeError(ctx context.Context, w http.ResponseWriter, request oauth2.AccessRequester, err error) {
+	if errors.Is(err, oauthstore.ErrUnstorableText) {
+		WriteRefusal(w, &Refusal{Status: http.StatusBadRequest, Code: "REQUEST_INVALID",
+			Message: "the request holds a control character in a form parameter or a DPoP proof's jti, which the broker does not store"})
+		return
+	}
 	if oauth2.ErrorToRFC6749Error(err).CodeField >= http.StatusInternalServerError {
 		slog.Error("broker: OAuth request failed", "error", oauth2.ErrorToDebugRFC6749Error(err))
 	}
@@ -550,13 +602,17 @@ func noteClient(ctx context.Context, request oauth2.AccessRequester) {
 }
 
 // WriteRefusal answers refusal as an OAuth error a client's OAuth library parses: invalid_request,
-// its description naming the broker's code, and that code again as the member code every other
-// refusal of the broker carries, which the answer's record reads.
+// or the refusal's own OAuthError, its description naming the broker's code, and that code again
+// as the member code every other refusal of the broker carries, which the answer's record reads.
 func WriteRefusal(w http.ResponseWriter, refusal *Refusal) {
 	if refusal.RetryAfter > 0 {
 		w.Header().Set("Retry-After", strconv.Itoa(refusal.RetryAfter))
 	}
-	writeOAuthJSON(w, refusal.Status, map[string]string{"error": "invalid_request", "error_description": refusal.Error(), "code": refusal.Code})
+	oauthError := refusal.OAuthError
+	if oauthError == "" {
+		oauthError = "invalid_request"
+	}
+	writeOAuthJSON(w, refusal.Status, map[string]string{"error": oauthError, "error_description": refusal.Error(), "code": refusal.Code})
 }
 
 // writeOAuthJSON answers status with body and the no-store headers RFC 6749 and RFC 8628 require.

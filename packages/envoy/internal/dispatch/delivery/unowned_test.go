@@ -36,6 +36,7 @@ type unownedSeed struct {
 }
 
 func TestListUnownedP0(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	p0, p1 := 0, 1
 	route := "role:dora"

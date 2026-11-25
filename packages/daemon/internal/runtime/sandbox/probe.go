@@ -198,8 +198,8 @@ type ImageProbe struct {
 	// fixed reservation (internal/daemon/kubernetes.go, probeReservation), its cpu and memory the
 	// request and the limit alike, so the probe pod is Guaranteed whatever the roles request. It
 	// runs Oh My Pi three times, one at a time (pi.agents, the plugin's load, the session-storage
-	// setting), holds its TLS clients to the compromised chains, and exits, so it is sized for that
-	// and not for a role's work.
+	// setting), checks the image's capability rows and the roles' overlays, and exits, so it is
+	// sized for that and not for a role's work.
 	Resources corev1.ResourceRequirements
 }
 
@@ -243,7 +243,7 @@ func (p ImageProbe) startupBudgetDuration() time.Duration {
 // transient: anything else, a pod the kubelet itself failed included, and a probe container that
 // exited bootprobe.NoVerdictExit, having seen no failure and some check with no verdict (judge),
 // retried under p.Retry; when the retry gives up, its error carries the last attempt's detail,
-// which for that exit names each TLS run and step with no verdict. The report counts the attempts
+// which for that exit names each step with no verdict. The report counts the attempts
 // that waited on capacity and keeps the last one's reason, for the pool-capacity row of the
 // capability report.
 func (r *Runtime) ProbeImage(ctx context.Context, p ImageProbe) (bootprobe.ImageReport, error) {
@@ -1188,11 +1188,10 @@ var undefinedFlag = regexp.MustCompile(`(?:unknown flag|flag provided but not de
 // reasons of its own (kubeletFailure) is transient, whatever of its log could be read, and an
 // unread log is judged by the read's error. A Failed pod past those is one whose probe container
 // exited on its own. One that exited bootprobe.NoVerdictExit is transient: the probe saw no
-// failure and some check with no verdict — a TLS run its own limit stopped short of an answer at a
-// site an earlier run reached, or a check the probe's deadline cut — which the detail names from
-// its no-verdict line (bootprobe.NoVerdict), so the retry runs a new pod. Any other exit is the
-// image's refusal, exit 1 included: a failure, or, from a CLI that predates the no-verdict exit,
-// a run its limit or deadline cut. The OK line must confirm this daemon's contract: an
+// failure and some check with no verdict — a check the probe's deadline cut — which the detail
+// names from its no-verdict line (bootprobe.NoVerdict), so the retry runs a new pod. Any other
+// exit is the image's refusal, exit 1 included: a failure, or, from a CLI that predates the
+// no-verdict exit, a check its deadline cut. The OK line must confirm this daemon's contract: an
 // image whose CLI predates the contract check prints none, having checked no contract, and is
 // refused, not waved through; one that confirmed another contract is refused naming both. And it
 // must say the prompt-named agents' models resolved: any other mark, or none, does not prove the
@@ -1342,25 +1341,26 @@ type probeSpec struct {
 }
 
 // probeManifest is the probe Sandbox: Running from the start (it holds no Secret to write first),
-// deleted by the controller at shutdown, placed exactly as every worker is placed — the Legion
-// pool, gVisor, the configured scheduling — with the workers' pod security and what the operator
-// adds to every pod (its ServiceAccount, volumes, mounts, and variables, and the providers
-// Secret's configured keys), and a single container running the image's Go `legion probe-image`
-// against p's contract as a worker runs: on the pod's baseline (--pod-safety), loading the plugins
-// from the roots a pod loads them from (--plugin-root, --envoy-plugin-root), with the providers
-// Secret's keys exported as the worker's shim exports them (--provider-env-dir) when its pod mounts
-// that Secret (mountsProviders), each providers secret's `<NAME>_FILE` pointing at its file there
-// as a worker's does (so neither exports it), and resolving the daemon's own role prompts'
-// references (--role-references), which ProbeImage requires, and, first, running one role
-// generation's namespaces as an issue pod's launcher runs every role (--role-namespaces), over a
-// disk emptyDir of its own at RoleProbeDir, as an issue pod's role homes volume is, so a runtime
-// that refuses a role's namespaces fails the probe rather than every role's start. Its command and
-// env are escaped against the kubelet's expansion as every worker container's are
-// (kubeletLiteral). It carries Karpenter's `do-not-disrupt` alone, not the Cluster Autoscaler's
-// `safe-to-evict` (podTemplate sets both): GKE Autopilot places a pod carrying that one on a node
-// of its own whenever possible, so each boot's probe would ask for a node, and a probe minutes long
-// and already retried on failure (kubeletFailure, ImageProbe.Retry) gains nothing from a seven-day
-// eviction window.
+// deleted by the controller at shutdown, placed as a gVisor worker is placed — the Legion pool,
+// gVisor, the configured scheduling — whatever runtime.kubernetes.sandbox says, as a repository
+// cache pod is, where an issue pod or the controller's pod may run in a microVM (placement), with
+// the workers' pod security and what the operator adds to every pod (its ServiceAccount, volumes,
+// mounts, and variables, and the providers Secret's configured keys), and a single container
+// running the image's Go `legion probe-image` against p's contract as a worker runs: on the pod's
+// baseline (--pod-safety), loading the plugins from the roots a pod loads them from
+// (--plugin-root, --envoy-plugin-root), with the providers Secret's keys exported as the worker's
+// shim exports them (--provider-env-dir) when its pod mounts that Secret (mountsProviders), each
+// providers secret's `<NAME>_FILE` pointing at its file there as a worker's does (so neither
+// exports it), and resolving the daemon's own role prompts' references (--role-references), which
+// ProbeImage requires, and, first, running one role generation's namespaces as an issue pod's
+// launcher runs every role (--role-namespaces), over a disk emptyDir of its own at RoleProbeDir,
+// as an issue pod's role homes volume is, so a runtime that refuses a role's namespaces fails the
+// probe rather than every role's start. Its command and env are escaped against the kubelet's
+// expansion as every worker container's are (kubeletLiteral). It carries Karpenter's
+// `do-not-disrupt` alone, not the Cluster Autoscaler's `safe-to-evict` (podTemplate sets both):
+// GKE Autopilot places a pod carrying that one on a node of its own whenever possible, so each
+// boot's probe would ask for a node, and a probe minutes long and already retried on failure
+// (kubeletFailure, ImageProbe.Retry) gains nothing from a seven-day eviction window.
 // For each role role_config_files names (Options.RoleConfigFiles), in the order of the runtime's
 // roles (roleConfigRoles: Legion's, each role of the deployment, then the controller), it
 // passes that role's overlays (--role-config-files), and for every workflow role one value per

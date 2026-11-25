@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // keyAToken and keyBToken are the claims of two agents of the implementer on LEGION-208, as
@@ -21,14 +22,12 @@ const (
 	keyBToken claim.Token = "legion-legion-legion-208-reviewer"
 )
 
-// enqueueStarts queues each of starts on LEGION-208, in order, and answers their row ids.
-func enqueueStarts(t *testing.T, st interface {
-	Tx(context.Context, func(pgx.Tx) error) error
-}, starts ...SuperviseRequest) []int64 {
+// enqueueStarts queues each of starts on LEGION-208, in order, in one transaction on pool, and
+// answers their row ids.
+func enqueueStarts(t *testing.T, pool store.TxPool, starts ...SuperviseRequest) []int64 {
 	t.Helper()
-	ctx := context.Background()
 	ids := make([]int64, 0, len(starts))
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, start := range starts {
 			row, err := NewOutboxRow("LEGION-208", start, time.Now())
 			if err != nil {
@@ -75,7 +74,7 @@ func TestARoleRunHoldsTheStartsThatNameItsClaim(t *testing.T) {
 		s.Claim, s.Entry, s.Task = token, entry, "Implement it."
 		return s
 	}
-	ids := enqueueStarts(t, st, named(keyBToken, 3), named(keyAToken, 4), start)
+	ids := enqueueStarts(t, st.Pool(), named(keyBToken, 3), named(keyAToken, 4), start)
 	keyB := RoleRunKey{Token: keyBToken, Issue: "LEGION-208", Role: claim.RoleImplementer, Generation: 1}
 	keyA := RoleRunKey{Token: keyAToken, Issue: "LEGION-208", Role: claim.RoleImplementer, Generation: 1}
 	inTx(t, st, func(tx pgx.Tx) {
@@ -105,7 +104,7 @@ func TestAnOwedStartCarriesTheClaimItNames(t *testing.T) {
 		Task: "Implement it.", NeedsSlot: true}
 	keyed := start
 	keyed.Claim = keyBToken
-	enqueueStarts(t, st, keyed)
+	enqueueStarts(t, st.Pool(), keyed)
 	inTx(t, st, func(tx pgx.Tx) {
 		_, err := tx.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error) values ('supervise', 'LEGION-208',
 			'{"op": "start", "tree": "LEGION-208", "role": "tester", "generation": 1, "phase": "testing", "task": "Test it.", "needsSlot": true}',
@@ -123,7 +122,8 @@ func TestAnOwedStartCarriesTheClaimItNames(t *testing.T) {
 
 // A start a pause holds is listed under the claim it names, the claim it was queued for: key b's
 // start of the implementer's step is key b's, though the implementer's own token is key a's. A start
-// the release before wrote names none and is listed under its role's own token, as before.
+// the release before wrote names none and is listed under the claim of the worker on its role's
+// step (WorkerClaimOf), here the implementer's own token, since no phases row names another.
 func TestAPauseHeldStartIsListedUnderTheClaimItNames(t *testing.T) {
 	row := OutboxRow{Kind: OutboxKindSupervise, Issue: "LEGION-208"}
 	if got := pauseHeldClaim("legion", row, string(claim.RoleImplementer), keyBToken, nil); got != keyBToken {

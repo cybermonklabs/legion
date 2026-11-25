@@ -55,7 +55,7 @@ import (
 // (packages/pi-shared/src/daemon-client.ts) parses each completion with, refuses null, so no
 // plugin sends one. ReturnTo is the step of the issue's running task that a failed
 // step names as the one its task returns to, by its place in the task, 1 for its first: only
-// a tester's completion with the verdict fail names one (returnToRefusal), and it is a pointer for
+// the completion of a tester or of a role of the deployment with the verdict fail names one (returnToRefusal), and it is a pointer for
 // the reason PlanRating is, so a completion naming 0 is refused rather than read as naming none.
 // Which step it may name is the workflow's to judge against the task's steps (RETURN_REFUSED).
 type HandoffCompleteRequest struct {
@@ -277,7 +277,8 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// than from the turn that never announced itself.
 	//
 	// The fallback applies only when that task is the issue's own current work. A task of another
-	// run, of another phase, or of no phase at all — an operator's own, which carries generation 0
+	// run, of another phase, of a step another role of the deployment runs (every such role runs as
+	// step), or of no phase at all — an operator's own, which carries generation 0
 	// — is none of the work a completion could be of, and is refused below, whether the claim
 	// answered for it (supervise's serving reads such a task too, for a claim that has served
 	// nothing) or answered for nothing. Why the held task is not the issue's current task is one
@@ -307,7 +308,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// run is the issue's generation, are untouched.
 	var notCurrent string
 	if c.ServingGeneration == 0 && (c.Pending == nil || (c.Pending.ConfirmedAt.IsZero() && c.Pending.DeliveredAt.IsZero())) {
-		if notCurrent = heldTaskNotCurrent(grant.Issue, issue.Generation, issue.Phase, c.Pending); notCurrent == "" {
+		if notCurrent = heldTaskNotCurrent(*issue, grant.Role, c.Pending); notCurrent == "" {
 			serving, entry = c.Pending.Generation, c.Pending.Entry
 		} else {
 			serving, entry = 0, 0
@@ -315,7 +316,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	}
 	if serving == 0 {
 		if notCurrent == "" {
-			notCurrent = heldTaskNotCurrent(grant.Issue, issue.Generation, issue.Phase, c.Pending)
+			notCurrent = heldTaskNotCurrent(*issue, grant.Role, c.Pending)
 		}
 		s.writeFailure(w, r, http.StatusConflict, "HANDOFF_NO_RUN", noRunCompletion(grant.Issue, issue.Generation, issue.Phase, notCurrent))
 		return
@@ -344,17 +345,20 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// work the step is refused first, HANDOFF_NOT_THE_STEPS_WORKER (intake.StepsWorkerFence), as
 	// the workflow refuses it before its own fence: the fence would refuse it HANDOFF_STALE_ENTRY,
 	// whose words promise the claim the task of the entry the phase is on, and that task goes to the
-	// step's agent alone. A role that does not work the issue's phase meets the fence's
+	// step's agent alone. A completion of an entry its own claim served, on a step of the role the
+	// task has since left for another agent's step, is not refused there: the fence answers it
+	// first, HANDOFF_NOT_CURRENT_PHASE naming that agent (intake.AnotherAgentsStep), as the
+	// workflow does. A role that does not work the issue's phase meets the fence's
 	// HANDOFF_NOT_CURRENT_PHASE here, which promises nothing, and the workflow judges the rest of
 	// its completion, the report of a run the task has left, in its own order (pastCompletion).
 	run := position.run(grant.Role, entry, works)
 	if works {
-		if refusal := intake.StepsWorkerFence(grant.Issue, grant.Role, grant.Claim, run.holder, run.served, run.stepTask); refusal != nil {
+		if refusal := intake.StepsWorkerFence(grant.Issue, grant.Role, grant.Claim, run.served, run.row); refusal != nil {
 			s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
 			return
 		}
 	}
-	if refusal := intake.EntryFence(*issue, grant.Role, run.served, run.holder, entry, run.entry, run.entryMovedBack, run.otherStepsEntry, req.Commit,
+	if refusal := intake.EntryFence(*issue, grant.Role, run.served, entry, run.row, run.otherStepsEntry, req.Commit,
 		position.pullRequest, c.Pending); refusal != nil {
 		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
 		return
@@ -609,13 +613,16 @@ func (s *server) handoffRecord(w http.ResponseWriter, r *http.Request, session s
 	return false
 }
 
-// heldTaskNotCurrent says why the task a claim is holding is not the issue's current task — it is
-// of another run, of another phase, or there is no task at all — and answers "" when it is that
-// task: one of the issue's own generation and its own phase. The one rule has two readers, and
-// this is the one place it is written. The completion route's fallback to the held task's run and
-// entry applies exactly on the empty answer (answerCompletion), and the HANDOFF_NO_RUN
-// refusal is written from the answer itself (noRunCompletion), so a change to which held task may
-// back a completion cannot leave the 409 describing a rule the route no longer applies.
+// heldTaskNotCurrent says why the task a claim of role is holding is not issue's current task — it
+// is of another run, of another phase, of a step the claim's role does not run, or there is no
+// task at all — and answers "" when it is that task: one of the issue's own generation and its own
+// phase, and at step one of the running step's role (record.Issue.StepIsOf, which the engine's
+// judgement of the completion reads too), since every role the deployment defines runs as step.
+// The one rule has two readers, and this is the one place it is written. The completion route's
+// fallback to the held task's run and entry applies exactly on the empty answer
+// (answerCompletion), and the HANDOFF_NO_RUN refusal is written from the answer itself
+// (noRunCompletion), so a change to which held task may back a completion cannot leave the 409
+// describing a rule the route no longer applies.
 //
 // An empty answer also says the claim holds a task at all, which is what lets the route read
 // Pending on the strength of it: the first case asks supervise.HoldsTask, so every case after it
@@ -623,26 +630,30 @@ func (s *server) handoffRecord(w http.ResponseWriter, r *http.Request, session s
 // delivery of a relaunch's record (supervise.Delivery.Relaunch), which carries the sentence of
 // what the relaunch ended and no work; the reason says which, so that delivery is said as what it
 // is rather than read as a task of no run, which is an operator's own.
-func heldTaskNotCurrent(issue string, current uint64, p phase.Phase, pending *supervise.Delivery) string {
+func heldTaskNotCurrent(issue record.Issue, role claim.Role, pending *supervise.Delivery) string {
+	key, current, p := issue.Key, issue.Generation, issue.Phase
 	switch {
 	case !supervise.HoldsTask(pending):
 		if pending == nil {
-			return fmt.Sprintf("this claim holds no task at all, and %s is on generation %d in %s", issue, current, p)
+			return fmt.Sprintf("this claim holds no task at all, and %s is on generation %d in %s", key, current, p)
 		}
 		return fmt.Sprintf("this claim holds no task, only the daemon's own delivery of what its relaunch ended (%s), and %s is on generation %d in %s",
-			pending.ID, issue, current, p)
+			pending.ID, key, current, p)
 	case pending.Generation != current:
 		run := fmt.Sprintf("generation %d's", pending.Generation)
 		if pending.Generation == 0 {
 			run = "no run's (an operator's own task carries no generation)"
 		}
-		return fmt.Sprintf("the task this claim holds (%s) is %s, and %s is on generation %d", pending.ID, run, issue, current)
+		return fmt.Sprintf("the task this claim holds (%s) is %s, and %s is on generation %d", pending.ID, run, key, current)
 	case pending.Phase != p:
 		of := "names no phase"
 		if pending.Phase != "" {
 			of = fmt.Sprintf("is the %s phase's", pending.Phase)
 		}
-		return fmt.Sprintf("the task this claim holds (%s) %s, and %s is in %s", pending.ID, of, issue, p)
+		return fmt.Sprintf("the task this claim holds (%s) %s, and %s is in %s", pending.ID, of, key, p)
+	case !issue.StepIsOf(role):
+		return fmt.Sprintf("the task this claim holds (%s) is the %s phase's, and the running step of %s is the %s's, not this claim's %s",
+			pending.ID, p, key, issue.StepRole, role)
 	}
 	return ""
 }
@@ -672,9 +683,11 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 }
 
 // implementationPullRequest is the implementer's completion's read of GitHub: in implementing, a
-// completion moves its issue to testing only on a pull request recorded open or merged for it
-// (workflow's TriggerImplementationReady), and only the opened webhook, or the daemon's per-issue
-// read standing in for one that webhook lost (readIssuePullRequest), records one open. So before
+// completion moves its issue to its task's next step (testing, in the default steps), or to its
+// retro where the implementer's step is the task's last, only on a
+// pull request recorded open or merged for it (workflow's TriggerImplementationReady), and only
+// the opened webhook, or the daemon's per-issue read standing in for one that webhook lost
+// (readIssuePullRequest), records one open. So before
 // the completion is applied, the open pull request on the issue's branch (claim.IssueBranch) is
 // read as the implement App, minted for the owner of the issue's repository in GitHub's spelling
 // (record.Issue.GitHubRepo, which the webhook's facts name it by), and it says whether the
@@ -683,11 +696,12 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 //   - one open: when the record does not already hold it open, the intake.PullRequestOpened its
 //     webhook would have carried is applied first, a reopen when the record holds the same pull
 //     request closed, under the read's stable id (intake.OpenedRead). The completion then
-//     moves the issue to testing. A failure to apply it is FACT_APPLY_FAILED, with the completion
-//     not applied.
+//     moves the issue to its task's next step, or to its retro. A failure to apply it is
+//     FACT_APPLY_FAILED, with the completion not applied.
 //   - none, with the record holding the pull request merged: the completion is applied and moves
-//     the issue to testing. The work landed, its merge told the architect (pr-merged), and the
-//     workflow runs on.
+//     the issue to its task's next step, or to its retro. The work landed, its merge told the
+//     architect
+//     (pr-merged), and the workflow runs on.
 //   - none otherwise: HANDOFF_NO_PULL_REQUEST, 409, and nothing is applied, so the completion at
 //     the same commit is applied once the pull request is open. When the record holds the pull
 //     request closed without merging, the refusal names it: the close told the architect, which

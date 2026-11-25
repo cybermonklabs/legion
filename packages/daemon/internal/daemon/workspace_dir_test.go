@@ -17,6 +17,7 @@ import (
 // and TestTheWorkspaceDirIsThePanesStartDirectory hold each runtime's own process to that
 // directory). An issue whose recorded repository does not parse names the branch alone.
 func TestEachTaskNamesTheDirectoryItsRuntimeStartsTheAgentIn(t *testing.T) {
+	t.Parallel()
 	issue := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion"}
 	repo := ghrepo.MustParse("sjawhar/legion")
 	stateDir := t.TempDir()

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -23,6 +24,7 @@ import (
 // The test holds the serializer for a little longer than bootTimeout, the bound the boot's replay
 // gives each fact and the bound a live terminal fact had at 52f51bd6, then frees it.
 func TestALiveTerminalFactQueuedPastTheBootBudgetDoesNotStopTheWorkflow(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	handler := &outboxFactHandler{}
 	w := &workflowRuntime{pool: pool, handlers: []intake.Handler{handler}, log: quietLogger(), failed: make(chan error, 1), limits: replayLimits}
@@ -33,7 +35,7 @@ func TestALiveTerminalFactQueuedPastTheBootBudgetDoesNotStopTheWorkflow(t *testi
 	failed := supervise.Claim{Token: token, Project: "legion", Tree: "LEGION-1001", Issue: "LEGION-1001", Role: claim.RoleTester, Generation: 1,
 		State: supervise.StateFailed, Failure: "pane exited", FailureCause: supervise.CauseNeverRegistered, Budgets: supervise.Budgets{LaunchFailures: 3}}
 
-	live, err := pool.Begin(context.Background())
+	live, err := pool.BeginTx(context.Background(), pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

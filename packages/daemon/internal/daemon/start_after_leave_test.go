@@ -21,6 +21,7 @@ import (
 // which has run nothing: the runtime is asked no spawn, and the tree's cleanup does not wait for
 // it.
 func TestAStartBetweenItsReadAndItsCreateWhenTheLeaveCommitsRetiresItsClaim(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

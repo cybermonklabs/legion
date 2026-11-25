@@ -26,8 +26,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/volumestat"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -66,16 +68,50 @@ type Options struct {
 // Health is what GET /healthz answers: whether the cache has a clone to serve, its repository, the
 // default branch's head, when its last fetch in this process succeeded (zero before one has), how
 // many bytes /tar streams, and how many /tar requests it is sending or holding in its queue at the
-// answer (Streams), which the daemon waits to reach zero before it replaces a live cache pod. A
-// cache of an earlier release answers no streams, so Streams is nil there.
+// answer (Streams), which the daemon waits to reach zero before it replaces a live cache pod.
+//
+// It carries the cache's room on its volume too, which the daemon's capability report reads: the
+// volume's size (VolumeBytes) and the bytes available to the cache (AvailableBytes), from a statfs
+// of Options.Root read at the answer, or the error of that statfs where it failed (VolumeError),
+// with neither figure; and, for the fetch and for the repack, the time of that step's last failure
+// for lack of space since its last success (FetchOutOfSpaceAt, RepackOutOfSpaceAt; outOfSpace says
+// what counts as one), zero while there is none. The Health a fetch or a repack stores holds none
+// of these: the handler joins them at each answer (fillRoom), in the 503 answer too, since a volume
+// exists before the first clone does.
+//
+// A cache of an earlier release answers no streams and none of the room fields, so Streams and the
+// two figures are nil there and the rest empty, which counts for nothing.
 type Health struct {
-	Ready       bool      `json:"ready"`
-	Repo        string    `json:"repo"`
-	Head        string    `json:"head,omitempty"`
-	LastFetchAt time.Time `json:"lastFetchAt,omitzero"`
-	Bytes       int64     `json:"bytes"`
-	Streams     *int      `json:"streams,omitempty"`
+	Ready              bool      `json:"ready"`
+	Repo               string    `json:"repo"`
+	Head               string    `json:"head,omitempty"`
+	LastFetchAt        time.Time `json:"lastFetchAt,omitzero"`
+	Bytes              int64     `json:"bytes"`
+	Streams            *int      `json:"streams,omitempty"`
+	VolumeBytes        *uint64   `json:"volumeBytes,omitempty"`
+	AvailableBytes     *uint64   `json:"availableBytes,omitempty"`
+	VolumeError        string    `json:"volumeError,omitempty"`
+	FetchOutOfSpaceAt  time.Time `json:"fetchOutOfSpaceAt,omitzero"`
+	RepackOutOfSpaceAt time.Time `json:"repackOutOfSpaceAt,omitzero"`
 }
+
+// readVolume is the cache's one reading of its volume: one statfs of a path, volumestat.Read, the
+// module's one reader, which the launcher's trimmer reads an issue pod's volume with too. It is a
+// package variable so that a test sets the figures a failed step and a /healthz answer read.
+var readVolume = volumestat.Read
+
+// lowRoom is the room under which a failed fetch or repack counts as one for lack of space whatever
+// git said: 1 GiB available, read when the step failed. git reports a ref it could not write for
+// lack of space with neither of outOfSpacePhrases: on 2026-11-19 one deployment's full cache logged
+// its fetch's `error: cannot lock ref '<ref>': unable to create directory for <path>`.
+const lowRoom = 1 << 30
+
+// outOfSpacePhrases are git's words for a write that found no room, matched case-sensitively in a
+// failed step's error, which carries git's stderr (the workspace runner's command failure): the
+// system's `No space left on device` after git's `write error`, and git's own `Out of diskspace`
+// after its `sha1 file '<path>' write error.`. git 2.47.3 writes both, and on 2026-11-19 one
+// deployment's cache logged the second for its repack and then the first for every fetch.
+var outOfSpacePhrases = []string{"No space left on device", "Out of diskspace"}
 
 // repackEvery is how long after the clone, or its last repack, a fetch repacks it.
 var repackEvery = 24 * time.Hour
@@ -107,9 +143,14 @@ var maxStreams = 32
 //
 //	GET /readyz   the kubelet's readiness probe, which carries no token: 200 once the clone is
 //	              there to serve, 503 before, and nothing else.
-//	GET /healthz  200 {"ready":true,"repo":"acme/widgets","head":"<default branch sha>","lastFetchAt":"…","bytes":N,"streams":S}
+//	GET /healthz  200 {"ready":true,"repo":"acme/widgets","head":"<default branch sha>","lastFetchAt":"…","bytes":N,"streams":S,
+//	              "volumeBytes":V,"availableBytes":A,"fetchOutOfSpaceAt":"…","repackOutOfSpaceAt":"…"}
 //	              once the clone is there to serve; 503 {"ready":false,…} before. streams is the
-//	              /tar requests being sent or waiting at the answer.
+//	              /tar requests being sent or waiting at the answer; volumeBytes and availableBytes
+//	              are a statfs of the volume read at the answer, in the 503 answer too, with
+//	              volumeError in their place when it fails; each …OutOfSpaceAt is that step's last
+//	              failure for lack of space since its last success, absent while there is none
+//	              (Health).
 //	GET /tar      a tar stream of the bare clone's refs and packs (workspace.FeedEntry), taken under
 //	              the read lock, so no fetch moves refs or packs while it streams, at most
 //	              maxStreams at once, a request past them waiting its turn; 503 before the clone
@@ -130,9 +171,11 @@ var maxStreams = 32
 // it runs (snapshot), and only the next fetch waits for it. /readyz and /healthz take no lock, so
 // neither the readiness probe nor a health read ever waits on a fetch or a repack. A fetch that
 // fails is logged and tried at the next tick; the cache stays ready on its last good state, a
-// restart's clone on the volume included. A first clone that fails ends Serve with its failure:
-// there is nothing to serve, and the kubelet restarts the container. As its container's PID 1,
-// Serve reaps every orphan git leaves it after each refresh (reapOrphans).
+// restart's clone on the volume included. A fetch or a repack that fails for lack of space is
+// reported at /healthz until that step next succeeds, the repack's across a restart too
+// (repackOutOfSpaceFile, read before the listener serves). A first clone that fails ends Serve
+// with its failure: there is nothing to serve, and the kubelet restarts the container. As its
+// container's PID 1, Serve reaps every orphan git leaves it after each refresh (reapOrphans).
 func Serve(ctx context.Context, opts Options) error {
 	if err := opts.check(); err != nil {
 		return err
@@ -150,6 +193,7 @@ func Serve(ctx context.Context, opts Options) error {
 	}
 	c := newCache(opts, dir)
 	c.health.Store(&Health{Repo: opts.Repo.String()})
+	c.loadRepackFailure()
 	server := &http.Server{Handler: c.handler(), ReadHeaderTimeout: 10 * time.Second}
 	served := make(chan error, 1)
 	go func() { served <- server.Serve(listener) }()
@@ -222,22 +266,80 @@ func (opts Options) check() error {
 // cache is Serve's state: lock is the clone's refs and packs as a tar reads them, written by every
 // fetch and read by every tar; maint keeps a fetch and a repack from running at once, and is held
 // by refresh alone; health is what /healthz answers, swapped whole after each fetch and repack;
-// streams holds one token per /tar stream being sent, maxStreams at most; inFlight counts the /tar
-// requests being sent or waiting for a token, which /healthz reports as Health.Streams.
+// room is each step's last failure for lack of space, which /healthz joins to health at each
+// answer; streams holds one token per /tar stream being sent, maxStreams at most; inFlight counts
+// the /tar requests being sent or waiting for a token, which /healthz reports as Health.Streams.
 type cache struct {
 	opts       Options
 	dir        string
 	lock       sync.RWMutex
 	maint      sync.Mutex
 	health     atomic.Pointer[Health]
+	room       room
 	lastRepack time.Time
 	streams    chan struct{}
 	inFlight   atomic.Int64
 }
 
+// room is the time of the fetch's and of the repack's last failure for lack of space since that
+// step's last success, zero for a step with none. It is kept apart from health because
+// publishLocked stores a new Health whole at every publish, which would drop a failure kept there,
+// and it has a mutex of its own because the handler reads it while refresh writes it.
+type room struct {
+	mu     sync.Mutex
+	fetch  time.Time
+	repack time.Time
+}
+
+// failures is the two steps' failure times as they stand.
+func (r *room) failures() (fetch, repack time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.fetch, r.repack
+}
+
+// setFetch records at as the fetch's last failure for lack of space; the zero time clears it.
+func (r *room) setFetch(at time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.fetch = at
+}
+
+// setRepack records at as the repack's last failure for lack of space; the zero time clears it.
+func (r *room) setRepack(at time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.repack = at
+}
+
 // newCache is the state Serve keeps for opts' clone at dir.
 func newCache(opts Options, dir string) *cache {
 	return &cache{opts: opts, dir: dir, streams: make(chan struct{}, maxStreams)}
+}
+
+// outOfSpace is whether err, the failure of the fetch or of the repack, is one for lack of space:
+// its text holds one of outOfSpacePhrases, or the volume has less than lowRoom available now. Its
+// callers ask before removePartialPacks runs, since that removal frees what the failed step wrote.
+// A statfs that fails here counts for nothing, so the failure is then one for lack of space by
+// git's words alone; /healthz names that statfs's error at every answer.
+func (c *cache) outOfSpace(err error) bool {
+	text := err.Error()
+	if slices.ContainsFunc(outOfSpacePhrases, func(phrase string) bool { return strings.Contains(text, phrase) }) {
+		return true
+	}
+	reading, err := readVolume(c.opts.Root)
+	return err == nil && reading.AvailableBytes < lowRoom
+}
+
+// fillRoom sets health's room fields: the volume's figures from a statfs of Options.Root read now,
+// or that statfs's error and no figures, and each step's failure time as room holds it.
+func (c *cache) fillRoom(health *Health) {
+	if reading, err := readVolume(c.opts.Root); err != nil {
+		health.VolumeError = err.Error()
+	} else {
+		health.VolumeBytes, health.AvailableBytes = &reading.SizeBytes, &reading.AvailableBytes
+	}
+	health.FetchOutOfSpaceAt, health.RepackOutOfSpaceAt = c.room.failures()
 }
 
 // refresh fetches the clone from GitHub under the write lock (cloning it the first time) and
@@ -249,15 +351,26 @@ func newCache(opts Options, dir string) *cache {
 // repack ends. A fetch that fails has the partial packs its `git index-pack` left removed, as a
 // failed repack does. Once both have ended, and no git of this process runs, the orphans git left
 // are reaped (reapOrphans).
+//
+// A fetch that fails for lack of space (outOfSpace, asked before the removal frees what it left)
+// is recorded in room, and the next fetch that succeeds clears it; the first clone, onto a volume
+// that held none, is not recorded, since a cache whose first clone fails never turns ready. The
+// publish after a repack is neither step's, so its failure is not recorded either. A recorded
+// failure changes nothing of the schedule: a failed fetch ends its refresh as any failure does,
+// and the next refresh whose fetch succeeds runs the repack that is due.
 func (c *cache) refresh(ctx context.Context) error {
 	c.maint.Lock()
 	defer c.maint.Unlock()
 	defer reapOrphans(c.opts.Log)
-	fetched, err := c.fetch(ctx)
+	fetched, first, err := c.fetch(ctx)
 	if err != nil {
+		if failed := time.Now(); !first && c.outOfSpace(err) {
+			c.room.setFetch(failed)
+		}
 		c.removePartialPacks()
 		return err
 	}
+	c.room.setFetch(time.Time{})
 	if c.lastRepack.IsZero() {
 		at, ok := c.recordedRepack()
 		if !ok {
@@ -287,33 +400,87 @@ const lastRepackFile = ".legion-last-repack"
 // records it, and whether it records one that reads as an RFC 3339 time. With none, the process's
 // first fetch starts the record and repacks nothing: a clone just cloned needs no repack.
 func (c *cache) recordedRepack() (time.Time, bool) {
-	body, err := os.ReadFile(filepath.Join(c.opts.Root, lastRepackFile))
-	if err != nil {
-		return time.Time{}, false
-	}
-	at, err := time.Parse(time.RFC3339, strings.TrimSpace(string(body)))
+	at, err := c.readTime(lastRepackFile)
 	return at, err == nil
 }
 
 // recordRepack writes at to lastRepackFile, logging a failure: a lost record costs one repack too
 // early, nothing more.
 func (c *cache) recordRepack(at time.Time) {
-	if err := os.WriteFile(filepath.Join(c.opts.Root, lastRepackFile), []byte(at.UTC().Format(time.RFC3339)+"\n"), 0o644); err != nil {
+	if err := c.writeTime(lastRepackFile, at); err != nil {
 		c.opts.Log("record the last repack: " + oneLine(err))
 	}
 }
 
-// fetch fetches the clone under the write lock and publishes what it holds, answering when. The
-// cache fills its own clone from GitHub, so every stage of this fetch is clocked, with no stream
-// from a cache among them: the first clone gets workspace.CacheFetchTimeout rather than an issue
-// pod's FetchTimeout, since it is the repository's one full download; a fetch into the clone keeps
-// FetchTimeout, since it holds the lock every tar waits on and brings only what GitHub gained.
-func (c *cache) fetch(ctx context.Context) (time.Time, error) {
+// repackOutOfSpaceFile is where the cache keeps, on its own volume beside lastRepackFile and
+// outside the clone, so /tar never streams it, the time of the repack's last failure for lack of
+// space, as one RFC 3339 UTC time and a line feed: a repack runs once a repackEvery, and a cache
+// pod is replaced more often than that, so a failure kept in memory alone would be gone from the
+// pod that replaced it until a repack failed again, a day later. The next repack that succeeds
+// removes it, so a failure stays reported for up to a repackEvery after its claim is grown. A
+// fetch's failure is kept in memory alone: the next fetch, a Refresh later, reports it again.
+const repackOutOfSpaceFile = ".legion-repack-out-of-space"
+
+// keepRepackFailure writes at to repackOutOfSpaceFile, logging a failure: room keeps it in memory
+// all the same, so only a process that replaces this one misses it.
+func (c *cache) keepRepackFailure(at time.Time) {
+	if err := c.writeTime(repackOutOfSpaceFile, at); err != nil {
+		c.opts.Log("keep the repack's failure for lack of space: " + oneLine(err))
+	}
+}
+
+// dropRepackFailure removes repackOutOfSpaceFile once a repack has succeeded, logging a failure
+// other than its absence.
+func (c *cache) dropRepackFailure() {
+	if err := os.Remove(filepath.Join(c.opts.Root, repackOutOfSpaceFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		c.opts.Log("remove the kept repack failure for lack of space: " + oneLine(err))
+	}
+}
+
+// loadRepackFailure reads repackOutOfSpaceFile into room, which Serve does before its listener
+// serves, so the process's first /healthz answer, the 503 one included, carries a failure the
+// process before it kept. A file it cannot read, or whose text is no RFC 3339 time, is logged and
+// ignored; no file is no failure.
+func (c *cache) loadRepackFailure() {
+	at, err := c.readTime(repackOutOfSpaceFile)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+	case err != nil:
+		c.opts.Log("read the kept repack failure for lack of space, ignoring it: " + oneLine(err))
+	default:
+		c.room.setRepack(at)
+	}
+}
+
+// writeTime writes at to the file name under Options.Root, beside the clone, as one RFC 3339 UTC
+// time and a line feed: the shape of lastRepackFile and repackOutOfSpaceFile alike.
+func (c *cache) writeTime(name string, at time.Time) error {
+	return os.WriteFile(filepath.Join(c.opts.Root, name), []byte(at.UTC().Format(time.RFC3339)+"\n"), 0o644)
+}
+
+// readTime is the time the file name under Options.Root holds, as writeTime writes it. Its error is
+// os.ReadFile's as it returns it, so a caller tells a file that is not there (fs.ErrNotExist), or
+// time.Parse's for a text that is no RFC 3339 time.
+func (c *cache) readTime(name string) (time.Time, error) {
+	body, err := os.ReadFile(filepath.Join(c.opts.Root, name))
+	if err != nil {
+		return time.Time{}, err
+	}
+	return time.Parse(time.RFC3339, strings.TrimSpace(string(body)))
+}
+
+// fetch fetches the clone under the write lock and publishes what it holds, answering when, and
+// whether it was the first clone, onto a volume that held none. The cache fills its own clone from
+// GitHub, so every stage of this fetch is clocked, with no stream from a cache among them: the
+// first clone gets workspace.CacheFetchTimeout rather than an issue pod's FetchTimeout, since it is
+// the repository's one full download; a fetch into the clone keeps FetchTimeout, since it holds
+// the lock every tar waits on and brings only what GitHub gained.
+func (c *cache) fetch(ctx context.Context) (time.Time, bool, error) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	cloned, err := pathExists(c.dir)
 	if err != nil {
-		return time.Time{}, err
+		return time.Time{}, false, err
 	}
 	bound := workspace.CacheFetchTimeout
 	if cloned {
@@ -322,12 +489,12 @@ func (c *cache) fetch(ctx context.Context) (time.Time, error) {
 	if _, err := workspace.Fetch(ctx, c.opts.Run, workspace.FetchRequest{
 		Repo: c.opts.Repo, CredentialDir: c.opts.CredentialDir, Feed: c.opts.Root,
 		Token: func() (string, error) { return config.ReadSecretPointer(tokenFileEnv, c.opts.TokenFile) },
-		Log:   c.opts.Log, Clock: workspace.WallClock{}, Bound: bound,
+		Log:   c.opts.Log, Clock: clock.Real(), Bound: bound,
 	}); err != nil {
-		return time.Time{}, err
+		return time.Time{}, !cloned, err
 	}
 	fetched := time.Now()
-	return fetched, c.publishLocked(ctx, fetched)
+	return fetched, !cloned, c.publishLocked(ctx, fetched)
 }
 
 // repackMemory bounds the repack's memory, which git leaves unbounded by default: one thread, a
@@ -336,7 +503,8 @@ func (c *cache) fetch(ctx context.Context) (time.Time, error) {
 // resident without it, past the cache container's 4Gi default memory limit, and at 1.78 GiB with
 // it, taking 7m04s rather than 6m07s at one core (sjawhar/legion#2240). It writes no bitmap
 // either: the cache serves no git protocol and streams no `.bitmap`, so one costs time and memory
-// for nothing.
+// for nothing. FeedGitWithin puts these after the smaller pack settings every other git of the
+// cache gets (workspace's feedGit), so these win for the repack.
 var repackMemory = []string{
 	"-c", "pack.threads=1", "-c", "pack.windowMemory=256m", "-c", "pack.deltaCacheSize=64m",
 	"-c", "core.deltaBaseCacheLimit=64m", "-c", "core.packedGitLimit=512m", "-c", "core.packedGitWindowSize=64m",
@@ -351,14 +519,28 @@ var repackMemory = []string{
 // cache's volume: on 2026-10-26 one deployment's cache's 20Gi volume filled with two killed
 // repacks' 13 GB of `tmp_pack_*` files, after which every fetch failed `No space left on device`
 // (sjawhar/legion#2240).
+//
+// One that fails for lack of space (outOfSpace, asked before the removal frees what it left) is
+// recorded in room and kept in repackOutOfSpaceFile, written once the removal has freed that room,
+// so the write has some; one that succeeds clears both. Neither changes when the next repack runs.
 func (c *cache) repack(ctx context.Context, fetched time.Time) {
 	c.lastRepack = fetched
 	c.recordRepack(fetched)
 	if _, err := workspace.FeedGitWithin(ctx, c.opts.Run, c.dir, repackTimeout, append(slices.Clone(repackMemory), "repack", "-a", "-d", "--quiet")...); err != nil {
 		c.opts.Log(fmt.Sprintf("repack failed; tried again in %s: %s", repackEvery, oneLine(err)))
+		failed := time.Now()
+		outOfSpace := c.outOfSpace(err)
+		if outOfSpace {
+			c.room.setRepack(failed)
+		}
 		c.removePartialPacks()
+		if outOfSpace {
+			c.keepRepackFailure(failed)
+		}
 		return
 	}
+	c.room.setRepack(time.Time{})
+	c.dropRepackFailure()
 	c.opts.Log("repacked " + c.dir)
 }
 
@@ -502,6 +684,7 @@ func (c *cache) handler() http.Handler {
 		answer := *c.health.Load()
 		streams := int(c.inFlight.Load())
 		answer.Streams = &streams
+		c.fillRoom(&answer)
 		health := &answer
 		w.Header().Set(workspace.CacheRepositoryHeader, c.opts.Repo.String())
 		w.Header().Set("Content-Type", "application/json")

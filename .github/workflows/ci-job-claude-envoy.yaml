@@ -31,6 +31,8 @@ jobs:
   claude-envoy:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
+    env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -41,8 +43,9 @@ jobs:
       # .claude-code-pin, the repository's one copy of it (.github/actions/install-claude-code).
       - uses: ./.github/actions/install-claude-code
       - run: bun install --frozen-lockfile
+      # why: .github/ci-notes/ci.md#why-every-biome-step-prints-every-warning-and-error
       - name: Lint Claude Envoy plugin
-        run: bun run lint
+        run: bun run lint --diagnostic-level=warn --max-diagnostics=none
         working-directory: packages/claude-envoy
       - name: Typecheck Claude Envoy plugin
         run: bun run typecheck
@@ -56,6 +59,13 @@ jobs:
       # The pack step packs the package's own dist/ and legion/ (release-push.sh extract-built).
       - name: Put the checked build into CI's checkout for the pack
         run: .github/scripts/release-push.sh extract-built "$RUNNER_TEMP/claude-envoy-built.tar"
+      - name: Pre-pull the NATS image the reply-grant row runs
+        # ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml), as the
+        # envoy-client job pulls it: tests/agent-stream-reply-grant.test.ts starts it with an
+        # authorization of its own (packages/envoy-client/test/nats-server.ts, NATS_IMAGE). The
+        # registry is this repository's own, so a failed pull is a fault of this repository. Show
+        # it, do not retry it.
+        run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f
       # tests/send-arguments.test.ts runs envoy-send's printed resend command under bash and under
       # zsh, whose EQUALS option reads a bare `=word` as a path, and fails the zsh row on CI where
       # zsh is missing; the runner image has no zsh.
@@ -64,6 +74,8 @@ jobs:
       - name: Test Claude Envoy plugin
         run: bun run test
         working-directory: packages/claude-envoy
+        env:
+          LEGION_E2E: "1"
       - name: Pack Claude Envoy plugin
         run: bun pm pack --destination ../../out/pr-artifacts
         working-directory: packages/claude-envoy
@@ -104,6 +116,8 @@ jobs:
     needs: claude-envoy
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

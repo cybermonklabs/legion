@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
@@ -73,7 +74,7 @@ func TestAStartOfAnAgentWhosePodLacksItsSlotWaits(t *testing.T) {
 func seedSlotWaitPlan(t *testing.T, runner *outbox, issue record.Issue, second bool) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, runner.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, runner.pool, func(ctx context.Context, tx pgx.Tx) error {
 		v := record.PlanVersion{Issue: issue.Key, Generation: issue.Generation, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
 			GivenBy: mustClaimToken(t, issue.Key, claim.RoleArchitect), GivenAt: time.Now().UTC()}
 		task := record.PlanTask{Issue: issue.Key, Generation: issue.Generation, Task: "a", PlanVersion: 1, BlockText: "Build it.", State: record.TaskWaiting}

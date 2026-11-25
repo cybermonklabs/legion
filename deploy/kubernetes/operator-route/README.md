@@ -1,6 +1,6 @@
 # The operator's model route
 
-Legion carries no model, provider or route knowledge. Everything a Legion pod needs to reach a model
+Legion carries no provider or route knowledge, and no model but the `model` a role of `roles` names. Everything a Legion pod needs to reach a model
 is the operator's, delivered through `runtime.kubernetes.pod` and `provider_keys`
 (`docs/kubernetes.md`, "Operator configuration"). This directory is an example of it:
 [`pod.yml`](pod.yml) is the pieces an operator supplies, in the shape the daemon loads, and
@@ -60,14 +60,18 @@ pods mount `legion-operator-route` in that namespace reads the same copy.
 ## Changing a role's model
 
 The two files in that directory are the operator's, and `apply.sh` writes the ConfigMap from them.
-To change the model a role uses, edit that role's line under `modelRoles` in `overlay.yml` and run
-the same `apply.sh` command; nothing in this repository changes. Pods started after that read the
-new file. A running pod keeps the files it started with until it restarts, because `pod.yml` mounts
-both by `subPath`, which the kubelet never refreshes.
+To change the model of one of Oh My Pi's model roles (`default`, `review`, `smol` and the rest), edit
+its line under `modelRoles` in `overlay.yml` and run the same `apply.sh` command. Nothing in this
+repository changes. Pods started after that read the new file.
+A running pod keeps the files it started with until it restarts, because `pod.yml` mounts both by
+`subPath`, which the kubelet never refreshes.
+A role of `roles` that names a `model` runs on that `model` in `legion.yaml`, in place of the
+`default` line.
 
-`modelRoles.default` is the model every role's session runs on, a resumed session included: each
-launch names `--model @default`, Oh My Pi's own name for that role, so a role takes the model this
-file gives it now rather than the one its session saved when it started.
+`modelRoles.default` is the model of each role whose settings name no model, a resumed session
+included: each such launch names `--model @default`, Oh My Pi's own name for that role, so a role
+takes the model this file gives it now rather than the one its session saved when it started.
+A role of `roles` that names a `model` is launched with `--model` and that model instead.
 A settings set without that key is not refused anywhere: Oh My Pi reads `@default` as its own
 built-in chat role and the session starts, silently, on a model that is no model of this
 directory's and reachable from no pod.
@@ -77,9 +81,11 @@ family the new pin catalogues (`omp models anthropic` on the new build) and the 
 serves, never to another family, and adds that model to `enabledModels` and to `models.yml` and
 `models-key-file.yml`. A gateway serves only the ids it was set up for and answers any other with
 404, so on the gateway route run one `omp -p --model @<role> "Reply ok."` turn through the new
-`models.yml` for each new model id before applying. The older models stay in all three, because a
-resumed session restores its own model and the pinned Oh My Pi refuses to resume one the profile
-no longer has (`docs/kubernetes.md`).
+`models.yml` for each new model id before applying.
+An older model can leave all three once no role and no fallback chain names it.
+A resumed session does not need it, since each launch names its model with `--model`.
+The pinned Oh My Pi restores a session's saved model only for a launch that names none
+(`docs/kubernetes.md`).
 
 `apply.sh` writes with a server-side apply under its own field manager,
 `legion-operator-route-apply`, and forces conflicts. When another tool wrote the ConfigMap before

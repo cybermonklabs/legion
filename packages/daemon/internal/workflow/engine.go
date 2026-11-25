@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -41,7 +42,7 @@ type Hook struct {
 }
 
 // HookEventWorkBack is the one event a hook of this engine stands on: an issue's work went back
-// a phase, which the daemon counts by the move's own `<from>-<to>` pair (phase.BackwardPairs).
+// a phase, which the daemon counts by the move's own `<from>-<to>` pair (phase.MovePairs).
 // It is the word the configuration spells as well (config.HookEventWorkBack), written out again
 // here because this package imports no configuration: a hook reaches the engine with its event
 // as the operator wrote it, and the move back fires the hooks that name this one
@@ -76,8 +77,9 @@ type Config struct {
 	// already open, whose role its own row holds.
 	ProductionCheckRole claim.Role
 	// DefaultSteps are the project's default steps (config.Project.RunsByDefault): the steps of
-	// the one task default of an issue whose owner gives no plan, and of a task whose block names
-	// neither steps nor a sub-owner. Nil takes the steps of a project that names none.
+	// the one task default of an issue whose owner gives no plan or whose experiment's group takes
+	// none, and of a task whose block names neither steps nor a sub-owner. Nil takes the steps of
+	// a project that names none.
 	DefaultSteps []plan.Step
 	// Deployment is the roles a step of this deployment names, each with its type
 	// (config.Config.Deployment): Legion's own and each role of `roles`. A stored step takes the
@@ -117,15 +119,27 @@ type Config struct {
 	// one (daemon's hearRecorded). It is told every recording, including one on a
 	// repository already heard, which costs the daemon one comparison. Nil tells none.
 	HearRepository func(ctx context.Context, repo string)
-	// ReadMergeState is asked, on the commit of a fact that owes a read of GitHub's merge state
-	// (askMergeState, basePush, through askMergeStateFor), to read it for the pull request's head:
-	// a fact that leaves a review round waiting on GitHub's answer, which is what moves an approved
-	// issue to accepting; and, by the gate classify.MergeStateReadOwed, a head move of an issue in
-	// implementing through merging and a base push of an issue in testing through merging, each of
-	// which can turn the head conflicting with its base (dispatch://INFRA-4374 R0). The daemon
-	// answers it with a ladder of reads (workflowRuntime.queueMergeState); nil asks for none, which
-	// is the API-only daemon and a test that drives the reads itself.
+	// ReadMergeState is asked, on the commit of a fact of one pull request that owes a read of
+	// GitHub's merge state (askMergeState, by mergeStateOwed), to read it for the pull
+	// request's head: a fact that leaves a review round waiting on GitHub's answer, which is what
+	// moves an approved issue on to its task's next step (accepting, in the default steps), or to
+	// its retro where the review is the task's last step; and, by the gate
+	// classify.MergeStateReadOwed, a head move of an issue where a merge forward stands
+	// (classify.MergeForwardStands: its task at the implementer's place, or a place after it on the
+	// task's line), which can turn the head conflicting with its base (dispatch://INFRA-4374 R0).
+	// The daemon answers it with a ladder of reads (workflowRuntime.queueMergeState); nil asks for
+	// none, which is the API-only daemon and a test that drives the reads itself.
 	ReadMergeState func(issue string)
+	// ReadBaseMergeStates is asked, on the commit of a push to base of repo (basePush), to read
+	// GitHub's merge state for each pull request on that base the push owes a read, by issue: the
+	// same reasons askMergeState reads a fact of one pull request by (mergeStateOwed:
+	// classify.MergeStateReadOwed's base-push reason, a task at a place after the implementer's on
+	// its line, or a review round waiting on GitHub), named
+	// all at once, so that one push makes one batch of reads of its base rather than one read of
+	// each pull request (workflowRuntime.queueBaseMergeStates, GraphQL queries of a few pull
+	// requests each, asked for by number). issues is
+	// never empty. Nil asks for none, as ReadMergeState's nil does.
+	ReadBaseMergeStates func(repo, base string, issues []string)
 	// Reserve is the moment a wake the engine causes may run, given the caller's own now and
 	// never a moment before it: the daemon's one wake limiter (internal/wakepace, openSupervision
 	// in internal/daemon), which paces every wake the daemon causes together — the role processes
@@ -150,7 +164,9 @@ type Config struct {
 	// the memory experiment, whose unit is the tree and which is therefore drawn where a tree is
 	// opened and never here, so a project that declares no experiment of its own has this engine
 	// draw nothing. ExperimentSource is the random source a `random` mode is drawn with: nil is
-	// experiment.CryptoSource, the daemon's own, and a test hands in one of its own.
+	// experiment.CryptoSource, the daemon's own, and a test hands in one of its own. It is the one
+	// source of the daemon's draws: admission draws the trees and issues it records with it too
+	// (Engine.ExperimentSource).
 	Experiments      []config.Experiment
 	ExperimentSource func(uint64) (uint64, error)
 	// StepAgent is the daemon's read of the agent of a step at the moment the engine writes the
@@ -214,6 +230,11 @@ func New(store record.Store, cfg Config, log *slog.Logger) *Engine {
 }
 
 func (e *Engine) now() time.Time { return e.cfg.Clock().UTC() }
+
+// ExperimentSource is the random source every `random` experiment is drawn with
+// (Config.ExperimentSource): this engine's draw of each child it records, and admission's of each
+// tree and issue it records, which reads it here rather than holding a second one.
+func (e *Engine) ExperimentSource() func(uint64) (uint64, error) { return e.cfg.ExperimentSource }
 
 // byReviewApp says whether login is the review App's bot (Config.ReviewAppLogin). With no login
 // configured, it is no one's.
@@ -317,8 +338,12 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.sessionStoreFault(ctx, tx, fact)
 	case intake.PodRefusedLaunch:
 		return e.podRefusedLaunch(ctx, tx, fact)
+	case intake.RefusedStartEnded:
+		return e.refusedStartEnded(ctx, tx, fact)
 	case intake.MemoryGuardKill:
 		return e.memoryGuardKill(ctx, tx, fact)
+	case intake.ControllerMemoryGuardKill:
+		return e.controllerMemoryGuardKill(ctx, tx, fact)
 	case intake.RetryOrEscalate:
 		return e.retryOrEscalate(ctx, tx, fact)
 	case intake.RestartPhase:
@@ -543,8 +568,10 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 // A hold of the root's plan (planHold) is not a failure a retry answers. A todo on a root held for
 // its stopped task ends the stop: a task whose work ran starts again at its first step
 // (restartTask), and a task stopped before its first step went out waits for that step again
-// (waitForFirstStep). A todo on a root held for the issues beneath it leaves the hold, since the
-// last of them to leave starts the retro, keeps the observation, and logs why. It queues the status
+// (waitForFirstStep). Where a step of that task names a role the deployment no longer defines,
+// the stop stands instead and the owner is told again (keepLostStop). A todo on a root held for
+// the issues beneath it leaves the hold, since the last of them to leave starts the retro, keeps
+// the observation, and logs why. It queues the status
 // the record keeps, the last step's, over the todo, with the reason the hold still stands posted
 // beside it (heldParentWait's reason), so the person who set the todo reads why the board went back,
 // as the release of any other hold queues the status of the phase it ends in: every later status
@@ -573,6 +600,9 @@ func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Is
 		}
 		return e.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite(issue.Status, fact.Status, wait.reason()))
 	default:
+		if lost, ok := w.lostFrom(1, e.cfg.Deployment); ok {
+			return e.keepLostStop(ctx, tx, released, w, lost, fact)
+		}
 		if !w.Place.Started() {
 			return e.waitForFirstStep(ctx, tx, released, w, restartReason)
 		}
@@ -605,6 +635,16 @@ const restartReason = "the issue was set to todo while its task was stopped"
 // workflow does not react: the observation is recorded with the status kept (keepStatus), and the
 // daemon re-asserts its own status through the outbox. A person's move and the daemon's own write
 // carry no session (intake.DispatchIssue.ActorSession): they are the workflow's to act on.
+//
+// One write of a session of the tree is not set back: the owning architect's done, backlog,
+// icebox or triage on a child of its tree (owningArchitectsMove). The architect decides that the
+// work of a child is done, folded into another issue or no longer needed, and the child's status
+// in Dispatch is the one field that records that decision (dispatch://INFRA-3178). For that write
+// the function answers that it did not handle it, so dispatchIssue takes the move as it takes a
+// person's: it drops the status writes it queued for the child, and the child leaves the workflow
+// (leave). Every other write of a session of the tree is set back. That is a status that moves
+// the workflow or todo, any status of a phase worker, a child's own architect's status on its own
+// issue, an architect's status on an issue it does not own, and any status on the tree root.
 func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) (bool, error) {
 	if fact.ActorSession == "" {
 		return false, nil
@@ -613,7 +653,11 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 	if err != nil {
 		return false, err
 	}
-	if !agent {
+	if agent {
+		if stands, err := e.owningArchitectsMove(ctx, tx, issue, fact); err != nil || stands {
+			return false, err
+		}
+	} else {
 		// Whether the write lands on the root of a tree that is running now, by the one rule every
 		// reader of that question asks (record.TreeRunning, record.TreeRuns): its lifecycle stands
 		// open under the workflow's own authority, it does not linger, and it is not itself waiting
@@ -638,7 +682,7 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 	if err := e.keepStatus(ctx, tx, issue, fact); err != nil {
 		return false, err
 	}
-	if err := e.enqueue(ctx, tx, issue.Key, record.ReassertStatusWrite(issue.Status, fact.Status)); err != nil {
+	if err := e.enqueue(ctx, tx, issue.Key, record.ReassertStatusWrite(issue.Status, fact.Status, fact.Seq)); err != nil {
 		return false, err
 	}
 	if agent {
@@ -648,16 +692,51 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 		Reason: fmt.Sprintf("session %s set %s to %s, and the daemon set it back to %s", fact.ActorSession, issue.Key, fact.Status, issue.Status)})
 }
 
+// owningArchitectsMove says whether fact, the write of a session that holds a claim in issue's
+// tree, is the owning architect's move of issue out of the workflow, which sessionStatusWrite does
+// not set back. Four conditions make it one:
+//   - The status is done, backlog, icebox or triage (record.OutOfWorkflow).
+//   - The issue is not the tree root, which leaves the workflow only by the architect's sign-off
+//     or close_root.
+//   - The session holds the architect claim of an issue of the tree, in any state
+//     (record.Store.ArchitectIssueOfSession).
+//   - That architect owns the issue by the rule of the API's operations on a child
+//     (record.OwnsUnder). The tree root's architect owns every issue of its tree, so its move is
+//     judged with no read of the tree. A sub-architect's move is judged over the tree's records.
+//
+// A move that stands writes its own log line, which names the architect's issue.
+func (e *Engine) owningArchitectsMove(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) (bool, error) {
+	if !record.OutOfWorkflow(fact.Status) || claim.IsTreeRoot(issue.Key, issue.Tree) {
+		return false, nil
+	}
+	architect, held, err := e.store.ArchitectIssueOfSession(ctx, tx, issue.Tree, fact.ActorSession)
+	if err != nil || !held {
+		return false, err
+	}
+	if !claim.IsTreeRoot(architect, issue.Tree) {
+		members, err := e.treeMembers(ctx, tx, issue)
+		if err != nil {
+			return false, err
+		}
+		if !record.OwnsUnder(members, issue.Tree, architect, issue) {
+			return false, nil
+		}
+	}
+	e.logOnCommit(ctx, "workflow: the owning architect's status on its child stands", "issue", issue.Key,
+		"session", fact.ActorSession, "architect", architect, "status", fact.Status)
+	return true, nil
+}
+
 // observedIssue is issue with everything an observation of fact records on it: its title, rank,
-// parent, label, sequence, the status Dispatch showed and the Dispatch chain its preparation
-// read (Ancestry), with the recorded status kept. It writes nothing, so a caller that gives the
-// issue a phase of its own puts the two in one row (releaseHeldRoot).
+// priority, parent, label, sequence, the status Dispatch showed and the Dispatch chain its
+// preparation read (Ancestry), with the recorded status kept. It writes nothing, so a caller that
+// gives the issue a phase of its own puts the two in one row (releaseHeldRoot).
 func (e *Engine) observedIssue(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) (record.Issue, error) {
 	ancestry, err := e.Ancestry(ctx, tx, issue, fact.Ancestry)
 	if err != nil {
 		return issue, err
 	}
-	issue.Title, issue.Rank, issue.Parent, issue.LastDispatchSeq = fact.Title, fact.Rank, record.ParentOf(fact.Parent), fact.Seq
+	issue.Title, issue.Rank, issue.Priority, issue.Parent, issue.LastDispatchSeq = fact.Title, fact.Rank, fact.Priority, record.ParentOf(fact.Parent), fact.Seq
 	issue.HandedOver, issue.DispatchStatus, issue.Ancestry = fact.HandedOver, fact.Status, ancestry
 	return issue, nil
 }
@@ -679,6 +758,12 @@ func (e *Engine) keepStatus(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // transaction, not before the outbox PATCH: otherwise the reopen and this event could both act on
 // the child. Keep the child in its live tree, reassert its workflow status, and fence admission
 // from seeing this todo by recording the event sequence.
+//
+// It runs before dispatchIssue's sequence fence, so the todo can reach it after a newer event of
+// the child was applied: delivered late, or replayed from a message the intake gave up on, however
+// late. Such a todo is still consumed, its fence row deleted and the status reasserted, but it
+// records nothing on the child: the newer event's title, sequence and Dispatch status stand, and
+// the sequence they hold already fences admission from it.
 func (e *Engine) rejectStaleHandover(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) (bool, error) {
 	if !fact.DaemonActor || !fact.HandedOver || fact.Status != "todo" {
 		return false, nil
@@ -697,11 +782,13 @@ func (e *Engine) rejectStaleHandover(ctx context.Context, tx pgx.Tx, issue recor
 	if err := e.store.DeleteHandover(ctx, tx, issue.Key); err != nil {
 		return false, err
 	}
-	if err := e.keepStatus(ctx, tx, issue, fact); err != nil {
-		return false, err
+	if fact.Seq == 0 || fact.Seq > issue.LastDispatchSeq {
+		if err := e.keepStatus(ctx, tx, issue, fact); err != nil {
+			return false, err
+		}
 	}
 	if issue.Status != fact.Status {
-		if err := e.enqueue(ctx, tx, issue.Key, record.ReassertStatusWrite(issue.Status, fact.Status)); err != nil {
+		if err := e.enqueue(ctx, tx, issue.Key, record.ReassertStatusWrite(issue.Status, fact.Status, fact.Seq)); err != nil {
 			return false, err
 		}
 	}
@@ -770,11 +857,13 @@ func (e *Engine) HearRepository(ctx context.Context, repo string) {
 
 // RecordedFact is the todo fact an issue's own record already says, for a run no live event
 // brought: admission's promotion of a stranded child (ReenterChild) and Adopt's entry of a queued
-// root's todo members.
+// root's todo members. It is a fact the daemon builds from its own record, so it keeps the stored
+// priority by copying it: a fact built from what Dispatch sent carries Dispatch's, null included,
+// and replaces it.
 func RecordedFact(issue record.Issue) intake.DispatchIssue {
 	fact := intake.DispatchIssue{
 		Key: issue.Key, Seq: issue.LastDispatchSeq, Status: issue.Status, Title: issue.Title,
-		Rank: issue.Rank, HandedOver: issue.HandedOver, ResolvedRepo: issue.Repo,
+		Rank: issue.Rank, Priority: issue.Priority, HandedOver: issue.HandedOver, ResolvedRepo: issue.Repo,
 	}
 	if issue.Parent != nil {
 		fact.Parent = *issue.Parent
@@ -850,8 +939,9 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 // starts it (gateOpened) when the line reaches it. The gate and the blockers are therefore read
 // where the line is read, once for the whole project, rather than here once per child.
 //
-// A child entering beneath an ancestor the daemon has already accepted waits for that ancestor
-// to close before anything starts it (record.AcceptedAncestor, which the waiting line reads),
+// A child entering beneath an ancestor the daemon has already accepted waits while that ancestor
+// stands in retro or merging before anything starts it (record.AcceptedAncestor, which the
+// waiting line reads),
 // and the architect above the child is told so here. The two doors an agent uses refuse such a
 // child outright (api's CHILD_UNDER_ACCEPTED_PARENT), so what reaches this is a person's own move
 // to todo, which the daemon records rather than undoes: the record is the honest one, and the
@@ -864,7 +954,7 @@ func (e *Engine) enterChild(ctx context.Context, tx pgx.Tx, root record.Issue, f
 	at Resolution) error {
 	parentKey := fact.Parent
 	child := record.Issue{Key: fact.Key, Tree: root.Tree, Project: root.Project, Title: fact.Title, Parent: &parentKey, Phase: phase.Admitted,
-		Generation: generation, Status: fact.Status, Rank: fact.Rank, HandedOver: fact.HandedOver, LastDispatchSeq: fact.Seq, DispatchStatus: fact.Status,
+		Generation: generation, Status: fact.Status, Rank: fact.Rank, Priority: fact.Priority, HandedOver: fact.HandedOver, LastDispatchSeq: fact.Seq, DispatchStatus: fact.Status,
 		Repo: at.Repo, DefaultBranch: at.DefaultBranch, GitHubRepo: at.GitHubRepo}
 	if err := e.WriteIssue(ctx, tx, child); err != nil {
 		return err
@@ -901,19 +991,19 @@ func (e *Engine) drawExperiments(ctx context.Context, tx pgx.Tx, issue string) e
 // while no role was named for that phase. The two holds of an owner's plan are read where their
 // issue stands (record.StandsAt), so each report of a run an event ended before the hold is taken
 // as it is without the hold. A parent held for its children stands at its retro: the pass of its
-// last step moved it there in place of the retro, as an approval moves an issue into accepting, so
-// the report of the run that pass ended is taken as it is there. A task its owner stopped stands at
-// the step the stop ended: the report of a run that left that phase earlier - a review the review
-// event moved back to implementing before the stop - is taken as it is there, and the report of the
-// run of the step it stands at is none of a phase its role has left, so it is answered as the run
-// the stop ended (pastReportOf). A task with plan rows takes it the same way, whatever step it
-// stands at now. A role that works the step its issue stands at has left a phase only where the
-// report is of the role's run of another step: the place of row (Walk.runPlace of reported) against
-// the place its task stands at (Walk.Place), so of a reviewer at steps 2 and 4 whose step 2 an
-// approval moved on from with no report, that report is taken after a stop at step 4. A walk with
-// no plan rows holds each phase once, so there the role alone decides. w is the walk of issue's run;
-// the test of the run itself is ranUnreported, on row, the role's row of the run the completion
-// reports (Walk.completionRow).
+// last step moved it there in place of the retro, as an approval moves an issue to its task's next
+// step, so the report of the run that pass ended is taken as it is there. A task its owner stopped
+// stands at the step the stop ended: the report of a run that left that phase earlier - a review
+// the review event moved back to implementing before the stop - is taken as it is there, and the
+// report of the run of the step it stands at is none of a phase its role has left, so it is
+// answered as the run the stop ended (pastReportOf). A task with plan rows takes it the same way,
+// whatever step it stands at now. A role that works the step its issue stands at has left a phase
+// only where the report is of the role's run of another step: the place of row (Walk.runPlace of
+// reported) against the place its task stands at (Walk.Place), so of a reviewer at steps 2 and 4
+// whose step 2 an approval moved on from with no report, that report is taken after a stop at step
+// 4. A walk with no plan rows holds each phase once, so there the role alone decides. w is the walk
+// of issue's run; the test of the run itself is ranUnreported, on row, the role's row of the run the
+// completion reports (Walk.completionRow).
 func (e *Engine) leftItsPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, role claim.Role, token claim.Token, reported phase.Phase,
 	row record.PhaseRow) (bool, error) {
 	at := issue.Phase
@@ -998,33 +1088,57 @@ func returnToOf(issue record.Issue, w Walk, fact intake.HandoffComplete, reporte
 // recordStepReview writes the commit a completion of a step of the type review that runs as step
 // read onto the role's phases row (record.PhaseRow.ReviewedHead), so the task of the step's next
 // run names it (namingTheReviewRound), as the reviewer's next round names the commit its own
-// review read. The row is the row of the step the completion is of (phaseRow), and the first run of
-// a later step of the role starts from it (stepRunRow), as the reviewer's next round does; the
-// clear of a generation empties it with the reviewer's (record.Store.ClearGeneration). It
-// writes only for a completion of the entry that stands, by equality of an entry number and no
-// time compared: row, the role's phases row the completion read and wrote in its own transaction
-// before the move raises any entry, holds the task of an entry (EntryTask, which the clear of a
-// generation empties and only a raise writes again) and stands on the entry the completion carries
-// (fact.Entry, the one value the entry rule reads). A completion the route read before a reset of
-// the tree's generation and the engine applies after it so writes no commit of the generation
-// before into the new one, whether or not the promotion raised the entry since. A row a start ran
-// stands on 1 or above, so a completion of entry 0 writes none. Otherwise it writes nothing: the
-// commit stays where it stood, and the next run reads more. A step of another type writes none,
-// and nor does a completion naming no commit.
-func (e *Engine) recordStepReview(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, fact intake.HandoffComplete) error {
-	if fact.Commit == "" || row.EntryTask == "" || fact.Entry != row.Entry {
-		return nil
-	}
-	w, err := e.walk(ctx, tx, issue)
-	if err != nil {
-		return err
-	}
+// review read. The row is the row of the step the completion is of (phaseRow), and the commit is
+// written onto the agent's other rows too (shareReviewedHead), as the reviewer's review is; the
+// clear of a generation empties it with the reviewer's (record.Store.ClearGeneration). It writes
+// only where stepCommitStays gives no reason, and otherwise logs that reason: the commit stays
+// where it stood, and the next run reads more. A step of another type writes none. w is the walk
+// of the issue's run, as handoff read it.
+func (e *Engine) recordStepReview(ctx context.Context, tx pgx.Tx, w Walk, row record.PhaseRow, fact intake.HandoffComplete) error {
 	step, ok := w.planStepAt(w.Place)
 	if !w.Stored || !ok || claim.Role(step.Role) != fact.Role || step.Type != plan.TypeReview {
 		return nil
 	}
+	if why := stepCommitStays(fact, row); why != "" {
+		e.logOnCommit(ctx, stepCommitStaysLog+why, "issue", fact.Issue, "role", fact.Role, "task", w.Task,
+			"step", w.Place.Position, "commit", fact.Commit, "completion_entry", fact.Entry, "entry", row.Entry)
+		return nil
+	}
 	row.ReviewedHead = fact.Commit
-	return e.store.PutPhase(ctx, tx, row)
+	if err := e.store.PutPhase(ctx, tx, row); err != nil {
+		return err
+	}
+	return e.shareReviewedHead(ctx, tx, row)
+}
+
+// stepCommitStaysLog begins the line recordStepReview logs for a completion of a review step that
+// moves no reviewed commit, followed by its reason (stepCommitStays).
+const stepCommitStaysLog = "workflow: a review step's completion moves no reviewed commit: "
+
+// stepCommitStays is why fact, a completion of a step of the type review, leaves the commit row,
+// the step's phases row, holds where it stands (recordStepReview), and "" where fact moves it to
+// the commit it names. The completion must name its commit as a head is spelled
+// (reviewround.IsHead), as a review footer's head of another spelling names no commit
+// (intake.PullRequestReview.LegionHead): the route asks a step's commit only to be non-empty, and
+// the commit is named in tasks, another agent's among them (record.AnotherAgentsReview). And it
+// must be of the entry that stands, by equality of an entry number and no time compared: row, the
+// role's phases row the completion read and wrote in its own transaction before the move raises
+// any entry, holds the task of an entry (EntryTask, which the clear of a generation empties and
+// only a raise writes again) and stands on the entry the completion carries (fact.Entry, the one
+// value the entry rule reads). A completion the route read before a reset of the tree's generation
+// and the engine applies after it so writes no commit of the generation before into the new one,
+// whether or not the promotion raised the entry since. A row a start ran stands on 1 or above, so
+// a completion of entry 0 moves none.
+func stepCommitStays(fact intake.HandoffComplete, row record.PhaseRow) string {
+	switch {
+	case !reviewround.IsHead(fact.Commit):
+		return "its commit is not spelled as a head is"
+	case row.EntryTask == "":
+		return "the step's row holds no entry's task"
+	case fact.Entry != row.Entry:
+		return fmt.Sprintf("it completes entry %d and the step's row stands at entry %d", fact.Entry, row.Entry)
+	}
+	return ""
 }
 
 func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComplete) (intake.Result, error) {
@@ -1053,7 +1167,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	//
 	// reported is the phase this completion is of (phase.Of): the issue's own, or, for a role the
 	// issue has moved on without, the phase that role has left, which pastCompletion answers. At
-	// step, a completion is current only from the role of the running step (Issue.StepRole): two
+	// step, a completion is current only from the role of the running step (Issue.StepIsOf): two
 	// steps of roles the deployment defines both run as step, and the other's report is of a step
 	// the task has left.
 	//
@@ -1062,7 +1176,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// stands, and for a role that has left its phase the row of the entry it serves, so a role that
 	// stands at two steps reports the step whose run it was, whichever place the task returned to.
 	reported := phase.Of(fact.Role, issue.Phase)
-	current := reported == issue.Phase && (issue.Phase != phase.Step || fact.Role == issue.StepRole)
+	current := reported == issue.Phase && issue.StepIsOf(fact.Role)
 	w, err := e.walk(ctx, tx, *issue)
 	if err != nil {
 		return intake.Result{}, err
@@ -1099,7 +1213,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	if refusal != nil {
 		return intake.Result{Refusal: refusal}, nil
 	}
-	pr, err := e.store.PullRequest(ctx, tx, fact.Issue)
+	pr, err := e.store.PullRequestRow(ctx, tx, fact.Issue)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -1119,7 +1233,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// works the issue's phase (api's answerCompletion), since the fence's HANDOFF_STALE_ENTRY
 	// would promise it the task of an entry its claim never served.
 	served := record.ServedClaim(rows, fact.Role, fact.Entry)
-	if refusal := intake.StepsWorkerFence(issue.Key, fact.Role, fact.Claim, row.Claim, served, row.StepTask); refusal != nil {
+	if refusal := intake.StepsWorkerFence(issue.Key, fact.Role, fact.Claim, served, row); refusal != nil {
 		return intake.Result{Refusal: refusal, Unspent: true}, nil
 	}
 	// The route judged the entry this completion is of on its own read of the role's row, before
@@ -1133,11 +1247,10 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// this transaction read, before anything is written, and its refusal is left unspent, as the
 	// route's writes nothing, so the same report applies once it is the work of the entry that
 	// stands.
-	if refusal := intake.EntryFence(*issue, fact.Role, served, row.Claim, fact.Entry, row.Entry, row.EntryMovedBack,
-		record.OtherStepsEntry(rows, row), fact.Commit, pr, nil); refusal != nil {
+	if refusal := intake.EntryFence(*issue, fact.Role, served, fact.Entry, row, record.OtherStepsEntry(rows, row), fact.Commit, pr, nil); refusal != nil {
 		return intake.Result{Refusal: refusal, Unspent: true}, nil
 	}
-	if refusal := intake.StepsWorkerFence(issue.Key, fact.Role, fact.Claim, row.Claim, "", row.StepTask); refusal != nil {
+	if refusal := intake.StepsWorkerFence(issue.Key, fact.Role, fact.Claim, "", row); refusal != nil {
 		return intake.Result{Refusal: refusal, Unspent: true}, nil
 	}
 	// A completion of the phase the issue stands in that is at the head a merge forward replaced
@@ -1222,7 +1335,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		// goes back to the step its returnTo names, or to the one its plan reads (returnTarget). A
 		// step of the type review keeps the commit its completion read first, before the move
 		// raises any entry (recordStepReview).
-		if err := e.recordStepReview(ctx, tx, *issue, row, fact); err != nil {
+		if err := e.recordStepReview(ctx, tx, w, row, fact); err != nil {
 			return intake.Result{}, err
 		}
 		switch fact.Verdict {
@@ -1474,12 +1587,11 @@ const deathReasonCut = "… (cut)"
 
 // deathSentence is the supervisor's sentence as a worker-died's reason carries it: each run of
 // line breaks between two pieces of its text written as " / " and any at either end dropped, then
-// quoted and cut as quoteBounded writes it. For a run of refused turns the sentence holds the
-// provider's message as the role's own plugin posted it (supervise's refusalCause, api's
-// turn-outcome route), which can run to a mebibyte over many lines; the claim and a failure
-// record's `detail` keep it whole (noticeFailure). The sentence is cut at runtime.PodEndRunes
-// runes before its line breaks are written, so no more of a mebibyte is read than the bound
-// keeps.
+// quoted and cut as quoteBounded writes it. A failure an earlier daemon wrote for a run of refused
+// turns holds the provider's message as the role's own plugin posted it (the turn-outcome route),
+// which can run to a mebibyte over many lines; the claim and a failure record's `detail` keep it
+// whole (noticeFailure). The sentence is cut at runtime.PodEndRunes runes before its line breaks
+// are written, so no more of a mebibyte is read than the bound keeps.
 func deathSentence(sentence string) string {
 	cut := false
 	if at := runeOffset(sentence, runtime.PodEndRunes); at < len(sentence) {
@@ -1917,12 +2029,29 @@ func (e *Engine) sessionStoreFault(ctx context.Context, tx pgx.Tx, fact intake.S
 }
 
 // podRefusedLaunch tells the issue and the controller that a role cannot start until its issue's
-// pod is replaced, and queues a start of the claim where the fact asks for one (Queue,
-// queueRefusedStart). The supervisor decides how often it is told — at the first refusal, then
-// hourly — so every fact that reaches here is reported.
+// pod is replaced, and queues a start of the claim wherever the outbox holds no start that brings
+// it back (queueRefusedStart, startBringsBack), read from the role's run in the fact's own
+// transaction. The supervisor decides how often it is told — at the first refusal, then hourly —
+// so every fact that reaches here is reported.
+//
+// The outbox, not the supervisor, says whether a start stands behind the claim, because the launch
+// the pod refused may have come after the start that raised it had finished: the outbox start of a
+// suspended claim whose resume the wake pacing parked finishes once it has delivered its task, and
+// so does one whose launch's write failed and whose retry the machine arms, while the launch runs
+// at the wake's turn or at that retry. The suspension the refusal ends in retires the task, and
+// with no start left nothing would resume the claim but a boot. Where the outbox start whose own
+// launch the pod refused still stands, it waits for the pod (the outbox's ErrAwaitsPodUpdate wait)
+// and resumes the claim once another pod stands, so nothing more is queued; and once a start this
+// queued stands, an hourly report queues no second.
+//
+// The report is judged against the claim the store holds, in this transaction (refusalStands): a
+// claim that launched since the refusal tells nobody it cannot be started and is queued nothing.
 func (e *Engine) podRefusedLaunch(ctx context.Context, tx pgx.Tx, fact intake.PodRefusedLaunch) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
+		return intake.Result{}, err
+	}
+	if stands, err := e.refusalStands(ctx, tx, fact.Claim, fact.Generation, fact.Pod); err != nil || !stands {
 		return intake.Result{}, err
 	}
 	told := fmt.Sprintf("The %s of %s cannot be started: the issue's pod %s cannot run it until that pod's update round or its release replaces it: %s. Nothing is charged; the daemon starts the %s again once another pod stands.",
@@ -1935,36 +2064,127 @@ func (e *Engine) podRefusedLaunch(ctx context.Context, tx pgx.Tx, fact intake.Po
 		Kind: record.PodWaitHeldNotice, Role: fact.Role, Phase: issue.Phase, Reason: told})); err != nil {
 		return intake.Result{}, err
 	}
-	if !fact.Queue {
-		return intake.Result{}, nil
-	}
-	return intake.Result{}, e.queueRefusedStart(ctx, tx, *issue, fact)
+	return intake.Result{}, e.startRefusedClaim(ctx, tx, *issue, fact)
 }
 
-// queueRefusedStart queues the start of a claim whose launch its issue's pod refused with no
-// outbox start behind it (intake.PodRefusedLaunch's Queue): a relaunch of the machine's own, an
-// operator's resume. The suspension that refusal ended in retired the phase task the claim held
-// (supervise's settle), and the record holds that work all the same: where the claim works the
-// step its issue stands in, the start is that step's owed entry (sendOwedEntry), the entry and the
-// task its phases row holds, marked as a resend of that entry so the claim, which was given it, is
-// given it again. Any other is a start naming the claim, of no phase, which resumes it with
-// whatever it holds. The outbox runs either as a wait for the pod while that pod stands
-// (supervise's podStillRefuses) and resumes the claim once another stands or none.
+// refusedStartEnded reads the claim's queued starts again once a start row of a claim whose last
+// launch its pod refused has ended (intake.RefusedStartEnded), and queues the claim's start where
+// none stands (startRefusedClaim), marked with the pod the fact names, the one refusing the claim
+// when the row ended. The refusal's own fact reads the outbox in its transaction, and it can read a
+// row as the claim's start that then ends without bringing the claim back: a row the wake pacing
+// parked a launch for, which has delivered its task and returned when that launch's turn comes and
+// whose finish has not committed yet, or a start a refusal no row raised read, which then ends at a
+// fence the issue's move set. The outbox applies this once the row's finish has committed and it
+// has read the refusal on the claim's machine (internal/daemon's startRowEnded); facts are applied
+// one at a time (intake.ApplyFact), so whichever of the two comes second reads what the first left,
+// and the claim has one start whichever order they run in. It tells nobody. It is judged against
+// the claim the store holds, as the report is (refusalStands).
+func (e *Engine) refusedStartEnded(ctx context.Context, tx pgx.Tx, fact intake.RefusedStartEnded) (intake.Result, error) {
+	issue, err := e.store.Issue(ctx, tx, fact.Issue)
+	if err != nil || issue == nil {
+		return intake.Result{}, err
+	}
+	if stands, err := e.refusalStands(ctx, tx, fact.Claim, fact.Generation, fact.Pod); err != nil || !stands {
+		return intake.Result{}, err
+	}
+	return intake.Result{}, e.startRefusedClaim(ctx, tx, *issue, intake.PodRefusedLaunch{Issue: fact.Issue, Role: fact.Role, Claim: fact.Claim, Pod: fact.Pod})
+}
+
+// refusalStands is whether a fact of the refused launch of token at generation (its claim's
+// generation when the pod refused it) still describes the claim the store holds, read in the fact's
+// own transaction: a claim the store holds at a later generation has launched since, on the pod
+// that replaced pod, so the fact tells nobody that it cannot be started, which is no longer true,
+// and queues no start, whose owed entry would hand the running worker its task again. The read
+// locks the claim's row for the rest of the transaction (record.Store.ClaimLaunchedSince), so a
+// launch whose first write comes after it waits for this fact's commit, and the fact's effects
+// stand for a claim that had not launched; either order leaves the record true. The daemon's tries
+// of the fact also drop it once the machine no longer reports the refusal (internal/daemon's
+// applyRefusalFact), which spares a try; this read is the one that decides.
+func (e *Engine) refusalStands(ctx context.Context, tx pgx.Tx, token claim.Token, generation uint64, pod string) (bool, error) {
+	launched, err := e.store.ClaimLaunchedSince(ctx, tx, token, generation)
+	if err != nil {
+		return false, err
+	}
+	if launched {
+		e.logOnCommit(ctx, "workflow: a fact of a refused launch applies nothing: its claim has launched since", "claim", token, "generation", generation, "pod", pod)
+	}
+	return !launched, nil
+}
+
+// startRefusedClaim queues the start of a claim whose launch its issue's pod refused
+// (queueRefusedStart) unless a queued start that reaches the claim brings it back
+// (startBringsBack), read in the caller's transaction.
+func (e *Engine) startRefusedClaim(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.PodRefusedLaunch) error {
+	queued, err := e.store.ClaimQueued(ctx, tx, fact.Claim, issue.Key, issue.Generation)
+	if err != nil || startBringsBack(queued) {
+		return err
+	}
+	return e.queueRefusedStart(ctx, tx, issue, fact)
+}
+
+// queueRefusedStart queues the start of a claim whose launch its issue's pod refused where the
+// outbox holds no start that brings the claim back (podRefusedLaunch). The suspension that refusal
+// ended in retired the phase task the claim held (supervise's settle), and the record holds that
+// work all the same: where the claim is the worker of the step its issue stands in (workerClaim,
+// the one rule every reader of that claim reads), the start is that step's owed entry
+// (sendOwedEntry), the entry and the task its phases row holds, marked as a resend of that entry
+// so the claim, which was given it, is given it again. Any other is a start naming the claim, of
+// no phase, which resumes it with whatever it holds. The outbox runs either as a wait for the pod
+// while that pod stands (supervise's podStillRefuses) and resumes the claim once another stands or
+// none. A claim of a role the deployment lost, or one that runs in the slot of such a role
+// (lostSlot), is queued nothing: its task is stopped (stopLostRoles), no pod the deployment builds
+// has its slot, and its start would wait for one for ever; the skip is logged.
+//
+// Either start is marked with the pod whose refusal queued it (fact.Pod,
+// record.SuperviseRequest.RefusedPod), so that its end asks for no further start while that pod
+// refuses the claim (the daemon outbox's startRowEnded says why).
+//
+// Nor is a start queued that the outbox would finish without acting, before it reaches the claim
+// (the daemon outbox's start): the start of the role of a stopped task's step (StoppedStepRole),
+// whose task the owner starts again with a start of its own (restartTask), and any start of a
+// member of a tree that lingers, which re-admission starts again. Such a start would bring the
+// claim back no more than none, and it is logged as skipped. An issue held for another reason, an
+// escalation or the issues beneath it, is not one of these: the outbox runs a start of no phase
+// of its claim as it runs any other, and the machine judges a start that names no phase by nothing
+// (supervise's startHolds).
 func (e *Engine) queueRefusedStart(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.PodRefusedLaunch) error {
 	if record.OutOfWorkflow(issue.Status) {
 		return nil
 	}
+	if lostRole(fact.Role, e.cfg.Deployment) || lostSlot(fact.Claim, e.cfg.Deployment) {
+		e.logOnCommit(ctx, "workflow: no start is queued for a refused launch of a claim whose role or slot the deployment no longer defines",
+			"issue", issue.Key, "role", fact.Role, "claim", fact.Claim)
+		return nil
+	}
+	if StoppedStepRole(issue) == fact.Role {
+		e.logOnCommit(ctx, "workflow: no start is queued for a refused launch of the role of a stopped task's step; the task's restart starts it",
+			"issue", issue.Key, "role", fact.Role, "claim", fact.Claim, "from", issue.Hold.From)
+		return nil
+	}
+	root, err := e.store.Issue(ctx, tx, issue.Tree)
+	if err != nil {
+		return err
+	}
+	if root != nil && root.Lingers() {
+		e.logOnCommit(ctx, "workflow: no start is queued for a refused launch of a member of a lingering tree; re-admission starts it",
+			"issue", issue.Key, "tree", issue.Tree, "role", fact.Role, "claim", fact.Claim)
+		return nil
+	}
 	if role := OpenRoleOf(issue); role != "" && role == fact.Role {
+		worker, err := e.workerClaim(ctx, tx, issue, role)
+		if err != nil {
+			return err
+		}
 		row, err := e.phaseRow(ctx, tx, issue, role)
 		if err != nil {
 			return err
 		}
-		if row.Claim == fact.Claim && row.Entry > 0 {
-			return e.sendOwedEntry(ctx, tx, issue, role, row.Claim, row, startMarks{resend: true})
+		if worker == fact.Claim && row.Entry > 0 {
+			return e.sendOwedEntry(ctx, tx, issue, role, worker, row, startMarks{resend: true, refusedPod: fact.Pod})
 		}
 	}
 	return e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: fact.Role, Claim: fact.Claim,
-		Generation: issue.Generation})
+		Generation: issue.Generation, RefusedPod: fact.Pod})
 }
 
 // memoryGuardKill tells the role whose process an issue pod's memory guard ended, or a microVM
@@ -2078,6 +2298,133 @@ func kernelKillLead(report shimwire.LauncherMemoryKill) string {
 	return fmt.Sprintf("The pod's kernel stopped one of your processes because the pod ran out of memory: "+
 		"%s (pid %d) held %s when the pod's memory read %s of its %s limit. ",
 		codeSpan(report.Executable), report.PID, binarySize(report.SizeBytes), binarySize(report.CounterBytes), binarySize(report.LimitBytes))
+}
+
+// controllerMemoryGuardKill tells the project's controller which of its own programs the memory
+// guard of the controller's pod ended, or the pod's own kernel stopped, and why
+// (intake.ControllerMemoryGuardKill): one controller notice of kind memory-guard-kill, filed under
+// the project key as a tick is, and enqueued in the fact's transaction, so a fact that rolls back
+// tells nobody and the outbox carries the telling across a restart. No architect is told: the
+// controller's pod is of no issue, and the program was the controller's.
+//
+// The report's cause chooses the note, as memoryGuardKill's does. The controller's pod in gVisor
+// runs the guard, whose reports carry no cause; the controller's pod in a microVM runs the guest
+// watch over the launcher's controllerClassifier in its place, and reports the kernel's kills
+// with their causes, where the daemon's acknowledgement carried KernelKills (runtime/sandbox's
+// launcherHelloAck sets it on the controller's). So the kernel's note of a command
+// (controllerKernelKillNote) answers shimwire.MemoryKillCauseKernel; the kernel's note of one of
+// the processes that run the controller's session (controllerKernelProtectedKillNote) answers
+// shimwire.MemoryKillCauseKernelProtected; and the guard's (controllerMemoryGuardNote) answers
+// shimwire.MemoryKillCauseGuard, the only other cause the launcher session lets through
+// (shimwire.LauncherMemoryKill.Validate). The line logged names the cause.
+//
+// Each kill is a row of its own, written here and never through admission's wakeController,
+// whose rule keeps one unsent notice per kind and project: a second kill while the first one's
+// notice waits is a second program ended, and the controller must hear of each. What keeps one
+// kill to one row however often its report arrives is the fact's event id (the daemon's
+// memoryGuardKillEventID), which ApplyFact applies once.
+//
+// The token is the session's, the claim the launcher's connection authenticated for. A token that
+// is not this project's controller's (claim.ControllerToken of the project as every token spells
+// it, claim.ProjectToken, which is how the sandbox names the controller pod's claim) is no kill of
+// this controller's program: the runtime hands only the controller's pod a session of no issue, so
+// it is logged and dropped rather than told to a reader whose program it was not.
+func (e *Engine) controllerMemoryGuardKill(ctx context.Context, tx pgx.Tx, fact intake.ControllerMemoryGuardKill) (intake.Result, error) {
+	report := fact.Report
+	project, err := claim.ProjectToken(e.cfg.Project)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if fact.Token != claim.ControllerToken(project) {
+		e.logOnCommit(ctx, "workflow: a controller memory guard kill names a token that is not this project's controller, so nobody is told",
+			"role", fact.Token, "pod", fact.PodUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID, "cause", report.Cause)
+		return intake.Result{}, nil
+	}
+	var note, told string
+	switch report.Cause {
+	case shimwire.MemoryKillCauseKernel:
+		note, told = controllerKernelKillNote(report), "workflow: the controller whose program the pod's kernel stopped is told why"
+	case shimwire.MemoryKillCauseKernelProtected:
+		note, told = controllerKernelProtectedKillNote(report), "workflow: the controller is told why the pod's kernel stopped one of the processes that run its session"
+	default:
+		note, told = controllerMemoryGuardNote(report), "workflow: the controller whose program the memory guard ended is told why"
+	}
+	if err := e.enqueue(ctx, tx, e.cfg.Project, record.ControllerNotice(record.Notice{
+		Kind: record.MemoryGuardKillNotice, Role: claim.RoleController, Reason: note})); err != nil {
+		return intake.Result{}, err
+	}
+	e.logOnCommit(ctx, told,
+		"role", fact.Token, "pod", fact.PodUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID,
+		"cause", report.Cause, "sizeBytes", report.SizeBytes, "readingBytes", report.ReadingBytes, "counterBytes", report.CounterBytes,
+		"limitBytes", report.LimitBytes)
+	return intake.Result{}, nil
+}
+
+// The ends of the controller's notes of a process stopped for memory, which it reads in place of
+// a role's (memoryKillGoesOn, memoryKillHeavyWork). The controller has no worker's tools
+// reference, and its skill has no section for this notice, so each note gives its own brief
+// advice and points to no skill (dispatch://INFRA-3368/ask/aa99c6ba-8a58-4830-998c-7f8102f65dd0).
+// controllerMemoryKillGoesOn says what goes on after a command of the controller's is stopped, in
+// the guard's note and the kernel's note of a command; it is not true of a process that runs the
+// controller's session, whose note says what happens instead (controllerKernelProtectedKillEnd).
+// controllerMemoryKillRunAgain, what to run in place of the same program, ends both notes of a
+// command.
+const (
+	controllerMemoryKillGoesOn   = "Your session and the pod's other processes go on. "
+	controllerMemoryKillRunAgain = "Do not run the same program again unchanged: bound its output (a page, a limit, a stream), " +
+		"or send heavy work where your deployment's instructions say."
+)
+
+// controllerKernelProtectedKillEnd is what the controller reads of one of the processes that run
+// its session stopped by its microVM pod's kernel (shimwire.MemoryKillCauseKernelProtected): the
+// shim and its direct children, the agent among them, which the launcher's controllerClassifier
+// marks as the session's. The controller's pod has no role-init: its shim is the launcher's
+// generation itself. The agent's end ends the shim's (the shim returns the agent's exit), and the
+// shim's is the generation's exit: the launcher, the container's PID 1, ends what the generation
+// left (cleanExitedGeneration) and reports that exit. The daemon reads that as the controller's
+// process gone, as it reads every exit of that process (supervise's died): it takes back the task
+// the turn was running, charges one launch failure and relaunches the same session, and where the
+// claim's budget has run out and the claim fails, the controller keeper retries it with fresh
+// budgets after a wait (the daemon's controllerKeeper). Either way the same session starts again,
+// which is all the note says of it. A helper of the agent's may end alone, which is why the note
+// says what follows only of the agent. It never says the session goes on, which the end of the
+// agent's own process makes false, and it does not say "do not run the same program again", since
+// the process was not one the controller ran.
+const controllerKernelProtectedKillEnd = "It was one of the processes that run your session, not a command you ran. " +
+	"If it was your agent, your turn ended with it, and so did every command it was running. " +
+	"The daemon then starts the same session again, as it does after any exit of your session's process. " +
+	"Bound the output of what you run (a page, a limit, a stream), and send heavy work where your deployment's instructions say."
+
+// controllerMemoryGuardNote is the reason of the notice the controller reads when the memory guard
+// of its pod ended one of its programs: which process, how much it held, how near the limit the
+// pod was, that its session and the pod's other processes go on (controllerMemoryKillGoesOn), and
+// what to run in place of the same program (controllerMemoryKillRunAgain). It is written as
+// memoryGuardNote is: sizes in binary units (binarySize), and the process by its executable alone
+// in a code span (codeSpan), with none of its arguments.
+func controllerMemoryGuardNote(report shimwire.LauncherMemoryKill) string {
+	return fmt.Sprintf("The launcher's memory guard stopped one of your processes with SIGKILL because your pod was near its memory limit: "+
+		"%s (pid %d) held %s of anonymous memory while the pod's anonymous memory read %s of its %s limit. "+
+		controllerMemoryKillGoesOn+controllerMemoryKillRunAgain,
+		codeSpan(report.Executable), report.PID, binarySize(report.SizeBytes), binarySize(report.ReadingBytes), binarySize(report.LimitBytes))
+}
+
+// controllerKernelKillNote is the reason of the notice the controller reads when its microVM
+// pod's own kernel stopped one of its commands because the pod ran out of memory
+// (shimwire.MemoryKillCauseKernel): which process, how much it held, the pod's memory counter
+// against its limit, as kernelKillNote's lead gives them (kernelKillLead), then what the guard's
+// note says after its lead: that the controller's session and the pod's other processes go on,
+// and what to run in place of the same program.
+func controllerKernelKillNote(report shimwire.LauncherMemoryKill) string {
+	return kernelKillLead(report) + controllerMemoryKillGoesOn + controllerMemoryKillRunAgain
+}
+
+// controllerKernelProtectedKillNote is the reason of the notice the controller reads when its
+// microVM pod's own kernel stopped one of the processes that run its session
+// (shimwire.MemoryKillCauseKernelProtected): which process, how much it held, the pod's memory
+// counter against its limit (kernelKillLead), and what that process's end does to the controller
+// (controllerKernelProtectedKillEnd), as kernelProtectedKillNote tells a role.
+func controllerKernelProtectedKillNote(report shimwire.LauncherMemoryKill) string {
+	return kernelKillLead(report) + controllerKernelProtectedKillEnd
 }
 
 // codeSpan is text as one Markdown code span that nothing in text ends early or spreads over
@@ -2281,8 +2628,8 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 //
 // freshSession is the operator's `--fresh-session`: the start it queues retries the claim in a
 // new session rather than the one it recorded. An architect's retry of a held phase asks for
-// none — a claim the provider refused out of its budget takes a new session all the same, which
-// the claim's own retry decides (supervise's freshSession).
+// none, and resumes the recorded session, whatever the claim's run of refused turns (supervise's
+// freshSession).
 //
 // The release is logged as it commits: the issue, the phase it comes back to and the reason,
 // which is the architect's own words where its retry named any.
@@ -2310,7 +2657,7 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// below: the hold is gone either way, and the reason is the one the restarted role's task
 	// carries.
 	e.logOnCommit(ctx, "workflow: a held phase is released", "issue", issue.Key, "phase", from, "reason", reason)
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil {
 		return "", err
 	}
@@ -2332,9 +2679,15 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			reason += ": " + r.reason
 		}
 	}
-	return from, e.restart(ctx, tx, issue, issue.RoleAt(from), func(at Standing) string {
+	if err := e.restart(ctx, tx, issue, issue.RoleAt(from), func(at Standing) string {
 		return task(issue, at, record.PhaseRow{}, pr, reason)
-	}, freshSession)
+	}, freshSession); err != nil {
+		return "", err
+	}
+	// The release puts the issue back in a phase, so it queues the reconcile of the tree's news as
+	// a move does after its start (queueMovedNews). It puts the issue back in the phase the hold is
+	// from, which is no move between phases, so the merge forward stands as the hold left it.
+	return from, e.queueMovedNews(ctx, tx, issue)
 }
 
 // backwardRefusal is why the guard refuses fact, and "" where it does not: the one sentence that
@@ -2343,6 +2696,10 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // step, nearest first in the task's order (Walk.backwardPlace), where the move names step and
 // more than one serves it: the move does not say which, and the refusal names both and the field
 // that names one.
+//
+// It is a function of the issue, its walk and the fact alone and reads no pull request, so the
+// rule that a merged change never moves back is none of its readings: backward, which holds the
+// transaction, reads the issue's pull request after this answers "" and refuses that move itself.
 func backwardRefusal(issue record.Issue, w Walk, fact intake.BackwardMove, served bool, two []record.TaskPlace) string {
 	switch {
 	case fact.To == "":
@@ -2354,7 +2711,7 @@ func backwardRefusal(issue record.Issue, w Walk, fact intake.BackwardMove, serve
 			"the verdict fail and returnTo; the owner names it with request_backward_move and returnTo.",
 			w.Task, issue.Key, two[0].Position, w.RoleAt(two[0]), two[1].Position, w.RoleAt(two[1]))
 	case !served:
-		return fmt.Sprintf("a backward move reaches an earlier phase, and no backward row of %s serves %s; the %s's move of %s changed nothing",
+		return fmt.Sprintf("a backward move reaches an earlier step of the task, at an earlier phase or at step, and no backward row of %s serves %s; the %s's move of %s changed nothing",
 			issue.Phase, fact.To, fact.Requester, issue.Key)
 	case issue.RoleAt(issue.Phase) != fact.Requester:
 		return fmt.Sprintf("a backward move is the role running the issue's phase: %s of %s is the %s's, so the %s's move to %s changed nothing",
@@ -2396,13 +2753,21 @@ func (e *Engine) phaseNow(ctx context.Context, tx pgx.Tx, issue record.Issue) (p
 	return moved.Phase, nil
 }
 
+// backward applies a backward move (request_backward_move): the role running the issue's phase
+// sends it back to an earlier phase, with its reason. It is refused BACKWARD_REFUSED, changing
+// nothing, where the table's guard refuses it (backwardRefusal), and where the issue's pull
+// request has merged, in whichever phase the issue stands: a merged change never moves back.
+// GitHub reopens no merged pull request and its change is already on the base branch, so an
+// earlier phase has no pull request left to carry new work; that work goes to an issue whose pull
+// request is still open, which the architect decides.
 func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMove) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
 	// The table is the guard, and it reads three things: the move names a target, a backward row
-	// of the issue's phase serves that target - anything but an earlier phase has none - and the
+	// of the issue's phase serves that target - anything but an earlier step of the task, at an
+	// earlier phase or at step, has none - and the
 	// caller is the role running that phase. An empty target is read first, since the row lookup
 	// takes it to match any row.
 	//
@@ -2417,11 +2782,13 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if err != nil {
 		return intake.Result{}, err
 	}
-	// The move reaches the one earlier place of its task that runs as its target (backwardPlace);
-	// where none or more than one does, no row serves it. A move that names its place (returnTo)
-	// goes there instead, judged by the one judge of a named place a failed step's returnTo meets
-	// (returnStep), and its target must be the phase that place runs as. A move that names no
-	// target is refused first, below, whatever it names.
+	// The move reaches the nearest earlier place of its task that runs as its target
+	// (backwardPlace), as a role that stands at two steps runs its phase at two; where none does,
+	// no row serves it, and where the target is step and two earlier places run as step, a move
+	// that names no place is refused, since it does not say which (backwardRefusal). A move that
+	// names its place (returnTo) goes there instead, judged by the one judge of a named place a
+	// failed step's returnTo meets (returnStep), and its target must be the phase that place runs
+	// as. A move that names no target is refused first, below, whatever it names.
 	target, found, two := w.backwardPlace(fact.To)
 	if fact.ReturnTo > 0 && fact.To != "" {
 		place, why := backwardReturn(*issue, w, fact)
@@ -2437,6 +2804,17 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if why := backwardRefusal(*issue, w, fact, served, two); why != "" {
 		return refused("BACKWARD_REFUSED", why), nil
 	}
+	// A merged pull request refuses the move in every phase: in merging, where a root's close can
+	// wait on the rest of its tree (closeMerged), and in an earlier phase whose pull request merged
+	// early, which the architect is told of (merged).
+	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if pr != nil && pr.State == record.PullRequestMerged {
+		return refused("BACKWARD_REFUSED", fmt.Sprintf("the %s's move of %s to %s changed nothing: its pull request has merged; a merged change never moves back",
+			fact.Requester, issue.Key, fact.To)), nil
+	}
 	// The move posts its reason on the issue, so a reason Dispatch would refuse there is refused
 	// here, before anything moves (backwardReasonRefusal).
 	if code, why := backwardReasonRefusal(issue.Phase, fact.To, fact.Requester, fact.Reason); code != "" {
@@ -2449,7 +2827,7 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if lingers {
 		return refusedLingering(*issue, fmt.Sprintf("the %s's backward move to %s", fact.Requester, fact.To)), nil
 	}
-	row, err := e.phaseRow(ctx, tx, *issue, fact.Requester)
+	row, err := e.phaseRowOn(ctx, tx, *issue, w, fact.Requester)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -2465,16 +2843,13 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	// A phase worker's move is its step's worker's decision: two claims of one issue can hold one
 	// role (record.WorkerClaim), and the move names the claim that asked it (By). A claim the
 	// role's row does not name on its step works nothing the move would send back, so its move is
-	// refused, unspent. A row that runs no step of the plan names no worker, and a move that names
-	// no claim, from a route before the claim was carried, is judged by its role as before.
-	if fact.Requester != claim.RoleArchitect && fact.By != "" && row.StepTask != "" && row.Claim != "" && fact.By != row.Claim {
+	// refused, unspent. A row that names no agent of its own (record.NamesItsAgent) names no worker
+	// here, and a move that names no claim, from a route before the claim was carried, is judged by
+	// its role as before.
+	if fact.Requester != claim.RoleArchitect && fact.By != "" && record.NamesItsAgent(row) && fact.By != row.Claim {
 		return intake.Result{Refusal: refused("BACKWARD_REFUSED", fmt.Sprintf(
 			"%s is a claim of the %s of %s, and %s works its step: only that claim's move sends the step back; this move changed nothing",
 			fact.By, fact.Requester, issue.Key, row.Claim)).Refusal, Unspent: true}, nil
-	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
-	if err != nil {
-		return intake.Result{}, err
 	}
 	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerBackward, target, row, pr, fact.Reason)
 }
@@ -2487,34 +2862,36 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 // the current entry's task, owed to its claim, comes by itself.
 func staleBackwardMove(issue string, requester claim.Role, p phase.Phase, current, served int64) *intake.Refusal {
 	return &intake.Refusal{Status: 409, Code: "BACKWARD_REFUSED", Message: fmt.Sprintf(
-		"%s handed the %s phase %s again: this move back is of entry %d, which is %d behind the entry %d the phase is on, so it changed nothing. "+
+		"%s handed the %s phase %s again: this move back is of entry %d, not the phase's current entry %d, so it changed nothing. "+
 			"End this turn without moving the issue. The task of the entry the phase is on is owed to this claim, and the daemon sends it by itself: judge that task's work at the head it names, and move the issue back in its turn if that work calls for it",
-		issue, requester, p, served, current-served, current)}
+		issue, requester, p, served, current)}
 }
 
-// parkRule is the condition dispatch://INFRA-2971 sets on each move of an issue to backlog,
-// icebox or triage. Each refusal and notice of this package that names such a move (park_child,
-// or icebox for a children-first wait) carries it word for word, as the skills and the prompts do,
-// so that an architect reads one rule wherever it reads of a park.
-const parkRule = "only when a person asked for that move, or when the work is done, folded into another issue or no longer needed"
+// endChildrenFirst is what the refusals over children still in the workflow, sign_off's and
+// close_root's, tell the architect to do: wait for its status write to be taken, end a child by
+// that write (record.EndChildRule), and ask the person about a child that no move fits. hold is
+// what the architect holds until the person answers.
+func endChildrenFirst(hold string) string {
+	return record.StatusNotTakenYet + " " + record.EndChildRule +
+		" When a child can neither finish nor take one of these moves, ask the person. Hold the " + hold + " until they answer."
+}
 
 // signOff is the architect's acceptance of the step before it: it moves the issue from accepting
 // to the task's next step, or to retro where the acceptance is the task's last step (the default
 // steps), and starts that step's role told the report of the step the owner accepted: the handoff
-// on the phases row of the role of the step before accepting, with the pull request. An issue with
-// no plan rows walks today's line, where that step is the review, so its retro is told the
-// review's handoff, as the approval told it before acceptance existed. Outside accepting it
-// changes nothing and says so.
+// on the phases row of that step, its role's row at that step's place (phaseRow), with the pull
+// request. An issue with no plan rows walks today's line, where that step is the review, so its
+// retro is told the review's handoff, as the approval told it before acceptance existed. Outside
+// accepting it changes nothing and says so.
 //
 // It is refused while any issue beneath the one being accepted is still in the workflow
-// (OpenBeneath), with SIGNOFF_CHILD_IN_WORKFLOW naming them. A parent's work is proved by a head
-// that carries its children's merges: accepted first, it would reach retro and the merge
-// with their work not in it, which is what dispatch://INFRA-980 forbids. The acceptance
-// was held this way once before (dispatch://INFRA-229) and the hold was taken off because a
-// parent's approved pull request then waited outside the merge queue and went stale against its
-// base; under children-first a parent starts its own phases only after its children have left,
-// so by the time it is accepted there is nothing left to wait for, and the refusal is the
-// backstop for a child filed after the parent started.
+// (OpenBeneath), with SIGNOFF_CHILD_IN_WORKFLOW naming them, since a parent is accepted only once
+// no issue beneath it is still in the workflow (dispatch://INFRA-980). The acceptance was held
+// this way once before (dispatch://INFRA-229) and the hold was taken off because a parent's
+// approved pull request then waited outside the merge queue and went stale against its base;
+// under children-first a parent starts its own phases only after its children have left, so by
+// the time it is accepted there is nothing left to wait for, and the refusal is the backstop for
+// a child filed after the parent started.
 func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -2528,8 +2905,9 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 		return intake.Result{}, err
 	}
 	if len(open) > 0 {
-		return refused("SIGNOFF_CHILD_IN_WORKFLOW", fmt.Sprintf("%s is not accepted while these issues beneath it are still in the workflow: %s. A parent's head proves its children's merged work, so it is accepted after them: run each one to done, and sign off again. Park one with park_child "+parkRule+", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer",
-			issue.Key, strings.Join(open, ", "))), nil
+		return refused("SIGNOFF_CHILD_IN_WORKFLOW", fmt.Sprintf("%s is not accepted while these issues beneath it are still in the workflow: %s. "+
+			"A parent is accepted only once no issue beneath it is still in the workflow. Sign off again when each of them has left the workflow.",
+			issue.Key, strings.Join(open, ", "))+" "+endChildrenFirst("acceptance")), nil
 	}
 	accepted, err := e.acceptedRole(ctx, tx, *issue)
 	if err != nil {
@@ -2539,7 +2917,7 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	if err != nil {
 		return intake.Result{}, err
 	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -2617,8 +2995,9 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// not written anew. The move's two phases go with the pass, because the move is counted under
 	// its own pair and a hook of the deployment stands on that pair (recordPass,
 	// fireWorkBackHooks), so a hook sees every way the work goes back and not the review's alone.
-	// The round is the review's alone — it counts the review rounds review_round_cap bounds, so
-	// only a review that requested changes moves it, and a send-back for anything else leaves it
+	// The round is the review's — it counts the review rounds review_round_cap bounds, so only a
+	// review that requested changes moves it, or the fail of a step of the type review whose agent
+	// is not the owner (Walk.reviewFails), and a send-back for anything else leaves it
 	// where it stands. The pull request goes with both because each reads it: a move made while
 	// the record holds this head in a confirmed conflict with its base (record.PullRequest's
 	// ConflictingHead) is a conflict round, which review_round_cap does not count and no pair
@@ -2649,7 +3028,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return err
 		}
 	}
-	// A parent whose plan has no acceptance step passes its last step into its retro, and while an
+	// A parent whose last step is not the owner's acceptance passes that step into its retro, and while an
 	// issue beneath it is still in the workflow Legion holds it before its retro instead
 	// (beneathRetro, holdBeforeRetro).
 	beneath, err := e.beneathRetro(ctx, tx, issue, w, row.To)
@@ -2671,7 +3050,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if w.Stored && row.To != phase.Done {
 		starting = w.RoleAt(row.ToPlace)
 	}
-	if err := e.clearHandoff(ctx, tx, issue, starting); err != nil {
+	if err := e.clearHandoff(ctx, tx, issue, w, starting); err != nil {
 		return err
 	}
 	// The move out of admitted is where the run's work starts, and so where the plan it carries
@@ -2714,6 +3093,9 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return err
 		}
 	}
+	if err := e.queueMovedNews(ctx, tx, issue); err != nil {
+		return err
+	}
 	// Two moves start a step no phase worker's start begins, so it starts here, under the agent it
 	// names (startNamedStep): a merge GitHub has already made, which no merger runs and whose close
 	// ends it, and accepting, whose role is the architect, for which start above starts no worker
@@ -2738,10 +3120,10 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		}
 	}
 	// The merge forward follows the move (mergeForwardOnEntry): a move into implementing drops
-	// it, and a move at a head held in a confirmed conflict asks for it where the phase entered
-	// needs a head that merges. It comes after the start, so the worker of the phase entered is
+	// it, and a move at a head held in a confirmed conflict asks for it where the merge comes
+	// next. It comes after the start, so the worker of the phase entered is
 	// started before the hold that tells it to wait for the merge.
-	if err := e.mergeForwardOnEntry(ctx, tx, issue, from); err != nil {
+	if err := e.mergeForwardOnEntry(ctx, tx, issue, w); err != nil {
 		return err
 	}
 	if mergedAlready {
@@ -2809,13 +3191,17 @@ func (e *Engine) arrive(ctx context.Context, tx pgx.Tx, issue *record.Issue, w *
 	return from, nil
 }
 
-// holdBeforeRetro is the pass of a parent's last step into to, its retro, on a plan with no
-// acceptance step while beneath, the issues beneath it, are still in the workflow (beneathRetro):
-// the task moves to its retro's place and the issue stands in held for its children
+// holdBeforeRetro is the pass of a parent's last step into to, its retro, on a task whose last
+// step is not the owner's acceptance while beneath, the issues beneath it, are still in the
+// workflow (beneathRetro): the task moves to its retro's place and the issue stands in held for
+// its children
 // (record.HoldForChildren) instead. The hold writes no status, since held has none, starts no
 // retro, which starts once none of them is open beneath it (releaseHeldParents), and keeps the last step's
 // handoff for the retro's task, which no clear of a handoff takes. The architect is told the pass
-// and the hold.
+// and the hold. The hold asks nothing of the merge forward: the retro is where the merge comes
+// next (classify.MergeComesNext), where a move asks nothing (mergeForwardOnEntry). An ask made in
+// implementing stays on the record, neither the hold nor its release (startHeldRetro) asks it
+// again, and the move into merging asks the merger.
 func (e *Engine) holdBeforeRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, trigger TriggerKind, to phase.Phase, place record.TaskPlace,
 	handoff record.PhaseRow, pr *record.PullRequest, reason string, beneath []string) error {
 	ended := w.endingRole(issue.Phase)
@@ -2829,6 +3215,31 @@ func (e *Engine) holdBeforeRetro(ctx context.Context, tx pgx.Tx, issue record.Is
 		return err
 	}
 	return e.notice(ctx, tx, issue.Key, retroHeldNotice(issue.Key, beneath))
+}
+
+// queueMovedNews queues the reconcile of issue's tree's news of its approved design
+// (record.QueueDesignNews) when the move just written leaves the holder of issue's phase owed news
+// (record.OwedNews over the record as the move leaves it). A phase worker's start carries what its
+// holder is owed (the daemon's start executor), but no start carries news into accepting, since
+// the engine starts no architect (start): the reconcile is what sends an owed member in accepting
+// its news, as a task to the architect that owns it, beside the phase-finished notice. A move into
+// any other phase queues it too, so news whose change set no start could carry yet is sent once
+// the reconcile has recorded it.
+//
+// Each release out of held calls it after the start of the phase it releases into, as a move does
+// (restartTask, retryPhase, startHeldRetro): a hold owes the issue nothing (record.OwedNews names a
+// held issue UntoldHeld), so a version approved while it was held can reach the holder of the
+// phase entered with no change set recorded, which that start cannot carry and the reconcile
+// records and sends.
+func (e *Engine) queueMovedNews(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	facts, err := record.TreeNewsFacts(ctx, e.store, tx, e.cfg.Steps, issue.Tree)
+	if err != nil {
+		return err
+	}
+	if _, owes := record.OwedNews(facts).Member(issue.Key); owes {
+		return record.QueueDesignNews(ctx, e.store, tx, issue.Tree, e.now())
+	}
+	return nil
 }
 
 // noticeFor is what a transition on trigger out of from into to tells the architect: that from
@@ -2968,21 +3379,67 @@ func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 // todo, starts the task again. It answers stopTask's refusal of a stop that cannot stand where the
 // issue stands now (a root that waits on a person before its first step), and writes nothing then.
 func (e *Engine) stopLostRole(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, lost record.TaskPlace, end StepEnd) (*intake.Refusal, error) {
-	role := w.Steps[lost.Position-1].Role
-	why := fmt.Sprintf("step %d names the role %s, which the deployment no longer defines", lost.Position, role)
-	said := fmt.Sprintf("task %s of %s was stopped: %s", w.Task, issue.Key, why)
-	from := record.StandsAt(issue)
-	if refusal, err := e.stopTask(ctx, tx, issue, w, why, said, end); err != nil || refusal != nil {
+	why, told := lostStop(issue, w, lost, e.cfg.Deployment)
+	if refusal, err := e.stopTask(ctx, tx, issue, w, why, told.Reason, end); err != nil || refusal != nil {
 		return refusal, err
 	}
-	return nil, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "task-stopped", Role: claim.Role(role), Phase: from, Reason: said})
+	return nil, e.notice(ctx, tx, issue.Key, told)
+}
+
+// keepLostStop answers a person's todo on a root held for its stopped task when a step of the task
+// names a role the engine's deployment no longer defines (Walk.lostFrom from step 1, since every
+// step of the task runs again once it goes on): nothing starts, and the stop stands, now for that
+// step, which the owner's next version of the plan or the role defined again ends. A task its
+// owner stopped before the role was lost, which the boot leaves as it stands (stopLostRoles), takes
+// the lost step's reason here. The issue keeps its hold, with the observation the todo brought
+// (released); the status the record keeps is written back over the todo with the stop's reason, as
+// a todo on a root held for its children has its status written back (releaseHeldRoot); and the
+// owner is told again, in the task-stopped notice that names the role. Nothing moved, so no
+// movement is marked and no process is stopped: the stop that held the issue stopped it.
+func (e *Engine) keepLostStop(ctx context.Context, tx pgx.Tx, released record.Issue, w Walk, lost record.TaskPlace, fact intake.DispatchIssue) error {
+	why, told := lostStop(released, w, lost, e.cfg.Deployment)
+	if err := e.store.StopTask(ctx, tx, released.Key, released.Generation, w.Task, why); err != nil {
+		return err
+	}
+	if err := e.WriteIssue(ctx, tx, released); err != nil {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: a todo starts no task whose step names a role the deployment no longer defines; the task stays stopped",
+		"issue", released.Key, "tree", released.Tree, "task", w.Task, "step", lost.Position, "reason", why)
+	if err := e.enqueue(ctx, tx, released.Key, record.OrdinaryStatusWrite(released.Status, fact.Status, told.Reason)); err != nil {
+		return err
+	}
+	return e.notice(ctx, tx, released.Key, told)
+}
+
+// lostStop is the stop of w's task of issue for its work at lost, which d lost (Walk.lostAt): the
+// task's reason, which names the step and the role, and the task-stopped notice that tells the
+// task's owner, which names the role, the place the issue stands and that reason. Where the step's
+// role is lost the reason names it. Where the work's agent is named for a role d lost (lostAgent),
+// a step of a role d defines or the retro, the reason names that agent and its name's role, the
+// slot it runs in: a later version of the plan gives that work an agent of another name.
+func lostStop(issue record.Issue, w Walk, lost record.TaskPlace, d plan.Deployment) (string, record.Notice) {
+	step, _ := w.stepAt(lost)
+	role := step.Role
+	why := fmt.Sprintf("step %d names the role %s, which the deployment no longer defines", lost.Position, role)
+	if lost.Kind != record.PlaceStep || d.Defines(step.Role) {
+		role = string(step.AgentName())
+		work := fmt.Sprintf("step %d", lost.Position)
+		if lost.Kind == record.PlaceRetro {
+			work = "the retro"
+		}
+		why = fmt.Sprintf("%s is the work of the agent %s, which runs in the slot of the role %s, which the deployment no longer defines", work, role, role)
+	}
+	return why, record.Notice{Kind: "task-stopped", Role: claim.Role(role), Phase: record.StandsAt(issue),
+		Reason: fmt.Sprintf("task %s of %s was stopped: %s", w.Task, issue.Key, why)}
 }
 
 // stopLostRoles stops, at the daemon's boot, the task of each issue of the project in the workflow
 // whose task still has a step to run of a role the engine's deployment no longer defines
 // (Walk.lostStep), running or waiting: the settings are read at the start, so a restart is where a
 // role leaves the deployment while the store still names it. A task its plan already holds
-// (planHold) has nothing to stop. A task whose stop cannot stand where its issue stands now (a root
+// (planHold) has nothing to stop: a todo on its root keeps it stopped while one of its steps names
+// a lost role (keepLostStop). A task whose stop cannot stand where its issue stands now (a root
 // that waits on a person before its first step) is passed over with one log line: the move into
 // its first step stops it then (transition's lostAt).
 func (e *Engine) stopLostRoles(ctx context.Context, tx pgx.Tx) error {
@@ -3113,11 +3570,17 @@ func (e *Engine) claimTargets(ctx context.Context, tx pgx.Tx, issue record.Issue
 // it (record.PhaseRowAt). An issue with no plan rows reads the role's one row. issue is the record
 // as the caller read it in tx, so the row is read with one read of the rows and one of the walk.
 func (e *Engine) phaseRow(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) (record.PhaseRow, error) {
-	rows, err := e.store.Phases(ctx, tx, issue.Key)
+	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
 		return record.PhaseRow{}, err
 	}
-	w, err := e.walk(ctx, tx, issue)
+	return e.phaseRowOn(ctx, tx, issue, w, role)
+}
+
+// phaseRowOn is phaseRow on w, the walk of issue's run as the caller holds it in tx, so a caller
+// that read the walk reads it once.
+func (e *Engine) phaseRowOn(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, role claim.Role) (record.PhaseRow, error) {
+	rows, err := e.store.Phases(ctx, tx, issue.Key)
 	if err != nil {
 		return record.PhaseRow{}, err
 	}
@@ -3158,7 +3621,7 @@ func (e *Engine) issueForBranch(ctx context.Context, tx pgx.Tx, repo, branch str
 
 // pullRequest is the recorded pull request number of repo, when its issue is recorded on repo.
 // The read is made under the name the fact carries and then, when it finds nothing, under the
-// other name of the pair that names it (ghrepo.Under): a record keeps the repository it was
+// other name of the pair that names it (pullRequestUnder): a record keeps the repository it was
 // written under until the daemon's one-time rename pass writes the pair's `to` over it, so a pull
 // request already open when its repository was transferred is recorded under the name it moved
 // from while every event after names the one it moved to. A deployment that configures no rename
@@ -3166,22 +3629,42 @@ func (e *Engine) issueForBranch(ctx context.Context, tx pgx.Tx, repo, branch str
 // first finds nothing, which is the common case — an event of a pull request this daemon does not
 // record at all.
 func (e *Engine) pullRequest(ctx context.Context, tx pgx.Tx, repo string, number int) (*record.PullRequest, error) {
-	pr, err := ghrepo.Under(e.cfg.RepositoryRenames, repo, func(name string) (*record.PullRequest, error) {
+	return e.pullRequestUnder(ctx, tx, repo, func(name string) (*record.PullRequest, error) {
 		return e.store.PullRequestByNumber(ctx, tx, name, number)
 	})
-	if err != nil || pr == nil {
-		return nil, err
-	}
-	return e.ownPullRequest(ctx, tx, pr, repo)
 }
 
 // pullRequestByBranch is the recorded pull request of repo on branch, when its issue is recorded
 // on repo. It reads under the same names as pullRequest, in the same order and for the same
 // reason.
 func (e *Engine) pullRequestByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*record.PullRequest, error) {
-	pr, err := ghrepo.Under(e.cfg.RepositoryRenames, repo, func(name string) (*record.PullRequest, error) {
+	return e.pullRequestUnder(ctx, tx, repo, func(name string) (*record.PullRequest, error) {
 		return e.store.PullRequestByBranch(ctx, tx, name, branch)
 	})
+}
+
+// pullRequestRow and pullRequestRowByBranch are what pullRequest and pullRequestByBranch answer,
+// read under the same names and owned by the same rule, as the pull request's row alone
+// (record.Store.PullRequestRowByNumber, PullRequestRowByBranch): with none of what it remembers of
+// its settled heads, for a fact's handling that never writes the record back and reads neither
+// its SettledHeads nor its head run's Settled.
+func (e *Engine) pullRequestRow(ctx context.Context, tx pgx.Tx, repo string, number int) (*record.PullRequest, error) {
+	return e.pullRequestUnder(ctx, tx, repo, func(name string) (*record.PullRequest, error) {
+		return e.store.PullRequestRowByNumber(ctx, tx, name, number)
+	})
+}
+
+func (e *Engine) pullRequestRowByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*record.PullRequest, error) {
+	return e.pullRequestUnder(ctx, tx, repo, func(name string) (*record.PullRequest, error) {
+		return e.store.PullRequestRowByBranch(ctx, tx, name, branch)
+	})
+}
+
+// pullRequestUnder is the pull request read finds under repo and then, when it finds nothing,
+// under the other name of the pair that names repo (ghrepo.Under), when its issue is recorded on
+// repo (ownPullRequest).
+func (e *Engine) pullRequestUnder(ctx context.Context, tx pgx.Tx, repo string, read func(name string) (*record.PullRequest, error)) (*record.PullRequest, error) {
+	pr, err := ghrepo.Under(e.cfg.RepositoryRenames, repo, read)
 	if err != nil || pr == nil {
 		return nil, err
 	}

@@ -65,7 +65,7 @@ func TestAKeyKeepsTheNameWhoseClaimHoldsItsSessionAfterItsRowsAreGone(t *testing
 		}
 		if v.place == 2 {
 			// The planner's step runs first and moves the task on to the implementer's.
-			completesAs(t, pool, engine, claim.RolePlanner, agentToken(t, "planner"), "plan", version)
+			completesAs(t, pool, engine, claim.RolePlanner, agentToken(t, "planner"), "plan", version, "head")
 			assertWalksAt(t, pool, engine, key, phase.Implementing, stepPlace(2))
 		}
 		start := lastStartOf(t, pool, key, v.role)

@@ -160,8 +160,9 @@ func TestOhMyPiAppendsTheWholePromptFileItIsNamed(t *testing.T) {
 	}
 }
 
-// A pod's agent resumes the session its claim recorded and runs the model the pod's overlay puts
-// on the `default` role, not the one that session saved: `--model @default` rides the recorded
+// A pod's agent of a role that names no model resumes the session its claim recorded and runs the
+// model the pod's overlay puts on the `default` role, not the one that session saved: `--model
+// @default` rides the recorded
 // argv, and @default is Oh My Pi's own name for that role. Measured on the pinned binary: a
 // session saved on one model, the profile's `modelRoles.default` moved to another, and the
 // recorded argv's own answer naming the profile's current model. The same argv with the flag
@@ -271,6 +272,81 @@ func TestTheResumedAgentRunsTheConfiguredModel(t *testing.T) {
 	}
 	if files := testbin.SessionFiles(t, sessions); !slices.Equal(files, saved) {
 		t.Errorf("the profile holds %q after the resumes, want the one session file %q", files, saved)
+	}
+}
+
+// A pod's agent resumes a session whose saved model the profile no longer has, and starts: its
+// launch names `--model` (agentArgv), and the pinned Oh My Pi restores a session's saved model only
+// for a launch that names none. Measured on the pinned binary: a session saved on operator/saved,
+// then the profile's models.yml drops that model and `modelRoles.default` moves to
+// operator/configured, as an operator's apply.sh does to a route. The same argv with the flag taken
+// out is the control: in `--mode rpc` Oh My Pi refuses it, `Could not restore model
+// operator/saved`, with a non-zero exit. So a route that drops a model a session last used fails
+// none of a pod's resumes (docs/kubernetes.md, "Resume"). The control runs first, for the reason
+// TestTheResumedAgentRunsTheConfiguredModel gives: the flagged resume writes a `model_change` of
+// its own into the session.
+func TestAResumeNamingItsModelOutlivesADroppedSavedModel(t *testing.T) {
+	omp := testbin.OMP(t)
+	dir := t.TempDir()
+	home, work := filepath.Join(dir, "home"), filepath.Join(dir, "work")
+	if err := os.MkdirAll(work, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		testbin.AnthropicAnswer(w, "saved", "ok")
+	}))
+	defer server.Close()
+	// route is the profile's models.yml with the test's provider serving the models named.
+	route := func(ids ...string) string {
+		models := "providers:\n  operator:\n    baseUrl: " + server.URL + "\n    auth: apiKey\n    api: anthropic-messages\n" +
+			"    apiKey: unused\n    models:\n"
+		for _, id := range ids {
+			models += "      - id: " + id + "\n        name: " + id + "\n"
+		}
+		return models
+	}
+	testbin.OMPHome(t, omp, home)
+	agent := testbin.WriteOMPProfile(t, home, route("saved", "configured"), "modelRoles:\n  default: operator/saved\n")
+	environ := testbin.OMPEnviron(home)
+
+	if stdout, stderr, err := runOmp(t, []string{omp, "-p", "Reply ok."}, work, environ, ""); err != nil {
+		t.Fatalf("saving a session: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
+	}
+	saved := testbin.SessionFiles(t, filepath.Join(agent, "sessions"))
+	if len(saved) != 1 {
+		t.Fatalf("the profile holds %q after one print-mode turn, want one session file", saved)
+	}
+	if got, want := testbin.ModelChanges(t, saved[0]), []string{"operator/saved"}; !slices.Equal(got, want) {
+		t.Fatalf("the saved session's model changes = %q, want %q", got, want)
+	}
+
+	// The operator drops the saved model from the route and moves the role off it.
+	for name, content := range map[string]string{"models.yml": route("configured"), "config.yml": "modelRoles:\n  default: operator/configured\n"} {
+		if err := os.WriteFile(filepath.Join(agent, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	argv := withPromptFile(t, launch{spec: runtime.SpawnSpec{ResumeSessionFile: saved[0]}}.agentArgv([]string{omp}), "The test's system prompt.")
+	if at := slices.Index(argv, "--model"); at < 0 || at+1 == len(argv) || argv[at+1] != "@default" {
+		t.Errorf("the resumed launch's argv %q names no --model @default", argv)
+	}
+	const state = `{"type":"get_state","id":"1"}` + "\n"
+
+	// The control, first: the same launch with the flag taken out restores the session's saved
+	// model, which the route no longer has, and is refused.
+	without := slices.DeleteFunc(slices.Clone(argv), func(word string) bool { return word == "--model" || word == "@default" })
+	if _, stderr, err := runOmp(t, without, work, environ, state); err == nil || !strings.Contains(stderr, "Could not restore model operator/saved") {
+		t.Errorf("the resume without the flag ended %v with stderr %q, want a refusal naming Could not restore model operator/saved", err, stderr)
+	}
+
+	// The launch itself names its model, so it restores nothing and starts on the role's model.
+	stdout, stderr, err := runOmp(t, argv, work, environ, state)
+	if err != nil {
+		t.Fatalf("the resume that names its model: omp %s: %v\nstdout: %s\nstderr: %s", strings.Join(argv[1:], " "), err, stdout, stderr)
+	}
+	if got := testbin.StateModel(t, stdout); got != "operator/configured" {
+		t.Errorf("the resumed agent runs %s, want the profile's operator/configured\nstderr: %s", got, stderr)
 	}
 }
 

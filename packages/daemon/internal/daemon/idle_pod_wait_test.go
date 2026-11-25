@@ -54,10 +54,11 @@ func podWaitHeldNotices(t *testing.T, r *idleRig) []string {
 }
 
 // An operator's suspension that holds a pod a role's start waits for is a wait nothing ends until
-// the operator acts: main's rule keeps the pod for the suspension (ruling 18 point 4). The
+// the operator acts: main's rule keeps the pod for the suspension. The
 // controller is told once for each streak of that hold, with what holds the pod, and told again
 // only when a later streak begins.
 func TestAnOperatorsSuspensionThatHoldsAWaitingPodIsToldOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	t.Run("a start waits for the pod", func(t *testing.T) {
 		rig := newIdleRig(t)

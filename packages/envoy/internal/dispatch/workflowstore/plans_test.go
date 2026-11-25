@@ -755,15 +755,15 @@ func TestProjectPlansTakesThePlanMadeLastThenTheGreatestID(t *testing.T) {
 // the rest default plans, so a rule that took an owner's plan over a default one, before the
 // generation or as a tie of it, finds an owner's plan newer than a plan after it.
 func TestAPlanIsNewerByGenerationThenMadeThenID(t *testing.T) {
-	plans := []madePlan{
-		{plan: Plan{ID: "9c000000-0000-4000-8000-000000000000", Generation: 1, Source: PlanSourceOwner}, made: minute(50)},
-		{plan: Plan{ID: "5c000000-0000-4000-8000-000000000000", Generation: 2, Source: PlanSourceDefault}, made: minute(10)},
-		{plan: Plan{ID: "1c000000-0000-4000-8000-000000000000", Generation: 2, Source: PlanSourceOwner}, made: minute(30)},
-		{plan: Plan{ID: "3c000000-0000-4000-8000-000000000000", Generation: 2, Source: PlanSourceDefault}, made: minute(30)},
-		{plan: Plan{ID: "2c000000-0000-4000-8000-000000000000", Generation: 3, Source: PlanSourceDefault}, made: minute(0)},
+	plans := []MadePlan{
+		{Plan: Plan{ID: "9c000000-0000-4000-8000-000000000000", Generation: 1, Source: PlanSourceOwner}, Made: minute(50)},
+		{Plan: Plan{ID: "5c000000-0000-4000-8000-000000000000", Generation: 2, Source: PlanSourceDefault}, Made: minute(10)},
+		{Plan: Plan{ID: "1c000000-0000-4000-8000-000000000000", Generation: 2, Source: PlanSourceOwner}, Made: minute(30)},
+		{Plan: Plan{ID: "3c000000-0000-4000-8000-000000000000", Generation: 2, Source: PlanSourceDefault}, Made: minute(30)},
+		{Plan: Plan{ID: "2c000000-0000-4000-8000-000000000000", Generation: 3, Source: PlanSourceDefault}, Made: minute(0)},
 	}
-	text := func(plan madePlan) string {
-		return fmt.Sprintf("generation %d made %s id %s source %s", plan.plan.Generation, plan.made.Format(time.RFC3339), plan.plan.ID, plan.plan.Source)
+	text := func(plan MadePlan) string {
+		return fmt.Sprintf("generation %d made %s id %s source %s", plan.Plan.Generation, plan.Made.Format(time.RFC3339), plan.Plan.ID, plan.Plan.Source)
 	}
 	for older := range plans {
 		if !plans[older].newerThan(nil) {
@@ -773,6 +773,65 @@ func TestAPlanIsNewerByGenerationThenMadeThenID(t *testing.T) {
 			if got, want := plans[newer].newerThan(&plans[older]), newer > older; got != want {
 				t.Errorf("the plan of %s newer than the plan of %s: %t, want %t", text(plans[newer]), text(plans[older]), got, want)
 			}
+		}
+	}
+}
+
+// The read of some issues' plans answers each issue's plans with the moment each node was made,
+// oldest first, and nothing for an issue Legion never ran or one it was not asked about.
+func TestIssuesPlansAnswersEachIssuesPlansOldestFirst(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	second := putPlan(t, pool, defaultPlan(uuid.NewString(), "LEG-1", 2), minute(10))
+	first := putPlan(t, pool, defaultPlan(uuid.NewString(), "LEG-1", 1), minute(20))
+	putPlan(t, pool, defaultPlan(uuid.NewString(), "LEG-2", 1), minute(5))
+	got, err := IssuesPlans(context.Background(), pool, []string{"LEG-1", "LEG-3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || len(got["LEG-1"]) != 2 {
+		t.Fatalf("the read answered %v, want two plans of LEG-1 and nothing else", got)
+	}
+	if older, newer := got["LEG-1"][0], got["LEG-1"][1]; older.Plan.ID != first.ID || newer.Plan.ID != second.ID ||
+		!older.Made.Equal(minute(20)) || !newer.Made.Equal(minute(10)) {
+		t.Fatalf("the plans of LEG-1 are %s made %s, then %s made %s, want generation 1's, then generation 2's",
+			planText(older.Plan), older.Made, planText(newer.Plan), newer.Made)
+	}
+}
+
+// One run keeps one plan node, whose made_at is its first write's, and a later version replaces the
+// node's tasks whole, with a value tuple of the new tasks at the moment of its write. So the read
+// answers each version of the run's plan at the moment its own write made it, oldest first: the
+// metrics' fallback timeline then reads each mark by the version in force at its time, not the
+// whole run by the newest.
+func TestIssuesPlansAnswersEachVersionOfARunsPlanAtItsOwnTime(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	id, document := uuid.NewString(), uuid.NewString()
+	version := func(n int, steps ...string) PlanWrite {
+		return PlanWrite{ID: id, Issue: "LEG-1", Generation: new(int64(1)), Source: new(PlanSourceOwner),
+			Document: PlanDocument{ArtifactID: document, Version: n}, Tasks: []PlanTask{{ID: "a", Steps: steps}}}
+	}
+	putPlan(t, pool, version(1, "implementer", "tester", "reviewer"), minute(10))
+	putPlan(t, pool, version(2, "implementer", "reviewer", "tester"), minute(30))
+	got, err := IssuesPlans(context.Background(), pool, []string{"LEG-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plans := got["LEG-1"]
+	if len(plans) != 2 {
+		t.Fatalf("the read answered %d plans of LEG-1 (%v), want both versions of its one run", len(plans), plans)
+	}
+	for i, want := range []struct {
+		made    time.Time
+		version int
+		steps   []string
+	}{
+		{minute(10), 1, []string{"implementer", "tester", "reviewer"}},
+		{minute(30), 2, []string{"implementer", "reviewer", "tester"}},
+	} {
+		plan := plans[i]
+		if plan.Plan.ID != id || !plan.Made.Equal(want.made) || plan.Plan.Document == nil || plan.Plan.Document.Version != want.version ||
+			len(plan.Plan.Tasks) != 1 || !slices.Equal(plan.Plan.Tasks[0].Steps, want.steps) {
+			t.Fatalf("plan %d of LEG-1 is %s made %s, want version %d with steps %v made %s", i, planText(plan.Plan), plan.Made, want.version, want.steps, want.made)
 		}
 	}
 }

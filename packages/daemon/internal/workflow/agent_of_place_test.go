@@ -33,7 +33,7 @@ func TestTheAgentOfAPlaceIsOneAgentByItsNameAndByItsIdentity(t *testing.T) {
 			if err != nil {
 				t.Fatalf("the steps %q: %v", tc.words, err)
 			}
-			rows := record.NameAgents(nil, nil, planSteps(plan.Deployment{Roles: plan.BuiltinRoles()}, "LEGION-208", 1, "a", steps))
+			rows := record.NameAgents(nil, nil, nil, planSteps(plan.Deployment{Roles: plan.BuiltinRoles()}, "LEGION-208", 1, "a", steps))
 			w := Walk{Stored: true, Task: "a", Steps: rows}
 			retro := record.TaskPlace{Kind: record.PlaceRetro}
 			if named, id := w.AgentAt(retro), w.agentIDAt(retro); named != tc.named || id != tc.id {

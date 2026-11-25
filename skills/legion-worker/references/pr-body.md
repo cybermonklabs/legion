@@ -17,8 +17,7 @@ Edit the live body: read it (`gh api repos/{owner}/{repo}/pulls/{number} --jq .b
 - <two to five bullets, each one behaviour a user or operator meets, never a file name>
 **Look at first:** <one to three `path:line` places where a wrong decision would hurt> (the reviewer writes this line; with no reviewer step, the implementer does)
 **Proven by:** <the surface and the run of the check the change turns on, one line>
-**Not proven / risk:**
-- <one line per claim recorded as unproven before the merge>, or the single word `none` (the reviewer writes this line; with no reviewer step, the implementer does; `none` is invalid while such a claim stands)
+**Not proven / risk:** <a risk that stands, in one sentence; leave the line out where none stands. The reviewer writes it; with no reviewer step, the implementer does>
 **Size:** <files changed, +added/−removed>
 
 ## Verification
@@ -29,7 +28,7 @@ Edit the live body: read it (`gh api repos/{owner}/{repo}/pulls/{number} --jq .b
 - Thread <node id>: accepted by the reviewer — <its reason, one line>; resolved at <head-sha>.
 - Thread <node id>: still open — <what remains>; unresolved at <head-sha>.
 
-**Thermo:** `simplify-settled-diff` once at <head-sha>, a docs-only PR included: <0 applied | applied → new head <sha>>; defects reported: <none | <n>, fixed in <sha>>; thermonuclear pair at the reviewed head <sha> over <the whole change | <last-reviewed-sha>..<sha>>, one row per half:
+**Thermo:** `simplify-settled-diff` once at <head-sha> (a docs-only PR has no `Thermo` line): <0 applied | applied → new head <sha>>; defects reported: <none | <n>, fixed in <sha>>; thermonuclear pair at the reviewed head <sha> over <the whole change | <last-reviewed-sha>..<sha>>, one row per half:
 - `thermonuclear-deep-review`: <APPROVE | CHANGES>, <n> findings stand
 - `thermonuclear-code-quality`: <APPROVE | CHANGES>, <n> findings stand
 Where the diff the round reads touches no runtime code, each row reads `not run (<the whole change | <last-reviewed-sha>..<sha>> touches no runtime code)`, and the two rows of the last round the pair ran in stay beside them.
@@ -53,18 +52,25 @@ GitHub refuses a body over 65,536 characters: past about 48,000, link evidence r
 ## The brief for the human
 
 The implementer keeps `Outcome`, `Why`, `Change`, `Proven by` and `Size` true after every push.
-At each round the reviewer writes `Look at first` and `Not proven / risk`, copying word for word every claim recorded as unproven (the tester's `failures`, its own review, a proof-check comment).
+At each round the reviewer writes `Look at first`, and a risk on the `Not proven / risk` line where one stands.
 With no reviewer step, the implementer writes both, including what its own evidence does not prove; where the body claims a check that has not concluded at the head, the implementer names that check under `Not proven / risk`.
 With no reviewer step, at retro the implementer updates `Not proven / risk` after reading the handoff of each tester step where the task has one.
-A requirement there is unmet, unless only the deploy can show it and the plan names its observation.
 A stale `Outcome` is a finding against the implementer; the merger rewrites nothing.
 
 ## The simplify pass and the `Thermo` line
 
-- The implementer runs `skill://simplify-settled-diff` once per pull request, in its first implementing round, after its own results and before it completes, whatever the diff touches, a docs-only diff included.
+- The implementer runs `skill://simplify-settled-diff` once per pull request, in its first implementing round, after its own results and before it completes.
+  The pass covers every file the diff touches, and a docs-only diff needs none.
   Applied: rerun the fast local checks and the issue's checks the simplify diff touches, and record them at the applied head.
   A defect the pass reports is fixed outside the pass and the results recorded again, never dropped as out of scope;
   the `Thermo` line names the count and the fixing commit.
 
 - The reviewer's pair runs at the head each round reviews, over the diff that round reads, when that diff touches runtime code;
   the `Thermo` line records the range it read and a row per half, and earlier rounds' rows stay beside them.
+
+## The footer of a comment
+
+- End every pull-request comment you post with `<!-- legion: {"session":"<session-id>","phase":"<phase>"} -->`.
+
+- A Dispatch comment or message never carries the `<!-- legion: … -->` footer.
+  Dispatch records the session that wrote it, and only a pull-request comment or review needs the footer.

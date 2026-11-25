@@ -43,6 +43,57 @@ func TestWorkerClaimIsTheClaimOfTheRolesStep(t *testing.T) {
 	}
 }
 
+// The commit an agent's step is named as its own is read from the rows each of its deciding
+// reviews writes that commit onto (AgentsOtherRow, workflow's shareReviewedHead), and from no
+// other: its rows of the role on the task at other places, place 0 among them, and no row of
+// another agent, task or role, nor the step's own. Agent "" (an issue whose key names no claims)
+// has no such row, since no review writes onto a row that names no claim. Before, the read was a
+// scan of its own, which took a row of no claim for agent "" and passed over place 0: it named a
+// commit no review shared there, and missed one a review did.
+func TestAnAgentsReviewedHeadIsReadFromTheRowsItsReviewsWriteOnto(t *testing.T) {
+	const keyA claim.Token = "legion-legion-infra-12-implementer"
+	const keyS claim.Token = "legion-legion-infra-12-tester"
+	const read = "4444444444444444444444444444444444444444"
+	for _, tc := range []struct {
+		name  string
+		agent claim.Token
+		row   PhaseRow
+		want  string
+	}{
+		{name: "the agent's row of an earlier step", agent: keyA, want: read,
+			row: PhaseRow{Role: claim.RoleReviewer, StepTask: "t", StepPlace: 2, Claim: keyA, ReviewedHead: read}},
+		{name: "the agent's row of a later step", agent: keyA, want: read,
+			row: PhaseRow{Role: claim.RoleReviewer, StepTask: "t", StepPlace: 6, Claim: keyA, ReviewedHead: read}},
+		{name: "the agent's row at place 0 of the task", agent: keyA, want: read,
+			row: PhaseRow{Role: claim.RoleReviewer, StepTask: "t", StepPlace: 0, Claim: keyA, ReviewedHead: read}},
+		{name: "another agent's row", agent: keyA,
+			row: PhaseRow{Role: claim.RoleReviewer, StepTask: "t", StepPlace: 2, Claim: keyS, ReviewedHead: read}},
+		{name: "the agent's row of another task", agent: keyA,
+			row: PhaseRow{Role: claim.RoleReviewer, StepTask: "u", StepPlace: 2, Claim: keyA, ReviewedHead: read}},
+		{name: "the agent's row of another role", agent: keyA,
+			row: PhaseRow{Role: claim.RoleTester, StepTask: "t", StepPlace: 2, Claim: keyA, ReviewedHead: read}},
+		{name: "the step's own row", agent: keyA,
+			row: PhaseRow{Role: claim.RoleReviewer, StepTask: "t", StepPlace: 4, Claim: keyA, ReviewedHead: read}},
+		{name: "a row of no claim, for an agent", agent: keyA,
+			row: PhaseRow{Role: claim.RoleReviewer, StepTask: "t", StepPlace: 2, ReviewedHead: read}},
+		{name: "a row of no claim, for agent \"\"",
+			row: PhaseRow{Role: claim.RoleReviewer, StepTask: "t", StepPlace: 2, ReviewedHead: read}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rows := []PhaseRow{tc.row}
+			got := AgentsReviewedHead(rows, claim.RoleReviewer, "t", 4, tc.agent)
+			if got != tc.want {
+				t.Fatalf("AgentsReviewedHead(reviewer, t, 4, %q) = %q, want %q", tc.agent, got, tc.want)
+			}
+			step := PhaseRow{Role: claim.RoleReviewer, StepTask: "t", StepPlace: 4, Claim: tc.agent}
+			if written := AgentsOtherRow(step, tc.row); written != (got != "") {
+				t.Fatalf("AgentsReviewedHead(reviewer, t, 4, %q) = %q, where a review of the agent writes onto the row: %t",
+					tc.agent, got, written)
+			}
+		})
+	}
+}
+
 // A role that stands at two steps has a row for each, and a reader with no walk reads the row with
 // the highest entry: the row of the step the role works now, or worked last, since a step's start
 // raises its entry above every row of its role. After a return to step 1, that is step 1's row
@@ -168,12 +219,12 @@ func TestAPayloadNamesTheClaimItsProducerHolds(t *testing.T) {
 			roundTrip: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 1, Claim: keyed},
 		},
 		{
-			name:      "a release's workspace save",
+			name:      "a release's workspace check",
 			kind:      OutboxKindIssueBundle,
 			named:     `{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"tester","claim":"` + string(keyed) + `"}`,
 			unnamed:   `{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"tester"}`,
-			claimOf:   func(p OutboxPayload) claim.Token { return p.(IssueBundle).Claim },
-			roundTrip: IssueBundle{Tree: "LEGION-208", Generation: 1, TreeGeneration: 1, Role: claim.RoleTester, Claim: keyed},
+			claimOf:   func(p OutboxPayload) claim.Token { return p.(IssueWorkspaceCheck).Claim },
+			roundTrip: IssueWorkspaceCheck{Tree: "LEGION-208", Generation: 1, TreeGeneration: 1, Role: claim.RoleTester, Claim: keyed},
 		},
 		{
 			name:      "an update round's ask",
@@ -219,7 +270,7 @@ func TestAPayloadNamesTheClaimItsProducerHolds(t *testing.T) {
 func TestAPayloadRefusesAClaimThatIsNoClaimToken(t *testing.T) {
 	for _, payload := range []OutboxPayload{
 		SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 1, Claim: "tester"},
-		IssueBundle{Tree: "LEGION-208", Generation: 1, TreeGeneration: 1, Role: claim.RoleTester, Claim: "tester"},
+		IssueWorkspaceCheck{Tree: "LEGION-208", Generation: 1, TreeGeneration: 1, Role: claim.RoleTester, Claim: "tester"},
 		UpdateAsk{Role: claim.RoleTester, Round: "r1", Text: "Push.", Claim: "tester"},
 		HookPrompt{Hook: "back", Role: claim.RoleTester, Claim: "tester", From: phase.Testing, To: phase.Implementing, Count: 1, Prompt: "Read it."},
 		MergeForwardMessage{Role: claim.RoleImplementer, Claim: "tester", Step: MergeForwardAsk, Head: "c0de", Base: "main",

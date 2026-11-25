@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -15,6 +16,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -30,13 +33,12 @@ func checkerDeployment() plan.Deployment {
 // running at step 2, the checker's, so the store reads key's running role as the checker.
 func seedCheckerStep(t *testing.T, h *harness, key string) {
 	t.Helper()
-	ctx := context.Background()
-	err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		v := record.PlanVersion{Issue: key, Generation: 1, Version: 2, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
 			GivenBy: "legion-legion-" + claim.Token(key) + "-architect"}
 		task := record.PlanTask{Issue: key, Generation: 1, Task: "a", PlanVersion: 2, BlockText: "Build the widget.", State: record.TaskWaiting}
-		steps := record.NameAgents(nil, nil, []record.PlanStep{
+		steps := record.NameAgents(nil, nil, nil, []record.PlanStep{
 			{Issue: key, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: plan.TypeImplementation},
 			{Issue: key, Generation: 1, Task: "a", Position: 2, Role: "checker", Type: plan.TypeTesting},
 		})
@@ -123,6 +125,50 @@ func TestADeploymentRoleReportsWithAVerdictAndACommit(t *testing.T) {
 			}
 			if len(taken) != 1 || taken[0].Verdict != tc.req.Verdict || taken[0].Commit != headSHA {
 				t.Fatalf("the %s's completions = %+v, want the one, with its verdict and commit", tc.role, taken)
+			}
+		})
+	}
+}
+
+// A claim that has served no run takes the run and the entry of the task it holds only where that
+// task is the issue's current work (heldTaskNotCurrent): at step, the work of the running step's
+// role alone (record.Issue.StepRole), since every role the deployment defines runs as step. In
+// `implementer checker` at step 2, the checker holding a step task of the issue's generation is
+// taken; a critic holding a step task of the same generation, of a step the task is not at, is
+// refused HANDOFF_NO_RUN naming the checker, and nothing is recorded.
+func TestAHeldStepTaskBacksOnlyTheRunningStepsRole(t *testing.T) {
+	const key = "LEGION-208"
+	deployment := checkerDeployment()
+	deployment.Roles["critic"] = plan.RoleDef{Name: "critic", Type: plan.TypeReview}
+	for _, tc := range []struct {
+		role  claim.Role
+		taken bool
+	}{{"checker", true}, {"critic", false}} {
+		t.Run(string(tc.role), func(t *testing.T) {
+			h, _, facts := newWorkflowHarness(t, workflow.Config{Project: testProject, Repositories: testRepositories,
+				Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3, Deployment: deployment})
+			seedIssueAt(t, h, key, phase.Step)
+			seedCheckerStep(t, h, key)
+			seedPullRequest(t, h, key, headSHA)
+			seedEntry(t, h, key, tc.role, 1)
+			worker := untaskedClaim(t, h, key, tc.role)
+			holdingTask(t, h, worker, supervise.RequestDeliver{Task: "the step of " + key, ID: "outbox:77", Generation: 1, Phase: phase.Step, Entry: 1})
+
+			answer := h.complete(HandoffCompleteRequest{GrantID: worker.grant(t), Summary: "checked", Verdict: "pass", Commit: headSHA})
+
+			if tc.taken {
+				completion(t, answer)
+				if taken := lastCompletion(t, facts); taken.Role != tc.role || taken.Generation != 1 || taken.Entry != 1 {
+					t.Fatalf("the completion = %+v, want the checker's, of the held task's generation 1 and entry 1", taken)
+				}
+				return
+			}
+			message := refused(t, answer, http.StatusConflict, "HANDOFF_NO_RUN")
+			if want := "the task this claim holds (outbox:77) is the step phase's, and the running step of LEGION-208 is the checker's, not this claim's critic"; !strings.Contains(message, want) {
+				t.Fatalf("the refusal = %q, want it to say %q", message, want)
+			}
+			if got := facts.recorded(); len(got) != 0 {
+				t.Fatalf("the refused completion recorded %#v, want nothing", got)
 			}
 		})
 	}

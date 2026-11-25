@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -312,7 +313,7 @@ func TestReviveLeavesAnotherAgentsSessionWhoeverCallsIt(t *testing.T) {
 			spawns, resumes := len(h.calls("Spawn")), len(h.calls("Resume"))
 
 			if err := h.insideDecision(h.m, func() error {
-				return h.m.revive(h.ctx, "a decision that runs nothing at the admission", false, StartWork{Agent: tc.agent}, nil)
+				return h.m.revive(h.ctx, "a decision that runs nothing at the admission", false, time.Time{}, StartWork{Agent: tc.agent}, nil)
 			}); err != nil {
 				t.Fatalf("revive for %s = %v, want the claim brought back", tc.agent, err)
 			}

@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -21,19 +22,20 @@ import (
 // the board shows the status of its last step. Something moves the board, then the last issue
 // beneath the root leaves, and the retro that ends the hold lands on the board: Dispatch reads
 // retro. The board's move is a person's todo on the held root, which leaves the hold as it stands
-// and sets the board back with the hold's own retro-held sentence posted beside it, so the person
-// reads why; or an outside session's status on the root, which the daemon re-asserts its own
-// status over; the control has no move, so the same check is seen to pass where the board was
-// never moved, and nothing posts the sentence. The root's status rows then run through the
-// outbox's own status executor against the board, oldest first, as the outbox runs an issue's
-// status writes one at a time in the order they were made: each row queued before the release is
-// still waiting when the release queues its own.
+// and sets the board back with the hold's why posted beside it, written for that person, so the
+// person reads why and is given none of the architect's rules for ending a child; or an outside
+// session's status on the root, which the daemon re-asserts its own status over; the control has
+// no move, so the same check is seen to pass where the board was never moved, and nothing posts
+// the sentence. The root's status rows then run through the outbox's own status executor against
+// the board, oldest first, as the outbox runs an issue's status writes one at a time in the order
+// they were made: each row queued before the release is still waiting when the release queues
+// its own.
 func TestTheRetroThatEndsAChildrenHoldLandsOnTheBoard(t *testing.T) {
+	t.Parallel()
 	const rootKey, childKey = "LEGION-208", "LEGION-209"
-	// heldSentence is the retro-held sentence of the root's hold, naming the issue beneath it.
-	const heldSentence = "LEGION-208 passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: LEGION-209. " +
-		"A parent's head proves its children's merged work. Run each one to done, or park one with park_child only when a person asked for that move, " +
-		"or when the work is done, folded into another issue or no longer needed; Legion starts the retro when the last one leaves."
+	// heldSentence is the why of the root's hold that a person reads beside the board's move,
+	// naming the issue beneath it.
+	const heldSentence = "LEGION-208 waits before its retro for these issues beneath it: LEGION-209. Legion starts the retro when the last one leaves."
 	for _, tc := range []struct {
 		name string
 		// moved is the status the board is moved to before the last issue leaves, "" for none, and
@@ -59,12 +61,12 @@ func TestTheRetroThatEndsAChildrenHoldLandsOnTheBoard(t *testing.T) {
 			child := record.Issue{Key: childKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: rootKey, Project: "LEGION",
 				Title: "child", Parent: &parent, Phase: phase.Reviewing, Generation: 1, Status: "needs_review", DispatchStatus: "needs_review",
 				Rank: "B", LastDispatchSeq: 1, HandedOver: true}
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				version := record.PlanVersion{Issue: rootKey, Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
 					GivenBy: mustClaimToken(t, rootKey, claim.RoleArchitect), GivenAt: now.Add(-time.Hour)}
 				task := record.PlanTask{Issue: rootKey, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.",
 					State: record.TaskRunning, Place: record.TaskPlace{Kind: record.PlaceRetro}}
-				steps := record.NameAgents(nil, nil, []record.PlanStep{
+				steps := record.NameAgents(nil, nil, nil, []record.PlanStep{
 					{Issue: rootKey, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 					{Issue: rootKey, Generation: 1, Task: "a", Position: 2, Role: "reviewer", Type: "review"},
 				})
@@ -96,7 +98,7 @@ func TestTheRetroThatEndsAChildrenHoldLandsOnTheBoard(t *testing.T) {
 			writeRootStatuses := func() {
 				t.Helper()
 				var rows []record.OutboxRow
-				if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 					var err error
 					rows, err = records.PendingStatusWrites(ctx, tx, "LEGION")
 					return err
@@ -141,6 +143,9 @@ func TestTheRetroThatEndsAChildrenHoldLandsOnTheBoard(t *testing.T) {
 			for _, post := range board.posted {
 				if strings.HasPrefix(post, heldSentence) {
 					told++
+				}
+				if strings.Contains(post, record.EndChildRule) || strings.Contains(post, record.StatusNotTakenYet) {
+					t.Errorf("Dispatch was posted %q, which carries the architect's rules for ending a child: a person reads it", post)
 				}
 			}
 			if want := map[bool]int{true: 1, false: 0}[tc.moved == "todo"]; told != want {

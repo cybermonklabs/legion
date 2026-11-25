@@ -130,11 +130,12 @@ var settingsEmitted = map[string]string{
 	"MetadataConfig.IdentityProvider":                "runtime.kubernetes.sandbox.microvm.metadata.identity_provider",
 	"Kubernetes.MemoryGuard":                         "runtime.kubernetes.memory_guard",
 	"MemoryGuardConfig.IssuePods":                    "runtime.kubernetes.memory_guard.issue_pods",
-	"MemoryGuardPodConfig.Enabled":                   "runtime.kubernetes.memory_guard.issue_pods.enabled",
-	"MemoryGuardPodConfig.ActPercent":                "runtime.kubernetes.memory_guard.issue_pods.act_percent",
-	"MemoryGuardPodConfig.FloorPercent":              "runtime.kubernetes.memory_guard.issue_pods.floor_percent",
-	"MemoryGuardPodConfig.WaitSeconds":               "runtime.kubernetes.memory_guard.issue_pods.wait_seconds",
-	"MemoryGuardPodConfig.IntervalMilliseconds":      "runtime.kubernetes.memory_guard.issue_pods.interval_milliseconds",
+	"MemoryGuardConfig.ControllerPod":                "runtime.kubernetes.memory_guard.controller_pod",
+	"MemoryGuardPodConfig.Enabled":                   "runtime.kubernetes.memory_guard.<pod>.enabled",
+	"MemoryGuardPodConfig.ActPercent":                "runtime.kubernetes.memory_guard.<pod>.act_percent",
+	"MemoryGuardPodConfig.FloorPercent":              "runtime.kubernetes.memory_guard.<pod>.floor_percent",
+	"MemoryGuardPodConfig.WaitSeconds":               "runtime.kubernetes.memory_guard.<pod>.wait_seconds",
+	"MemoryGuardPodConfig.IntervalMilliseconds":      "runtime.kubernetes.memory_guard.<pod>.interval_milliseconds",
 	"Kubernetes.VolumeTrim":                          "runtime.kubernetes.volume_trim",
 	"VolumeTrimConfig.Enabled":                       "runtime.kubernetes.volume_trim.enabled",
 	"VolumeTrimConfig.HighPercent":                   "runtime.kubernetes.volume_trim.high_percent",
@@ -185,6 +186,7 @@ var settingsEmitted = map[string]string{
 	"Variant.Weight":                                 "projects.<KEY>.experiments.<name>.variants[].weight",
 	"Variant.ConfigFiles":                            "projects.<KEY>.experiments.<name>.variants[].config_files",
 	"Variant.InstructionsPath":                       "projects.<KEY>.experiments.<name>.variants[].instructions",
+	"Variant.Plan":                                   "projects.<KEY>.experiments.<name>.variants[].plan",
 	"Gates.Design":                                   "gates.design",
 	"GitHubApps.Implement":                           "github_apps.implement",
 	"GitHubApps.Review":                              "github_apps.review",
@@ -242,6 +244,8 @@ var settingsExcluded = map[string]string{
 	"Hook.Prompt":                     "the words a hook puts in front of its roles, which the deployment writes for its own agents and no pod needs to read from a route that authenticates nobody; `hooks[].prompt_file` carries the path of the file the other form holds them in, as `instructions` carries a path and never its text",
 	"Variant.ConfigFilesField":        "derived: the key an operator wrote the arm's `config_files` under, built by config.Project.ExperimentsDeclared from the project key and the names beside it, which the settings already carry",
 	"Variant.MemoryBlock":             "derived: whether the arm is the `memory` block's rather than the `experiments` key's, set by config.Project.ExperimentsDeclared, which the settings already tell by carrying the block under `memory` and the key under `experiments`",
+	"Config.Revision":                 "not a setting: the commit this binary was built from, which `legion start` sets from cmd/legion's link-time revision and no legion.yaml key names",
+	"Config.GitHubGraphQLShare":       "not shown yet: the pace of the daemon's own GraphQL reads of GitHub, which no pod or plugin reads or acts on; carrying it on GET /legion/v1/state is a change of the daemon API contract (answers.go, packages/contracts) that the pull request adding the key does not make",
 }
 
 // Every exported field of every struct the walk reaches (settingsConfigTypes) is named in exactly
@@ -294,6 +298,23 @@ func TestTheTmuxSettingsShowTheTakeOver(t *testing.T) {
 		if string(encoded) != tc.want {
 			t.Errorf("tmuxSettingsOf(%+v) = %s, want %s", tc.block, encoded, tc.want)
 		}
+	}
+}
+
+// The memory_guard block shows each pod kind's own settled block under its own key: different
+// numbers in the two come out each under its kind, and one kind off leaves the other on.
+func TestTheMemoryGuardSettingsShowEachPodKindsOwnBlock(t *testing.T) {
+	encoded, err := json.Marshal(kubernetesSettingsOf(&config.Kubernetes{MemoryGuard: config.MemoryGuardConfig{
+		IssuePods:     config.MemoryGuardPodConfig{Enabled: true, ActPercent: 80, FloorPercent: 15, WaitSeconds: 8, IntervalMilliseconds: 250},
+		ControllerPod: config.MemoryGuardPodConfig{Enabled: false, ActPercent: 70, FloorPercent: 20, WaitSeconds: 9, IntervalMilliseconds: 400},
+	}}).MemoryGuard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"issue_pods":{"enabled":true,"act_percent":80,"floor_percent":15,"wait_seconds":8,"interval_milliseconds":250},` +
+		`"controller_pod":{"enabled":false,"act_percent":70,"floor_percent":20,"wait_seconds":9,"interval_milliseconds":400}}`
+	if string(encoded) != want {
+		t.Errorf("settings.runtime.kubernetes.memory_guard = %s, want %s", encoded, want)
 	}
 }
 
@@ -384,10 +405,12 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 		"idle_minutes", "backstop_minutes",
 	})
 	memoryGuardKeys := keysOf(t, kubernetesKeys["memory_guard"])
-	assertKeys(t, "settings.runtime.kubernetes.memory_guard", memoryGuardKeys, []string{"issue_pods"})
-	assertKeys(t, "settings.runtime.kubernetes.memory_guard.issue_pods", keysOf(t, memoryGuardKeys["issue_pods"]), []string{
-		"enabled", "act_percent", "floor_percent", "wait_seconds", "interval_milliseconds",
-	})
+	assertKeys(t, "settings.runtime.kubernetes.memory_guard", memoryGuardKeys, []string{"issue_pods", "controller_pod"})
+	for _, kind := range []string{"issue_pods", "controller_pod"} {
+		assertKeys(t, "settings.runtime.kubernetes.memory_guard."+kind, keysOf(t, memoryGuardKeys[kind]), []string{
+			"enabled", "act_percent", "floor_percent", "wait_seconds", "interval_milliseconds",
+		})
+	}
 	assertKeys(t, "settings.runtime.kubernetes.repository_cache", keysOf(t, kubernetesKeys["repository_cache"]), []string{
 		"volume", "refresh_minutes", "retain_hours", "resources",
 	})
@@ -772,6 +795,47 @@ func TestSettingsOfNamesAProjectsExperiments(t *testing.T) {
 	}
 	if got := nullKeys(document, "settings"); len(got) != 0 {
 		t.Errorf("settings carry the null keys %q, want none: an arm that names no overlay carries `[]`", got)
+	}
+}
+
+// An arm's `plan` rides the settings as the file writes it, absent where the arm names none, and
+// the declared list the settings give back carries it on the same arm, so `legion state`, which
+// reads that list, sees how the issues of each arm are done. The fault caught is experimentsOf
+// leaving the word out.
+func TestTheSettingsCarryThePlanOfAVariant(t *testing.T) {
+	const declared = `    experiments:
+      planning:
+        mode: random
+        unit: issue
+        variants:
+          - {name: a, plan: owner}
+          - {name: b, plan: default}
+`
+	body := strings.Replace(settingsFixtureFile, "  WIDGETS:\n", "  WIDGETS:\n"+declared, 1)
+	if body == settingsFixtureFile {
+		t.Fatal("the fixture's WIDGETS project was not given the key")
+	}
+	settings := SettingsOf(loadSettingsFile(t, body))
+	variants := settings.Projects["WIDGETS"].Experiments[0].Variants
+	if variants[0].Plan != "owner" || variants[1].Plan != "default" {
+		t.Fatalf("the arms' plans = %q and %q, want owner and default", variants[0].Plan, variants[1].Plan)
+	}
+	encoded, err := json.Marshal(settings.Projects["WIDGETS"].Experiments[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Contains(encoded, []byte(`"plan":"default"`)) {
+		t.Errorf("the experiment's settings = %s, want the key plan on its arm", encoded)
+	}
+	back := settings.Projects["WIDGETS"].DeclaredExperiments("WIDGETS")
+	if len(back) != 2 || back[1].Name != "planning" {
+		t.Fatalf("declared experiments = %+v, want memory then planning", back)
+	}
+	if got := back[1].Variants[1].Plan; got != config.PlanGroupDefault {
+		t.Errorf("the declared arm b's plan = %q, want %q", got, config.PlanGroupDefault)
+	}
+	if !back[1].SetsPlan() {
+		t.Error("the declared planning sets no plan, want it to")
 	}
 }
 

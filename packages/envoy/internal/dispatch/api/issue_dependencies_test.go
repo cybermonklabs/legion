@@ -15,11 +15,14 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // blocked_by is an issue-to-issue dependency: create and PATCH replace its complete target
 // set, every issue payload exposes it, and list rows include it with the primary artifact id.
 func TestIssueBlockedByRoundTrip(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "CORE", "name": "Core",
@@ -119,6 +122,7 @@ func TestIssueBlockedByRoundTrip(t *testing.T) {
 // is a wait like any other: it is accepted, and a ring closed through it is refused as a ring
 // inside one project is.
 func TestIssueBlockedByRefusesDependencyCycles(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	for _, project := range []string{"CORE", "SIDE"} {
 		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
@@ -181,6 +185,7 @@ func TestIssueBlockedByRefusesDependencyCycles(t *testing.T) {
 // An issue naming itself in blocked_by is an input mistake, refused as one rather than as a
 // dependency cycle.
 func TestIssueBlockedBySelfIsAnInputError(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	key := createListedIssues(t, handler, "CORE", 1)[0]
 	response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{"blocked_by": []string{key}}, "alice")
@@ -195,6 +200,7 @@ func TestIssueBlockedBySelfIsAnInputError(t *testing.T) {
 }
 
 func TestIssueBlockedByConcurrentWritesDoNotDeadlock(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []string{"reciprocal blockers", "blocker and reparent", "old parent and reparent"} {
 		t.Run(scenario, func(t *testing.T) {
 			handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
@@ -279,6 +285,7 @@ func TestIssueBlockedByConcurrentWritesDoNotDeadlock(t *testing.T) {
 }
 
 func TestIssueBlockedByCountLimitOnCreateAndPatch(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "CORE", "name": "Core",
@@ -333,6 +340,7 @@ func TestIssueBlockedByCountLimitOnCreateAndPatch(t *testing.T) {
 }
 
 func TestIssueBlockedByIgnoresIndirectRowActivity(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "CORE", "name": "Core",
@@ -374,6 +382,7 @@ func TestIssueBlockedByIgnoresIndirectRowActivity(t *testing.T) {
 }
 
 func TestStatusPatchRacingReparentUsesCommittedParent(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	keys := createListedIssues(t, handler, "CORE", 3)
 	gate, err := database.Pool.Begin(context.Background())
@@ -408,6 +417,7 @@ func TestStatusPatchRacingReparentUsesCommittedParent(t *testing.T) {
 }
 
 func TestReparentIgnoresUnrelatedGrandchildRowActivity(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	keys := createListedIssues(t, handler, "CORE", 4)
 	if _, err := database.Pool.Exec(context.Background(), `update issues set parent_key = $1 where key = $2`, keys[3], keys[0]); err != nil {
@@ -441,6 +451,7 @@ func TestReparentIgnoresUnrelatedGrandchildRowActivity(t *testing.T) {
 // must not hold the shared parent while it waits for the new parent's lock: the status write would
 // hold that lock and wait for the shared parent, and Postgres would abort one of them.
 func TestReparentUnderSiblingDoesNotDeadlockWithItsStatusWrite(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	keys := createListedIssues(t, handler, "CORE", 3)
 	parent, moving, sibling := keys[0], keys[1], keys[2]
@@ -487,6 +498,7 @@ func TestReparentUnderSiblingDoesNotDeadlockWithItsStatusWrite(t *testing.T) {
 // an issue moves between them therefore queues one write behind the other, whichever of the two the
 // board shows first, rather than each holding one neighbour while waiting on the other.
 func TestReparentDoesNotDeadlockWithBoardMoveBetweenItsEnds(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []struct {
 		name string
 		// moving, parent and child index the three issues in creation order, which is key order
@@ -561,6 +573,7 @@ func TestReparentDoesNotDeadlockWithBoardMoveBetweenItsEnds(t *testing.T) {
 // never has one write holding the issue while the other holds the neighbour: a move waiting for its
 // gated first neighbour holds nothing yet, so the reparent finishes before the gate opens.
 func TestReparentDoesNotDeadlockWithABoardMoveOfTheSameIssue(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	keys := createListedIssues(t, handler, "CORE", 3)
 	after, before, moving := keys[0], keys[1], keys[2]
@@ -585,12 +598,20 @@ func TestReparentDoesNotDeadlockWithABoardMoveOfTheSameIssue(t *testing.T) {
 	go func() {
 		reparents <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+moving, map[string]string{"parent": before}, "alice")
 	}()
-	select {
-	case response := <-reparents:
-		if response.Code != http.StatusOK {
-			t.Fatalf("reparent beside a waiting board move of the same issue: %d %s", response.Code, response.Body.String())
+	// The reparent answers beside the waiting move, which holds nothing yet. One that waited for
+	// the move would queue on an owner lock behind it, a second owner-lock waiter beside the move's
+	// own wait on the gate.
+	var reparented *httptest.ResponseRecorder
+	testwait.Until(t, "the reparent to answer beside the waiting board move (the owner-lock waiters while it has not)", func() (int, bool) {
+		select {
+		case reparented = <-reparents:
+			return 0, true
+		default:
 		}
-	case <-time.After(2 * time.Second):
+		waiting, _ := storetest.OwnerLockWaiters(t, database)
+		return waiting, waiting >= 2
+	})
+	if reparented == nil {
 		// The reparent is waiting for the move. Open the gate and report how the two writes end.
 		if err := gate.Commit(context.Background()); err != nil {
 			t.Fatal(err)
@@ -598,6 +619,9 @@ func TestReparentDoesNotDeadlockWithABoardMoveOfTheSameIssue(t *testing.T) {
 		reparent, move := awaitResponse(t, reparents), awaitResponse(t, moves)
 		t.Fatalf("reparent waited for a board move of the same issue; once the gate opened the reparent answered %d %s and the move %d %s",
 			reparent.Code, reparent.Body.String(), move.Code, move.Body.String())
+	}
+	if reparented.Code != http.StatusOK {
+		t.Fatalf("reparent beside a waiting board move of the same issue: %d %s", reparented.Code, reparented.Body.String())
 	}
 	if err := gate.Commit(context.Background()); err != nil {
 		t.Fatal(err)
@@ -623,6 +647,7 @@ func TestReparentDoesNotDeadlockWithABoardMoveOfTheSameIssue(t *testing.T) {
 // board, with an issue moved between the two while the child's status is written, therefore never
 // has the move holding the parent while the status write holds the child.
 func TestStatusWriteDoesNotDeadlockWithBoardMoveBetweenTheIssueAndItsParent(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	keys := createListedIssues(t, handler, "CORE", 3)
 	parent, child, moving := keys[0], keys[1], keys[2]
@@ -680,6 +705,7 @@ func TestStatusWriteDoesNotDeadlockWithBoardMoveBetweenTheIssueAndItsParent(t *t
 // therefore never has the reparent holding the grandparent while the status write holds the old
 // parent.
 func TestReparentToGrandparentDoesNotDeadlockWithAStatusWriteOnTheOldParent(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	keys := createListedIssues(t, handler, "CORE", 3)
 	grandparent, parent, child := keys[0], keys[1], keys[2]
@@ -727,6 +753,7 @@ func TestReparentToGrandparentDoesNotDeadlockWithAStatusWriteOnTheOldParent(t *t
 // moves at every attempt is refused with 409 PARENT_CONTENDED and nothing applied, never locked
 // out of owner lock order.
 func TestStatusWriteRefusesAParentThatMovesAtEveryAttempt(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	keys := createListedIssues(t, handler, "CORE", 4)
 	first, second, third, child := keys[0], keys[1], keys[2], keys[3]
@@ -786,6 +813,7 @@ func TestStatusWriteRefusesAParentThatMovesAtEveryAttempt(t *testing.T) {
 }
 
 func TestChildCreateWithoutBlockersDoesNotWaitOnParentRow(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	parent := createListedIssues(t, handler, "CORE", 1)[0]
 	gate, err := database.Pool.Begin(context.Background())
@@ -812,6 +840,7 @@ func TestChildCreateWithoutBlockersDoesNotWaitOnParentRow(t *testing.T) {
 }
 
 func TestConcurrentThreeWayDependenciesDoNotCommitCycle(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	keys := createListedIssues(t, handler, "CORE", 3)
 	for round := range 20 {
@@ -868,6 +897,7 @@ func TestConcurrentThreeWayDependenciesDoNotCommitCycle(t *testing.T) {
 // neighbour, which sorts first. A status write on that neighbour waits for the move and finishes
 // once the gate opens; a dependency write naming the neighbour finishes while the move still waits.
 func TestBoardMoveStatusAndDependencyWriteDoNotDeadlock(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	keys := createListedIssues(t, handler, "CORE", 6)
 	anchor, parent, moving, neighbor, dependent := keys[1], keys[2], keys[3], keys[4], keys[5]
@@ -916,6 +946,7 @@ func TestBoardMoveStatusAndDependencyWriteDoNotDeadlock(t *testing.T) {
 }
 
 func TestDependencyWaitDoesNotHoldIssueRankOrNumberLocks(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	keys := createListedIssues(t, handler, "CORE", 3)
 	other := createListedIssues(t, handler, "SIDE", 2)

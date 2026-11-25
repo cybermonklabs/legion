@@ -199,6 +199,7 @@ func provisioningRefusal(w http.ResponseWriter) {
 //   - one in GitHub's trouble (a 500): the error is returned as it came, with no second mint and
 //     nothing logged.
 func TestTheProvisioningTokenIsAReadingLease(t *testing.T) {
+	t.Parallel()
 	const (
 		readingOwner = "acme-reading"
 		narrowOwner  = "acme-no-actions"
@@ -342,6 +343,7 @@ func TestTheProvisioningTokenIsAReadingLease(t *testing.T) {
 // a rate limit as nothing about what the account grants: the trouble is returned as it came,
 // and the next provisioning asks again.
 func TestARateLimited422OfTheProvisioningReadIsNoFallbackToTheWriteToken(t *testing.T) {
+	t.Parallel()
 	const (
 		limitedOwner        = "acme-rate-limited"
 		limitedInstallation = "55"

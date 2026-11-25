@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  Claude Code's `legion` tool takes the completion and the backward move of a role that a Legion
+  deployment defines, as the Oh My Pi plugin does. Such a role works the phase `step` and writes no
+  handoff record, so its completion reports the commit its workspace stands on.
+time: 2026-11-23T20:05:28Z
+custom:
+    Issue: pr5164
