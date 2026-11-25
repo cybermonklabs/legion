@@ -714,7 +714,7 @@ export function liveDispatch(config: DispatchConfig): DispatchWrites {
 }
 
 async function main(argv: readonly string[]): Promise<number> {
-  const prelude = readCommandLine(argv, parseArguments, "config" satisfies Category);
+  const prelude = await readCommandLine(argv, parseArguments, "config" satisfies Category);
   if (!prelude.ready) return prelude.code;
   return runCheck(prelude.options, liveDispatch(prelude.config), (line) => {
     console.log(line);

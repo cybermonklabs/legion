@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+    The reviewer's role prompt says that a `ci_check` check naming a job held back without its label
+    has no pass standing even when no run answers its name, so the reviewer requests changes for it
+    rather than sending it to the architect as a check with wrong words: the label cures it.
+time: 2026-11-23T21:35:41.511815211Z
+custom:
+    Issue: pr5273

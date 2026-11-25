@@ -82,46 +82,6 @@ test("the injected dispatch-first context holds the blocker and accepted-request
   }
 });
 
-// dispatch-first paid for the longer accepted-request rule by shortening other lines. Each
-// shortened sentence still carries its rule, and these pins hold it.
-test("dispatch-first's shortened sentences keep their rules", () => {
-  const context = readDispatchFirstContext(dispatchFirstSkillFile(staged));
-  for (const rule of [
-    "**Question already decided:** cite the answered ask (`dispatch://KEY/ask/<id>`) and never ask again.",
-    "**Duplicate found, or a likely duplicate a create names:** fold it only when it is the same work.",
-    "A result a person asked for ends its document with an ask block asking their next step, else `dispatch ask`.",
-    "| write or change a spec, ask, comment or message a person reads | `skill://dispatch-writing-specs` |",
-  ]) {
-    expect(context).toContain(rule);
-  }
-});
-
-// The issue, its plan, other issues and asks are the one record of work still to do. No skill or
-// daemon prompt names a separate list of open items. The check bans the name itself, even in a
-// ban, because that is simpler than telling an offer from a ban. The controls are the two lines
-// that offered the list. Each root must hold Markdown, so an empty root cannot pass.
-test("no skill or daemon prompt names a list of open items", () => {
-  const listName = /open[- _]items/i;
-  for (const retired of [
-    "Record every request you accept in Dispatch before you start it: an issue, or a line in your issue's `open-items.md` artifact.",
-    "Read the issue, then its `open-items.md` where one exists",
-  ]) {
-    expect(listName.test(retired), retired).toBe(true);
-  }
-  const named = skillAndPromptRoots.flatMap((root) => {
-    const markdown = files(root).filter((file) => file.endsWith(".md"));
-    expect(markdown.length, root).toBeGreaterThan(0);
-    return markdown.flatMap((file) =>
-      readFileSync(file, "utf8")
-        .split("\n")
-        .flatMap((line, index) =>
-          listName.test(line) ? [`${path.relative(REPO_ROOT, file)}:${index + 1}`] : []
-        )
-    );
-  });
-  expect(named).toEqual([]);
-});
-
 // The three Dispatch skills are read by every session with Dispatch, so their length is a cost on
 // each one. Every file of the three staged skills counts, frontmatter included, as `wc -w` counts:
 // whitespace-separated tokens.

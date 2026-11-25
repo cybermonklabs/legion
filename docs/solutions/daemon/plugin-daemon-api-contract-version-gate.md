@@ -68,7 +68,7 @@ design and, more usefully, the two alternatives that were rejected and why.
   request or response shape bumped the constant and the manifest field together, and the
   deployment installed the plugin release built from the same commit into the active profile
   before the daemon restarted on the new code. Since dispatch://INFRA-1569 the change adds a
-  contract entry instead (`bash scripts/daemon-contract-entry.sh <slug>`, the root `AGENTS.md`)
+  contract entry instead (`bash scripts/daemon-contract-entry.sh <slug>`, `CONTRIBUTING.md`)
   and edits no number, and the deployment order is the same.
 
 Negative control on the rig: a daemon from the branch started against a profile whose plugin
@@ -224,7 +224,7 @@ PR wrote said contract 2 *was* the credential file, which was true on the branch
 
 ## Related
 
-- The root `AGENTS.md`: the contract entry that replaced the bump rule (dispatch://INFRA-1569),
+- `CONTRIBUTING.md`: the contract entry that replaced the bump rule (dispatch://INFRA-1569),
   and `docs/kubernetes.md`, "Contract discipline": how an operator reads a build's numbers.
 - `docs/solutions/daemon/handoff-schema-migration-patterns.md`: versioning of persisted state,
   the other place a shape change needs a number.

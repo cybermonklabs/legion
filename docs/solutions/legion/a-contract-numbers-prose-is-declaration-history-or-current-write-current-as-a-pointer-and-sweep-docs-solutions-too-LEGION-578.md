@@ -23,7 +23,7 @@ Rewritten for dispatch://INFRA-1569. Before it a branch picked its own contract 
 note also listed the files that declared the number and how to sweep them at a renumber. Since it,
 no committed file declares a number above 256: a contract change adds an entry with
 `bash scripts/daemon-contract-entry.sh <slug>`, and a build's number is 256 plus its count of
-entries, each numbered by its place in `main`'s merge order (the root `AGENTS.md`).
+entries, each numbered by its place in `main`'s merge order (`CONTRIBUTING.md`).
 
 - Classify every sentence that names a daemon API contract number. **History** (a literal, true
   forever): a released number, as `packages/daemon/internal/api/version.go`'s numbered entries,
