@@ -185,9 +185,9 @@ type jjGiven struct {
 // of the step moved (jjFollowed): the real push's words after a step that changes nothing more
 // (errJJAsWritten), so that a hidden commit that no metaedit moved goes as the role named it. The
 // step's loop over a commit with no author can run a metaedit before a dry run it cannot read or
-// before checkArgMax, and an earlier metaedit can run before one that jj refuses: each argument is
-// then held to the commits it named before the step, each one a metaedit moved as the commit that
-// replaced it. Only the real push prints the lines (runJJ); a dry run drops them.
+// before checkArgMax: each argument is then held to the commits it named before the step, each one
+// a metaedit moved as the commit that replaced it. Only the real push prints the lines (runJJ); a
+// dry run drops them.
 func (s *jjStep) given(moved bool) []jjGiven {
 	given := make([]jjGiven, len(s.push.revisions))
 	for i := range given {

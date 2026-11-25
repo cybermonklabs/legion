@@ -715,14 +715,16 @@ func TestASameSecondRetrySendsTheCommitTheRefusedPushMade(t *testing.T) {
 // A retry after a `jj op restore` to the operation before the refused push, in the second of that
 // push's rewrite (one fixed JJ_TIMESTAMP): the restore puts the bookmark back on the commit the
 // role made, C, and hides the commit the refused push's rewrite made of it, which the step's
-// rewrite of C would make again, and jj refuses to make a commit that exists. The step prints one
-// line that names jj's error and changes nothing more, and the push sends C as jj alone does,
-// with its author as it is, adds one `snapshot working copy` operation at most, and makes no
-// change divergent. The step takes its one snapshot before that metaedit (a recording jj ahead of
-// the real one, read from after the refused push, sees one command of the step's with no
-// --ignore-working-copy), so its line ends by saying that the push runs with
-// --ignore-working-copy, and the real push runs with that flag as its first word.
-func TestARetryAfterARestoreSendsTheCommitAsJJDoes(t *testing.T) {
+// rewrite of C would make again, and jj refuses to make a commit that exists. No commit of the
+// push stands for that one, C being visible, so the push stops before the real push runs: it
+// prints jj's own error, which names `Newly-created commit <made> already exists`, and exits with
+// jj's status, the one jj alone exits with for the same metaedit in the same second. It prints no
+// line `legion jj: could not set the author: …`, the recording jj sees no real push, origin still
+// holds no legion/K-1, as the refused push left it, the bookmark stays on C with its author as it
+// is, and no change is made divergent. The retry adds no operation but one `snapshot working copy`
+// at most, the step's snapshot before that metaedit: jj refused the metaedit whole, and no push
+// ran.
+func TestARetryAfterARestoreStopsThePushWithJJsError(t *testing.T) {
 	t.Parallel()
 	impl, rev := rolePushImplementer, rolePushReviewer
 	rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
@@ -744,15 +746,30 @@ func TestARetryAfterARestoreSendsTheCommitAsJJDoes(t *testing.T) {
 		if hidden := f.jj(impl, "--ignore-working-copy", "log", "-r", made, "--no-graph", "-T", "hidden"); hidden != "true" {
 			t.Fatalf("%s, the refused push's rewrite, is hidden %q after jj op restore, want true", made, hidden)
 		}
+		refusal := "Newly-created commit " + made + " already exists"
+		aloneCode, _, aloneErr := f.alone(impl, "--ignore-working-copy", "metaedit", "--update-author", "-r", c.commit)
+		if aloneCode == 0 || !strings.Contains(aloneErr, refusal) {
+			t.Fatalf("jj alone's metaedit --update-author of %s exited %d and printed:\n%s\nwant jj's refusal %q", c.commit, aloneCode, aloneErr, refusal)
+		}
 		retry := f.op()
-		f.pushAndCheck(rolePushBookmark, rolePushWant{
-			refs:      []rolePushRef{{ref: "refs/heads/legion/K-1", commits: []rolePushCommit{{change: c.change, author: rev, commit: c.commit}}}},
-			same:      map[string]rolePushIdentity{c.commit: rev},
-			cannotSet: 1, cannotSetNames: "Newly-created commit " + made + " already exists",
-			snapshots: rolePushTakesOneSnapshot,
-		})
-		if ops := f.opsSince(retry); len(slices.DeleteFunc(slices.Clone(ops), func(op string) bool { return op != "snapshot working copy" })) > 1 {
-			t.Errorf("the retry added the operations %q, newest first, want one snapshot of the working copy at most", ops)
+		divergent := f.divergence()
+		code, _, stderr := f.push(impl, rolePushBookmark...)
+		f.check(rolePushWant{
+			exit: aloneCode,
+			refs: []rolePushRef{{ref: "refs/heads/legion/K-1", absent: true}},
+			same: map[string]rolePushIdentity{c.commit: rev},
+		}, rolePushBookmark, code, stderr, divergent, 0)
+		if !strings.Contains(stderr, aloneErr) {
+			t.Errorf("the push printed\n%s\nwant jj's own error, as jj alone prints it:\n%s", stderr, aloneErr)
+		}
+		if calls := f.calls(); slices.ContainsFunc(calls, rolePushCall.realPush) {
+			t.Errorf("the recording jj ran %v, want no real push", calls)
+		}
+		if on := f.read("legion/K-1").commit; on != c.commit {
+			t.Errorf("legion/K-1 is on %s after the push, want %s, where the restore left it", on, c.commit)
+		}
+		if ops := f.opsSince(retry); len(ops) > 1 || len(ops) == 1 && ops[0] != "snapshot working copy" {
+			t.Errorf("the retry added the operations %q, newest first, want one snapshot of the working copy at most and nothing else", ops)
 		}
 	})
 }

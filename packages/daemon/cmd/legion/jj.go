@@ -106,11 +106,10 @@ func jjStepped(words []string) string {
 // first read where git has moved HEAD or a branch since jj last imported them (jjStep.gitMoved),
 // and otherwise before it changes a commit or a word of the push; errJJSnapshot lists what makes
 // it take it, and jjStep.snapshotted says how the real push runs after it. After a step that
-// changes nothing more (errJJAsWritten), past a dry run it cannot read, a metaedit that jj refuses
-// because the commit it would make exists already (jjStep.metaedit), or a push whose command would
-// pass jjArgMax bytes (jjStep.checkArgMax), only a commit that a metaedit of the step moved counts
-// as replaced, and every argument is held to the commits it named before the step only where a
-// metaedit ran.
+// changes nothing more (errJJAsWritten), past a dry run it cannot read or a push whose command
+// would pass jjArgMax bytes (jjStep.checkArgMax), only a commit that a metaedit of the step moved
+// counts as replaced, and every argument is held to the commits it named before the step only
+// where a metaedit ran.
 // The push that runs after the step, or after the line of a table it cannot use, gets
 // wrappedJJStepped set to the digest of the words it runs with, the step's --ignore-working-copy
 // among them; the step's own commands do not.
@@ -283,7 +282,8 @@ type jjRewrite struct {
 // what the command printed on standard error, and runs no push. Four go on past one:
 // readRevisions, revisionSet and revisionGiven, past the failure of their reads of a revision
 // argument (readRevision, ids), and metaedit, past jj's refusal to make a commit that exists
-// already (jjCommitExists) and the failure of its read of that commit.
+// already (jjCommitExists) where that commit stands for one of its commits (existing); where it
+// stands for none, or the read of it fails, metaedit answers that refusal.
 type jjStepFailure struct {
 	code   int
 	output string
@@ -292,12 +292,12 @@ type jjStepFailure struct {
 func (f jjStepFailure) Error() string { return fmt.Sprintf("a command of the step exited %d", f.code) }
 
 // errJJAsWritten is a step that has printed its one line of what it could not do and changes
-// nothing more: read what the push sends (unreadable), set an author where jj refuses to make a
-// commit that exists already (metaedit), or set authors where the push's command would then pass
-// jjArgMax bytes (checkArgMax). The push then runs as the role wrote it, but where a metaedit of the
-// step ran: each revision argument is then held to the commits it named before the step, each one
-// that metaedit moved as the commit that replaced it (jjStep.given). Where the step took its
-// snapshot before it gave up, that push runs as jjStep.snapshotted says too.
+// nothing more: read what the push sends (unreadable), or set authors where the push's command
+// would then pass jjArgMax bytes (checkArgMax). The push then runs as the role wrote it, but
+// where a metaedit of the step ran: each revision argument is then held to the commits it named
+// before the step, each one that metaedit moved as the commit that replaced it (jjStep.given).
+// Where the step took its snapshot before it gave up, that push runs as jjStep.snapshotted says
+// too.
 var errJJAsWritten = errors.New("the step changes nothing more; the push runs as written")
 
 // errJJSnapshot is a run of the step (once) that would change a commit or a word of the push while
@@ -707,9 +707,9 @@ func (s *jjStep) readSet(heads []string) ([]jjSetCommit, error) {
 // may have hidden it since. jj then refuses the whole part and changes nothing
 // (jjExistingCommit). Where that commit can stand for one of commits (existing), the step records
 // that one's rewrite, and the metaedit runs again over the rest of commits, if any. Each pass, a
-// part or such a refusal, leaves one commit fewer at least, so the passes end. Otherwise the step
-// prints one line that names jj's error, and answers errJJAsWritten. Any other failure is
-// answered as it is: a jjStepFailure runs no push.
+// part or such a refusal, leaves one commit fewer at least, so the passes end. Where it can stand
+// for none of them, metaedit answers jj's refusal as it is, as it answers any other failure: a
+// jjStepFailure, after which runJJ prints jj's error and exits with jj's status, and no push runs.
 func (s *jjStep) metaedit(role legionclaim.Role, commits []*jjFollowed) error {
 	if s.snapshotDue() {
 		return errJJSnapshot
@@ -748,7 +748,7 @@ func (s *jjStep) metaedit(role legionclaim.Role, commits []*jjFollowed) error {
 			}
 		}
 		_, err := s.jj(env, args...)
-		made, line, exists := jjExistingCommit(err)
+		made, exists := jjExistingCommit(err)
 		if !exists {
 			if err != nil {
 				return err
@@ -763,12 +763,12 @@ func (s *jjStep) metaedit(role legionclaim.Role, commits []*jjFollowed) error {
 			commits = commits[n:]
 			continue
 		}
-		taken, err := s.existing(made, commits)
-		if err != nil {
-			return err
+		taken, readErr := s.existing(made, commits)
+		if readErr != nil {
+			return readErr
 		}
 		if taken == nil {
-			return s.asWritten("set the author", line)
+			return err
 		}
 		s.rewrites = append(s.rewrites, jjRewrite{role: role, commit: taken})
 		commits = slices.DeleteFunc(commits, func(c *jjFollowed) bool { return c == taken })
@@ -782,18 +782,18 @@ func (s *jjStep) metaedit(role legionclaim.Role, commits []*jjFollowed) error {
 var jjCommitExists = regexp.MustCompile(`Newly-created commit ([0-9a-f]+) already exists`)
 
 // jjExistingCommit reads err, the failure of a command of the step (jjStepFailure), as jj's
-// refusal to make a commit that exists already (jjCommitExists): ok is whether it is one, id the
-// commit id it names, and line the words of it that name that commit.
-func jjExistingCommit(err error) (id, line string, ok bool) {
+// refusal to make a commit that exists already (jjCommitExists): ok is whether it is one, and id
+// the commit id it names.
+func jjExistingCommit(err error) (id string, ok bool) {
 	var failed jjStepFailure
 	if !errors.As(err, &failed) {
-		return "", "", false
+		return "", false
 	}
 	match := jjCommitExists.FindStringSubmatch(failed.output)
 	if match == nil {
-		return "", "", false
+		return "", false
 	}
-	return match[1], match[0], true
+	return match[1], true
 }
 
 // existing is the one of commits that made stands for, made being a commit id that jj refused
@@ -973,12 +973,11 @@ func (s *jjStep) unreadable(line string) error {
 }
 
 // asWritten prints the one line of a step that could not do what, naming line: what of the dry run
-// it could not read (unreadable), jj's refusal to make a commit that exists already (metaedit), or
-// the revision argument with which the push's command would pass jjArgMax bytes (checkArgMax). It
-// answers errJJAsWritten: the step changes nothing more, and the push runs as the role wrote it,
-// but where a metaedit of the step ran, past which each revision argument is held to its set
-// (jjStep.given). Where the step took its snapshot, that push runs as snapshotted says too, and the
-// line ends `, with --ignore-working-copy`.
+// it could not read (unreadable), or the revision argument with which the push's command would
+// pass jjArgMax bytes (checkArgMax). It answers errJJAsWritten: the step changes nothing more, and
+// the push runs as the role wrote it, but where a metaedit of the step ran, past which each
+// revision argument is held to its set (jjStep.given). Where the step took its snapshot, that push
+// runs as snapshotted says too, and the line ends `, with --ignore-working-copy`.
 func (s *jjStep) asWritten(what, line string) error {
 	ignoring := ""
 	if s.snapshotted {
