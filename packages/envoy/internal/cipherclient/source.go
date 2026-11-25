@@ -20,8 +20,8 @@ import (
 // Actions run's token asked of GitHub again — and a Source that caches must cache for less than
 // the token it answers lives.
 //
-// Four implementations are the four identities a machine of this deployment holds. Each is a
-// Source so one client serves all four and a caller names which it has in one line.
+// Each implementation is one identity this process can prove. Each is a Source so one client
+// serves them all and a caller names which it has in one line.
 type Source interface {
 	// Token is a subject token to present and the subject_token_type it is presented under, or
 	// an error that never reached the broker: an identity this machine could not read is never

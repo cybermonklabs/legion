@@ -578,6 +578,8 @@ func TestPodAnswersTheListedAccount(t *testing.T) {
 //   - an entry that names no project and fixes legion-daemon: alone;
 //   - an entry of ACME that fixes a Legion role's session;
 //   - an entry of CASE that fixes Legion-Daemon:CASE, since the comparison holds the case;
+//   - a job entry whose list is JOB and that fixes legion-daemon:JOB, since a job entry names no
+//     Project (its projects are its job list);
 //   - a read entry that fixes legion-daemon:READ.
 //
 // The decision reads the session the entry fixes, and never the session the request names.
@@ -597,6 +599,7 @@ func TestPodGivesLegionStatusToTheDaemonsEntryAlone(t *testing.T) {
 			{Account: noProjectAccount, Person: person, Session: "legion-daemon:"},
 			{Account: roleAccount, Project: project, Person: person, Session: roleSession},
 			{Account: caseAccount, Project: "CASE", Person: person, Session: "Legion-Daemon:CASE"},
+			{Account: jobAccount, Job: jobList(t, "JOB"), Session: "legion-daemon:JOB"},
 		},
 		[]exchange.ReadEntry{{Account: readerAccount, Service: readerService, Session: "legion-daemon:READ"}},
 		nil, nil, signInDomain)
@@ -617,6 +620,7 @@ func TestPodGivesLegionStatusToTheDaemonsEntryAlone(t *testing.T) {
 		{name: "an account naming no project, fixing legion-daemon:", account: noProjectAccount, claimed: "legion-daemon:"},
 		{name: "an account of ACME fixing the role's session", account: roleAccount, claimed: roleSession},
 		{name: "an account of CASE fixing Legion-Daemon:CASE", account: caseAccount, claimed: "Legion-Daemon:CASE"},
+		{name: "a job entry of JOB fixing legion-daemon:JOB", account: jobAccount, claimed: "legion-daemon:JOB"},
 		{name: "a read entry fixing legion-daemon:READ", account: readerAccount, claimed: "legion-daemon:READ"},
 	} {
 		t.Run(c.name, func(t *testing.T) {

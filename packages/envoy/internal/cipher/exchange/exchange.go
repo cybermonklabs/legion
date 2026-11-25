@@ -403,8 +403,9 @@ type Claims struct {
 	// never Session: an entry that fixes no session takes Session from the request, which may
 	// name any session. So a pod whose request names legion-daemon:<its project> gets no
 	// LegionStatus, and neither does an entry that fixes the daemon session of another project or
-	// that names no project. No other decision sets it: a read entry, a workflow, a machine, a
-	// person's sign-in and a dev box never do, whatever session they carry.
+	// that names no project. No other decision sets it: a job entry, whose Project is empty, a read
+	// entry, a workflow, a machine, a person's sign-in and a dev box never do, whatever session
+	// they carry.
 	LegionStatus bool
 	// Principal is who the session name belongs to, and is not a claim of the minted token: it is
 	// what the broker records as the name's holder, so a caller that may exchange cannot mint a

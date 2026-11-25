@@ -122,7 +122,7 @@ func TestEveryProjectScopeIsWrittenAsItsOwnWordAndNoOtherIsWritten(t *testing.T)
 			}
 		})
 	}
-	for _, scope := range []exchange.ProjectScope{exchange.ProjectScopePerson, exchange.ProjectScopeNone, exchange.ProjectScopeUnset} {
+	for _, scope := range []exchange.ProjectScope{exchange.ProjectScopePerson, exchange.ProjectScopeNone, exchange.ProjectScopePublic, exchange.ProjectScopeUnset} {
 		for _, read := range []bool{false, true} {
 			t.Run(fmt.Sprintf("LegionStatus beside %d, read %t", int(scope), read), func(t *testing.T) {
 				session := oauthstore.NewExchangeSession()

@@ -290,6 +290,7 @@ A `named` job's token sets `Actor.Project`, so the project check below judges it
 A `public` job's token names no one project, so the project check holds it to none: it writes wherever Dispatch's own rules let a token that names no project write, a write that belongs to the deployment included.
 The private projects of its list limit no write at this release.
 It holds no OAuth scope, so every route whose `scopes` name `person` or `approve` refuses it `403 OAUTH_SCOPE_REQUIRED` at its scope gate.
+With `DISPATCH_LEGION_STATUS_SCOPE` on, a job's token, `named` or `public`, holds neither `person` nor `legion-status`, so Dispatch refuses it a Legion issue's status write, the removal of its `legion` label and the move after which it is no longer a Legion issue, with `403 LEGION_STATUS_SCOPE_REQUIRED`, as it refuses every credential that holds neither (below).
 The sign-in check below lets it write, and Dispatch records each write under the token's session, for its service, and under no person.
 `GET /api/v1/whoami` answers it with `owner` null, `service` its identity, `session` its session, `scopes` `[]`, `project` its one project for a `named` token and null for a `public` one, and `project_scope` `named` or `public`, which tells it from a machine's token, whose `project_scope` is `person` and whose every write the sign-in check refuses.
 The access log's `credential` names it `broker-token:service:<identity>` (below).
@@ -300,7 +301,7 @@ The broker grants that scope only to the token of an account entry whose fixed s
 No other credential holds it: a personal token cannot (`400 TOKEN_SCOPES_INPUT`), and no credential holds it beside `person`.
 With `DISPATCH_LEGION_STATUS_SCOPE` on, a write of a Legion issue's status, the removal of its `legion` label, and a move after which it is no longer a Legion issue need `legion-status` or `person` (`/api/v1/issues/{key}` (PATCH), Routes below, and `/api/v1/issues/{key}/status-change` (POST)).
 The daemon passes with its own broker token.
-The shared token, a personal token without `person`, a project's other broker tokens and a pod's Kubernetes token hold neither scope, so with the setting on Dispatch refuses them these writes, whatever session the request body names, but for one.
+The shared token, a personal token without `person`, a project's other broker tokens, a job's token and a pod's Kubernetes token hold neither scope, so with the setting on Dispatch refuses them these writes, whatever session the request body names, but for one.
 An architect of an issue above writes a Legion issue's status `done`, `backlog`, `icebox` or `triage` once its claim is ready: its broker token proves its session, and the daemon's own token has published that session as the architect of an issue above the Legion issue, of the Legion issue's own project, before the call and after it (`internal/dispatch/api/legion_status_scope.go`).
 With `include_children` it writes `backlog`, `icebox` or `triage` only, with `unlink_children` or `include_parent` nothing, and its removal of the `legion` label and its move out from under every labelled issue stay refused.
 

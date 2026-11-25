@@ -918,9 +918,10 @@ func readCut(form url.Values, read bool, now time.Time) (time.Time, error) {
 // token that holds any word beside read and person for no session's (ciphertoken's shapeOf).
 //
 // claims.LegionStatus beside any project scope but exchange.ProjectScopeNamed is a server error
-// that names it, and nothing is written or granted. Set.Pod sets it for an account entry alone,
-// whose decision is always named, so it beside another scope is a decision this broker never
-// makes, and the refusal keeps such a Claims from minting a token that holds the scope.
+// that names it, and nothing is written or granted. Set.Pod sets it for an account entry that names
+// a project (isLegionDaemon), whose decision is always named, so it beside another scope is a
+// decision this broker never makes, and the refusal keeps such a Claims from minting a token that
+// holds the scope.
 //
 // Any other value, exchange.ProjectScopeUnset included, is a server error that names it, and
 // nothing is written or granted: every exchange constructor sets the scope, so an unset one is a

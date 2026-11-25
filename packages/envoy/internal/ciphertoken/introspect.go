@@ -58,7 +58,9 @@ const ScopeRead = oauthwire.ScopeRead
 // ScopeLegionStatus is the OAuth scope the broker grants a Legion daemon's own token, in the
 // answer's space-separated Scope: the broker's own wire name, carried here for the reason
 // ScopeRead is. callerOf reads it into Caller.LegionStatus. Beside the project scope named or
-// person, shapeOf reads a token that holds it as it reads one that does not.
+// person, shapeOf reads a token that names a person and holds it as it reads one that does not.
+// A named answer that names no person and holds any scope word, this one included, is no
+// session's credential (shapeOf).
 const ScopeLegionStatus = oauthwire.ScopeLegionStatus
 
 // LegionDaemonSessionPrefix starts the session a Legion daemon writes its project's issues under,
