@@ -76,9 +76,10 @@
 -- eval_figure_cuts_stale holds one row per cut of a repository (every deploy repository of it)
 -- whose figures a move of its project's default repository moved, from the commit that publishes
 -- the move (evals.publishDefaults) until the refresher has folded every range and day of the cut
--- again (evals.refoldStaleCuts), a batch of end days a pass: a read of the cut folds the day rows
--- meanwhile (evals.figuresThrough), and every other cut stays served. The move's commit folds the
--- project's own rows itself, so no row names the cut ''.
+-- again (evals.refoldStaleCuts), from the pass that publishes the move on, batch after batch, each
+-- a short transaction: a read of the cut folds the day rows meanwhile (evals.figuresThrough), and
+-- every other cut stays served. The move's commit folds the project's own rows itself, so no row
+-- names the cut ''.
 --   generation  1 for the first mark, one more for each move that marks the cut again, which sets
 --               next_day back to null: the refold's batch that reaches the last end day deletes the
 --               row only where its generation is the one the batch read, so a move during a refold

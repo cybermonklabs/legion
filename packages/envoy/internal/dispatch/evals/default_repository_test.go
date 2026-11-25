@@ -1,6 +1,7 @@
 package evals
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -341,18 +343,47 @@ func (r *refresherRig) logAcmeWeb(t *testing.T, project string, day time.Time) {
 }
 
 // wokenPass makes one refresher pass as of the rig's clock with no batch of the walks, as the pass
-// a wake runs inside a RefresherGap does (refresh): its pages publish what they read, a move of a
-// default repository among it, and it makes none of the background work, the refold of the cuts a
-// move marked stale among it.
+// a wake runs inside a RefresherGap does (refresh), with no wake owed: its pages publish what they
+// read, a move of a default repository among it, it makes none of the walks' background work, and
+// it folds again each cut a move marked stale to its end (refoldStaleCuts).
 func (r *refresherRig) wokenPass(t *testing.T) {
 	t.Helper()
-	if _, err := r.horizon.Await(t.Context()); err != nil {
+	r.refreshIn(t.Context(), t, nil)
+}
+
+// owedPass makes one refresher pass as of the rig's clock with batch (nil for none, as wokenPass
+// makes it) while a wake of its loop is owed (duty.WakeOwed), as when a change commits during the
+// pass: its refold of the cuts a move marked stale folds one batch, of the first cut still marked,
+// and stops there for the wake (refresh.yields).
+func (r *refresherRig) owedPass(t *testing.T, batch *gapBatch) {
+	t.Helper()
+	owed := make(chan struct{}, 1)
+	owed <- struct{}{}
+	r.refreshIn(duty.WithWake(t.Context(), owed), t, batch)
+}
+
+// refreshIn makes one refresher pass in ctx as of the rig's clock with batch (refresh), once the
+// event log's safe horizon is proven.
+func (r *refresherRig) refreshIn(ctx context.Context, t *testing.T, batch *gapBatch) {
+	t.Helper()
+	if _, err := r.horizon.Await(ctx); err != nil {
 		t.Fatalf("await the event log's safe horizon: %v", err)
 	}
-	if _, _, err := r.registry.refresh(t.Context(), RefresherDeps{Horizon: r.horizon, Build: r.build},
-		refresherSchedule{gap: RefresherGap, page: refresherPage, batch: r.batch, now: func() time.Time { return r.now }}, r.seeds, nil); err != nil {
-		t.Fatalf("the refresher's woken pass failed: %v", err)
+	if _, _, err := r.registry.refresh(ctx, RefresherDeps{Horizon: r.horizon, Build: r.build},
+		refresherSchedule{gap: RefresherGap, page: refresherPage, batch: r.batch, now: func() time.Time { return r.now }}, r.seeds, batch); err != nil {
+		t.Fatalf("the refresher's pass failed: %v", err)
 	}
+}
+
+// markedBefore reports whether marks hold a cut before cut in the byte order of their keys, whose
+// refold a pass folds before cut's (refoldStaleCuts).
+func markedBefore(marks map[staleCut]staleMark, cut staleCut) bool {
+	for marked := range marks {
+		if compareStaleCuts(marked, cut) < 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // staleMark is a stale cut's mark as eval_figure_cuts_stale holds it: its generation, and the
@@ -402,18 +433,20 @@ func moveShapes() []struct {
 
 // TestADefaultMoveMarksOnlyTheCutsItTouches: over seedPierAndQuay's history, with a logged eval of
 // PIER and one of QUAY whose readings of acme/web are rows of each project's cut of it, PIER's
-// default moves to acme/quay and the pass a wake runs publishes it, with no background work
-// (wokenPass). Its commit marks stale the cuts the move moves and no other: PIER's old and new
-// default's (acme/pier, acme/quay), and QUAY's acme/quay, whose owner keys of acme/quay#1 and the
-// runs of it PIER gains and QUAY loses. Right after it, a read of a touched cut (PIER's and QUAY's
-// acme/quay) answers the fold of its day rows and is stated from no stored figure, while a read of
-// an untouched cut of the same project and of the other (each one's acme/web), and of each
-// project's own rows, which the move's commit folded, is stated from the stored figures, each
-// answering the fold of its rows. Once the refresher settles no cut is marked, each touched cut is
-// stated from the stored figures again, with the bytes the fold of its day rows answered while it
-// was stale, and the stored figures are the fold of the rows that stand. Red where a move marks
-// every cut of the projects it moves, or none of them, or where a read of a stale cut reads its
-// stored figures.
+// default moves to acme/quay and a pass's pages publish it, the pass stopping before the rest of
+// its work (pageAlone), so the refold of the cuts the move marks has not begun: a whole pass folds
+// at least one batch of it, which is the whole refold of PIER's acme/pier, even in batches of one
+// end day, and clears its mark. Its commit marks stale the cuts the move moves and no other:
+// PIER's old and new default's (acme/pier, acme/quay), and QUAY's acme/quay, whose owner keys of
+// acme/quay#1 and the runs of it PIER gains and QUAY loses. Right after it, a read of a touched cut
+// (PIER's and QUAY's acme/quay) answers the fold of its day rows and is stated from no stored
+// figure, while a read of an untouched cut of the same project and of the other (each one's
+// acme/web), and of each project's own rows, which the move's commit folded, is stated from the
+// stored figures, each answering the fold of its rows. Once the refresher settles no cut is marked,
+// each touched cut is stated from the stored figures again, with the bytes the fold of its day rows
+// answered while it was stale, and the stored figures are the fold of the rows that stand. Red
+// where a move marks every cut of the projects it moves, or none of them, or where a read of a
+// stale cut reads its stored figures.
 func TestADefaultMoveMarksOnlyTheCutsItTouches(t *testing.T) {
 	r := newRefresherRig(t)
 	day := seedPierAndQuay(t, r)
@@ -426,10 +459,10 @@ func TestADefaultMoveMarksOnlyTheCutsItTouches(t *testing.T) {
 		t.Fatalf("the first whole build left the cuts %v stale", marks)
 	}
 	r.exec(t, "move PIER's default repository", `update projects set default_repo = $1 where key = 'PIER'`, quayRepo)
-	r.wokenPass(t)
+	r.pageAlone(t)
 	want := []staleCut{{project: "PIER", repo: pierRepo}, {project: "PIER", repo: quayRepo}, {project: "QUAY", repo: quayRepo}}
 	if marked := slices.SortedFunc(maps.Keys(r.staleMarks(t)), compareStaleCuts); !slices.Equal(marked, want) {
-		t.Fatalf("the pass that published PIER's move to %s marked the cuts %v stale, want %v", quayRepo, marked, want)
+		t.Fatalf("the page that published PIER's move to %s marked the cuts %v stale, want %v", quayRepo, marked, want)
 	}
 	reads := []struct {
 		project, repo string
@@ -473,7 +506,7 @@ func TestADefaultMoveMarksOnlyTheCutsItTouches(t *testing.T) {
 			}
 		}
 	}
-	check("right after the pass that published the move", true)
+	check("right after the page that published the move", true)
 
 	r.settle(t)
 	if marks := r.staleMarks(t); len(marks) != 0 {
@@ -484,15 +517,17 @@ func TestADefaultMoveMarksOnlyTheCutsItTouches(t *testing.T) {
 }
 
 // TestAMoveDuringARefoldLeavesTheCutStaleUntilItsGenerationIsFolded: over seedPierAndQuay's
-// history, with batches of one end day (refresherRig.batch), PIER's default moves to acme/quay and
-// the pass a wake runs publishes it, which marks PIER's cut of acme/quay stale; one pass folds the
-// first end day of the cut again and leaves the rest marked, its refold begun. PIER's default then
-// moves back, and the pass that publishes it marks the cut again, at the next generation, its
-// refold to begin again. The mark then stands at every pass until the refold of the new generation
-// has folded every end day of the cut from its first, the passes the whole cut takes and not the
-// fewer the first generation's refold had left, a read of the cut folding the day rows meanwhile
-// and answering what they fold; once it is cleared, the read is stated from the stored figures,
-// and they are the fold of the rows that stand. Red where a move keeps the progress or the
+// history, with batches of one end day (refresherRig.batch) and every pass run under an owed wake
+// (owedPass), so each pass folds one end day of the first cut still marked and stops for the wake,
+// PIER's default moves to acme/quay and the pass a wake runs publishes it, which marks PIER's cut
+// of acme/quay stale; once the cut before it is folded, one pass folds the first end day of the cut
+// again and leaves the rest marked, its refold begun. PIER's default then moves back, and the pass
+// that publishes it marks the cut again, at the next generation, its refold to begin again. The
+// mark then stands at every pass until the refold of the new generation has folded every end day of
+// the cut from its first, the passes the whole cut takes once no cut before it is marked and not
+// the fewer the first generation's refold had left, a read of the cut folding the day rows
+// meanwhile and answering what they fold; once it is cleared, the read is stated from the stored
+// figures, and they are the fold of the rows that stand. Red where a move keeps the progress or the
 // generation of a refold begun: the refold then goes on from where the first generation stood,
 // clears the mark a pass early, and leaves the stored figures of the cut's first end day folded
 // under the default the second move left.
@@ -503,13 +538,25 @@ func TestAMoveDuringARefoldLeavesTheCutStaleUntilItsGenerationIsFolded(t *testin
 	r.expectBuilt(t, "the first whole build", refresherToday)
 	r.batch = 1
 	cut := staleCut{project: "PIER", repo: quayRepo}
+	// reach makes passes until no cut before cut is marked, each folding one end day of the first
+	// cut that is, so the next pass folds the next end day of cut.
+	reach := func(what string) {
+		t.Helper()
+		for passes := 0; markedBefore(r.staleMarks(t), cut); passes++ {
+			if passes > 100 {
+				t.Fatalf("%s: %d passes left a cut before PIER's cut of %s stale: %v", what, passes, quayRepo, r.staleMarks(t))
+			}
+			r.owedPass(t, &gapBatch{})
+		}
+	}
 	r.exec(t, "move PIER's default repository", `update projects set default_repo = $1 where key = 'PIER'`, quayRepo)
-	r.wokenPass(t)
+	r.owedPass(t, nil)
 	first, held := r.staleMarks(t)[cut]
 	if !held || first.next != nil {
 		t.Fatalf("the pass that published PIER's move to %s left its cut of it marked %t at %+v, want marked with its refold to begin", quayRepo, held, first)
 	}
-	r.pass(t)
+	reach("after the move")
+	r.owedPass(t, &gapBatch{})
 	begun, held := r.staleMarks(t)[cut]
 	if !held || begun.next == nil || begun.generation != first.generation {
 		t.Fatalf("a pass of one end day left PIER's cut of %s marked %t at %+v, want its refold begun and not done, at generation %d", quayRepo, held, begun, first.generation)
@@ -521,11 +568,12 @@ func TestAMoveDuringARefoldLeavesTheCutStaleUntilItsGenerationIsFolded(t *testin
 		t.Fatalf("the refold of PIER's cut of %s folds %d end days, and the check needs more than the one its first batch folded", quayRepo, whole)
 	}
 	r.exec(t, "move PIER's default repository back", `update projects set default_repo = $1 where key = 'PIER'`, pierRepo)
-	r.wokenPass(t)
+	r.owedPass(t, nil)
 	if again, held := r.staleMarks(t)[cut]; !held || again.generation != begun.generation+1 || again.next != nil {
 		t.Fatalf("the pass that published PIER's move back to %s left its cut of %s marked %t at %+v, want generation %d with its refold to begin again",
 			pierRepo, quayRepo, held, again, begun.generation+1)
 	}
+	reach("after the move back")
 	shape := moveShapes()[0]
 	passes := 0
 	for {
@@ -533,22 +581,22 @@ func TestAMoveDuringARefoldLeavesTheCutStaleUntilItsGenerationIsFolded(t *testin
 			break
 		}
 		if passes > 3*whole {
-			t.Fatalf("%d passes after the move back left PIER's cut of %s stale", passes, quayRepo)
+			t.Fatalf("%d passes after the move back and the cuts before it left PIER's cut of %s stale", passes, quayRepo)
 		}
 		stated, folded, fromFigures := r.listValues(t, "PIER", []string{quayRepo}, shape.window, &shape.compare)
 		if fromFigures != 0 {
-			t.Errorf("%d passes after the move back, with the cut stale, the read of PIER's %s stated %d evals from the stored figures", passes, quayRepo, fromFigures)
+			t.Errorf("%d passes into the refold after the move back, with the cut stale, the read of PIER's %s stated %d evals from the stored figures", passes, quayRepo, fromFigures)
 		}
 		for _, id := range slices.Sorted(maps.Keys(folded)) {
 			if stated[id] != folded[id] {
-				t.Errorf("%d passes after the move back, the read of PIER's %s states %s's values otherwise than the fold of its day rows", passes, quayRepo, id)
+				t.Errorf("%d passes into the refold after the move back, the read of PIER's %s states %s's values otherwise than the fold of its day rows", passes, quayRepo, id)
 			}
 		}
-		r.pass(t)
+		r.owedPass(t, &gapBatch{})
 		passes++
 	}
 	if passes < whole {
-		t.Errorf("the mark of PIER's cut of %s was cleared %d passes after the move back, where the refold of its whole %d end days takes %d",
+		t.Errorf("the mark of PIER's cut of %s was cleared %d passes after the move back and the cuts before it, where the refold of its whole %d end days takes %d",
 			quayRepo, passes, whole, whole)
 	}
 	stated, folded, fromFigures := r.listValues(t, "PIER", []string{quayRepo}, shape.window, &shape.compare)
@@ -562,6 +610,68 @@ func TestAMoveDuringARefoldLeavesTheCutStaleUntilItsGenerationIsFolded(t *testin
 	}
 	expectTruth(t, "once the refold of the new generation was done", r.storedFigures(t), r.truthFigures(t))
 	t.Logf("the refold of PIER's cut of %s, begun again at generation %d, took %d passes of one end day", quayRepo, begun.generation+1, passes)
+}
+
+// TestThePassThatPublishesAMoveFoldsItsStaleCutsToTheEnd: over seedPierAndQuay's history, with
+// batches of one end day (refresherRig.batch), PIER's default moves to acme/quay, and one pass with
+// no batch of the walks and no wake owed (wokenPass), as the move's own wake runs it inside a
+// RefresherGap, publishes the move, marks the cuts it moves stale and folds every one of them again
+// to its end, a batch of one end day after another, back to back, PIER's cut of acme/quay alone
+// taking more than one: once the pass ends PIER publishes acme/quay, no cut is marked, and the
+// stored figures are the fold of the rows that stand, every cut's (expectTruth). Red against the
+// refold a gap paced, where a pass with no batch of the walks folds no stale cut and a pass with
+// one folds one batch of each: the pass then leaves every cut the move marked stale, and their
+// stored figures folded under the defaults before it.
+func TestThePassThatPublishesAMoveFoldsItsStaleCutsToTheEnd(t *testing.T) {
+	r := newRefresherRig(t)
+	ctx, pool := t.Context(), r.database.Pool
+	seedPierAndQuay(t, r)
+	r.settle(t)
+	r.expectBuilt(t, "the first whole build", refresherToday)
+	r.batch = 1
+	r.exec(t, "move PIER's default repository", `update projects set default_repo = $1 where key = 'PIER'`, quayRepo)
+	r.wokenPass(t)
+	if published, err := PublishedDefaultIn(ctx, pool, "PIER"); err != nil || published != quayRepo {
+		t.Fatalf("the pass left PIER publishing %q as its default (%v), want %s", published, err, quayRepo)
+	}
+	first, err := cutStart(ctx, pool, "PIER", quayRepo)
+	if err != nil || first == nil {
+		t.Fatalf("the first end day of PIER's cut of %s is %v (%v), want a day", quayRepo, first, err)
+	}
+	if days := int(refresherToday.AddDate(0, 0, FigureLead).Sub(*first)/(24*time.Hour)) + 1; days < 2 {
+		t.Fatalf("the refold of PIER's cut of %s folds %d end days, and the check needs more than one batch of one", quayRepo, days)
+	}
+	if marks := r.staleMarks(t); len(marks) != 0 {
+		t.Errorf("the pass that published PIER's move to %s left the cuts %v stale", quayRepo, marks)
+	}
+	expectTruth(t, "after the pass that published the move", r.storedFigures(t), r.truthFigures(t))
+}
+
+// TestARefoldBatchFoldsAtLeastOneEndDayAndAtMostThePassBatch: the next batch of a stale cut's
+// refold (refoldBatchDays) folds one end day after a batch far past refoldBatchBudget, whether it
+// folded one end day or a whole batch, so a refold whose every end day takes longer than the
+// budget still moves on; it folds the pass's batch size after a batch that took next to no time or
+// none the clock could tell, never more; and it folds one end day where the pass's batch size is
+// none. Red where the sizing rounds a slow batch down to no end day, which folds nothing and never
+// ends, or lets a fast one grow past the pass's batch size.
+func TestARefoldBatchFoldsAtLeastOneEndDayAndAtMostThePassBatch(t *testing.T) {
+	for _, tc := range []struct {
+		what       string
+		days, most int
+		took       time.Duration
+		want       int
+	}{
+		{"one end day far past the budget", 1, walkBatch, time.Hour, 1},
+		{"a whole batch far past the budget", walkBatch, walkBatch, time.Hour, 1},
+		{"a whole batch in next to no time", walkBatch, walkBatch, time.Nanosecond, walkBatch},
+		{"one end day in no time the clock could tell", 1, walkBatch, 0, walkBatch},
+		{"one end day with a pass batch of none", 1, 0, time.Nanosecond, 1},
+	} {
+		if got := refoldBatchDays(tc.days, tc.took, tc.most); got != tc.want {
+			t.Errorf("%s: the next batch of %d end days at most after %d end days in %s folds %d end days, want %d",
+				tc.what, tc.most, tc.days, tc.took, got, tc.want)
+		}
+	}
 }
 
 // Clearing the last default repository a project holds (PUT /api/v1/projects/{key}/default-repository

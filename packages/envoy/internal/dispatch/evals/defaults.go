@@ -113,7 +113,7 @@ func judgingProject(defaults map[string]string, deployRepo string) string {
 // (refoldProject, figureScope.own), so they fold the rows it reads under the new defaults, and one
 // eval_days change of no eval (delivery.EvalDaysWrittenByDefaults), which marks its evals views;
 // each cut of a repository the move moves marked stale (markStaleCuts), its refold left to the
-// refresher's background work; and, where the project judging the delivery views moved, one more
+// refresher (refoldStaleCuts); and, where the project judging the delivery views moved, one more
 // change (delivery.JudgingMoved), which marks those views. The projects it moves are those whose
 // own default it moves, and every project whose owner keys (eval_project_owners, with whether it
 // reads each through the repository) the new defaults move, read in tx before and after the write:
@@ -125,7 +125,9 @@ func judgingProject(defaults map[string]string, deployRepo string) string {
 // and that of the repository of each owner key it gains, loses or reads otherwise through the
 // repository; it folds none of them, since at INFRA's size the two defaults' cuts hold about
 // 290,000 range rows, past what a commit folds inside R14's 2 s. Every write of the commit lands
-// together, so a read answers the old defaults and figures or the new ones.
+// together, so a read answers the old defaults and figures or the new ones. The refresher's pass
+// whose page commits the move folds the stale cuts again once its pages are done, batch after
+// batch, each in a short transaction of its own (refoldStaleCuts).
 func publishDefaults(ctx context.Context, tx pgx.Tx, build string, move *defaultsMove) error {
 	projects := slices.AppendSeq(make([]string, 0, len(move.live)), maps.Keys(move.live))
 	slices.Sort(projects)

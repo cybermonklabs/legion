@@ -80,11 +80,12 @@ import (
 // 290,000 range rows, which no write folds again inside R14's 2 s for a move to reach every view.
 // So the move's own commit (publishDefaults) folds again the project's own rows alone, and marks
 // each cut it moves stale (eval_figure_cuts_stale, with a generation each mark moves); the
-// refresher's background work folds each stale cut again, every range and day of it, a batch of
-// end days a pass (refoldStaleCut, one function a transaction calls), and clears its mark in the
-// transaction that finishes it unless a later move marked it again. Until then a read of the
-// stale cut folds the day rows, which answer the same bytes (figuresThrough), and every other cut
-// stays served.
+// refresher's pass folds each stale cut again, every range and day of it, batch after batch, each
+// batch a short transaction (refoldCut, one function a transaction calls), and clears its mark in
+// the transaction that finishes it unless a later move marked it again (refoldStaleCuts). The pass
+// that publishes the move begins the refold, and a pass stops it between two batches only for an
+// owed wake, whose pass goes on with it. Until then a read of the stale cut folds the day rows,
+// which answer the same bytes (figuresThrough), and every other cut stays served.
 //
 // The writers are the refresher's writes of a project's day (writeProjectDay), its unowned-p0 row
 // (WriteUnownedP0Day), its logged zero fill (fillLoggedZeros) and its rewrite of a settings change

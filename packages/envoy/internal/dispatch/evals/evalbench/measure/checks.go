@@ -496,9 +496,14 @@ func (c *headChecks) insertRolledBack(ctx context.Context, index, text string, a
 // a move's commit marks it (eval_figure_cuts_stale), reads the paint's 84-day read with a compare
 // range and its 28-day read of that repository once more, as the paint measures each (measure),
 // which fold the day rows while the mark stands (figuresThrough), and takes the mark away again
-// where it made it. Each RESULT line names the read, its database and server time, its body, the
-// same read's database time from the stored figures in the paint, and whether the two answers'
-// items are equal. It judges no budget: the architect reads the fallback's time.
+// where it made it. A running server's refresher folds a marked cut again in any pass
+// (evals.refoldStaleCuts): its first batch records where the refold stands (next_day) and its last
+// deletes the mark. So after the two reads it reads the mark back, and where the mark no longer
+// stands at generation 1 with its refold to begin, the refresher folded the cut during the
+// measurement and a read may have read the stored figures: it states no read and fails. Each
+// RESULT line names the read, its database and server time, its body, the same read's database
+// time from the stored figures in the paint, and whether the two answers' items are equal. It
+// judges no budget: the architect reads the fallback's time.
 func (c *headChecks) fallback(measured []measuredCase, catalog map[int64]bool) {
 	ctx := context.Background()
 	repo := evalbench.Repos[0]
@@ -518,6 +523,7 @@ func (c *headChecks) fallback(measured []measuredCase, catalog map[int64]bool) {
 			}
 		}()
 	}
+	var results []string
 	for _, name := range []string{"list-84d-compare-repo", "list-28d-repo"} {
 		var stored *measuredCase
 		for index := range measured {
@@ -536,8 +542,21 @@ func (c *headChecks) fallback(measured []measuredCase, catalog map[int64]bool) {
 			c.r.fail("k16 fallback: %s: %v", one.name, err)
 			continue
 		}
-		c.r.result("k16 fallback case=%s status=%d db_ms=%.2f statements=%d server_ms=%.0f body_bytes=%d gzip_bytes=%d stored_db_ms=%.2f items_equal=%t",
-			one.name, got.status, dbMs(got.own), len(got.own), got.serverMs, len(got.body), gzipSize(got.body), dbMs(stored.own), sameItems(got.body, stored.body))
+		results = append(results, fmt.Sprintf("k16 fallback case=%s status=%d db_ms=%.2f statements=%d server_ms=%.0f body_bytes=%d gzip_bytes=%d stored_db_ms=%.2f items_equal=%t",
+			one.name, got.status, dbMs(got.own), len(got.own), got.serverMs, len(got.body), gzipSize(got.body), dbMs(stored.own), sameItems(got.body, stored.body)))
+	}
+	var stands bool
+	if err := c.pool.QueryRow(ctx, `select exists (select 1 from eval_figure_cuts_stale where project_key = $1 and repo = $2 and generation = 1 and next_day is null)`,
+		c.o.project, repo).Scan(&stands); err != nil {
+		c.r.fail("k16 fallback: read back the mark of %s's cut of %s: %v", c.o.project, repo, err)
+		return
+	}
+	if !stands {
+		c.r.fail("k16 fallback: the refresher folded %s's cut of %s again during the measurement, so its reads may have read the stored figures; no read of it is stated", c.o.project, repo)
+		return
+	}
+	for _, result := range results {
+		c.r.result("%s", result)
 	}
 }
 
