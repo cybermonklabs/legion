@@ -152,26 +152,12 @@ func historyFault(h History) error {
 
 // Changed is the sorted paths whose label differs between the trees of from and to, or that one
 // of the trees does not hold, so a move gives both of its paths; ok is false when the history
-// holds no commit with one of the two ids. A FixtureHistory gives no error. Each call finds the two
-// trees in the list of commits (tree); the judge reads the trees of a FixtureHistory by their ids
+// holds no commit with one of the two ids. A FixtureHistory gives no error. Each call builds the
+// tree of each commit by its id (trees) and reads the two trees there; the judge builds them once
 // instead (fixtureTrees, newCheckJudge), so that its many calls take time that grows with the
 // history and not with its square.
 func (h FixtureHistory) Changed(from, to string) ([]string, bool, error) {
-	a, okFrom := h.tree(from)
-	b, okTo := h.tree(to)
-	if !okFrom || !okTo {
-		return nil, false, nil
-	}
-	return pathsChanged(a, b), true, nil
-}
-
-// tree is the files of the commit id, and whether the history holds it.
-func (h FixtureHistory) tree(id string) (map[string]string, bool) {
-	i := slices.IndexFunc(h.Commits, func(c FixtureCommit) bool { return c.ID == id })
-	if i < 0 {
-		return nil, false
-	}
-	return h.Commits[i].Files, true
+	return h.trees().Changed(from, to)
 }
 
 // fixtureTrees is the tree of each commit of a FixtureHistory by its id, whose ids are unique
@@ -188,7 +174,7 @@ func (h FixtureHistory) trees() fixtureTrees {
 	return trees
 }
 
-// Changed is FixtureHistory.Changed of the history whose trees t holds.
+// Changed is FixtureHistory.Changed of the history whose trees t holds, the one body of both.
 func (t fixtureTrees) Changed(from, to string) ([]string, bool, error) {
 	a, okFrom := t[from]
 	b, okTo := t[to]
