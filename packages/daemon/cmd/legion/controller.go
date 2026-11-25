@@ -506,7 +506,7 @@ func checkControllerRepositories(ctx context.Context, daemonURL string) error {
 	daemon := operator{base: daemonURL}
 	answered, err := daemon.do(timed, http.MethodGet, route, nil)
 	if err != nil {
-		return fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", daemonURL, err)
+		return fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", daemon.shownRoot(), err)
 	}
 	asked := daemon.shown(route)
 	if status := answered.Status(); status/100 != 2 {
@@ -571,7 +571,7 @@ func fetchControllerSecret(ctx context.Context, daemonURL, operatorToken string,
 	daemon := operator{base: daemonURL, bearer: operatorToken}
 	answered, err := daemon.do(ctx, http.MethodPost, route, api.ControllerSecretRequest{PluginContract: contract})
 	if err != nil {
-		return "", nil, fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", daemonURL, err)
+		return "", nil, fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", daemon.shownRoot(), err)
 	}
 	asked := daemon.shown(route)
 	if status := answered.Status(); status/100 != 2 {

@@ -99,8 +99,10 @@ func fetchInputs(repo, feed, cacheURL string) (fetchInput, error) {
 	}
 	inputs := fetchInput{repository: repository}
 	if cacheURL != "" {
+		// The refusal names the flag alone: the URL as written is where a credential would be,
+		// and one with no "://" passes the URL rule on stderr (newRoot) as written.
 		if parsed, err := url.Parse(cacheURL); err != nil || parsed.Scheme != "http" || parsed.Host == "" {
-			return fetchInput{}, fmt.Errorf("--cache-url must be an http:// URL (got %q)", cacheURL)
+			return fetchInput{}, errors.New("--cache-url must be an http:// URL with a host")
 		}
 		tokenFile, set := os.LookupEnv(repocache.CacheTokenFileEnv)
 		if !set {

@@ -1242,9 +1242,10 @@ func TestReadGitRemotesReadsEveryMarkerLineGitPrints(t *testing.T) {
 
 // git prints a remote's URL and partial clone filter as they are configured, so whitespace in
 // either lets gh's greedy reading of the line take another URL than the one before its first
-// ` (`: readGitRemotes refuses such a line, naming it, rather than count an owner gh may not act
-// on. The three shapes the gates probed, each gh acting on evilown's repository: a filter holding a
-// second `<url> (fetch)`, the same after a GitHub URL, and a URL holding a second URL.
+// ` (`: readGitRemotes refuses such a line, naming the URL gh reads from it, rather than count an
+// owner gh may not act on. The three shapes the gates probed, each gh acting on evilown's
+// repository: a filter holding a second `<url> (fetch)`, the same after a GitHub URL, and a URL
+// holding a second URL.
 func TestReadGitRemotesRefusesALineGhReadsOtherwise(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git on this machine")
