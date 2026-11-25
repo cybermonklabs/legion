@@ -7,12 +7,15 @@ import type { Agent } from "../../api/types";
 /**
  * The agent registry (`GET /api/v1/agents`: the sessions the Envoy listener lists, as of
  * Dispatch's copy of its list, at most 5 s old) as every surface reads it. One query key, one
- * lookup built per response, and one poller:
- * `AgentRegistryPoller`, mounted once in the app shell, refreshes the registry every 15 s while
- * anything registered through `useRegistryPolling` is mounted (each session `AgentName`, each
- * `useAgents(…, true)` caller). A reader never polls on its own: TanStack runs one interval
- * per observer, so N readers mounted at different times would fetch up to N times per 15 s.
- * The poller keeps TanStack's default of not polling a hidden tab.
+ * lookup built per response, and one poller: `AgentRegistryPoller`, mounted once in the app
+ * shell, refreshes the registry every 15 s while anything registered through `useRegistryPolling`
+ * is mounted: each enabled `useAgentRegistry` reader (a session's `AgentName`, a claim chip, the
+ * issues table's claim filter, the search palette's send offer), each `useAgents(…, true)`
+ * caller, and each reference to a session or a role a surface draws (`useReferenceData` in
+ * `reference-target.ts`), so a session renamed or a role taken up while the page is open reads
+ * as it is now. A reader never polls on its own: TanStack runs one interval per observer, so N
+ * readers mounted at different times would fetch up to N times per 15 s. The poller keeps
+ * TanStack's default of not polling a hidden tab.
  */
 
 /** A session's running state, from the registry only. `running`: listed by the latest
@@ -70,6 +73,25 @@ function registryLookup(agents: readonly Agent[]): RegistryLookup {
     lookups.set(agents, lookup);
   }
   return lookup;
+}
+
+/** The agent the registry response `agents` lists under `sessionId`, through the lookup every
+ *  reader of that response shares. */
+export function registeredAgent(
+  agents: readonly Agent[] | undefined,
+  sessionId: string
+): Agent | undefined {
+  return agents === undefined ? undefined : registryLookup(agents).byId.get(sessionId);
+}
+
+/** The title the registry response `agents` gives `sessionId`, trimmed: undefined for a session
+ *  it does not list or lists with a blank title, which names nobody. */
+export function registeredTitle(
+  agents: readonly Agent[] | undefined,
+  sessionId: string
+): string | undefined {
+  const title = registeredAgent(agents, sessionId)?.title.trim();
+  return title === undefined || title === "" ? undefined : title;
 }
 
 let pollingReaders = 0;
@@ -146,6 +168,10 @@ export interface AgentRegistry {
  * Reads the registry. `enabled` fetches it (a first load only: it never refetches on mount, the
  * shell's poller refreshes it) and registers with the poller; disabled, it still reads whatever
  * the cache holds, so its titles name agents but its states stay `unknown` until a read lands.
+ * A read that failed is not asked again by a reader that mounts after it either: a page draws an
+ * agent's name in many places, and each of them would ask a failed registry again with every
+ * try the dashboard's retry rule allows, where the poller's own interval already asks it again
+ * every 15 s.
  */
 export function useAgentRegistry(enabled: boolean): AgentRegistry {
   useRegistryPolling(enabled);
@@ -153,8 +179,10 @@ export function useAgentRegistry(enabled: boolean): AgentRegistry {
     ...agentsQuery(),
     enabled,
     refetchOnMount: false,
+    retryOnMount: false,
   });
-  const lookup = registryLookup(data ?? EMPTY_AGENTS);
+  const agents = data ?? EMPTY_AGENTS;
+  const lookup = registryLookup(agents);
   // A failed refetch keeps the last response's data, so the state goes back to unknown while
   // the cached titles go on naming agents.
   const known = !(isPending || isError);
@@ -174,12 +202,9 @@ export function useAgentRegistry(enabled: boolean): AgentRegistry {
         if (agent === undefined) return "not-running";
         return agent.state === "unresponsive" ? "unresponsive" : "running";
       },
-      title: (sessionId: string) => {
-        const title = lookup.byId.get(sessionId)?.title.trim();
-        return title === undefined || title === "" ? undefined : title;
-      },
+      title: (sessionId: string) => registeredTitle(agents, sessionId),
       titles: lookup.titles,
     }),
-    [isError, known, lookup, refilling]
+    [agents, isError, known, lookup, refilling]
   );
 }

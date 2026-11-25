@@ -49,7 +49,7 @@ const CORE_1: ReferenceTarget = {
 };
 
 function references(targets: Record<string, ReferenceTarget | null>): EditorReferences {
-  return { onKeys: () => {}, scan, targets: new Map(Object.entries(targets)) };
+  return { mentions: new Map(), onKeys: () => {}, scan, targets: new Map(Object.entries(targets)) };
 }
 
 /** A spec as Dispatch stores one: the address is a link whose text is its own address, written

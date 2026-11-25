@@ -251,21 +251,33 @@ export interface HandoffField {
   readonly field: string;
   /** The field's name, or `proof <n>` for the nth proof entry, counted from 1. */
   readonly label: string;
+  /** Where the server keeps the reading of this row's text in the handoff's `field_trees`: the
+   *  JSON Pointer (RFC 6901) of the text in the body - `/summary` for a field, `/proof/0` for the
+   *  first proof entry - so a field named `proof.0` and that entry never share a key. */
+  readonly path: string;
   readonly text: string;
-  /** `text` is indented JSON (an array or an object) rather than a plain value. */
-  readonly json: boolean;
+  /** What `text` is: words the session wrote (`prose`), which the renderer draws; indented JSON
+   *  (`json`, an array or an object); or a number, a boolean or null as its JSON text
+   *  (`value`). */
+  readonly shape: "json" | "prose" | "value";
 }
 
 /** A value as a row shows it: a string as itself, an array or an object as indented JSON, and a
  *  number, a boolean or null as its JSON text. */
-function handoffValue(value: unknown): Pick<HandoffField, "json" | "text"> {
+function handoffValue(value: unknown): Pick<HandoffField, "shape" | "text"> {
   if (typeof value === "string") {
-    return { json: false, text: value };
+    return { shape: "prose", text: value };
   }
   if (value !== null && typeof value === "object") {
-    return { json: true, text: JSON.stringify(value, null, 2) };
+    return { shape: "json", text: JSON.stringify(value, null, 2) };
   }
-  return { json: false, text: JSON.stringify(value) };
+  return { shape: "value", text: JSON.stringify(value) };
+}
+
+/** The JSON Pointer (RFC 6901) token of an object's key: `~` written `~0` and `/` written `~1`,
+ *  the escapes the server's pointer to the same key uses (`handoffRead`). */
+function pointerToken(key: string): string {
+  return key.replaceAll("~", "~0").replaceAll("/", "~1");
 }
 
 /** The rows a handoff's body expands to, in the order its session wrote the fields, with a
@@ -286,9 +298,10 @@ export function handoffFields(body: string): HandoffField[] | undefined {
       ? value.map((entry, index) => ({
           field,
           label: `proof ${index + 1}`,
+          path: `/proof/${index}`,
           ...handoffValue(entry),
         }))
-      : [{ field, label: field, ...handoffValue(value) }]
+      : [{ field, label: field, path: `/${pointerToken(field)}`, ...handoffValue(value) }]
   );
 }
 

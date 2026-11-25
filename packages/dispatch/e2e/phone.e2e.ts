@@ -1,4 +1,3 @@
-import { keyText } from "../web/src/features/shell/key-text";
 import { setLiveSessions } from "./agents";
 
 import {
@@ -24,9 +23,9 @@ import {
   selectEditorText,
 } from "./editor";
 import { askCard, inboxList } from "./inbox-pane";
-import { modKey, namesMac } from "./keyboard-palette";
 import { distinctKeys, watchWrites } from "./keyed-writes";
 import { expectConsecutiveLinksClear } from "./layout";
+import { refPicker } from "./ref-picker";
 import { insertExternalLink } from "./seed";
 import { navigateInApp, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
@@ -168,23 +167,16 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
       await commentBody.focus();
     }
 
-    // The hint under the box names the page's `$mod` as the app's formatter draws it for this
-    // page (`keyText`): `⌘` under a Mac's user agent, as the iPhone project's is, and `Ctrl`
-    // elsewhere.
-    await expect(commentComposer).toContainText(
-      `${keyText("$mod+K", await namesMac(page))} inserts a reference.`
-    );
-
-    // D12: Ctrl+K (Cmd+K under a Mac's user agent, as the iPhone project's is: `modKey`) opens a
-    // real dialog; Escape dismisses only the picker, restores focus to the composer, and leaves
-    // the composer's own draft (and, on phone, the sheet) open.
-    await commentBody.press(`${await modKey(page)}+k`);
-    const picker = page.getByRole("dialog", { name: "Reference picker" });
+    // `MentionField` takes the first Escape to close its list, without closing the composer
+    // or its phone sheet. The draft and focus stay in the field.
+    await commentBody.fill("why @");
+    const picker = refPicker(commentComposer);
     await expect(picker).toBeVisible();
-    await page.keyboard.press("Escape");
+    await commentBody.press("Escape");
     await expect(picker).toHaveCount(0);
     await expect(commentComposer).toBeVisible();
     await expect(commentBody).toBeFocused();
+    await expect(commentBody).toHaveValue("why @");
 
     // D11: Escape on a non-empty draft shows an inline "Discard draft?" affordance (not a
     // blocking confirm()); Escape again discards it. That ends the comment, so the composer
@@ -445,9 +437,9 @@ test("inline @ autocomplete has touch-sized controls and no overflow on iPhone @
     await page.goto(`/issues/${issue.key}/conversation`);
     const composer = page.getByRole("form", { name: "Comment composer" });
     await composer.getByLabel("Comment").fill("@");
-    const picker = composer.getByRole("listbox", { name: "Mention suggestions" });
+    const picker = refPicker(composer);
     await expect(picker).toBeVisible();
-    const option = picker.getByRole("option", { exact: true, name: "planner" });
+    const option = picker.getByRole("option", { name: /^planner\b/ });
     await expect(option).toBeVisible();
     // The planner option above shows the live list has drawn, and a new issue has no
     // collaborators to add a Not running option, so one read lists every control.
@@ -956,11 +948,13 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
     await navigateInApp(page, `/issues/${issue.key}/conversation`);
     const composer = page.getByRole("form", { name: "Comment composer" });
     await composer.getByLabel("Comment").fill("@");
-    const roleOption = composer
-      .getByRole("listbox", { name: "Mention suggestions" })
-      .getByRole("option", { exact: true, name: "legion-implementer" });
+    const roleOption = refPicker(composer).getByRole("option", {
+      name: /^legion-implementer\b/,
+    });
     await expectEllipsis(roleOption);
-    await expectStacked(roleOption);
+    // The row's own text column: its kind's icon sits beside it rather than above its words
+    // (`RefPickerList`), so what stacks is the column the words and the detail share.
+    await expectStacked(roleOption.locator("> span"));
     const detail = roleOption.getByText(new RegExp(`^${longTitle} · /w/legion · `));
     await expect.soft(detail).toHaveAttribute("title", (await detail.textContent()) ?? "");
 

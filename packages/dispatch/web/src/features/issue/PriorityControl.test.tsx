@@ -1,4 +1,4 @@
-import { expect, jest, test } from "bun:test";
+import { beforeAll, expect, jest, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the bare mouse, pointer and touch presses a draggable parent must not see, which user-event has no form for
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -32,10 +32,17 @@ import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, NetworkError } from "../../api/client";
 import type { InboxRow, Issue, IssueDetails, IssuePriority, IssueSummary } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { issuePriority } from "./issue-priority";
 import { PRIORITY_TRIGGER_SELECTOR, PriorityControl, PriorityEditor } from "./PriorityControl";
 import { useIssuePriority } from "./useIssuePriority";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const issue: Issue = {
   advances: [],

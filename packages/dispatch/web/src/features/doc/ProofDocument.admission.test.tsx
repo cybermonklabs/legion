@@ -1,4 +1,4 @@
-import { beforeEach, expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, beforeEach, expect, jest, spyOn, test } from "bun:test";
 import type { ArtifactRebuildReport } from "@legion/contracts";
 import { onlineManager } from "@tanstack/react-query";
 import { act, screen, waitFor, within } from "@testing-library/react";
@@ -25,9 +25,16 @@ import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/clie
 import { DispatchQueryClient } from "../../api/query-client";
 import type { ArtifactText } from "../../api/types";
 import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { deletePendingEdits, openPendingEdits } from "./pending-edits";
 import { compiledSchemaCreatable } from "./schema";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 // Whether the live editor may connect, and what the page shows when it may not or cannot: the
 // admission's own `/text` read, a socket the server refuses as outside the Proof schema, the repair

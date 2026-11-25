@@ -86,7 +86,9 @@ Biome's formatter, linter and `assist` are off over the copies, in the first ove
     So it offers no Comment, Suggest or Ask on a selection and writes no mark from one, records no authorship on what a person types, and its `commentOnSelection` answers false; `CreateProofEditorOptions` and `commentOnSelection`'s comment say so.
     Dispatch sets it for a priority's description, which it saves as markdown; `tests/proof-marks.test.ts` holds both settings.
 
-29. Annotations, casts and assertions that make a file type-check, each of which erases before runtime.
+29. `src/lib-headless.ts`'s parse processor installs `remarkKeepAddressesWhole` from `./whole-addresses` right after `remarkGfm`, and `src/lib.ts` installs that module's `libraryRemarkKeepAddressesWholePlugin` right after `gfm`, each with a comment saying why, so a bare `dispatch://` address is read whole by the headless engine and by the live editor's paste and `setMarkdown`.
+
+30. Annotations, casts and assertions that make a file type-check, each of which erases before runtime.
 
 29. A plain click opens a link (dispatch://INFRA-2160, R1, R2).
     `src/lib.ts` installs `dispatchLinkOpenPlugin` from `./dispatch-link-open` in place of upstream's `markdownLinkClickPlugin`, takes the host's `openLink` option (typed `OpenLink`, which it re-exports), hands each access mode to `setReferenceAccess` in `applyAccess`, and exposes `linkAtCaret` and `openLinkAtCaret` on the handle.

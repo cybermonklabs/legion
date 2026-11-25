@@ -1,16 +1,21 @@
 import { expect, test } from "bun:test";
 import { TextSelection } from "@milkdown/kit/prose/state";
 import type { EditorView } from "@milkdown/kit/prose/view";
-import type { EditorReferences, ReferenceCandidate, ReferenceTarget } from "../src/lib";
+import type {
+  EditorReferences,
+  OfferedReference,
+  ReferenceCandidate,
+  ReferenceTarget,
+} from "../src/lib";
 import { referenceAt } from "../src/reference-decorations";
 import { withMarksEditor } from "./marks-editor";
 
-/** A stand-in for the host's reader: a `dispatch://` address, an issue key or a `#id` (`#` and
- *  its whole run of id characters), each keyed by its own text, as the host keys a candidate by
- *  the words the author wrote. */
+/** A stand-in for the host's reader: a `dispatch://` address, an `http(s)://` address, an issue
+ *  key or a `#id` (`#` and its whole run of id characters), each keyed by its own text, as the
+ *  host keys a candidate by the words the author wrote. */
 function readReferences(text: string): ReferenceCandidate[] {
   return Array.from(
-    text.matchAll(/dispatch:\/\/[^\s<`]+|\b[A-Z]+-\d+\b|#[A-Za-z0-9_-]+/g),
+    text.matchAll(/dispatch:\/\/[^\s<`]+|https?:\/\/[^\s<`]+|\b[A-Z]+-\d+\b|#[A-Za-z0-9_-]+/g),
     (match) => ({
       end: match.index + match[0].length,
       key: match[0],
@@ -37,12 +42,14 @@ const SPEC: ReferenceTarget = {
 };
 
 /** The host's side of the titles: what it last handed the editor, every text the editor read
- *  through it, and every key set the editor reported. */
+ *  through it, and every set of references the editor offered, each split into the keys its
+ *  plain candidates name and the keys its mentions name. */
 interface TestHost {
   readonly references: EditorReferences;
   /** Each block of text the editor read, in order, so a test says what an edit read again. */
   readonly reads: string[];
   readonly reported: string[][];
+  readonly mentioned: string[][];
 }
 
 /** A host whose `scan` and `onKeys` keep one identity each, as a host that memoizes them does,
@@ -50,9 +57,15 @@ interface TestHost {
 function hostReferences(): TestHost {
   const reads: string[] = [];
   const reported: string[][] = [];
+  const mentioned: string[][] = [];
   return {
+    mentioned,
     references: {
-      onKeys: (keys) => void reported.push([...keys]),
+      mentions: new Map(),
+      onKeys: (keys: readonly OfferedReference[]) => {
+        reported.push(keys.filter((offered) => !offered.mention).map((offered) => offered.key));
+        mentioned.push(keys.filter((offered) => offered.mention).map((offered) => offered.key));
+      },
       scan: (text) => {
         reads.push(text);
         return readReferences(text);
@@ -65,13 +78,19 @@ function hostReferences(): TestHost {
 }
 
 /** Hands the editor what the host has resolved, as a host pushing a fresh value with the same
- *  reader does: one `EditorReferences` carries the whole map and replaces the last one. */
+ *  reader does: one `EditorReferences` carries the whole of both maps and replaces the last one.
+ *  `resolved` answers the plain candidates, and `mentions` what a mention of a key draws. */
 function resolve(
   handle: { setReferences(references: EditorReferences | null): void },
   host: TestHost,
-  resolved: Record<string, ReferenceTarget | null>
+  resolved: Record<string, ReferenceTarget | null>,
+  mentions: Record<string, ReferenceTarget | null> = {}
 ): void {
-  handle.setReferences({ ...host.references, targets: new Map(Object.entries(resolved)) });
+  handle.setReferences({
+    ...host.references,
+    mentions: new Map(Object.entries(mentions)),
+    targets: new Map(Object.entries(resolved)),
+  });
 }
 
 /** Each drawn title as its link target and its words, in document order. */
@@ -225,6 +244,25 @@ test("a link whose text is its own address is drawn with its target's title", as
   );
 });
 
+// The same rule a rendered body reads (`@legion/contracts`'s `wordsAreAddress`): a Markdown
+// autolink of a bare `www.` address gives its link an `http://` destination its words do not
+// write, and those words are still its own address.
+test("a link whose words are its own address but for the scheme is drawn with its title", async () => {
+  const host = hostReferences();
+  const page = "http://www.dispatch.test/issues/CORE-1";
+  await withMarksEditor(
+    "See [www.dispatch.test/issues/CORE-1](http://www.dispatch.test/issues/CORE-1) here.",
+    ({ handle, view }) => {
+      handle.setReferences(host.references);
+      expect(host.reported).toEqual([[page]]);
+      resolve(handle, host, { [page]: CORE_1 });
+
+      expect(titles(view)).toEqual([{ href: "dispatch://CORE-1", text: "CORE-1 Fix the thing" }]);
+      expect(hidden(view)).toEqual(["www.dispatch.test/issues/CORE-1"]);
+    }
+  );
+});
+
 test("a link whose text its author wrote keeps those words", async () => {
   const host = hostReferences();
   await withMarksEditor("See [the decision](dispatch://CORE-1/spec) here.", ({ handle, view }) => {
@@ -237,6 +275,150 @@ test("a link whose text its author wrote keeps those words", async () => {
 
     expect(titles(view)).toEqual([]);
     expect(view.dom.textContent).toContain("the decision");
+  });
+});
+
+// A mention is a link whose words start with `@`: the plugin offers its address to the host as a
+// mention (`OfferedReference.mention`), and draws the host's answer for it in `mentions` - the
+// party's current name, so a party renamed since reads as it is called now. The same address
+// written as its own link's words is offered as a plain candidate too, and each is drawn by its
+// own answer, never by the other's. A link whose words its author wrote another way is never
+// offered, whatever it links to.
+test("a link whose words are a mention is offered as a mention of its address", async () => {
+  const host = hostReferences();
+  const agent = "dispatch://agent/s1";
+  await withMarksEditor(
+    `Ask [@Old name](${agent}), [${agent}](${agent}) and [Old name](${agent}) here.`,
+    ({ handle, view }) => {
+      handle.setReferences(host.references);
+      expect(host.reported).toEqual([[agent]]);
+      expect(host.mentioned).toEqual([[agent]]);
+      resolve(
+        handle,
+        host,
+        { [agent]: { href: agent, title: "New name" } },
+        { [agent]: { href: agent, title: "@New name" } }
+      );
+
+      expect(titles(view)).toEqual([
+        { href: agent, text: "@New name" },
+        { href: agent, text: "New name" },
+      ]);
+      expect(hidden(view)).toEqual(["@Old name", agent]);
+      expect(view.dom.textContent).toContain("and Old name here.");
+      // No link stands inside another: each title stands inside the link it is read from and
+      // carries no address of its own (an `a` with no `href` is no link), so the three links the
+      // author wrote are the only links there.
+      expect(view.dom.querySelector("a a[href]")).toBeNull();
+      expect(view.dom.querySelectorAll("a:not(.dispatch-reference)")).toHaveLength(3);
+
+      // A host that answers the address alone draws no mention over its writer's words.
+      resolve(handle, host, { [agent]: { href: agent, title: "New name" } });
+      expect(titles(view)).toEqual([{ href: agent, text: "New name" }]);
+      expect(view.dom.textContent).toContain("@Old name");
+    }
+  );
+});
+
+// The formatting rule every reader of a record applies (`@legion/contracts`'s
+// `dispatch-mentions.ts`), in its three cases. First: a mention's `@` is words its writer wrote,
+// never code, so a party's link with code anywhere in its words keeps them - all of them code,
+// code that opens them, or code after the sign.
+test("a party's link with code anywhere in its words is offered as no mention", async () => {
+  const host = hostReferences();
+  const agent = "dispatch://agent/s1";
+  await withMarksEditor(
+    `Ask [\`@x\`](${agent}), [\`@y\` too](${agent}) and [@z \`now\`](${agent}) here.`,
+    ({ handle, view }) => {
+      handle.setReferences(host.references);
+      expect(host.mentioned).toEqual([]);
+      resolve(handle, host, {}, { [agent]: { href: agent, title: "@New name" } });
+
+      expect(titles(view)).toEqual([]);
+      expect(view.dom.textContent).toContain("Ask @x, @y too and @z now here.");
+    }
+  );
+});
+
+// Second: emphasis, strong or strikethrough over all of a link's words is the same document as
+// that formatting around the link, so the link is still a mention, and its title is drawn in
+// that formatting - written inside the brackets, around the link, or around the sentence.
+test("a party's link whose words are all under one formatting is a mention drawn in it", async () => {
+  const host = hostReferences();
+  const agent = "dispatch://agent/s1";
+  await withMarksEditor(
+    `Ask [**@Old**](${agent}), *[@Old](${agent})* and ~~cc [@Old](${agent}) now~~ here.`,
+    ({ handle, view }) => {
+      handle.setReferences(host.references);
+      expect(host.mentioned).toEqual([[agent]]);
+      resolve(handle, host, {}, { [agent]: { href: agent, title: "@New name" } });
+
+      expect(titles(view).map((title) => title.text)).toEqual([
+        "@New name",
+        "@New name",
+        "@New name",
+      ]);
+      expect(hidden(view)).toEqual(["@Old", "@Old", "@Old"]);
+      expect(view.dom.querySelector("strong a.dispatch-reference")).not.toBeNull();
+      expect(view.dom.querySelector("em a.dispatch-reference")).not.toBeNull();
+      expect(view.dom.querySelector("del a.dispatch-reference")).not.toBeNull();
+    }
+  );
+});
+
+// Third: formatting over some of a link's words is the author formatting the words, which are
+// then theirs, whichever of them it covers.
+test("a party's link whose words are formatted in part is offered as no mention", async () => {
+  const host = hostReferences();
+  const agent = "dispatch://agent/s1";
+  await withMarksEditor(
+    `Ask [@Old **name**](${agent}), [*@Old* name](${agent}) and [@Old ~~name~~](${agent}) here.`,
+    ({ handle, view }) => {
+      handle.setReferences(host.references);
+      expect(host.mentioned).toEqual([]);
+      resolve(handle, host, {}, { [agent]: { href: agent, title: "@New name" } });
+
+      expect(titles(view)).toEqual([]);
+      expect(view.dom.textContent).toContain("Ask @Old name, @Old name and @Old name here.");
+    }
+  );
+});
+
+// A hard break among a link's words cuts them as formatting over a part of them does. The break
+// holds no mark, so the link is a run of text on each side of it, which the editor reads as the
+// one link it is, as every reader of the record does: the words are the author's, and only the
+// plain mention beside it is drawn.
+test("a party's link whose words a hard break cuts is offered as no mention", async () => {
+  const host = hostReferences();
+  const agent = "dispatch://agent/s1";
+  await withMarksEditor(
+    `Ask [@Old\\\nname](${agent}) and [@Old](${agent}) here.`,
+    ({ handle, view }) => {
+      handle.setReferences(host.references);
+      expect(host.mentioned).toEqual([[agent]]);
+      resolve(handle, host, {}, { [agent]: { href: agent, title: "@New name" } });
+
+      expect(titles(view).map((title) => title.text)).toEqual(["@New name"]);
+      expect(hidden(view)).toEqual(["@Old"]);
+      expect(view.dom.querySelector("br")).not.toBeNull();
+    }
+  );
+});
+
+// A target that opens no page - a person, whom no page shows - is drawn by its title as words,
+// not as a link a click or the hover card would follow.
+test("a target with no address is drawn as words and no link", async () => {
+  const host = hostReferences();
+  await withMarksEditor("Ask dispatch://person/dana here.", ({ handle, view }) => {
+    handle.setReferences(host.references);
+    resolve(handle, host, { "dispatch://person/dana": { title: "dana" } });
+
+    expect(titles(view)).toEqual([]);
+    const drawn = view.dom.querySelector("span.dispatch-reference");
+    expect(drawn?.textContent).toBe("dana");
+    expect(drawn?.hasAttribute("data-dispatch-href")).toBe(false);
+    expect(drawn?.getAttribute("role")).toBeNull();
+    expect(hidden(view)).toEqual(["dispatch://person/dana"]);
   });
 });
 

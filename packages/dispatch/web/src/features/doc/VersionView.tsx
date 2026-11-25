@@ -38,6 +38,9 @@ export interface VersionViewProps {
   changeBaseline?: ChangeBaseline;
   createdAt: string | undefined;
   highlight: Highlight | undefined;
+  /** The issue the document is on, which the version's text is a text of; null for a project
+   *  document. */
+  issueKey: string | null;
   /** The project document shown, for block asks with no issue to be referenced under. */
   owner: { project: string; slug: string } | undefined;
   version: number;
@@ -49,6 +52,7 @@ export function VersionView({
   changeBaseline,
   createdAt,
   highlight,
+  issueKey,
   owner,
   version,
 }: VersionViewProps): ReactNode {
@@ -87,7 +91,10 @@ export function VersionView({
   const markdown = isText(versionQuery.data) ? versionQuery.data.markdown : undefined;
   // Where a `#id` in this version's text resolves: the document it is a version of, whose
   // latest version's question blocks declare the asks it names, as the server reads them.
-  const textSource = useMemo(() => textSourceOf("artifact", artifactId), [artifactId]);
+  const textSource = useMemo(
+    () => textSourceOf("artifact", artifactId, issueKey),
+    [artifactId, issueKey]
+  );
   // The page's link opener, which the editor calls for a click on one of its links: a past
   // version takes no edits, so Tab reaches each link and Enter opens it the same way. It is one
   // function for the life of this view, so the editor, which reads its options once, holds it.
@@ -248,6 +255,9 @@ export function VersionView({
       )}
       <article aria-label="Document" className="dispatch-doc" data-read-only="true">
         <div ref={root} />
+        {/* The read-only editor paints the version itself and draws its references as
+            decorations: why the renderer has no mount here is the reading list's
+            `document-version-body` (`DISPATCH_READING_SURFACES`). */}
         <DocumentReferences editor={editorHandle} source={textSource} />
         {askBlockHosts.map((host) => {
           const blockId = String(host.node.attrs.blockId);

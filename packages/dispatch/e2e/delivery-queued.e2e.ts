@@ -14,6 +14,7 @@ import {
 } from "./agents";
 import { createIssue, createMessage, createProject, queuedEnvelopesOf } from "./api";
 import { listTrigger, pickFromList } from "./filters";
+import { pickReference } from "./ref-picker";
 import { sessionIds } from "./session-ids";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -125,11 +126,10 @@ test("a mention of a stopped but known session is queued for it, and the listene
     const page = await alice.newPage();
     await page.goto(`/issues/${issue}/conversation`);
     const field = page.getByRole("form", { name: "Comment composer" }).getByLabel("Comment");
-    await field.fill("/btw @");
-    await page
-      .getByRole("listbox", { name: "Mention suggestions" })
-      .getByRole("option", { name: "Planner" })
-      .click();
+    // The one picker every box opens lists the live session under its
+    // name, and the pick writes the mention into the draft after the typed command.
+    await pickReference(field, "/btw @", /^Planner/);
+    await expect(field).toHaveValue(`/btw [@Planner](dispatch://agent/${planner.session_id})`);
     // The composer offered the mention off the live list, and the session stops between that
     // read and the send: the listener still knows it, so the mention is stored for it.
     await setSessionStopped(planner.session_id, true);

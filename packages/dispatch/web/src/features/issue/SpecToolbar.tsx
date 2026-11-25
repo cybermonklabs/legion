@@ -45,6 +45,7 @@ export function SpecToolbar({
   const versionLabels = new Map(
     toolbar.versions.map((item) => [
       String(item.number),
+      // A version's summary, as its writer gave it: the reading list's `spec-version-summary`.
       `Version ${item.number}${item.named && item.summary !== null ? ` — ${item.summary}` : ""}`,
     ])
   );

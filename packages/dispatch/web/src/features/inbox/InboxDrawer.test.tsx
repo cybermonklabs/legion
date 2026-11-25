@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
@@ -10,6 +10,7 @@ import { answerAskSnoozes } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
 import type { InboxRow } from "../../api/types";
 import { ShortcutHelpOpener } from "../issue-page/shortcut-help-opener";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, type KeyBindingDescription } from "../shell/keymap";
 import { catalogueEntry } from "../shell/keymap-catalogue";
@@ -17,6 +18,12 @@ import { ShortcutHelp } from "../shell/ShortcutHelp";
 import { dialogOpen } from "../shell/useDialog";
 import { InboxDrawer } from "./InboxDrawer";
 import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 installInboxApiMocks();
 

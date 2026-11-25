@@ -10,7 +10,7 @@ import { DESKTOP_WIDTH, specArtifact, stubViewport } from "./margin-fixture";
 function keptFor(quote: string): AwayDraft {
   return {
     anchor: { artifact: specArtifact.id, mark_id: `mark-${quote}`, quote },
-    draft: { body: `Draft for ${quote}`, mentions: [], replacement: "" },
+    draft: { body: `Draft for ${quote}`, replacement: "" },
     owner: { issueKey: "CORE-1", kind: "issue" },
     replyTo: null,
   };

@@ -1,10 +1,11 @@
+import { dispatchWritingBox } from "@legion/contracts";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useContext, useId, useState } from "react";
+import { type FormEvent, type ReactNode, useContext, useState } from "react";
 
 import { type ArtifactOwner, api, type WriteBounds, type WriteMethod } from "../../api/client";
 import type { Ask, AskRead, Comment, CommentWithTrees, CreateCommentInput } from "../../api/types";
-import { heldField, useHeldThroughAnswer } from "../../components/held-press";
+import { useHeldThroughAnswer } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { useTooltips } from "../../components/tooltips";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
@@ -12,7 +13,6 @@ import {
   borderDefault,
   borderStrong,
   enabledCardHoverBorder,
-  inputClasses,
   pageInkText,
   pageLineBorder,
   pageQuietText,
@@ -23,15 +23,16 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
+import { MentionField } from "../conversation/MentionField";
 import { ConversationTurns, turnFocusRing, turnMarks } from "../conversation/turn-keys";
 import { AgentName } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
-import { EditedMark, PostBody } from "../refs/PostBody";
+import { PostBody } from "../refs/PostBody";
+import { EditedMark } from "../refs/PostMarks";
 import { postDeletion } from "../refs/post-marks";
 import { itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
-import { Unfurl } from "../refs/Unfurl";
 import type { DwellRef } from "../shell/useDwell";
 import { EarlierReplies } from "../threads/EarlierReplies";
 import { threadLayout } from "../threads/thread-layout";
@@ -47,6 +48,7 @@ import {
   useInboxAnswerWrite,
 } from "./outstanding-answers";
 import { askArtifactId } from "./owner-reads";
+import { useQuestionLabel } from "./question-label";
 import { clearReplyDraft, setReplyDraft, useReplyDraft } from "./reply-drafts";
 import { UnsentText } from "./UnsentText";
 
@@ -84,11 +86,11 @@ function AskReply({
         <PostBody
           deleted={postDeletion(comment)}
           markdown={comment.body}
-          source={textSourceOf("comment", comment.id)}
+          source={textSourceOf("comment", comment.id, comment.issue_key)}
+          surface="ask-thread-reply"
           tree={comment.body_tree}
         />
       </div>
-      <Unfurl body={comment.body} source={textSourceOf("comment", comment.id)} />
       <p className={`mt-1 flex flex-wrap items-center gap-x-1 text-xs ${textMutedOnSurfaceMuted}`}>
         <span>
           <AgentName actor={comment.author} inline /> · <Timestamp at={comment.created_at} />
@@ -100,8 +102,10 @@ function AskReply({
   );
 }
 
-/** One press of a reply: the ask it is of (`AskPress`) and the text it posts. */
+/** One press of a reply: the ask it is of (`AskPress`), the text it posts, and its question as
+ *  the label names it (`questionWords`). */
 interface ReplyPress extends AskPress {
+  readonly questionWords: string;
   readonly text: string;
 }
 
@@ -237,9 +241,6 @@ export function AskReplyComposer({
   uploadOwner?: ArtifactOwner;
 }): ReactNode {
   const queryClient = useQueryClient();
-  // Each composer owns its field id so transient duplicate mounts during a responsive
-  // transition cannot share an ask-id-derived id.
-  const fieldId = `${useId()}-reply`;
   const [body, setBody] = useReplyDraft(ask.id);
   // Keyed by the ask, so the form's own send outlives the composer that started it and any
   // composer for the ask sees it in flight.
@@ -252,12 +253,17 @@ export function AskReplyComposer({
   );
   // An upload holds Reply only within its deadline (`DraftUpload.holding`).
   const uploading = upload.holding > 0;
+  const question = useQuestionLabel(ask);
   // The form shows a refused reply itself, with Retry, under the draft it kept. Each press
   // carries the ask it replies to, as an answer's does (`useAskAnswerForm`): where it posts, and
   // the draft and the thread its landing clears and reads again, are that ask's, whichever ask a
   // host draws this composer for by then. A reply leaves the ask's row in the Inbox's read.
   const options: OutstandingAnswerWriteOptions<Comment, ReplyPress> = {
-    label: (press) => `Reply on “${press.ask.question}”`,
+    // The question goes in as its plain-text projection, the words the card draws: the reading
+    // list's `write-label` (`DISPATCH_READING_SURFACES`) says why. Each press carries the line as
+    // it reads at the press, while the composer is drawn for that ask, so a Retry made once a host
+    // has drawn the composer for the next one names the question it answers.
+    label: (press) => `Reply on “${press.questionWords}”`,
     method: "POST",
     removesRow: () => false,
     write: (press, bounds) => {
@@ -305,38 +311,35 @@ export function AskReplyComposer({
     // sends nothing.
     if (replyHeld) return;
     if (refuseReply()) return;
-    submit.mutate({ ask, text: body.trim() });
+    submit.mutate({ ask, questionWords: question.line(), text: body.trim() });
   };
 
   return (
     <form className="flex flex-col gap-2" onSubmit={submitReply}>
-      <label className={`block text-sm font-medium ${textSecondaryOnCanvas}`} htmlFor={fieldId}>
-        Reply
-        {/* `data-reply-box`: the box a page's reply key hands the caret (the Inbox's `r`). */}
-        <textarea
-          {...heldField(held)}
-          className={`mt-1 block w-full rounded-lg px-3 py-2 font-normal outline-none aria-disabled:opacity-50 ${inputClasses(true)}`}
-          data-reply-box=""
-          id={fieldId}
-          onChange={(event) => setBody(event.target.value)}
-          onDrop={
-            uploadOwner === undefined || held
-              ? undefined
-              : (event) => {
-                  if (!held) upload.drop(event, uploadOwner, ask.id);
-                }
-          }
-          onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading || held })}
-          onPaste={
-            uploadOwner === undefined || held
-              ? undefined
-              : (event) => {
-                  if (!held) upload.paste(event, uploadOwner, ask.id);
-                }
-          }
-          value={body}
-        />
-      </label>
+      {question.reads}
+      {/* `replyBox`: the box a page's reply key hands the caret (the Inbox's `r`). */}
+      <MentionField
+        body={body}
+        className="aria-disabled:opacity-50"
+        held={held}
+        issueKey={ask.issue_key ?? undefined}
+        label="Reply"
+        labelClassName={`block text-sm font-medium ${textSecondaryOnCanvas}`}
+        onChange={(change) => setBody(change.body)}
+        onDrop={
+          uploadOwner === undefined || held
+            ? undefined
+            : (event) => upload.drop(event, uploadOwner, ask.id)
+        }
+        onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading || held })}
+        onPaste={
+          uploadOwner === undefined || held
+            ? undefined
+            : (event) => upload.paste(event, uploadOwner, ask.id)
+        }
+        replyBox
+        writing={dispatchWritingBox("ask-thread-reply", "comment")}
+      />
       <DraftUploadStatus upload={upload} />
       <button
         aria-disabled={replyHeld || undefined}

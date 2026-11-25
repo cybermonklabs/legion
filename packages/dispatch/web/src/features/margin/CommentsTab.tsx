@@ -18,8 +18,6 @@ import type { SaveCommentEdit } from "../conversation/send-request";
 import type { AwayDraft } from "../conversation/unsent-drafts";
 import { type OfferedDraft, stoppedOfferOf } from "../conversation/useKeptDrafts";
 import { AskCard } from "../inbox/AskCard";
-import { textSourceOf } from "../refs/text-references";
-import { Unfurl } from "../refs/Unfurl";
 import { DecisionList } from "./DecisionCard";
 import { marginComposeKeptKey, marginComposeSendKey, useMargin } from "./margin-context";
 import { ThreadList } from "./ThreadList";
@@ -150,6 +148,7 @@ export function MarginComposerSlot({
         anchor={composer.anchor}
         anchorRefusal={anchorRefusal}
         autoFocus={onScreen}
+        box="margin-composer"
         closed={isClosed}
         frame="pt-3"
         kind={composer.kind}
@@ -220,7 +219,9 @@ export function MarginKeptDrafts({
         <DraftOffer
           body={away.draft.body}
           drop={{ label: "Discard my draft", press: () => discard(away, index) }}
+          // The words each draft was written for, as the document has them: `anchor-quote`.
           key={`${away.anchor.mark_id ?? ""}:${away.anchor.occurrence ?? ""}:${away.anchor.quote}`}
+          // Those words again, named in the line over the draft: `anchor-quote`.
           lead={`You wrote this draft${away.kind === undefined || away.kind === "comment" ? "" : ` as ${KIND_WORDS[away.kind]},`} for the words “${away.anchor.quote}”. It is kept here, and offered in the next compose you open on this document:`}
           replacement={away.draft.replacement}
         />
@@ -258,7 +259,6 @@ export function MarginAskCard({
         owner={owner.kind === "document" ? owner : undefined}
         variant="compact"
       />
-      <Unfurl body={ask.question} source={textSourceOf("ask", ask.id)} />
     </div>
   );
 }

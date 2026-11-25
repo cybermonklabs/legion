@@ -52,6 +52,7 @@ function ApprovedChangeView({
     return <p className={`text-sm ${dangerText}`}>Could not load versions to compare.</p>;
   }
   if (cut !== undefined) {
+    // The exact characters a change swaps: the reading list's `change-view-diff`.
     return <ChangeView after={cut.after} before={cut.before} />;
   }
   return <p className={`text-sm ${textMutedOnSurface}`}>Loading versions to compare…</p>;

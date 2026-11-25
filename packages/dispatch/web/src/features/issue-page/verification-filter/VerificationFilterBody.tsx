@@ -29,19 +29,27 @@ import {
   pageWordsText,
 } from "../../../theme/classes";
 import { useAgentText } from "../../refs/AgentName";
-import { EditedMark } from "../../refs/PostBody";
+import { EditedMark } from "../../refs/PostMarks";
 import { postDeletion } from "../../refs/post-marks";
+import {
+  PublishedReferenceNames,
+  type PublishedReferences,
+  useKnownReferences,
+} from "../../refs/reference-names";
+import { parseNodeReference } from "../../refs/routes";
 import { type ActionBinding, useKeymap } from "../../shell/keymap";
 import type { KeymapActionId } from "../../shell/keymap-catalogue";
 import { agentRoleWord } from "../agent-role";
 import { CutWords } from "../CutWords";
 import { FoldMark } from "../FoldMark";
-import { lineWords, type NodeChip, type TreeNode } from "../issue-tree";
+import { chipName, type NodeChip, type TreeNode } from "../issue-tree";
 import { NodeFacts } from "../NodeFacts";
 import { NodeGlyph } from "../NodeGlyph";
-import { DeletedLine, NODE_EDITED_MARKS, ParentLink } from "../NodeRow";
+import { NODE_EDITED_MARKS } from "../NodeRow";
+import { DeletedLine, lineOrKindWord, NodeParentLine, useNodeLine } from "../node-line";
 import { chipWords } from "../node-row-chip";
 import { shortDay } from "../node-time";
+import type { OutlineReads } from "../outline-reads";
 import { authorText, pageChrome } from "../page-structure";
 import {
   authorKind,
@@ -166,6 +174,8 @@ export function VerificationFilterBody({
   addressed,
   checks,
   context,
+  namesLine,
+  published,
   reads,
   view,
   whole,
@@ -180,6 +190,20 @@ export function VerificationFilterBody({
   /** The ids of the rows the filter draws as context, which under Verification is every
    *  statement (`presets.ts`). */
   context: ReadonlySet<string>;
+  /** The names' line while the page's names reads stand failed (`outline-reads.ts`'s
+   *  `useOutlineReads`), the outline's own: its words and a Retry that asks those reads again, and
+   *  none while they do not stand failed. Every reference the rows and the parent lines draw
+   *  waits on those names (`published`), so while they stand failed each is drawn as its address
+   *  and "Also under" names nothing; the line says why. The body draws it over the tree after
+   *  its own reads' lines, as the outline draws it after the lines of the reads its rows come
+   *  from. */
+  namesLine: OutlineReads["names"];
+  /** What the page publishes of its one batched names read (`useIssueTree.ts`'s `published`),
+   *  which the body hands every row it draws in the render that draws it
+   *  (`PublishedReferenceNames`), as the outline does (`IssueTree`'s `published`): a reference
+   *  the page is asking for waits on the page's answer from a row's first render, rather than
+   *  being read again by the row (R8). */
+  published: PublishedReferences;
   /** How the three reads the body is drawn from stand (the slot's `reads`): the coverage read,
    *  the results read and the blocks read of the Verification document. Until all three hold an
    *  answer the body draws its tree with no row and no line in it, so it never says that an
@@ -231,9 +255,29 @@ export function VerificationFilterBody({
   // The rows are drawn once all three reads hold an answer, and not while one is out or failed.
   const answered = reads.state === "answered";
   const rows = answered && holds ? treeRows(view.id, shown, loose, others) : [];
-  // Each read that failed before it first answered, by its name with the press that asks it
-  // alone again and whether it runs again, which the body says over the tree.
+  // The lines the body says over the tree: each read that failed before it first answered, by
+  // its name with the press that asks it alone again and whether it runs again, in the body's
+  // own order (`VERIFICATION_READS`) whatever order the reads are given in, then the names' line
+  // (`namesLine`), as the outline draws it after the lines of the reads its rows come from
+  // (`outline-reads.ts`'s `useOutlineReads`).
   const failed = reads.state === "failed" ? reads.failed : undefined;
+  const failedLines = [
+    ...VERIFICATION_READS.flatMap((read) => {
+      const line = failed?.[read];
+      return line === undefined
+        ? []
+        : [
+            {
+              failure: line.failure,
+              key: read,
+              message: UNREADABLE_LINES[read],
+              retry: line.retry,
+              retrying: line.retrying,
+            },
+          ];
+    }),
+    ...namesLine,
+  ];
   // Whether a row of the address's node is drawn: a statement, a check, or another row.
   useLayoutEffect(() => {
     if (!answered || addressed === undefined) return;
@@ -241,17 +285,24 @@ export function VerificationFilterBody({
     const nodes = [...readings.map(({ node }) => node), ...others];
     addressed.tell(nodes.some(({ id }) => addressed.named.has(id)));
   }, [addressed, answered, loose, others, shown]);
-  // Each statement of the issue by its address, named by its first words, which "Also under"
-  // names a check's other statements by (`AlsoUnder`). Every statement a check is drawn under is
-  // one of the issue's, whatever a query or a chip left of them.
+  // Each statement of the issue by its address, named as every chip of the page names a block
+  // (`chipName`): by the line the names store projects beside its name from the reading the page
+  // published for it, its first block that holds words (`KnownReferences.lines`), which "Also
+  // under" names a check's other statements by (`AlsoUnder`). Every statement a check is drawn
+  // under is one of the issue's, whatever a query or a chip left of them; one the store holds no
+  // line for yet is named by nothing until it does, as a chip draws nothing until its name comes.
+  const { lines } = useKnownReferences();
   const statementNames = useMemo<ReadonlyMap<string, string>>(
     () =>
       new Map(
-        issue.statements.flatMap(({ node }): [string, string][] =>
-          node.reference === undefined ? [] : [[node.reference, chipWords(lineWords(node))]]
-        )
+        issue.statements.flatMap(({ node: { reference } }): [string, string][] => {
+          const line = reference === undefined ? undefined : lines.get(reference);
+          return reference === undefined || line === undefined
+            ? []
+            : [[reference, chipName(parseNodeReference(reference), line)]];
+        })
       ),
-    [issue]
+    [issue, lines]
   );
   // The row that holds the tree's one tab stop, by its id in `rows`: the issue's at first. A
   // row the reader's narrowing took out hands it back to the issue's row, in this render rather
@@ -393,28 +444,25 @@ export function VerificationFilterBody({
       },
     },
   ]);
-  return (
+  const drawnBody = (
     <div className={BODY} data-verification-body="">
-      {/* Each read that failed before it first answered, the page's one line for a failed read
-          (`FailedReadLine`): its words and a Retry that asks that read alone again. The lines
-          stand in the body's own order (`VERIFICATION_READS`) whatever order the reads are given
-          in, since the stage the view is drawn in gives the first line's Retry the focus when a
-          line leaves with it. They stand over the tree and never in it: an alert inside a tree
-          would break the tree's own structure of rows. Each stands in an element that names its
-          read, so one read's line is found by that name. */}
-      {VERIFICATION_READS.map((read) => {
-        const line = failed?.[read];
-        return line === undefined ? null : (
-          <div data-verification-unreadable={read} key={read}>
-            <FailedReadLine
-              failure={line.failure}
-              message={UNREADABLE_LINES[read]}
-              onRetry={line.retry}
-              retrying={line.retrying}
-            />
-          </div>
-        );
-      })}
+      {/* Each line, the page's one line for a failed read (`FailedReadLine`): its words and a
+          Retry that asks its read alone again. The view's own reads' lines stand in the body's
+          own order whatever order the reads are given in, since the stage the view is drawn in
+          gives the first line's Retry the focus when a line leaves with it. They stand over the
+          tree and never in it: an alert inside a tree would break the tree's own structure of
+          rows. Each stands in an element that names its read, so one read's line is found by
+          that name. */}
+      {failedLines.map((line) => (
+        <div data-verification-unreadable={line.key} key={line.key}>
+          <FailedReadLine
+            failure={line.failure}
+            message={line.message}
+            onRetry={line.retry}
+            retrying={line.retrying}
+          />
+        </div>
+      ))}
       {/* The page holds one tree on every address, and it holds everything the view draws: the
           issue's row and the table, or in their place the one line that says the issue holds
           nothing to draw. While a read is out or has failed it holds nothing, and is still the
@@ -503,6 +551,7 @@ export function VerificationFilterBody({
       </div>
     </div>
   );
+  return <PublishedReferenceNames published={published}>{drawnBody}</PublishedReferenceNames>;
 }
 
 /** What one part of the body draws of its checks, a statement's or the table's own after its
@@ -1112,7 +1161,9 @@ function Statement({
         >
           <RowText markdown={node.text} source={node.source} tabStops tree={node.tree} />
         </CutWords>
-        <ParentLine node={node} />
+        {node.parentLine === undefined ? null : (
+          <NodeParentLine line={node.parentLine} spaced tabStops />
+        )}
         <Gaps node={node} />
       </div>
       <div className="flex min-w-0 flex-col">
@@ -1231,6 +1282,9 @@ function Check({
   const node = check.node;
   const surface = node.facts.find((fact) => fact.name === "surface")?.value ?? "";
   const opened = pressed ?? focusInside;
+  // The check's one line, which names the control of its facts after the page's words for it,
+  // cut to a chip's room: the reading list's `verification-check-facts`.
+  const { line, reads: lineReads } = useNodeLine(node, { surface: "verification-check-facts" });
   /** Opens the facts where they were shut as the press began and shuts them where they were
    *  drawn: a pointer's press reads them as its `mousedown` found them (`markPress`), a key as
    *  they stand now. */
@@ -1291,11 +1345,14 @@ function Check({
           <div className="min-w-0 break-words" data-node-words="">
             <RowText markdown={node.text} source={node.source} tabStops tree={node.tree} />
           </div>
+          {lineReads}
           {/* The facts' disclosure control: 24 px square, drawn into the words' 20 px line by
               its margins, so the line keeps its height. */}
           <button
             aria-expanded={opened}
-            aria-label={`${VERIFICATION_WORDS.show_facts} ${chipWords(lineWords(node))}`}
+            // The page's words, then the check's line (`useNodeLine`): the reading list's
+            // `verification-check-facts`.
+            aria-label={`${VERIFICATION_WORDS.show_facts} ${chipWords(lineOrKindWord(line, node.type))}`}
             className={`-my-0.5 ml-auto inline-flex size-6 shrink-0 items-center justify-center self-start rounded hover:text-page-ink ${pageQuietText} ${focusVisibleRing}`}
             data-verification-facts=""
             onClick={pressFacts}
@@ -1416,11 +1473,12 @@ function Check({
 
 /** One result of a check: who recorded it and when, what it observed, whether the check's state
  *  stands on it, and what it holds that no line has room for, in the body the check's row opens.
- *  What it observed is drawn as a node's own text is, through `RowText`, so no stored text of the
- *  view is drawn as raw characters. No commit is drawn for it, on its line or in its facts: the
- *  page names one commit for the issue's results, once, in the summary, and a result recorded
- *  against another says so in its check's word, "Out of date". So the facts it opens leave out
- *  the `commit` fact `check-facts.ts`'s `resultFacts` gives every result. */
+ *  What it observed is drawn as a node's own text is, through `RowText`, from the results read's
+ *  reading of it (`observed_tree`) where the read sent one, so no stored text of the view is
+ *  drawn as raw characters or parsed by the page. No commit is drawn for it, on its line or in
+ *  its facts: the page names one commit for the issue's results, once, in the summary, and a
+ *  result recorded against another says so in its check's word, "Out of date". So the facts it
+ *  opens leave out the `commit` fact `check-facts.ts`'s `resultFacts` gives every result. */
 function LatestResult({
   opened,
   result,
@@ -1462,7 +1520,7 @@ function LatestResult({
           className={`mt-0.5 min-w-0 text-sm leading-5 break-words ${pageWordsText}`}
           data-node-words=""
         >
-          <RowText markdown={result.text} tabStops />
+          <RowText markdown={result.text} tabStops tree={result.tree} />
         </div>
       )}
       {opened ? (
@@ -1496,16 +1554,16 @@ function Author({ actor }: { actor: Actor | undefined }): ReactNode {
   );
 }
 
-/** The other statements a check is drawn under, each named by its first words as every chip of
- *  the page names its target (`node-row-chip.ts`): a check serves several statements and this
- *  body draws it under each. A target is named from the statement the view already holds for it
- *  (`names`, by its address): the words of the first block of the server's reading of its text
- *  (`lineWords`), cut by `chipWords`, and never its stored excerpt (`chip.name`) nor any
- *  markdown pass over them. So no mark the author typed is drawn, a statement whose words open on
- *  "1." keeps it, a bare `dispatch://` address reads as its target's short form, and the line
- *  waits on no names read. A target the view holds no statement for and one that reads as no
- *  words draw nothing, a comma stands only between targets that are drawn, and the line is
- *  drawn only where one is. */
+/** The other statements a check is drawn under, each named as every chip of the page names a
+ *  block (`chipName`): a check serves several statements and this body draws it under each. A
+ *  target is named from the statement the view already holds for it (`names`, by its address),
+ *  by the line the names store projects from the reading the page published for it - the first
+ *  block of its words that holds any, a reference inside it read as its short form, since a name
+ *  inside a name resolves nothing - cut to a chip's room. So no mark the author typed is drawn
+ *  and a statement whose words open on "1." keeps it. A target the view holds no statement for
+ *  and one the store holds no line for draw nothing, a comma stands only between targets that
+ *  are drawn, and the line is drawn only where one is. The reading list's `node-row-chip`
+ *  (`DISPATCH_READING_SURFACES`) says why a chip's words are drawn so. */
 function AlsoUnder({
   chips,
   names,
@@ -1556,31 +1614,6 @@ function Gaps({ node }: { node: TreeNode }): ReactNode {
   );
 }
 
-/** The one line a row draws for the node its words came from, where the filter draws that node
- *  as no row: its kind and its first line, drawn by the outline's own `ParentLink`. The line is
- *  the link a reader follows to that node where the model gives it an address, and text where
- *  it gives none or the address does not parse. The link is a tab stop (`tabStops`), as every
- *  control of the view is: the tree's keys move between rows and reach no link inside one. A
- *  parent its author deleted is drawn as the deleted line, and one its author edited says
- *  ` · edited` after its line, as the outline's parent line draws them (INFRA-1523, R2 and R3). */
-function ParentLine({ node }: { node: TreeNode }): ReactNode {
-  const line = node.parentLine;
-  if (line === undefined) return null;
-  return (
-    <p
-      className={`mt-0.5 flex min-w-0 items-baseline gap-1 text-xs leading-5 ${pageQuietText}`}
-      data-node-parent-line=""
-      data-parent-id={line.id}
-      data-parent-type={line.type}
-    >
-      <span className="shrink-0" {...pageChrome}>
-        {NODE_TYPE_NAMES[line.type]}
-      </span>
-      <ParentLink line={line} tabStops />
-    </p>
-  );
-}
-
 /** A row the filter kept that is neither a statement nor a check: a node an address named,
  *  which outranks the filter. It is drawn by its kind and its words, so nothing the filter drew
  *  is lost. It is a row of the tree and of the table, as a check that serves no statement is.
@@ -1618,7 +1651,9 @@ function OtherRow({ node, tabIndex }: { node: TreeNode; tabIndex: 0 | -1 }): Rea
           </p>
         )}
       </div>
-      <ParentLine node={node} />
+      {node.parentLine === undefined ? null : (
+        <NodeParentLine line={node.parentLine} spaced tabStops />
+      )}
     </div>
   );
 }

@@ -23,6 +23,7 @@ import { SendStoppedError } from "../writes/keyed-write";
 import type { ComposerKind, ReplyTarget } from "./composer-model";
 import { useHeldSend, useHeldSends } from "./held-sends";
 import { GoneReply } from "./KeptReply";
+import type { MentionFieldHandle } from "./MentionField";
 import type { SentDraft } from "./send-request";
 import { useUnsentDrafts } from "./unsent-drafts";
 import {
@@ -82,6 +83,7 @@ export function DraftOffer({
         <blockquote
           className={`border-l-2 pl-2 whitespace-pre-wrap ${quoteAccentBorder} ${quoteBodyText}`}
         >
+          {/* The reader's own text as the field holds it: the reading list's `kept-draft`. */}
           {body}
         </blockquote>
         {replacement === "" ? null : (
@@ -263,8 +265,9 @@ export function KeptDraftOffers({
   typedOver,
 }: {
   readonly changed: SentDraft | undefined;
-  /** The composer's text box, which each press of an offer here hands the focus to. */
-  readonly field: RefObject<HTMLTextAreaElement | null>;
+  /** The composer's body field, whose text box each press of an offer here hands the focus to
+   *  (`MentionFieldHandle.textarea`). */
+  readonly field: RefObject<MentionFieldHandle | null>;
   readonly gone: readonly GoneReplyDraft[];
   /** Where Use it here can put a draft of `gone` (`KeptDrafts.awayTakes`). */
   readonly goneTakes: KeptDrafts["awayTakes"];
@@ -292,7 +295,8 @@ export function KeptDraftOffers({
   /** Each press below takes its offer away, and the field takes the focus it leaves
    *  (`handFocusOn`). A host that moved the focus itself, or took the composer away with Discard
    *  my edit, the composer's Discard (`onClose`), keeps that. */
-  const intoField = (press: () => void) => () => handFocusOn(press, () => field.current);
+  const intoField = (press: () => void) => () =>
+    handFocusOn(press, () => field.current?.textarea() ?? null);
   return (
     <>
       {/* An edit written over a body the comment no longer holds: the field shows the comment as
@@ -326,6 +330,7 @@ export function KeptDraftOffers({
           body={offered.draft.body}
           drop={{ label: "Discard my draft", press: intoField(onDropOffered) }}
           id={changed === undefined ? heldId : undefined}
+          // The words the draft was written for, as the document has them: `anchor-quote`.
           lead={`You wrote this draft${offered.kind === undefined || offered.kind === kind ? "" : ` as ${KIND_WORDS[offered.kind]},`} for other words: “${offered.anchor.quote}”. It is kept here:`}
           note={offered.note}
           replacement={offered.draft.replacement}

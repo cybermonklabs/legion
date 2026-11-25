@@ -1,11 +1,18 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import { screen } from "@testing-library/react";
 
 import { renderWithQueries as render } from "../../__tests__/query-provider";
 import type { AskOption } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { AskOptionList } from "./AskOptionList";
 import { AskChoiceRow } from "./AskOptionRow";
 import { optionKey, ROW_IN_HAND_CLASS } from "./option-digits";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 test("an option label with backticks renders inline code with no wrapping <p> or literal backticks", async () => {
   const options: AskOption[] = [{ label: "Ship it `now`" }];

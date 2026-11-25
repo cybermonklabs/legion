@@ -483,7 +483,7 @@ terminal, `Shift+Enter` starts a new line, and `Ctrl+Enter` sends as everywhere.
 | `Enter` in the live view's message box | Send |
 | `Shift+Enter` in the live view's message box | New line |
 | After `/` in the live view's Send or Aside box | Arrow keys choose a command; `Tab` or `Enter` picks it; `Escape` closes the list |
-| `Ctrl+K` | In a new comment on an issue, open the reference picker to insert a `dispatch://` link |
+| `[[`, `@` or `#` in a writing box | Open the reference picker; arrow keys choose, `Tab` or `Enter` picks it, `Escape` closes the list |
 
 ## Change the keys
 

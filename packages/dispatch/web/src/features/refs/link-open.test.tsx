@@ -172,6 +172,21 @@ test("a Ctrl, Cmd or middle click opens a page of Dispatch in a new tab", async 
   }
 });
 
+// Nothing shows a person (R5), so a reference to one opens no page: the press the editor or the
+// shell's host took goes nowhere, in this tab or a new one, and the reader stays where they were.
+test("a reference to a person opens nothing, in the same tab or a new one", async () => {
+  const { open, route, view } = renderOpener();
+  try {
+    await open("dispatch://person/alice@example.com");
+    expect(route()).toBe("/issues/CORE-9");
+    await open("dispatch://person/alice@example.com", true);
+    expect(windowOpen).not.toHaveBeenCalled();
+    expect(route()).toBe("/issues/CORE-9");
+  } finally {
+    view.unmount();
+  }
+});
+
 /** Targets on Dispatch whose path starts with `//`: a `.` or `..` segment before the slashes
  *  (`%2e` is a `.` too), this origin before them, or a backslash among them, which a web address
  *  reads as a slash. */

@@ -8,9 +8,9 @@ import { focusVisibleRing } from "../../theme/classes";
 import { conversationItemId } from "../issue/pins";
 import {
   buildDispatchReference,
-  buildReferencePath,
   type DispatchReferenceRoute,
   parseNodeReference,
+  referenceHref,
 } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
 import { closestMatching, focusedMatching, roveFocus } from "../shell/roving";
@@ -309,13 +309,13 @@ export function useTurnKeys({
       when: () => turnRef() !== undefined,
     },
     {
-      // The turn's own page address: its issue's Conversation, landed on the turn.
+      // The turn's own page address: its issue's Conversation, landed on the turn. A reference
+      // with no page of its own, a person's, copies nothing (`referenceHref`).
       action: "issue.copy-turn-address",
       run: () => {
         const route = parseNodeReference(turnRef() ?? "");
-        if (route !== undefined) {
-          void copyText(`${window.location.origin}${buildReferencePath(route)}`);
-        }
+        const href = route === undefined ? undefined : referenceHref(route);
+        if (href !== undefined) void copyText(`${window.location.origin}${href}`);
       },
       when: () => turnRef() !== undefined,
     },

@@ -3,7 +3,7 @@ import { type ReactNode, type RefObject, useRef } from "react";
 import type { Artifact, Ask, DispatchEvent } from "../../api/types";
 import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
-import { useFootInset } from "../../hooks/useFootInset";
+import { FOOT_COMPOSER_FRAME_BOUND, useFootInset } from "../../hooks/useFootInset";
 import {
   activeTabIndicatorBorder,
   activeTabIndicatorText,
@@ -489,7 +489,7 @@ export function MarginSheet({
                 actionFailure={actionFailure?.id === phoneThread.key ? actionFailure : undefined}
                 artifactSlug={visibleArtifact.slug}
                 className="min-h-full pb-32"
-                composerClassName={`fixed inset-x-0 bottom-0 z-10 border-t px-4 pt-4 pb-2 ${card} ${borderDefault}`}
+                composerClassName={`fixed inset-x-0 bottom-0 z-10 border-t px-4 pt-4 pb-2 ${FOOT_COMPOSER_FRAME_BOUND} ${card} ${borderDefault}`}
                 expanded
                 hovered={selection.hoveredMarkId === phoneThread.anchor?.mark_id}
                 editingCommentId={selection.editingCommentId}

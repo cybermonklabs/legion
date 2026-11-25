@@ -1,3 +1,4 @@
+import { dispatchWritingBox } from "@legion/contracts";
 import {
   type ReactNode,
   useCallback,
@@ -20,7 +21,7 @@ import type {
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import { focusableIn, focusIntoView } from "../../components/focus-place";
-import { heldField, heldPress } from "../../components/held-press";
+import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useTooltips } from "../../components/tooltips";
@@ -38,7 +39,6 @@ import {
   cardHoverBorder,
   focusBorder,
   inlineWarningText,
-  inputClasses,
   linkHoverText,
   linkText,
   pageFailedText,
@@ -60,6 +60,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
+import { MentionField, type MentionFieldHandle } from "../conversation/MentionField";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownBody } from "../refs/MarkdownBody";
@@ -326,6 +327,7 @@ export function AskCard({
     mutation,
     otherSelected,
     questionChoice,
+    questionReads,
     reasonRequired,
     requiresReason,
     selectRealOption,
@@ -374,7 +376,7 @@ export function AskCard({
   const reference = itemRoute("ask", displayedAsk, ask.document ?? owner);
   // Where a `#id` in the ask's own text resolves: the document the server scopes this ask to -
   // the one its block is on, the one it is anchored to, else its issue's spec (`refs.ScopeOf`).
-  const source = textSourceOf("ask", displayedAsk.id);
+  const source = textSourceOf("ask", displayedAsk.id, displayedAsk.issue_key);
   // Where a file pasted or dropped into the answer, or into a reply under the ask, goes: the
   // ask's issue, or the project of the document it was asked on.
   const documentProject = (ask.document ?? owner ?? displayedAsk.anchor_artifact)?.project;
@@ -393,14 +395,14 @@ export function AskCard({
   });
   // An upload holds Answer and Ask back only within its deadline (`DraftUpload.holding`).
   const uploading = upload.holding > 0;
-  const answerFieldRef = useRef<HTMLTextAreaElement>(null);
+  const answerFieldRef = useRef<MentionFieldHandle | null>(null);
   // Picking Request changes moves the person straight to the field the server insists
   // on. Keyed on the field actually being mounted, not just on the option: the compact variant
   // unmounts the field when its disclosure closes, and reopening it must refocus.
   const reasonFieldShown = reasonRequired && (!isCompact || ownWordsOpen);
   useEffect(() => {
     if (reasonFieldShown) {
-      answerFieldRef.current?.focus();
+      answerFieldRef.current?.textarea()?.focus();
     }
   }, [reasonFieldShown]);
   // Opening the disclosure is a move into the field it reveals, whoever opened it: the reader's
@@ -415,7 +417,7 @@ export function AskCard({
     if (!focusNoteOnOpen.current) return;
     focusNoteOnOpen.current = false;
     if (ownWordsOpen) {
-      answerFieldRef.current?.focus();
+      answerFieldRef.current?.textarea()?.focus();
     }
   }, [ownWordsOpen]);
   // A pick of Other is a move into the box its words go in, by a click or by the Inbox's digit,
@@ -423,7 +425,7 @@ export function AskCard({
   // behind the note disclosure in the compact one, which the pick opens and whose render the
   // field waits for (the effect above).
   const focusAnswerField = () => {
-    const field = answerFieldRef.current;
+    const field = answerFieldRef.current?.textarea() ?? null;
     if (field !== null) {
       field.focus();
       return;
@@ -472,9 +474,9 @@ export function AskCard({
   // Outside `NoTooltips` the hold ends as the write is done with. Each control it holds - the
   // answer box, Answer (Save answer), Ask back, Ask back instead, Answer with it anyway, the
   // Cancel of a change, and the options with Other - is `aria-disabled` in place of `disabled` on
-  // every page (`heldPress`, `heldField`): the box is `readOnly`, and the options are held by
-  // their group. `disabled` drops the focus to the body in a browser; this way the control the
-  // reader pressed keeps it. A press of any of them does nothing then, and neither does
+  // every page (`heldPress`, `MentionField`'s `held`): the box is `readOnly`, and the options are
+  // held by their group. `disabled` drops the focus to the body in a browser; this way the control
+  // the reader pressed keeps it. A press of any of them does nothing then, and neither does
   // Ctrl+Enter, a paste or a drop in the box, or the form's submit. Each is drawn from the form as
   // it stood when the hold began (`refusedForm`): the landing empties the box and closes the
   // choice a question-shaped answer offers, and the control that would turn `disabled` or leave
@@ -663,54 +665,55 @@ export function AskCard({
     : ON_PAGE.action;
   const answerField = (
     <>
-      <label className="block" htmlFor={answerFieldId}>
-        <span
-          className={
-            reasonRequired
-              ? `mb-1 block text-sm font-medium ${tooltips ? textSecondaryOnSurface : ON_PAGE.muted}`
-              : "sr-only"
+      {/* Inside `NoTooltips` the box is the page's (`ON_PAGE.field`), with its label and the line
+          under it in the page's words. While the card holds its form the box is held (`held`):
+          it keeps its focus and its text, takes no typing, and its picker is shut, and it takes
+          no Ctrl+Enter, paste or drop. */}
+      <MentionField
+        askAnswer={true}
+        body={answerText}
+        className="font-normal aria-disabled:opacity-50"
+        fieldClassName={tooltips ? undefined : ON_PAGE.field}
+        fieldRef={answerFieldRef}
+        held={held}
+        hintClassName={tooltips ? undefined : `text-xs ${ON_PAGE.quiet}`}
+        issueKey={displayedAsk.issue_key ?? undefined}
+        label={reasonRequired ? "Reason (required)" : isApproval ? "Reason" : "Your answer"}
+        labelClassName={tooltips ? undefined : `block text-sm font-medium ${ON_PAGE.muted}`}
+        labelHidden={!reasonRequired}
+        onChange={(change) => {
+          setAnswerText(change.body);
+          setQuestionChoice(false);
+        }}
+        onDrop={
+          uploadOwner === undefined || held
+            ? undefined
+            : (event) => upload.drop(event, uploadOwner, ask.id)
+        }
+        onKeyDown={(event) => {
+          // Escape in the reason an approval's Request changes asks for lets go of that pick,
+          // and sends nothing: the Inbox's own Escape then puts the focus back on the row,
+          // which is why this neither stops the key nor calls `preventDefault`. The box
+          // stays, with what was typed in it, so nothing under the reader's focus unmounts. The
+          // Escape that ends an input method's composition cancels what the reader was
+          // composing and keeps the pick: Safari sends it with `isComposing` false and keyCode
+          // 229 (`inputMethodKey`). An Escape that closes the open picker never reaches here
+          // (`MentionField`), so it keeps the pick too.
+          if (event.key === "Escape" && reasonRequired && !inputMethodKey(event.nativeEvent)) {
+            dropReasonPick();
           }
-        >
-          {reasonRequired ? "Reason (required)" : isApproval ? "Reason" : "Your answer"}
-        </span>
-        <textarea
-          {...heldField(held)}
-          className={`block w-full rounded-lg px-3 py-2 font-normal outline-none aria-disabled:opacity-50 ${tooltips ? inputClasses(true) : ON_PAGE.field}`}
-          data-ask-answer=""
-          id={answerFieldId}
-          onChange={(event) => {
-            setAnswerText(event.target.value);
-            setQuestionChoice(false);
-          }}
-          onDrop={
-            uploadOwner === undefined || held
-              ? undefined
-              : (event) => upload.drop(event, uploadOwner, ask.id)
-          }
-          onKeyDown={(event) => {
-            // Escape in the reason an approval's Request changes asks for lets go of that pick,
-            // and sends nothing: the Inbox's own Escape then puts the focus back on the row,
-            // which is why this neither stops the key nor calls `preventDefault`. The box
-            // stays, with what was typed in it, so nothing under the reader's focus unmounts. The
-            // Escape that ends an input method's composition cancels what the reader was
-            // composing and keeps the pick: Safari sends it with `isComposing` false and keyCode
-            // 229 (`inputMethodKey`).
-            if (event.key === "Escape" && reasonRequired && !inputMethodKey(event.nativeEvent)) {
-              dropReasonPick();
-            }
-            submitOnModifiedEnter(event, { disabled: uploading || held });
-          }}
-          onPaste={
-            uploadOwner === undefined || held
-              ? undefined
-              : (event) => upload.paste(event, uploadOwner, ask.id)
-          }
-          placeholder={answerPlaceholder}
-          ref={answerFieldRef}
-          rows={2}
-          value={answerText}
-        />
-      </label>
+          submitOnModifiedEnter(event, { disabled: uploading || held });
+        }}
+        onPaste={
+          uploadOwner === undefined || held
+            ? undefined
+            : (event) => upload.paste(event, uploadOwner, ask.id)
+        }
+        placeholder={answerPlaceholder}
+        project={documentProject}
+        rows={2}
+        writing={dispatchWritingBox("ask-answer", "ask-answer")}
+      />
       <DraftUploadStatus upload={upload} />
     </>
   );
@@ -798,6 +801,7 @@ export function AskCard({
   if (completed !== null) {
     return (
       <>
+        {questionReads}
         <AskCompletionCard
           answers={answers}
           artifactSlug={artifactSlug}
@@ -851,6 +855,7 @@ export function AskCard({
       data-ask-card={displayedAsk.id}
       data-testid={`ask-${displayedAsk.id}`}
     >
+      {questionReads}
       {hasUrgencyNotch ? (
         <span
           aria-hidden="true"
@@ -889,6 +894,7 @@ export function AskCard({
             <MarkdownBody
               markdown={displayedAsk.question}
               source={source}
+              surface="ask-card-question"
               tree={displayedAsk.question_tree}
             />
           </div>
@@ -1059,6 +1065,7 @@ export function AskCard({
                     setOwnWordsOpen(requiresReason(option.label) || trimmedAnswer !== "");
                 }}
                 option={option}
+                source={source}
               />
             ))}
             {isApproval ? null : (
@@ -1075,6 +1082,7 @@ export function AskCard({
                   if (!otherSelected) focusAnswerField();
                 }}
                 option={{ label: "Other" }}
+                source={source}
               />
             )}
           </fieldset>

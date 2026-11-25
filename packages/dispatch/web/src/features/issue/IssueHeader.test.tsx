@@ -1,4 +1,4 @@
-import { expect, jest, type Mock, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { hashKey, QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the presses that end a title edit go inside one act, so React commits what they change after them as a browser does; user-event commits inside each event; and a key that ends an IME composition is marked as the input method's, which user-event has no form for
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -28,6 +28,7 @@ import type {
 } from "../../api/types";
 import { patchAnswer, sessionClaim } from "../issue-page/issue-fixtures";
 import { MarginProvider } from "../margin/margin-context";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { setActionKeys } from "../shell/keymap-keys";
@@ -37,6 +38,12 @@ import { writesOf } from "../writes/write-store";
 import { idlePriorityWrite, mockHeaderReads } from "./header-fixture";
 import { IssueHeader } from "./IssueHeader";
 import { stateForIssue } from "./pins";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 // The issue's header, read with the real `IssueHeader`: its title's editor in the shell's main
 // content, as the app shell draws it, and its pin under the reads of the viewer's state asked

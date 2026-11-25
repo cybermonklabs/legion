@@ -24,11 +24,10 @@ const REASONS = {
   7: "7. A card draws its thread under its record while the ask is settled, and under its form while the ask is open or the reader is changing their recorded answer (`completed`). An open ask's thread holds no composer (5), so a thread holding one moves between the two only at the reader's own Change answer and its end, which draws the thread afresh, its composer with it, for the same ask: the composer holds the ask's draft, as the composer of a card ended and drawn again does.",
   8: "8. Which replies the reader has not read (`unread`) decides only which replies the thread folds away (`threadLayout`): it never draws, ends, moves or keys a composer, whose place is the order's alone (`composerFirst(order)`, (1)).",
   9: "9. `AskThread` draws no composer where it is passed `showComposer={false}`, which only the collapsed thread passes, drawing `AskThread` for its replies alone: the collapsed thread's composer is the disclosure's own, the `Ask reply, collapsed` rows', and every other `AskThread` takes the default, `true`. So nothing that draws, ends or moves the collapsed thread's `AskThread` (its replies being there, its read, its order, its ask) draws, ends or moves a composer.",
-  10: "10. What the answer field spreads onto itself (`heldField(held)` in `held-press.ts`) is `aria-disabled` and `readOnly` alone, which hold the field while the card's write is out, or the read of its thread that follows a landed write is awaited (`held`), and keep the focus on it: neither names where the draft lives, which is the ask's (`useAskAnswerForm({ ask })`), so the field keeps the draft through the hold.",
 } as const;
 
 /** The answer field's mount, and the reply composer's in each thread. */
-const ANSWER_FIELD = 'AskCard | AskCard <textarea data-ask-answer="">';
+const ANSWER_FIELD = "AskCard | AskCard <MentionField askAnswer={true}>";
 const INLINE_COMPOSER = "AskThread | AskThread <AskReplyComposer>";
 const COLLAPSED_COMPOSER = "AskThreadDisclosure | AskThreadDisclosure <AskReplyComposer>";
 
@@ -52,9 +51,8 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers(`${ANSWER_FIELD} | early return | if (completed !== null) return …`, {
     reason: REASONS[4],
   }),
-  ...answers(`${ANSWER_FIELD} | address prop | {...heldField(held)}`, { reason: REASONS[10] }),
   ...answers(
-    `${ANSWER_FIELD} | lifetime | <textarea data-ask-answer="">`,
+    `${ANSWER_FIELD} | lifetime | <MentionField askAnswer={true}>`,
     cells(`${ANSWER} · the page reloaded, then back`, TYPED)
   ),
 

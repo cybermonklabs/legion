@@ -10,7 +10,7 @@ import {
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import { URGENCY_LABELS } from "../inbox/ask-urgency";
-import { buildReferencePath, parseNodeReference, shortForm } from "../refs/routes";
+import { parseNodeReference, referenceHref, shortForm } from "../refs/routes";
 
 /**
  * `blockId` is the block's own identity rather than one of its schema attributes, so it is the
@@ -31,19 +31,19 @@ function attributeValue(value: unknown): string {
  * (`@legion/proof-editor`'s `src/dispatch-link-open.ts`, which takes a link in this header though
  * the header is `contenteditable="false"`) - and which the hover card reads (`RefPreview`'s
  * trigger): the same pair `pictureView` writes. In a rendered body `collectReferenceAnchors`
- * reads the same attribute, and `LinkClickHost` opens the link. A pointer that names nothing is
- * the text it is.
+ * reads the same attribute, and `LinkClickHost` opens the link. A pointer that names nothing, or
+ * names something with no page of this dashboard - a person (R5) - is the text it is.
  */
 function pointerLink(reference: string): DOMOutputSpec {
   const route = parseNodeReference(reference);
   if (route === undefined) {
     return ["span", {}, reference];
   }
-  return [
-    "a",
-    { "data-dispatch-href": reference, href: buildReferencePath(route) },
-    shortForm(route),
-  ];
+  const href = referenceHref(route);
+  if (href === undefined) {
+    return ["span", {}, shortForm(route)];
+  }
+  return ["a", { "data-dispatch-href": reference, href }, shortForm(route)];
 }
 
 /** One attribute the header draws: its name, and the children its value draws as - a spec per

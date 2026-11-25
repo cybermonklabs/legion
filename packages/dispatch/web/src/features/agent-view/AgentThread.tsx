@@ -11,7 +11,7 @@ import {
   unstable_useTriggerPopoverScopeContext,
   useAuiState,
 } from "@assistant-ui/react";
-import type { AgentStreamCommand } from "@legion/contracts";
+import { type AgentStreamCommand, dispatchWritingBox } from "@legion/contracts";
 import { type ReactNode, type RefObject, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { ChevronIcon } from "../../components/DisclosureToggle";
@@ -42,11 +42,12 @@ import { PendingSendTurn } from "../conversation/PendingSendTurn";
 import type { SessionSends } from "../conversation/useSessionSends";
 import { AgentName } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { DeletedBody, EditedMark } from "../refs/PostBody";
+import { DeletedBody, EditedMark } from "../refs/PostMarks";
 import type { PostDeletion } from "../refs/post-marks";
 import { ErrorBoundary } from "../shell/ErrorBoundary";
 import { readDispatchMarks, turnKey } from "./dispatch-marks";
 import type { LivePlace } from "./live-views";
+import { type ReferenceKeys, ReferenceTriggers } from "./ReferenceTriggers";
 import { useLiveFollow } from "./use-live-follow";
 import { useFrameCoalesced } from "./useFrameCoalesced";
 
@@ -57,6 +58,10 @@ import { useFrameCoalesced } from "./useFrameCoalesced";
  */
 
 const preClasses = `mt-2 max-h-64 overflow-auto rounded-md p-2 text-xs whitespace-pre-wrap ${surfaceMutedBg} ${textMutedOnSurfaceMuted}`;
+
+/** This box's row of the writing list: one box, one write - a message to this session - so the
+ *  line under the box is read once (`DISPATCH_WRITING_BOXES`). */
+const WRITING = dispatchWritingBox("agent-live-composer", "agent-message");
 
 /** A tool call and, once it lands, its result. Folded by default: tool traffic is the bulk of a
  *  session's output and a viewer is usually reading the prose around it. */
@@ -110,13 +115,19 @@ const ToolCall: ToolCallMessagePartComponent = ({ toolName, argsText, result, is
  *  animation frame (`useFrameCoalesced`) rather than once per delta: the publisher sends at most
  *  ten snapshots a second, and a frame is the most anyone can see anyway. A module constant, as
  *  `Reasoning` is: a component minted per render would remount every part. */
+// No `source` here or on the reasoning below: why a session's own turn is no record is the
+// reading list's `agent-turn-text` and `agent-turn-reasoning` (`DISPATCH_READING_SURFACES`).
 const MarkdownText: TextMessagePartComponent = ({ text }) => (
-  <MarkdownBody markdown={useFrameCoalesced(text)} softBreaks="line" />
+  <MarkdownBody markdown={useFrameCoalesced(text)} softBreaks="line" surface="agent-turn-text" />
 );
 
 const Reasoning: ReasoningMessagePartComponent = ({ text }) => (
   <div className={`my-1 text-xs italic ${textMutedOnCanvas}`} data-testid="agent-reasoning">
-    <MarkdownBody markdown={useFrameCoalesced(text)} softBreaks="line" />
+    <MarkdownBody
+      markdown={useFrameCoalesced(text)}
+      softBreaks="line"
+      surface="agent-turn-reasoning"
+    />
   </div>
 );
 
@@ -510,6 +521,9 @@ export function AgentThread({
   const shownRefusal = refusedPress ? refusal : null;
   if (refusal === null && refusedPress) setRefusedPress(false);
   const hintId = useId();
+  // The keys the reference doors serve that assistant-ui does not (`ReferenceTriggers`), handed
+  // to them before the composer reads the key.
+  const referenceKeys = useRef<ReferenceKeys | null>(null);
   // The composer sits at the foot of a page that fills the screen, in its flow, above the rows
   // under it, and `Jump to latest` floats just above it while the reader is back in the
   // transcript: both are in the foot's page layer (`hooks/useFootInset.ts` lists the foot's
@@ -616,6 +630,8 @@ export function AgentThread({
           {commands === undefined || commands.length === 0 ? null : (
             <SlashCommands commands={commands} />
           )}
+          {/* The three reference doors, beside the `/` above: one input, four triggers. */}
+          <ReferenceTriggers keys={referenceKeys} />
           <div className="flex items-end gap-2">
             {/* Never taller than 40% of the screen, scrolling inside past that: after a resize
                 the textarea's autosize can leave it far taller than its text (a load at a
@@ -623,6 +639,10 @@ export function AgentThread({
                 over the row under it, so a press at Send reached that row. */}
             <ComposerPrimitive.Input
               className={`max-h-[40dvh] min-h-11 flex-1 overflow-y-auto rounded-lg px-3 py-2 text-sm ${inputClasses(false)}`}
+              // The one handle a browser row reaches this box by, since its accessible name is
+              // the placeholder, which says what the session is doing (`DISPATCH_WRITING_BOXES`).
+              data-agent-message=""
+              onKeyDown={(event) => referenceKeys.current?.(event)}
               placeholder={placeholder}
               rows={1}
               submitMode="enter"
@@ -652,6 +672,11 @@ export function AgentThread({
             id={hintId}
           >
             {held ? placeholder : shownRefusal}
+          </p>
+          {/* What a pick does here, in the writing list's own words, so the line under the box
+              and the list that drives the browser rows cannot drift apart. */}
+          <p className={`text-xs ${textMutedOnCanvas}`} data-testid="agent-message-hint">
+            {WRITING.hint}
           </p>
         </ComposerPrimitive.Root>
       </ComposerPrimitive.Unstable_TriggerPopoverRoot>

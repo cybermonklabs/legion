@@ -4,7 +4,7 @@
  * (INFRA-450).
  */
 
-import { afterEach, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import {
   QueryClient,
   QueryClientProvider,
@@ -39,6 +39,7 @@ import type {
   MyRepliesResponse,
   MyReplyRow,
 } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
 import { stoppedWriteNote } from "../writes/keyed-write";
@@ -53,6 +54,13 @@ import {
   inboxDismissBody,
   useInboxDismiss,
 } from "./useInboxDismiss";
+
+// A thread row's checkbox is named after its subject's plain-text reading (`PlainText`), which
+// reads nothing until the lazy Markdown engine has loaded, and the rows find each checkbox by that
+// name. So the file loads the engine before its first row, in whatever order the rows run.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** What a press carries for one of this file's Reply rows: the version the fixture draws them
  *  at, which every row of it shares. */

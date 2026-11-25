@@ -1,0 +1,5 @@
+kind: Added
+body: '`DISPATCH_READING_SURFACES` lists `verification-check-facts`, the name of a Verification check''s facts button, which reads the check''s line through the node-line projection.'
+time: 2026-11-25T21:20:10.000000000Z
+custom:
+    Issue: pr4304

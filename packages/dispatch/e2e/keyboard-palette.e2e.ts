@@ -1,6 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { issueSearchIn, openAgents, seedAgents, shownAgentRows } from "./agents";
+import { issueSearchIn, openAgents, plannerMention, seedAgents, shownAgentRows } from "./agents";
 import { createIssue, createProject, getIssue, patchIssue } from "./api";
 import { listTrigger } from "./filters";
 import { nextFrames } from "./frames";
@@ -458,7 +458,7 @@ test("the Agents page offers a row's picker, which then commits a keyboard pick 
     await expect(toggle).toContainText("CORE-2");
     const field = row.getByRole("textbox", { name: "Comment" });
     await expect(field).toBeFocused();
-    await expect(field).toHaveValue("@Planner");
+    await expect(field).toHaveValue(`${plannerMention} `);
   } finally {
     await context.close();
   }

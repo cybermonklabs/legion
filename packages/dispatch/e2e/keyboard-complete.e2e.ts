@@ -1194,8 +1194,11 @@ interface HighlightedRow {
 }
 
 /** The row the open list of `control`, a single pick's trigger, highlights (`aria-activedescendant`
- *  of its search box), or undefined while the list is closed or highlights nothing. */
-function highlightedRow(control: Locator): Promise<HighlightedRow | undefined> {
+ *  of its search box), or undefined while the list is closed or highlights nothing. Its name is
+ *  not `ref-picker.ts`'s `highlightedRow`, a locator: the zero-wait scan reads a wrapper by its
+ *  name in every file (`zero-wait-probes.ts`), so each call of that locator would read as this
+ *  probe. */
+function highlightedRowPlace(control: Locator): Promise<HighlightedRow | undefined> {
   return control.evaluate((trigger): HighlightedRow | undefined => {
     const panel = document.getElementById(trigger.getAttribute("aria-controls") ?? "");
     const search = panel?.querySelector('[role="combobox"]');
@@ -1249,7 +1252,7 @@ test("k-choice-writes-on-enter: on the issue page with seven people and no assig
   const say = (text: string) => `k-choice-writes-on-enter: the assignee's list, ${text}`;
   const inView = (step: string) =>
     expect
-      .poll(() => highlightedRow(control), {
+      .poll(() => highlightedRowPlace(control), {
         message: say(
           `${step}: the highlighted row stands inside the list's box, below its search box`
         ),

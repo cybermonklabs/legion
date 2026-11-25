@@ -254,6 +254,8 @@ export function IssueTitleRow({
         )}
       </h1>
       {editing ? (
+        // One line of text that holds no markup, so this box takes no reference picker:
+        // `issue-title` in `DISPATCH_WRITING_BOXES` says why.
         <textarea
           aria-describedby={drafts.titleError === null ? undefined : "issue-title-help"}
           aria-label="Issue title"

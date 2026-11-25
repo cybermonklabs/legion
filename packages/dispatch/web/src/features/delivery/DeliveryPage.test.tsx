@@ -243,10 +243,10 @@ afterEach(() => {
 /**
  * A row of this file: `bun:test`'s own, but its body ends by unmounting the page inside act
  * (`cleanup`), not in `afterEach`. DeliveryPage's search debounce (`useSettled`, 250 ms from
- * mount) and SourceFreshness's 1 s tick are real timers, and Bun gives the event loop a turn
- * between a row's body and its `afterEach`: a timer due then fires with the act environment on
- * and no act scope open, and React reports its setState as an update outside act. The unmount
- * clears both timers before that turn.
+ * the last keystroke) and SourceFreshness's 1 s tick are real timers, and Bun gives the event
+ * loop a turn between a row's body and its `afterEach`: a timer due then fires with the act
+ * environment on and no act scope open, and React reports its setState as an update outside act.
+ * The unmount clears both timers before that turn.
  */
 const test = (name: string, body: () => Promise<void>): void =>
   bunTest(name, async () => {
@@ -921,6 +921,22 @@ test("a facet pick leaves the window rolling: it writes no from or to, and subsc
     window: { preset: 28 },
     query: "priority=P0",
   });
+});
+
+// The search is asked for once the typing rests (`useSettled`): the URL keeps every keystroke, and
+// the page subscribes the text the typing rested on, never a text it passed through on the way.
+test("the search subscribes the text the typing rested on, once", async () => {
+  const user = userEvent.setup();
+  renderPage();
+  const socket = await answered(emptyTimeline);
+  await user.type(screen.getByLabelText("Search pull requests"), "widget");
+  expect(currentSearch().get("q")).toBe("widget");
+  await subscriptionTo(socket, { kind: "timeline", window: URL_WINDOW, query: "q=widget" });
+  expect(
+    socket
+      .subscribes()
+      .flatMap((frame) => (frame.view.kind === "timeline" ? [frame.view.query] : []))
+  ).toEqual(["", "q=widget"]);
 });
 
 test("the window control: a preset rolls and clears the brush, a custom range writes its days", async () => {

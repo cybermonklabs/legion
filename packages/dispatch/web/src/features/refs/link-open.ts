@@ -6,16 +6,17 @@ import { useNavigate } from "react-router-dom";
 import { openInNewTab } from "../shell/new-tab";
 import { hrefTarget } from "./link-address";
 import { MARKDOWN_BODY_SELECTOR } from "./markdown-engine";
-import { fetchReferencePath, needsSpecSlug } from "./reference-target";
-import { buildReferencePath, type DispatchReferenceRoute, parseNodeReference } from "./routes";
+import { fetchReferenceHref, needsSpecSlug } from "./reference-target";
+import { type DispatchReferenceRoute, parseNodeReference, referenceHref } from "./routes";
 
 /**
  * How a link of a document or a rendered body opens (dispatch://INFRA-2160, R1), the one rule for
  * every surface: a `dispatch://` reference and a link to a page of this application open that
  * page in the same tab, with no new load of the application; another site, a mail address and a
  * phone number open in a new tab; a Ctrl, Cmd or middle click opens a Dispatch page in a new tab
- * too; any other scheme opens nothing. The document editor calls it through its `openLink` option
- * (`@legion/proof-editor`'s `src/dispatch-link-open.ts`, from `ProofDocument` and `VersionView`),
+ * too; any other scheme opens nothing, and so does a reference to a person, whom no page shows
+ * (R5). The document editor calls it through its `openLink` option (`@legion/proof-editor`'s
+ * `src/dispatch-link-open.ts`, from `ProofDocument`, `VersionView` and `PriorityDescription`),
  * and `LinkClickHost` for every rendered body.
  */
 
@@ -115,11 +116,16 @@ function useDestinationOpener(): (
         return;
       case "reference":
         // A block of a spec pinned to a version opens that version under the spec's slug,
-        // which only the issue names; every other reference's path is known at once.
+        // which only the issue names; every other reference's href is known at once. A
+        // reference that opens no page of this dashboard - a person, whom nothing shows (R5) -
+        // goes nowhere: the press is taken all the same and stops here.
         if (needsSpecSlug(destination.route)) {
-          void fetchReferencePath(queryClient, destination.route).then(go);
+          void fetchReferenceHref(queryClient, destination.route).then((href) => {
+            if (href !== undefined) go(href);
+          });
         } else {
-          go(buildReferencePath(destination.route));
+          const href = referenceHref(destination.route);
+          if (href !== undefined) go(href);
         }
         return;
       case undefined:

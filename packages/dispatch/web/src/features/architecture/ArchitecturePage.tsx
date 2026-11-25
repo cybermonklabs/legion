@@ -36,6 +36,7 @@ import {
   textSecondaryOnSurface,
   trustWarningBorder,
 } from "../../theme/classes";
+import { ARCHITECTURE_COMPONENT_PARAM } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { openLinkInNewTab } from "../shell/new-tab";
@@ -82,7 +83,7 @@ function usePaneState(): {
   view: PaneView | null;
 } {
   const [searchParams, setSearchParams] = useSearchParams();
-  const component = searchParams.get("component");
+  const component = searchParams.get(ARCHITECTURE_COMPONENT_PARAM);
   const viewParam = searchParams.get("view");
   const view: PaneView | null =
     viewParam === "no-work" ? "no-work" : (VIEWS[viewParam ?? ""] ?? null);
@@ -329,7 +330,7 @@ function ArchitectureTreeView({
   ]);
 
   const path = levelId === null ? [] : componentPath(index, levelId);
-  const rowSearch = (id: string) => `?component=${encodeURIComponent(id)}`;
+  const rowSearch = (id: string) => `?${ARCHITECTURE_COMPONENT_PARAM}=${encodeURIComponent(id)}`;
   return (
     <div className="space-y-4" data-testid="architecture-pane">
       <header className={`space-y-1 text-sm ${textSecondaryOnCanvas}`}>

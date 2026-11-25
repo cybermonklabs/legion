@@ -3,7 +3,7 @@
  * it was, drawn as read (INFRA-450). Only a dismiss takes a row out of the list.
  */
 
-import { afterEach, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { onlineManager, QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -37,12 +37,19 @@ import type {
   MyRepliesResponse,
   MyReplyRow,
 } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { Inbox } from "./Inbox";
 import { widenToReadingPane } from "./inbox-fixture";
 import { ThreadRowCard } from "./ThreadRowCard";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const AS_OF = "2026-10-12T02:00:00Z";
 const NEWEST = "2026-10-12T01:00:00Z";

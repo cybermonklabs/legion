@@ -1220,6 +1220,7 @@ test("a drawn title opens its reference once on a pointer click, once on a drag 
     "See CORE-1 here.",
     ({ handle, view }) => {
       handle.setReferences({
+        mentions: new Map(),
         onKeys: () => {},
         scan: (text): ReferenceCandidate[] => {
           const start = text.indexOf("CORE-1");
@@ -1391,6 +1392,7 @@ test("Alt+Enter beside a bare key opens the reference its title stood for", asyn
     "See CORE-1 here.",
     ({ handle, view }) => {
       handle.setReferences({
+        mentions: new Map(),
         onKeys: () => {},
         scan: (text): ReferenceCandidate[] => {
           const start = text.indexOf("CORE-1");
@@ -1427,6 +1429,7 @@ test("Alt+Enter straight after an arrow key reads the caret where the page holds
     "See CORE-1 here.",
     ({ handle, view }) => {
       handle.setReferences({
+        mentions: new Map(),
         onKeys: () => {},
         scan: (text): ReferenceCandidate[] => {
           const start = text.indexOf("CORE-1");

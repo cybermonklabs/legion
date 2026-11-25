@@ -19,7 +19,7 @@ import { useActionKeys } from "../shell/keymap-keys";
 import { ControlKeyHint, keyshortcutsOf } from "../shell/ShortcutHelp";
 import { InboxOwnerLink, ThreadOwnerLine } from "./AskOwnerLink";
 import { AssignToMe, useAskAssign } from "./AssignToMe";
-import { askIssueKey, controlName } from "./ask-name";
+import { askIssueKey } from "./ask-name";
 import { DismissControl } from "./DismissControl";
 import { EarlierApprovalDetails, EarlierApprovalToggle } from "./EarlierApproval";
 import { inboxActionMark } from "./inbox-action-mark";
@@ -27,6 +27,7 @@ import { threadReferenceRoute } from "./list-row";
 import { SnoozeControl } from "./SnoozeControl";
 import { isUnassigned } from "./sections";
 import { isSnoozed } from "./snooze";
+import { useControlName } from "./useControlName";
 
 /** The head's first row: the item's controls, in a row of their own above its title (R9). The
  *  controls are at its start and the place of a fixed width is at its end; the row lines them up
@@ -218,7 +219,7 @@ export function ReadingPaneHead({
   const reviewsKeys = useActionKeys("inbox.show-reviews");
   const approveKeys = useActionKeys("inbox.approve");
   const requestChangesKeys = useActionKeys("inbox.request-changes");
-  const name = controlName(ask, undefined);
+  const { name, reads } = useControlName(ask, undefined);
   const page = openPagePath(ask, sectionBlockId);
   const reference = itemRoute("ask", ask, ask.document);
   const approval = ask.kind === "approval" ? ask.approval : undefined;
@@ -263,6 +264,7 @@ export function ReadingPaneHead({
               viewer={viewer}
             />
           ) : null}
+          {reads}
           {/* The Inbox holds the write this Snooze makes, by ask, so it outlives this head, which
               goes when the reader moves the selection (`useAskSnoozeWrites`). */}
           <SnoozeControl

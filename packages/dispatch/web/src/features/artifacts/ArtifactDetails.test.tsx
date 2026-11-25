@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
@@ -7,7 +7,15 @@ import { graphNode } from "../../__tests__/graph-fixture";
 import { listOf, pickNamed, textBoxes } from "../../__tests__/list-picks";
 import { api } from "../../api/client";
 import type { Artifact } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ArtifactDetails } from "./ArtifactDetails";
+
+// A Referenced-by excerpt is drawn by the shared renderer (`ReferencedBy`), which draws nothing
+// until the lazy Markdown engine has loaded, and the rows read the excerpt as soon as its region
+// shows. So the file loads the engine before its first row, in whatever order the rows run.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const artifact = {
   created_at: "2026-09-09T00:00:00Z",
@@ -239,6 +247,15 @@ test("ArtifactDetails links each inbound source to the record that cites it", as
       ref: "dispatch://CORE-1/artifact/diagram-png",
     }),
   });
+  // The citing comment's excerpt is the head of its body, which the renderer draws, so the
+  // reference in it reads its issue's summary for the document's name.
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [],
+    key: "CORE-1",
+    project: "CORE",
+    status: "in_progress",
+    title: "Fix the thing",
+  });
 
   try {
     const view = renderDetails(artifact);
@@ -252,6 +269,7 @@ test("ArtifactDetails links each inbound source to the record that cites it", as
     );
     view.unmount();
   } finally {
+    getIssueSummary.mockRestore();
     getReferences.mockRestore();
   }
 });

@@ -20,6 +20,7 @@ import "testing"
 // takeover of a claim the release still holds keeps that work on it, fails every row; no row of
 // the order table fails under it.
 func TestAWokenReleasedRoleSuspendedBeforeAnyPodIsNamedWhereThePodWent(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []memberKind{daemonSuspendedWokenKept, operatorSuspendedWokenKept} {
 		for _, end := range []roundPodEnd{endPodGone, endRecreated, endRecreatedRefusing} {
 			t.Run(string(kind.suspendsWoken())+": "+end.String(), func(t *testing.T) {
