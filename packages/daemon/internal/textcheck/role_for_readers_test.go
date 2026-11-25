@@ -52,8 +52,11 @@ type roleForReader struct {
 // acceptance step after it),
 // or reads the retro's own phase and the phase of the last step of a parent's task, neither of
 // which is admitted (retroHeldNotice and Engine.startHeldRetro, which run only for a parent held
-// before its retro for the issues beneath it), or never reads admitted at all because a check
-// before it refuses that phase, which is what each named test holds it to. The owner walk reads no
+// before its retro for the issues beneath it), or ends a design gate's message to a phase worker
+// whose issue stands where RoleFor names the architect (outbox.gateMoveEnds), or never reads
+// admitted at all because a check before it refuses that phase (Postgres.MoveStartQueued, whose
+// hook prompt names a move between two phases of the forward line), which is what each named
+// test holds it to. The owner walk reads no
 // role: where it starts is its caller's to say (record.NoticeStartsAtParent, for a notice).
 //
 // A reader this list does not hold fails the test, so a new one is decided rather than taking
@@ -64,10 +67,12 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/admit/stalled.go", fn: "stalledTreeReason"}:                  {calls: 1, test: "TestAWaitByDesignIsNeverToldAsAStall"},
 	{file: "internal/api/handoff.go", fn: "entryFence"}:                           {calls: 1, test: "TestArchitectUnchangedByItsCompletionAtAdmitted"},
 	{file: "internal/daemon/daemon.go", fn: "serve"}:                              {calls: 1, test: "TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine"},
+	{file: "internal/daemon/gate_move.go", fn: "outbox.gateMoveEnds"}:             {calls: 1, test: "TestAGateMoveToAReleasedHolderWhoseIssueStandsAtAdmittedEndsAtOnce"},
 	{file: "internal/daemon/design_news_holders.go", fn: "phaseHolder"}:           {calls: 1, test: "TestOnlyAPhaseWorkerHoldsAMembersPhase"},
 	{file: "internal/phase/phase.go", fn: "Of"}:                                   {calls: 1, test: "TestArchitectUnchangedByItsCompletionAtAdmitted"},
 	{file: "internal/projection/project.go", fn: "Project"}:                       {calls: 1, test: "TestProjectShowsARootsArchitectHandshake"},
 	{file: "internal/record/design_news.go", fn: "untold"}:                        {calls: 1, test: "TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken"},
+	{file: "internal/record/store.go", fn: "Postgres.MoveStartQueued"}:            {calls: 1, test: "TestAMoveStartQueuedHoldsAHookPromptOnlyForTheStartItsMoveBackQueued"},
 	{file: "internal/workflow/architect_start.go", fn: "writeCarriedPhase"}:       {calls: 1, test: "TestTheArchitectTaskOfEachShape"},
 	{file: "internal/workflow/catch_up.go", fn: "Engine.readyWorkerTask"}:         {calls: 1, test: "TestArchitectUnchangedByAReadyWorkerOfAnIssueAtAdmitted"},
 	{file: "internal/workflow/design_news.go", fn: "memberWords"}:                 {calls: 1, test: "TestTheRootArchitectsSummaryNamesEachMemberAsTheRecordStandsAtItsSend"},

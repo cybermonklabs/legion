@@ -105,6 +105,23 @@ func gateRows(token claim.Token) func(pathRow) bool {
 	}
 }
 
+// gateOpen says whether row is a gate row whose typed mark (record.RoleMessage.Gate) names an
+// opening.
+func gateOpen(row pathRow) bool {
+	msg, ok := row.payload.(record.RoleMessage)
+	return ok && msg.Gate != nil && msg.Gate.Open
+}
+
+// runOne runs row alone, past the backoff of its last attempt, through the lanes' own claim,
+// execute and settle (runRow), so a case decides the order in which rows that wait together run.
+func (r *gateMoveRig) runOne(row pathRow) {
+	r.t.Helper()
+	r.later(2 * time.Minute)
+	if err := r.runner.runRow(r.ctx, record.OutboxRow{ID: row.id, Kind: row.kind, Issue: row.issue}); err != nil {
+		r.t.Fatalf("run outbox row %d: %v", row.id, err)
+	}
+}
+
 // pass runs the gate rows of token once more, past the backoff of their last attempt, and answers
 // the rows it ran.
 func (r *gateMoveRig) pass(token claim.Token) []pathRow {
@@ -181,7 +198,7 @@ func TestAGateMoveReachesAReleasedHolderOnceItIsWoken(t *testing.T) {
 
 	r.dispatchEvent(intake.DispatchArtifactChangesRequested, 1)
 	closes := r.held(gateRows(token))
-	if len(closes) != 1 || !strings.Contains(closes[0].payload.(record.RoleMessage).Body, "closed") {
+	if len(closes) != 1 || gateOpen(closes[0]) {
 		t.Fatalf("the tester's rows after the close = %+v, want the one close message", closes)
 	}
 	for attempt := 1; attempt <= 3; attempt++ {
@@ -200,7 +217,7 @@ func TestAGateMoveReachesAReleasedHolderOnceItIsWoken(t *testing.T) {
 
 	r.dispatchEvent(intake.DispatchArtifactApproved, 1)
 	rows := r.held(gateRows(token))
-	if len(rows) != 2 || !strings.Contains(rows[1].payload.(record.RoleMessage).Body, "opened") {
+	if len(rows) != 2 || !gateOpen(rows[1]) {
 		t.Fatalf("the tester's rows after the opening = %+v, want the close and the opened message: the tester's phase took version 1 and owes no news", rows)
 	}
 	opening := rows[1]
@@ -233,9 +250,9 @@ func TestAGateMoveReachesAReleasedHolderOnceItIsWoken(t *testing.T) {
 }
 
 // R4 (h) of dispatch://INFRA-4480: the gate closes and does not open, and the tester's claim is
-// released. The close waits, waking nothing, until the backstop the release armed comes due and
-// wakes the tester (workflow's podBackstopDue); then it reaches the tester's session once, with
-// keep.
+// released. The close waits, waking nothing, until a backstop of the tester comes due and wakes it
+// (workflow's podBackstopDue); then it reaches the tester's session once, with keep. The test arms
+// the backstop itself, as a release's armBackstops arms one, since the rig runs no idle release.
 func TestAGateMoveReachesAReleasedHolderAfterItsBackstop(t *testing.T) {
 	t.Parallel()
 	r := newGateMoveRig(t, false)
@@ -274,6 +291,125 @@ func TestAGateMoveReachesAReleasedHolderAfterItsBackstop(t *testing.T) {
 	}
 	if held, _ := r.still(closes[0]); held {
 		t.Fatalf("the close's row is still queued after its publish, want it finished")
+	}
+}
+
+// R4 of dispatch://INFRA-4480, "Only the newest move is published", for a close that no later move
+// outran: the gate closes while the tester's pod is released, and a new version of the closed step
+// is posted while the gate stays closed. That version moves no gate (workflow's putGateTold writes
+// no move while the standing gate stays where it stood), so the close is still the gate's newest
+// move and the gate still stands as the close left it. After the tester's wake the close reaches
+// its session once, with keep.
+//
+// At 1103560a the close's next attempt ends it as outrun ("the step the move closed stands at
+// another version, or approved"), and the tester is never told; the test fails where it reads the
+// close's row after that attempt.
+func TestTheNewestGateMoveReachesAReleasedHolderAfterANewVersionOfTheClosedStep(t *testing.T) {
+	t.Parallel()
+	r := newGateMoveRig(t, false)
+	token := mustClaimToken(t, pathChild, claim.RoleTester)
+	tester, topic := r.holder(pathChild, claim.RoleTester, supervise.StateSuspended, supervise.SuspendedByReleased)
+
+	r.dispatchEvent(intake.DispatchArtifactChangesRequested, 1)
+	closes := r.held(gateRows(token))
+	if len(closes) != 1 || gateOpen(closes[0]) {
+		t.Fatalf("the tester's rows after the close = %+v, want the one close message", closes)
+	}
+	r.dispatchEvent(intake.DispatchArtifactVersion, 2)
+	if rows := r.held(gateRows(token)); len(rows) != 1 {
+		t.Fatalf("the tester's rows after a new version of the closed step = %+v, want the close alone: the version moves no gate", rows)
+	}
+	r.pass(token)
+	if held, _ := r.still(closes[0]); !held {
+		t.Fatalf("the close's row ended after a new version while the gate stands closed, want it waiting: no later move outran it")
+	}
+
+	r.wokenBySettlement(tester)
+	r.pass(token)
+	delivered, kept := r.toTopic(topic)
+	if len(delivered) != 0 || len(kept) != 1 || kept[0].message != closes[0].payload.(record.RoleMessage).Body {
+		t.Fatalf("the tester was published %d messages and kept %+v after its wake, want the close once, kept for its woken session", len(delivered), kept)
+	}
+}
+
+// R4 of dispatch://INFRA-4480, "Only the newest move is published", for two openings at one
+// version: while the tester's pod is released the gate closes, opens, closes and opens again, each
+// time on spec version 1, so four gate rows wait. After the tester's wake the lane runs the newest
+// opening first, as it does once the older rows have climbed their backoff, then the rest from the
+// newest down. Only the newest opening reaches the tester's session; every older row ends
+// unpublished.
+//
+// At 1103560a the older opening is published again once the newest one's row and the close between
+// them have finished: it finds no newer row in the outbox and the gate open at version 1. The test
+// fails where it counts the kept messages.
+func TestOnlyTheNewestGateMoveReachesAReleasedHolderAfterASecondOpeningAtOneVersion(t *testing.T) {
+	t.Parallel()
+	r := newGateMoveRig(t, false)
+	token := mustClaimToken(t, pathChild, claim.RoleTester)
+	tester, topic := r.holder(pathChild, claim.RoleTester, supervise.StateSuspended, supervise.SuspendedByReleased)
+
+	for _, move := range []intake.DispatchArtifactKind{intake.DispatchArtifactChangesRequested, intake.DispatchArtifactApproved,
+		intake.DispatchArtifactChangesRequested, intake.DispatchArtifactApproved} {
+		r.dispatchEvent(move, 1)
+	}
+	rows := r.held(gateRows(token))
+	if len(rows) != 4 || gateOpen(rows[0]) || !gateOpen(rows[1]) || gateOpen(rows[2]) || !gateOpen(rows[3]) {
+		t.Fatalf("the tester's rows after four moves = %+v, want close, opening, close, opening", rows)
+	}
+
+	r.wokenBySettlement(tester)
+	for i := len(rows) - 1; i >= 0; i-- {
+		r.runOne(rows[i])
+	}
+	delivered, kept := r.toTopic(topic)
+	if len(delivered) != 0 || len(kept) != 1 {
+		t.Fatalf("the tester was published %d messages and kept %d, want the newest opening once: an older move is never published after a newer one",
+			len(delivered), len(kept))
+	}
+	if newest := rows[3]; kept[0].key != record.OutboxKey(newest.id) {
+		t.Fatalf("the listener keeps the message of key %q, want the newest opening's, %q", kept[0].key, record.OutboxKey(newest.id))
+	}
+	if left := r.held(gateRows(token)); len(left) != 0 {
+		t.Fatalf("the tester's gate rows left = %+v, want every older row ended unpublished", left)
+	}
+}
+
+// R4 of dispatch://INFRA-4480, its end rule for an issue that left the phase its holder works, at
+// admitted: the gate closes while the tester's pod is released, and the tester's issue then
+// stands at admitted, which the architect works (phase.RoleFor answers the architect there). The
+// close's row ends undelivered at its next attempt and wakes nothing, since RoleFor no longer
+// answers the role the row was written for. No gate row is written for an issue at admitted in
+// the first place: tellGateMoved addresses no member whose phase RoleFor gives the architect, and
+// gateMoveMark marks no architect. Its negative control is gateMoveEnds without its phase test:
+// the row then waits while the tester reads released, and the test fails where it reads the row.
+func TestAGateMoveToAReleasedHolderWhoseIssueStandsAtAdmittedEndsAtOnce(t *testing.T) {
+	t.Parallel()
+	r := newGateMoveRig(t, false)
+	token := mustClaimToken(t, pathChild, claim.RoleTester)
+	tester, topic := r.holder(pathChild, claim.RoleTester, supervise.StateSuspended, supervise.SuspendedByReleased)
+
+	r.dispatchEvent(intake.DispatchArtifactChangesRequested, 1)
+	closes := r.held(gateRows(token))
+	if len(closes) != 1 {
+		t.Fatalf("the tester's rows after the close = %+v, want the one close message", closes)
+	}
+	moved := *readIssue(t, r.pool, pathChild)
+	moved.Phase = phase.Admitted
+	putOutboxIssue(t, r.pool, r.records, moved)
+
+	r.pass(token)
+	if held, _ := r.still(closes[0]); held {
+		t.Fatalf("the close's row is still queued with the tester's issue at admitted, want it ended undelivered: no phase worker works admitted")
+	}
+	const left = "outbox role message finished undelivered: its design gate move's issue left the phase its holder works, or the workflow"
+	if n := strings.Count(r.logs.String(), left); n != 1 {
+		t.Fatalf("the daemon logged %q %d times, want once", left, n)
+	}
+	if delivered, kept := r.toTopic(topic); len(delivered)+len(kept) != 0 || r.wakesOf(pathChild) != 0 {
+		t.Fatalf("the tester was published %d messages, kept %d and woken %d times, want none", len(delivered), len(kept), r.wakesOf(pathChild))
+	}
+	if held := tester.View(); !held.Released() {
+		t.Fatalf("the tester is %s by %q, want it still released", held.State, held.SuspendedBy)
 	}
 }
 

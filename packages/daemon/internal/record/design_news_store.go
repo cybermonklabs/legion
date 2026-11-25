@@ -3,6 +3,7 @@ package record
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -136,6 +137,26 @@ func (s *Postgres) CloseOpenings(ctx context.Context, tx pgx.Tx, tree string) er
 		return fmt.Errorf("settle the close of tree %s's gate on its told rows: %w", tree, err)
 	}
 	return nil
+}
+
+// OpeningSeq is the opening number issue's audience row holds now and whether the row exists, read
+// from design_news_told itself, so no unfinal credit counts (TreeTold reads design_news_told_in,
+// which answers 0 for a pair a credit names and no row holds). Only design_news_opening_settled
+// moves the number (SettleOpening, CloseOpenings), at each move of the tree's gate, and a clear of
+// the issue's generation deletes the row. So workflow's tellGateMoved names each move to a holder
+// by the number the holder's row took in the move's own transaction (GateMove.Seq), and the
+// daemon's outbox publishes a gate row only while the row still holds that number
+// (outbox.gateMoveStale).
+func (s *Postgres) OpeningSeq(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience) (int, bool, error) {
+	var seq int
+	err := tx.QueryRow(ctx, `select opening_seq from design_news_told where issue = $1 and audience = $2`, issue, string(audience)).Scan(&seq)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("read the opening number of %s's %s: %w", issue, audience, err)
+	}
+	return seq, true, nil
 }
 
 // FillTold writes each step of versions on issue's audience row where the row knows no version of

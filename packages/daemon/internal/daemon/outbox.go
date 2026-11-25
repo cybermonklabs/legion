@@ -1988,8 +1988,10 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 // nothing: a wake of the role already under way (R2 of dispatch://INFRA-4480), whose row waits for
 // that wake and then publishes with keep (roleMessageWay), and a design gate's move to a phase
 // holder (record.RoleMessage.Gate, R4), whose row waits for the claim to leave released for any
-// other cause and then publishes with keep (gateMoveWay), unless a later move of the gate outran it
-// (gateMoveOutran). The claim is read from its machine's View, as wakeForDelivery reads it. One
+// other cause and then publishes with keep, unless its holder can no longer be the one the move was
+// for (gateMoveEnds), and only while it is the newest move its holder was told of and the gate still
+// stands as that move left it (gateMoveStale, gate_move.go). The claim is read from its machine's
+// View, as wakeForDelivery reads it. One
 // window is left: a release between this read and the publish, which the listener refuses
 // (holder_lapsed) and wakes the role on. An outbox with no supervisor (a test's), or a role no
 // machine of this daemon holds, publishes as before.
@@ -2021,7 +2023,7 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 		return errors.New("role message executor has no Envoy publisher")
 	}
 	if payload.Gate != nil {
-		if outran, err := r.gateMoveOutran(ctx, row, payload); err != nil || outran {
+		if stale, err := r.gateMoveStale(ctx, row, payload); err != nil || stale {
 			return err
 		}
 	}
@@ -2043,7 +2045,7 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 			}
 		} else {
 			way, err := r.roleMessageWay(ctx, row, payload, held)
-			if err != nil || way == messageEnds {
+			if err != nil || way.ends() {
 				return err
 			}
 			kept = way == messageKept
@@ -2096,20 +2098,29 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 	return nil
 }
 
-// roleMessageWay is how a role message's row goes on at one attempt, decided before its publish
+// messageWay is how a role message's row goes on at one attempt, decided before its publish
 // (outbox.roleMessageWay).
-type roleMessageWay int
+type messageWay int
 
 const (
 	// messagePublished is a publish with keep: false, as every role message had before R2 of
 	// dispatch://INFRA-4480.
-	messagePublished roleMessageWay = iota
+	messagePublished messageWay = iota
 	// messageKept is a publish with keep (publishKeptToRole): the listener holds the message for
 	// the role's next live holder, the role's woken session, until that session claims its topic.
 	messageKept
-	// messageEnds is a row that ends at this attempt, unpublished, its line already logged.
-	messageEnds
+	// messageNotReached is a row that ends before its publish at a released claim no wake is
+	// bringing back, which the message is not worth a wake to: the end every role message to a
+	// released role had before R2. cybermonklabs/legion#4661 posts the work hold's stop at this end.
+	messageNotReached
+	// messageEnded is a design gate's row that ends unpublished by R4's end rule (gateMoveEnds): its
+	// holder was taken over, failed or retired, or its issue left the holder's phase, the workflow
+	// or a live tree. #4661 posts no stop at this end.
+	messageEnded
 )
+
+// ends says whether the row ends at this attempt, unpublished, its line already logged.
+func (w messageWay) ends() bool { return w == messageNotReached || w == messageEnded }
 
 // roleMessageKeptLines are the lines of a role message that publishKeptToRole ends: kept for the
 // role's woken session, or met by no holder and kept nowhere.
@@ -2120,46 +2131,52 @@ var roleMessageKeptLines = keptLines{
 
 // roleMessageWay is how a role message's row goes on at this attempt (roleMessage), read from held,
 // this daemon's view of the role's claim, for a row no pause owes its role. A wait is the error it
-// answers. A role no claim of this daemon holds (the zero view) is published to as before, and a
-// design gate's move goes on as gateMoveWay says. Every other message is read against a wake of
-// its role already under way (wakeUnderWay, R2 of dispatch://INFRA-4480):
+// answers. A role no claim of this daemon holds (the zero view) is published to as before. Two
+// kinds of row wait for a released claim, and each first decides whether it ends:
 //
-//   - The claim is released and a wake is under way: the row waits and publishes nothing, since a
-//     publish to a released role makes the listener raise the role's wake, and a role message is
-//     not worth one. The wait is routine (routineWaiting): the woken claim's launch ends it, or the
-//     end of the wake, and nobody has to act on it.
-//   - The claim is released and no wake is under way: the row ends with no wake, as it always has
-//     (record.RoleMessage says why).
-//   - The claim has left released after the wake's resume: the row publishes with keep, so the
-//     listener holds the message for the woken session until that session claims the role's
-//     topic, which it does at its first turn. A launch the wake pacing holds over no process is
-//     waited out first (parkedLaunch, parkedWait), as a hook prompt and a row a pause owes its
-//     role wait it out.
-//   - Any other claim is published to as before.
+//   - A design gate's move (record.RoleMessage.Gate) ends by R4's end rule (gateMoveEnds), and
+//     otherwise waits while its holder's claim reads released, wakes nothing, and goes on once the
+//     claim has left released for any cause (R4 of dispatch://INFRA-4480).
+//   - Every other message is read against a wake of its role already under way (wakeUnderWay, R2):
+//     with no wake under way it ends with no wake for a released claim, as it always has
+//     (record.RoleMessage says why), and is published as before to any other claim; with a wake
+//     under way it waits while the claim reads released, and goes on once the claim has left
+//     released after the wake's resume.
 //
-// So the row ends as it does without a wake, and wakes nothing, where no wake is under way, where
-// the claim was taken over, failed or retired, where the issue left the workflow, and where the
-// claim is still released with no start of the role queued.
-func (r *outbox) roleMessageWay(ctx context.Context, row record.OutboxRow, payload record.RoleMessage, held supervise.ClaimView) (roleMessageWay, error) {
+// Both then share one tail. The wait for a released claim is routine (routineWaiting): the woken
+// claim's launch ends it, or an end event, and nobody has to act on it. A launch the wake pacing
+// holds over no process is waited out (parkedLaunch, parkedWait), as a hook prompt and a row a
+// pause owes its role wait it out. After that the row publishes with keep, so the listener holds
+// the message for the woken session until that session claims the role's topic, which it does at
+// its first turn.
+func (r *outbox) roleMessageWay(ctx context.Context, row record.OutboxRow, payload record.RoleMessage, held supervise.ClaimView) (messageWay, error) {
 	if held.Issue == "" {
 		return messagePublished, nil
 	}
+	var waiting string
 	if payload.Gate != nil {
-		return r.gateMoveWay(ctx, row, payload, held)
+		if way, err := r.gateMoveEnds(ctx, row, payload, held); err != nil || way.ends() {
+			return way, err
+		}
+		waiting = fmt.Sprintf("%s's design gate message for %s waits while its holder's pod is released: a gate's move wakes no role, and the message is published once the claim leaves released",
+			row.Issue, payload.Role)
+	} else {
+		underWay, err := r.wakeUnderWay(ctx, held)
+		switch {
+		case err != nil:
+			return messagePublished, err
+		case !underWay && held.Released():
+			r.log.Info("outbox role message finished undelivered: its role's pod is released, and the message is not worth a wake",
+				"row", row.ID, "issue", row.Issue, "role", payload.Role)
+			return messageNotReached, nil
+		case !underWay:
+			return messagePublished, nil
+		}
+		waiting = fmt.Sprintf("%s's role message for %s waits for the wake of its role already under way: the role's resume is open and its claim has not left released yet",
+			row.Issue, payload.Role)
 	}
-	underWay, err := r.wakeUnderWay(ctx, held)
-	switch {
-	case err != nil:
-		return messagePublished, err
-	case held.Released() && underWay:
-		return messagePublished, routineWaiting{err: wait.Errorf("%s's role message for %s waits for the wake of its role already under way: the role's pod is released, its resume is open and a start of the role is queued",
-			row.Issue, payload.Role)}
-	case held.Released():
-		r.log.Info("outbox role message finished undelivered: its role's pod is released, and the message is not worth a wake",
-			"row", row.ID, "issue", row.Issue, "role", payload.Role)
-		return messageEnds, nil
-	case !underWay:
-		return messagePublished, nil
+	if held.Released() {
+		return messagePublished, routineWaiting{err: wait.Errorf("%s", waiting)}
 	}
 	if turn, parked := parkedLaunch(held); parked {
 		return messagePublished, r.parkedWait(turn, fmt.Sprintf("%s's role message for %s waits for the launch of its woken role, which the wake pacing holds until %s",
@@ -2178,6 +2195,12 @@ func (r *outbox) roleMessageWay(ctx context.Context, row record.OutboxRow, paylo
 // the role's topic inside that turn (supervise.SaidReady), so a claim already working can still
 // hold no topic while its resume reads open, and a publish with keep: false would meet no holder
 // then. An outbox with no tree store, a test's, reads none.
+//
+// held was read before the queued starts, and a lane that runs the wake's start writes the claim
+// and then deletes the row. So where held reads released and no start is queued, the claim is read
+// again: a wake that landed between the two reads leaves a claim that is no longer released, and
+// that wake is under way. That is the order record.Store.RoleRuns sets out for a reader that
+// weighs a claim against the rows it read: the claim read after the rows.
 func (r *outbox) wakeUnderWay(ctx context.Context, held supervise.ClaimView) (bool, error) {
 	if r.trees == nil || (held.Gone() && !held.Released()) {
 		return false, nil
@@ -2192,7 +2215,11 @@ func (r *outbox) wakeUnderWay(ctx context.Context, held supervise.ClaimView) (bo
 	if !held.Released() {
 		return true, nil
 	}
-	return r.roleStartQueued(ctx, held.Token, issue, held.Role)
+	queued, err := r.roleStartQueued(ctx, held.Token, issue, held.Role)
+	if err != nil || queued {
+		return queued, err
+	}
+	return !r.supervisedClaim(held.Token).Released(), nil
 }
 
 // roleStartQueued says whether the outbox still holds a start of role's claim token on issue at the
@@ -2209,110 +2236,6 @@ func (r *outbox) roleStartQueued(ctx context.Context, token claim.Token, issue r
 		return false, fmt.Errorf("read the queued starts of %s: %w", token, err)
 	}
 	return slices.ContainsFunc(run.Queued, func(queued record.QueuedSupervise) bool { return queued.Request.Op == "start" }), nil
-}
-
-// gateMoveWay is how a design gate's move to a phase holder goes on (record.RoleMessage.Gate, R4 of
-// dispatch://INFRA-4480), read from held, this daemon's view of the holder's claim. Under
-// `gates.hold: merge` the holder's phase goes on under the gate, so neither the close nor the
-// opening is worth a wake, and the row wakes nothing.
-//
-// The row ends undelivered, with one line, where the claim was taken over (suspended by any source
-// but the idle release, and a pause, whose stop suspends with the release's source too), failed or
-// retired, or where the issue has left the phase the holder works, has left the workflow or its
-// tree lingers (wakeableIssue). Otherwise it waits while the claim reads released, a routine wait
-// (routineWaiting) that the phase's backstop bounds, and once the claim has left released for any
-// other cause — the backstop, a CI settlement, a start, a message — it publishes with keep, as a
-// message whose wake is under way does, a launch the wake pacing holds over no process waited out
-// first. On a deployment with no backstop (outbox.backstop zero), under a gate that never moves
-// again, the row waits for the life of the phase. Which of several moves is published is
-// gateMoveOutran's, read before this.
-func (r *outbox) gateMoveWay(ctx context.Context, row record.OutboxRow, payload record.RoleMessage, held supervise.ClaimView) (roleMessageWay, error) {
-	if held.Gone() && !held.Released() {
-		r.log.Info("outbox role message finished undelivered: the holder its design gate move was for was taken over, failed or retired",
-			"row", row.ID, "issue", row.Issue, "role", payload.Role, "state", held.State, "suspended_by", held.SuspendedBy)
-		return messageEnds, nil
-	}
-	issue, wakeable, err := r.wakeableIssue(ctx, held.Issue)
-	if err != nil {
-		return messagePublished, err
-	}
-	if !wakeable || workflow.RoleFor(issue.Phase) != held.Role {
-		r.log.Info("outbox role message finished undelivered: its design gate move's issue left the phase its holder works, or the workflow",
-			"row", row.ID, "issue", row.Issue, "role", payload.Role, "phase", issue.Phase)
-		return messageEnds, nil
-	}
-	if held.Released() {
-		return messagePublished, routineWaiting{err: wait.Errorf("%s's design gate message for %s waits while its holder's pod is released: a gate's move wakes no role, and the message is published once the claim leaves released",
-			row.Issue, payload.Role)}
-	}
-	if turn, parked := parkedLaunch(held); parked {
-		return messagePublished, r.parkedWait(turn, fmt.Sprintf("%s's design gate message for %s waits for its holder's launch, which the wake pacing holds until %s",
-			row.Issue, payload.Role, turn.UTC().Format(time.RFC3339)))
-	}
-	return messageKept, nil
-}
-
-// gateMoveOutran is whether a design gate's move (record.RoleMessage.Gate) is outrun at the head of
-// an attempt, before anything else of the row: a later move of the same gate has been made, so the
-// holder would read a state the gate has left. Then the row ends unpublished with one line naming
-// the move and why. One REPEATABLE READ transaction reads both halves from one snapshot:
-//
-//   - The outbox holds a newer message of a move of the same tree's gate to the same holder
-//     (record.Store.NewerGateMessage). Rows of the role-message kind run as they come due, in
-//     next_at and id order, which a backoff moves, so this read and not the lane decides which
-//     of two moves that wait together is published: the newer.
-//   - The tree's standing gate (classify.StandingGate over its root's rows, as
-//     designGateClosed reads it) no longer stands where the move left it (gateMoveLeft), which
-//     catches a later move whose row has already run.
-//
-// It extends to every gate row the rule cybermonklabs/legion#4661's closeOutrun gives a close
-// that the opening outran.
-func (r *outbox) gateMoveOutran(ctx context.Context, row record.OutboxRow, payload record.RoleMessage) (bool, error) {
-	move := *payload.Gate
-	var newer bool
-	var gates map[record.DesignStep]record.DesignGate
-	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		var err error
-		if newer, err = r.records.NewerGateMessage(ctx, tx, row.Issue, payload.Role, move.Tree, row.ID); err != nil || newer {
-			return err
-		}
-		gates, err = r.records.GatesOf(ctx, tx, move.Tree)
-		return err
-	}); err != nil {
-		return false, fmt.Errorf("%s's design gate message for %s: read the moves of the design gate of %s: %w", row.Issue, payload.Role, move.Tree, err)
-	}
-	why := "a newer message of a move of the same gate waits for the same holder"
-	if !newer {
-		if why = gateMoveLeft(move, r.gatedSteps, gates); why == "" {
-			return false, nil
-		}
-	}
-	r.log.Info("outbox role message finished unpublished: a later move of the design gate outran it",
-		"row", row.ID, "issue", row.Issue, "role", payload.Role, "tree", move.Tree, "step", move.Step, "version", move.Version,
-		"open", move.Open, "why", why)
-	return true, nil
-}
-
-// gateMoveLeft says how the standing design gate of gates, the rows of a tree's root under the
-// deployment's steps, has left the state move left it in, and "" while it still stands there. An
-// opening stands while the standing gate is open and move's step stands approved at move's
-// version; a close stands while the standing gate is closed and move's step holds move's version
-// unapproved. Each step numbers the versions of its own document, so the step and the version
-// together name the move.
-func gateMoveLeft(move record.GateMove, steps []record.DesignStep, gates map[record.DesignStep]record.DesignGate) string {
-	_, closed := classify.StandingGate(steps, gates)
-	gate, held := gates[move.Step]
-	switch {
-	case move.Open && closed:
-		return "the gate the move opened stands closed"
-	case !move.Open && !closed:
-		return "the gate the move closed stands open"
-	case move.Open && (!held || gate.ApprovedVersion == nil || *gate.ApprovedVersion != move.Version):
-		return "the step the move opened stands approved at another version, or at none"
-	case !move.Open && (!held || record.GateOpen(gate) || gate.LatestVersion != move.Version):
-		return "the step the move closed stands at another version, or approved"
-	}
-	return ""
 }
 
 // heldMessageOwed is the held role message's debt, and the one statement of it (R4 of
@@ -2362,20 +2285,30 @@ func (r *outbox) heldMessageOwed(ctx context.Context, row record.OutboxRow, view
 // else. The row is the daemon's own facts of the firing — the hook, the move back and the counts —
 // and then the deployment's own words for the round that move back opened, unchanged
 // (record.HookPrompt.Message). It rides the role-message lane (record.LaneRoleMessage), so it
-// waits behind no other row of its issue's lanes, and reaches the role in the round its move back
-// opened. It stops nothing it reaches: the session takes it at its next model turn, and the
-// role's turn, jobs and process run on.
+// waits behind no row of its issue's other lanes. It stops nothing it reaches: the session takes
+// it at its next model turn, and the role's turn, jobs and process run on.
 //
-// The round opens when the start of the new phase's worker, which the move back queued in the
+// It reaches the role only in the round its move back opened (R1 of dispatch://INFRA-4480). The
+// round opens when the start of the new phase's worker, which the move back queued in the
 // transaction that fired the hook (workflow's transition, StartOrOwe), is given to that worker, and
-// a start of a phase that keeps an admission slot is given only while the issue holds a slot (R1
-// of dispatch://INFRA-4480). So while the outbox still holds that start, the start of the role of
-// the prompt's To phase that names To, carries StartOrOwe's slot mark for it and was written after
-// the prompt (record.Store.MoveStartQueued), the row waits, waking nothing and publishing nothing: a
-// released role woken for the prompt would work while the issue holds no slot, past the
-// admission cap, and a worker that is live and idle would read the prompt before its phase task.
-// The wait is routine (routineWaiting): the start's run ends it, a slot can be hours away, and
-// nobody has to act on it. The prompt keeps its words and its lane; only its moment changes.
+// a start of a phase that keeps an admission slot is given only while the issue holds a slot. Each
+// attempt reads the round as the record stands (moveRound) before it wakes or publishes anything:
+//
+//   - While that start is still queued (record.Store.MoveStartQueued), the row waits, waking
+//     nothing and publishing nothing: a released role woken for the prompt would work while the
+//     issue holds no slot, past the admission cap, and a worker that is live and idle would read
+//     the prompt before its phase task.
+//   - A start can also leave the outbox with its task never given: a later start of the issue takes
+//     it out (record.Store.EnqueueStart), or the phase fence finishes it once the issue has left the
+//     phase. So with no such start queued, the row reads the issue. Where the issue no longer
+//     stands in the prompt's To phase, or has left the workflow, the round it was written for is
+//     not the issue's, and the row ends unpublished with one line, waking nobody.
+//   - Where the issue stands in To but is held there, or To keeps a slot and the issue holds none
+//     (a wait on another issue gave its slot back), the row waits for the slot or the hold's end.
+//
+// Each wait is routine (routineWaiting): the start's run, the slot or the hold's end ends it, which
+// can be hours away, and nobody has to act on it. The prompt keeps its words and its lane; only its
+// moment changes.
 //
 // The row publishes with keep (publishKeptToRole, notify.Publisher.PublishKept): a topic with no
 // live holder is answered kept, the listener holding the prompt on the role's kept lane for one
@@ -2408,11 +2341,16 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 	if err != nil {
 		return err
 	}
-	if queued, err := r.moveStartQueued(ctx, row, payload.To); err != nil {
+	switch round, err := r.moveRound(ctx, row, payload.To); {
+	case err != nil:
 		return err
-	} else if queued {
-		return routineWaiting{err: wait.Errorf("the %s hook's prompt for %s waits until the start of %s its move back queued is given to its worker",
-			payload.Hook, row.Issue, payload.To)}
+	case round == roundGone:
+		r.log.Info("outbox hook prompt finished unpublished: the round its move back opened is no longer the issue's",
+			"row", row.ID, "issue", row.Issue, "hook", payload.Hook, "role", payload.Role, "to", payload.To)
+		return nil
+	case round != roundOpen:
+		return routineWaiting{err: wait.Errorf("the %s hook's prompt for %s waits for the round its move back to %s opened: %s",
+			payload.Hook, row.Issue, payload.To, round)}
 	}
 	// A role whose pod was released is not "no live session holds the role": its session is
 	// intact and its pod is one wake away, so the row wakes it and waits on its backoff, and the
@@ -2437,24 +2375,65 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 	return nil
 }
 
-// moveStartQueued says whether the outbox still holds the start that the move back into to which
-// wrote hook-prompt row queued (record.Store.MoveStartQueued), which the prompt waits to be given
-// (hookPrompt). A runner built with no store, a test's that drives one row by hand, holds no row
-// and reads none.
-func (r *outbox) moveStartQueued(ctx context.Context, row record.OutboxRow, to phase.Phase) (bool, error) {
+// moveRound is the round a hook prompt's move back into to opened, as the record stands at this
+// attempt (hookPrompt), read in one transaction: the start the move queued after row, still queued
+// (record.Store.MoveStartQueued); else the issue's record, where it stands (record.StandsAt) and
+// whether it holds a slot. A runner built with no store, a test's that drives one row by hand,
+// reads none and answers the round open.
+func (r *outbox) moveRound(ctx context.Context, row record.OutboxRow, to phase.Phase) (moveRoundState, error) {
 	if r.pool == nil || r.records == nil {
-		return false, nil
+		return roundOpen, nil
 	}
-	var queued bool
+	round := roundOpen
 	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		var err error
-		queued, err = r.records.MoveStartQueued(ctx, tx, row.Issue, row.ID, to)
-		return err
+		queued, err := r.records.MoveStartQueued(ctx, tx, row.Issue, row.ID, to)
+		if err != nil || queued {
+			round = roundStartQueued
+			return err
+		}
+		issue, err := r.records.Issue(ctx, tx, row.Issue)
+		switch {
+		case err != nil:
+			return err
+		case issue == nil || !record.InWorkflow(*issue) || record.StandsAt(*issue) != to:
+			round = roundGone
+			return nil
+		case issue.Phase == phase.Held:
+			round = roundHeld
+			return nil
+		case !record.PhaseKeepsSlot(to):
+			return nil
+		}
+		slots, err := r.records.Slots(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if !slices.ContainsFunc(slots, func(slot record.Slot) bool { return slot.Issue == row.Issue }) {
+			round = roundNoSlot
+		}
+		return nil
 	}); err != nil {
-		return false, fmt.Errorf("read whether the start of %s that row %d's move of %s queued is queued: %w", to, row.ID, row.Issue, err)
+		return roundOpen, fmt.Errorf("read the round row %d's move of %s to %s opened: %w", row.ID, row.Issue, to, err)
 	}
-	return queued, nil
+	return round, nil
 }
+
+// moveRoundState is where a hook prompt's round stands at one attempt (moveRound), each wait
+// spelled as the row's wait names it.
+type moveRoundState string
+
+const (
+	// roundOpen is a round whose start was given: the prompt goes on to its wake and publish.
+	roundOpen moveRoundState = ""
+	// roundStartQueued is a round whose start the move queued still waits in the outbox.
+	roundStartQueued moveRoundState = "the start the move queued is not given yet"
+	// roundHeld is a round whose issue stands held in its phase.
+	roundHeld moveRoundState = "the issue is held"
+	// roundNoSlot is a round of a phase that keeps a slot, its issue holding none.
+	roundNoSlot moveRoundState = "the issue holds no admission slot"
+	// roundGone is a round that is no longer the issue's: it left the phase or the workflow.
+	roundGone moveRoundState = "the issue left the phase"
+)
 
 // hookPromptKeptLines are the lines of a hook prompt that publishKeptToRole ends: kept for the
 // role's next holder, or met by no holder and kept nowhere.
@@ -2635,16 +2614,16 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 // merger's claim has neither failed nor retired, and retries every other failure
 // (merge_queue_removal.go); and mergeForwardMessage, a message of a merge forward, holds its row
 // the same way while the role's claim has neither failed nor retired and the merge forward still
-// stands at the row's head (merge_forward.go). Each of those five publishes with keep: false:
-// deliverNotice, mergeQueueRemoval and mergeForwardMessage hold their own row, and a kept copy
-// beside it would be a second keeper of one message; roleMessage's message is stale by the time a
-// role nobody holds is claimed; and updateAsk's round ends at its bound whether or not the role
-// answers. So whoever changes the rule for a topic with no holder must read all six executors, not
-// this function alone.
+// stands at the row's head (merge_forward.go). Each of those five publishes with keep: false, but
+// for roleMessage's two cases below: deliverNotice, mergeQueueRemoval and mergeForwardMessage hold
+// their own row, and a kept copy beside it would be a second keeper of one message; roleMessage's
+// message is stale by the time a role nobody holds is claimed; and updateAsk's round ends at its
+// bound whether or not the role answers. So whoever changes the rule for a topic with no holder
+// must read all six executors, not this function alone.
 //
-// roleMessage's one exception publishes here, with keep and the role message's own lines
-// (roleMessageKeptLines), and handles each other answer as its keep: false publish does: a role
-// message to a role whose wake is already under way once its claim has left released (R2 of
+// roleMessage publishes here, with keep and the role message's own lines (roleMessageKeptLines),
+// in two cases, and handles each other answer as its keep: false publish does: a role message to a
+// role whose wake is already under way once its claim has left released (R2 of
 // dispatch://INFRA-4480), and a design gate's move to a phase holder that is no merger
 // (record.RoleMessage.Gate, R4). The role's woken session is then the next holder the copy is
 // kept for, and the message is not stale for it: the role would have had it had its pod not been

@@ -165,8 +165,8 @@ func (p *taskAtPublishPublisher) PublishKept(ctx context.Context, topic, message
 // keep, after its phase task.
 //
 // At the pull request's base the prompt's first attempt wakes the released implementer
-// (wakeForDelivery) while the issue holds no slot, which is LINUX-1645's wake at 08:34:29Z on
-// 2026-11-18 under legion-v20.25.1; the test fails where it reads the wake after the first pass.
+// (wakeForDelivery) while the issue holds no slot, which is the wake a production daemon logged
+// for the work-back hook's prompt; the test fails where it reads the wake after the first pass.
 func TestAHookPromptOfAMoveBackFromAcceptingWaitsForTheIssuesSlot(t *testing.T) {
 	t.Parallel()
 	r := newReleasedRoleRig(t, phase.Implementing, claim.RoleImplementer)
@@ -237,9 +237,9 @@ func TestAHookPromptOfAMoveBackFromAcceptingWaitsForTheIssuesSlot(t *testing.T) 
 // the message is published once, with keep, so the listener holds it for the woken session.
 //
 // At the pull request's base the message's first attempt ends with "its role's pod is released,
-// and the message is not worth a wake", which is INFRA-3819's merger's row 524434 at 18:33:55Z on
-// 2026-11-22, 40 s after a wake of the merger whose start waited for INFRA-455's design gate and
-// 28 s before that wake's resume; the test fails where it reads the row after that attempt.
+// and the message is not worth a wake", as a production daemon ended a merger's role message 40 s
+// after a wake of that merger whose start waited for a closed design gate, and 28 s before that
+// wake's resume; the test fails where it reads the row after that attempt.
 func TestARoleMessageToAReleasedRoleWaitsForTheWakeUnderWay(t *testing.T) {
 	t.Parallel()
 	r := newReleasedRoleRig(t, phase.Merging, claim.RoleMerger)
@@ -361,7 +361,11 @@ func TestARoleMessageToARoleWhoseWakeIsParkedWaitsForTheLaunch(t *testing.T) {
 	t.Parallel()
 	r := newReleasedRoleRig(t, phase.Implementing, claim.RoleImplementer)
 	holdSlot(t, r.pool, "LEGION-208")
+	// The machines' time is held from the start, so every wait computed from the wake's turn, a
+	// re-park's included (supervise's reparkWake, which arms the turn less now), is parkedTurn
+	// exactly, and fire(parkedTurn) finds it.
 	clock := &heldClock{}
+	clock.advance(0)
 	r.sup.deps.Clock = clock
 	r.sup.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time { return now.Add(parkedTurn) }}
 	implementer := r.release()
@@ -376,6 +380,9 @@ func TestARoleMessageToARoleWhoseWakeIsParkedWaitsForTheLaunch(t *testing.T) {
 		t.Fatalf("the implementer is %s recording %+v with wake %+v, want its woken launch parked by the wake pacing over no process",
 			held.State, held.Locator, held.WakeWaiting)
 	}
+	if live, total := clock.armed(parkedTurn); live != 1 {
+		t.Fatalf("%d live timers of %d armed for the wake's turn, want one: the pacing parks the launch with one", live, total)
+	}
 
 	for pass := 1; pass <= 2; pass++ {
 		r.drain(fmt.Sprintf("outbox pass %d while the launch is parked", pass))
@@ -388,6 +395,9 @@ func TestARoleMessageToARoleWhoseWakeIsParkedWaitsForTheLaunch(t *testing.T) {
 		}
 	}
 
+	if live, total := clock.armed(parkedTurn); live != 1 {
+		t.Fatalf("%d live timers of %d armed for the wake's turn after the parked passes, want one: a timer stopped or re-armed at another wait would never fire", live, total)
+	}
 	if fired := clock.fire(parkedTurn); fired != 1 {
 		t.Fatalf("fired %d timers for the wake's turn, want the one the pacing armed", fired)
 	}
@@ -427,4 +437,128 @@ func TestARoleMessageToARoleWhoseWakeReachedItsFirstTurnIsKept(t *testing.T) {
 
 	r.drain("the role message's attempt in the woken role's first turn")
 	keptOnce(t, r.publisher, r.pool, claim.RoleImplementer, row, r.topic, message.Body, "the attempt in the first turn")
+}
+
+// R1 of dispatch://INFRA-4480: a start can leave the outbox without being given. The architect
+// moves LEGION-208 back from accepting to testing while the issue holds no slot and its tester's
+// pod is released: the move writes the work-back hook's prompt for the tester and the tester's
+// start of testing, which waits for the slot. Before that start runs, the tester fails the issue
+// back to implementing, and the implementer's start takes the tester's out of the outbox
+// (record.Store.EnqueueStart, which takes out the issue's pending phase start of the same slot
+// mark). The prompt's round never opened, so over several passes it wakes nobody and publishes
+// nothing, and its row ends with a line of its own.
+//
+// At 1103560a the prompt reads no queued start of testing as a start given, and its first attempt
+// wakes the released tester while the issue holds no slot; the test fails where it counts the
+// tester's wakes.
+func TestAHookPromptWhoseMovesStartWasTakenOutWithoutBeingGivenWakesNobody(t *testing.T) {
+	t.Parallel()
+	r := newReleasedRoleRig(t, phase.Testing, claim.RoleTester)
+	tester := r.release()
+	prompt := record.HookPrompt{Hook: "back-to-testing", Role: claim.RoleTester, From: phase.Accepting, To: phase.Testing,
+		Count: 1, Counts: map[string]int{phase.Pair(phase.Accepting, phase.Testing): 1}, Prompt: "Read what the architect sent back."}
+	var promptRow int64
+	r.inTx(func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		if promptRow, err = r.runner.records.EnqueueID(ctx, tx, mustOutboxRow(t, "LEGION-208", prompt, time.Now().Add(-time.Minute))); err != nil {
+			return err
+		}
+		return workflow.StartOrOwe(ctx, tx, r.runner.records, "LEGION-208", record.SuperviseRequest{Op: "start", Tree: "LEGION-208",
+			Role: claim.RoleTester, Generation: 1, Phase: phase.Testing, Task: "Test the change again."}, time.Now().Add(-time.Minute))
+	})
+	// The tester's fail moves the issue to implementing, whose start takes the tester's out.
+	moved := *readIssue(t, r.pool, "LEGION-208")
+	moved.Phase = phase.Implementing
+	putOutboxIssue(t, r.pool, r.runner.records, moved)
+	r.inTx(func(ctx context.Context, tx pgx.Tx) error {
+		return workflow.StartOrOwe(ctx, tx, r.runner.records, "LEGION-208", record.SuperviseRequest{Op: "start", Tree: "LEGION-208",
+			Role: claim.RoleImplementer, Generation: 1, Phase: phase.Implementing, Task: "Fix what the tester found."}, time.Now().Add(-time.Minute))
+	})
+
+	for pass := 1; pass <= 3 && r.still(promptRow); pass++ {
+		r.drain(fmt.Sprintf("outbox pass %d", pass))
+		if wakes := podResumes(t, r.pool, "LEGION-208"); wakes != 0 {
+			t.Fatalf("pass %d: the hook prompt took %d wakes of the released tester, want none: its round never opened and the issue holds no slot", pass, wakes)
+		}
+	}
+	if held := tester.View(); !held.Released() {
+		t.Fatalf("the tester is %s by %q, want it still released", held.State, held.SuspendedBy)
+	}
+	if attempts, _ := r.publisher.snapshot(); attempts != 0 {
+		t.Fatalf("the hook prompt was published %d times, want none: the round it was written for never opened", attempts)
+	}
+	if r.still(promptRow) {
+		t.Fatalf("the hook prompt's row is still queued, want it ended: the issue left the phase its move back went to")
+	}
+	const left = "outbox hook prompt finished unpublished: the round its move back opened is no longer the issue's"
+	if n := r.lineCount(left); n != 1 {
+		t.Fatalf("the daemon logged %q %d times, want once:\n%s", left, n, r.logs.String())
+	}
+}
+
+// landingRoleRun is the outbox's record store with one event run just before its first RoleRun
+// read: the order a lane's start can take between the role message's read of the claim and its
+// read of the role's queued starts.
+type landingRoleRun struct {
+	record.Store
+	once sync.Once
+	land func()
+}
+
+func (s *landingRoleRun) RoleRun(ctx context.Context, tx pgx.Tx, token claim.Token, issue string, role claim.Role,
+	generation uint64) (record.RoleRun, error) {
+	s.once.Do(s.land)
+	return s.Store.RoleRun(ctx, tx, token, issue, role, generation)
+}
+
+// R2 of dispatch://INFRA-4480: the wake's start runs between the role message's read of the claim
+// and its read of the role's queued starts. LEGION-208's implementer is released with its resume
+// open and its wake's start queued; the role message reads the claim released, and before it reads
+// the queued starts, the start resumes the claim and leaves the outbox, as a lane does (it writes
+// the claim, then deletes the row). The row waits rather than ending, and its next attempt
+// publishes the message once, with keep.
+//
+// At 1103560a the row reads no start queued beside the claim it read as released, ends with "its
+// role's pod is released, and the message is not worth a wake", and the woken session never gets
+// the message; the test fails where it reads the row after that attempt.
+func TestARoleMessageWhoseWakeLandsBetweenItsReadsWaitsForIt(t *testing.T) {
+	t.Parallel()
+	r := newReleasedRoleRig(t, phase.Implementing, claim.RoleImplementer)
+	holdSlot(t, r.pool, "LEGION-208")
+	implementer := r.release()
+	r.takeWake(pods.WakeChecks)
+	start := r.enqueue(record.SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 1,
+		Task: workflow.WakeTask(pods.WakeChecks, "head1 failed build", workflow.StoppedByRelease), WakeKind: pods.WakeChecks})
+	message := ciMessage(r.token)
+	row := r.enqueue(message)
+	r.runner.records = &landingRoleRun{Store: r.runner.records, land: func() {
+		if err := implementer.Handle(context.Background(), supervise.RequestRuleResume{Claim: r.token, Reason: "the wake's start"}); err != nil {
+			t.Errorf("resume the implementer as the wake's start does: %v", err)
+		}
+		if _, err := r.pool.Exec(context.Background(), `delete from outbox where id = $1`, start); err != nil {
+			t.Errorf("finish the wake's start: %v", err)
+		}
+	}}
+
+	if err := r.runner.execute(context.Background(), mustRow(t, r.pool, row)); err == nil {
+		t.Fatalf("the role message's attempt as its wake lands ended the row (%d lines %q), want it waiting for the woken session",
+			r.lineCount(releasedLine), releasedLine)
+	}
+	if attempts, _ := r.publisher.snapshot(); attempts != 0 {
+		t.Fatalf("the attempt as the wake lands published %d times, want none: it read the claim released", attempts)
+	}
+	r.drain("the role message's next attempt")
+	keptOnce(t, r.publisher, r.pool, claim.RoleImplementer, row, r.topic, message.Body, "the next attempt")
+}
+
+// mustRow is outbox row id as the store holds it.
+func mustRow(t *testing.T, pool *store.Pool, id int64) record.OutboxRow {
+	t.Helper()
+	var row record.OutboxRow
+	var kind string
+	if err := pool.QueryRow(context.Background(), `select id, kind, issue, payload from outbox where id = $1`, id).Scan(&row.ID, &kind, &row.Issue, &row.Payload); err != nil {
+		t.Fatalf("read outbox row %d: %v", id, err)
+	}
+	row.Kind = record.OutboxKind(kind)
+	return row
 }

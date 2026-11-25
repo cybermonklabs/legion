@@ -1,8 +1,13 @@
 package admit
 
 import (
+	"context"
 	"fmt"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -17,7 +22,11 @@ import (
 // request that has not merged. The cap's one row is held by another tree throughout the passes,
 // so the moved issue holds no row: its start is marked for the slot (workflow.StartOrOwe reads
 // record.PhaseKeepsSlot) and no lane can claim it (record.Store's outboxInOrder) over several
-// admission passes. Once the row frees, the line gives it to the issue and the start is claimable.
+// admission passes. Once the row frees, the line gives it to the issue, and a lane takes the start
+// with the outbox's own claim (record.Store.ClaimRow): the step at which the outbox gives a
+// worker its task, the supervise request being run under that lease. This package runs no claim
+// machine, so the hand-over itself is the daemon's; TestAHookPromptOfAMoveBackFromAcceptingWaitsForTheIssuesSlot
+// shows a worker holding the task a start of this kind gave it.
 //
 // It guards today's rule, the statement The Spec proposes as
 // post-review-phases-release-admission-capacity, and passes at the pull request's base. Its
@@ -79,6 +88,43 @@ func TestAMoveBackToTestingOrReviewingWaitsForTheIssuesSlot(t *testing.T) {
 				t.Fatalf("the starts of %s = %+v on rows %#v, want the %s's task claimable on the row the line gave it",
 					moved, startsOf(t, pool, moved), slots(t, pool), tc.worker)
 			}
+			if role, task := claimStart(t, pool, moved); role != tc.worker || task == "" {
+				t.Fatalf("a lane's claim of %s's start took the %s's start with task %q, want the %s's phase start", moved, role, task, tc.worker)
+			}
 		})
 	}
+}
+
+// claimStart takes issue's one runnable supervise start with the outbox's own claim, as a lane
+// takes a row before it runs it (record.Store.DueRows, then ClaimRow), and answers the role and the
+// task of the start it took; the zero values where no lane could take one.
+func claimStart(t *testing.T, pool *pgxpool.Pool, issue string) (claim.Role, string) {
+	t.Helper()
+	var role claim.Role
+	var task string
+	inTx(t, pool, func(tx pgx.Tx) {
+		ctx := context.Background()
+		records := record.NewStore()
+		due, err := records.DueRows(ctx, tx, testProject, issue, []record.OutboxKind{record.OutboxKindSupervise}, fixedNow)
+		if err != nil {
+			t.Fatalf("list what a lane may run for %s: %v", issue, err)
+		}
+		for _, row := range due {
+			payload, err := record.DecodeOutboxPayload(row)
+			if err != nil {
+				t.Fatalf("decode outbox row %d of %s: %v", row.ID, issue, err)
+			}
+			request, ok := payload.(record.SuperviseRequest)
+			if !ok || request.Op != "start" || request.Task == "" {
+				continue
+			}
+			if _, claimed, err := records.ClaimRow(ctx, tx, row.ID, fixedNow, time.Minute); err != nil {
+				t.Fatalf("claim outbox row %d of %s: %v", row.ID, issue, err)
+			} else if claimed {
+				role, task = request.Role, request.Task
+			}
+			return
+		}
+	})
+	return role, task
 }

@@ -1420,7 +1420,11 @@ func (WorkspaceRemove) OutboxKind() OutboxKind { return OutboxKindWorkspaceRemov
 //     itself whether that still stands.
 //   - A design gate's move (Gate, R4 of dispatch://INFRA-4480), whose row waits while its
 //     holder's claim reads released and publishes with keep once the claim has left released for
-//     any other cause.
+//     any other cause, and only while it is the newest move its holder was told of and the gate
+//     still stands as that move left it.
+//
+// A release before R4's knows no Gate key and decodes every payload strictly, so a rollback strips
+// the key first (RoleMessageGateWayBack); a stripped row is a plain role message to that release.
 type RoleMessage struct {
 	Role string `json:"role"`
 	Body string `json:"body"`
@@ -1428,22 +1432,36 @@ type RoleMessage struct {
 	// no merger, at the gate's close and at its opening (R4 of dispatch://INFRA-4480); nil for
 	// every other message, the root architect's and a merger's of a gate move among them. The row
 	// waits while its holder's claim reads released and wakes nothing, since the holder's phase
-	// goes on under the gate, and is published with keep once the claim has left released. The
-	// mark names the move, so a row that a later move of the same gate outran ends unpublished and
-	// the holder never reads a state the gate has left.
+	// goes on under the gate, and is published with keep once the claim has left released, only
+	// while it is the newest move of the gate its holder was told of (GateMove.Seq) and the gate
+	// still stands as the move left it, so the holder never reads a state the gate has left.
 	Gate *GateMove `json:"gate,omitempty"`
 }
 
 // GateMove is the move of a tree's standing design gate a role message reports
 // (RoleMessage.Gate): the tree whose root holds the gate, the step whose document moved it, that
-// document's version, and whether the move opened the gate or closed it. Each step numbers the
-// versions of its own document, so the step and the version together name one move of that step.
+// document's version, whether the move opened the gate or closed it, and Seq, the opening number
+// the holder's told row took at the move (design_news_told.opening_seq, read in the move's own
+// transaction after its settlement). Every move of the gate settles every told row of the tree
+// (Store.CloseOpenings at a close, Store.SettleOpening for each holder at an opening), and nothing
+// else moves that number, so the move whose Seq the row still holds is the newest move its holder
+// was told of, and an older one, however long its row waited, is not.
 type GateMove struct {
 	Tree    string     `json:"tree"`
 	Step    DesignStep `json:"step"`
 	Version int        `json:"version"`
 	Open    bool       `json:"open"`
+	Seq     int        `json:"seq"`
 }
+
+// RoleMessageGateWayBack is the statement that takes the Gate key off every queued role message,
+// for a rollback to a release before R4 of dispatch://INFRA-4480. That release decodes an outbox
+// payload strictly (decodeOutboxJSON's DisallowUnknownFields) and knows a role message of Role and
+// Body alone, so a row that still carries Gate fails at every attempt on its backoff. A stripped
+// row is a plain role message, which that release ends for a released claim as it ends every
+// other one. docs/kubernetes.md, "Rolling back the release that tells a released holder the design
+// gate's move", carries the same statement.
+const RoleMessageGateWayBack = `update outbox set payload = payload - 'gate' where kind = 'role_message' and payload ? 'gate'`
 
 func (RoleMessage) OutboxKind() OutboxKind { return OutboxKindRoleMessage }
 
@@ -2512,8 +2530,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.Body == "" {
 			return fmt.Errorf("role message requires body")
 		}
-		if move := value.Gate; move != nil && (move.Tree == "" || !move.Step.Valid()) {
-			return fmt.Errorf("a role message's design gate move names the tree whose gate moved and a design-gate step; it names %q at %q", move.Tree, move.Step)
+		if move := value.Gate; move != nil && (move.Tree == "" || !move.Step.Valid() || move.Seq < 1) {
+			return fmt.Errorf("a role message's design gate move names the tree whose gate moved, a design-gate step and the opening number its holder's row took at the move; it names %q at %q with number %d",
+				move.Tree, move.Step, move.Seq)
 		}
 	case GatedStepsPublish:
 		if value.Project == "" {

@@ -2444,13 +2444,16 @@ type Store interface {
 	// MoveStartQueued says whether the outbox still holds the start of a phase worker that a move
 	// back into phase to queued for issue after row id: a start of to's role that names to, carries
 	// the slot mark workflow.StartOrOwe gives a start of to, and was written after row id, whatever
-	// its lease or its next_at. A lane finishes such a row only once it has given the task to the
-	// worker's claim, so a start still held is one its worker has not been given.
+	// its lease or its next_at. A start can also leave without being given: a later start of the
+	// issue takes it out (EnqueueStart), or the phase fence finishes it once the issue has left
+	// to. So false says that no such start waits, not that its worker was given it.
 	MoveStartQueued(ctx context.Context, tx pgx.Tx, issue string, id int64, to phase.Phase) (bool, error)
-	// NewerGateMessage says whether the outbox holds a role message of issue to the role topic
-	// role that marks a move of tree's design gate (RoleMessage.Gate) and was written after row
-	// id, whatever its lease or its next_at: a later move of the same gate told the same holder.
-	NewerGateMessage(ctx context.Context, tx pgx.Tx, issue, role, tree string, id int64) (bool, error)
+	// OpeningSeq is the opening number issue's audience row holds now (design_news_told.opening_seq,
+	// DesignTold.Opening), read from the table itself with no credit counted, and whether the row
+	// exists. Every settlement of the gate's opening on the row moves it (SettleOpening and
+	// CloseOpenings), and nothing else does, so a design gate's move names itself to its holder by
+	// the number its row took (GateMove.Seq).
+	OpeningSeq(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience) (int, bool, error)
 	// UnfinishedLanes is each (issue, lane) with a row of project still in the outbox, by issue
 	// then lane.
 	UnfinishedLanes(ctx context.Context, tx pgx.Tx, project string) ([]LaneKey, error)
