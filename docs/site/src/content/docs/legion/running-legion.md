@@ -1610,10 +1610,11 @@ Closing the terminal leaves the project without one, and the daemon logs
   architect that is already running — and the pacing's estimate, at the read, of the moment it
   lets that wake out, by its place in the queues (`wakes waiting: 2 —
   legion-widgets-widgets-12-implementer launch due 2026-10-03T09:13:08Z; …`). A waiting wake
-  holds a place and no moment of its own: a wake ahead of it that leaves moves that moment
-  earlier, and each turn ahead of it, which waits a random part of up to one interval more, or a
-  wake for a role with a message waiting that goes ahead of it, moves it later, so two reads can
-  name two moments.
+  holds a place and no moment of its own. Any change of the queues or of the pace moves that
+  moment; for example, a wake ahead of it that leaves, or a message mark on its own claim, moves
+  it earlier, and a wake that joins ahead of it, the jitter of each turn ahead of it, a timer that
+  fires late, or, for a message wake, an ordinary wake that joins an empty second queue, which the
+  share then owes a turn, moves it later, so two reads can name two moments.
   Nothing waits outside a restart, a re-admission or a stale-plugin wave, which is why an
   ordinary read has no such line.
   It is what says whether a wave is still going out, and the latest `due` on it is the pacing's

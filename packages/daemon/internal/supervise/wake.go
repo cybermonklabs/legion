@@ -129,12 +129,15 @@ type WakePace struct {
 // WakeWaiting is a machine's waiting wake as its view names it: what kind of wake it is
 // (WakeLaunch or WakePluginRefresh, the two kinds a machine parks) and the pacing's estimate of
 // the moment it lets the wake's place out, as its queues stand (wakepace.Place.Estimate, read from
-// the pacer when the view is read, Machine.View). A waiting wake holds a place and no moment: a
-// wake ahead of it that leaves moves that moment earlier, and a message wake that goes ahead of it,
-// or the jitter of the turns ahead of it, which no estimate draws, moves it later, so two reads of
-// one wake can name two moments. It is the memory-only `wake` the machine holds, cut down to what
-// a reader outside this package is owed: never the launch itself, and never the state the gate
-// found, which only an operator's request that does not wait reads (dropWakeFor).
+// the pacer when the view is read, Machine.View). A waiting wake holds a place and no moment. Any
+// change of the queues or of the pace moves that moment; for example, a wake ahead of it that
+// leaves, or a message mark on its own claim, moves it earlier, and a wake that joins ahead of it,
+// the jitter of each turn ahead of it, a timer that fires late, or, for a message wake, an ordinary
+// wake that joins an empty second queue, which the share then owes a turn, moves it later, so two
+// reads of one wake can name two moments; no estimate draws the jitter. It is the memory-only
+// `wake` the machine holds, cut down to what a reader outside this package is owed: never the
+// launch itself, and never the state the gate found, which only an operator's request that does
+// not wait reads (dropWakeFor).
 type WakeWaiting struct {
 	Kind WakeKind
 	At   time.Time
