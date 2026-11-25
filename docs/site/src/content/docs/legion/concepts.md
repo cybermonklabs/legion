@@ -248,6 +248,13 @@ in the daemon's configuration, four by default; an issue that finds no free slot
 a labelled `todo` root takes its place in that line by its Dispatch priority and then in the
 project board's order.
 
+A P0 issue, one whose own Dispatch priority is P0, needs no free slot: it starts at the next
+admission pass outside the cap, and the cap counts only the issues holding a slot that are not P0.
+Every other hold on a start still holds it. `admission_p0_bound` can limit how many P0 issues hold a
+slot at once; it has no value unless the configuration gives one, and a person can set or clear it
+while the daemon runs with `legion project set-p0-bound` and `clear-p0-bound`. At the bound, a P0
+issue waits first in the line.
+
 An issue takes a slot when the daemon starts it — a root at its admission, which starts its
 architect, a child at the start of its first phase. An issue holds one of the cap's slots while it
 stands in a phase that keeps one, from the moment the daemon starts it until it is done or Dispatch

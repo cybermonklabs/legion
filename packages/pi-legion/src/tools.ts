@@ -760,7 +760,8 @@ export function createLegionTool(deps: {
         "A P0 issue, one whose own Dispatch priority is P0, starts outside the admission cap; set_p0_bound (bound or " +
         "unbounded, reason) sets how many P0 issues may hold a slot at once, or no bound with unbounded true, whatever " +
         "legion.yaml's admission_p0_bound says, and clear_p0_bound (reason) returns to legion.yaml's; neither takes an " +
-        "issue. Each is in force from the change's own admission pass on, with no restart: a lower bound stops nothing that " +
+        "issue. Change the bound only on a person's word, and cite it in reason. " +
+        "Each is in force from the change's own admission pass on, with no restart: a lower bound stops nothing that " +
         "runs, and at the bound a P0 issue waits first in the line. The answer is the bound in force, legion.yaml's and the " +
         "value set that stands; read_state's summary gives the same on its p0 holders line. The daemon refuses a set that " +
         "names neither bound nor unbounded, both, or a bound below 1 (INVALID_P0_BOUND), and a change with no reason " +
