@@ -190,17 +190,31 @@ func (m *Machine) pauseHeldTry(ctx context.Context, l launchTry, pause int64) er
 }
 
 // pauseStopDue is the gate's own stop (TimerPause): the machine posting itself the suspension of
-// the claim whose launch the pause's gate held (decision 7) — By released, the pause's id, and a
-// deadline of now. It meets the claim as the pause's own stop meets a parked wake: a claim that
-// records no process is stopped at once (holdSuspendUntilReady), and so is one whose process is
-// registered, ready or idle (suspend) or still booting, since the launch the gate holds was to
-// replace that process and a hold until ready would protect a process nothing wants; a claim in a
-// turn — the stall backstop's case — is held to the deadline of now and stopped mid-turn, its
-// task taken back interrupted (holdSuspension, suspendAtTimeout). Each ends in the pause's stop
-// transaction with a launch owed, since the held launch waits on the machine until the stop
-// lets it go (suspendedFor, launchMet). A stop that fails with the launch still held is posted
-// again at the probe interval; one that stopped the process and whose write failed owes the
-// write instead (persistStop).
+// the claim whose launch the pause's gate held (decision 7) — By released, the pause's id, and the
+// deadline pauseStopDeadline gives. It meets the claim as the pause's own stop meets a parked
+// wake, in one of three ways:
+//
+//   - A claim in a turn — the stall backstop's case — is held to the deadline of now and stopped
+//     mid-turn, its task taken back interrupted (holdSuspension, suspendAtTimeout).
+//   - A claim no turn runs in whose take's turn ended with its report still to come (takePhase,
+//     waitReport) is held for that report, as the pause's own stop held over a turn is at that
+//     turn's end (suspend, holdForReport; row 39j of dispatch://INFRA-2811's plan), bounded by
+//     R5's second wait (Timeouts.TurnStart) from now rather than by a deadline of now, and by
+//     nothing where that bound is not set, as the pause's own stop is. The report finishes the
+//     task once and the suspension runs then (settleThenAfterTurn); with no report by the bound
+//     the task is taken back with the note of a cut turn and the suspension runs
+//     (suspendAtTimeout, reportBoundOver, reportMissed). Stopped at once, the process would take
+//     with it the report the wait is for, the task would be taken back as a cut turn though its
+//     turn ran whole, and the resume would run it again.
+//   - Any other claim is stopped at once: one that records no process (holdSuspendUntilReady),
+//     and one whose process is registered, ready or idle (suspend) or still booting, since the
+//     launch the gate holds was to replace that process and a hold until ready would protect a
+//     process nothing wants.
+//
+// Each ends in the pause's stop transaction with a launch owed, since the held launch waits on the
+// machine until the stop lets it go (suspendedFor, launchMet). A stop that fails with the launch
+// still held is posted again at the probe interval; one that stopped the process and whose write
+// failed owes the write instead (persistStop).
 //
 // The pause it stops for is the open one when it runs. A launch held for a pause that has ended
 // by then, with no pause open, goes to the wake pacing rather than stopping the claim
@@ -221,7 +235,7 @@ func pauseStopDue(m *Machine, ctx context.Context, _ Event) error {
 		return m.letOutHeldLaunch(ctx)
 	}
 	waiting.pause = pause
-	request := RequestSuspend{Claim: m.claim.Token, By: SuspendedByReleased, Pause: pause, Deadline: m.deps.Clock.Now(),
+	request := RequestSuspend{Claim: m.claim.Token, By: SuspendedByReleased, Pause: pause, Deadline: m.pauseStopDeadline(),
 		Reason: fmt.Sprintf("the project is paused (pause %d) and its gate held this claim's launch", pause)}
 	var err error
 	switch {
@@ -243,6 +257,24 @@ func pauseStopDue(m *Machine, ctx context.Context, _ Event) error {
 		m.arm(TimerPause, m.deps.Timeouts.Probe, "")
 	}
 	return err
+}
+
+// pauseStopDeadline is the deadline of the gate's own stop (pauseStopDue). Over a claim no turn
+// runs in whose take's turn ended with its report still to come (takePhase, waitReport), which
+// that stop is held for (suspend, holdForReport), it is R5's second bound (Timeouts.TurnStart)
+// from now, as the wait for that report is bounded (reportBounded), and none where that bound is
+// not set, so the report can finish the task before the suspension runs. Over any other claim it
+// is now, so a claim in a turn is stopped mid-turn at once, and every other claim is stopped at
+// once as well.
+func (m *Machine) pauseStopDeadline() time.Time {
+	now := m.deps.Clock.Now()
+	if m.busy() || m.takePhase() != waitReport {
+		return now
+	}
+	if m.deps.Timeouts.TurnStart <= 0 {
+		return time.Time{}
+	}
+	return now.Add(m.deps.Timeouts.TurnStart)
 }
 
 // letOutHeldLaunch takes the launch the pause's gate holds into the wake pacing once the pause it
