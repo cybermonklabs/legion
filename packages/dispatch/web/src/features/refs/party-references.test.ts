@@ -282,6 +282,19 @@ test("a link with a title after its address is read to its closing parenthesis",
   expect(mentionTaken(body)).toBe(`[@Alice](${AGENT} "the planner")`);
 });
 
+// A link's address read as any span is, its sentence punctuation dropped, is still the address of
+// the link it stands in: the pill reads the link's words, as the stored record draws them (R8),
+// and taking the mention out takes the whole link.
+test("a link whose address ends in sentence punctuation is read around its address", () => {
+  expect(linkAt("See [the plan](dispatch://CORE-1.) now.")).toEqual({
+    markdown: "[the plan](dispatch://CORE-1.)",
+    picture: false,
+  });
+  const body = `Ask [@Alice](${AGENT}.) now.`;
+  expect(pill(body)).toEqual({ picture: false, reads: "mention", words: "@Alice" });
+  expect(mentionTaken(body)).toBe(`[@Alice](${AGENT}.)`);
+});
+
 test("a link whose address stands in angle brackets is read whole", () => {
   const body = `Ask [@Alice](<${AGENT}>) now.`;
   expect(pill(body).words).toBe("@Alice");
