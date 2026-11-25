@@ -1507,8 +1507,9 @@ func TestConfigCheckReportsTheConfigurationsCapabilityGaps(t *testing.T) {
 // trade reads set (AGENT_SECRETS_URL, AGENT_SECRETS_MACHINE_IDENTITY,
 // AGENT_SECRETS_MACHINE_TOKEN_FILE), a file with the setting and no dispatch_token_file prints
 // Config OK and exits 0. The check reads a dispatch_token_transition_file as it reads
-// dispatch_token_file: one it can read passes, and one it cannot is refused naming the key. The
-// control is the same file with dispatch_token_file added, refused naming both keys.
+// dispatch_token_file: one it can read passes, and one it cannot is refused naming the key and
+// why, never the file's path. The control is the same file with dispatch_token_file added,
+// refused naming both keys.
 func TestStartCheckConfigTakesTheBrokerSettingWithNoIdentity(t *testing.T) {
 	legionState(t)
 	fixtureenv.Unset(t, "AGENT_SECRETS_URL", "AGENT_SECRETS_MACHINE_IDENTITY", "AGENT_SECRETS_MACHINE_TOKEN_FILE")
@@ -1524,8 +1525,8 @@ func TestStartCheckConfigTakesTheBrokerSettingWithNoIdentity(t *testing.T) {
 	}{
 		{"the setting alone", broker, false, passes},
 		{"the setting with a transition file the check reads", transition, true, passes},
-		{"the setting with a transition file the check cannot read", transition, false, func(dir string) (int, string, string) {
-			return 1, "", "legion config check: dispatch_token_transition_file names " + filepath.Join(dir, "transition-token") + ", which could not be read: "
+		{"the setting with a transition file the check cannot read", transition, false, func(string) (int, string, string) {
+			return 1, "", "legion config check: dispatch_token_transition_file names a file that could not be read: it does not exist\n"
 		}},
 		{"the setting beside dispatch_token_file", "dispatch_token_file: ./dispatch-token\n" + broker, false, func(string) (int, string, string) {
 			return 1, "", "legion config check: dispatch_token_file and dispatch_token_broker are both set: the daemon's Dispatch credential is the bearer a file holds or its own pod identity traded at the secrets broker, never both\n"
