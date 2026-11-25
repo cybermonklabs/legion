@@ -4926,6 +4926,9 @@ READS = (
     ("test", "packages/dispatch/web/src/fonts/inter/LICENSE.txt", "the same thirdPartyNotices call"),
     ("dispatch_browser", "packages/contracts/fixtures/priority-ids.json",
      "`packages/dispatch/e2e/priorities.e2e.ts#idFixture`"),
+    ("daemon_go_tests", "packages/contracts/fixtures/dispatch-results/code-pass.json",
+     "`packages/daemon/internal/dispatch/client_results_test.go#TestIssueResultsReadsEachCheckState`, through its //ci:reads line, "
+     "and `packages/daemon/internal/record/close_wait_test.go`, which reads the same captured answers"),
 )
 
 # Every JSON file a test of one of these packages imports from outside the package by a
