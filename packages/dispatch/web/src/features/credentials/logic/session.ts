@@ -1,4 +1,4 @@
-import type { Agent, CredentialSession } from "../../api/types";
+import type { Agent, CredentialSession } from "../../../api/types";
 
 /** Where a running session runs, as the live agents list lists it. */
 export interface CredentialSessionPlace {
