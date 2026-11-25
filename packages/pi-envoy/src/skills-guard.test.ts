@@ -182,8 +182,19 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // is the record" (3). The duplicate bullet lost "read it", which the bullet on reading each hit
 // says (1). The research bullets lost "Ask only the part no search answered.", which their first
 // two bullets say together (7). The result bullet lost "is the same" (3). The spec-writing row
-// lost "or write an" (3). The three skills stand at 2,310 words on main at 7227e703, after #5391's
-// exit-code bullets; INFRA-4849's rewrite of dispatch-first takes them to 2,330, under the bound.
+// lost "or write an" (3).
+//
+// The bound did not move when dispatch-first's blocker bullet took one sentence of 19 words at
+// its end: "A secret request that waits for a person is already in their Inbox, so it gets no ask
+// (`skill://agent-secrets`)." A person directed that every agent know that a secret request
+// already reaches its approver's Inbox, so an ask for it is a duplicate, and that the rule go in a
+// generic skill. The rule lives in skills/agent-secrets/SKILL.md, which a session reads when a
+// command needs a secret. The blocker bullet, which every session holds whole, is the line that
+// sends an agent to open an ask, so its exception sits there and links the rule. By this test's
+// own whitespace count, the three skills stand at 2,329 words on main at d57c7a79 (917 + 556 +
+// 856; 2,310 at 7227e703 before #5364, after #5391's exit-code bullets), not 2,276. This pull
+// request's rewrite of dispatch-first with #5364's sentence takes them to 2,349, over the 2,340
+// bound until dispatch and dispatch-writing-specs are cut after #4316.
 test("the three Dispatch skills total fewer than 2,340 words", () => {
   const words = ["dispatch", "dispatch-first", "dispatch-writing-specs"]
     .flatMap((skill) => files(path.join(staged, skill)))
