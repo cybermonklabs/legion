@@ -27,7 +27,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -226,42 +225,6 @@ func (l *experimentLive) variantOnSteps() {
 		}
 		l.note("`dispatch steps --issue %s` prints %q right after its header and before its first run", want.issue.Key, want.line)
 	}
-}
-
-// variantPlace answers nil where line stands in printed, the stdout of `dispatch steps --issue
-// key`, where the command prints the variant of the issue: right after the header `<key>: <n>
-// steps in <m> tasks` and before the first run, with the header's n runs below it and nothing
-// else but the line of each task of the issue's plan, `task <task> needs <needs>: …`, which
-// comes before that task's runs and is no run (parseSteps passes it over too). It answers where
-// the line stands otherwise.
-func variantPlace(key, line, printed string) error {
-	lines := strings.Split(strings.TrimRight(printed, "\n"), "\n")
-	header, ok := strings.CutPrefix(lines[0], key+": ")
-	var steps, tasks int
-	if _, err := fmt.Sscanf(header, "%d steps in %d tasks", &steps, &tasks); !ok || err != nil {
-		return fmt.Errorf("the first line %q is no header of %s", lines[0], key)
-	}
-	if at := slices.Index(lines, line); at != 1 {
-		if at < 1 {
-			return fmt.Errorf("no line below the header is %q", line)
-		}
-		return fmt.Errorf("it is line %d of %d, after %q; want it right after the header and before the first run", at+1, len(lines), lines[at-1])
-	}
-	runs := 0
-	for _, below := range lines[2:] {
-		fields := strings.Fields(below)
-		if len(fields) > 2 && fields[0] == "task" && fields[2] == "needs" {
-			continue
-		}
-		if len(fields) != 12 || fields[5] != "attempt" {
-			return fmt.Errorf("the line %q below it is no run", below)
-		}
-		runs++
-	}
-	if steps == 0 || runs != steps {
-		return fmt.Errorf("the header says %d steps and %d runs follow the line", steps, runs)
-	}
-	return nil
 }
 
 // writePlan writes ownersPlan as the document plan.md of key with the real `dispatch artifact`,
