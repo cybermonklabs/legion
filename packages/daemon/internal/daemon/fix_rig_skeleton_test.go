@@ -829,7 +829,7 @@ func (w *fixRigWatch) pollDaemon(ctx context.Context) {
 			w.fail("processed_events", err)
 		}
 	}
-	outbox, err := r.st.Pool().Query(ctx, `select id, kind, payload::text, attempts, due_at, lease_until, last_error from outbox
+	outbox, err := r.st.Pool().Query(ctx, `select id, kind, payload::text, attempts, next_at, lease_until, last_error from outbox
 		where issue = any($1) order by id`, keys)
 	if err != nil {
 		w.fail("the outbox", err)
