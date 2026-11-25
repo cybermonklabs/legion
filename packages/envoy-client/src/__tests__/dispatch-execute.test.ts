@@ -2528,6 +2528,42 @@ describe("executeDispatchTool", () => {
     expect(requests).toEqual(["/api/v1/asks/open?author_session=session-1"]);
   });
 
+  // Every write carries the actor `toolActor` builds from `hostSession`, the id cut as Go's
+  // `strings.TrimSpace` cuts it (goTrimSpace): a leading space and a trailing U+0085, which
+  // `trim` keeps, go before the request, as they go from a path or a query.
+  test("a write's actor carries the host session id trimmed as Go's strings.TrimSpace does", async () => {
+    const calls: Array<{ method: string; body: unknown }> = [];
+    const fetchImpl = async (_url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      calls.push({
+        method: init?.method ?? "GET",
+        body: init?.body === undefined ? undefined : JSON.parse(String(init.body)),
+      });
+      return response({
+        key: "DSP-1",
+        status: "todo",
+        claim: { actor: { kind: "session", id: "session-one" }, at: "2026-09-24T06:00:00Z" },
+        legion_managed_status: false,
+      });
+    };
+
+    await executeDispatchTool({
+      tool: "dispatch_claim",
+      args: { issue: "DSP-1" },
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: " session-one\u0085",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(calls.map((call) => call.method)).toEqual(["POST"]);
+    expect(calls[0]?.body).toEqual({
+      actor: expect.objectContaining({ kind: "session", id: "session-one" }),
+    });
+  });
+
   test("dispatch_open_asks propagates Dispatch errors rather than treating them as no asks", async () => {
     const fetchImpl = async (): Promise<Response> =>
       new Response(

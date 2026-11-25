@@ -635,8 +635,13 @@ func (s *server) v2DocumentRows() []routeRow {
 				OpaqueContentTypes: []string{"*/*", "text/markdown"},
 			},
 			IDs: documentIDs(),
+			// include=blocks parses the version (docs.VersionBlocks), and writeHandlerError names
+			// its refusal: an element a newer build wrote, or another tree outside the schema. The
+			// route never reaches the document service, so it declares neither of the other two
+			// refusals of documentRefusals.
 			Refusals: []apicode.Refusal{
 				undeclaredKeyRefusal, documentMissingRefusal, versionMissingRefusal, fileStoreDownRefusal,
+				documentNewerContentRefusal, documentOutsideSchemaRefusal,
 				{Condition: apicode.FileBytesMissing, Code: apicode.FileMissing},
 				{Condition: apicode.FileStoreNotConfigured, Code: apicode.FileStoreUnconfigured},
 			},

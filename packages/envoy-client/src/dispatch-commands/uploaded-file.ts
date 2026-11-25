@@ -20,9 +20,20 @@ import type { DispatchToolResult } from "./context";
  * `agent/<session id>`) as `dispatch_read` does, which a host reads back from a transcript; a
  * larger picture is described without its bytes being fetched when Dispatch states its size. Any
  * other file comes back as text when it is UTF-8, and is described with the route that serves its
- * bytes when it is not. A file carries no token, anchors or approval, so nothing else is read. A
- * picture is shown whatever `shown` holds, and joins it under its address, so the session's later
- * reads name it instead of sending it.
+ * bytes when it is not. The header names the version read by its hash, on the line under its
+ * first: the latest version's `Document token:` line, as a document read prints its token, which
+ * the upload of the next version names as its precondition; a named version's `Content: sha256:`
+ * line, as a named document version's read prints its hash. It goes in the header, never after
+ * the text, so the text after the header is the stored file unchanged, a leading byte order mark
+ * included (the decoder keeps it), and a script or patch read back ends where the file ends. The
+ * dispatch command changes two things, as it does for every output it prints: it adds one line
+ * feed after a file that ends without one, and under Claude Code or Codex it cuts an output past
+ * 25,000 characters and writes the whole of it to a file it names (`fitOutput` in
+ * `../dispatch-cli.ts`). Dispatch states the token and the hash beside the version in the
+ * artifact's version list, so no other read is made for them, and a Dispatch or a version that
+ * states none prints no line: such a Dispatch takes no token on a file's upload. A file carries no
+ * anchors or approval, so nothing else is read. A picture is shown whatever `shown` holds, and
+ * joins it under its address, so the session's later reads name it instead of sending it.
  */
 export async function readUploadedFile(
   client: DispatchClient,

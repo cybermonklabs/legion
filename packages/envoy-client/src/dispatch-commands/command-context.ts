@@ -5,17 +5,20 @@ import { shownPictures, textWithPictures } from "../dispatch-picture-tools";
 import { ToolInputError } from "../tool-input-errors";
 import {
   type CommandContext,
-  type ExecuteDispatchToolInput,
   optionalString,
   type ResolvedArtifact,
   type SessionContext,
 } from "./context";
 import { documentTargets } from "./document-targets";
 
-function toolActor(origin: DispatchOrigin, input: ExecuteDispatchToolInput): Actor {
+/** The actor every write of the call carries: this session, by its id as `hostSession` reads it
+ *  (trimmed as Dispatch trims it), or `unknown` for a host that names no session or names one
+ *  blank to Go. */
+function toolActor(origin: DispatchOrigin, session: SessionContext): Actor {
+  const { input, hostSession } = session;
   return {
     kind: "session",
-    id: input.sessionId ?? "unknown",
+    id: hostSession || "unknown",
     origin: {
       ...origin,
       host: input.host,
@@ -34,7 +37,7 @@ export async function commandContext(session: SessionContext): Promise<CommandCo
   const { input, ownerArguments, pictures } = session;
   const actor = toolActor(
     await resolveOrigin(input.env ?? process.env, input.exec ?? defaultExec, input.cwd),
-    input
+    session
   );
   const client = session.newClient();
   const { owner, documentOwner, resolveDocument } = await documentTargets(client, ownerArguments);

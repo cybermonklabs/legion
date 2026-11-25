@@ -4541,15 +4541,16 @@ Each item below names a path with its method and identity, then its purpose.
 - `/auth/logout` (POST; cookie or trusted header)
 
   End the person's Dispatch sessions, forget their refresh token, and clear the session cookie.
-  `401 NO_IDENTITY` for a caller who is not signed in; `500 SESSION_FAILED` when the sessions cannot be ended.
+  The caller lookup (`identity.WriteError`) answers `401 NO_IDENTITY` for a caller who is not signed in, `503 SIGNIN_UNAVAILABLE` when confirming the caller needs the sign-in issuer and it cannot be reached, and `500 IDENTITY_ERROR` when the caller cannot be looked up;
+  `500 SESSION_FAILED` when the sessions cannot be ended.
   Like every unsafe request a browser credential carries, from another origin it is `403 ORIGIN_REFUSED` (`enforceCookieOrigin`).
-  Every refusal of the `/auth` routes, and of the router's own guard and dashboard files (`STATIC_NOT_FOUND`, `DASHBOARD_NOT_BUILT`, `STATIC_READ_FAILED`, `ASSET_STORE_UNAVAILABLE`, `ASSET_STORE_BUSY`), is `{code, error}`.
+  Every refusal of the `/auth` routes, and of the router's own guard and dashboard files (`STATIC_NOT_FOUND`, `DASHBOARD_NOT_BUILT`, `STATIC_READ_FAILED`, `ASSET_STORE_UNAVAILABLE`, `ASSET_STORE_BUSY`), is `{code, error}`, but one: `/auth/callback` refuses a person the sign-in rule does not admit with its 403 HTML page (`writeSignInRefusedPage`), which carries no code.
 
 - `/auth/whoami` (GET; cookie or trusted header)
 
   Return the resolved person, `{kind: "user", login, event_head}` with `login` their lowercase email and `event_head` an event id at or below which every event is final, read when the sign-in check answered.
   The page starts its events subscription from that id.
-  The sign-in check comes first: a caller who is not signed in is `401 NO_IDENTITY` and the head is never read.
+  The sign-in check comes first, and the head is never read when it refuses: the caller lookup (`identity.WriteError`) answers `401 NO_IDENTITY` for a caller who is not signed in, `503 SIGNIN_UNAVAILABLE` when confirming the caller needs the sign-in issuer and it cannot be reached, and `500 IDENTITY_ERROR` when the caller cannot be looked up.
   A signed-in caller is `503 EVENT_HEAD_UNAVAILABLE` while no event id is proven final yet, which ends on its own and which the page asks again for, and `503 EVENT_HEAD_READ_FAILED` when the head cannot be read, which the page retries twice and then shows as an error.
 
 - `/auth/_dev/signin` (GET; none; `DISPATCH_DEV_SIGNIN=1` only; loopback peer, no forwarding header)

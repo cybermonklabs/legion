@@ -266,7 +266,8 @@ export interface SessionContext {
    *  Dispatch trims it on the routes that read it so (open-asks, follow, read --message) and
    *  refuses an id holding whitespace on those that read it with `requestSessionID` (answers, a
    *  picture upload), so an id blank to Go is none. Every command that sends the id reads it here,
-   *  and one that needs one refuses an empty one itself. */
+   *  in a path, a query or the actor every write carries (`toolActor`), and one that needs one
+   *  refuses an empty one itself. */
   readonly hostSession: string | undefined;
   /**
    * A factory, not one instance: the constructor starts the request deadline, and the main path

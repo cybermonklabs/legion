@@ -684,11 +684,11 @@ func (s *server) writtenAskRowsV2(ctx context.Context, q queryer, who model.Acto
 	return rows, nil
 }
 
-// writtenAskV2 is the ask a /api/v2 write answers, read in two steps around the write's commit:
-// readBack, the write's askReadBack, reads its tables on the write's transaction before it
-// commits (writtenAskRowsV2), and answer completes the row once it has (completeWrittenAskV2).
-// reader is the caller's credential (requestReader), which newWrittenAskV2 resolves when the
-// route makes one, since the transaction readBack runs on holds no request.
+// writtenAskV2 is the ask a /api/v2 write answers, read in two steps: readBack, the write's
+// askReadBack, reads its tables on q (writtenAskRowsV2): the write's transaction, before it
+// commits, or the pool for writeUnchanged's no-op. answer then completes the row, after a write
+// has committed (completeWrittenAskV2). reader is the caller's credential (requestReader), which
+// newWrittenAskV2 resolves when the route makes one, since q holds no request.
 type writtenAskV2 struct {
 	server *server
 	reader model.Actor
@@ -701,10 +701,11 @@ func (s *server) newWrittenAskV2(r *http.Request) *writtenAskV2 {
 	return &writtenAskV2{server: s, reader: s.requestReader(r)}
 }
 
-// readBack reads the rows of the ask id names on q, the write's transaction, as the caller
-// (reader), so the ask's inbound backlink count is the caller's: a write, the no-op that answers
-// in its place (writeUnchanged) and GET /api/v2/asks/{id} count as the one person whose request
-// they answer, and a route answers one count of an ask whether it wrote or not.
+// readBack reads the rows of the ask id names on q: the write's transaction, or the pool for
+// writeUnchanged's no-op. It reads them as the caller (reader), so the ask's inbound backlink
+// count is the caller's: a write, the no-op that answers in its place (writeUnchanged) and GET
+// /api/v2/asks/{id} count as the one person whose request they answer, and a route answers one
+// count of an ask whether it wrote or not.
 func (written *writtenAskV2) readBack(ctx context.Context, q queryer, id string) (err error) {
 	written.rows, err = written.server.writtenAskRowsV2(ctx, q, written.reader, id)
 	return err

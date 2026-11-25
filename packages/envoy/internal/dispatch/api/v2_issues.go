@@ -331,8 +331,9 @@ func (s *server) v2IssueRows() []routeRow {
 				"that sequence. A parent that would make the issue its own ancestor, and a parent or blocked_by that would "+
 				"make it wait on itself, are 409 ISSUE_CYCLE. With the parent-status rule on, a change that breaks it is "+
 				"409 PARENT_STATUS_CONFLICT. Without status-change options, answers the issue with advice; a patch that "+
-				"changes nothing appends no event. With include_children, unlink_children, include_parent or dry_run, "+
-				"send status and optionally expected_sequence and actor, with no other issue fields. The server checks "+
+				"changes nothing appends no event. With include_children, unlink_children, include_parent or dry_run true, "+
+				"send status and optionally expected_sequence and actor, with no other issue fields; an option sent as "+
+				"false asks for nothing and is taken as absent. The server checks "+
 				"the plan, then changes each affected issue in a separate transaction, keeping the sequence fence and "+
 				"the progress of a keyed attempt. A dry run returns the plan without writing. This form answers "+
 				"{issue, changed}; a refusal carries the changes that committed before it. Closing with include_children "+
@@ -847,7 +848,10 @@ type patchIssueV2Input struct {
 	// none; absent leaves the set as it stands. Each entry is the one PUT
 	// /api/v1/issues/{key}/design-gates takes, holds left out or null stored as null.
 	DesignGates *[]issueDesignGateInput `json:"design_gates"`
-	// The presence of any status option selects the multi-issue status-change form.
+	// A status option or dry_run set to true selects the multi-issue status-change form. One set
+	// to false asks for nothing, as issueStatusOptionsOf (packages/contracts/src/dispatch-tools.ts)
+	// reads the options: with none true, the plain PATCH runs on updateIssueInput, which declares
+	// none of these members, so a false one is taken as absent.
 	IncludeChildren *bool `json:"include_children,omitempty"`
 	UnlinkChildren  *bool `json:"unlink_children,omitempty"`
 	IncludeParent   *bool `json:"include_parent,omitempty"`
@@ -855,7 +859,12 @@ type patchIssueV2Input struct {
 }
 
 func (body patchIssueV2Input) isStatusChange() bool {
-	return body.IncludeChildren != nil || body.UnlinkChildren != nil || body.IncludeParent != nil || body.DryRun != nil
+	for _, option := range []*bool{body.IncludeChildren, body.UnlinkChildren, body.IncludeParent, body.DryRun} {
+		if option != nil && *option {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *server) patchIssueKeyedRoute(r *http.Request) (keyedRoute, bool) {

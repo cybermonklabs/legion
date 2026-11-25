@@ -35,7 +35,7 @@ type tourRefusal struct {
 }
 
 // tourRefusals are the refusals of tourRefusal by the route their step calls, "<method>
-// /api/v2<pattern>". Each is a refusal the route's description says it answers.
+// /api/v2<pattern>". Each is listed in its operation's x-refusal-codes at its status, with a declared response body.
 var tourRefusals = map[string][]tourRefusal{
 	"GET /api/v2/deploy-runs/{id}": {
 		{Name: "an id that is not a positive integer", Change: refusalPath("id", "0"), Code: apicode.RunIDInput},

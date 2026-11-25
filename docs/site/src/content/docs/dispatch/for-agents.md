@@ -450,4 +450,6 @@ same on every retry of one write and new for every new write. Dispatch keeps eac
 24 hours; the same key with a different request is refused `422 KEY_REUSED`, and so is one key
 sent to a `/api/v1` route and then to its `/api/v2` route, which are two routes and so two
 requests. On `/api/v2` a repeat of a comment's or an issue message's edit or delete, or of a
-comment's state, is answered with that post as it stands now, as on `/api/v1`.
+comment's state, is answered with that post as it stands now. On `/api/v1` a repeat of an edit or
+of a comment's state is answered the same way, but a delete carries no key, so a repeated delete
+runs again and is refused `409 POST_DELETED`.

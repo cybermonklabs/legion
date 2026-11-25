@@ -2100,7 +2100,7 @@ const REVIEWED_WAIT_SITES: readonly {
     text: 'fetchImpl(input, { ...init, redirect: "manual" })',
     count: 1,
     bound:
-      "the fetch behind the client's #fetch, whose every request is made at :2488 or :2831 with a " +
+      "the fetch behind the client's #fetch, whose every request is made at :2510 or :2853 with a " +
       "signal this scan traces to AbortSignal.timeout; `init` is that request's own",
   },
   {
@@ -2162,7 +2162,7 @@ const REVIEWED_WAIT_SITES: readonly {
     kind: "fetch handed on as a value",
     count: 1,
     bound:
-      "the fetch handed to the open-asks read's DispatchClient (:384), whose every request is made at dispatch-http.ts:2488 or :2831 under a signal this scan traces to AbortSignal.timeout",
+      "the fetch handed to the open-asks read's DispatchClient (:384), whose every request is made at dispatch-http.ts:2510 or :2853 under a signal this scan traces to AbortSignal.timeout",
   },
   {
     file: "packages/envoy-client/src/dispatch-http.ts",
@@ -2170,7 +2170,7 @@ const REVIEWED_WAIT_SITES: readonly {
     kind: "fetch handed on as a value",
     count: 1,
     bound:
-      "DispatchClient's default fetchImpl (:1097), called by #fetch for the requests of :2488 and :2831",
+      "DispatchClient's default fetchImpl (:1101), called by #fetch for the requests of :2510 and :2853",
   },
   {
     file: "packages/envoy-client/src/session-answers.ts",
@@ -2178,7 +2178,7 @@ const REVIEWED_WAIT_SITES: readonly {
     kind: "fetch handed on as a value",
     count: 1,
     bound:
-      "the answers mode's DispatchClient (:604), whose requests are made at dispatch-http.ts:2488 and :2831 under the client's own deadline; the open-asks mode does not reach it",
+      "the answers mode's DispatchClient (:604), whose requests are made at dispatch-http.ts:2510 and :2853 under the client's own deadline; the open-asks mode does not reach it",
   },
   {
     file: "packages/envoy-client/src/dispatch-commands/context.ts",
@@ -2186,7 +2186,7 @@ const REVIEWED_WAIT_SITES: readonly {
     kind: "fetch handed on as a value",
     count: 1,
     bound:
-      "the dispatch command's fetchImpl (:325), handed to the same DispatchClient; the open-asks mode does not reach it",
+      "the dispatch command's fetchImpl (:331), handed to the same DispatchClient; the open-asks mode does not reach it",
   },
   {
     file: "packages/envoy-client/src/delivery.ts",
@@ -2194,7 +2194,7 @@ const REVIEWED_WAIT_SITES: readonly {
     kind: "fetch handed on as a value",
     count: 1,
     bound:
-      "the fetch postDeliveryReply hands its DispatchClient (:163) with the host's userAgent, whose requests are made at dispatch-http.ts:2281 and :2624 under the client's own deadline; the open-asks mode does not reach it",
+      "the fetch postDeliveryReply hands its DispatchClient (:167) with the host's userAgent, whose requests are made at dispatch-http.ts:2510 and :2853 under the client's own deadline; the open-asks mode does not reach it",
   },
   {
     file: "packages/envoy-client/src/dispatch-cwd.ts",
