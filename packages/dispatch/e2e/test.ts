@@ -8,12 +8,14 @@
  *  added to a list the stack keeps whole (`ownPeople`, `ownBroadcasts`,
  *  `ownArchitectureSources`). So a row that keys its data needs no database emptied before it:
  *  the worker empties it once, before its first row (`workerDatabase`, through `resetDatabase` in
- *  e2e/seed.ts), for whatever a run before it left there. The few rows docs/testing.md names
- *  empty it again inside themselves, through `resetDatabase`; among them are the rows that
- *  measure layout over text of a fixed width under a fixed project key (`fixedKey` in
- *  e2e/api.ts), whose project keys and issue numbers must be the same on every run. A fixed login
- *  (`fixedPerson`, below) needs no emptying, since `ownPeople` deletes its rows when the row
- *  ends. What the fake services hold - the fake Envoy's sessions and subscriptions, the broker's
+ *  e2e/seed.ts), for whatever a run before it left there, and again before it seeds the review
+ *  corpus (`reviewCorpus`), whose seed reads lists the whole stack holds. The few rows
+ *  docs/testing.md names empty it again inside themselves, through `resetDatabase`; among them
+ *  are the rows that measure layout over text of a fixed width under a fixed project key
+ *  (`fixedKey` in e2e/api.ts), whose project keys and issue numbers must be the same on every
+ *  run. A fixed login (`fixedPerson`, below) needs no emptying, since `ownPeople` deletes its
+ *  rows when the row ends. What the fake services hold - the fake Envoy's sessions and
+ *  subscriptions, the broker's
  *  credential requests, the fake GitHub's repositories, the embedder's counts - is the row's, and
  *  no key separates it, so an automatic fixture resets the fakes before every row (`freshFakes`,
  *  through `resetFakes` in e2e/seed.ts). Both used to
@@ -55,9 +57,10 @@
  *  literal login fails the typecheck.
  *
  *  **What a worker keeps.** Three things are the worker's, not a row's: its database, emptied
- *  once before its first row (`workerDatabase`), the delivery settings the delivery rows read
- *  (`deliverySettings`, handed to a row as its `delivery` place) and the review corpus the
- *  accessibility rows scan (`reviewCorpus`, handed to a row as its `reviewSeed`). The settings
+ *  before its first row (`workerDatabase`) and before it seeds the review corpus, the delivery
+ *  settings the delivery rows read (`deliverySettings`, handed to a row as its `delivery` place)
+ *  and the review corpus the accessibility and foot-sweep rows read (`reviewCorpus`, handed to a
+ *  row as its `reviewSeed`). The settings
  *  and the corpus are each written once into each database the worker empties - once for the
  *  worker, and again after a row that empties the database itself - and a row that changes one
  *  puts it back when it ends. A row that empties the database itself does it through
@@ -354,9 +357,9 @@ type DispatchWorkerFixtures = {
   /** Writes the delivery settings the delivery rows read (`writeDeliverySettings`), unless the
    *  worker has written them into the database it holds now (`databasesEmptied`). */
   deliverySettings: () => Promise<void>;
-  /** The review corpus (`seedReviewRoutes`), seeded unless the worker has seeded it into the
-   *  database it holds now (`databasesEmptied`), with what a row before this one changed of it
-   *  put back. */
+  /** The review corpus (`seedReviewRoutes`), seeded into a database the worker empties for it
+   *  unless the worker has seeded it into the database it holds now (`databasesEmptied`), with
+   *  what a row before this one changed of it put back. */
   reviewCorpus: () => Promise<ReviewSeed>;
 };
 
@@ -512,22 +515,30 @@ export const test = base.extend<DispatchOptions & DispatchFixtures, DispatchWork
   // `writeDeliverySettings`'s and the corpus seeds with its Pipeline job names and its reconcile
   // error, and the fake Envoy's sessions, which a row may set and a reset of the fakes empties.
   // Its broadcast goes at the end of the row that seeded it (`ownBroadcasts`): every broadcast
-  // is one list a row reads whole, and no page these rows scan draws it. The corpus is seeded
-  // into a database that holds none of it, which is every database a worker has just emptied.
+  // is one list a row reads whole, and no page these rows scan draws it. The seed reads lists
+  // the whole stack holds, every open question in the Inbox (`seedWorkspace`) and every check
+  // result (`seedReviewRoutes`), so the worker empties its database just before it seeds the
+  // corpus, whatever the rows before this one wrote there: they have ended, and every row after
+  // it writes under keys of its own. The first row to read it is often not the worker's first:
+  // seeded after the other rows of its worker, the seed's Inbox read never held exactly its five
+  // rows, and four rows failed so in CI run 45530954674. Emptying deletes every sign-in but
+  // alice's and bob's (the head comment above), so a row that reads the corpus opens its own
+  // contexts, as `asUser` and `withAlice` do.
   reviewCorpus: [
     // biome-ignore lint/correctness/noEmptyPattern: the corpus takes no other fixture.
     async ({}, use) => {
       let seeded: { into: number; seed: ReviewSeed; settings: string } | undefined;
       await use(async () => {
-        const database = databasesEmptied();
-        if (seeded?.into === database) {
+        if (seeded?.into === databasesEmptied()) {
           await putDeliverySettings(seeded.settings);
           await setLiveSessions(workspaceSessions);
           return seeded.seed;
         }
+        await resetDatabase();
+        const into = databasesEmptied();
         // The seed's waits give up at the bound a row's own assertions use, inside its clock.
         const seed = await seedReviewRoutes({ boundMs: expectTimeout });
-        seeded = { into: database, seed, settings: await readDeliverySettings() };
+        seeded = { into, seed, settings: await readDeliverySettings() };
         return seed;
       });
     },

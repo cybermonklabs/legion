@@ -296,7 +296,8 @@ under it. Each `web/src/` and `e2e/` path below is under `packages/dispatch`.
   no database and no sign-in.
 
 - **Browser against the real stack**: `bun run e2e`, with the real Go server and Postgres, one stack for each Playwright worker.
-  A spec takes its `test` from `e2e/test.ts`, whose fixtures empty the worker's database once, before the worker's first row, and before each row reset the fake services, whose state no key separates, and sign the default context in.
+  A spec takes its `test` from `e2e/test.ts`, whose fixtures empty the worker's database before the worker's first row, and before each row reset the fake services, whose state no key separates, and sign the default context in.
+  The worker empties its database again just before it seeds the review corpus (`reviewCorpus`) for the first row that reads it, since that seed reads lists that are the whole stack's, every open question in the Inbox and every check result; such a row opens its own contexts, since the emptying deletes every sign-in but alice's and bob's.
   A real-stack row makes its data under names of its own (`rowKey`, `rowPerson`, `rowSessionId` and `rowNumber` in `e2e/test.ts`), so it needs no emptied database: it seeds beside what the rows before it wrote, under names none of them used.
   A row empties the database inside itself in four cases only: for a claim about an empty list that is the whole stack's, which no key of the row's can make its own; for a row whose claim is the emptying itself; for an opt-in probe that a person compares by hand against a run on another checkout; and for a row that measures layout over text of a fixed width, whose project key and issue numbers must be the same on every run.
   Such a row empties through `resetDatabase` (`e2e/seed.ts`), the one way to empty the database, which counts every emptying, so the datasets the worker keeps are written again for the rows after it.
