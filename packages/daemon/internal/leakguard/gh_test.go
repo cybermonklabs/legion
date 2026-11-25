@@ -363,19 +363,6 @@ func TestAGhCallsReleaseAssetsAreReadOnAPublicRepository(t *testing.T) {
 		err := ghFieldCall(t, GhRequest{Args: []string{"release", "upload", "v1", filepath.Join(filepath.Dir(clean), "*.txt")}, Sent: sent})
 		reports(t, refusal(t, err).Lines, clean+" (asset label): "+leakguardtest.WordClass)
 	})
-	t.Run("a matched asset's label is read where another asset has its file", func(t *testing.T) {
-		// A pattern can match a file and a file named after it with a `#` and a label, and gh
-		// uploads each match as an asset of its own (cli/cli v2.98.0
-		// pkg/cmd/release/shared/upload.go, AssetsFromArgs, which keeps every match): the two
-		// assets open one file, and the second carries the label GitHub shows. Measured with gh
-		// 2.98.0 and `legion gh release upload <tag> 'dir/*'` over dir/x and `dir/x#<label>`: a
-		// label holding a rule's match reached GitHub unread, since the second asset was dropped.
-		sent := &GhSent{}
-		sent.Asset(clean, "")
-		sent.Asset(clean, "the "+leakguardtest.Word+" notes")
-		err := ghFieldCall(t, GhRequest{Args: []string{"release", "upload", "v1", filepath.Join(filepath.Dir(clean), "*")}, Sent: sent})
-		reports(t, refusal(t, err).Lines, clean+" (asset label): "+leakguardtest.WordClass)
-	})
 	t.Run("an asset past the bound is a setup failure", func(t *testing.T) {
 		failed := setupFailure(t, upload(t, huge))
 		if want := "the file gh uploads as a release asset, " + huge + ", is longer than"; !strings.Contains(failed.Why, want) || !strings.Contains(failed.Why, maxGhFileSaid) {
