@@ -98,8 +98,8 @@ const (
 	// CheckStateFail is Dispatch's computed fail (no, for the reason fail): the one state that
 	// starts the next change.
 	CheckStateFail CheckState = "fail"
-	// CheckStateNoResult is a check no result decides yet (no, for the reason no_result): it waits
-	// for evidence.
+	// CheckStateNoResult is a check no result decides yet: no for the reason no_result, and a live
+	// check's unknown for a reason of its deploy (liveWaitsForResult). It waits for evidence.
 	CheckStateNoResult CheckState = "no_result"
 	// CheckStateUnknown is every other answer: a pass and a fail at one commit, a result Dispatch
 	// could not place, a read Dispatch could not make, and an answer the close does not know.
@@ -219,6 +219,9 @@ func (w CloseWait) Done() bool {
 //   - no for the reason fail is a fail, with results[0] as its deciding result and commit as its
 //     commit. It starts the next change.
 //   - no for the reason no_result is no result yet.
+//   - unknown for a reason of a live check's deploy (program_not_named, no_deploy,
+//     deploy_not_merged or no_result_from_deploy) is no result yet from the live system. The
+//     daily notice names the reason.
 //   - Every other answer is unknown: a pass and a fail at one commit (unknown, pass_and_fail),
 //     which the owner is told of at once; a result Dispatch could not place or a read it could not
 //     make (unknown, not_placed or read_failed), read again on the backoff; and an answer with no
@@ -234,10 +237,25 @@ func CloseCheckOf(check dispatch.CheckBlock) CheckWait {
 		if len(stands.Results) > 0 {
 			state.Result = stands.Results[0]
 		}
-	case stands.Answer == dispatch.PassStandsNo && stands.Reason == dispatch.PassStandsReasonNoResult:
+	case stands.Answer == dispatch.PassStandsNo && stands.Reason == dispatch.PassStandsReasonNoResult,
+		stands.Answer == dispatch.PassStandsUnknown && liveWaitsForResult(stands.Reason):
 		state.State = CheckStateNoResult
 	}
 	return state
+}
+
+// liveWaitsForResult says whether reason is one Dispatch gives a live check (subject production
+// or graph) that no result from the live system decides yet: it names no program and Dispatch
+// holds the current deploys of several, no current deploy of its program is recorded, the
+// current deploy's commit does not hold the merge, or no result was recorded from that deploy.
+// Each waits for evidence, or for the check's author to name its program.
+func liveWaitsForResult(reason string) bool {
+	switch reason {
+	case dispatch.PassStandsReasonProgramNotNamed, dispatch.PassStandsReasonNoDeploy, dispatch.PassStandsReasonDeployNotMerged,
+		dispatch.PassStandsReasonNoResultFromDeploy:
+		return true
+	}
+	return false
 }
 
 // freshAnswer is the newest read's answer where it counts for the close: the read answered, it
