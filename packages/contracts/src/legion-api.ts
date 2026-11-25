@@ -980,7 +980,7 @@ const legionIssue = z.object({
  * and never changed, absent while the project has none: a reader that takes this body as its
  * starting point applies only a state message whose `stateId` is this one, since a message of
  * another id is counted in another store and its sequences say nothing of this body's. The three
- * keys of contract 273 are optional because a daemon before that contract writes none of them, and
+ * keys of contract 293 are optional because a daemon before that contract writes none of them, and
  * the route strips them from the body it serves a caller below that contract.
  * No plugin code reads a field of it: the controller's boot check read `project` here until it
  * read the health answer instead, and the controller's `read_state` hands the state to its
@@ -1146,6 +1146,22 @@ const legionControllerLocator = z.object({
  * ServiceAccount token, which no person approves, so there is no confirmation code (contract 22). */
 const legionAgentSecretsLoginView = z.object({
   state: z.string().optional(),
+});
+
+/** `api.DispatchCredentialView` — the daemon's Dispatch credential under `dispatch_token_broker`
+ * (contract 275): `session`, the session its own Dispatch calls run under
+ * (`legion-daemon:<PROJECT>`); `transitionLaunches`, the launches since the daemon's boot that
+ * carried the transition token of `dispatch_token_transition_file`, and `lastTransitionLaunchAt`,
+ * when the latest of them was sent, null before the first; and `liveLaunchesWithDispatchToken`,
+ * the live launches whose start carried a Dispatch token, whichever daemon started them. A
+ * deployment removes `dispatch_token_transition_file` once the last is 0. Never a token. No plugin
+ * code reads a field of it (`LEGION_ANSWER_READS` names none), so each is optional, and a value
+ * that is present is still held to its type. */
+const legionDispatchCredentialView = z.object({
+  session: nonEmptyString.optional(),
+  transitionLaunches: z.number().int().nonnegative().optional(),
+  lastTransitionLaunchAt: timestamp.nullable().optional(),
+  liveLaunchesWithDispatchToken: z.number().int().nonnegative().optional(),
 });
 
 /** `api.CapabilityState` — one row of the deployment's capability report
@@ -1463,7 +1479,11 @@ const legionPaused = z.object({
  * listed (contract 228). The daemon writes it on every body, its two lists empty while nothing is
  * open, and it is optional for the reason `wakesWaiting` is: the route strips it for a caller
  * below 228, read the same way (`api.stateFor`, `withoutIntakeGiveUps`), since a reader before
- * 228 refuses the key whether its lists are empty or not. */
+ * 228 refuses the key whether its lists are empty or not.
+ * `dispatchCredential` is the daemon's Dispatch credential and the two counts of the Dispatch
+ * tokens its launches hand out, written only under `dispatch_token_broker` (contract 275); the
+ * route strips it for a caller below 275, read the same way (`api.stateFor`,
+ * `withoutDispatchCredential`). */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo.optional(),
   contract: legionContract.optional(),
@@ -1478,6 +1498,7 @@ export const LegionStateResponse = z.object({
   lastPause: legionEndedPause.optional(),
   controllerLocator: legionControllerLocator.optional(),
   agentSecretsLogin: legionAgentSecretsLoginView.optional(),
+  dispatchCredential: legionDispatchCredentialView.optional(),
   capabilities: z.array(legionCapabilityState).optional(),
   repositories: legionRepositories.optional(),
   settings: legionSettings.optional(),
@@ -1517,13 +1538,13 @@ const legionObservedIssue = z.object({
 });
 
 /** `api.ObservedState`, the body of `GET /legion/v1/state?view=observed` (daemon API contract
- * 273): what Dispatch reads of a daemon, read in the same snapshot as the full state would be.
+ * 293): what Dispatch reads of a daemon, read in the same snapshot as the full state would be.
  * `daemon`, `settings` and `admission` are the full state's own blocks: the same `stateSeq`,
  * `stateId` and `stateRun`, and the same admission block, unfiltered and in the same order, so an
  * issue's place in the line is its index in `admission.waiting` plus one. `issues` lists every
  * issue the full state lists. The daemon serves the view at the caller's contract with the full
  * state's own rule, so at each contract every member is the member the full state serves there:
- * a caller below 273 gets no `stateSeq`, `stateId` or `stateRun` in either answer. A request with
+ * a caller below 293 gets no `stateSeq`, `stateId` or `stateRun` in either answer. A request with
  * any other `view` gets the full state, and the daemon logs a warning for it, because a later
  * version may refuse such a request. */
 export const LegionObservedStateResponse = z.object({

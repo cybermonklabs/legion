@@ -173,9 +173,20 @@ type Config struct {
 	// bearer only after every local configuration refusal has passed.
 	DispatchURL       string
 	DispatchTokenFile string
-	Projects          map[string]Project
-	Gates             Gates
-	GitHubApps        GitHubApps
+	// DispatchTokenBroker is `dispatch_token_broker`: the daemon's Dispatch credential is its own
+	// pod identity, traded at the secrets broker, rather than the bearer DispatchTokenFile names,
+	// which is "" whenever this is true (resolveDispatchTokenBroker). Only `runtime: kubernetes`
+	// takes it, and only beside DispatchURL and runtime.kubernetes.agent_secrets.exchange_audience.
+	// The loader reads no environment, so it decides nothing about that trade: boot makes it.
+	DispatchTokenBroker bool
+	// DispatchTokenTransitionFile is `dispatch_token_transition_file`, a path like
+	// DispatchTokenFile and "" when the file names none: the file holding the shared Dispatch
+	// token a launch into a pod built before DispatchTokenBroker was on gets. The daemon never
+	// calls Dispatch with it, and the loader takes it only beside DispatchTokenBroker.
+	DispatchTokenTransitionFile string
+	Projects                    map[string]Project
+	Gates                       Gates
+	GitHubApps                  GitHubApps
 	// Linger is how long a finished tree keeps its workspace before it closes (`linger_hours`).
 	Linger time.Duration
 	// ProductionCheckBound is how long a closed issue's production check stays open after the
@@ -429,13 +440,17 @@ type fileConfig struct {
 	NatsDaemonNkeySeedFile *string
 	DispatchURL            *string
 	DispatchTokenFile      *string
-	Projects               map[string]Project
-	Gates                  *Gates
-	GitHubApps             *GitHubApps
-	Linger                 *time.Duration
-	ProductionCheckBound   *time.Duration
-	PodUpdateGrace         *time.Duration
-	StalledTreeNotice      *time.Duration
+	// DispatchTokenBroker is `dispatch_token_broker`, nil when the file leaves it out, and
+	// DispatchTokenTransitionFile `dispatch_token_transition_file`.
+	DispatchTokenBroker         *bool
+	DispatchTokenTransitionFile *string
+	Projects                    map[string]Project
+	Gates                       *Gates
+	GitHubApps                  *GitHubApps
+	Linger                      *time.Duration
+	ProductionCheckBound        *time.Duration
+	PodUpdateGrace              *time.Duration
+	StalledTreeNotice           *time.Duration
 	// WorkerSilence is `worker_silence_minutes` and WorkerBackground `worker_background_hours`,
 	// pointers as every other duration key here is: a file that leaves a key out is
 	// distinguishable from one that sets it, so resolve leaves the default standing for the
@@ -604,6 +619,19 @@ func readString(value *yaml.Node, key string) (*string, error) {
 	var read string
 	if value.Kind != yaml.ScalarNode || value.Decode(&read) != nil {
 		return nil, fmt.Errorf("%s must be a string", key)
+	}
+	return &read, nil
+}
+
+// readBool reads a key that is only true or false, as the controller's loader reads its own
+// `dispatch_token_broker`; nil for an unset one (absent from its mapping, or null).
+func readBool(value *yaml.Node, key string) (*bool, error) {
+	if value == nil || value.Tag == "!!null" {
+		return nil, nil
+	}
+	var read bool
+	if value.Tag != "!!bool" || value.Decode(&read) != nil {
+		return nil, fmt.Errorf("%s must be true or false", key)
 	}
 	return &read, nil
 }
@@ -1100,6 +1128,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 			return Config{}, errors.New("advertise_host is not used when runtime is tmux: every pane dials the daemon's own unix socket; remove advertise_host")
 		}
 		cfg.AdvertiseHost = *file.AdvertiseHost
+	}
+	if err := resolveDispatchTokenBroker(file, configDir, &cfg); err != nil {
+		return Config{}, err
 	}
 
 	if file.Kubernetes != nil {

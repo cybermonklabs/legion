@@ -205,9 +205,10 @@ type outbox struct {
 
 // outboxTrees is the store's tree barrier (store.Store) as the outbox runs it: an issue close's
 // suspension, an idle release's own two decisions, the check of its workspace and the decline
-// that check can record, a stop's wait for a stored claim's machine, a workflow tree close's
-// cleanup, a delivery wake and the open resume that refuses one, a project pause's stop of a role
-// and which pause stopped a role, and the end of a pause's hold of a pod a deletion took.
+// that check can record, a finished issue's drop of the record of its pods' disks, a stop's wait
+// for a stored claim's machine, a workflow tree close's cleanup, a delivery wake and the open
+// resume that refuses one, a project pause's stop of a role and which pause stopped a role, and
+// the end of a pause's hold of a pod a deletion took.
 type outboxTrees interface {
 	Pool() *store.Pool
 	IssueSuspension(ctx context.Context, project string, closing store.IssueClose, outOfWorkflow func(status string) bool) (bool, error)
@@ -223,6 +224,7 @@ type outboxTrees interface {
 	DeclineLeftPodClose(ctx context.Context, project, issue string, decline store.IdleReleaseDecline) (bool, error)
 	ReleaseIdleIssue(ctx context.Context, project, issue string, decide store.IdleReleaseDecide) (bool, error)
 	ClearIssueRelease(ctx context.Context, project, issue string) error
+	DeleteIssuePodDisks(ctx context.Context, issue string) error
 	NoteReleaseTeardown(ctx context.Context, project, issue string, release int64, teardown store.ReleaseTeardown) error
 	StoredClaimMayRun(ctx context.Context, token claim.Token, row int64) (bool, error)
 	StoredClaimMayRunIn(ctx context.Context, token claim.Token, tree string) (bool, error)

@@ -603,6 +603,7 @@ var stateNarrowings = []stateNarrowing{
 	{contract: podHoldContract, issue: withoutPodHold, dropped: "the issues' podHold"},
 	{contract: priorityContract, issue: withoutPriority, dropped: "the issues' priority and their waitingLine's priority"},
 	{contract: causeTimesContract, issue: withoutCauseTimes, dropped: "the claim views' lastDeathAt and lastStartFailureAt"},
+	{contract: dispatchCredentialContract, state: withoutDispatchCredential, dropped: "dispatchCredential"},
 	{contract: stateSeqContract, state: withoutStateSeq,
 		dropped: "daemon.stateSeq, daemon.stateId and daemon.stateRun"},
 }
@@ -912,6 +913,21 @@ const quietTimeContract = 111
 // moves that constant, and the contract these keys arrived at stays where it is.
 const shapedAnswersContract = 193
 
+// dispatchCredentialContract is the daemon contract that added `dispatchCredential` to the state,
+// the daemon's own Dispatch credential under dispatch_token_broker and the two counts of the
+// Dispatch tokens its launches hand out (version.go's 275, DispatchCredentialView). A caller below
+// it is served the state without the key (withoutDispatchCredential, its row of stateNarrowings):
+// one built before sjawhar/legion#2788 reads the state with a strict schema and would refuse the
+// whole body for a key it does not name, and one built after strips the key instead, so the band
+// keeps the body its own contract's record describes. causeTimesContract's row, 256, stands just
+// below it. Every caller from 193 up states its contract, so callers from 256 through 274 are
+// served the keys of 256 without this object.
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
+// that constant, and the contract the key arrived at stays where it is. It moves only with this
+// change's own number: answers.go's SupportedContracts names the constant rather than its number.
+const dispatchCredentialContract = 275
+
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
 // line's `kind` (version.go's 132): a started issue that gave its admission slot back to wait on
 // another issue (record.LineWaitingOnIssue). A plugin from 85 up to it reads `kind` with a
@@ -1146,7 +1162,7 @@ const causeTimesContract = 256
 // stateSeqContract is the daemon contract that added `daemon.stateSeq`, the sequence of the newest
 // state event the project's daemon committed, read in the body's own snapshot, and beside it
 // `daemon.stateId`, the id of the store that count is kept in, and `daemon.stateRun`, the id of the
-// daemon run that serves the body (version.go's 273, DaemonInfo.StateSeq, StateID and
+// daemon run that serves the body (version.go's 293, DaemonInfo.StateSeq, StateID and
 // StateRun). A plugin before it is served the daemon block without the three keys
 // (withoutStateSeq, its row of stateNarrowings): one built before sjawhar/legion#2788 reads the
 // state with a strict schema and would refuse the whole body for a key it does not name, and one
@@ -1154,15 +1170,15 @@ const causeTimesContract = 256
 // ask for them rather than what keeps such a caller reading at all. The same contract added the
 // observed view of the state route, shaping.go's answer AnswerObservedState, which is no row of
 // Answers: it carries the same daemon block, and observedFor narrows it by the same band.
-// causeTimesContract stands below it with no row of stateNarrowings between the two, so a caller
-// at or above causeTimesContract and below this contract is served 256's keys and none of the
-// three.
+// dispatchCredentialContract stands below it with no row of stateNarrowings between the two, so a
+// caller at or above dispatchCredentialContract and below this contract is served 275's keys and
+// none of the three.
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys arrived at stays where it is. It is the last number
 // of answers.go's SupportedContracts, which names the constant rather than its number for that
 // reason.
-const stateSeqContract = 273
+const stateSeqContract = 293
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
@@ -1894,6 +1910,19 @@ func withoutPause(state State) (State, bool) {
 func withoutStateSeq(state State) (State, bool) {
 	moved := state.Daemon.StateSeq != nil || state.Daemon.StateID != "" || state.Daemon.StateRun != ""
 	state.Daemon.StateSeq, state.Daemon.StateID, state.Daemon.StateRun = nil, "", ""
+	return state, moved
+}
+
+// withoutDispatchCredential is state with no `dispatchCredential`, the one key
+// dispatchCredentialContract added to the state; nothing else of that contract is a key of an
+// answer a plugin parses, since the settings block's `dispatch_token_broker` is a key no reader
+// types (answers.go's typedSettings). The key is a pointer with `omitempty`, written only under
+// dispatch_token_broker, so the band reports a move only for a state that carries it. The field is
+// the state's own value, so the state the source answered is left as it was, as withoutPause
+// leaves it.
+func withoutDispatchCredential(state State) (State, bool) {
+	moved := state.DispatchCredential != nil
+	state.DispatchCredential = nil
 	return state, moved
 }
 

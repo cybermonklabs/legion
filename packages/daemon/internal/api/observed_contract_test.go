@@ -83,7 +83,7 @@ func observedPart(state State) State {
 	return State{Daemon: state.Daemon, Settings: state.Settings, Admission: state.Admission, Issues: issues}
 }
 
-// The observed view follows the whole state's rule (version.go's 273, shaping.go's observedFor):
+// The observed view follows the whole state's rule (version.go's 293, shaping.go's observedFor):
 // at every contract this daemon answers, the view's daemon block, settings, admission block and
 // each issue's observed members are the whole state's at that same contract, whether the caller
 // states its contract or the claims of its pod record it. So an older contract keeps its

@@ -152,7 +152,7 @@ func TestTheStateServedToAPodBeforeTheStateSeqContractLeavesTheNextCallersStateW
 // stateSeqContract is the contract whose entry in version.go added the key, and this daemon's own
 // contract is never below it: a caller at this contract is served the sequence.
 func TestTheStateSeqContractIsTheContractThatAddedTheKey(t *testing.T) {
-	const addedStateSeq = 273
+	const addedStateSeq = 293
 	if stateSeqContract != addedStateSeq {
 		t.Fatalf("stateSeqContract = %d, want %d, the contract whose entry in version.go added `daemon.stateSeq`",
 			stateSeqContract, addedStateSeq)

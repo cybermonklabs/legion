@@ -12,9 +12,9 @@ body: |-
   names the values and the one view the route serves (`observed`): a later version may refuse such
   a request. The route authenticates nobody, so the daemon logs that warning at most once a minute
   in all, and the next line names how many such requests it did not log (`skipped`). The view is
-  part of daemon API contract 273. The daemon serves the view at the
+  part of daemon API contract 293. The daemon serves the view at the
   caller's contract with the same rule as the full state, so at each contract every member of the
-  view is the member the full state serves there: a caller below 273 gets no `stateSeq`, `stateId`
+  view is the member the full state serves there: a caller below 293 gets no `stateSeq`, `stateId`
   or `stateRun` in either answer. On 2026-11-20 the INFRA daemon's full state was 7,307,929 bytes,
   and the part that the view serves was 665,962 bytes.
 custom:
