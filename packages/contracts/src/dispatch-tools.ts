@@ -1881,6 +1881,8 @@ export const dispatchToolSpecs = [
       "the document's margin mark holds no text, each mention delivery still waiting is failed, " +
       "and search stops matching it. A suggestion of it still waiting is rejected out of the " +
       "document before the body goes, so the text an insert suggestion put there goes with it. " +
+      "A retired document takes no new text, so there the suggestion and the margin mark stay " +
+      "as its frozen text holds them, and the delete writes no version of it. " +
       "Every block of it loses the text each revision recorded, so a reference pinned to a block " +
       "of the comment reads none either. A Dispatch of this release keeps the body: " +
       "dispatch read --ref dispatch://KEY/comment/<id> --history then marks the comment deleted " +

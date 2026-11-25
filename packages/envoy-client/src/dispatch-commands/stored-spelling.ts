@@ -1,7 +1,6 @@
-import { PATH_KEEPS_BYTES, pathKeepsBytesOf } from "@legion/contracts";
+import { PATH_KEEPS_BYTES, pathKeepsBytesOf, runOf } from "@legion/contracts";
 import {
   type DirectiveAttribute,
-  runOf,
   type TypedOpener,
   typedFenceBrace,
   typedOpenerAt,

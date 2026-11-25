@@ -70,14 +70,12 @@ export function isPlainTitleBlock(node: DisplayTree): boolean {
   if (Array.isArray(node.marks) && node.marks.length > 0) return false;
   if (!Array.isArray(node.content) || node.content.length === 0) return false;
   if (isUnsureBlock(node)) return false;
-  let text = "";
   for (const child of node.content as DisplayTree[]) {
     if (child.type !== "text" || typeof child.text !== "string") return false;
     if (Array.isArray(child.marks) && child.marks.length > 0) return false;
-    text += child.text;
   }
-  const origin = typeof window === "undefined" ? "" : window.location.origin;
-  return readTextReferences(text, { origin }).references.length === 0;
+  // Every child is a text run, so the node's words are its runs joined.
+  return holdsNoReference(wordsOf(node));
 }
 
 /** Characters or block openers that draw more than plain text in markdown: a list, quote,
@@ -92,8 +90,12 @@ const AUTOLINK_ADDRESS = /https?:\/\/|mailto:|www\./i;
 export function isPlainTitleMarkdown(markdown: string): boolean {
   if (markdown === "" || markdown.startsWith(UNSURE_PREFIX)) return false;
   if (!PLAIN_TITLE_MARKDOWN.test(markdown) || AUTOLINK_ADDRESS.test(markdown)) return false;
-  const origin = typeof window === "undefined" ? "" : window.location.origin;
-  return readTextReferences(markdown, { origin }).references.length === 0;
+  return holdsNoReference(markdown);
+}
+
+/** Whether `text` holds no reference that a body links (`readTextReferences`). */
+function holdsNoReference(text: string): boolean {
+  return readTextReferences(text).references.length === 0;
 }
 
 /** A decision's name as the server's read of a decision names it (`decisionread`'s Heading): the
