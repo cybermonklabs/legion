@@ -34,7 +34,7 @@ type mergeTimeFills struct {
 // that the running rule has not judged yet (an AttributionRule below
 // delivery.AttributionRuleVersion): a row stored before pull_request_heads.merged_at, or written
 // from the envelope of a listener older than that field. It learns it once per read of the results
-// (learnMergeTime), so the CI read and the comparison after it ask GitHub once between them. The
+// (refreshMerge), so the CI read and the comparison after it ask GitHub once between them. The
 // read is the reconcile's own refresh of a row, which stores GitHub's time of the merge and stamps
 // the row with the running rule whatever GitHub answered, so no later read asks again: a pull
 // request GitHub no longer holds, or one of a repository the App cannot read, keeps no time, and
@@ -48,7 +48,7 @@ func (s *server) fillMergeTimes(ctx context.Context, fills *mergeTimeFills, rows
 	for index := range rows {
 		row := &rows[index]
 		if row.MergedAt == nil && row.AttributionRule < delivery.AttributionRuleVersion {
-			row.MergedAt = s.learnMergeTime(ctx, fills, *row)
+			row.MergedAt = s.refreshMerge(ctx, fills, row.Repo, row.Number)
 		}
 		if row.MergedAt == nil {
 			ordered = false
@@ -57,17 +57,17 @@ func (s *server) fillMergeTimes(ctx context.Context, fills *mergeTimeFills, rows
 	return ordered
 }
 
-// learnMergeTime is when row's pull request merged, as GitHub answers it: the refresh of its row
-// (delivery.Attributor.RefreshPullRequestHead), then the time that row holds after it
-// (delivery.Attributor.StoredMergeTime), nil where GitHub gave none or a read failed, which is
-// logged. fills keeps each answer, so one read of the results asks GitHub about a pull request
-// once, a read that failed included. A read with no memo (a nil fills), and a deployment that
-// holds no App key, learn nothing.
-func (s *server) learnMergeTime(ctx context.Context, fills *mergeTimeFills, row delivery.MergeTime) *time.Time {
+// refreshMerge is when pull request number of repo merged, as the store holds it after one refresh
+// of its row from GitHub in this read (delivery.Attributor.RefreshPullRequestHead), read back by its
+// number (delivery.Attributor.StoredMergeTime), since the refresh answers only whether it failed:
+// nil where GitHub gave no time or a read failed, which is logged. fills keeps each answer, so one
+// read of the results asks GitHub about a pull request once, a read that failed included. A read
+// with no memo (a nil fills), and a deployment that holds no App key, refresh nothing.
+func (s *server) refreshMerge(ctx context.Context, fills *mergeTimeFills, repo string, number int) *time.Time {
 	if fills == nil || s.deps.GitHub == nil {
 		return nil
 	}
-	key := row.Repo + "#" + strconv.Itoa(row.Number)
+	key := repo + "#" + strconv.Itoa(number)
 	fills.mu.Lock()
 	defer fills.mu.Unlock()
 	if learned, asked := fills.learned[key]; asked {
@@ -77,12 +77,12 @@ func (s *server) learnMergeTime(ctx context.Context, fills *mergeTimeFills, row 
 		fills.learned = map[string]*time.Time{}
 	}
 	var learned *time.Time
-	err := s.deps.Attributor.RefreshPullRequestHead(ctx, s.deps.Store.Pool, s.deps.GitHub, s.deps.Events, row.Repo, row.Number, time.Now())
+	err := s.deps.Attributor.RefreshPullRequestHead(ctx, s.deps.Store.Pool, s.deps.GitHub, s.deps.Events, repo, number, time.Now())
 	if err == nil {
-		learned, err = s.deps.Attributor.StoredMergeTime(ctx, s.deps.Store.Pool, row.Repo, row.Number)
+		learned, err = s.deps.Attributor.StoredMergeTime(ctx, s.deps.Store.Pool, repo, number)
 	}
 	if err != nil {
-		slog.Warn("dispatch: read when a merged pull request merged", "repo", row.Repo, "number", row.Number, "error", err)
+		slog.Warn("dispatch: refresh a merged pull request a results read orders", "repo", repo, "number", number, "error", err)
 	}
 	fills.learned[key] = learned
 	return learned
