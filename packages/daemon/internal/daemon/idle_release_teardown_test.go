@@ -3,12 +3,17 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -186,10 +191,11 @@ func TestATeardownWhoseRuntimeFailsAfterItTookThePodFinishesOnItsNextAttempt(t *
 }
 
 // The record of a release (store.Store.RecordPodRelease) is the teardown's first step once the
-// runtime has answered, and it can fail too: the runtime has taken the pod, and the mark names no
-// release yet. A daemon that stops between the runtime's answer and the record leaves the store
-// in the same state, and the daemon that replaces it runs the row again. Here the record fails
-// once, and the row runs again after a claim of the pod was taken over or the pod was given work:
+// runtime has answered, and it can fail too: the runtime has taken the pod, and no record names
+// the mark yet (pod_releases.issue_release_id). A daemon that stops between the runtime's answer
+// and the record leaves the store in the same state, and the daemon that replaces it runs the row
+// again. Here the record fails once, and the row runs again after a claim of the pod was taken
+// over or the pod was given work:
 // in the same daemon, and in a daemon restarted from the store alone (idleRig.restarted). The
 // runtime's read committed the release (store's CommitIssueRelease), so that attempt finishes
 // it: it asks the runtime again, records the release once, and cancels nothing. An attempt that
@@ -299,6 +305,293 @@ func refusePodReleaseRecordOnce(t *testing.T, pool *store.Pool) {
 			t.Fatalf("refuse the next record of a release: %v", err)
 		}
 	}
+}
+
+// R3's bound on a release (dispatch://INFRA-3589).
+// A record of the release that cannot be written is the teardown's error: the mark stands and the
+// row runs again, because the record tells the wakes taken under the mark the release they end.
+// A release that cannot finish must not run for ever, so the retries end at
+// workflow.WakeHeldForRelease after the mark. Here a trigger on pod_releases refuses every record
+// (refusePodReleaseRecords), an earlier release of the pod is recorded before this one marks, and
+// a CI settlement's wake of the implementer is taken under the mark with its start queued, as the
+// workflow's wake leaves one (wakeReleased). Each row runs a first attempt a minute before the
+// bound, which fails and leaves the mark, the wake's resume and its start as they were. Then:
+//
+//   - (a) is the test. The next attempt runs at the bound. It logs one ERROR line naming the issue,
+//     the release and the record's error, records no release, clears the mark and finishes its
+//     row. The wake's resume pairs with no release, keeps the release it saw as the issue's newest,
+//     and is dated to the give-up. Its start is the role's one start: the role's next wake closes
+//     no resume and takes none, and the drain resumes the role once. The control of that absence
+//     follows it: once a later release of the issue is recorded, the same wake closes the resume
+//     and takes its own.
+//   - (b) is the control of (a). The next attempt runs a second before the bound. It fails as the
+//     first did: it logs its row's failure and no line of a give-up, the mark stands, the row
+//     stays, the resume and the start are as the wake left them, and the role is not resumed in
+//     the pod the teardown took.
+func TestATeardownWhoseRecordFailsEveryTimeGivesUpAtTheBound(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// next is when the next attempt runs, after the release's mark.
+		next time.Duration
+		// givesUp is whether that attempt gives up on the record.
+		givesUp bool
+	}{
+		{name: "(a) the test: the attempt at the bound gives up on the record", next: workflow.WakeHeldForRelease, givesUp: true},
+		{name: "(b) the control: an attempt a second before the bound fails", next: workflow.WakeHeldForRelease - time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newIdleRig(t)
+			ctx := context.Background()
+			var logs syncBuffer
+			rig.runner.log = jsonLogger(&logs)
+			earlier, _, err := rig.st.RecordPodRelease(ctx, store.PodRelease{Project: "legion", Issue: rig.issue.Key,
+				Generation: 1, Roles: []string{string(claim.RoleImplementer)}, At: time.Now().UTC().Add(-2 * time.Hour)})
+			if err != nil {
+				t.Fatalf("record the earlier release: %v", err)
+			}
+			rig.heldTeardown(t)
+			refusePodReleaseRecords(t, rig.pool)
+			var mark int64
+			var markedAt time.Time
+			if err := rig.pool.QueryRow(ctx, `select id, marked_at from issue_releases where issue = $1`,
+				rig.issue.Key).Scan(&mark, &markedAt); err != nil {
+				t.Fatalf("read the release's mark: %v", err)
+			}
+
+			// The settlement's wake, taken after the release recorded the claim released and before
+			// its teardown: its resume reads the earlier release, and its start waits for the
+			// teardown row (record's outboxInOrder).
+			takenAt := time.Now().UTC().Truncate(time.Microsecond)
+			if taken, err := rig.st.TakePodWake(ctx, "legion", rig.issue.Key, rig.token, pods.WakeChecks, takenAt, 0); err != nil || !taken {
+				t.Fatalf("take the settlement's wake = %t, %v; want it taken", taken, err)
+			}
+			const detail = "head1 failed build"
+			start, err := record.NewOutboxRow(rig.issue.Key, record.SuperviseRequest{Op: "start", Tree: rig.issue.Tree,
+				Role: claim.RoleImplementer, Generation: 1, Task: workflow.WakeTask(pods.WakeChecks, detail, workflow.StoppedByRelease),
+				WakeKind: pods.WakeChecks, WakeDetail: detail}, time.Now().UTC())
+			if err != nil {
+				t.Fatalf("encode the wake's start: %v", err)
+			}
+			if _, err := rig.pool.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token)
+				values ($1, $2, $3, 0, now(), '', '')`, string(start.Kind), rig.issue.Key, string(start.Payload)); err != nil {
+				t.Fatalf("queue the wake's start: %v", err)
+			}
+			woken := wokenResume{release: earlier, seen: earlier, at: takenAt, clock: takenAt}
+			resumes := len(rig.rt.CallsOf("Resume"))
+
+			// attempt runs the teardown row once, with the outbox's clock at after past the mark, and
+			// answers the lines that run logged.
+			attempt := func(after time.Duration) string {
+				t.Helper()
+				rig.runner.now = func() time.Time { return markedAt.Add(after) }
+				teardownDueAgain(t, rig, false)
+				before := len(logs.String())
+				if err := rig.runner.RunOnce(ctx); err != nil {
+					t.Fatalf("run the teardown: %v", err)
+				}
+				return logs.String()[before:]
+			}
+			// failing checks a teardown whose attempts all failed: the row kept with that many
+			// attempts, the mark standing, no record of the release, the wake's resume and its start
+			// as the wake left them, and the role not resumed.
+			failing := func(attempts int, logged string) {
+				t.Helper()
+				var kept int
+				if err := rig.pool.QueryRow(ctx, `select attempts from outbox where issue = $1 and kind = 'issue_release'`,
+					rig.issue.Key).Scan(&kept); err != nil || kept != attempts || !rig.marked(t) {
+					t.Fatalf("the teardown row's attempts = %d (%v) and the mark stands = %t; want the row failed %d times and the mark left",
+						kept, err, rig.marked(t), attempts)
+				}
+				refused := loggedLines(t, logged, podReleasesRefused)
+				if len(refused) != 1 || refused[0]["msg"] != "outbox row failed" || refused[0]["kind"] != "issue_release" {
+					t.Fatalf("the attempt's lines that name the refused record = %v, want one: the teardown row's failure", refused)
+				}
+				if given := loggedMessages(t, logs.String(), idleRigRecordGivenUp); len(given) != 0 {
+					t.Fatalf("the teardown logged %v, want no line of a teardown that gave up on its record", given)
+				}
+				if releases := rig.records(t).Releases; len(releases) != 1 || releases[0].ID != earlier {
+					t.Fatalf("releases = %+v, want the earlier release %d alone", releases, earlier)
+				}
+				rig.wantImplementerResume(t, woken)
+				if starts := rig.implementerStarts(t); starts != 1 {
+					t.Fatalf("the implementer's queued starts = %d, want the wake's one start, waiting for the teardown", starts)
+				}
+				if got := rig.machine.Claim(); !got.Released() || len(rig.rt.CallsOf("Resume")) != resumes {
+					t.Fatalf("the claim = %s by %s after %d resumes; want it released and not resumed in the pod the teardown took",
+						got.State, got.SuspendedBy, len(rig.rt.CallsOf("Resume"))-resumes)
+				}
+			}
+
+			failing(1, attempt(workflow.WakeHeldForRelease-time.Minute))
+			logged := attempt(tc.next)
+			if !tc.givesUp {
+				failing(2, logged)
+				return
+			}
+
+			errorLines := loggedLines(t, logged, `"level":"ERROR"`)
+			if len(errorLines) != 1 || !strings.HasPrefix(fmt.Sprint(errorLines[0]["msg"]), idleRigRecordGivenUp) ||
+				errorLines[0]["issue"] != rig.issue.Key || errorLines[0]["release"] != float64(mark) ||
+				!strings.Contains(fmt.Sprint(errorLines[0]["error"]), podReleasesRefused) {
+				t.Fatalf("the attempt at the bound logged the ERROR lines %v; want one, %q, naming issue %s, release %d and the record's error %q",
+					errorLines, idleRigRecordGivenUp, rig.issue.Key, mark, podReleasesRefused)
+			}
+			if failed := loggedMessages(t, logged, "outbox row failed"); len(failed) != 0 {
+				t.Fatalf("the attempt at the bound logged %v, want no failure of its row", failed)
+			}
+			var rows int
+			if err := rig.pool.QueryRow(ctx, `select count(*) from outbox where issue = $1 and kind = 'issue_release'`,
+				rig.issue.Key).Scan(&rows); err != nil || rows != 0 || rig.marked(t) {
+				t.Fatalf("after the attempt at the bound the teardown rows = %d (%v) and the mark stands = %t; want the row finished and the mark cleared",
+					rows, err, rig.marked(t))
+			}
+			if releases := rig.records(t).Releases; len(releases) != 1 || releases[0].ID != earlier {
+				t.Fatalf("releases = %+v, want the earlier release %d alone: the give-up writes no pod release", releases, earlier)
+			}
+			gaveUp := markedAt.Add(workflow.WakeHeldForRelease)
+			settled := wokenResume{release: 0, seen: earlier, at: gaveUp, clock: gaveUp}
+			rig.wantImplementerResume(t, settled)
+			if starts := rig.implementerStarts(t); starts != 1 {
+				t.Fatalf("the implementer's queued starts = %d, want the wake's one start", starts)
+			}
+
+			if closed, taken := rig.implementerWake(t, gaveUp); closed != 0 || taken {
+				t.Fatalf("the role's next wake before its start ran closed the resume of release %d and took a wake = %t; want neither: the wake's start is the role's one start",
+					closed, taken)
+			}
+			// The drain runs the wake's start, which resumes the role once, in the new pod. The
+			// start then waits to hand the role its task, since the rig's implementer still holds
+			// its phase's task, so it can stay queued; it resumes nothing again.
+			rig.drain(t)
+			if got := rig.machine.Claim(); got.Released() || len(rig.rt.CallsOf("Resume")) != resumes+1 || rig.implementerStarts(t) > 1 {
+				t.Fatalf("the claim after the drain = %s by %s after %d resumes, with %d starts queued; want it resumed once, by the wake's one start",
+					got.State, got.SuspendedBy, len(rig.rt.CallsOf("Resume"))-resumes, rig.implementerStarts(t))
+			}
+			if closed, taken := rig.implementerWake(t, gaveUp); closed != 0 || taken {
+				t.Fatalf("the role's next wake after its start ran closed the resume of release %d and took a wake = %t; want neither",
+					closed, taken)
+			}
+			rig.wantImplementerResume(t, settled)
+
+			// The control of the absence above: a later release of the issue is recorded, so the
+			// pod the resume waits for went away again, and the same wake closes the resume and
+			// takes its own.
+			if _, err := rig.pool.Exec(ctx, `drop trigger refuse_pod_release_records on pod_releases`); err != nil {
+				t.Fatalf("let a later release be recorded: %v", err)
+			}
+			later, _, err := rig.st.RecordPodRelease(ctx, store.PodRelease{Project: "legion", Issue: rig.issue.Key,
+				Generation: 1, Roles: []string{string(claim.RoleImplementer)}, At: gaveUp.Add(time.Hour)})
+			if err != nil {
+				t.Fatalf("record a later release: %v", err)
+			}
+			if closed, taken := rig.implementerWake(t, gaveUp.Add(2*time.Hour)); closed != later || !taken {
+				t.Fatalf("the wake after a later release closed the resume of release %d and took a wake = %t; want the resume closed under release %d and a wake taken",
+					closed, taken, later)
+			}
+		})
+	}
+}
+
+// idleRigRecordGivenUp is the start of the ERROR line a teardown logs when it gives up on a record
+// of its release that could not be written (outbox.recordGivenUp).
+const idleRigRecordGivenUp = "outbox: the record of a release could not be written within 15 minutes of its mark"
+
+// podReleasesRefused is the error the trigger of refusePodReleaseRecords raises.
+const podReleasesRefused = "pod_releases refuses every record"
+
+// refusePodReleaseRecords makes the database refuse every record of a release: a trigger on
+// pod_releases raises podReleasesRefused at each insert, so each record's transaction
+// (store.Store.RecordPodRelease) rolls back.
+func refusePodReleaseRecords(t *testing.T, pool *store.Pool) {
+	t.Helper()
+	for _, statement := range []string{
+		`create function refuse_pod_release_records() returns trigger language plpgsql as $$
+		begin
+			raise exception '` + podReleasesRefused + `';
+		end $$`,
+		`create trigger refuse_pod_release_records before insert on pod_releases
+			for each row execute function refuse_pod_release_records()`,
+	} {
+		if _, err := pool.Exec(context.Background(), statement); err != nil {
+			t.Fatalf("refuse every record of a release: %v", err)
+		}
+	}
+}
+
+// wokenResume is what a test reads of the implementer's resume: the release it pairs with, the
+// newest release it saw (pod_resumes.seen_release), its time and its stuck clock.
+type wokenResume struct {
+	release, seen int64
+	at, clock     time.Time
+}
+
+// wantImplementerResume checks that the implementer has one resume, open and with no first turn,
+// and that it is want.
+func (r *idleRig) wantImplementerResume(t *testing.T, want wokenResume) {
+	t.Helper()
+	rows, err := r.pool.Query(context.Background(), `select release_id, seen_release, at, clock_at,
+		closed_at is not null or first_turn_at is not null from pod_resumes where issue = $1 and role = 'implementer' order by id`,
+		r.issue.Key)
+	if err != nil {
+		t.Fatalf("read the implementer's resumes: %v", err)
+	}
+	defer rows.Close()
+	var got []wokenResume
+	ended := false
+	for rows.Next() {
+		var resume wokenResume
+		var done bool
+		if err := rows.Scan(&resume.release, &resume.seen, &resume.at, &resume.clock, &done); err != nil {
+			t.Fatalf("read the implementer's resumes: %v", err)
+		}
+		ended = ended || done
+		got = append(got, resume)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the implementer's resumes: %v", err)
+	}
+	if len(got) != 1 || ended || got[0].release != want.release || got[0].seen != want.seen ||
+		!got[0].at.Equal(want.at) || !got[0].clock.Equal(want.clock) {
+		t.Fatalf("the implementer's resumes = %+v (one ended: %t), want one open resume %+v", got, ended, want)
+	}
+}
+
+// implementerStarts is how many starts of the implementer the outbox holds.
+func (r *idleRig) implementerStarts(t *testing.T) int {
+	t.Helper()
+	var starts int
+	if err := r.pool.QueryRow(context.Background(), `select count(*) from outbox where issue = $1 and kind = 'supervise'
+		and payload->>'op' = 'start' and payload->>'role' = 'implementer'`, r.issue.Key).Scan(&starts); err != nil {
+		t.Fatalf("count the implementer's starts: %v", err)
+	}
+	return starts
+}
+
+// implementerWake takes a backstop's wake of the implementer at at as the workflow's wake takes
+// one (wakeReleased): in one transaction, the pause that holds it (PauseOfWake), the close of a
+// resume whose pod went away (ClosePodGoneResume) and the take (TakePodWake). It answers the
+// release the close named, 0 where it closed nothing, and whether the take took the wake.
+func (r *idleRig) implementerWake(t *testing.T, at time.Time) (closed int64, taken bool) {
+	t.Helper()
+	ctx := context.Background()
+	records, err := r.st.PodRecordsOf("legion")
+	if err != nil {
+		t.Fatalf("read the pod records: %v", err)
+	}
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		pause, _, err := records.PauseOfWake(ctx, tx, r.issue.Key, r.token, 0)
+		if err != nil {
+			return err
+		}
+		if closed, err = records.ClosePodGoneResume(ctx, tx, r.issue.Key, claim.RoleImplementer); err != nil {
+			return err
+		}
+		taken, err = records.TakePodWake(ctx, tx, r.issue.Key, claim.RoleImplementer, pods.WakeBackstop, at, pause)
+		return err
+	}); err != nil {
+		t.Fatalf("take the implementer's next wake: %v", err)
+	}
+	return closed, taken
 }
 
 // restarted is the rig's daemon after a restart: a supervisor that restores every claim the store

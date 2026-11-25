@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 )
 
@@ -176,5 +177,103 @@ func TestTheStrandedReadSeesOnlyTheWakesOfTheNewestRelease(t *testing.T) {
 	unfinished, err = unfinishedResumes(ctx, st, "legion", bound)
 	if err != nil || len(unfinished) != 1 || unfinished[0].Role != "tester" {
 		t.Fatalf("unfinished wakes of the newest release = %+v, %v; want the tester's alone", unfinished, err)
+	}
+}
+
+// A teardown that gives up on its release's record settles the wakes taken under the mark in its
+// place (SettleUnrecordedRelease, R3's bound of dispatch://INFRA-3589), and writes no release. In
+// the first row no record names the mark: the wake taken under it pairs with no release, keeps the
+// newest release it saw, and is dated to the give-up; a wake of a role the release never recorded
+// is left as it was. The second row is the control of the first: a record already names the mark,
+// so the settle answers that and writes nothing, and the wake stays pointed at that record.
+func TestAnUnrecordedReleaseSettlesTheWakeUnderItsMarkUnlessARecordNamesIt(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		recorded bool
+	}{
+		{name: "no record names the mark"},
+		{name: "the control: a record names the mark", recorded: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := migratedStore(t)
+			ctx := context.Background()
+			at := time.Now().UTC().Truncate(time.Millisecond)
+			earlier, _, err := store.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue,
+				Generation: 1, Roles: []string{"implementer"}, At: at.Add(-2 * time.Hour)})
+			if err != nil {
+				t.Fatalf("record the earlier release: %v", err)
+			}
+			markRelease(t, store, 1, 1, 1, 0, claim.RoleImplementer)
+			var mark int64
+			if err := store.Pool().QueryRow(ctx, `select id from issue_releases where issue = $1`, rootIssue).Scan(&mark); err != nil {
+				t.Fatalf("read the mark: %v", err)
+			}
+			take := func(role claim.Role) int64 {
+				t.Helper()
+				token, err := claim.NewToken("legion", rootIssue, role)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if taken, err := store.TakePodWake(ctx, "legion", rootIssue, token, pods.WakeAgentMessage, at.Add(-10*time.Minute), 0); err != nil || !taken {
+					t.Fatalf("take the %s's wake = %t, %v; want it taken", role, taken, err)
+				}
+				id, _, found, err := store.OpenPodResume(ctx, "legion", rootIssue, role)
+				if err != nil || !found {
+					t.Fatalf("the %s's open resume = %t, %v; want the one its wake recorded", role, found, err)
+				}
+				return id
+			}
+			woken := take(claim.RoleImplementer)
+			outside := take(claim.RoleArchitect)
+			release := int64(0)
+			if tc.recorded {
+				if release, _, err = store.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
+					Roles: []string{"implementer"}, At: at, Release: mark}); err != nil {
+					t.Fatalf("record the release: %v", err)
+				}
+			}
+
+			gaveUp := at.Add(time.Hour)
+			recorded, err := store.SettleUnrecordedRelease(ctx, "legion", rootIssue, mark, gaveUp, nil)
+			if err != nil || recorded != tc.recorded {
+				t.Fatalf("the settle answered recorded %t, %v; want %t", recorded, err, tc.recorded)
+			}
+			// The settle writes no release: the earlier one stands, and the record where one names
+			// the mark.
+			wantReleases := 1
+			if tc.recorded {
+				wantReleases = 2
+			}
+			var releases int
+			if err := store.Pool().QueryRow(ctx, `select count(*) from pod_releases where issue = $1`, rootIssue).Scan(&releases); err != nil ||
+				releases != wantReleases {
+				t.Fatalf("releases recorded = %d (%v), want %d", releases, err, wantReleases)
+			}
+			want := []struct {
+				what          string
+				id            int64
+				release, seen int64
+				at            time.Time
+			}{
+				{what: "the wake taken under the mark", id: woken, release: 0, seen: earlier, at: gaveUp},
+				{what: "the wake of a role the release never recorded", id: outside, release: earlier, seen: earlier, at: at.Add(-10 * time.Minute)},
+			}
+			if tc.recorded {
+				want[0].release, want[0].seen, want[0].at = release, release, at
+			}
+			for _, want := range want {
+				var release, seen int64
+				var resumed, clock time.Time
+				if err := store.Pool().QueryRow(ctx, `select release_id, seen_release, at, clock_at from pod_resumes where id = $1`,
+					want.id).Scan(&release, &seen, &resumed, &clock); err != nil {
+					t.Fatalf("read %s: %v", want.what, err)
+				}
+				if release != want.release || seen != want.seen || !resumed.Equal(want.at) || !clock.Equal(want.at) {
+					t.Errorf("%s has release %d, seen release %d, time %s and stuck clock %s; want %d, %d, and %s for both",
+						want.what, release, seen, resumed.UTC().Format(time.RFC3339Nano), clock.UTC().Format(time.RFC3339Nano),
+						want.release, want.seen, want.at.Format(time.RFC3339Nano))
+				}
+			}
+		})
 	}
 }

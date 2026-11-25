@@ -124,6 +124,9 @@ func (c ReleaseCause) String() string {
 // Teardown is what the mark notes of the release's teardown (issue_releases.teardown,
 // ReleaseTeardown). Every decision that holds a mark carries all of the mark's half of it
 // (releaseMark.decision), so no reader gets the zero note, which is a real state, by accident.
+//
+// MarkedAt is when the release's mark was written (issue_releases.marked_at). The teardown reads
+// it to bound how long a failed record write is retried before it gives up on the record.
 type ReleaseDecision struct {
 	Act            ReleaseAct
 	Cause          ReleaseCause
@@ -133,6 +136,7 @@ type ReleaseDecision struct {
 	PodTaken       bool
 	Committed      bool
 	Teardown       ReleaseTeardown
+	MarkedAt       time.Time
 }
 
 // ReleaseTeardown is whether the teardown of the release of a pod no role can use may have taken
@@ -200,6 +204,8 @@ type releaseMark struct {
 	// teardown is the mark's note of whether an attempt of the release's teardown came to the
 	// runtime's first write (ReleaseTeardown).
 	teardown ReleaseTeardown
+	// markedAt is when the release's mark was written (issue_releases.marked_at).
+	markedAt time.Time
 }
 
 // holds is whether row is one of the rows this mark's release queued. Every row of a release was
@@ -208,9 +214,10 @@ type releaseMark struct {
 func (m releaseMark) holds(row int64) bool { return row >= m.first && row <= m.last }
 
 // decision is the mark's half of a ReleaseDecision — the release's id, the roles its stops have
-// suspended, its rule and its teardown's note — which every row of the release reads alike.
+// suspended, its rule, its teardown's note and when the mark was written — which every row of the
+// release reads alike.
 func (m releaseMark) decision() ReleaseDecision {
-	return ReleaseDecision{Release: m.id, Suspended: m.roles(), SuspendsNoRole: m.suspendsNoRole(), Teardown: m.teardown}
+	return ReleaseDecision{Release: m.id, Suspended: m.roles(), SuspendsNoRole: m.suspendsNoRole(), Teardown: m.teardown, MarkedAt: m.markedAt}
 }
 
 // readReleaseMark reads the mark of issue's release and places row in it: held is false for a
@@ -218,9 +225,9 @@ func (m releaseMark) decision() ReleaseDecision {
 // the row belongs to.
 func readReleaseMark(ctx context.Context, tx pgx.Tx, project, issue string, row int64) (mark releaseMark, held bool, err error) {
 	err = tx.QueryRow(ctx, `select id, first_row, boundary_row, last_row, started_row, wake_row, suspended, kind, committed, turn_start,
-		teardown, coalesce((select p.id from pod_releases p where p.issue_release_id = issue_releases.id), 0)
+		teardown, marked_at, coalesce((select p.id from pod_releases p where p.issue_release_id = issue_releases.id), 0)
 		from issue_releases where project = $1 and issue = $2`, project, issue).Scan(&mark.id, &mark.first, &mark.boundary,
-		&mark.last, &mark.started, &mark.wake, &mark.suspended, &mark.kind, &mark.committed, &mark.turn, &mark.teardown, &mark.released)
+		&mark.last, &mark.started, &mark.wake, &mark.suspended, &mark.kind, &mark.committed, &mark.turn, &mark.teardown, &mark.markedAt, &mark.released)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return releaseMark{}, false, nil
 	}

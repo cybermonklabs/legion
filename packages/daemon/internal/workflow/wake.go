@@ -142,13 +142,16 @@ func PauseWakeRow(issue record.Issue, role claim.Role, pause int64) record.Super
 }
 
 // A wake report that finds its claim in a release that has not ended is applied again every
-// wakeRetryInRelease, for at most wakeHeldForRelease after the report's own time. That limit is
+// wakeRetryInRelease, for at most WakeHeldForRelease after the report's own time. That limit is
 // longer than INFRA's 610-second bound on a stop (runtime/sandbox), so a release that ends
 // records the claim inside it. A release that has not ended by then has a fault of its own, and
-// the wake is dropped with one warning (listenerWakeInRelease).
+// the wake is dropped with one warning (listenerWakeInRelease). WakeHeldForRelease is R3's bound
+// on the release too (dispatch://INFRA-3589): a teardown whose record of the release cannot be
+// written runs again for at most WakeHeldForRelease after the release's mark, and then finishes
+// without that record and clears the mark (internal/daemon's recordGivenUp).
 const (
 	wakeRetryInRelease = 30 * time.Second
-	wakeHeldForRelease = 15 * time.Minute
+	WakeHeldForRelease = 15 * time.Minute
 )
 
 // wakePreamble is the first sentences of the task of a wake whose session an idle release stopped
@@ -434,10 +437,10 @@ func (e *Engine) listenerWakeReleased(ctx context.Context, tx pgx.Tx, released s
 // stop to end. The report is then applied again after wakeRetryInRelease (intake.RetryLater,
 // Waiting): once the release records the claim, the report wakes it, and once a cancel ends the
 // release, the report finds the claim live or its start queued. A report still in that gap
-// wakeHeldForRelease after its own time is dropped with one warning, once the fact that drops it
+// WakeHeldForRelease after its own time is dropped with one warning, once the fact that drops it
 // commits.
 func (e *Engine) listenerWakeInRelease(ctx context.Context, held supervise.Claim, marked time.Time, kind, detail string, fact intake.ListenerWake) error {
-	deadline := fact.At.Add(wakeHeldForRelease)
+	deadline := fact.At.Add(WakeHeldForRelease)
 	if !e.now().Before(deadline) {
 		e.warnOnCommit(ctx, "wake: a wake that came during a release was dropped: the release did not end within 15 minutes of the report",
 			"issue", held.Issue, "role", held.Role, "kind", kind, "detail", detail, "report", fact.Report, "at", fact.At)
@@ -676,7 +679,7 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 // (store.Store.RecordPodRelease). A listener's report has a time of its own
 // (intake.ListenerWake.At). That time stays the report's: it bounds how long the report waits for
 // a release (listenerWakeInRelease), and that wait's warning names it. It is never the resume's
-// time, because a report can wait up to wakeHeldForRelease before the take, and a stuck rule that
+// time, because a report can wait up to WakeHeldForRelease before the take, and a stuck rule that
 // counted that wait would report a pod that is still being built.
 //
 // Which pause holds the wake is the store's one rule of it (Pods.PauseOfWake, decision 15 of
