@@ -15,6 +15,7 @@ import {
 } from "@legion/contracts/legion-api";
 import type { Actor } from "../web/src/api/types";
 import { checkStanding } from "../web/src/features/issue-page/tree-drafts";
+import { compareTimestamps } from "../web/src/lib/timestamps";
 import {
   answerAsk,
   baseUrl,
@@ -24,6 +25,7 @@ import {
   createIssueArtifact,
   createMessage,
   createProject,
+  declineAsk,
   editArtifact,
   getIssue,
   getIssueDecisions,
@@ -37,6 +39,7 @@ import {
   recordCheckResult,
   requestApproval,
   reviewArtifact,
+  uploadIssueFile,
   userHeaders,
   withOpenedAsk,
 } from "./api";
@@ -45,6 +48,7 @@ import { awaitBlockAsk, pause } from "./issue-layout-seed-support";
 import { LEGION_PROJECT, seedLegionDaemon } from "./legion-seed";
 import { sql } from "./psql";
 import { sqlLiteral } from "./seed";
+import { ONE_PIXEL_PNG } from "./sends";
 
 /** The person every Dashboard row signs in as: the assignee of each seeded issue, so every open
  *  question of it waits on her unless it is handed on. */
@@ -1037,4 +1041,237 @@ async function awaitUnread(key: string, threads: readonly string[]): Promise<voi
     }
     await pause(100);
   }
+}
+
+/** The questions and decisions that the ask body and card rows read on today's pages. */
+export const ASK_TODAY = {
+  anchor: "Each item is answered where it is drawn.",
+  blockId: "rollout-choice",
+  blockQuestion: "Where should we start the rollout?",
+  changeAnswer: "Start with the second batch.",
+  declined: "Should we change the release date?",
+  optionQuestion: "Which order does the list take?",
+  options: [
+    { description: "Newest at the top.", label: "Newest first" },
+    { description: "Oldest at the top.", label: "Oldest first" },
+  ],
+  picture: "Rollout map",
+  questionShaped: "What should the next batch contain?",
+  reply: "Both orders work for the next batch.",
+  unsure: "Unsure: we have not measured how frequently the list changes.",
+} as const;
+
+export interface AskTodayDecision {
+  readonly case: "first" | "second" | "kept" | "person" | "replaced";
+  readonly heading: string;
+  readonly section: "Waiting for your review" | "Your decisions" | "Replaced";
+  readonly ties: readonly string[];
+  readonly text: string;
+}
+
+export interface AskTodaySeed extends DashboardSeed {
+  readonly blockPath: string;
+  readonly notesId: string;
+  readonly pictureSlug: string;
+  readonly plannerName: string;
+  readonly records: Readonly<
+    Record<
+      "anchored" | "block" | "changed" | "declined" | "orphaned" | "questionShaped" | "thread",
+      string
+    >
+  >;
+  readonly decisionCases: readonly AskTodayDecision[];
+}
+
+export async function seedAskToday(holds: MainHolds): Promise<AskTodaySeed> {
+  const seed = await seedDashboard(holds);
+  const { key } = seed;
+  const picture = await uploadIssueFile(key, {
+    bytes: new Uint8Array(Buffer.from(ONE_PIXEL_PNG, "base64")),
+    contentType: "image/png",
+    name: "rollout.png",
+  });
+  const oldWords = "The first batch starts at dawn.";
+  const notes = await createIssueArtifact(
+    key,
+    { content: `${oldWords}\n`, name: "rollout.md" },
+    asPlanner
+  );
+  await editArtifact(
+    seed.specArtifactId,
+    {
+      ops: [
+        {
+          after: "end",
+          markdown: [
+            `:::ask{#${ASK_TODAY.blockId} urgency="high" multiple="false" state="open"}`,
+            ASK_TODAY.blockQuestion,
+            "",
+            `![${ASK_TODAY.picture}](dispatch://${key}/artifact/${picture.artifact.slug}@v1)`,
+            "",
+            ...ASK_TODAY.options.map(({ label, description }) => `- ${label}: ${description}`),
+            ":::",
+          ].join("\n"),
+          op: "insert",
+        },
+      ],
+    },
+    asPlanner
+  );
+  const notesId = notes.artifact.id;
+  const block = await awaitBlockAsk(key, ASK_TODAY.blockId);
+  const anchored = await createAsk(
+    key,
+    {
+      anchor: { artifact: "spec", quote: ASK_TODAY.anchor },
+      options: [...ASK_TODAY.options],
+      question: "How should the reader order these items?",
+    },
+    asPlanner
+  );
+  const orphaned = await createAsk(
+    key,
+    { anchor: { artifact: notesId, quote: oldWords }, question: "Is this the start time?" },
+    asPlanner
+  );
+  await editArtifact(
+    notesId,
+    { ops: [{ find: oldWords, op: "replace", with: "No time is set for the next batch." }] },
+    asPlanner
+  );
+
+  // This open ask belongs to another reader. A new reply lists it as a thread, not as an ask
+  // waiting on the signed-in reader.
+  const thread = await createAsk(
+    key,
+    {
+      multiple: true,
+      options: [...ASK_TODAY.options],
+      question: "Which orders work for the next batch?",
+    },
+    asPlanner
+  );
+  await createComment(key, { ask_id: thread.id, body: "Does the next batch use the same order?" });
+  await handAskOn(thread.id, "bob");
+  await createComment(key, { ask_id: thread.id, body: ASK_TODAY.reply }, asPlanner);
+  await awaitUnread(key, [thread.id]);
+
+  const changed = await createAsk(
+    key,
+    { options: [...ASK_TODAY.options], question: "Which batch should run first?" },
+    asPlanner
+  );
+  const first = await answerAsk(changed.id, {
+    expected_edited_at: null,
+    selected: [ASK_TODAY.options[0].label],
+    text: "Start with the first batch.",
+  });
+  if (first.answer === null) throw new Error("The first answer is missing from the write response");
+  await answerAsk(changed.id, {
+    expected_answer_at: first.answer.at,
+    expected_edited_at: null,
+    selected: [ASK_TODAY.options[1].label],
+    text: ASK_TODAY.changeAnswer,
+  });
+  const declined = await createAsk(key, { question: ASK_TODAY.declined }, asPlanner);
+  await declineAsk(declined.id, { note: "The release owner decides this one." });
+  const questionShaped = await createAsk(key, { question: ASK_TODAY.questionShaped }, asPlanner);
+
+  // The second decision already shapes r4, which seedDashboard edited after the tie.
+  // Change the decision after that edit, but keep its first paragraph for the Change quote.
+  const words = seededDecisions(key, seed.asks.answered);
+  await editArtifact(
+    seed.decisionsDocumentId,
+    {
+      ops: [
+        {
+          find: words.second.words,
+          op: "replace",
+          with: `${words.second.words}\n\n${ASK_TODAY.unsure}`,
+        },
+      ],
+    },
+    asPlanner
+  );
+  if (!holds.decisionsAreNodes) {
+    const deadline = Date.now() + 20_000;
+    for (;;) {
+      const changed = (await getIssueDecisions(key)).decisions?.find(
+        (decision) => decision.heading === words.second.heading
+      );
+      const tie = changed?.links?.find(({ to }) => to.block_id === "r4");
+      if (
+        changed?.waiting_review &&
+        changed.unsure &&
+        tie?.stale &&
+        tie.to.changed_at != null &&
+        compareTimestamps(tie.to.changed_at, tie.created_at) > 0
+      ) {
+        break;
+      }
+      if (Date.now() > deadline) {
+        throw new Error(
+          `The second decision does not show both link changes: ${JSON.stringify(changed)}`
+        );
+      }
+      await pause(100);
+    }
+  }
+  // The inserted ask opens a new spec version. Renew the request for that version.
+  const approval = withOpenedAsk(await requestApproval(seed.specArtifactId, {}, asPlanner));
+  await awaitApproval(key, seed.specArtifactId, "awaiting");
+  return {
+    ...seed,
+    asks: { ...seed.asks, approval: { id: approval.ask.id, version: approval.version } },
+    blockPath: `/issues/${key}/spec`,
+    notesId,
+    pictureSlug: picture.artifact.slug,
+    plannerName: PLANNER.origin?.session_title ?? PLANNER.id,
+    records: {
+      anchored: anchored.id,
+      block,
+      changed: changed.id,
+      declined: declined.id,
+      orphaned: orphaned.id,
+      questionShaped: questionShaped.id,
+      thread: thread.id,
+    },
+    decisionCases: [
+      {
+        case: "first",
+        heading: words.first.heading,
+        section: "Waiting for your review",
+        ties: [REQUIREMENTS.r1, REQUIREMENTS.r3],
+        text: seed.decisions.first.words,
+      },
+      {
+        case: "second",
+        heading: words.second.heading,
+        section: "Waiting for your review",
+        ties: [R4_AGAIN],
+        text: seed.decisions.second.words,
+      },
+      {
+        case: "kept",
+        heading: words.kept.heading,
+        section: "Your decisions",
+        ties: [REQUIREMENTS.r1],
+        text: quotedWords(words.kept.words),
+      },
+      {
+        case: "person",
+        heading: words.person.heading,
+        section: "Your decisions",
+        ties: [REQUIREMENTS.r2],
+        text: "Decided in",
+      },
+      {
+        case: "replaced",
+        heading: words.replaced.heading,
+        section: "Replaced",
+        ties: [REQUIREMENTS.r3],
+        text: quotedWords(words.replaced.words),
+      },
+    ] as const,
+  };
 }
