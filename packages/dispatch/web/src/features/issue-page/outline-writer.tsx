@@ -56,8 +56,6 @@ export interface OutlineWriter {
   readonly sendKey: MutationKey;
   readonly setKind: (kind: WriterKind) => void;
   readonly setReply: (reply: ReplyTarget | null) => void;
-  /** Picks `label` of the options of the question the line answers, or lets it go. */
-  readonly toggle: (label: string) => void;
   /** Sets the line back to a new comment on the issue and puts the caret in it: the issue's own
    *  Reply, whose reply is a comment on the issue. */
   readonly writeOnIssue: () => void;
@@ -240,9 +238,6 @@ export function OutlineWriterProvider({
     },
     [answering, focus, sendKey, setReply, store]
   );
-  const toggle = useCallback((label: string) => {
-    setAnswer((held) => (held === undefined ? held : picked(held, label)));
-  }, []);
   const clear = useCallback(() => {
     if (store.sendingNow(sendKey)) return;
     setReply(null);
@@ -283,7 +278,6 @@ export function OutlineWriterProvider({
       sendKey,
       setKind,
       setReply,
-      toggle,
       writeOnIssue,
     }),
     [
@@ -302,7 +296,6 @@ export function OutlineWriterProvider({
       replyTo,
       sendKey,
       setReply,
-      toggle,
       writeOnIssue,
     ]
   );

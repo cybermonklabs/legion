@@ -85,34 +85,22 @@ function focusedApprovalAction(action: keyof typeof ACTION_WORDS): HTMLButtonEle
 }
 
 /**
- * The line at the outline's foot while it answers a question: the question's options are its
- * chips there, which the keyboard reaches, so its controls own the keys as an ask card's do.
- */
-const ANSWER_LINE = "form[data-answering]";
-
-/**
- * Whether focus is outside every `<input>`, every ask card and the line that answers a question.
- * `0`-`3` and `Shift+P` are the two keys that write the issue without focusing a control, so they
- * are the two that have to say where the reader is not: a digit typed straight after picking a
- * question's option belongs to that control's own surface, not to the issue's priority. The
- * registry passes single keys through every control that takes no typed text, so this is the
- * page's own question to answer.
+ * Whether focus is outside every `<input>` and outside every ask card. `0`-`3` and `Shift+P` are
+ * the two keys that write the issue without focusing a control, so they are the two that have to
+ * say where the reader is not: a digit typed straight after picking a question's option belongs
+ * to that control's own surface, not to the issue's priority. The registry passes single keys
+ * through every control that takes no typed text, so this is the page's own question to answer.
  *
  * A focused `<button>` is deliberately not excluded. Every single-key binding in the registry
  * fires from one: a digit has no native meaning on a button, and after any click - a view, a
  * disclosure, Copy - focus sits on the button that was clicked, which is where a reader reaching
- * for the next shortcut stands. An ask card's buttons and the answer line's are the exception,
- * and that is what `outsideAskCard` (`inbox/ask-card.ts`, the one definition both pages read) and
- * `ANSWER_LINE` cover: there, the question's controls own the keys. `e` opens a control rather
- * than write, so a stray press is visible and undoable and it is offered throughout.
+ * for the next shortcut stands. An ask card's buttons are the exception, and that is what
+ * `outsideAskCard` covers (`inbox/ask-card.ts`, the one definition both pages read): there, the
+ * question's controls own the keys. `e` opens a control rather than write, so a stray press is
+ * visible and undoable and it is offered throughout.
  */
 function outsideInputsAndAskCards(): boolean {
-  const active = document.activeElement;
-  return (
-    !(active instanceof HTMLInputElement) &&
-    outsideAskCard() &&
-    active?.closest(ANSWER_LINE) == null
-  );
+  return !(document.activeElement instanceof HTMLInputElement) && outsideAskCard();
 }
 
 /**

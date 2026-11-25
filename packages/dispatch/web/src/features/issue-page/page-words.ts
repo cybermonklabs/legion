@@ -850,13 +850,6 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
    *  the focused open question's control that answers it, which sets the line at the foot of the
    *  outline to answer it (R16, the prototype's `.acts`), as `a` does. */
   answer: "Answer",
-  /** What the line at the foot of the outline says of the open question it answers, before the
-   *  question's own first line (the prototype's `.tgt.ans`). */
-  answering: "Answering:",
-  /** What it says of the options the reader picked, before them: "you chose 1024 px". */
-  answer_chose: "you chose",
-  /** What the line says while it is empty and answers a question. */
-  answer_placeholder: "Answer in your own words…  (Enter sends · Shift+Enter new line)",
   /** The document a design-gate step reviews, by the step (`StepEntry.step`; `criteria` reviews
    *  the verification), as the names of that document's Approve and Request changes end with
    *  it where the gate's list carries the actions of more than one document (`ApprovalSteps`'
@@ -1109,10 +1102,8 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   /** Sends the change a reader wrote against a decision, named apart from the conversation's
    *  own Send so a page drawing both offers two controls a reader can tell apart (R7). */
   send_change: "Send change",
-  /** Sends what the line at the foot of the outline holds (R16), and the answer it holds to the
-   *  question it answers (`send_answer`). */
+  /** Sends what the line at the foot of the outline holds (R16). */
   send: "Send",
-  send_answer: "Send answer",
   /** How many checks serve a requirement, which the coverage read counts without naming them
    *  (R4, until the chain read lands). */
   serving_checks: "Checks serving it",
