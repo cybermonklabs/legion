@@ -3025,20 +3025,21 @@ An issue standing in `testing` at the upgrade has no tester's completion recorde
 
 **The way back is two transactions, run with this release's daemon stopped, before the earlier image is pinned.**
 Run the newer migration's first.
-`20261121074614_phase_verdict_gone` drops `phases.verdict`, which every earlier release reads and writes by name, so the earlier daemon cannot read a phase row while the column is gone.
-Its header's way back adds the column again at its default, drops `phases.states_serial` and deletes the migration's own row, so the roll-forward's `Migrate` runs the file again:
+`20261121074614_phase_verdict_gone` keeps `phases.verdict`, which every earlier release reads and writes by name, and gives it the default `''`.
+This release writes nothing to the column, so a daemon of the earlier release, during the roll or after a rollback, reads each phase row this release wrote as one with no verdict and writes its own; a later release drops the column, once no running build reads it.
+Its header's way back is owed to the roll-forward and to that earlier daemon's reads: it empties `phases.verdict`, drops `phases.states_serial` and deletes the migration's own row, so the roll-forward's `Migrate` runs the file again and adds the serial back at 0 on every row:
 
 ```sh
 psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
-alter table phases add column if not exists verdict text not null default '';
+update phases set verdict = '' where verdict <> '';
 alter table phases drop column if exists states_serial;
 delete from schema_version where version = 20261121074614;
 commit;
 SQL
 ```
 
-Each tester's row that this release completed then reads as a completion with no verdict, which moves no issue in the earlier release: a tester whose issue is still in `testing` completes again under that release.
+Each tester's row then reads as a completion with no verdict, which moves no issue in the earlier release, and none carries the verdict of an earlier completion that release took: a tester whose issue is still in `testing` completes again under that release.
 The queued notices need nothing: the earlier release decodes a notice with no `verdict`, since its field is omitted when empty.
 Then run the way back in the header of `20261121065041_check_states`, which drops the tables `check_states`, `check_state_sets` and `check_state_serials` and the column `issues.check_states_seq` and deletes that migration's row:
 
@@ -3625,7 +3626,7 @@ The migrations recorded above this one are these.
 20261120055717_dispatch_issue_value_sequences, of dispatch://INFRA-4729, adds seven columns of `dispatch_issues`, an index on `dispatch_issues.parent` and the table `dispatch_issue_refills`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement, and a rollback to a release before it runs the statement of its own section, [Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues), before the earlier image is pinned.
 20261120144241_intake_failures, of dispatch://INFRA-1575, adds the tables `intake_failures`, `cleared_pull_requests` and `pull_request_settled_heads`, and touches none of the six, so the block holds over it and leaves the three tables standing, which the earlier release never reads, and a rollback to a release before it takes the steps of its own section first, [Rolling back the release that gives up on intake messages](#rolling-back-the-release-that-gives-up-on-intake-messages).
 20261121065041_check_states adds the tables `check_states`, `check_state_sets` and `check_state_serials` and the column `issues.check_states_seq`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement; the way back in its own header drops them.
-20261121074614_phase_verdict_gone drops `phases.verdict`, adds `phases.states_serial` and takes the key `verdict` out of each queued notice, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back of its own section, [Rolling back the release whose testing move follows Dispatch's check states](#rolling-back-the-release-whose-testing-move-follows-dispatchs-check-states), first, since every earlier release reads and writes `phases.verdict`.
+20261121074614_phase_verdict_gone gives `phases.verdict`, which it keeps for every earlier release, the default `''`, adds `phases.states_serial` and takes the key `verdict` out of each queued notice, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back of its own section, [Rolling back the release whose testing move follows Dispatch's check states](#rolling-back-the-release-whose-testing-move-follows-dispatchs-check-states), first, which empties `phases.verdict` and drops `phases.states_serial` for the roll-forward.
 20261121170714_dispatch_issue_applied_seq adds `dispatch_issues.applied_seq` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which drops the column and deletes its version row, with every daemon of the database stopped: `dispatch_issues` holds the rows of every project that shares the database, and a daemon of this release still running for another project would fail every issue event after the drop.
 20261123165139_experiment_assignment_plan adds `experiment_assignments.plan` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; a rollback past it takes `plan` out of `legion.yaml` first ([Rolling back the release whose experiment sets how each issue is done](#rolling-back-the-release-whose-experiment-sets-how-each-issue-is-done)).
 20261123212127_claim_start_failure_after_ready empties `claims.last_start_failure` on every claim stored ready, working or idle, and touches none of the six, so the block holds over it; it carries no way back, since an earlier release reads an empty start failure as none recorded.

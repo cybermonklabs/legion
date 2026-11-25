@@ -168,8 +168,9 @@ import (
 // outbox_kind_check: the migration creates check_states, check_state_sets and check_state_serials,
 // empty, and adds issues.check_states_seq at 0.
 // The phase verdict's removal (20261121074614) is applied after it, before the copy's applied
-// sequence, and touches no outbox_kind_check: it drops phases.verdict, adds phases.states_serial
-// at 0, and takes the key verdict out of each queued notice.
+// sequence, and touches no outbox_kind_check: it gives phases.verdict, kept for the release
+// before, the empty string for a default, adds phases.states_serial at 0, and takes the key
+// verdict out of each queued notice.
 // The applied sequence of the copy of Dispatch's issues (20261121170714) is applied after all of
 // these but the plan of an experiment's draw (20261123165139), dispatch://INFRA-5463's
 // 20261123212127 and the verdict records, and touches no outbox_kind_check: it adds

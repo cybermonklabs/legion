@@ -363,9 +363,9 @@ func upgradeRecoveryReadsAnswer(t *testing.T, pool *store.Pool, token claim.Toke
 	t.Helper()
 	ctx := context.Background()
 	// A rollback past the phase entry runs, before the phase entry's own block, the way back of
-	// each migration recorded above it that the release before cannot read past
-	// (docs/kubernetes.md), the newest first: the phase verdict's removal's, which adds back the
-	// phases.verdict column the release before reads and writes by name; then the reviewed
+	// each migration recorded above it that docs/kubernetes.md lists for the rollback, the newest
+	// first: the phase verdict's removal's, which empties phases.verdict and drops
+	// phases.states_serial, so that the roll-forward adds it again at 0; then the reviewed
 	// commit's, which deletes the key this release writes on a reviewer's start row
 	// (`roundNamed`), which the release before decodes strictly and would refuse.
 	verdictWayBack, err := migrations.WayBack(phaseVerdictGoneVersion)

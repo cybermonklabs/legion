@@ -40,28 +40,11 @@ var upgradeMarks = []record.ArchitectStallArm{record.ArchitectSlowBeforeGate, re
 // carries every migration already, so the fill ran once over an empty record: each case seeds the
 // shape the release before this one leaves and runs the fill over it, which is what the upgrade
 // does, and what the case then reads is the migration's own writing rather than a fixture's copy
-// of it. The fill writes phases.verdict, which a later migration drops
-// (20261121074614_phase_verdict_gone), so it runs as the upgrade runs it: on the schema it was
-// written for, that later migration's way back run before it, and that migration applied again
-// after it.
+// of it.
 func applyArchitectUpgrade(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	ctx := context.Background()
-	wayBack, err := migrations.WayBack(phaseVerdictGoneVersion)
-	if err != nil {
-		t.Fatalf("read the way back of migration %d: %v", phaseVerdictGoneVersion, err)
-	}
-	if _, err := pool.Exec(ctx, wayBack, pgx.QueryExecModeSimpleProtocol); err != nil {
-		t.Fatalf("run the way back of migration %d: %v", phaseVerdictGoneVersion, err)
-	}
-	if _, err := pool.Exec(ctx, embeddedMigration(t, architectUpgradeVersion)); err != nil {
+	if _, err := pool.Exec(context.Background(), embeddedMigration(t, architectUpgradeVersion)); err != nil {
 		t.Fatalf("run the fill of migration %d: %v", architectUpgradeVersion, err)
-	}
-	if _, err := pool.Exec(ctx, embeddedMigration(t, phaseVerdictGoneVersion)); err != nil {
-		t.Fatalf("apply migration %d again after the fill: %v", phaseVerdictGoneVersion, err)
-	}
-	if _, err := pool.Exec(ctx, "insert into schema_version (version) values ($1)", phaseVerdictGoneVersion); err != nil {
-		t.Fatalf("record migration %d again: %v", phaseVerdictGoneVersion, err)
 	}
 }
 
@@ -506,9 +489,10 @@ func headerWayBack(t *testing.T, version int) string {
 // claim's handshake columns (20261114020537_claim_entry_handshake.up.sql) and entryVerbatimVersion
 // the version of the phases row's mark that a resume's task is sent again as written
 // (20261114061900_phase_entry_verbatim.up.sql), whose way back is this migration's.
-// phaseVerdictGoneVersion is the migration that drops phases.verdict
-// (20261121074614_phase_verdict_gone.up.sql), which this migration's fill writes: a rollback to a
-// release before this one runs that migration's way back first (docs/kubernetes.md).
+// phaseVerdictGoneVersion is the migration that takes the tester's verdict out of the record
+// (20261121074614_phase_verdict_gone.up.sql): a rollback to a release before this one runs that
+// migration's way back first, the newest first as docs/kubernetes.md gives them, which the
+// roll-forward owes for phases.states_serial.
 const (
 	phaseEntryVersion       = 20261111225552
 	stalledNoticesVersion   = 20261113181500
@@ -558,11 +542,11 @@ func versionsNotIn(a, b []int) []int {
 }
 
 // A rollback and the roll-forward after it leave every root architect settled, as the first
-// upgrade did. The ways back run in the order docs/kubernetes.md gives an operator, each as the
-// one transaction its header carries: the phase verdict's removal's first
-// (20261121074614_phase_verdict_gone, migrations.WayBack), since this migration's fill writes the
-// column it drops; then this migration's (headerWayBack), which the headers of 20261113181500,
-// 20261114020537 and 20261114061900 carry as well, and the phase entry's after it. This
+// upgrade did. The ways back run in the order docs/kubernetes.md gives an operator, the newest
+// first, each as the one transaction its header carries: the phase verdict's removal's
+// (20261121074614_phase_verdict_gone, migrations.WayBack); then this migration's
+// (headerWayBack), which the headers of 20261113181500, 20261114020537 and 20261114061900 carry
+// as well, and the phase entry's after it. This
 // migration's block drops the phases row's mark and deletes 20261114061900's version
 // row, drops the claim's four handshake columns and deletes 20261114020537's version row, deletes
 // its own and 20261113181500's, and drops the marks' table and the architect wakes still unsent,

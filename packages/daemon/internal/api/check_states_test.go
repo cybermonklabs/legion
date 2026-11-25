@@ -124,8 +124,10 @@ func TestAPhaseCompletionCarriesNoVerdict(t *testing.T) {
 		if err := h.store.Pool().QueryRow(context.Background(), `select to_jsonb(p) from phases p where issue = 'LEGION-208' and role = 'tester'`).Scan(&row); err != nil {
 			t.Fatalf("read the tester's phase row: %v", err)
 		}
-		if _, held := row["verdict"]; held || row["handoff_record"] != written {
-			t.Fatalf("the tester's phase row = %v, want the completion naming %s and no verdict", row, written)
+		// phases.verdict stays for the release before, and this release writes nothing to it, so
+		// the pass the plugin sent is not stored: the row holds the column's default.
+		if row["verdict"] != "" || row["handoff_record"] != written {
+			t.Fatalf("the tester's phase row = %v, want the completion naming %s and an empty verdict", row, written)
 		}
 		rows, err := h.store.Pool().Query(context.Background(), `select event_id from processed_events where source = 'api'`)
 		if err != nil {

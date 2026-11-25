@@ -635,6 +635,12 @@ type PhaseRow struct {
 	// daemon holds every state event of the issue through it (Store.StatesFenceReached), and 0, a
 	// record that carries none, passes that fence at once. Every other row holds 0. The next phase's
 	// start clears it with the rest of the handoff (workflow's clearHandoff).
+	//
+	// The tester's verdict it replaces has no field: phases.verdict stays in the table for the
+	// release before, which reads and writes it in each of its statements over a phase row while
+	// it runs beside this one during a roll or after a rollback, and no statement of this release
+	// names it, so each row this release inserts takes its default, '', which that release reads
+	// as no verdict (migration 20261121074614_phase_verdict_gone). A later release drops it.
 	StatesSerial int64
 	// Summary is what the role reported with its completion, which the architect is told when the
 	// phase ends.

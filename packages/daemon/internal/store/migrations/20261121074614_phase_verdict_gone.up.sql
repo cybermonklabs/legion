@@ -2,36 +2,48 @@
 -- Dispatch publishes of the issue's before_merge checks at the tested head decide the testing
 -- phase (workflow's decideTesting), so the record keeps no verdict of the tester's.
 --
--- phases.verdict goes. It held the tester's pass or fail on the tester's row, which moved the issue,
--- named the tester's result in the reviewer's task and rode the architect's phase-finished notice.
--- phases.states_serial takes its place: on the tester's row, the check states serial of the test
--- record its completion named (record.PhaseRow.StatesSerial), through which the move waits until the
--- daemon holds every state event of the issue (record.Store.StatesFenceReached). Every row takes 0,
--- which passes that fence at once, as a record written before Dispatch kept a serial does.
+-- phases.verdict stays, for the release before. It held the tester's pass or fail on the tester's
+-- row, which moved the issue, named the tester's result in the reviewer's task and rode the
+-- architect's phase-finished notice. This release names it in no statement. The release before
+-- names it in each of its statements over a phase row (record.Postgres.Phases, PutPhase and the
+-- clear of a generation), and a rolling release runs that release beside this one on the database
+-- this one migrated, as a rollback runs it there again. So the column keeps its type and its not
+-- null and takes the default '', which each row this release inserts takes, and the release before
+-- reads such a row as a completion with no verdict. With no default the column would refuse this
+-- release's insert, and a nullable column would hand the release before a null, which it cannot
+-- scan into its string. A later release drops the column, once no running build reads it.
+--
+-- phases.states_serial is new: on the tester's row, the check states serial of the test record its
+-- completion named (record.PhaseRow.StatesSerial), through which the move waits until the daemon
+-- holds every state event of the issue (record.Store.StatesFenceReached). Every row takes 0, which
+-- passes that fence at once, as a record written before Dispatch kept a serial does, and so does
+-- each row the release before inserts, since it names the column in no statement.
 --
 -- A phase-finished notice the release before queued names the tester's verdict under the key
 -- verdict, which record.Notice no longer has, and the outbox decodes a row strictly
 -- (record.DecodeOutboxPayload), so such a row would fail on every attempt and tell its architect
 -- nothing. The update strips the key from every queued notice, which is then sent with the rest of
--- what it says: its kind, role, phase, summary and version.
+-- what it says: its kind, role, phase, summary and version. The release before decodes a notice
+-- with no verdict, since its field is omitted when empty.
 --
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
--- .down.sql file exists. The release before this one reads and writes phases.verdict by name
--- (record.Postgres.Phases and PutPhase), so it cannot read a phase row while the column is gone. The
--- way back is the one transaction below, run with this release's daemon stopped and before the
--- release before starts. It adds the column back at its default, so each tester's row this release
--- completed reads as a completion with no verdict, which moves no issue there: a tester whose
--- completion stands while its issue is still in testing completes again under the release before.
--- It drops states_serial, which the release before names in no statement, and deletes this
--- migration's row, so the roll-forward's Migrate runs this file again. It needs nothing of the
--- outbox: the release before decodes a notice with no verdict, since its field is omitted when
--- empty.
+-- .down.sql file exists. The release before runs on this release's schema as it stands, so the way
+-- back is owed to the roll-forward rather than to the release before. It is the one transaction
+-- below, run with this release's daemon stopped and before the release before starts. It empties
+-- phases.verdict, which this release never writes, so a tester's row this release completed no
+-- longer carries the verdict of an earlier completion the release before took: each tester's row
+-- reads as a completion with no verdict there, which moves no issue, and a tester whose completion
+-- stands while its issue is still in testing completes again under the release before. It drops
+-- states_serial, so that the roll-forward adds it again at 0 on every row and no row the release
+-- before completed carries a serial of this release's, and it deletes this migration's row, so the
+-- roll-forward's Migrate runs this file again. It needs nothing of the outbox: the release before
+-- decodes a notice with no verdict.
 --
 -- begin;
--- alter table phases add column if not exists verdict text not null default '';
+-- update phases set verdict = '' where verdict <> '';
 -- alter table phases drop column if exists states_serial;
 -- delete from schema_version where version = 20261121074614;
 -- commit;
-alter table phases drop column verdict;
+alter table phases alter column verdict set default '';
 alter table phases add column states_serial bigint not null default 0 check (states_serial >= 0);
 update outbox set payload = payload - 'verdict' where kind = 'notice' and payload ? 'verdict';

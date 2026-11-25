@@ -13,11 +13,12 @@ import (
 // phaseVerdictGoneVersion is the version of the migration this file tests.
 const phaseVerdictGoneVersion = 20261121074614
 
-// 20261121074614 drops phases.verdict and adds phases.states_serial at 0 on every row the release
-// before wrote. The way back its header gives (migrations.WayBack), run as an operator runs it
-// through psql, adds the verdict column back at its default, so the release before's read and
-// write of a phase row name a column that stands, drops states_serial and deletes the migration's
-// own row; the roll-forward's Migrate then applies the migration again, and only it.
+// 20261121074614 keeps phases.verdict, which the release before reads and writes by name, gives it
+// the empty string for a default, which each row this release inserts takes, and adds
+// phases.states_serial at 0 on every row the release before wrote. The way back its header gives
+// (migrations.WayBack), run as an operator runs it through psql, empties every verdict, drops
+// states_serial and deletes the migration's own row; the roll-forward's Migrate then applies the
+// migration again, and only it.
 func TestThePhaseVerdictGoneMigrationAndItsWayBack(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -38,11 +39,17 @@ func TestThePhaseVerdictGoneMigrationAndItsWayBack(t *testing.T) {
 	}
 	const columns = `select column_name::text from information_schema.columns where table_schema = current_schema()
 		and table_name = 'phases' and column_name in ('verdict', 'states_serial') order by column_name`
-	if got, want := rowsAsText(t, store, columns), []string{"states_serial"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("the phases columns after the migration = %v, want %v", got, want)
+	if got, want := rowsAsText(t, store, columns), []string{"states_serial", "verdict"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the phases columns after the migration = %v, want %v: verdict kept for the release before", got, want)
 	}
-	if got, want := rowsAsText(t, store, `select row(role, states_serial, summary)::text from phases`), []string{"(tester,0,tested)"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("the tester's row after the migration = %v, want %v: kept, at serial 0", got, want)
+	if got, want := rowsAsText(t, store, `select row(role, verdict, states_serial, summary)::text from phases`), []string{"(tester,pass,0,tested)"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the tester's row after the migration = %v, want %v: kept as the release before wrote it, at serial 0", got, want)
+	}
+	// A row this release inserts names no verdict and takes the default, which the release before
+	// reads as no verdict.
+	exec(`insert into phases (issue, role, claim, handoff_commit, rounds, summary) values ('ACME-1', 'reviewer', 'reviewer-claim', '', 0, '')`)
+	if got, want := rowsAsText(t, store, `select row(role, verdict)::text from phases where role = 'reviewer'`), []string{"(reviewer,\"\")"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the reviewer's row this release inserted = %v, want %v", got, want)
 	}
 
 	wayBack, err := migrations.WayBack(phaseVerdictGoneVersion)
@@ -53,7 +60,10 @@ func TestThePhaseVerdictGoneMigrationAndItsWayBack(t *testing.T) {
 	if got, want := rowsAsText(t, store, columns), []string{"verdict"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the phases columns after the way back = %v, want %v", got, want)
 	}
-	// The release before's write after the way back takes, naming the verdict again.
+	if got, want := rowsAsText(t, store, `select row(role, verdict)::text from phases order by role`), []string{"(reviewer,\"\")", "(tester,\"\")"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the phase rows after the way back = %v, want %v: every verdict emptied", got, want)
+	}
+	// The release before's write after the way back takes, naming the verdict.
 	exec(`update phases set verdict = 'fail' where issue = 'ACME-1' and role = 'tester'`)
 	if got, want := rowsAsText(t, store, `select count(*)::text from schema_version where version = 20261121074614`), []string{"0"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the migration's rows after the way back = %v, want %v", got, want)
@@ -63,7 +73,7 @@ func TestThePhaseVerdictGoneMigrationAndItsWayBack(t *testing.T) {
 	if err != nil || applied != 1 {
 		t.Fatalf("the roll-forward's migrate applied %d, %v; want the phase verdict's removal alone", applied, err)
 	}
-	if got, want := rowsAsText(t, store, columns), []string{"states_serial"}; !reflect.DeepEqual(got, want) {
+	if got, want := rowsAsText(t, store, columns), []string{"states_serial", "verdict"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the phases columns after the roll-forward = %v, want %v", got, want)
 	}
 }

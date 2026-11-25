@@ -11,9 +11,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// phaseVerdictGoneVersion is the migration that drops phases.verdict
-// (internal/store/migrations/20261121074614_phase_verdict_gone.up.sql): a rollback to a release
-// that reads that column runs its way back before any older one (docs/kubernetes.md).
+// phaseVerdictGoneVersion is the migration that takes the tester's verdict out of the record
+// (internal/store/migrations/20261121074614_phase_verdict_gone.up.sql): a rollback past it runs its
+// way back before any older one, the newest first (docs/kubernetes.md).
 const phaseVerdictGoneVersion = 20261121074614
 
 // entryRigHead is the head of the pull request outbox_entry_test.go's rig records: a full commit id,

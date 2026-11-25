@@ -358,10 +358,10 @@ func (r *inFlightRig) seedInFlight(issue *inFlightIssue, seeded phase.Phase, sta
 	key := issue.key
 	// The release before writes phases.verdict on every phase row it inserts: the column is not null
 	// with no default in each schema before the check states, and that release names it in each
-	// statement. The store before the plans holds it so (storeBeforeThePlans). The store of the
-	// release of the owner's plan, every embedded migration applied (newReleaseBeforeRig), holds
-	// this branch's check states too, whose 20261121074614 drops the column (PROVISIONAL, #4940):
-	// there the row is written without it. So the seed writes the column where the schema holds it.
+	// statement. The store before the plans holds it so (storeBeforeThePlans), and so does the store
+	// with every embedded migration applied (newReleaseBeforeRig), whose 20261121074614 keeps it for
+	// the release before with the default '' (PROVISIONAL, #4940's af0b7836272). The seed writes it
+	// wherever the schema holds it, as that release does.
 	verdict := r.phasesHoldVerdict(ctx)
 	verdictColumn, verdictValue := "", ""
 	if verdict {
@@ -469,9 +469,9 @@ func (r *inFlightRig) resume(issue *inFlightIssue, role claim.Role) *stepClaiman
 	return c
 }
 
-// phasesHoldVerdict says whether the rig's store holds phases.verdict: the store before the plans
-// does, and the store with every embedded migration applied does not, since this branch's check
-// states drop it (20261121074614, PROVISIONAL, #4940).
+// phasesHoldVerdict says whether the rig's store holds phases.verdict, which every store of this
+// package's release-before tests does today; the seed reads it rather than assume it, so a later
+// release that drops the column, once no running build reads it, changes no seed.
 func (r *inFlightRig) phasesHoldVerdict(ctx context.Context) bool {
 	r.t.Helper()
 	var holds bool

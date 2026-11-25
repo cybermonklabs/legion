@@ -2335,7 +2335,7 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"awaiting_answered_detail", "awaiting_since_seq", "awaiting_since", "handout_seq", "declared_seq", "declared_at", "caught_up_seq",
 			"ancestry", "handed_over_from", "told_parent", "memory_group", "memory_draw_mode", "memory_drawn_at", "memory_carried",
 			"moved_at", "tree_stalled_told_at", "released_for_wait_at", "check_states_seq"},
-		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "states_serial", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "handoff_record", "handoff_version", "reviewed_head", "step_task", "step_place"},
+		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "states_serial", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "handoff_record", "handoff_version", "reviewed_head", "step_task", "step_place"},
 		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "state_read_at", "conflicting_head", "merge_sha", "conflict_read", "merge_forward"},
 		"issue_plans":       {"issue", "generation", "version", "source", "artifact_id", "given_by", "given_at"},
 		"plan_tasks":        {"issue", "generation", "task", "plan_version", "block_text", "needs", "part_of", "owner_role", "merges", "steps_by_default", "state", "stopped_reason", "running_kind", "position", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told"},
@@ -2567,8 +2567,9 @@ func TestResidentRolesMigrationDropsOnlyTheQueuedPhaseEndSuspends(t *testing.T) 
 }
 
 // phaseVerdictGoneVersion is the migration that takes the tester's verdict out of the daemon's
-// record: it drops phases.verdict, adds phases.states_serial, and strips the key verdict from every
-// queued notice.
+// record: it gives phases.verdict, which this release no longer writes and the release before
+// still reads and writes, the empty string for its default, adds phases.states_serial, and strips
+// the key verdict from every queued notice.
 const phaseVerdictGoneVersion = 20261121074614
 
 // A phase-finished notice the release before queued names the tester's verdict, which the notice
@@ -2633,6 +2634,133 @@ func TestPhaseVerdictGoneMigrationStripsTheVerdictFromStoredNotices(t *testing.T
 		must(t, tx.QueryRow(ctx, `select count(*) from outbox where kind = 'notice' and payload ? 'verdict'`).Scan(&verdicts))
 		if verdicts != 0 {
 			t.Fatalf("%d stored notices still hold the key verdict after the migration, want none", verdicts)
+		}
+	})
+}
+
+// The release before this one is the daemon build that took the tester's verdict on its phase
+// completion, before Dispatch's check states decided the testing move. Its statements over a phase
+// row are copied below as that release's own text, from its record.Postgres: Phases with
+// scanPhase (releaseBeforeReadsPhases), PutPhase and clearGeneration's statement over phases. Each
+// names phases.verdict.
+const (
+	releaseBeforePhases = `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_raised_at, entry_moved_back from phases
+		where issue = $1 order by role`
+	releaseBeforePutPhase = `insert into phases (issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff,
+		decision, completed_at, entry, entry_task, entry_raised_at, entry_moved_back)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+		on conflict (issue, role) do update set claim = excluded.claim,
+		handoff_commit = excluded.handoff_commit, pass = excluded.pass,
+		handoff_record = excluded.handoff_record, handoff_version = excluded.handoff_version,
+		rounds = excluded.rounds, conflict_rounds = excluded.conflict_rounds, backward_moves = excluded.backward_moves,
+		cap_told = excluded.cap_told, verdict = excluded.verdict,
+		summary = excluded.summary, last_handoff = excluded.last_handoff, decision = excluded.decision,
+		completed_at = excluded.completed_at,
+		entry = excluded.entry, entry_task = excluded.entry_task, entry_raised_at = excluded.entry_raised_at,
+		entry_moved_back = excluded.entry_moved_back`
+	releaseBeforeClearPhases = "update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, rounds = 0, conflict_rounds = 0, " +
+		"backward_moves = '{}'::jsonb, cap_told = 0, verdict = '', summary = '', decision = null, " +
+		"entry_task = '' where issue = $1"
+)
+
+// releaseBeforePhase is a phase row as the release before's scanPhase reads it: its PhaseRow's
+// fields, each of the type it scans the column into.
+type releaseBeforePhase struct {
+	Issue, Role, Claim, HandoffCommit      string
+	Pass                                   int
+	HandoffRecord                          string
+	HandoffVersion, Rounds, ConflictRounds int
+	BackwardMoves                          []byte
+	CapTold                                int
+	Verdict, Summary, LastHandoff          string
+	Decision                               []byte
+	CompletedAt                            time.Time
+	Entry                                  int64
+	EntryTask                              string
+	EntryRaisedAt                          *time.Time
+	EntryMovedBack                         bool
+}
+
+// releaseBeforeReadsPhases is the release before's Phases over issue, with its scanPhase's scan.
+func releaseBeforeReadsPhases(ctx context.Context, tx pgx.Tx, issue string) ([]releaseBeforePhase, error) {
+	rows, err := tx.Query(ctx, releaseBeforePhases, issue)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var phases []releaseBeforePhase
+	for rows.Next() {
+		var p releaseBeforePhase
+		if err := rows.Scan(&p.Issue, &p.Role, &p.Claim, &p.HandoffCommit, &p.Pass, &p.HandoffRecord, &p.HandoffVersion, &p.Rounds, &p.ConflictRounds,
+			&p.BackwardMoves, &p.CapTold, &p.Verdict, &p.Summary, &p.LastHandoff, &p.Decision, &p.CompletedAt,
+			&p.Entry, &p.EntryTask, &p.EntryRaisedAt, &p.EntryMovedBack); err != nil {
+			return nil, err
+		}
+		phases = append(phases, p)
+	}
+	return phases, rows.Err()
+}
+
+// A rolling release runs the release before beside this one on the database this one migrated,
+// and a rollback runs it there again. So that release must read the phase rows this one writes and
+// write its own: its read of the tester's row this release completed reads it, with no verdict;
+// its write of a row, naming the verdict, and its clear of a generation's phases both take; and
+// this release reads the row the release before wrote.
+func TestTheReleaseBeforeReadsAndWritesThePhaseRowsOfThisRelease(t *testing.T) {
+	ctx := context.Background()
+	st := emptyStore(t)
+	if _, err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate a fresh database to this release: %v", err)
+	}
+	records := NewStore()
+	issue := issueFixture("LEGION-208")
+	completed := time.Date(2026, 11, 21, 7, 46, 14, 0, time.UTC)
+	tester := PhaseRow{Issue: issue.Key, Role: claim.RoleTester, Claim: "legion-208-tester", HandoffCommit: "aabbcc",
+		HandoffRecord: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", HandoffVersion: 2, Rounds: 1, StatesSerial: 7,
+		Summary: "Every check passes.", CompletedAt: completed, Entry: 3, EntryTask: "Test the change."}
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, issue))
+		must(t, records.PutPhase(ctx, tx, tester))
+	})
+
+	inTx(t, st, func(tx pgx.Tx) {
+		read, err := releaseBeforeReadsPhases(ctx, tx, issue.Key)
+		if err != nil {
+			t.Fatalf("the release before's read of the phase row this release wrote: %v", err)
+		}
+		if len(read) != 1 {
+			t.Fatalf("the release before read %d phase rows of %s, want the tester's one", len(read), issue.Key)
+		}
+		got := read[0]
+		if got.Role != string(claim.RoleTester) || got.HandoffCommit != tester.HandoffCommit || got.HandoffRecord != tester.HandoffRecord ||
+			got.HandoffVersion != tester.HandoffVersion || got.Summary != tester.Summary || !got.CompletedAt.Equal(completed) ||
+			got.Entry != tester.Entry || got.EntryTask != tester.EntryTask || got.Verdict != "" {
+			t.Fatalf("the release before read the tester's row as %+v, want the completion this release wrote, with no verdict", got)
+		}
+	})
+
+	inTx(t, st, func(tx pgx.Tx) {
+		if _, err := tx.Exec(ctx, releaseBeforePutPhase, issue.Key, string(claim.RoleImplementer), "legion-208-implementer", "ddeeff", 1, "", 0, 1, 0,
+			[]byte("{}"), 0, "", "Implemented.", "", nil, completed, int64(2), "Implement the change.", nil, false); err != nil {
+			t.Fatalf("the release before's write of a phase row: %v", err)
+		}
+		if _, err := tx.Exec(ctx, releaseBeforePutPhase, issue.Key, string(claim.RoleTester), "legion-208-tester", "aabbcc", 0, tester.HandoffRecord, 2, 1, 0,
+			[]byte("{}"), 0, "pass", "Every check passes.", "", nil, completed, int64(3), "Test the change.", nil, false); err != nil {
+			t.Fatalf("the release before's write of the tester's completion with its verdict: %v", err)
+		}
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		rows, err := records.Phases(ctx, tx, issue.Key)
+		if err != nil {
+			t.Fatalf("this release's read of the phase rows the release before wrote: %v", err)
+		}
+		if len(rows) != 2 || rows[0].Role != claim.RoleImplementer || rows[0].HandoffCommit != "ddeeff" || rows[0].Summary != "Implemented." {
+			t.Fatalf("this release read %+v, want the implementer's row the release before wrote beside the tester's", rows)
+		}
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		if _, err := tx.Exec(ctx, releaseBeforeClearPhases, issue.Key); err != nil {
+			t.Fatalf("the release before's clear of a generation's phase rows: %v", err)
 		}
 	})
 }
