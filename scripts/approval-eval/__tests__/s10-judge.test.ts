@@ -3,7 +3,13 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE, type Registration, runDigestOf } from "../reserve";
+import {
+  CLAIM_RUN_VARIABLE,
+  REGISTRATION,
+  RESERVE_VARIABLE,
+  type Registration,
+  runDigestOf,
+} from "../reserve";
 import { ruleVerdictOf } from "../s10-analysis";
 import {
   INPUTS_VERSION,
@@ -523,7 +529,7 @@ describe("s10-judge-admit.ts", () => {
     );
   });
 
-  test("refuses an --out that is relative or inside the repository, and a run claim.ts does not register", async () => {
+  test("refuses an --out that is relative or inside the repository, and any run once claim.ts records the reserve's end", async () => {
     await writeInputs(inputsFiles());
     const read = await registration();
     const relative = args(inputs, "relative/out");
@@ -546,7 +552,9 @@ describe("s10-judge-admit.ts", () => {
       if (saved === undefined) delete process.env[RESERVE_VARIABLE];
       else process.env[RESERVE_VARIABLE] = saved;
     }
-    expect(errors.join("\n")).toContain("This run's digest is");
+    // The checkout's claim.ts records the owner's release, so the real command judges no run.
+    expect(errors.join("\n")).toContain("the claim's judging runs only under its read");
+    expect(errors.join("\n")).toContain(`the reserve ended at ${REGISTRATION.ended}`);
   });
 
   test("judges only into its claim directory's s10-judged, over the inputs stage there", async () => {
