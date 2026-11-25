@@ -6,10 +6,12 @@ import { createElement, useEffect } from "react";
 import { api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { Actor } from "../../api/types";
+import { producingMessages } from "./contents-entries";
 import { FocusedNodeProvider, useSetFocusedNode } from "./focused-node";
 import { type ContentsEntry, ContentsList, contentsOf } from "./IssueContents";
 import type { TreeNode } from "./issue-tree";
 import { CONTROL_LABELS, type NodeType } from "./page-words";
+import { presetView } from "./presets";
 import { SENTENCE_TABLE } from "./sentence-table";
 
 /**
@@ -56,6 +58,12 @@ function shape(entries: readonly ContentsEntry[]): string[] {
       ? entry.node.id
       : `${entry.node.id}: ${shape(entry.children).join(", ")}`
   );
+}
+
+/** The entries of `root` for `viewer`, its producing messages read off `root` itself, as the
+ *  slot reads them with no words filter. */
+function entriesOf(root: TreeNode, viewer: string | undefined): ContentsEntry[] {
+  return contentsOf(root, viewer, producingMessages(root));
 }
 
 /** A question holding a nested question and the reader's comment thread. Beside it are other
@@ -107,26 +115,23 @@ const counted = node("CORE-1", "issue", [
 ]);
 
 test("the list holds each question and each thread the reader began, nested, and no issue", () => {
-  expect(shape(contentsOf(nested, "alice"))).toEqual([
-    "ask-1: ask-2, comment-mine",
-    "message-mine",
-  ]);
+  expect(shape(entriesOf(nested, "alice"))).toEqual(["ask-1: ask-2, comment-mine", "message-mine"]);
 });
 
 test("a reader the page has not named yet begins no thread of the list", () => {
-  expect(shape(contentsOf(mine, undefined))).toEqual([]);
+  expect(shape(entriesOf(mine, undefined))).toEqual([]);
 });
 
 // The reader is told from the login as the server holds it, whatever its case
 // (`refs/actor.ts`'s `isViewer`).
 test("a thread the reader began is theirs whatever the case of their login", () => {
-  expect(shape(contentsOf(mine, "Alice"))).toEqual(["comment-mine"]);
+  expect(shape(entriesOf(mine, "Alice"))).toEqual(["comment-mine"]);
 });
 
 // A node drawn under a second parent is the same node: its copy, and the branch under the copy,
 // are neither listed nor counted again.
 test("a transcluded copy and the branch under it are listed and counted once", () => {
-  const [entry] = contentsOf(copied, "alice");
+  const [entry] = entriesOf(copied, "alice");
   expect(shape(entry === undefined ? [] : [entry])).toEqual(["ask-1: ask-under"]);
   expect(entry?.marks.for_review).toBe(1);
 });
@@ -142,7 +147,7 @@ test("each entry counts what its own branch holds, and a nested entry's branch i
         ...Object.entries(marks(entry.children)),
       ])
     );
-  expect(marks(contentsOf(counted, "alice"))).toEqual({
+  expect(marks(entriesOf(counted, "alice"))).toEqual({
     // What sits under the issue and under no entry is counted on none: the issue has no entry.
     "ask-1": { children: 0, failing: 1, for_review: 1, statements: 1 },
     "ask-2": { children: 0, failing: 0, for_review: 0, statements: 1 },
@@ -160,7 +165,27 @@ test("a requirement of another document is no statement an entry counts", () => 
       node("plan-md#b-r9", "requirement", [], { statement: undefined }),
     ]),
   ]);
-  expect(contentsOf(root, "alice")[0]?.marks.statements).toBe(1);
+  expect(entriesOf(root, "alice")[0]?.marks.statements).toBe(1);
+});
+
+// R2: a words filter changes what the list draws, never what a thread produced. The view the
+// filter leaves keeps the reader's message, whose words hold the filter's word, and drops the
+// statement under it, which holds none; the list still reads the message as having produced it.
+test("under a words filter a message the reader wrote that produced a node is an entry where only the message holds the words", () => {
+  const root = node("CORE-1", "issue", [
+    node(
+      "message-mine",
+      "message",
+      [node("spec#b-r1", "requirement", [], { text: "The page draws the list." })],
+      { author: alice, text: "Please add a quokka statement." }
+    ),
+  ]);
+  const view = presetView(root, "conversation", "quokka").root;
+  expect(
+    view.children[0]?.children,
+    "the filter's view keeps the statement that holds none of its words"
+  ).toEqual([]);
+  expect(shape(contentsOf(view, "alice", producingMessages(root)))).toEqual(["message-mine"]);
 });
 
 /** Puts the page's focus on node `id`, as the outline does when the reader moves to it. */
@@ -193,6 +218,7 @@ test("folding the entry above the one the reader is in leaves the tab stop on th
           nameOf: () => undefined,
           onFocusBranch: () => {},
           onGo: () => {},
+          producing: producingMessages(root),
           root,
         })
       )
@@ -240,6 +266,7 @@ test("a list drawn more than 30 s after whoami answered asks for it nothing", ()
         nameOf: () => undefined,
         onFocusBranch: () => {},
         onGo: () => {},
+        producing: new Set<string>(),
         root: node("CORE-1", "issue", [node("ask-1", "ask")]),
       })
     )
@@ -306,6 +333,7 @@ function drawList(root: TreeNode, width: number): { container: HTMLElement; unmo
           nameOf: () => undefined,
           onFocusBranch: () => {},
           onGo: () => {},
+          producing: producingMessages(root),
           root,
         })
       )
@@ -425,6 +453,7 @@ function drawNamedList(
           nameOf,
           onFocusBranch: () => {},
           onGo: () => {},
+          producing: producingMessages(root),
           root,
         })
       )

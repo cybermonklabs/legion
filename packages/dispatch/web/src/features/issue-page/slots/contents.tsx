@@ -3,6 +3,7 @@ import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
 import { useContentsChosen } from "../contents-chosen";
+import { producingMessages } from "../contents-entries";
 import { ContentsList } from "../IssueContents";
 import { briefCounts, IssueThreeThings } from "../IssueThreeThings";
 import { issueAddress } from "../issue-address";
@@ -48,6 +49,9 @@ export function ContentsSlot({ issue, route }: SlotProps): ReactNode {
     () => presetView(root, "conversation", address.filter, undefined, memo?.id),
     [address.filter, memo, root]
   );
+  // Whether a message produced a node is read over the whole tree: the words filter's view drops
+  // the node a matching message produced (`isContentsEntry`).
+  const producing = useMemo(() => producingMessages(root), [root]);
   // How a reference the sentences and the entries cite is named, read once over the whole tree
   // (`referenceStandIns`).
   const { nameOf } = useIssueNames(issue, root);
@@ -75,6 +79,7 @@ export function ContentsSlot({ issue, route }: SlotProps): ReactNode {
           ask(id, focusBranch);
           chosen();
         }}
+        producing={producing}
         root={view.root}
       />
     </NoTooltips>

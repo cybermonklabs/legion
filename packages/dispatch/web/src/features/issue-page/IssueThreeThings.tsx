@@ -42,6 +42,9 @@ const LABELS = [
   CONTROL_LABELS.in_short_done,
 ] as const;
 
+// A copy of `VerificationFilterBody.tsx`'s private `CHECK_STATES`, its doc included: that file
+// may export nothing but `CAP` in this change. The copy goes once that file exports its own,
+// which this file then imports.
 /** The seven states a check can be in, in the order the page declares them. */
 const CHECK_STATES = Object.keys(NODE_STATE_WORDS.check) as CheckState[];
 
@@ -292,6 +295,9 @@ function PlanCount({ plan }: { plan: PresetSignal | undefined }): ReactNode {
   );
 }
 
+// A copy of `VerificationFilterBody.tsx`'s private `checkTone`: that file may export nothing but
+// `CAP` in this change, and the two rows colour a state as its legend does only while the two
+// stay the same. The copy goes once that file exports its own, which this file then imports.
 /** How a check's state is coloured, as the Verification view colours it: the passed green and the
  *  failed red, and the quiet grey for the five states that are neither. */
 function stateTone(state: CheckState): string {
