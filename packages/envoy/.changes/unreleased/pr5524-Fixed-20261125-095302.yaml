@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  `agent-secrets-helper install` no longer says it did not restart the helper when, after a
+  restart systemd answered success, a read of the unit's main process before or after that
+  restart fails or does not answer within 5 s: it says it could not tell whether the restart
+  replaced the helper, naming the read that failed and its error, sends `undrain` as before
+  unless systemd still holds a job for the unit, and exits 2. A read that does not answer within
+  its bound is named as one, not as `signal: killed`.
+time: 2026-11-25T09:53:02Z
+custom:
+    Issue: pr5524
