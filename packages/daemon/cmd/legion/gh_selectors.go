@@ -811,7 +811,9 @@ func readGitRemotes() ([]ghRemote, error) {
 			strings.TrimSpace(gh[1]) != git[1] || strings.TrimSpace(gh[2]) != git[2] || gh[3] != git[3] {
 			// The line is not printed: a URL that holds whitespace is one way to reach this, and
 			// the URL rule, which ends a URL at whitespace, would leave the URL's tail as written.
-			return nil, errors.New("git remote -v printed a line that git's shape and gh's reading of it do not agree on (the line is not printed)")
+			// The URL gh's own reading takes from it is named (ghReadURL): the repository gh
+			// would act on.
+			return nil, fmt.Errorf("git remote -v printed a line that git's shape and gh's reading of it do not agree on, from which gh reads the URL %s (the line is not printed)", ghReadURL(gh))
 		}
 		remotes = append(remotes, ghRemote{name: git[1], url: git[2], push: git[3] == "push"})
 	}
@@ -826,6 +828,20 @@ func readGitRemotes() ([]ghRemote, error) {
 		remotes = append(remotes, ghMarkerLine(line))
 	}
 	return remotes, nil
+}
+
+// ghReadURL is the URL gh's own reading of a refused `git remote -v` line takes (ghRemoteLine), as
+// the refusal names it: through the URL rule (redact.URLCredentials) where it is an absolute URL
+// with a host, and not at all otherwise, since a word the rule reads no URL in, such as the tail
+// of a URL that holds a space, keeps its query as written.
+func ghReadURL(gh []string) string {
+	if gh != nil {
+		read := strings.TrimSpace(gh[2])
+		if u, err := url.Parse(read); err == nil && u.Scheme != "" && u.Host != "" {
+			return redact.URLCredentials(read)
+		}
+	}
+	return "(none this can name)"
 }
 
 // gitLines runs git with args in the working directory and answers the lines it prints: none for
