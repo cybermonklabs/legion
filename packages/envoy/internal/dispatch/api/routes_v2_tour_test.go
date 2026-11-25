@@ -471,6 +471,17 @@ func withQueryValue(query url.Values, key, value string) url.Values {
 	return with
 }
 
+// refusalBody is a tourRefusal's change that sets the member name of its step's JSON body to
+// value, the step's own body left as it was.
+func refusalBody(name string, value any) func(*testing.T, *routeTour, tourRequest) tourRequest {
+	return func(_ *testing.T, _ *routeTour, request tourRequest) tourRequest {
+		body := maps.Clone(request.Body.(map[string]any))
+		body[name] = value
+		request.Body = body
+		return request
+	}
+}
+
 // withoutMembers is the JSON value body with each member paths names taken out (tourStep's
 // ReplayMoves), and body itself where paths names none.
 func withoutMembers(t *testing.T, body []byte, paths []string) json.RawMessage {

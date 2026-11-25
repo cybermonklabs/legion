@@ -44,6 +44,45 @@ var tourRefusals = map[string][]tourRefusal{
 	"GET /api/v2/nodes": {
 		{Name: "a project that is no project key", Change: refusalQuery("project", "lower"), Code: apicode.InvalidProject},
 	},
+	"GET /api/v2/agents/{session_id}/answers": {
+		{Name: "a session_id that is no session id", Change: refusalPath("session_id", "no session"), Code: apicode.InvalidSessionID},
+	},
+	"GET /api/v2/search-results": {
+		{Name: "a project that is no project key", Change: refusalQuery("project", "lower"), Code: apicode.InvalidProject},
+		{Name: "a number_project that is no project key", Change: refusalQuery("number_project", "lower"), Code: apicode.InvalidNumberProject},
+		{Name: "a status that is no issue status", Change: refusalQuery("status", "nope"), Code: apicode.InvalidStatus},
+		{Name: "an author that is no actor id", Change: refusalQuery("author", "has space"), Code: apicode.InvalidAuthor},
+	},
+	"GET /api/v2/related-check-stats": {
+		{Name: "a project that is no project key", Change: refusalQuery("project", "lower"), Code: apicode.InvalidProject},
+	},
+	"GET /api/v2/repositories/{owner}/{repo}/app-installation": {
+		{Name: "an owner that is no GitHub owner", Change: refusalPath("owner", "bad owner"), Code: apicode.InvalidRepository},
+	},
+	"GET /api/v2/reference-targets": {
+		{Name: "a ref that is no reference", Change: refusalQuery("ref", "not a ref"), Code: apicode.InvalidReference},
+	},
+	"DELETE /api/v2/projects/{key}/architecture-sources/{owner}/{repo}": {
+		{Name: "a repo that is no GitHub name", Change: refusalPath("repo", "bad repo"), Code: apicode.SourceInput},
+	},
+	"PUT /api/v2/projects/{key}/architecture-sources/{owner}/{repo}": {
+		{Name: "a blank branch", Change: refusalBody("branch", "  "), Code: apicode.SourceInput},
+	},
+	"POST /api/v2/session-groups": {
+		{Name: "a blank name", Change: refusalBody("name", "  "), Code: apicode.SessionGroupInput},
+	},
+	"DELETE /api/v2/session-groups/{id}": {
+		{Name: "an id that is no uuid", Change: refusalPath("id", "not-a-uuid"), Code: apicode.SessionGroupNotFound},
+	},
+	"PATCH /api/v2/session-groups/{id}": {
+		{Name: "an id that is no uuid", Change: refusalPath("id", "not-a-uuid"), Code: apicode.SessionGroupNotFound},
+	},
+	"POST /api/v2/projects": {
+		{Name: "a key that is no project key", Change: refusalBody("key", "lower"), Code: apicode.InvalidProject},
+	},
+	"POST /api/v2/priorities": {
+		{Name: "a blank title", Change: refusalBody("title", "  "), Code: apicode.PriorityInput},
+	},
 }
 
 // TestV2RouteTourRefusalsAreListedOnTheirOperations sends, for each step of the route tour, the

@@ -45,6 +45,27 @@ var (
 	runIDMalformedRefusal      = apicode.Refusal{Condition: apicode.RunIDMalformed, Code: apicode.RunIDInput}
 )
 
+// The refusals of what a search, a going request and a session group write name.
+var (
+	searchAuthorInvalidRefusal    = apicode.Refusal{Condition: apicode.SearchAuthorInvalid, Code: apicode.InvalidAuthor}
+	numberProjectMalformedRefusal = apicode.Refusal{Condition: apicode.NumberProjectMalformed, Code: apicode.InvalidNumberProject}
+	searchCoverageTimedOutRefusal = apicode.Refusal{Condition: apicode.SearchCoverageTimedOut, Code: apicode.SearchCoverageTimeout}
+	goingAskerNamesNobodyRefusal  = apicode.Refusal{Condition: apicode.CredentialNamesNobody, Code: apicode.GoingAskerNamesNobody}
+	goingWordsBlankRefusal        = apicode.Refusal{Condition: apicode.GoingWordsBlank, Code: apicode.GoingInput}
+	bodyProjectMalformedRefusal   = apicode.Refusal{Condition: apicode.BodyProjectMalformed, Code: apicode.InvalidProject}
+	sessionGroupInvalidRefusal    = apicode.Refusal{Condition: apicode.SessionGroupInvalid, Code: apicode.SessionGroupInput}
+	sessionAlreadyGroupedRefusal  = apicode.Refusal{Condition: apicode.SessionAlreadyGrouped, Code: apicode.SessionInGroup}
+	sessionGroupNameHeldRefusal   = apicode.Refusal{Condition: apicode.SessionGroupNameHeld, Code: apicode.SessionGroupNameTaken}
+	sessionGroupNameTitledRefusal = apicode.Refusal{Condition: apicode.SessionGroupNameTitled, Code: apicode.SessionGroupNameIsSessionTitle}
+)
+
+// sessionGroupWriteRefusals are the refusals of a session group's create and of its edit, which
+// write a group's name and sessions alike (createDeliverySessionGroupFrom,
+// updateDeliverySessionGroupFrom), after the route's own.
+func sessionGroupWriteRefusals(own ...apicode.Refusal) []apicode.Refusal {
+	return append(own, sessionGroupInvalidRefusal, sessionAlreadyGroupedRefusal, sessionGroupNameHeldRefusal, sessionGroupNameTitledRefusal)
+}
+
 // deliveryUnconfiguredRefusal is the refusal of a route that reads the deployment's delivery
 // settings (deliverySettings) on a Dispatch that holds none.
 var deliveryUnconfiguredRefusal = apicode.Refusal{Condition: apicode.DeliveryUnconfigured, Code: apicode.DeliveryNotConfigured}
@@ -78,7 +99,7 @@ func (s *server) v2MiscRows() []routeRow {
 			Resource: "agents", Kind: kindCollection, Key: "{session_id}",
 			Query:    agentsV2Query{},
 			Shape:    routeShape{Status: http.StatusOK, Response: page[agentResponse]{}},
-			Refusals: listRefusals(),
+			Refusals: listRefusals(envoyUnreachableRefusal, envoyRefillingRefusal),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/agents/{session_id}/answers", Auth: authAny, Versions: onlyV2,
@@ -106,7 +127,7 @@ func (s *server) v2MiscRows() []routeRow {
 			Resource: "answers", Kind: kindCollection, TimeFields: []string{"at"},
 			Query:    sessionAnswersV2Query{},
 			Shape:    routeShape{Status: http.StatusOK, Response: sessionAnswersV2{}},
-			Refusals: listRefusals(),
+			Refusals: listRefusals(sessionIDMalformedRefusal),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/block-links", Auth: authAny, Versions: onlyV2,
@@ -121,7 +142,7 @@ func (s *server) v2MiscRows() []routeRow {
 			Resource: "block-links", Kind: kindCollection,
 			Query:    blockLinksV2Query{},
 			Shape:    routeShape{Status: http.StatusOK, Response: blockLinksV2{}},
-			Refusals: listRefusals(documentMissingRefusal),
+			Refusals: listRefusals(documentMissingRefusal, referenceInvalidRefusal),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/reference-targets", Auth: authAny, Versions: onlyV2,
@@ -156,7 +177,7 @@ func (s *server) v2MiscRows() []routeRow {
 				Status: http.StatusOK, Response: page[model.ReferenceTarget]{},
 				Also: []routeAnswer{{Status: http.StatusNotModified}},
 			},
-			Refusals: listRefusals(),
+			Refusals: listRefusals(referenceInvalidRefusal, valuePastBoundRefusal),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/block-schema", Auth: authPublic, Versions: onlyV2,
@@ -176,10 +197,11 @@ func (s *server) v2MiscRows() []routeRow {
 			Handler:     s.searchResultsV2,
 			Resource:    "search-results", Kind: kindCollection,
 			TimeFields: []string{"written_at"}, CrossProject: true,
-			Query:    searchResultsV2Query{},
-			Shape:    routeShape{Status: http.StatusOK, Response: searchResultsV2{}},
-			List:     listBounds{Default: searchDefaultLimit, Max: searchMaxLimit},
-			Refusals: listRefusals(),
+			Query: searchResultsV2Query{},
+			Shape: routeShape{Status: http.StatusOK, Response: searchResultsV2{}},
+			List:  listBounds{Default: searchDefaultLimit, Max: searchMaxLimit},
+			Refusals: listRefusals(queryProjectMalformedRefusal, numberProjectMalformedRefusal, issueStatusInvalidRefusal,
+				searchAuthorInvalidRefusal, valuePastBoundRefusal),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/nodes", Auth: authAny, Versions: onlyV2,
@@ -217,7 +239,7 @@ func (s *server) v2MiscRows() []routeRow {
 			Handler:  s.searchCoverage,
 			Resource: "search-coverage", Kind: kindReport,
 			Shape:    routeShape{Status: http.StatusOK, Response: model.SearchCoverage{}},
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal},
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, searchCoverageTimedOutRefusal},
 		},
 		{
 			Method: http.MethodGet, Pattern: "/going-actions", Auth: authAny, Versions: onlyV2,
@@ -259,10 +281,11 @@ func (s *server) v2MiscRows() []routeRow {
 			Resource: "going-requests", Kind: kindCollection, Key: "{id}",
 			// project is optional in the body, so a question may belong to no project: a collection
 			// of no one project's, which stands at the top level (R1.2 of dispatch://INFRA-2946/spec).
-			Body:     requestBody{Kind: bodyJSON, Type: createGoingRequestInput{}},
-			Shape:    routeShape{Status: http.StatusCreated, Response: goingRequest{}},
-			Scope:    scopeProjectInBody,
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal},
+			Body:  requestBody{Kind: bodyJSON, Type: createGoingRequestInput{}},
+			Shape: routeShape{Status: http.StatusCreated, Response: goingRequest{}},
+			Scope: scopeProjectInBody,
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, goingAskerNamesNobodyRefusal, goingWordsBlankRefusal,
+				valuePastBoundRefusal, bodyProjectMalformedRefusal},
 		},
 		{
 			Method: http.MethodGet, Pattern: "/going-requests/{id}/stream", Auth: authAny, Versions: onlyV2,
@@ -338,7 +361,7 @@ func (s *server) v2MiscRows() []routeRow {
 			Body:     requestBody{Kind: bodyJSON, Type: createDeliverySessionGroupInput{}},
 			Shape:    routeShape{Status: http.StatusCreated, Response: delivery.SessionGroup{}},
 			Scope:    scopeDeployment,
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal},
+			Refusals: sessionGroupWriteRefusals(undeclaredKeyRefusal),
 		},
 		{
 			Method: http.MethodDelete, Pattern: "/session-groups/{id}", Auth: authAny, Versions: onlyV2,
@@ -365,7 +388,7 @@ func (s *server) v2MiscRows() []routeRow {
 			Shape:    routeShape{Status: http.StatusOK, Response: delivery.SessionGroup{}},
 			Scope:    scopeDeployment,
 			IDs:      sessionGroupIDs(),
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, sessionGroupMissingRefusal},
+			Refusals: sessionGroupWriteRefusals(undeclaredKeyRefusal, sessionGroupMissingRefusal),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/deploy-runs/{id}", Auth: authAny, Versions: onlyV2,

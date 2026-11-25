@@ -44,6 +44,16 @@ var (
 	priorityMissingRefusal           = apicode.Refusal{Condition: apicode.PriorityMissing, Code: apicode.PriorityNotFound}
 	nearCopyCheckMissingRefusal      = apicode.Refusal{Condition: apicode.NearCopyCheckMissing, Code: apicode.NearCopyCheckNotFound}
 	architectureSourceMissingRefusal = apicode.Refusal{Condition: apicode.ArchitectureSourceMissing, Code: apicode.SourceNotFound}
+	projectHasNoSourceRefusal        = apicode.Refusal{Condition: apicode.ProjectHasNoSource, Code: apicode.SourceNotFound}
+	sourceInputRefusal               = apicode.Refusal{Condition: apicode.SourceInputInvalid, Code: apicode.SourceInput}
+	sourceUnreadableRefusal          = apicode.Refusal{Condition: apicode.SourceUnreadable, Code: apicode.SourceAccess}
+	projectInputRefusal              = apicode.Refusal{Condition: apicode.ProjectInputInvalid, Code: apicode.InvalidProject}
+	projectKeyHeldRefusal            = apicode.Refusal{Condition: apicode.ProjectKeyHeld, Code: apicode.ProjectExists}
+	excludeIssueInvalidRefusal       = apicode.Refusal{Condition: apicode.ExcludeIssueInvalid, Code: apicode.ExcludeIssueInput}
+	repositoryPathInvalidRefusal     = apicode.Refusal{Condition: apicode.RepositoryPathInvalid, Code: apicode.InvalidRepository}
+	gitHubAppKeyMissingRefusal       = apicode.Refusal{Condition: apicode.GitHubAppKeyMissing, Code: apicode.GitHubAppUnconfigured}
+	priorityInputRefusal             = apicode.Refusal{Condition: apicode.PriorityInputInvalid, Code: apicode.PriorityInput}
+	priorityIDHeldRefusal            = apicode.Refusal{Condition: apicode.PriorityIDHeld, Code: apicode.PriorityExists}
 )
 
 // projectDefaultAssigneeText is what the routes that read or write a project's default assignee
@@ -103,10 +113,11 @@ func (s *server) v2ProjectRows() []routeRow {
 				projectDefaultAssigneeText, contracts.ProjectNameMax),
 			Handler:  s.createProjectV2,
 			Resource: "projects", Kind: kindCollection, Key: "{key}",
-			Body:     requestBody{Kind: bodyJSON, Type: createProjectInput{}},
-			Shape:    routeShape{Status: http.StatusCreated, Response: projectV2{}},
-			Scope:    scopeDeployment,
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal},
+			Body:  requestBody{Kind: bodyJSON, Type: createProjectInput{}},
+			Shape: routeShape{Status: http.StatusCreated, Response: projectV2{}},
+			Scope: scopeDeployment,
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, projectInputRefusal, assigneeNotSignedInRefusal,
+				valuePastBoundRefusal, projectKeyHeldRefusal},
 		},
 		{
 			Method: http.MethodPatch, Pattern: "/projects/{key}", Auth: authAny, Versions: onlyV2,
@@ -138,7 +149,7 @@ func (s *server) v2ProjectRows() []routeRow {
 			}},
 			Scope: scopeProject, ProjectOf: projectPathProject,
 			Refusals: []apicode.Refusal{
-				undeclaredKeyRefusal, projectMissingRefusal,
+				undeclaredKeyRefusal, projectMissingRefusal, projectInputRefusal, assigneeNotSignedInRefusal,
 				{Condition: apicode.DeploymentMemberScoped, Code: apicode.ProjectScopeDeployment},
 			},
 		},
@@ -153,7 +164,7 @@ func (s *server) v2ProjectRows() []routeRow {
 			Handler:  s.getArchitectureTreeV2,
 			Resource: "architecture", Kind: kindReport,
 			Shape:    routeShape{Status: http.StatusOK, Response: architectureTreeRead{}},
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, projectMissingRefusal},
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, projectMissingRefusal, projectHasNoSourceRefusal},
 		},
 		{
 			Method: http.MethodGet, Pattern: "/projects/{key}/plans", Auth: authAny, Versions: onlyV2,
@@ -198,7 +209,7 @@ func (s *server) v2ProjectRows() []routeRow {
 			Body:  requestBody{Kind: bodyJSON, Type: actorInput{}, Optional: true},
 			Shape: routeShape{Status: http.StatusNoContent},
 			Scope: scopeProject, ProjectOf: projectPathProject,
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, projectMissingRefusal, architectureSourceMissingRefusal},
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, projectMissingRefusal, sourceInputRefusal, architectureSourceMissingRefusal},
 		},
 		{
 			Method: http.MethodPut, Pattern: "/projects/{key}/architecture-sources/{owner}/{repo}", Auth: authAny, Versions: onlyV2,
@@ -216,7 +227,7 @@ func (s *server) v2ProjectRows() []routeRow {
 			Body:  requestBody{Kind: bodyJSON, Type: putArchitectureSourceInput{}},
 			Shape: routeShape{Status: http.StatusOK, Response: model.ArchitectureSource{}},
 			Scope: scopeProject, ProjectOf: projectPathProject,
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, projectMissingRefusal},
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, projectMissingRefusal, sourceInputRefusal, sourceUnreadableRefusal},
 		},
 		{
 			Method: http.MethodPost, Pattern: "/projects/{key}/architecture-syncs", Auth: authAny, Versions: onlyV2,
@@ -236,7 +247,8 @@ func (s *server) v2ProjectRows() []routeRow {
 			Body:  requestBody{Kind: bodyJSON, Type: architectureSyncV2Input{}, Optional: true},
 			Shape: routeShape{Status: http.StatusOK, Response: page[model.ArchitectureSource]{}},
 			Scope: scopeProject, ProjectOf: projectPathProject,
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, projectMissingRefusal},
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, projectMissingRefusal, sourceInputRefusal,
+				architectureSourceMissingRefusal, projectHasNoSourceRefusal},
 		},
 		{
 			Method: http.MethodPost, Pattern: "/projects/{key}/related-searches", Auth: authAny, Versions: onlyV2,
@@ -262,7 +274,7 @@ func (s *server) v2ProjectRows() []routeRow {
 			Body:  requestBody{Kind: bodyJSON, Type: relatedRequest{}},
 			Shape: routeShape{Status: http.StatusOK, Response: model.Suggestions{}},
 			Scope: scopeProject, ProjectOf: projectPathProject,
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, projectMissingRefusal},
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, projectMissingRefusal, valuePastBoundRefusal, excludeIssueInvalidRefusal},
 		},
 		{
 			Method: http.MethodGet, Pattern: "/projects/{key}/near-copy-checks", Auth: authAny, Versions: onlyV2,
@@ -273,8 +285,8 @@ func (s *server) v2ProjectRows() []routeRow {
 				"that transaction's start as created_at and is seen only once it commits, so a window should end some time "+
 				"before now. A row is {id, created_at, project, actor_kind, actor_id, outcome, reason, force, title, "+
 				"spec_sha256, parent, issue, candidates, refuse_score, nudge_score, build_commit}, with no spec: GET "+
-				"/api/v2/near-copy-checks/{id} reads one row with it. outcome is refused (nothing was written; every 409 "+
-				"POSSIBLE_DUPLICATE has this row, written before the answer), forced, nudged, passed or not_made, and "+
+				"/api/v2/near-copy-checks/{id} reads one row with it. outcome is refused (nothing was written; every issue "+
+				"create the gate refused has this row, written before the answer), forced, nudged, passed or not_made, and "+
 				"reason bound, failed or unrecorded for not_made and null otherwise; candidates are the issues the gate read "+
 				"at or above nudge_score, at most %d, best first. limit 1 to %d (default %d) and offset; {items, total, "+
 				"limit, offset}. 404 PROJECT_NOT_FOUND for a project that does not exist.",
@@ -325,7 +337,7 @@ func (s *server) v2ProjectRows() []routeRow {
 			Handler:  s.getAppInstallation,
 			Resource: "app-installation", Kind: kindSingleton,
 			Shape:    routeShape{Status: http.StatusOK, Response: appInstallationResponse{}},
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal},
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, repositoryPathInvalidRefusal, gitHubAppKeyMissingRefusal, gitHubReadFailedRefusal},
 		},
 		{
 			Method: http.MethodGet, Pattern: "/priorities", Auth: authAny, Versions: onlyV2,
@@ -365,7 +377,7 @@ func (s *server) v2ProjectRows() []routeRow {
 			Body:     requestBody{Kind: bodyJSON, Type: createPriorityInput{}},
 			Shape:    routeShape{Status: http.StatusCreated, Response: model.Priority{}},
 			Scope:    scopeDeployment,
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal},
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, priorityInputRefusal, priorityIDHeldRefusal},
 		},
 		{
 			Method: http.MethodDelete, Pattern: "/priorities/{id}", Auth: authAny, Versions: onlyV2,
@@ -397,7 +409,7 @@ func (s *server) v2ProjectRows() []routeRow {
 			Shape:    routeShape{Status: http.StatusOK, Response: model.Priority{}},
 			Scope:    scopeDeployment,
 			IDs:      &idRoute{Reason: "a priority id, a slug of its own and no uuid at all"},
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, priorityMissingRefusal},
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, priorityMissingRefusal, priorityInputRefusal, rankInvalidRefusal},
 		},
 		{
 			Method: http.MethodGet, Pattern: "/priorities/{id}/acts", Auth: authAny, Versions: onlyV2,
@@ -471,7 +483,7 @@ func (s *server) v2ProjectRows() []routeRow {
 			TimeFields: []string{"created_at"}, CrossProject: true,
 			Query:    relatedCheckStatsV2Query{},
 			Shape:    routeShape{Status: http.StatusOK, Response: relatedCheckStatsV2{}},
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal},
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, queryProjectMalformedRefusal},
 		},
 	}
 }

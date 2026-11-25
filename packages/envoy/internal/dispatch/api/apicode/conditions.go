@@ -51,9 +51,10 @@ var (
 	// first write of a run makes its record, so only a write that cannot make it meets a missing
 	// step.
 	StepMissing = Condition{"step missing"}
-	// ArchitectureSourceMissing is the {owner}/{repo} of a project's architecture source (DELETE
-	// /api/v2/projects/{key}/architecture-sources/{owner}/{repo}) that names no source of the
-	// project {key} names.
+	// ArchitectureSourceMissing is a repository a route names as one of a project's architecture
+	// sources (the {owner}/{repo} of DELETE /api/v2/projects/{key}/architecture-sources/{owner}/{repo},
+	// a member of POST /api/v2/projects/{key}/architecture-syncs's repos) that the project has no
+	// source from, before the route acts or while it runs.
 	ArchitectureSourceMissing = Condition{"architecture source missing"}
 	// DeployRunMissing is the {id} of a deploy run (GET /api/v2/deploy-runs/{id}) that names no
 	// run of the deployment's deploy repository Dispatch holds.
@@ -205,8 +206,9 @@ var (
 	MarkStateInvalid = Condition{"mark state invalid"}
 	// SnoozeInvalid is an ask mark's snoozed_until left out or not in the future.
 	SnoozeInvalid = Condition{"snooze invalid"}
-	// ReferenceQueryInvalid is a reference read naming neither or both of to and from, or a
-	// reference that does not parse.
+	// ReferenceQueryInvalid is a reference read that names no reference, names neither or both of
+	// to and from, or names one that is no dispatch:// reference: GET /api/v2/references,
+	// /reference-targets and /block-links.
 	ReferenceQueryInvalid = Condition{"reference query invalid"}
 	// RoleHoldersInvalid is a role-holder set the write refuses: no holders, a role that is none of
 	// the six, a session that is no session id, a role or a session named twice.
@@ -321,14 +323,18 @@ var (
 	TitleNearCopy              = Condition{"title a near copy of another issue's"}
 	ParentOutsideCallerProject = Condition{"parent outside the credential's project"}
 	ExternalLinkHeld           = Condition{"external link held by another issue"}
-	IssueStatusInvalid         = Condition{"issue status invalid"}
-	ExternalURLInvalid         = Condition{"external url invalid"}
-	IssueSequenceMoved         = Condition{"issue sequence moved"}
-	ParentLockContended        = Condition{"parent lock contended"}
-	RankInvalid                = Condition{"rank invalid"}
-	IssueRouteInvalid          = Condition{"issue route invalid"}
-	AdvancesFilterInvalid      = Condition{"advances filter invalid"}
-	ClosedWindowInverted       = Condition{"closed window inverted"}
+	// IssueStatusInvalid is an issue status a patch or a search names that is none of the
+	// statuses.
+	IssueStatusInvalid  = Condition{"issue status invalid"}
+	ExternalURLInvalid  = Condition{"external url invalid"}
+	IssueSequenceMoved  = Condition{"issue sequence moved"}
+	ParentLockContended = Condition{"parent lock contended"}
+	// RankInvalid is a rank a write refuses: an issue's rank, or a priority's, naming no neighbour
+	// or one it cannot land beside.
+	RankInvalid           = Condition{"rank invalid"}
+	IssueRouteInvalid     = Condition{"issue route invalid"}
+	AdvancesFilterInvalid = Condition{"advances filter invalid"}
+	ClosedWindowInverted  = Condition{"closed window inverted"}
 	// ClaimHolderMoved is a claim write whose holder changed twice while it ran.
 	ClaimHolderMoved = Condition{"claim holder moved"}
 	// IssueHeldByAnother is a claim or a release the caller may not make over the holder.
@@ -382,6 +388,74 @@ var (
 	FollowOfAnotherSession  = Condition{"follow of another session without the person scope"}
 )
 
+// The conditions of what a search, a going request and a related search name.
+var (
+	// SearchAuthorInvalid is a search's author filter that is no one actor id.
+	SearchAuthorInvalid = Condition{"search author invalid"}
+	// NumberProjectMalformed is a search's number_project that is no project key.
+	NumberProjectMalformed = Condition{"number project malformed"}
+	// SearchCoverageTimedOut is a search coverage whose one statement ran past its bound.
+	SearchCoverageTimedOut = Condition{"search coverage timed out"}
+	// CredentialNamesNobody is a going request from a credential that names nobody, whose run
+	// no reader would be served.
+	CredentialNamesNobody = Condition{"going credential names nobody"}
+	// GoingWordsBlank is a going request whose words are blank.
+	GoingWordsBlank = Condition{"going words blank"}
+	// BodyProjectMalformed is a project a request's body names that is no project key: POST
+	// /api/v2/going-requests.
+	BodyProjectMalformed = Condition{"body project malformed"}
+	// ExcludeIssueInvalid is an issue a related search excludes that is no issue key of the
+	// project, or a list of them longer than the bound.
+	ExcludeIssueInvalid = Condition{"excluded issue invalid"}
+)
+
+// The conditions of what a session group, a project, an architecture source and a priority write
+// refuses.
+var (
+	// SessionGroupInvalid is a session group's name or sessions the write refuses, or an edit
+	// that would leave it empty.
+	SessionGroupInvalid = Condition{"session group invalid"}
+	// SessionAlreadyGrouped is a session another group holds.
+	SessionAlreadyGrouped = Condition{"session already grouped"}
+	// SessionGroupNameHeld is a session group's name another group has.
+	SessionGroupNameHeld = Condition{"session group name held"}
+	// SessionGroupNameTitled is a session group's name that is the title of a session outside
+	// the group.
+	SessionGroupNameTitled = Condition{"session group name is a session title"}
+	// ProjectInputInvalid is a project's key, name, default assignee, gated steps or default
+	// repository the write refuses, or a patch that names none of them.
+	ProjectInputInvalid = Condition{"project input invalid"}
+	// ProjectKeyHeld is a project's key another project has.
+	ProjectKeyHeld = Condition{"project key held"}
+	// ProjectHasNoSource is a read or a sync of every architecture source of a project that has
+	// none.
+	ProjectHasNoSource = Condition{"project has no architecture source"}
+	// SourceInputInvalid is a repository that is no owner/name, or a blank branch, an
+	// architecture source's route names.
+	SourceInputInvalid = Condition{"source input invalid"}
+	// SourceUnreadable is a repository, or a branch of it, the GitHub App cannot read: no App
+	// key, no installation, no contents read, or no such branch.
+	SourceUnreadable = Condition{"source unreadable"}
+	// PriorityInputInvalid is a priority's title, id or write that names nothing the write
+	// refuses.
+	PriorityInputInvalid = Condition{"priority input invalid"}
+	// PriorityIDHeld is a priority's id the store already holds.
+	PriorityIDHeld = Condition{"priority id held"}
+)
+
+// The conditions of the GitHub App's installation read and of the secrets broker's relays.
+var (
+	// RepositoryPathInvalid is a repository path whose owner or name GitHub does not allow.
+	RepositoryPathInvalid = Condition{"repository path invalid"}
+	// GitHubAppKeyMissing is a read of GitHub's App on a Dispatch that holds no App key.
+	GitHubAppKeyMissing = Condition{"github app key missing"}
+	// BrokerUnreachable is a credential route's call the secrets broker did not answer.
+	BrokerUnreachable = Condition{"secrets broker unreachable"}
+	// ServiceAccountTokenUnreadable is a credential route's call that stopped at Dispatch's own
+	// ServiceAccount token, which it cannot read.
+	ServiceAccountTokenUnreadable = Condition{"service account token unreadable"}
+)
+
 // The conditions of a service Dispatch relies on.
 var (
 	// EnvoyUnreachable is a route that needs the Envoy listener, on a Dispatch configured with
@@ -431,8 +505,8 @@ var (
 	QueryVersionMissing = Condition{"query version missing"}
 	// ArtifactNotDocument is an artifact a route reads as a document that is a file or an image.
 	ArtifactNotDocument = Condition{"artifact not a document"}
-	// QueryProjectMalformed is a project a request's query names that is no project key: GET
-	// /api/v2/nodes's project filter.
+	// QueryProjectMalformed is a project a request's query names that is no project key: the
+	// project filter of GET /api/v2/nodes, /search-results and /related-check-stats.
 	QueryProjectMalformed = Condition{"query project malformed"}
 )
 

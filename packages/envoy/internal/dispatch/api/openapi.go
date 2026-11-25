@@ -985,8 +985,9 @@ var callerCodes = []apicode.Code{
 //   - a route that needs a scope, or a value of whose request needs one: OAUTH_SCOPE_REQUIRED;
 //   - a route that resolves an id written short: the prefix layer's ID_AMBIGUOUS and its 404s;
 //   - a write: the login check's LOGIN_CHANGED and the sign-in check's SIGN_IN_REQUIRED, the
-//     project check's PROJECT_SCOPE or PROJECT_SCOPE_DEPLOYMENT by the row's class, and the
-//     drain's 413 for a body past the route's bound, a write that reads no body among them;
+//     project check's PROJECT_SCOPE (a project-in-body class's by its handler, once it has read the
+//     body's project) or PROJECT_SCOPE_DEPLOYMENT by the row's class, and the drain's 413 for a
+//     body past the route's bound, a write that reads no body among them;
 //   - a write into one session's rows, by its path or by its body: the session check's
 //     SESSION_SCOPE;
 //   - a route that reads a JSON body or an upload: the body decoder's;
@@ -1041,7 +1042,9 @@ func openAPIOperationCodes(route apiRoute) map[string]any {
 	if route.Method != http.MethodGet {
 		codes = append(codes, apicode.LoginChanged, apicode.SignInRequired)
 		switch route.Scope {
-		case scopeProject:
+		case scopeProject, scopeProjectInBody:
+			// The project layer's refusal for a class it mounts, and the handler's own for the
+			// one that names its project in its body (refuseWriteOutsideProjectScope).
 			codes = append(codes, apicode.ProjectScope)
 		case scopeDeployment:
 			codes = append(codes, apicode.ProjectScopeDeployment)

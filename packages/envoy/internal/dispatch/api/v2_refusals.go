@@ -24,6 +24,9 @@ var (
 	assigneeNotSignedInRefusal   = apicode.Refusal{Condition: apicode.AssigneeNotSignedIn, Code: apicode.AssigneeNotAllowed}
 	gitHubReadFailedRefusal      = apicode.Refusal{Condition: apicode.GitHubReadFailed, Code: apicode.GitHubUnreadable}
 	refPrefixAmbiguousRefusal    = apicode.Refusal{Condition: apicode.RefPrefixAmbiguous, Code: apicode.IDAmbiguous}
+	referenceInvalidRefusal      = apicode.Refusal{Condition: apicode.ReferenceQueryInvalid, Code: apicode.InvalidReference}
+	issueStatusInvalidRefusal    = apicode.Refusal{Condition: apicode.IssueStatusInvalid, Code: apicode.InvalidStatus}
+	rankInvalidRefusal           = apicode.Refusal{Condition: apicode.RankInvalid, Code: apicode.RankInput}
 )
 
 // unsubscribeRefusals are the refusals of the unsubscription of a session from an owner's topics

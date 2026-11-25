@@ -138,10 +138,9 @@ func (s *server) v2LogRows() []routeRow {
 			Resource: "references", Kind: kindLog, Position: sourceSeqPosition,
 			Query: referencesV2Query{},
 			Shape: routeShape{Status: http.StatusOK, Response: referencesV2{}},
-			Refusals: listRefusals(positionRefusal,
-				apicode.Refusal{Condition: apicode.ReferenceQueryInvalid, Code: apicode.InvalidReference},
+			Refusals: listRefusals(positionRefusal, referenceInvalidRefusal,
 				apicode.Refusal{Condition: apicode.ReferenceNodeMissing, Code: apicode.NotFound},
-				apicode.Refusal{Condition: apicode.RefPrefixAmbiguous, Code: apicode.IDAmbiguous}),
+				refPrefixAmbiguousRefusal),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/me/threads", Auth: authAny, Versions: onlyV2,
