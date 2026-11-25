@@ -25,7 +25,8 @@ package api
 // the drain writes their versions after the COMMIT (docs.Service.DrainOwedQueries).
 //
 // The refusals, in the order the route reads them: an ask, a comment or a message, which the route
-// moves none of, for every caller (400 NODE_NOT_MOVABLE); a parent nobody holds (404 NOT_FOUND),
+// moves none of, and a decision that holds a from_ask, which stands under the ask it settles, for
+// every caller (400 NODE_NOT_MOVABLE); a parent nobody holds (404 NOT_FOUND),
 // and a constraint moved under any node but an issue's (400 INVALID_POINTER), which R7 reads before
 // every other rule; a body that names no move (400 MOVE_INPUT) and a move that states no placement
 // (428 PRECONDITION_REQUIRED); R28's writer check on a requirement, a criterion or a check (403
@@ -69,7 +70,8 @@ const (
 	// codeMoveInput is a body that names neither parent nor after, or names one as no address.
 	codeMoveInput = "MOVE_INPUT"
 	// codeNodeNotMovable is a move of an ask, a comment or a message, whose part_of follows its
-	// own row and no move writes.
+	// own row and no move writes, or of a decision that holds a from_ask, whose part_of follows
+	// that from_ask.
 	codeNodeNotMovable = "NODE_NOT_MOVABLE"
 	// codeParentNotReached is a parent the walk of the issue it stands under does not reach.
 	codeParentNotReached = "PARENT_NOT_REACHED"
@@ -267,6 +269,20 @@ func (s *server) moveNode(ctx context.Context, move nodeMoveRequest) (nodeMoved,
 		return nodeMoved{}, nil, nil, errorf(http.StatusBadRequest, codeNodeNotMovable,
 			"the %s %s does not move: its part_of follows its own row - an ask's the document that holds its block, a comment's and a message's what each answers or the node its anchor is on - so a move would leave a difference no pass clears, and the next restore would undo it; an ask moves with the block that holds it",
 			moved.word(), moved.named)
+	}
+	// A decision that holds a from_ask stands under the ask it settles, whatever a move would
+	// store (R2): R7 answers it 400 NODE_NOT_MOVABLE at the same point, naming its ask, whoever the
+	// caller is, so an agent's move of a person's such decision is this and not R32's 409.
+	if moved.kind == refs.BlockNodeKind && moved.typ == refs.DecisionSupertag {
+		ask, holds, err := refs.DecisionFromAsk(ctx, tx, moved.id)
+		if err != nil {
+			return nodeMoved{}, nil, nil, err
+		}
+		if holds {
+			return nodeMoved{}, nil, nil, errorf(http.StatusBadRequest, codeNodeNotMovable,
+				"the %s %s does not move: it holds a from_ask, %s, so it stands under the ask it settles and its place follows that from_ask - a move would leave it where the next index pass undoes it; to move it, change or remove its from_ask through a write of its document's text",
+				moved.word(), moved.named, ask)
+		}
 	}
 	// R7 reads the constraint rule next, before every other rule: a constraint stands only under an
 	// issue node, so one moved under any other parent is refused before the body, the If-Match and

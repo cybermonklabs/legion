@@ -36,15 +36,18 @@ var blockProjections = []projection{{
 		" an authored node's row with no parent_block_id, and the row of a block a move of the node route placed" +
 		" (placement stored), states a part_of to no block of its artifact, and the node's part_of to anything but a" +
 		" block of its own artifact - its issue, a conversation node, another artifact's block, a lens - reads as that;" +
+		" a decision's row whose node holds a current from_ask to an ask of its document's issue whose row names its" +
+		" node states a part_of to that ask, read as the node side reads it, whatever its parent_block_id;" +
 		" a row of an issue room's tree artifact reads its document from its issue_room_blocks row, and one of a room" +
 		" that owes its block index is owed",
 	rows: `
 		select 'block ' || d.node_id, d.node_kind, d.node_address,
 		       md5(d.node_id || '|' || ` + statedLinks(
 		`'`+refs.TupleInDocument+`>artifact:' || document.ref_key`,
-		`'`+graphstore.TuplePartOf+`>' || case when d.parent_block_id is not null then '`+refs.BlockNodeKind+`:' || a.ref_key || '#' || d.parent_block_id
+		`'`+graphstore.TuplePartOf+`>' || coalesce(`+settledAsk("d", "a")+`,
+		      case when d.parent_block_id is not null then '`+refs.BlockNodeKind+`:' || a.ref_key || '#' || d.parent_block_id
 		      when d.type in `+refs.AuthoredTypesSQL+` or `+storedRow("d")+` then '`+outsideArtifact+`' || a.ref_key
-		      else `+refs.DocumentTopSQL("document")+` end`,
+		      else `+refs.DocumentTopSQL("document")+` end)`,
 	) + `)
 		from document_blocks d
 		join artifacts a on a.id = d.artifact_id
@@ -316,6 +319,28 @@ func storedRow(alias string) string {
 		where t.from_kind = ` + alias + `.node_kind and t.from_id = ` + alias + `.node_address and t.kind = '` + refs.AttributePlacement + `'
 		  and t.to_kind = '` + graphstore.KindValue + `'
 		order by t.seq desc limit 1) = '` + refs.PlacementStored + `', false)`
+}
+
+// settledAsk is the far end, written kind:id as statedLinks reads a link, of the part_of the
+// node of the document_blocks row alias stands under where that row is a decision that settles an
+// ask of its issue (R2 of the issue-tree spec, refs.DecisionFacts): its node holds a current
+// from_ask to an ask whose marked row is one of the issue of artifact, the row's own artifacts row,
+// and the decision stands under that ask's node whatever its parent_block_id says, since that
+// column keeps the block its text stands in. The far end is read as blockPlacedLinks reads a
+// part_of to an ask's node: the block of the row's own artifact that holds the ask, where its row
+// names one (askBlockID), else the ask's own address. It is null for every other row, whose parent
+// its own columns state.
+func settledAsk(alias, artifact string) string {
+	return `case when ` + alias + `.type = '` + refs.DecisionSupertag + `' then (
+		select coalesce('` + refs.BlockNodeKind + `:' || ` + artifact + `.ref_key || '#' || settled.block_id,
+		                '` + graphstore.KindAsk + `:' || settled.node_address)
+		from (` + graphstore.CurrentTupleRead(`t.to_id`, `t.to_id, t.asserted`,
+		`t.from_kind = `+alias+`.node_kind and t.from_id = `+alias+`.node_address and t.kind = '`+refs.TupleFromAsk+`'
+		  and t.to_kind = '`+graphstore.KindAsk+`'`) + `) held
+		join asks settled on settled.node_kind = '` + graphstore.KindAsk + `' and settled.node_address = held.to_id
+		  and settled.issue_key = ` + artifact + `.issue_key
+		where held.asserted
+		order by held.to_id limit 1) end`
 }
 
 // blockAuthorsHeld is true of each document_blocks row d, with its artifacts row a, whose block's
