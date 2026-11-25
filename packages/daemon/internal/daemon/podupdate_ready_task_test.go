@@ -8,24 +8,19 @@ package daemon
 // fact (claimDurableState, intake.ClaimReady): a phase worker that holds its phase and nothing
 // pending is given its phase's task again when its new process is ready (workflow's
 // readyWorkerTask), once, without waiting for the silence sweep, and the sweep then finds a worker
-// that holds its task and sends nothing more. The ready reads the silence repair's own rule of
-// whether the worker is owed a turn (workflow.PhaseWorkerOwedTurn), so a worker whose phase entry
-// the workflow accepted as complete is given nothing. An update that keeps its pod relaunches
-// nothing, and so prompts nobody.
+// that holds its task and sends nothing more. A worker whose phase is over, as where the issue has
+// moved on to a phase its role does not work, is given nothing at that ready. An update that keeps
+// its pod relaunches nothing, and so prompts nobody.
 //
 // The rig's ready is a workflow fact here as the boot makes it one (readiesAsTheBootBinds).
 
 import (
-	"context"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -129,30 +124,25 @@ func TestAReplacedPhaseWorkerGetsItsUnfinishedTaskOnceWhenItsNewProcessIsReady(t
 	}
 }
 
-func TestAReplacedPhaseWorkerWhoseCompletionWasAcceptedIsSentNothing(t *testing.T) {
+func TestAReplacedPhaseWorkerWhosePhaseIsOverIsSentNothing(t *testing.T) {
 	t.Parallel()
 	rig, _ := aWorkerWithItsPhasesTask(t)
 	worker := claim.RoleImplementer
 	rig.drifts(podUpdateDrift)
 	rig.answersInsideItsTask(worker)
-	// The workflow accepts the worker's completion of its phase entry while the issue stays in the
-	// phase.
-	if err := store.Transact(rig.ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
-		return rig.records.PutPhase(rig.ctx, tx, record.PhaseRow{Issue: podUpdateIssue, Role: worker, Claim: rig.tokens[worker],
-			Entry: silenceEntry, EntryTask: silenceEntryTask, EntryRaisedAt: podUpdateStart, CompletedAt: rig.clock.Now()})
-	}); err != nil {
-		t.Fatalf("record the completion of the %s: %v", worker, err)
-	}
+	// The worker's phase is over: the workflow moves the issue on to testing, which the tester
+	// works, while the round replaces the pod.
+	rig.movesTo(phase.Testing)
 	rig.replacedAndBack(worker)
 	conn := rig.workers[worker]
 
 	rig.drain()
 	rig.settle(worker)
 	if got := rig.starts(); len(got) != 0 {
-		t.Fatalf("the supervise rows of %s = %+v, want none: a worker whose completion was accepted is owed no turn", podUpdateIssue, got)
+		t.Fatalf("the supervise rows of %s = %+v, want none: the implementer's phase is over", podUpdateIssue, got)
 	}
 	if sent := conn.Prompts(); len(sent) != 0 {
-		t.Fatalf("the new process was sent %+v, want nothing: its phase entry is complete", sent)
+		t.Fatalf("the new process was sent %+v, want nothing: its phase is over", sent)
 	}
 }
 

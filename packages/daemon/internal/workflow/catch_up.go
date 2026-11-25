@@ -200,10 +200,11 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // pod is given its task back: the turn in which it answered the round retired the task it held
 // though its phase was not complete (supervise's settle), and the round's end sends only what is
 // still pending, so the worker's new process gets its phase's task here, once it is ready, without
-// waiting for the silence sweep. The ready asks the silence repair's own question of whether the
-// worker is owed a turn at all (PhaseWorkerOwedTurn): a role whose completion of its phase entry
-// the workflow accepted, while the issue stands in the phase, is given nothing, as the repair gives
-// it nothing.
+// waiting for the silence sweep. A worker whose phase is over is given nothing: the issue has left
+// the phase for one its role does not work (RoleFor), or the phase's terminating fact has come
+// (PhaseFinished). The ready does not read a phase row's completion (record.PhaseRow.CompletedAt),
+// which the silence repair reads (PhaseWorkerOwedTurn): a merger that the boot relaunches with a
+// READY completion still on its row is owed its merging task at its ready (cutoverMergerRepair).
 //
 // The daemon's own delivery of a relaunch's record is no task (supervise.HoldsTask), so a claim
 // that holds that alone is read as holding nothing. The phase's task that this queues takes that
@@ -220,15 +221,14 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // What such a claim is sent is decided by the entry its role's phases row names
 // (record.PhaseRow.Entry), read here as admission reads it for the same decision (admit's
 // owedEntryRoles): the whole row, below the skips above, so a ready this function passes over
-// costs no read of the row and the row the rule is weighed against is the row whose work is sent.
-// A claim behind that entry — the entry it was given is under the row's and no queued start
-// carries that entry (OwedEntry) — is sent the work of that entry at that entry (SendOwedEntry),
-// which is the task the transition wrote when it raised the number. It is sent that rather than
-// the phase's resume task because the resume says to carry the existing phase work on, and the
-// work of an entry this claim was never given is work it does not have; the resume would also
-// spend the turn on the wrong prompt, since the completion it answers with is refused as behind
-// that entry and the entry's own task follows from the next admission pass or the entry sweep
-// anyway.
+// costs no query and the row the rule is weighed against is the row whose work is sent. A claim
+// behind that entry — the entry it was given is under the row's and no queued start carries that
+// entry (OwedEntry) — is sent the work of that entry at that entry (SendOwedEntry), which is the
+// task the transition wrote when it raised the number. It is sent that rather than the phase's
+// resume task because the resume says to carry the existing phase work on, and the work of an
+// entry this claim was never given is work it does not have; the resume would also spend the turn
+// on the wrong prompt, since the completion it answers with is refused as behind that entry and
+// the entry's own task follows from the next admission pass or the entry sweep anyway.
 //
 // A claim level with its row is sent the phase's resume task, enqueued here and marked as a
 // resume task, so the one rule about already-delivered work stays the outbox's: it does not
@@ -282,8 +282,8 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	if queuedRowCovers(run, *root, issue.Phase) {
 		return nil
 	}
-	row, owed, err := PhaseWorkerOwedTurn(ctx, e.store, tx, *issue, role)
-	if err != nil || !owed {
+	row, err := e.phaseRow(ctx, tx, issue.Key, role)
+	if err != nil {
 		return err
 	}
 	if OwedEntry(run, *root, row.Entry) {

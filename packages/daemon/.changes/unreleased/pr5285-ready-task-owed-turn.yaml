@@ -1,8 +1,0 @@
-kind: Fixed
-body: |-
-  A phase worker whose completion of its phase entry the workflow accepted, while its issue still
-  stands in that phase, is no longer sent its phase's task again when its claim becomes ready, as
-  after a relaunch or an update round's replacement of its pod (#5285). The ready asks the silence
-  repair's own question of whether the worker is owed a turn. A worker an update round relaunched
-  in a new pod is still sent its unfinished task once, when its new process is ready, without
-  waiting for the silence sweep.
