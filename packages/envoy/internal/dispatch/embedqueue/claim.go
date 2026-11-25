@@ -18,9 +18,9 @@ import (
 // shrink it and see a call end at its bound in milliseconds.
 var callBound = 60 * time.Second
 
-// callSlack is how much of its claim a call that runs to callBound must still have when it ends:
-// time for the call to unwind once its context ends, for the renewal or the commit that follows,
-// and for a late timer on a loaded host.
+// callSlack is how much of its claim a call that runs to callBound must still have when it ends,
+// for what runs before the next renewal: the call's unwinding once its context ends, the commit,
+// the next group's token reservation (reserveTokens' UPDATE), and a late timer on a loaded host.
 const callSlack = 15 * time.Second
 
 // claimRenewal re-extends scanPending's claim on every row of the original top-level batch a
@@ -52,12 +52,10 @@ func newClaimRenewal(deps Deps, rows []pendingRow, claimed time.Time) *claimRene
 	}}
 }
 
-// renew renews c's claim once it falls due (due): once it has no more than need of claimWindow
-// left, and in any case once renewClaimInterval has passed since its last renewal. need is the
-// most the step about to start may take: an Embed call's callBound plus callSlack
-// (embedDocuments), so however late after the last renewal a call starts, it ends with its claim
-// no older than claimWindow less callSlack; 0 at a slice of a wait (waitOutDebt), which ends when
-// the claim next falls due.
+// renew renews c's claim once it falls due (due). need is the most the step about to start may
+// take: an Embed call's callBound plus callSlack (embedDocuments), so however late after the last
+// renewal a call starts, it ends with its claim no older than claimWindow less callSlack; 0 at a
+// slice of a wait (waitOutDebt), which ends when the claim next falls due.
 func (c *claimRenewal) renew(ctx context.Context, need time.Duration) {
 	if c == nil || ctx.Err() != nil || c.due(need) > 0 {
 		return
@@ -68,21 +66,18 @@ func (c *claimRenewal) renew(ctx context.Context, need time.Duration) {
 	}
 }
 
-// due is how long until renew(need) renews c's claim, and 0 once it would: the claim's time left
-// less the larger of need and claimWindow less renewClaimInterval, which is the time a claim has
-// left renewClaimInterval after its renewal. The second term holds for a call's need too, and it
-// is why no renewal comes before a reservation: a call's own renewal, a statement after the
-// reservation, renews whatever such a renewal would. At today's values a call's need renews at
-// 45 s, before the interval's 60 s, but a shorter renewClaimInterval reverses that, and without the
-// term no renewal would run between bisection's attempts
+// due is how long until renew(need) renews c's claim, and 0 once it would: until the claim is
+// claimWindow less need old, or renewClaimInterval old if that is sooner. The interval bounds a
+// call's renewal too, so a call's own renewal, a statement after its reservation, renews whatever
+// a renewal before the reservation would, whatever renewClaimInterval is; without it no renewal
+// runs between bisection's attempts once a test shrinks the interval
 // (TestProcessBatchActuallyCallsRenewalAndReservesTokens). A nil *claimRenewal, which renews
 // nothing, is never due.
 func (c *claimRenewal) due(need time.Duration) time.Duration {
 	if c == nil {
 		return math.MaxInt64
 	}
-	left := claimWindow - time.Since(c.last)
-	return max(left-max(need, claimWindow-renewClaimInterval), 0)
+	return max(min(claimWindow-need, renewClaimInterval)-time.Since(c.last), 0)
 }
 
 // boundedCall is an embedder each of whose calls the queue ends at callBound through the call's
