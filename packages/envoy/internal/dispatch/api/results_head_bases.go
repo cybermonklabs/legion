@@ -43,6 +43,7 @@ func (c *comparisonReader) headBases(ctx context.Context, issueKey string) compa
 	open := slices.ContainsFunc(heads, func(head delivery.AttributedHead) bool { return head.Open })
 	ordered := open || c.mergedInOrder(ctx, heads)
 	bases, subjects := pullRequestBases(heads, issueRepo, open, ordered)
+	bases = slices.DeleteFunc(bases, func(basis model.CheckBasis) bool { return basis.Merged })
 	unread := ""
 	switch {
 	case len(bases) > 0:
