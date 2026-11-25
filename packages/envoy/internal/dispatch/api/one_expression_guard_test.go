@@ -38,7 +38,7 @@ package api
 // nobody. It is a file of its own under `//go:build !race` now, so the text-check job runs it
 // and the line below is the declaration that holds that job's filter to what it reads.
 //ci:reads packages/envoy/**/*.go !**/*_test.go internal/dispatch/api/module_source_test.go:76 walks packages/envoy (infra, testdata and all) and :83 parses every .go file it finds but the test files (:80), for the tests that ask it for the module's sources: lock_level_test.go:91, event_insert_guard_test.go:46, review_order_guard_test.go:49, review_write_guard_test.go:53, TestOneExpressionDecidesWhoWaitsInOneSpelling, issue_route_writer_guard_test.go:107; issue_route_writer_guard_test.go:126 also walks packages/envoy and reads every non-test file of it as text
-//ci:reads packages/envoy/**/*.sql sqlRuleCopies, which TestOneExpressionDecidesWhoWaitsInOneSpelling calls, walks packages/envoy and reads every .sql file it finds, its comments blanked, for a copy of the rule
+//ci:reads packages/envoy/**/*.sql sqlFilesSpellingTheRule, which TestOneExpressionDecidesWhoWaitsInOneSpelling calls, walks packages/envoy and reads every .sql file it finds, its comments blanked, for a copy of the rule
 
 import (
 	"fmt"
@@ -201,8 +201,8 @@ const (
 var ruleNeedle = regexp.MustCompile(`(?i)\bcoalesce` + sqlSpace + `*\(` + sqlSpace + `*(?:` + sqlIdentifier +
 	sqlSpace + `*\.` + sqlSpace + `*)*(?:asked_of(?:[^` + sqlIdentifierCont + `]|$)|(?:u&)?(?-i:"asked_of"))`)
 
-// goRuleCopies is the number of copies of the rule in the text of a Go source.
-func goRuleCopies(text string) int {
+// goRuleCount is the number of copies of the rule in the text of a Go source.
+func goRuleCount(text string) int {
 	return len(ruleNeedle.FindAllStringIndex(text, -1))
 }
 
@@ -212,10 +212,10 @@ func sqlRuleCount(text string) int {
 	return len(ruleNeedle.FindAllStringIndex(sqlCode(text), -1))
 }
 
-// sqlRuleCopies is each .sql file of the module that spells the rule (sqlRuleCount), as its path
-// with the number of copies in it. A walk that read no migration would answer none for a reason
-// other than there being none, so it fails the test instead.
-func sqlRuleCopies(t *testing.T) []string {
+// sqlFilesSpellingTheRule is each .sql file of the module that spells the rule (sqlRuleCount), as
+// its path with the number of copies in it. A walk that read no migration would answer none for a
+// reason other than there being none, so it fails the test instead.
+func sqlFilesSpellingTheRule(t *testing.T) []string {
 	t.Helper()
 	copies := []string{}
 	read, migrations := 0, 0
@@ -306,7 +306,7 @@ func TestOneExpressionDecidesWhoWaitsInOneSpelling(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", source.path, err)
 		}
-		if spelled := goRuleCopies(string(text)); spelled > 0 {
+		if spelled := goRuleCount(string(text)); spelled > 0 {
 			copies = append(copies, fmt.Sprintf("%s (%d)", filepath.ToSlash(source.path), spelled))
 		}
 		joined := strings.Count(string(text), "left join projects p on p.key = coalesce(i.project_key, ar.project_key)")
@@ -340,7 +340,7 @@ func TestOneExpressionDecidesWhoWaitsInOneSpelling(t *testing.T) {
 		{"const q = `select coalesce(\"a\"\"b\".asked_of, 'fallback') from asks as \"a\"\"b\"`", 1},
 		{"const q = `select coalesce(ä.asked_of, 'fallback') from asks as ä`", 1},
 	} {
-		if got := goRuleCopies(planted.source); got != planted.spelled {
+		if got := goRuleCount(planted.source); got != planted.spelled {
 			t.Errorf("the Go count finds %d copies of the rule in %q, want %d", got, planted.source, planted.spelled)
 		}
 	}
@@ -395,7 +395,7 @@ func TestOneExpressionDecidesWhoWaitsInOneSpelling(t *testing.T) {
 	if t.Failed() {
 		return
 	}
-	if sqlCopies := sqlRuleCopies(t); len(sqlCopies) > 0 {
+	if sqlCopies := sqlFilesSpellingTheRule(t); len(sqlCopies) > 0 {
 		t.Fatalf("the rule is spelled in the SQL of %v, want it in no .sql file: %s names it once, in ask_rows.go",
 			sqlCopies, askedOfPersonExpressionName)
 	}
