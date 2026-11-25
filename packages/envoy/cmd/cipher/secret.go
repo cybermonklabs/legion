@@ -1211,6 +1211,11 @@ func cmdSecretList(args []string, stdout, stderr io.Writer) int {
 	defer s.Close()
 	listings, err := s.backend.List(s.ctx, s.settings.SecretsPrefix, secretstore.ReadOptions{IncludeDeleted: true})
 	if err != nil {
+		// A read of one listed secret names that secret; any other failure is the list's own.
+		var one secretstore.SecretFailure
+		if errors.As(err, &one) {
+			return secretFailIn(stderr, form, s, fmt.Errorf("read %s: %w", one.ID, one.Err))
+		}
 		return secretFailIn(stderr, form, s, fmt.Errorf("list the agent secrets: %w", err))
 	}
 	views := make([]secretView, 0, len(listings))

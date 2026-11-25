@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
@@ -71,4 +72,27 @@ func TestClientErrorsAnswerTheClientsFailure(t *testing.T) {
 	if _, err := (aws.Store{Client: failingCalls{awstest.NewLocal(), missing}, KeyARN: awstest.KeyARN}).Describe(ctx, id, secretstore.ReadOptions{}); err != secretstore.ErrNotFound {
 		t.Errorf("Describe of a missing secret without ClientErrors = %v, want ErrNotFound itself", err)
 	}
+}
+
+// TestClientErrorsWordAValueThatIsNotText: with ClientErrors, a current value that is no text reads
+// as ErrValueNotText in the CLI's words alone; without it, the broker's store names the secret
+// (the control).
+func TestClientErrorsWordAValueThatIsNotText(t *testing.T) {
+	const source = "arn:aws:secretsmanager:us-east-1:1:secret:binary"
+	binary := binaryValue{awstest.NewLocal()}
+	_, err := (aws.Store{Client: binary, KeyARN: awstest.KeyARN, ClientErrors: true}).Read(context.Background(), source)
+	if !errors.Is(err, secretstore.ErrValueNotText) || err.Error() != "its value is not a non-empty string" {
+		t.Errorf("Read of a binary value with ClientErrors = %v, want ErrValueNotText in the CLI's words", err)
+	}
+	_, err = (aws.Store{Client: binary, KeyARN: awstest.KeyARN}).Read(context.Background(), source)
+	if !errors.Is(err, secretstore.ErrValueNotText) || !strings.Contains(err.Error(), source) {
+		t.Errorf("Read of a binary value without ClientErrors = %v, want ErrValueNotText naming the secret", err)
+	}
+}
+
+// binaryValue is a awstest.Local whose every GetSecretValue answers a value held as SecretBinary.
+type binaryValue struct{ *awstest.Local }
+
+func (b binaryValue) GetSecretValue(context.Context, *secretsmanager.GetSecretValueInput, ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+	return &secretsmanager.GetSecretValueOutput{SecretBinary: []byte{0xff}}, nil
 }
