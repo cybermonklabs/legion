@@ -75,10 +75,12 @@ func workflowRunsOfOneCommit(rawQuery string) bool {
 // installation token of the App installation covering the path's repository. A workflow-runs read
 // GitHub answers 200 is trimmed to workflowRuns, and a body that does not decode as workflow runs
 // is 502 GITHUB_UPSTREAM; every other answer, and a workflow-runs answer of any other status,
-// passes through as GitHub sent it, but a rate limit. Any other method is 405; a path the web app
-// does not read, or a workflow-runs read whose query is not one commit's head_sha and its page, is
-// 404 GITHUB_PATH_REFUSED; a repository the App is not installed on, or a deployment with no App
-// key, is 503 GITHUB_TOKEN_UNAVAILABLE. A rate limit is 503 GITHUB_RATE_LIMITED with Retry-After:
+// passes through as GitHub sent it, but a rate limit. What passes through holds no run of the
+// installation token: whatever answers in GitHub's place can echo the token the read carried, in
+// a 2xx as well as in a refusal. Any other method is 405; a path the web app does not read, or a
+// workflow-runs read whose query is not one commit's head_sha and its page, is 404
+// GITHUB_PATH_REFUSED; a repository the App is not installed on, or a deployment with no App key,
+// is 503 GITHUB_TOKEN_UNAVAILABLE. A rate limit is 503 GITHUB_RATE_LIMITED with Retry-After:
 // GitHub's answer to the token mint or to the read, or a limit another request or process already
 // met (githubapp.Limits), in which case GitHub is not asked. The caller has already established
 // that a person is asking.
@@ -149,6 +151,11 @@ func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client)
 			api.WriteJSON(w, http.StatusBadGateway, map[string]string{"error": "GitHub answered the workflow runs with a body that does not decode", "code": "GITHUB_UPSTREAM"})
 			return
 		}
+		// A run's event and name are GitHub's words as it wrote them (Answer.Decode fills a string
+		// as it came), so every run of the token is redacted from them (redact.Tokens).
+		for i, run := range runs.WorkflowRuns {
+			runs.WorkflowRuns[i].Event, runs.WorkflowRuns[i].Name = redact.Tokens(run.Event, -1, token), redact.Tokens(run.Name, -1, token)
+		}
 		api.WriteJSON(w, http.StatusOK, runs)
 		return
 	}
@@ -156,12 +163,15 @@ func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client)
 		w.Header().Set("Content-Type", contentType)
 	}
 	w.WriteHeader(status)
-	// A 2xx answer is the data the caller asked for, forwarded whole (redact.Answer.StreamTo). Any
-	// other is GitHub's refusal, or a stand-in's, which can echo the installation token the read
-	// carried: it goes to the caller as the rule prints it, with that token redacted
-	// (redact.Answer.Words).
+	// A 2xx answer is the data the caller asked for, forwarded whole (redact.Answer.StreamTo) but
+	// for every run of the installation token the read carried (redact.Tokens): that token alone,
+	// not the whole record of the read, whose other words (a query's values) the data can name
+	// back as its own. Any other is GitHub's refusal, or a stand-in's: it goes to the caller as the
+	// rule prints it, with that token redacted (redact.Answer.Words).
 	if status/100 == 2 {
-		_, _ = body.StreamTo(w)
+		var data strings.Builder
+		_, _ = body.StreamTo(&data)
+		_, _ = io.WriteString(w, redact.Tokens(data.String(), -1, token))
 		return
 	}
 	_, _ = io.WriteString(w, body.Words().String())

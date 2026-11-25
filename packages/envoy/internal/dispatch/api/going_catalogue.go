@@ -41,6 +41,8 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/urljoin"
 )
 
 // goingCataloguePath is the route that serves the catalogue, named once so the refusal of an
@@ -472,7 +474,8 @@ type GoingDoer interface {
 // request made.
 type GoingCaller struct {
 	Catalogue GoingCatalogue
-	// BaseURL is the Dispatch server the action is performed against, without a trailing slash.
+	// BaseURL is the Dispatch server the action is performed against: the row's path is joined
+	// onto its path, its query kept (urljoin.Join).
 	BaseURL string
 	// Session is the agent session the caller acts as, which fills the rows addressing it: a
 	// follow records this session as the ask's follower. A caller that is no session leaves it
@@ -507,7 +510,9 @@ func (e GoingArgumentError) Error() string {
 // fills (chooseGoingRoute) takes its path from the arguments its placeholders name, and every
 // other argument becomes the request's JSON body. Nothing is sent until the catalogue holds the
 // action and the tool's own schema accepts the call. An argument naming a document by slug is
-// the caller's to resolve to the id a row's path takes.
+// the caller's to resolve to the id a row's path takes. A BaseURL that does not parse, or a URL
+// joined from it that does not, fails the call by its class, never by url.Parse's error, which
+// quotes the URL whole, its user information and query included.
 func (c GoingCaller) Do(ctx context.Context, action string, arguments map[string]any) (*http.Response, error) {
 	entry, held := c.Catalogue.Lookup(action)
 	if !held {
@@ -535,9 +540,13 @@ func (c GoingCaller) Do(ctx context.Context, action string, arguments map[string
 	if err != nil {
 		return nil, fmt.Errorf("encode %s: %w", action, err)
 	}
-	request, err := http.NewRequestWithContext(ctx, route.Method, c.BaseURL+path, bytes.NewReader(encoded))
+	var request *http.Request
+	endpoint, err := urljoin.Join(c.BaseURL, path)
+	if err == nil {
+		request, err = http.NewRequestWithContext(ctx, route.Method, endpoint.String(), bytes.NewReader(encoded))
+	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s: build the %s %s request: %w", action, route.Method, route.Pattern, redact.Masked(err, redact.ClassNotAURL))
 	}
 	request.Header.Set("Content-Type", "application/json")
 	return c.Doer.Do(request)

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/urljoin"
 	"github.com/sjawhar/envoy/redirects"
 )
 
@@ -76,22 +77,24 @@ type EntraTokenSource struct {
 }
 
 // NewEntraTokenSource checks cfg's shape and returns an EntraTokenSource; it makes no call and
-// does not read the token file yet, so a missing file fails the first Embed, not boot.
+// does not read the token file yet, so a missing file fails the first Embed, not boot. The token
+// endpoint is the tenant's token path joined onto the authority's path, the authority's query
+// kept (urljoin.Join). url.Parse's error quotes the authority whole, user information and query
+// included, so an authority that does not parse is refused in fixed words.
 func NewEntraTokenSource(cfg EntraConfig) (*EntraTokenSource, error) {
 	if cfg.TenantID == "" || cfg.ClientID == "" || cfg.TokenFile == "" || cfg.Scope == "" {
 		return nil, errors.New("embed: entra sign-in needs a tenant id, a client id, a token file and a scope")
 	}
-	authority := cmp.Or(cfg.Authority, entraDefaultAuthority)
-	base, err := url.Parse(authority)
-	if err != nil {
-		return nil, fmt.Errorf("embed: entra authority: %w", err)
-	}
-	if !base.IsAbs() || base.Host == "" {
-		return nil, errors.New("embed: entra authority must be an absolute URL with a host")
+	tokenURL, err := urljoin.Join(cmp.Or(cfg.Authority, entraDefaultAuthority), url.PathEscape(cfg.TenantID)+"/oauth2/v2.0/token")
+	switch {
+	case errors.Is(err, urljoin.ErrBase):
+		return nil, errors.New("embed: entra authority must be an absolute URL with a host (it is not printed)")
+	case err != nil:
+		return nil, errors.New("embed: entra tenant id is not one path element")
 	}
 	client := redirects.Refused(cmp.Or(cfg.HTTPClient, http.DefaultClient))
 	return &EntraTokenSource{
-		tokenURL:  strings.TrimRight(authority, "/") + "/" + url.PathEscape(cfg.TenantID) + "/oauth2/v2.0/token",
+		tokenURL:  tokenURL.String(),
 		clientID:  cfg.ClientID,
 		tokenFile: cfg.TokenFile,
 		scope:     cfg.Scope,
@@ -149,7 +152,9 @@ func (s *EntraTokenSource) exchange(ctx context.Context) (string, time.Duration,
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, s.tokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
-		return "", 0, fmt.Errorf("embed: entra build request: %w", err)
+		// url.Parse's error quotes the token URL whole, the authority's user information and query
+		// included.
+		return "", 0, fmt.Errorf("embed: entra build request: %w", redact.Masked(err, redact.ClassNotAURL))
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.Header.Set("Accept", "application/json")
