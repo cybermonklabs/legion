@@ -94,7 +94,7 @@ A retro that cannot write the body: `skill://legion-architect/references/accepta
 ## 6. Acceptance and the merge
 
 In `accepting`, which only a task naming `acceptance:owner` enters, no worker holds the phase:
-read, against the goal, every check and requirement in `skill://legion-architect/references/acceptance.md`, "Accepting".
+read, against the goal, every check and requirement in `skill://legion-architect/references/acceptance.md`, "Accepting", and its finding asks, refusals and what follows.
 
 Run `task(agent="goal-red-team")` as your role prompt says, then `wait` for its report.
 Accept only when a pass stands for every `before_merge` check at the head the step before your acceptance passed, every requirement has a check (with no `before_merge` check, your comment says how each is proven), and none is unmet or read narrower than written:
