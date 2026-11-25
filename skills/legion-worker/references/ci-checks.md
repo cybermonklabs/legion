@@ -40,11 +40,12 @@ When the run gives no result, the line reads `CI run <name> has no result (<case
   On a task that takes a fix, a failure at the head goes to the implementer's step or starts a fix, as its role prompt says.
 
 - The tester runs and records only the checks with no `ci_check`.
-  A `ci_check` check goes in `failures` only when its derived result is a fail, or its run concluded `skipped`, `neutral` or `cancelled`.
-  A check that a running fix holds goes in no `failures` entry.
-  A run still going fails no round: say so in `implementerProof.how`.
+  It neither reads nor records a `ci_check` check, which is CI's.
+  Each failure of a check it runs is a fail result on that check in Dispatch, never a field of its handoff.
 
 - The reviewer waits for a run still going by its name, and neither approves nor requests changes for that check until it concludes.
+  A check that its task, or a message of a fix, names as a running fix's check is the fix's, and holds no approval.
+  On a task that takes a fix, a prompt to read Dispatch again comes when a check's state changes at the head: it names no verdict.
 
 - A job the repository runs on a pull request only under the label `full-ci` (on cybermonklabs/legion, the slow suites and the full browser lane) reads `skipped` without it.
   The implementer adds the label, then pushes, because the workflow starts on a push and not on a label.

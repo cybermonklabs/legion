@@ -7561,8 +7561,8 @@ The round is recorded on every claim of the issue that has a session and has not
 One rule says which of those claims the round asks and which it waits for (`roundAsks`), so the round waits for each claim it asks and for no other (dispatch://INFRA-4109 R2).
 It asks each of them but a `failed` claim, a claim that left the round's pod, and a claim the round passes over (below).
 The daemon publishes one message to each role the round asks, on the role's own Envoy topic, the architect's included (`askRound`, `record.UpdateAsk`):
-it names the drift, the round's own id and the moment the round ends, it says that only the role's own push keeps its work, and it gives the role five steps in this order: push its work to the issue branch; let each subagent and background job it started finish, or stop one that cannot finish before the round ends, and push what it made; put a scratch file it needs as evidence on Dispatch; answer `ready_for_update` with that id; end its turn.
-The text is the one `supervise.UpdateTask` builds from the reasons and the opening the round recorded, so every role of one round reads one text.
+it names the drift, the round's own id and the moment the round ends, it says that only the role's own push keeps its work, and it gives the role five steps in this order: push its work to the issue branch, or, beside a running fix, to the branch of its own that the message names (the fix to the fix's own branch), while the implementer of a fix that still reads its job pushes nothing; let each subagent and background job it started finish, or stop one that cannot finish before the round ends, and push what it made; put a scratch file it needs as evidence on Dispatch; answer `ready_for_update` with that id; end its turn.
+The text is the one `supervise.UpdateTask` builds from the reasons, the opening the round recorded and where the role pushes (`supervise.UpdatePush`, which the record's `branch`, `ownFix` and `fixReads` copy), so every role of one round reads one text but for its first step.
 Each role the round asks that has not answered is asked once per round by an ask that reaches its session: the daemon marks the claim asked (the `update_tasked_at` column) when the publish reached a session, an ask that finds no live session on the role's topic marks nothing, the next sweep that finds the role ready asks it again, and no sweep asks a role while an ask of the round still waits for it in the outbox.
 The daemon asks a role only once its agent has said it is ready (`supervise.SaidReady`).
 A claim that is queued, launching, registered but not ready, or suspended by an operator has no live session on its role's topic, so the sweep asks it nothing yet and writes no mark on it, and the round waits for it all the same.
@@ -7746,7 +7746,7 @@ None of it reaches the next pod: the issue's scratch, a role's temporary directo
 A kept volume carries all of it to the issue's next pod ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)), and the round's message still tells each role to push, because a reset or a suspension of the issue deletes that volume.
 What does reach it is what lives elsewhere
 — each role's session, a row in the session database ([Selecting the store](#selecting-the-store));
-the issue's branch on GitHub, `legion/<KEY>`, which every pushed turn is in;
+the issue's branch on GitHub, `legion/<KEY>`, which every pushed turn is in, and, while a fix runs, the branches of their own that the fix and each step beside it push to;
 the issue's record in the daemon's own Postgres; and the repository's cache, which fills the next pod's feed.
 A release adds one thing to that list: the git bundle of the workspace's unpushed work, which the daemon holds in its own database until the next pod restores it ([Idle release](#idle-release)).
 
@@ -7932,6 +7932,7 @@ The move to `backlog` suspends the issue, and the suspension deletes its Sandbox
 After the move to `todo`, the issue's next launch makes a new Sandbox, and its pod provisions on a new, empty volume.
 For a root, the two moves give every issue of its tree a new volume.
 Have each role push its work first, because the reset deletes all the work on the volume that no role pushed.
+The move to `backlog` also has the daemon delete the branches beside a fix of the issue's tasks, so let a running fix end, or copy those branches, before the reset.
 
 Never delete the claim by hand.
 Agent Sandbox then makes a new, empty claim under the live Sandbox.
@@ -8054,7 +8055,8 @@ The wakes are these:
 - a phase start, task, backward move, notice, merge-forward message, hook prompt, merge-queue removal message, production-check look or slot resume the daemon has for a role of the pod, a notice for a released sub-architect included, which stays that notice's owner;
 
 - a CI settlement the daemon records for the head of the issue's pull request, while a phase worker of the pod has its phase open (the Envoy listener's settlement fact: the daemon reads no check run of its own, and its own reads of a pull request run at the moments [Running Legion](https://cybermonklabs.github.io/legion/legion/running-legion/) names).
-  One head can settle more than once as its checks finish, and each settlement wakes a released pod at most once;
+  One head can settle more than once as its checks finish, and each settlement wakes a released pod at most once.
+  On a task that takes a fix the settlement wakes nobody itself: its report of the runs that newly ended, and a prompt to read Dispatch when a check's state changes at the head (outbox rows of kind `ci_news`), wake the reader each names, the worker of the step that runs or the implementer of a running fix, as a hook prompt does;
 
 - a message published to the role topic of a role of the pod, which the Envoy listener holds and reports to the daemon.
   Envoy keeps it for one hour, until the `kept_until` its publish answers with, and it reaches the woken role if the role is back inside that hour.

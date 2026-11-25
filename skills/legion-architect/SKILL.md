@@ -97,6 +97,7 @@ Run `task(agent="goal-red-team")` as your role prompt says, then `wait` for its 
 Accept only when a pass stands for every `before_merge` check at the head the step before your acceptance passed, every requirement has a check (with no `before_merge` check, your comment says how each is proven), and none is unmet or read narrower than written:
 post a `dispatch comment` naming each check and its result, then `legion({ op: "sign_off", issue: "<KEY>" })`.
 Wait for a `ci_check` run still going; a name no run answers is yours to correct in the check.
+Beside a running fix, the check its message names is the fix's: it holds no acceptance, and the hold before the retro waits for it.
 Finding asks, refusals and what follows: `skill://legion-architect/references/acceptance.md`.
 
 ## 7. Close
