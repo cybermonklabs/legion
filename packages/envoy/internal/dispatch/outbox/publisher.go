@@ -152,9 +152,10 @@ type Deps struct {
 	// lock (lockPublisherHold) must see the takeover and roll back; it is unexported, and nil in
 	// cmd/dispatch.
 	holdRead func()
-	// holdLocked, when set, runs inside a holder transaction right after it locked the publisher
-	// hold's row (lockPublisherHold), and holds the transaction there until it returns. A test
-	// opens a takeover of the hold while a transaction holds that lock, which no test could time
+	// holdLocked, when set, runs inside a holder transaction right after its final lock of the
+	// publisher hold's row found the hold this process's (lockPublisherHold, inHolderTransaction),
+	// and holds the transaction there, before its commit, until it returns. A test opens a
+	// takeover of the hold while a transaction holds that lock, which no test could time
 	// otherwise; it is unexported, and nil in cmd/dispatch.
 	holdLocked func()
 	// lanes is what the batches of one scan share: the owners they hold in flight, the outbox

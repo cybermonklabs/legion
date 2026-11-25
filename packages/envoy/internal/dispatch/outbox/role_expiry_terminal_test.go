@@ -18,8 +18,8 @@ import (
 
 // A window of events about a document whose reference is long - a document slug may run to
 // thousands of characters - makes one message the issue message writer's own body check takes:
-// its lists are bounded by their length, not only by how many events they name. At the head
-// before this rule 50 such events are one list over the block bound.
+// its lists are bounded by their length, not only by how many events they name. With the length
+// bound taken away, 50 such events are one list over the block bound.
 func TestAWindowOfLongDocumentReferencesMakesOneMessageTheBodyCheckTakes(t *testing.T) {
 	window := undeliveredWindow{issueKey: "T-1", role: "long-documents", openedAt: time.Now()}
 	slug := strings.Repeat("a", 2600)
@@ -61,8 +61,9 @@ func TestADocumentWithAnOversizedReferenceIsNamedByItsID(t *testing.T) {
 
 // A note that joins a window after the window's message was posted - which a writer the hold has
 // left could make before the hold serialized it - is posted in a message of its own, naming it,
-// rather than marked posted under the message that does not name it. At the head before this rule
-// the second post answers the first message and the note is marked posted unseen.
+// rather than marked posted under the message that does not name it. With the window's events
+// taken out of its message id, the second post answers the first message and the note is marked
+// posted unseen.
 func TestANoteThatJoinsAPostedWindowGetsAMessageOfItsOwn(t *testing.T) {
 	ctx := context.Background()
 	rig := newRoleRig(t)
@@ -125,8 +126,9 @@ func undeliveredCount(t *testing.T, database *store.Store, eventID int64) int {
 // keeps name - ends as an event recorded undelivered at the bound does: one role.undelivered
 // record, however many such copies one pass finds, and none of its rows left owed. An event one of
 // whose copies cannot be kept again while another is still owed a keep is not ended: that row is
-// settled carried and the other stays owed. With the carried outcome taken away, each such copy
-// appends a record of its own and ends an event another copy still carries.
+// settled carried and the other stays owed. Each half has its own guard: with the carried outcome
+// taken away, event one ends and gets a record; with endRoleDelivery's settle of the pair's owed
+// rows and its ended check taken away, each copy of event both appends a record of its own.
 func TestAnEventWhoseCopiesAreAllGoneIsRecordedOnce(t *testing.T) {
 	ctx := context.Background()
 	rig := newRoleRig(t)

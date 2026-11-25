@@ -19,23 +19,17 @@ import (
 // takeover's copy of it, whose message id names no attempt - stops at that bound: the expiry that
 // records it undelivered settles the event's earlier expiry that still owed a keep, so the pass
 // after it keeps nothing more, and the role's kept lane never holds a copy kept after the record.
-// At the head before this rule the earlier row stays owed and the pass keeps the event a fourth
-// time.
+// With endRoleDelivery's settle of the pair's owed rows taken away, the earlier row stays owed and
+// the pass keeps the event a fourth time.
 func TestTheExpiryThatRecordsAnEventUndeliveredSettlesItsEarlierOwedKeeps(t *testing.T) {
 	ctx := context.Background()
 	rig := newRoleRig(t)
 	const role = "expiry-bound-two-copies"
-	rig.silent(t, contracts.RoleTopicPrefix+role)
-	event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
 	outbox := holding(t, rig.deps())
-	outbox.scan(ctx, unfenced{})
-	lane := keptLane(t, rig.client, role)
-	if len(lane) != 1 {
-		t.Fatalf("role %s's kept lane holds %d copies, want the scan's one", role, len(lane))
-	}
-	expire(t, rig.client, role, lane[0])
+	event := expiredOnce(t, rig, outbox, role)
 	outbox.passKeptExpiries(ctx, unfenced{})
-	if lane = keptLane(t, rig.client, role); len(lane) != 2 {
+	lane := keptLane(t, rig.client, role)
+	if len(lane) != 2 {
 		t.Fatalf("role %s's kept lane holds %d copies, want the copy kept again", role, len(lane))
 	}
 	taken := envelopeOf(t, lane[1])
@@ -65,7 +59,7 @@ func TestTheExpiryThatRecordsAnEventUndeliveredSettlesItsEarlierOwedKeeps(t *tes
 
 // A window of many events makes one message that the issue message writer's own check of a body
 // takes: no single block of it is over the block bound, so the message is posted rather than
-// refused on every try. It names every event. At the head before this rule the events are one
+// refused on every try. It names every event. With the lists' bound taken away, the events are one
 // list, one block over the bound, and the window's message is never posted.
 func TestAWindowOfManyEventsMakesOneMessageTheBodyCheckTakes(t *testing.T) {
 	window := undeliveredWindow{issueKey: "T-1", role: "busy-role", openedAt: time.Now()}
@@ -88,8 +82,8 @@ func TestAWindowOfManyEventsMakesOneMessageTheBodyCheckTakes(t *testing.T) {
 
 // A window whose post was made but whose mark never committed - the process died between the two -
 // is posted again by the next pass, and that post finds the message the first one wrote: the issue
-// holds one message for the window. At the head before this rule the second post writes a second
-// message.
+// holds one message for the window. With the window's own message id taken away, the second post
+// writes a second message.
 func TestAWindowPostedAgainAfterItsMarkWasLostHoldsOneMessage(t *testing.T) {
 	ctx := context.Background()
 	rig := newRoleRig(t)
@@ -125,23 +119,16 @@ func TestAWindowPostedAgainAfterItsMarkWasLostHoldsOneMessage(t *testing.T) {
 
 // An outbox whose process the publisher hold does not name records no expiry notice, moves no
 // cursor, claims no expiry owed a keep and posts no window: its pass writes nothing, and the
-// holder's pass after it does the work once. At the head before this rule the other process
+// holder's pass after it does the work once. With the hold checks taken away, the other process
 // records the notice and keeps the copy again.
 func TestAnOutboxTheHoldDoesNotNameWritesNothingOfTheExpiries(t *testing.T) {
 	ctx := context.Background()
 	rig := newRoleRig(t)
 	const role = "expiry-not-the-holder"
-	rig.silent(t, contracts.RoleTopicPrefix+role)
-	event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
 	deps := rig.withIssueMessages(t, rig.deps())
 	holder := holding(t, deps)
 	other := New(deps)
-	holder.scan(ctx, unfenced{})
-	lane := keptLane(t, rig.client, role)
-	if len(lane) != 1 {
-		t.Fatalf("role %s's kept lane holds %d copies, want the scan's one", role, len(lane))
-	}
-	expire(t, rig.client, role, lane[0])
+	event := expiredOnce(t, rig, holder, role)
 
 	other.passKeptExpiries(ctx, unfenced{})
 

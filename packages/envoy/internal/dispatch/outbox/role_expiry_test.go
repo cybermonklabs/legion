@@ -77,19 +77,23 @@ func expire(t *testing.T, client *bus.Client, role string, stored bus.StoredMess
 	return notice
 }
 
-// expiryRow is one outbox_role_copy_expiries row as a test reads it.
+// expiryRow is one outbox_role_copy_expiries row as a test reads it: its keep attempt, the copy's
+// stream sequence, its outcome, whether it is settled, its failed sends (attempt_count) and when it
+// is due again.
 type expiryRow struct {
 	attempt  int
 	sequence uint64
 	outcome  *string
 	settled  bool
+	failures int
+	due      *time.Time
 }
 
 // expiryRows is every row the outbox recorded for eventID's copies on role, by attempt.
 func expiryRows(t *testing.T, database *store.Store, eventID int64, role string) []expiryRow {
 	t.Helper()
 	rows, err := database.Pool.Query(context.Background(), `
-		select keep_attempt, copy_sequence, outcome, settled_at is not null
+		select keep_attempt, copy_sequence, outcome, settled_at is not null, attempt_count, next_attempt_at
 		from outbox_role_copy_expiries where event_id = $1 and role = $2 order by keep_attempt
 	`, eventID, role)
 	if err != nil {
@@ -99,7 +103,7 @@ func expiryRows(t *testing.T, database *store.Store, eventID int64, role string)
 	var found []expiryRow
 	for rows.Next() {
 		var row expiryRow
-		if err := rows.Scan(&row.attempt, &row.sequence, &row.outcome, &row.settled); err != nil {
+		if err := rows.Scan(&row.attempt, &row.sequence, &row.outcome, &row.settled, &row.failures, &row.due); err != nil {
 			t.Fatalf("scan an expiry of event %d: %v", eventID, err)
 		}
 		found = append(found, row)
@@ -221,18 +225,7 @@ func TestARoleNeverHeldEndsRecordedUndeliveredOnTheIssueAfterTheBound(t *testing
 	outbox := holding(t, rig.deps())
 	outbox.scan(ctx, unfenced{})
 
-	var last bus.KeptCopyExpiry
-	for keep := 1; keep <= maxRoleKeeps; keep++ {
-		lane := keptLane(t, rig.client, role)
-		if len(lane) != keep {
-			t.Fatalf("role %s's kept lane holds %d copies before keep %d's hour ends, want %d", role, len(lane), keep, keep)
-		}
-		last = expire(t, rig.client, role, lane[keep-1])
-		if last.Attempt != keep {
-			t.Fatalf("copy %d of the lane names attempt %d, want %d", keep, last.Attempt, keep)
-		}
-		outbox.passKeptExpiries(ctx, unfenced{})
-	}
+	last := expireUpTo(t, rig, outbox, unfenced{}, role, event.ID, maxRoleKeeps)
 
 	if lane := keptLane(t, rig.client, role); len(lane) != maxRoleKeeps {
 		t.Fatalf("role %s's kept lane holds %d copies, want the %d keeps of the bound and no more", role, len(lane), maxRoleKeeps)
@@ -322,17 +315,11 @@ func TestAnExpiryOfAnotherCopyUnderARecordedAttemptCountsAsTheNextAttempt(t *tes
 	ctx := context.Background()
 	rig := newRoleRig(t)
 	const role = "expiry-other-copy"
-	rig.silent(t, contracts.RoleTopicPrefix+role)
-	event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
 	outbox := holding(t, rig.deps())
-	outbox.scan(ctx, unfenced{})
-	lane := keptLane(t, rig.client, role)
-	if len(lane) != 1 {
-		t.Fatalf("role %s's kept lane holds %d copies, want the scan's one", role, len(lane))
-	}
-	expire(t, rig.client, role, lane[0])
+	event := expiredOnce(t, rig, outbox, role)
 	outbox.passKeptExpiries(ctx, unfenced{})
-	if lane = keptLane(t, rig.client, role); len(lane) != 2 {
+	lane := keptLane(t, rig.client, role)
+	if len(lane) != 2 {
 		t.Fatalf("role %s's kept lane holds %d copies after the first copy's hour ended, want the copy kept again", role, len(lane))
 	}
 
@@ -396,14 +383,16 @@ func newestCopyOf(t *testing.T, rig *roleRig, role string, eventID int64) bus.St
 // the expiry notice of the event's newest copy, as a listener's walk does at the end of its hour,
 // and runs outbox's expiry pass under hold. At maxRoleKeeps the outbox records the event
 // undelivered; below it, the outbox has kept the event's copy last+1 times.
-func expireUpTo(t *testing.T, rig *roleRig, outbox *Outbox, hold fence, role string, eventID int64, last int) {
+func expireUpTo(t *testing.T, rig *roleRig, outbox *Outbox, hold fence, role string, eventID int64, last int) bus.KeptCopyExpiry {
 	t.Helper()
+	var notice bus.KeptCopyExpiry
 	for keep := 1; keep <= last; keep++ {
-		if notice := expire(t, rig.client, role, newestCopyOf(t, rig, role, eventID)); notice.Attempt != keep {
+		if notice = expire(t, rig.client, role, newestCopyOf(t, rig, role, eventID)); notice.Attempt != keep {
 			t.Fatalf("event %d's newest copy names attempt %d, want %d", eventID, notice.Attempt, keep)
 		}
 		outbox.passKeptExpiries(context.Background(), hold)
 	}
+	return notice
 }
 
 // failingKeeps is a publisher whose window answers every keep on role's kept lane with err, and
@@ -430,32 +419,19 @@ func (w failingKeepsWindow) PublishStoredAsync(subject string, item contracts.En
 	return w.Sender.PublishStoredAsync(subject, item, msgID)
 }
 
-// expiredOnce routes an event to role, keeps its copy and ends that copy's hour, and answers the
-// event: what a test of the expiry pass's first keep starts from.
-func expiredOnce(t *testing.T, rig *roleRig, role string) model.Event {
+// expiredOnce routes an event to role, keeps its copy through outbox's scan and ends that copy's
+// hour, and answers the event: what a test of the expiry pass's first keep starts from.
+func expiredOnce(t *testing.T, rig *roleRig, outbox *Outbox, role string) model.Event {
 	t.Helper()
 	rig.silent(t, contracts.RoleTopicPrefix+role)
 	event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
-	holding(t, rig.deps()).scan(context.Background(), unfenced{})
+	outbox.scan(context.Background(), unfenced{})
 	lane := keptLane(t, rig.client, role)
 	if len(lane) != 1 {
 		t.Fatalf("role %s's kept lane holds %d copies, want the scan's one", role, len(lane))
 	}
 	expire(t, rig.client, role, lane[0])
 	return event
-}
-
-// expiryState is eventID's one expiry row for role: its failed attempts, whether it is settled,
-// and when it is due again.
-func expiryState(t *testing.T, database *store.Store, eventID int64, role string) (attempts int, settled bool, due *time.Time) {
-	t.Helper()
-	if err := database.Pool.QueryRow(context.Background(), `
-		select attempt_count, settled_at is not null, next_attempt_at from outbox_role_copy_expiries
-		where event_id = $1 and role = $2
-	`, eventID, role).Scan(&attempts, &settled, &due); err != nil {
-		t.Fatalf("read event %d's expiry: %v", eventID, err)
-	}
-	return attempts, settled, due
 }
 
 // An expired copy whose keep NATS refuses for good cannot be kept again, and no other copy of the
@@ -466,7 +442,7 @@ func TestARefusedKeepEndsItsEventRecordedUndelivered(t *testing.T) {
 	ctx := context.Background()
 	rig := newRoleRig(t)
 	const role = "expiry-keep-refused"
-	event := expiredOnce(t, rig, role)
+	event := expiredOnce(t, rig, holding(t, rig.deps()), role)
 
 	holding(t, rig.publisherOn(failingKeeps{Client: rig.client, role: role, err: bus.ErrRefused})).passKeptExpiries(ctx, unfenced{})
 
@@ -604,7 +580,7 @@ func TestAnUnavailableKeepIsCountedAndReleased(t *testing.T) {
 	ctx := context.Background()
 	rig := newRoleRig(t)
 	const role = "expiry-keep-unavailable"
-	event := expiredOnce(t, rig, role)
+	event := expiredOnce(t, rig, holding(t, rig.deps()), role)
 	deps, registry := rig.countingDeps(t)
 	deps.Publisher = failingKeeps{Client: rig.client, role: role, err: bus.ErrUnavailable}
 
@@ -615,10 +591,11 @@ func TestAnUnavailableKeepIsCountedAndReleased(t *testing.T) {
 	if body := failureReasons(t, registry); !strings.Contains(body, `envoy_dispatch_outbox_publish_failures_total{reason="failed"} 1`) {
 		t.Fatalf("/metrics body = %q, want the unavailable keep counted as failed once", body)
 	}
-	attempts, settled, due := expiryState(t, rig.database, event.ID, role)
-	if attempts != 0 || settled || due == nil || due.Before(before.Add(retry.BaseDelay-time.Second)) || due.After(after.Add(retry.BaseDelay+time.Second)) {
-		t.Fatalf("event %d's expiry is attempts=%d settled=%v due=%v, want no attempt, unsettled, due retry.BaseDelay (%v) after the pass",
-			event.ID, attempts, settled, due, retry.BaseDelay)
+	rows := expiryRows(t, rig.database, event.ID, role)
+	if len(rows) != 1 || rows[0].failures != 0 || rows[0].settled || rows[0].due == nil ||
+		rows[0].due.Before(before.Add(retry.BaseDelay-time.Second)) || rows[0].due.After(after.Add(retry.BaseDelay+time.Second)) {
+		t.Fatalf("event %d's expiries are %+v, want one with no failed send, unsettled, due retry.BaseDelay (%v) after the pass",
+			event.ID, rows, retry.BaseDelay)
 	}
 }
 
@@ -630,7 +607,7 @@ func TestAnUnacknowledgedKeepIsCountedUnanswered(t *testing.T) {
 	ctx := context.Background()
 	rig := newRoleRig(t)
 	const role = "expiry-keep-unacknowledged"
-	event := expiredOnce(t, rig, role)
+	event := expiredOnce(t, rig, holding(t, rig.deps()), role)
 	deps, registry := rig.countingDeps(t)
 	deps.Publisher = failingKeeps{Client: rig.client, role: role, err: bus.ErrNotAcknowledged}
 
@@ -640,7 +617,7 @@ func TestAnUnacknowledgedKeepIsCountedUnanswered(t *testing.T) {
 	if !strings.Contains(body, `envoy_dispatch_outbox_publish_failures_total{reason="unanswered"} 1`) || strings.Contains(body, `reason="failed"`) {
 		t.Fatalf("/metrics body = %q, want the unacknowledged keep counted as unanswered once and nothing as failed", body)
 	}
-	if attempts, settled, _ := expiryState(t, rig.database, event.ID, role); attempts != 1 || settled {
-		t.Fatalf("event %d's expiry is attempts=%d settled=%v, want one failed attempt, unsettled", event.ID, attempts, settled)
+	if rows := expiryRows(t, rig.database, event.ID, role); len(rows) != 1 || rows[0].failures != 1 || rows[0].settled {
+		t.Fatalf("event %d's expiries are %+v, want one with one failed send, unsettled", event.ID, rows)
 	}
 }

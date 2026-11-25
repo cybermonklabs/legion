@@ -79,11 +79,8 @@ func systemMessages(t *testing.T, database *store.Store, key string) []systemMes
 func expireToTheBound(t *testing.T, rig *roleRig, outbox *Outbox, role string, eventID int64) {
 	t.Helper()
 	expireUpTo(t, rig, outbox, unfenced{}, role, eventID, maxRoleKeeps)
-	var records int
-	if err := rig.database.Pool.QueryRow(context.Background(), `
-		select count(*) from events where type = $1 and (payload ->> 'event_id')::bigint = $2
-	`, model.RoleUndeliveredEventType, eventID).Scan(&records); err != nil || records != 1 {
-		t.Fatalf("event %d has %d role.undelivered records after its %d keeps (%v), want one", eventID, records, maxRoleKeeps, err)
+	if records := undeliveredCount(t, rig.database, eventID); records != 1 {
+		t.Fatalf("event %d has %d role.undelivered records after its %d keeps, want one", eventID, records, maxRoleKeeps)
 	}
 }
 
@@ -109,7 +106,7 @@ func restarted(t *testing.T, deps Deps) *Outbox {
 // message written by the outbox's system actor names the event, its type, the post it carries, the
 // role and its keeps. Inside the hour nothing is posted. The window is opened by one outbox process
 // and posted by another, started afresh with nothing in memory of it, so its state is in Postgres.
-// At the head before this message (role.undelivered alone) nothing is posted on the issue.
+// With the window pass taken away (role.undelivered alone), nothing is posted on the issue.
 func TestAnIssueEventARoleNeverTookIsToldOnTheIssueWhenItsWindowEnds(t *testing.T) {
 	ctx := context.Background()
 	rig := newRoleRig(t)
@@ -160,7 +157,7 @@ func TestAnIssueEventARoleNeverTookIsToldOnTheIssueWhenItsWindowEnds(t *testing.
 }
 
 // Two events one role did not take on one issue within the window's hour are named in one message.
-// At the head before this message nothing is posted.
+// With the window pass taken away, nothing is posted.
 func TestTwoEventsOneRoleDidNotTakeWithinTheHourAreNamedInOneMessage(t *testing.T) {
 	ctx := context.Background()
 	rig := newRoleRig(t)
@@ -190,7 +187,7 @@ func TestTwoEventsOneRoleDidNotTakeWithinTheHourAreNamedInOneMessage(t *testing.
 
 // An event a role did not take after its window's hour has ended opens a window of its own, posted
 // in a message of its own once that hour ends; the first window's message names the first event
-// alone. At the head before this message nothing is posted.
+// alone. With the window pass taken away, nothing is posted.
 func TestAnEventARoleDidNotTakeAfterItsWindowEndedOpensANewWindow(t *testing.T) {
 	ctx := context.Background()
 	rig := newRoleRig(t)
@@ -224,7 +221,7 @@ func TestAnEventARoleDidNotTakeAfterItsWindowEndedOpensANewWindow(t *testing.T) 
 // A document event a role did not take is told on the document's issue, whose route the role is,
 // as an issue message that names the document and links it. A document of an issue writes its
 // events on that issue (store.OwnerOf), naming the document in their payload, as a person's settled
-// edit does here. At the head before this message nothing is posted.
+// edit does here. With the window pass taken away, nothing is posted.
 func TestADocumentEventARoleNeverTookIsToldOnTheDocumentsIssue(t *testing.T) {
 	ctx := context.Background()
 	rig := newRoleRig(t)

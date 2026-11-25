@@ -725,12 +725,12 @@ and appends a `role.undelivered` event on the event's own issue, document or pro
 a system actor so it reaches no role, which a person reads in that owner's history. It stops the
 same way, with fewer keeps, when a copy cannot be kept again: the stream no longer holds it, or
 holds one no read can decode, or NATS refused its keep or its forward for good. Where the bound
-is reached or no copy is left, every expiry of the event still owed a keep is settled, and its
-one `role.undelivered` record is appended, so nothing keeps it again. A copy that cannot be kept
-again ends nothing while another copy of the event carries its delivery on, that is, while
-another expiry of it is still owed a keep or was kept, forwarded or skipped after this one was
-recorded; its row is settled `carried`, and nothing else is written. The outbox also notes the
-event in
+is reached or no other copy carries its delivery on, every expiry of the event still owed a keep
+is settled, and its one `role.undelivered` record is appended, so nothing keeps it again. A copy
+that cannot be kept again ends nothing while another copy of the event carries its delivery on,
+that is, while another expiry of it is still owed a keep or was kept, forwarded or skipped after
+this one was recorded; its row is settled `carried`, and nothing else is written. The outbox also
+notes the event in
 `outbox_role_undelivered_notes` for a message on the event's issue, or on the issue of the
 document a document event is about: the first such note of a role on an issue opens a one-hour
 window, every later note of that role there joins it, and once the hour has ended the outbox

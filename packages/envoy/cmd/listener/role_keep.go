@@ -1466,9 +1466,10 @@ func (c keptCopyClaim) forwardUnconfirmed() bool {
 // here: the value with unconfirmedClaimSuffix cut from its end is the reason,
 // deadLetterDeliveryMode for a mode claim and deadLetterExpired for an expiry claim, and the
 // suffix is the qualifier of either. A value that names neither reason is an expiry claim with no
-// qualifier, whatever its end; no walk writes one. This is the one place a claim is read back, as
-// claimReason is the one place a drop is written into a claim, and judgeKeptRoleCopy builds the
-// drop again from the claim this returns. Both are read from the claim and from nothing else: the
+// qualifier, whatever its end; no walk writes one. This is the one place a claim is read back.
+// Two places write one: claimReason for a dead letter's drop, and endKeptCopyWithExpiryNotice,
+// which writes the plain expired reason. judgeKeptRoleCopy builds the drop again from the claim
+// this returns. Both are read from the claim and from nothing else: the
 // copy's age on the clock of the walk taking the claim over need not be what it was on the clock
 // of the walk that made it, the holder that refused the copy's mode may no longer hold the role,
 // and the forward's claim that showed the copy may have reached the holder is gone from the
@@ -1686,10 +1687,11 @@ type keptRoleDrop struct {
 // for d (bus.KeptRoleCursor.DeadLetter, endKeptCopyWithDeadLetter): d's reason, with
 // unconfirmedClaimSuffix after it for a copy whose forward may have reached the holder
 // (d.forwarded), whichever reason that is. It is the one place a dead letter's drop is written
-// into a claim; an expiry notice, which no forward precedes, writes the plain expired reason
-// itself (endKeptCopyWithExpiryNotice). keptCopyClaimOf is the one place a claim is read back, so a
-// walk that takes the claim over drops the copy for the reason, and with the qualifier, this drop
-// has.
+// into a claim. An expiry notice writes the plain expired reason itself
+// (endKeptCopyWithExpiryNotice): it is no dead letter, keptCopyClaimOf reads that reason back with
+// no qualifier, and a walk that takes its claim over sends the notice again whatever the
+// qualifier would have said. keptCopyClaimOf is the one place a claim is read back, so a walk that
+// takes the claim over drops the copy for the reason, and with the qualifier, this drop has.
 func (d keptRoleDrop) claimReason() string {
 	if d.forwarded {
 		return string(d.reason) + unconfirmedClaimSuffix

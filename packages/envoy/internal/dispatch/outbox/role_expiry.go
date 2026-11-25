@@ -170,8 +170,8 @@ func lockPublisherHold(ctx context.Context, tx pgx.Tx, instance uuid.UUID) (bool
 // (expiryClaimQuery, expiryRecordQuery). The transaction reads the hold's row first with no lock
 // (holdsPublisherHold), runs write, and locks the hold's row for share as its last statement
 // before the commit (lockPublisherHold); when the row does not name instance at either read it
-// writes nothing and answers errNotTheHolder. For a test, Deps.holdRead runs after the first read,
-// and Deps.holdLocked once the final lock is held.
+// writes nothing and answers errNotTheHolder. For a test, Deps.holdRead runs once the first read
+// found the hold this process's, and Deps.holdLocked once the final lock found it so.
 func inHolderTransaction(ctx context.Context, deps Deps, instance uuid.UUID, write func(pgx.Tx) (*model.Event, error)) error {
 	tx, err := deps.Store.Pool.Begin(ctx)
 	if err != nil {

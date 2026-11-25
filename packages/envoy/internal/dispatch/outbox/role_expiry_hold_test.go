@@ -40,8 +40,6 @@ func TestATakeoverOfThePublisherHoldWaitsForAnOpenExpiryRecord(t *testing.T) {
 	ctx := context.Background()
 	rig := newRoleRig(t)
 	const role = "expiry-record-open"
-	rig.silent(t, contracts.RoleTopicPrefix+role)
-	event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
 	locked, release := make(chan struct{}), make(chan struct{})
 	deps := rig.deps()
 	deps.holdLocked = func() {
@@ -49,12 +47,7 @@ func TestATakeoverOfThePublisherHoldWaitsForAnOpenExpiryRecord(t *testing.T) {
 		<-release
 	}
 	outbox := holding(t, deps)
-	outbox.scan(ctx, unfenced{})
-	lane := keptLane(t, rig.client, role)
-	if len(lane) != 1 {
-		t.Fatalf("role %s's kept lane holds %d copies, want the scan's one", role, len(lane))
-	}
-	expire(t, rig.client, role, lane[0])
+	event := expiredOnce(t, rig, outbox, role)
 	passed := make(chan struct{})
 	go func() {
 		defer close(passed)
@@ -116,7 +109,9 @@ func TestATakeoverBeforeTheFinalLockMakesTheRecordRollBack(t *testing.T) {
 		outbox.scan(ctx, unfenced{})
 		expireUpTo(t, rig, outbox, unfenced{}, role, event.ID, maxRoleKeeps-1)
 		before := expiryCursor(t, rig.database)
-		expire(t, rig.client, role, newestCopyOf(t, rig, role, event.ID))
+		if last := expire(t, rig.client, role, newestCopyOf(t, rig, role, event.ID)); last.Attempt != maxRoleKeeps {
+			t.Fatalf("event %d's newest copy names attempt %d before the last expiry, want %d", event.ID, last.Attempt, maxRoleKeeps)
+		}
 
 		armed.Store(true)
 		outbox.passKeptExpiries(ctx, unfenced{})
@@ -182,7 +177,9 @@ func TestAnExpiryRecordWaitingOnTheOwnerLockKeepsThePublisherHold(t *testing.T) 
 	t.Cleanup(func() { _ = hold.Release(context.Background()) })
 	outbox.scan(ctx, hold)
 	expireUpTo(t, rig, outbox, hold, role, event.ID, maxRoleKeeps-1)
-	expire(t, rig.client, role, newestCopyOf(t, rig, role, event.ID))
+	if last := expire(t, rig.client, role, newestCopyOf(t, rig, role, event.ID)); last.Attempt != maxRoleKeeps {
+		t.Fatalf("event %d's newest copy names attempt %d before the last expiry, want %d", event.ID, last.Attempt, maxRoleKeeps)
+	}
 
 	// Another write holds the issue's row while the record that appends the event's
 	// role.undelivered record waits on it, for longer than the hold's loss window.
