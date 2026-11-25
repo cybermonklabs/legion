@@ -1026,9 +1026,9 @@ func daemonBrokerClient(cfg config.Config, getenv func(string) string, log *slog
 }
 
 // tradeTransient is every failed trade but a refusal no retry cures
-// (cipherclient.RefusedError.Permanent): a broker that did not answer or answered 5xx, its 429, a
-// DPoP refusal, a pod session it holds no registration for yet, and an identity this pod could not
-// read yet, such as a projected token the kubelet has not written.
+// (cipherclient.RefusedError.Permanent): a broker that did not answer or answered 5xx, a 408 or its
+// 429, a DPoP refusal, a pod session it holds no registration for yet, and an identity this pod
+// could not read yet, such as a projected token the kubelet has not written.
 func tradeTransient(err error) bool {
 	var refused *cipherclient.RefusedError
 	return !(errors.As(err, &refused) && refused.Permanent())

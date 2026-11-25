@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/fileerr"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/signedrecord"
 	"github.com/sjawhar/envoy/natsurl"
 )
 
@@ -136,6 +137,31 @@ func loadNATSCallout(getenv func(string) string, k8sIssuer string) (NATSCallout,
 		return NATSCallout{}, errors.New("BROKER_NATS_K8S_AUDIENCE needs BROKER_K8S_OIDC_ISSUER, whose projected tokens a service presents to the NATS auth service")
 	}
 	return settings, nil
+}
+
+// loadNATSHold reads the writer hold's switch and signing keys (Config.NATS documents both) into
+// settings. BROKER_NATS_HOLD_READ is true, false or unset, which is false, and nothing else: a
+// misspelled value must refuse the start rather than leave the rule off. Each entry of
+// BROKER_NATS_HOLD_SIGNING_KEYS, parted by whitespace or commas, is the unpadded base64url of a
+// 32-byte Ed25519 public key, and one that is not is refused by its place in the list, never by
+// its text, since text pasted there in error may be the private half. Neither setting needs the
+// auth service's others: the hold's routes verify every write against the keys whether or not
+// the auth service reads the row, and the switch is refused without its operator and its keys by
+// the broker's start, which reads the operator from BROKER_NATS_SERVICES (cmd/cipherd).
+func loadNATSHold(getenv func(string) string, settings *NATSCallout) error {
+	switch value := strings.TrimSpace(getenv("BROKER_NATS_HOLD_READ")); value {
+	case "", "false":
+	case "true":
+		settings.HoldRead = true
+	default:
+		return fmt.Errorf("BROKER_NATS_HOLD_READ must be true or false, got %q", value)
+	}
+	keys, err := signedrecord.ParsePublicKeys("BROKER_NATS_HOLD_SIGNING_KEYS", getenv("BROKER_NATS_HOLD_SIGNING_KEYS"))
+	if err != nil {
+		return err
+	}
+	settings.HoldSigningKeys = keys
+	return nil
 }
 
 // edgeListenerEntries is the first edge-listener entry of Services that names a Kubernetes
