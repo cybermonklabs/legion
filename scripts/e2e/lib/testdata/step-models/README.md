@@ -78,7 +78,7 @@ The read lines were taken with jq 1.7:
 jq -R -r 'select((try fromjson catch null | objects | .msg) == "workflow: a step used a read of its agent'\''s calls")' daemon.jsonl
 ```
 
-Each transcript was cut with `jq -c -f <filter> <file>`, jq 1.7. The filters keep what the comparator reads, as the cuts of the files with a real source do. Beyond those cuts, they keep each content block's `type` and `name`, and the `op` of a `legion` call. Such a call is how an agent ends its step. The Claude Code filter also keeps `isSidechain` and `agentId`, which mark a subagent's line in a transcript. It keeps `requestedModel` too, the model Claude Code asked for.
+Each transcript was cut with `jq -c -f <filter> <file>`, jq 1.7. The filters keep what the comparator reads, as the cuts of the files with a real source do. Beyond those cuts, they keep each content block's `type` and `name`, and the `op` of a `legion` call. The op tells the call that completes a step from the tool's other calls. The Claude Code filter also keeps `isSidechain` and `agentId`, which mark a subagent's line in a transcript. It keeps `requestedModel` too, the model Claude Code asked for.
 
 The Oh My Pi filter:
 
