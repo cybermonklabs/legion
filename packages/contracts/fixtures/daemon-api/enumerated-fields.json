@@ -750,10 +750,6 @@
     "keyPath": "issues.*.architect.failure.cause",
     "values": [
       {
-        "value": "cyber_policy",
-        "since": 264
-      },
-      {
         "value": "died",
         "since": 75
       },
@@ -787,10 +783,6 @@
     "answer": "state",
     "keyPath": "issues.*.workers.*.claim.failure.cause",
     "values": [
-      {
-        "value": "cyber_policy",
-        "since": 264
-      },
       {
         "value": "died",
         "since": 75
@@ -826,10 +818,6 @@
     "keyPath": "issues.*.architect.pendingCause",
     "values": [
       {
-        "value": "cyber_policy",
-        "since": 264
-      },
-      {
         "value": "died",
         "since": 75
       },
@@ -863,10 +851,6 @@
     "answer": "state",
     "keyPath": "issues.*.workers.*.claim.pendingCause",
     "values": [
-      {
-        "value": "cyber_policy",
-        "since": 264
-      },
       {
         "value": "died",
         "since": 75
@@ -1694,10 +1678,6 @@
     "keyPath": "architect.failure.cause",
     "values": [
       {
-        "value": "cyber_policy",
-        "since": 264
-      },
-      {
         "value": "died",
         "since": 75
       },
@@ -1731,10 +1711,6 @@
     "answer": "issue-record",
     "keyPath": "workers.*.claim.failure.cause",
     "values": [
-      {
-        "value": "cyber_policy",
-        "since": 264
-      },
       {
         "value": "died",
         "since": 75
@@ -1770,10 +1746,6 @@
     "keyPath": "architect.pendingCause",
     "values": [
       {
-        "value": "cyber_policy",
-        "since": 264
-      },
-      {
         "value": "died",
         "since": 75
       },
@@ -1807,10 +1779,6 @@
     "answer": "issue-record",
     "keyPath": "workers.*.claim.pendingCause",
     "values": [
-      {
-        "value": "cyber_policy",
-        "since": 264
-      },
       {
         "value": "died",
         "since": 75

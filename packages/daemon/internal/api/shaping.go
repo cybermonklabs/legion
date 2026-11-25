@@ -1120,20 +1120,6 @@ func withoutPriority(issue Issue) (Issue, bool) {
 // for that reason.
 const causeTimesContract = 256
 
-// cyberPolicyContract is the daemon contract that added `cyber_policy` to the words a claim can
-// fail under (supervise.CauseCyberPolicy, version.go's 264): a claim view's `failure.cause` and
-// `pendingCause` take it, and `POST /legion/v1/claims/turn-outcome` takes `code`. A plugin before
-// it reads both causes with a `z.enum` of the seven words before, and refuses the whole body for an
-// eighth, so a caller below it is served `provider_error` in its place
-// (withoutUnadmittedFailureCauses): the refusal is a provider error that cannot clear, which is
-// what such a reader was told of it before. It removed no key and added none to an answer.
-//
-// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
-// that constant, and the contract the value arrived at stays where it is. It moves only with this
-// change's own number, and it is the last number of answers.go's SupportedContracts, which names
-// the constant rather than its number for that reason.
-const cyberPolicyContract = 264
-
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
 // deployment that gates no step carries an empty list of it (GatedStepViewsOf), which the wire
