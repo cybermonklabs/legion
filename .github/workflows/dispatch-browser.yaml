@@ -585,7 +585,7 @@ jobs:
     runs-on: ubuntu-24.04
     # why: .github/ci-notes/dispatch-browser.md#the-quarantine-jobs-steps-and-what-they-keep-of-the-shard-jobs
     container:
-      image: ghcr.io/cybermonklabs/legion/ci@sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
+      image: ghcr.io/cybermonklabs/legion/ci@sha256:e07980de09bccdbac284c19b9aa94032e90b9f9deb3edac565e3fb0945f2b230
       options: --user 1001 --ipc=host --init
     # why: .github/ci-notes/dispatch-browser.md#the-quarantine-jobs-budget
     # 540 + 120 + 120 + 565 + 1 = 1,346 s: its own 9-minute browser step, the shard job's others.
