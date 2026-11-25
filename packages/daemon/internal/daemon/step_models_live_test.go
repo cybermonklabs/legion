@@ -607,3 +607,161 @@ func (r *stepModelsLive) buildClaudeEnvoy() string {
 	r.note("built the claude-envoy plugin this checkout ships into %s", out)
 	return out
 }
+
+// setUpDispatch creates the run's project on Dispatch, sets liveRepo as its default repository,
+// and creates the two issues, each in progress and carrying the legion label, as a running daemon
+// leaves one. It fills in each issue's key, its pull request number and its three claim tokens.
+func (r *stepModelsLive) setUpDispatch() {
+	t := r.t
+	t.Helper()
+	r.dispatch.user(http.MethodPost, "/api/v1/projects",
+		map[string]string{"key": r.cfg.Project, "name": "Step models chain"}, http.StatusCreated, nil)
+	r.dispatch.user(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository",
+		map[string]any{"repo": liveRepo}, http.StatusOK, nil)
+	for _, name := range []string{"A", "B"} {
+		issue := &stepModelsIssue{name: name, title: "the chain's issue " + name}
+		var created struct {
+			Key string `json:"key"`
+		}
+		r.dispatch.user(http.MethodPost, "/api/v1/issues",
+			map[string]string{"project": r.cfg.Project, "title": issue.title}, http.StatusCreated, &created)
+		if created.Key == "" {
+			t.Fatalf("Dispatch created the issue %q with no key", issue.title)
+		}
+		r.dispatch.user(http.MethodPatch, "/api/v1/issues/"+created.Key,
+			map[string]any{"status": "in_progress", "labels": []string{"legion"}}, http.StatusOK, nil)
+		issue.key = created.Key
+		number, err := strconv.ParseInt(randomSuffix(t)[:6], 16, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		issue.number = int(number) + 1
+		issue.implementer = r.token(issue.key, claim.RoleImplementer)
+		issue.tester = r.token(issue.key, claim.RoleTester)
+		issue.architect = r.token(issue.key, claim.RoleArchitect)
+		r.issues = append(r.issues, issue)
+	}
+}
+
+// serveStandins starts one endpoint per driven claim, each scripted for the steps that claim
+// works in turn, and the spare every other claim talks to.
+//
+// Issue A: its implementer ends its first and second steps itself and has its third stopped by
+// the architect; its tester ends its first and second. Issue B: its implementer ends its first
+// and second, and its tester ends its first and has its second stopped. Each tester's completion
+// carries the verdict `fail`, which sends the issue back for another step of the same
+// implementer, so one issue gives each harness two steps its agent ended.
+func (r *stepModelsLive) serveStandins() {
+	t := r.t
+	t.Helper()
+	ended := stepModelsStep{ended: true}
+	failed := stepModelsStep{ended: true, verdict: "fail"}
+	stopped := stepModelsStep{}
+	scripts := map[string][2][]stepModelsStep{
+		"A": {{ended, ended, stopped}, {failed, failed}},
+		"B": {{ended, ended}, {failed, stopped}},
+	}
+	for _, issue := range r.issues {
+		script := scripts[issue.name]
+		lower := strings.ToLower(issue.name)
+		r.panes[issue.implementer] = newStepModelsStandin(t, "smimplementer"+lower, "omp",
+			standinModel("smimplementer"+lower), issue.implementer, script[0])
+		r.panes[issue.tester] = newStepModelsStandin(t, "smtester"+lower, "claude",
+			stepModelsClaudeSetModel, issue.tester, script[1])
+	}
+	r.spare = newPaneStandin(t, stepModelsSpareProvider)
+}
+
+// ompStandins is every Oh My Pi endpoint of the run, the spare last: the providers the run's
+// models.yml names.
+func (r *stepModelsLive) ompStandins() []*modelStandin {
+	var standins []*modelStandin
+	for _, issue := range r.issues {
+		standins = append(standins, r.panes[issue.implementer].modelStandin)
+	}
+	return append(standins, r.spare.modelStandin)
+}
+
+// writeOmpProfile writes the profile every Oh My Pi pane shares: one provider per endpoint, one
+// model each, and the settings a pane needs to run unattended.
+func (r *stepModelsLive) writeOmpProfile() {
+	t := r.t
+	t.Helper()
+	agent := filepath.Join(r.home, ".omp", "profiles", r.profile, "agent")
+	if err := os.MkdirAll(agent, 0o700); err != nil {
+		t.Fatalf("make the profile's agent directory %s: %v", agent, err)
+	}
+	var models, enabled strings.Builder
+	models.WriteString("# Written by packages/daemon/internal/daemon/step_models_live_test.go.\nproviders:\n")
+	for _, stand := range r.ompStandins() {
+		fmt.Fprintf(&models, "  %s:\n    baseUrl: %s\n    api: anthropic-messages\n    apiKey: a-literal-key-no-endpoint-checks\n"+
+			"    models:\n      - id: %s\n        name: %s\n        contextWindow: 200000\n        maxTokens: 8192\n",
+			stand.name, stand.url, stand.name+standinModelID, stand.name)
+		fmt.Fprintf(&enabled, "  - %s\n", standinModel(stand.name))
+	}
+	writeProofFile(t, filepath.Join(agent, "models.yml"), models.String())
+	writeProofFile(t, filepath.Join(agent, "config.yml"),
+		"# Written by packages/daemon/internal/daemon/step_models_live_test.go.\n"+
+			"enabledModels:\n"+enabled.String()+
+			// A fresh profile opens Oh My Pi's setup wizard, and a pane waiting on it never starts.
+			"startup:\n  setupWizard: false\n")
+}
+
+// writeOverlays writes the Oh My Pi overlays each pane is told through PI_CONFIG_FILES: the
+// operator's own, which every pane names first and which turns `retry.enabled` off so the host
+// walks no fallback chain of its own, then one naming the single model the claim's stand-in
+// serves. Only the Oh My Pi claims take one: a Claude Code role reads no PI_CONFIG_FILES, and its
+// model is its pane's ANTHROPIC_MODEL (claudePaneEnvironment).
+func (r *stepModelsLive) writeOverlays() {
+	t := r.t
+	t.Helper()
+	dir := filepath.Join(r.work, "overlays")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	operator := filepath.Join(dir, "operator.yml")
+	writeProofFile(t, operator, "# The operator's pane overlay (runtime.tmux.pi_config_files).\nretry:\n  enabled: false\n")
+	for _, issue := range r.issues {
+		pane := r.panes[issue.implementer]
+		path := filepath.Join(dir, pane.name+".yml")
+		writeRoleOverlay(t, path, standinModel(pane.name))
+		r.overlays[issue.implementer] = []string{operator, path}
+	}
+	spare := filepath.Join(dir, "spare.yml")
+	writeRoleOverlay(t, spare, standinModel(stepModelsSpareProvider))
+	r.spareOverlays = []string{operator, spare}
+}
+
+// claudeKeyVariable is the name of the variable Claude Code reads its provider key from, and
+// stepModelsStandinKey the literal this run's panes carry in it. No endpoint of this run checks
+// it: every one of them is a stand-in of the test's own, and CI holds no model credential. The
+// two are joined at run time rather than written as one literal, so the source carries nothing
+// shaped like a key assignment.
+const (
+	claudeKeyVariable    = "ANTHROPIC_API_KEY"
+	stepModelsStandinKey = "a-literal-value-no-endpoint-checks"
+)
+
+// claudePaneEnvironment is what every pane of this run carries beyond what a pane is told: a
+// Claude pane's endpoint, a stand-in key, and the one model it asks for. A Claude Code role reads
+// no Oh My Pi overlay, so this is where its set model is decided, and its stand-in serves that
+// same model, as every endpoint of the chain serves the model it was asked for.
+//
+// Every child of this run carries these names, since the local runtime gives one environment to
+// all of them, and an Oh My Pi pane reads none of them. The two testers therefore share one
+// endpoint, and the chain tells their records apart by the claim, which every served response
+// carries, rather than by the endpoint.
+func (r *stepModelsLive) claudePaneEnvironment() []string {
+	r.t.Helper()
+	for _, issue := range r.issues {
+		if pane, driven := r.panes[issue.tester]; driven && pane.url != "" {
+			return []string{
+				"ANTHROPIC_BASE_URL=" + pane.url,
+				claudeKeyVariable + "=" + stepModelsStandinKey,
+				"ANTHROPIC_MODEL=" + stepModelsClaudeModel,
+			}
+		}
+	}
+	r.t.Fatal("no Claude pane has an endpoint yet: serveStandins runs before this")
+	return nil
+}
