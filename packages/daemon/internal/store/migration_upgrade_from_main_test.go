@@ -83,10 +83,10 @@ import (
 // applied sequence, 20261121170714, dispatch://INFRA-3320's 20261122154643, dispatch://INFRA-4730's
 // 20261122154644 and 20261122154645, the release that keeps no saved workspace (20261123050533),
 // the plan of an experiment's draw (20261123165139), dispatch://INFRA-5463's 20261123212127,
-// dispatch://INFRA-5471's 20261123224717, the waiting line's issue priority (20261124060500) and
-// #5349's cause times (20261124073512), so an upgrade of a database main migrated applies it just
-// before those seventeen. It adds pull_requests.statuses at its default, the empty list, and it
-// touches no outbox_kind_check.
+// dispatch://INFRA-5471's 20261123224717, the waiting line's issue priority (20261124060500),
+// #5349's cause times (20261124073512) and dispatch://INFRA-3149's 20261124143026, so an upgrade
+// of a database main migrated applies it just before those eighteen. It adds
+// pull_requests.statuses at its default, the empty list, and it touches no outbox_kind_check.
 // The reviewer's reviewed commit (20261116234034, `phases.reviewed_head`) is named here for the
 // same reason: it adds one column at its default, which every row it finds reads as no commit
 // (migration_20261116234034_test.go), it stands below the design news too, and it touches no
@@ -133,8 +133,9 @@ import (
 // The plan of an experiment's draw (20261123165139) adds `experiment_assignments.plan` at its
 // default, which every row it finds reads as no group (migration_20261123165139_test.go), stands
 // above every migration named here but dispatch://INFRA-5463's 20261123212127,
-// dispatch://INFRA-5471's 20261123224717, the waiting line's issue priority (20261124060500) and
-// #5349's cause times (20261124073512), and touches no outbox_kind_check.
+// dispatch://INFRA-5471's 20261123224717, the waiting line's issue priority (20261124060500),
+// #5349's cause times (20261124073512) and dispatch://INFRA-3149's 20261124143026, and touches no
+// outbox_kind_check.
 // dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337) is applied after all
 // of these and touches no outbox_kind_check: it clears a claim's ask mark where that claim's ask
 // is still queued.
@@ -145,69 +146,71 @@ import (
 // applied sequence, 20261121170714, INFRA-3320's 20261122154643, dispatch://INFRA-4730's
 // 20261122154644 and 20261122154645, the release that keeps no saved workspace (20261123050533),
 // the plan of an experiment's draw (20261123165139), dispatch://INFRA-5463's 20261123212127,
-// dispatch://INFRA-5471's 20261123224717, the waiting line's issue priority (20261124060500) and
-// #5349's cause times (20261124073512): it names every kind the plan-record list names and its
-// own two, phase_ended among them. The same migration deletes the queued phase_ended rows, the
-// seeded one below among them, and adds pull_requests.conflict_read and
-// pull_requests.merge_forward, both null on every row it finds.
+// dispatch://INFRA-5471's 20261123224717, the waiting line's issue priority (20261124060500),
+// #5349's cause times (20261124073512) and dispatch://INFRA-3149's 20261124143026: it names every
+// kind the plan-record list names and its own two, phase_ended among them. The same migration
+// deletes the queued phase_ended rows, the seeded one below among them, and adds
+// pull_requests.conflict_read and pull_requests.merge_forward, both null on every row it finds.
 // The design news's list, applied after it and after every other version of this list but
 // 20261120012547, 20261120042902, 20261120055717, 20261120144241, 20261121170714, 20261122154643,
 // 20261122154644, 20261122154645, 20261123050533, 20261123165139, 20261123212127, 20261123224717,
-// 20261124060500 and 20261124073512, names those kinds and design_changes.
+// 20261124060500, 20261124073512 and 20261124143026, names those kinds and design_changes.
 // dispatch://INFRA-3178's set-back sequence (20261120012547) is applied after all of these, the
 // design news among them, and before dispatch://INFRA-4108's 20261120042902,
 // dispatch://INFRA-4729's 20261120055717, dispatch://INFRA-1575's 20261120144241, 20261121170714,
 // INFRA-3320's 20261122154643, dispatch://INFRA-4730's 20261122154644 and 20261122154645,
-// 20261123050533, 20261123165139, 20261123212127, 20261123224717, 20261124060500 and
-// 20261124073512. It runs no statement, so it changes nothing on a database main migrated, and it
-// touches no outbox_kind_check.
+// 20261123050533, 20261123165139, 20261123212127, 20261123224717, 20261124060500, 20261124073512
+// and 20261124143026. It runs no statement, so it changes nothing on a database main migrated, and
+// it touches no outbox_kind_check.
 // dispatch://INFRA-4108's mark of a launch that had Oh My Pi resume a claim's session by its id
 // (20261120042902) stands above every other version of this list, the design news among them, but
 // dispatch://INFRA-4729's 20261120055717, dispatch://INFRA-1575's 20261120144241, 20261121170714,
 // INFRA-3320's 20261122154643, dispatch://INFRA-4730's 20261122154644 and 20261122154645,
-// 20261123050533, 20261123165139, 20261123212127, 20261123224717, 20261124060500 and
-// 20261124073512; it adds claims.agent_resume_generation at its default, 0, on every row it finds,
-// and touches no outbox_kind_check, so it needs no row of its own here.
+// 20261123050533, 20261123165139, 20261123212127, 20261123224717, 20261124060500, 20261124073512
+// and 20261124143026; it adds claims.agent_resume_generation at its default, 0, on every row it
+// finds, and touches no outbox_kind_check, so it needs no row of its own here.
 // dispatch://INFRA-4729's sequence of each value of the copy of Dispatch's issues (20261120055717)
 // is applied after all of these, the design news among them, and before dispatch://INFRA-1575's
 // 20261120144241, 20261121170714, INFRA-3320's 20261122154643, dispatch://INFRA-4730's two,
-// 20261123050533, 20261123165139, 20261123212127, 20261123224717, 20261124060500 and
-// 20261124073512, and it touches no outbox_kind_check: it adds columns to dispatch_issues at their
-// defaults, an index on its parent, and a refill mark for each project the copy holds rows of.
+// 20261123050533, 20261123165139, 20261123212127, 20261123224717, 20261124060500, 20261124073512
+// and 20261124143026, and it touches no outbox_kind_check: it adds columns to dispatch_issues at
+// their defaults, an index on its parent, and a refill mark for each project the copy holds rows
+// of.
 // dispatch://INFRA-1575's intake failures (20261120144241) are applied after all of these and
 // before 20261121170714, INFRA-3320's 20261122154643, dispatch://INFRA-4730's two, 20261123050533,
-// 20261123165139, 20261123212127, 20261123224717, 20261124060500 and 20261124073512: they create
-// intake_failures, cleared_pull_requests and pull_request_settled_heads, all three empty, and touch
-// no dispatch_issues column and no outbox_kind_check.
+// 20261123165139, 20261123212127, 20261123224717, 20261124060500, 20261124073512 and
+// 20261124143026: they create intake_failures, cleared_pull_requests and
+// pull_request_settled_heads, all three empty, and touch no dispatch_issues column and no
+// outbox_kind_check.
 // The applied sequence of the copy of Dispatch's issues (20261121170714) is applied after all of
 // these and before INFRA-3320's 20261122154643, dispatch://INFRA-4730's two, 20261123050533,
-// 20261123165139, 20261123212127, 20261123224717, 20261124060500 and 20261124073512, and it
-// touches no outbox_kind_check: it adds dispatch_issues.applied_seq at its default, 0, on every
-// row it finds.
+// 20261123165139, 20261123212127, 20261123224717, 20261124060500, 20261124073512 and
+// 20261124143026, and it touches no outbox_kind_check: it adds dispatch_issues.applied_seq at its
+// default, 0, on every row it finds.
 // INFRA-3320's kind list with the two basis seeds (20261122154643) stands above every other
 // version of this list but dispatch://INFRA-4730's two, the release that keeps no saved workspace
 // (20261123050533), the plan of an experiment's draw (20261123165139), dispatch://INFRA-5463's
 // 20261123212127, dispatch://INFRA-5471's 20261123224717, the waiting line's issue priority
-// (20261124060500) and #5349's cause times (20261124073512), and restates the design news's kinds
-// with the two seeds. It deletes nothing, so the phase_ended row 20261119003157 deleted stays
-// deleted.
+// (20261124060500), #5349's cause times (20261124073512) and dispatch://INFRA-3149's
+// 20261124143026, and restates the design news's kinds with the two seeds. It deletes nothing, so
+// the phase_ended row 20261119003157 deleted stays deleted.
 // dispatch://INFRA-4730's mark that an issue holds its own gate (20261122154644) stands above it:
 // it adds issues.holds_gate, set on every record whose key is its stored tree, and touches no
 // outbox_kind_check. Its issue facts (20261122154645) stand above that one: they add the columns
 // and the tables each issue's own facts live in, open an issue lifecycle for each issue a live
 // claim names under an open tree lifecycle, set claims.holds_gate on every claim whose issue is its
-// stored tree, and restate the basis seeds' kinds with retention_end. None of the six versions
+// stored tree, and restate the basis seeds' kinds with retention_end. None of the seven versions
 // above them touches outbox_kind_check, so the issue facts are its last word.
 // The release that keeps no saved workspace (20261123050533) is applied after all of these,
 // INFRA-4730's issue facts among them, and before 20261123165139, 20261123212127, 20261123224717,
-// 20261124060500 and 20261124073512, and touches no outbox_kind_check: it drops workspace_bundles,
-// which main's own 20261101222725 made, with whatever rows main's releases saved in it, makes
-// idle_release_declines, empty, and adds issue_releases.turn_start, null on every row it finds. So
-// INFRA-4730's issue facts stay the last word of that check.
+// 20261124060500, 20261124073512 and 20261124143026, and touches no outbox_kind_check: it drops
+// workspace_bundles, which main's own 20261101222725 made, with whatever rows main's releases
+// saved in it, makes idle_release_declines, empty, and adds issue_releases.turn_start, null on
+// every row it finds. So INFRA-4730's issue facts stay the last word of that check.
 // dispatch://INFRA-5463's clear of the start failure of a claim whose agent is up
 // (20261123212127) is applied after all of these but dispatch://INFRA-5471's 20261123224717, the
-// waiting line's issue priority (20261124060500) and #5349's cause times (20261124073512), and
-// touches no outbox_kind_check: it empties
+// waiting line's issue priority (20261124060500), #5349's cause times (20261124073512) and
+// dispatch://INFRA-3149's 20261124143026, and touches no outbox_kind_check: it empties
 // claims.last_start_failure on every claim stored ready, working or idle, a column this list's
 // 20261029121000 adds and the upgrade applies before it, so it needs no row of its own here
 // (migration_20261123212127_test.go reads it).
@@ -216,6 +219,10 @@ import (
 // and `legion members-back`. The priority migration (20261124060500) adds issues.priority,
 // null on every existing row. #5349 (20261124073512) adds the claim cause times and their
 // digests, also initially null. None of these migrations touches outbox_kind_check.
+// dispatch://INFRA-3149's release teardown (20261124143026) is applied after all of these and
+// touches no outbox_kind_check: it adds issue_releases.teardown at its default, `reached`, on every
+// mark it finds, and pod_releases.issue_release_id, null on every row it finds, under a unique
+// index of the rows that name a mark (migration_20261124143026_test.go).
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -229,7 +236,7 @@ var thisBranchsMigrations = []int{
 	20261117112334, 20261117200337, 20261119003157, 20261119203047, 20261120012547, 20261120042902,
 	20261120055717, 20261120144241, 20261121170714, 20261122154643, 20261122154644, 20261122154645,
 	20261123050533, 20261123165139, 20261123212127, 20261123224717, 20261124060500,
-	20261124073512,
+	20261124073512, 20261124143026,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -251,11 +258,11 @@ var thisBranchsMigrations = []int{
 // dispatch://INFRA-4729's 20261120055717, dispatch://INFRA-1575's 20261120144241, the copy's
 // applied sequence, 20261121170714, dispatch://INFRA-4730's 20261122154644 and 20261122154645, the
 // release that keeps no saved workspace's 20261123050533, the plan of an experiment's draw
-// (20261123165139), dispatch://INFRA-5463's 20261123212127 and dispatch://INFRA-5471's
-// 20261123224717. That is why the loop below holds the list rather than
-// counting it, so that a version added above any of them is named here rather than read as main's.
-// The waiting line's issue priority, 20261124060500, stands above them too.
-// #5349's cause times, 20261124073512, stand above every one of them, and the list names them too.
+// (20261123165139), dispatch://INFRA-5463's 20261123212127, dispatch://INFRA-5471's
+// 20261123224717 and dispatch://INFRA-3149's 20261124143026, with the waiting line's issue
+// priority, 20261124060500, and #5349's cause times, 20261124073512, between the last two. That
+// is why the loop below holds the list rather than counting it, so that a version added above any
+// of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main
@@ -551,8 +558,12 @@ const mainsAppliedSequence = 20261121170714
 // 8af2e555670f and 9ed30ada122a lack it below their newest, and the others above it.
 // The merges of main fd2f03fb and bcc5d7e6 brought main's waiting line's issue priority
 // (20261124060500) and #5349's cause times (20261124073512), which stand above every other version
-// this head embeds: the database of main with Dispatch priority holds the first and lacks the
-// second, above its newest, and every other database here lacks both, above its newest.
+// this head embeds but 20261124143026: the database of main with Dispatch priority holds the first
+// and lacks the second, above its newest, and every other database here lacks both, above its
+// newest.
+// The merge of main c227d046 brought dispatch://INFRA-3149's release teardown (20261124143026),
+// which stands above every other version this head embeds: every database here lacks it, above
+// its newest.
 // Store.Migrate asks each embedded migration whether its own version is recorded (apply) and
 // never compares it with the newest, so each upgrade applies the versions that database lacks,
 // below its newest and above it alike, and leaves every embedded version recorded once.

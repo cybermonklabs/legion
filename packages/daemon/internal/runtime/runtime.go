@@ -284,8 +284,20 @@ type IssueSuspender interface {
 // Secrets that the next launch writes again are deleted. Every other Sandbox is deleted, as
 // IssueSuspender deletes it. A Sandbox already gone is success, so a retried release finishes.
 // Process-only runtimes have no pod to release.
+//
+// It answers whether it released a Sandbox: true once it has stopped the pod of the issue's
+// Sandbox and deleted or kept that Sandbox, false where it acted on nothing — authorize's false, a
+// Sandbox that holds a later pod than podUID, a Sandbox already gone (deleted by hand or by an
+// earlier teardown), or a kept Sandbox an earlier release already released, which runs no pod and
+// owns no Secret.
+//
+// writing, where it is not nil, is called under the same lock once the runtime has found a Sandbox
+// to release, just before its first write to that Sandbox or what it owns, and at most once; an
+// error from it ends the release before any write. A release that answers true has called it, and
+// one that acted on nothing has not.
 type IssueReleaser interface {
-	ReleaseIssue(ctx context.Context, issue, podUID string, authorize func(context.Context) (bool, error)) error
+	ReleaseIssue(ctx context.Context, issue, podUID string, authorize func(context.Context) (bool, error),
+		writing func(context.Context) error) (released bool, err error)
 }
 
 // OutlivesPod says whether an effect queued for the pod queued names does nothing to pod, the pod
