@@ -18,7 +18,9 @@ var _ = registerRetirement(StoresMovedRetirement)
 // StoresMovedKinds is the guard of what the move of the priority store and the workflow store
 // kept (dispatch://INFRA-1098's R32): the capability stores_moved, which only a build that reads
 // and writes the two stores in the graph store announces. It is a list of its own, apart from
-// every child's, so the guard reads that one capability and no relation kind.
+// every child's, so the guard reads that one capability and no relation kind. Only a build of this
+// release or a later one announces it, so it also guards what the release before this one still
+// reads of an earlier release's kept objects (decisionsDocumentRetirement).
 var StoresMovedKinds = []string{processes.CapabilityStoresMoved}
 
 // The objects the move keeps for the release before, by their names: the two triggers on

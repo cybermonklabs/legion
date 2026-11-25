@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -25,10 +26,6 @@ import (
 // decisionsGoneBuildStamp is the commit the build this test boots registers under, so an
 // announcement the test writes under another commit is the build a rollback reaches.
 const decisionsGoneBuildStamp = "0d7d0d7d0d7d0d7d0d7d0d7d0d7d0d7d0d7d0d7d"
-
-// decisionsReleaseKinds are the relation kinds the release that retired the decisions document
-// moved into the store, which the boot's retirement requires the build a rollback reaches to list.
-var decisionsReleaseKinds = []string{"anchored_to", "owned_by", "followed_by", "from_ask", "decided_by"}
 
 // The checks the boot's retirement narrows, each with a write of `decisions` it then refuses.
 var decisionsChecks = []struct{ name, write string }{
@@ -50,20 +47,24 @@ var decisionsChecks = []struct{ name, write string }{
 // contracts hold no `decisions`. Before each search for an absence the test finds a planted
 // instance in a scratch copy, so a search that cannot find is no pass.
 //
-// The stored objects go in a step of every boot, over four databases this build boots on:
-//   - one whose newest announcement of another build lists the decisions release's kinds, and
-//     where decisions_documents() answers no document: the step deletes the design_gates rows of
-//     the step `decisions`, drops the function and narrows the three checks, each of which then
-//     refuses `decisions` by name, and a second boot changes nothing. Over it the issue read answers
-//     no decisions_artifact_id, GET /api/v1/issues/{key}/decisions answers 404 NOT_FOUND, a new
-//     document named decisions.md or slugged decisions-md is refused 409 DECISIONS_ARE_NODES and
-//     the issue holds no new document, a Keep of a `##` heading of a retired decisions document
-//     answers 404 TARGET_NOT_FOUND and writes no decision_keeps row, the gated-steps write of
-//     `decisions` is 400 INVALID_PROJECT and the design-gates write of it 400 INVALID_ISSUE, each
-//     naming the step, and /healthz holds no decisions_step_owed;
-//   - one whose newest such announcement is of the release before, which lists none of the
-//     kinds that release added: every object stays, the server serves, and the log names the
-//     announcement;
+// The stored objects go in a step of every boot, over five databases this build boots on:
+//   - one whose newest announcement of another build lists every kind this build lists,
+//     stores_moved among them, and where decisions_documents() answers no document: the step
+//     deletes the design_gates rows of the step `decisions`, drops the function and narrows the
+//     three checks, each of which then refuses `decisions` by name, and a second boot changes
+//     nothing. Over it the issue read answers no decisions_artifact_id,
+//     GET /api/v1/issues/{key}/decisions answers 404 NOT_FOUND, a new document named decisions.md
+//     or slugged decisions-md is refused 409 DECISIONS_ARE_NODES and the issue holds no new
+//     document, a Keep of a `##` heading of a retired decisions document answers 404
+//     TARGET_NOT_FOUND and writes no decision_keeps row, the gated-steps write of `decisions` is
+//     400 INVALID_PROJECT and the design-gates write of it 400 INVALID_ISSUE, each naming the step,
+//     and /healthz holds no decisions_step_owed;
+//   - two whose newest such announcement is of a release before this one, which lists no
+//     stores_moved: the release before the decisions release, which lists none of the kinds that
+//     release added either, and the issue-room release, the release before this one, which lists
+//     every other kind this build lists and whose issue read still calls decisions_documents().
+//     Over each every object stays, the server serves, and the log names the announcement and
+//     stores_moved as what it lacks;
 //   - one where decisions_documents() answers a document, a document with no role that its slug
 //     names: the function and the checks stay, the server serves, and the log names the document;
 //   - one this boot created from empty: the step deletes them at once.
@@ -511,20 +512,39 @@ func mapsEqual(a, b map[string]string) bool {
 	return true
 }
 
+// requireTheReleaseBeforeKeepsTheObjects boots over two databases whose newest announcement of
+// another build is of a release before this one: the release before the decisions release, which
+// lists none of the kinds that release added, and the issue-room release, the release before this
+// one, which lists every other kind this build lists and still reads decisions_documents(). Neither
+// lists stores_moved, so the step keeps every object over each and logs one line naming the
+// announcement and what it lacks.
 func requireTheReleaseBeforeKeepsTheObjects(t *testing.T, binary string) {
-	d := newDecisionsDatabase(t)
-	before := slices.DeleteFunc(slices.Clone(refs.TupleKinds()), func(kind string) bool {
-		return kind == "followed_by" || kind == "from_ask" || kind == "decided_by"
-	})
-	const beforeCommit = "1149114911491149114911491149114911491149"
-	seedGone(t, d, beforeCommit, before)
-	d.boot(t, binary)
-	requireKept(t, d, 1)
-	output := d.process.Output.String()
-	if !strings.Contains(output, "announcement_commit="+beforeCommit) || !strings.Contains(output, "kept its objects") {
-		t.Errorf("the log names no announcement %s for the kept objects:\n%s", beforeCommit, output)
+	for _, before := range []struct {
+		name, commit string
+		unlisted     []string
+	}{
+		{"before the decisions release", "1149114911491149114911491149114911491149",
+			[]string{"followed_by", "from_ask", "decided_by", processes.CapabilityStoresMoved}},
+		{"the issue-room release", "1253125312531253125312531253125312531253", []string{processes.CapabilityStoresMoved}},
+	} {
+		t.Run(before.name, func(t *testing.T) {
+			d := newDecisionsDatabase(t)
+			seedGone(t, d, before.commit, slices.DeleteFunc(slices.Clone(refs.TupleKinds()), func(kind string) bool {
+				return slices.Contains(before.unlisted, kind)
+			}))
+			d.boot(t, binary)
+			requireKept(t, d, 1)
+			output := d.process.Output.String()
+			logged := slices.ContainsFunc(strings.Split(output, "\n"), func(line string) bool {
+				return strings.Contains(line, `retirement="the decisions document's kept objects"`) && strings.Contains(line, "kept its objects") &&
+					strings.Contains(line, "announcement_commit="+before.commit) && strings.Contains(line, "missing=["+processes.CapabilityStoresMoved+"]")
+			})
+			if !logged {
+				t.Errorf("the log names no announcement %s lacking %s for the kept objects:\n%s", before.commit, processes.CapabilityStoresMoved, output)
+			}
+			d.process.call(t, http.MethodGet, "/api/v1/issues/GONE-1", "", http.StatusOK)
+		})
 	}
-	d.process.call(t, http.MethodGet, "/api/v1/issues/GONE-1", "", http.StatusOK)
 }
 
 func requireAStandingDocumentKeepsTheObjects(t *testing.T, binary string) {

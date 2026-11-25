@@ -34,9 +34,11 @@ import (
 type Retirement struct {
 	// Name names the objects in every line the step logs about them.
 	Name string
-	// Kinds are the relation kinds of the release that kept the objects: the kinds it moved into
-	// the store, which every build of it and after it announces (refs.TupleKinds). It is one of
-	// the lists below, one per release, so every entry of one release reads one guard.
+	// Kinds are the relation kinds of the first release no build of which reads or writes the
+	// objects: the kinds it moved into the store, which every build of it and after it announces
+	// (refs.TupleKinds). That is the release that kept the objects where its own build reads them
+	// no more, and a later one where a build of it still does, as the decisions document's
+	// (decisionsDocumentRetirement). It is one of the lists below, one per release.
 	Kinds []string
 	// Stands reports whether the objects still stand. An entry whose objects are gone does nothing
 	// more, so a boot after the one that deleted them reads one probe and changes nothing.
@@ -59,7 +61,8 @@ type Retirement struct {
 // release that moved decisions, readings, asks and their answers: an ask's anchored_to, owned_by
 // and followed_by, and a decision block's from_ask and decided_by. Every build of that release and
 // after it announces them, and a build of a release before it announces none of followed_by,
-// from_ask and decided_by. Every entry that deletes what that release kept reads this one list.
+// from_ask and decided_by. Every entry that deletes what that release kept, and that no build of
+// it reads, reads this one list.
 var AsksKinds = []string{
 	graphstore.TupleAnchoredTo, graphstore.TupleOwnedBy, graphstore.TupleFollowedBy,
 	refs.TupleFromAsk, graphstore.TupleDecidedBy,
