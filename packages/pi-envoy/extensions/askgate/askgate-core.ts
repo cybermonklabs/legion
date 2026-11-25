@@ -264,6 +264,7 @@ import {
   operandPath,
   uploadIsDocument,
 } from "@legion/envoy-client/askgate-marker";
+import { spawnWatched } from "@legion/envoy-client/process-group";
 import type { DispatchSession } from "../../src/dispatch-session";
 import requestTemplate from "./askgate-request.md" with { type: "text" };
 import systemTemplate from "./askgate-system.md" with { type: "text" };
@@ -676,7 +677,7 @@ interface Deps {
     directory: string,
     signal: AbortSignal,
     deadlineMs?: number
-  ) => DispatchSession | undefined;
+  ) => Promise<DispatchSession | undefined>;
   /**
    * The session's decision recorder, shared with the host's record of unmarked writes: the gate
    * builds none of its own. Two recorders would each upload the session's document under its name,
@@ -1818,53 +1819,47 @@ export interface UnreadableCommand {
 }
 
 /**
- * Runs `script` under bash in a process group of its own, which is killed at the limit or on the
- * signal. The script gets `env` with DISPATCH_DRY_RUN_LOCAL=1 added: under it the CLI's dry run
- * of an upload (`dispatch artifact --dry-run`) checks the arguments alone and asks Dispatch
- * nothing, where it otherwise asks how Dispatch would store inline text (POST
- * /api/v1/markdown/round-trip). The variable leaves a `dispatch result` record's dry run asking
- * Dispatch, as it did before, and the gate reviews no `result`. The gate reads arguments, and the
- * call makes that round trip itself and refuses a text Dispatch would store under another
- * spelling, so the read needs none. The `cd`'s `pwd -P` probe, the other script the gate runs
- * here, ignores the variable. The call never gets it: Oh My Pi runs the call in its own
- * environment, and `env` is copied here, not changed. A `dispatch` older than the variable ignores
- * it and asks nothing either way.
+ * Runs `script` under bash in a process group of its own, which is killed at the limit, on the
+ * signal and once the script's own shell exits, and which ends with this process however it ends
+ * (`spawnWatched`): a helper the script left running neither outlives the dry run nor holds its
+ * pipes, and so its answer, open until the limit. The script gets `env` with
+ * DISPATCH_DRY_RUN_LOCAL=1 added: under it the CLI's dry run of an upload
+ * (`dispatch artifact --dry-run`) checks the arguments alone and asks Dispatch nothing, where it
+ * otherwise asks how Dispatch would store inline text (POST /api/v1/markdown/round-trip). The
+ * variable leaves a `dispatch result` record's dry run asking Dispatch, as it did before, and the
+ * gate reviews no `result`. The gate reads arguments, and the call makes that round trip itself
+ * and refuses a text Dispatch would store under another spelling, so the read needs none. The
+ * `cd`'s `pwd -P` probe, the other script the gate runs here, ignores the variable. The call
+ * never gets it: Oh My Pi runs the call in its own environment, and `env` is copied here, not
+ * changed. A `dispatch` older than the variable ignores it and asks nothing either way.
  */
 export async function spawnDryRun(
   script: string,
   { cwd, env, timeoutMs, signal }: DryRunOptions
 ): Promise<DryRunResult> {
-  const child = Bun.spawn(["bash", "-c", script], {
+  const { child, endGroup } = spawnWatched(["bash", "-c", script], {
     cwd,
     env: { ...env, DISPATCH_DRY_RUN_LOCAL: "1" },
-    stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
-    detached: true,
   });
   let timedOut = false;
-  const kill = () => {
-    try {
-      process.kill(-child.pid, "SIGKILL");
-    } catch {
-      // The group already exited.
-    }
-  };
   const timer = setTimeout(() => {
     timedOut = true;
-    kill();
+    endGroup();
   }, timeoutMs);
-  signal?.addEventListener("abort", kill, { once: true });
+  signal?.addEventListener("abort", endGroup, { once: true });
   try {
     const [stdout, stderr] = await Promise.all([
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
+      child.exited.finally(endGroup),
     ]);
-    await child.exited;
     return { exitCode: child.exitCode, stdout, stderr, timedOut };
   } finally {
     clearTimeout(timer);
-    signal?.removeEventListener("abort", kill);
+    signal?.removeEventListener("abort", endGroup);
+    endGroup();
   }
 }
 

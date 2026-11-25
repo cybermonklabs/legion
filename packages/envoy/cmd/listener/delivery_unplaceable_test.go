@@ -14,6 +14,7 @@ import (
 // would report: a message simply stops arriving, or the durable's pending budget stops being
 // bounded, with no failure and no record anywhere.
 func TestUnplaceableRetryWindowFitsTheBoundsItDependsOn(t *testing.T) {
+	t.Parallel()
 	// The window is spent as whole deferrals of unplaceableRetryDelay each, counted from the
 	// first delivery, so a message's deliveries are the deferrals the window buys plus the
 	// first delivery that asked for the first of them.
@@ -59,6 +60,7 @@ func TestUnplaceableRetryWindowFitsTheBoundsItDependsOn(t *testing.T) {
 // and read again at the expiry, where a new message takes a slot and the orphans are gone. A
 // sequence whose own entry expired is taken afresh, with an expiry counted from the new take.
 func TestAnOrphanedDeferralSlotIsReclaimedAtItsExpiry(t *testing.T) {
+	t.Parallel()
 	start := time.Unix(1_800_000_000, 0)
 	clock := start
 	set := newUnplaceableDeferrals()

@@ -542,7 +542,10 @@ runs; `dispatch` then takes host `claude` and Claude Code's rule, so `CLAUDE_CON
 session's own directory, comes ahead of any `ENVOY_CONFIG_FILE` an outer session exported.
 
 `readEnvoyConfig(path, env, { cwd })` reads that file and a checkout's `<cwd>/.envoy/envoy.json`
-as written, running no command. Each section is strict: an unknown key is refused naming it, and
+as written, running no command, and resolves to the result: every file it reads or looks for is
+read through `fs/promises`, so a read waiting on a loaded disk holds the read alone and never the
+process's event loop, as do `askgateSetting` and the files the `*_FILE` variables name
+(`readSecretFile`). Each section is strict: an unknown key is refused naming it, and
 so is a top-level `natsUrls`, which belongs in `envoy.natsUrls`. JSON that does not parse is
 refused at its line and column, never with the parser's message, which quotes the text it stopped
 at. A missing chosen file contributes nothing and sets `missing`: each section is then on only when
@@ -616,18 +619,30 @@ A `token` or `natsSeed` value starting with `!` is a command (`fileValue`): it r
 `/bin/sh -c` in the directory of the envoy.json that names it, never the session's working
 directory, so `./bin/token` or a directory-configured shim (mise, direnv) resolves against that
 file and not whatever repository the session started in. It runs in its own process group for at
-most 10 s, and its trimmed stdout is the value. Its
-exit status decides: a command that exited 0 has printed its value even when a process it left
-running holds stdout open; a timeout kills the whole group. It runs only when its section's
-resolver is about to use the value (the section on, no variable overriding the field). Its value
+most 10 s, and its trimmed stdout is the value. The read waits for it without holding the process:
+every resolver that can run one (`fileValue`, `fileBearer`, `dispatchSettings`, `envoySettings`,
+`sessionSettings`, `sessionDispatchSettings`, `sessionEnvoySettings`) returns a Promise, so the
+session's timers, deliveries and NATS pings are served while it runs, and `sessionSettings` runs
+the two sections' commands at once. The command's exit status decides: a command that exited 0
+has printed its value even when a process it left running holds stdout open; a timeout kills the
+whole group. The group also ends with the process however the process ends: its own exit, a
+signal it handles through `process.reallyExit` (as Oh My Pi's SIGINT, SIGTERM, SIGHUP and
+fatal-error handlers do), or a SIGKILL. A watch in the group (`spawnWatched` in
+`src/process-group.ts`) reads a pipe the process holds and kills the group once the kernel has
+closed it. The command's stdout goes to a file whose name is removed before the command starts,
+so no exit leaves the value on disk under a name. It runs only when its section's resolver is
+about to use the value (the section on, no variable overriding the field). Its value
 is kept for the process, shared across module instances (one map on `globalThis` under
 `Symbol.for("legion.envoy-config.commands.v1")`, since Oh My Pi loads each extension instance, a
 `task` subagent's included, as a fresh module, and pi-envoy and pi-legion, released separately,
 each bundle this module; a change to an entry's shape takes a new key), and keyed by the command,
-its file and its working directory. A command that ran out of time is kept as failed for the life
-of the process: a hanging
-command never runs again in that process, since each run would block it for the whole 10 s. A
-failure that ended on its own (a non-zero exit, empty output, more than one line) is kept for 60 s
+its file and its working directory. A read that starts while the same command runs, in any of
+those instances at or after this change, waits for that run rather than starting another (a second
+map, of the runs under way, under `Symbol.for("legion.envoy-config.command-runs.v1")`); a bundle
+from before it keeps no such map, so a read in it starts a run of its own. A command that ran out
+of time is kept as failed for the life of the process: a hanging command never runs again in that
+process, since each run would hold every read waiting on it for the whole 10 s. A failure that
+ended on its own (a non-zero exit, empty output, more than one line) is kept for 60 s
 and then the command runs again, so a cause that clears (a keyring unlocked after the session
 started) needs no restart. The `dispatch` command is one process per call, and each Claude Code
 hook one per event, so a `!` token runs once for each. A non-zero
@@ -709,19 +724,19 @@ server is named (below), or a section's own error (`Dispatch is off: <error>`,
 that an Envoy that is on takes no inbound messages: `Envoy's inbound messages are off:
 <inbound.off>; the Envoy tools still work`. Otherwise a file that turns a section off, or holds no
 section for it, says nothing.
-`askgateSetting(file)` reads the session file's top-level `askgate` section now, on its own, so a
-section that does not parse never fails the Dispatch or Envoy read: `{"askgate":{"enabled":false}}`
-turns AskGate off (`{ enabled: false, error: null }`); no file, no section or `enabled: true`
-leaves it on. A section that does not parse, or a file that cannot be read or is not JSON, leaves
-it on with an `error` naming the file and `askgate.enabled` and ending `AskGate stays on`. A
-checkout's `.envoy/envoy.json` cannot set it.
+`askgateSetting(file)` resolves to the session file's top-level `askgate` section, read now, on
+its own, so a section that does not parse never fails the Dispatch or Envoy read:
+`{"askgate":{"enabled":false}}` turns AskGate off (`{ enabled: false, error: null }`); no file, no
+section or `enabled: true` leaves it on. A section that does not parse, or a file that cannot be
+read or is not JSON, leaves it on with an `error` naming the file and `askgate.enabled` and ending
+`AskGate stays on`. A checkout's `.envoy/envoy.json` cannot set it.
 `sessionDispatchSettings(file, env, { cwd })` reads
 Dispatch alone, now: `{ dispatch, warnings, missing }`, Dispatch's resolution beside the files the
 read found and did not read and the missing-file record, for a command, which says the `warnings`
 itself, and for a plugin whose Dispatch calls follow a file that changes. `activeDispatchSettings`
 turns its `dispatch` into the configuration a caller uses, null when nothing configures Dispatch,
-or a `dispatch config: <reason>` throw. `sessionDispatchUrl(file, env, { cwd })` is the URL alone
-(`dispatchUrl`), resolved without reading the token, so no `!` command runs, or undefined when
+or a `dispatch config: <reason>` throw. `sessionDispatchUrl(file, env, { cwd })` resolves to the
+URL alone (`dispatchUrl`), without the token's value, so no `!` command runs, or undefined when
 Dispatch is off before its token is read: what a caller on a deadline names to
 `readSessionAnswers` as `dispatchUrl` while a kept resolution is off with an error, so only the list
 read from that URL stands in. `sessionEnvoySettings(file, env, { cwd, nats })` reads

@@ -449,7 +449,7 @@ export async function runDispatchCli(
     // with Dispatch off too, reading a dashboard-URL ref only against a server it knows. A call
     // whose dry run Dispatch answers (`dryRunAsksDispatch`: a `dispatch result` record) goes on
     // below, as the call itself does.
-    const resolved = sessionDispatchSettings(file, env, {
+    const resolved = await sessionDispatchSettings(file, env, {
       cwd: io.cwd,
       session: sessionId,
       tokenFiles: true,
@@ -518,7 +518,7 @@ export async function runDispatchCli(
   // The session this call acts as is the session a broker trade writes under, so the token this
   // call presents names it rather than naming none or another of this machine's. The command is
   // the one caller that takes the token files (`tokenFilesTarget`, dispatch-config.ts).
-  const { dispatch: resolution, warnings } = sessionDispatchSettings(file, env, {
+  const { dispatch: resolution, warnings } = await sessionDispatchSettings(file, env, {
     cwd: io.cwd,
     session: sessionId,
     tokenFiles: true,
@@ -673,7 +673,7 @@ export async function runDispatchCli(
   let topics: Promise<readonly string[] | null> | undefined;
   const readTopics = async (): Promise<readonly string[] | null> => {
     try {
-      const envoy = sessionEnvoySettings(file, env, {
+      const envoy = await sessionEnvoySettings(file, env, {
         cwd: io.cwd,
         nats: false,
         session: sessionId,
