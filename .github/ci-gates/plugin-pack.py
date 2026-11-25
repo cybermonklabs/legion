@@ -12,22 +12,24 @@ GATE = gate("plugin_pack", PLUGIN_PACK_JOB, exact=[
         (DAEMON, [f"./{PLUGIN_PACK_PACKAGE}/"], "go test -run over the package the three tests are in", {}),
     ]),
 ], reads=[
-    Read(g, f"{at(PLUGIN_PACK_JOB, PLUGIN_PACK_STEP)}: internal/daemon/promptreferences_omp_test.go:134,209-230 "
+    Read(g, f"{at(PLUGIN_PACK_JOB, PLUGIN_PACK_STEP)}: "
+            "`packages/daemon/internal/daemon/promptreferences_omp_test.go#TestTheRealPluginsOnTheRealOhMyPi` and `packages/daemon/internal/daemon/promptreferences_omp_test.go#packedPlugin` "
             "packs packages/pi-envoy and packages/pi-legion with `bun pm pack`, which runs their prepack")
     for g in PACK_READS
 ] + reads(
-    ("packages/envoy-client/scripts/build-dispatch-cli.sh", "scripts/pi-plugin-prepack.sh:96, run by the pack "
-                                                            "in promptreferences_omp_test.go:230"),
+    ("packages/envoy-client/scripts/build-dispatch-cli.sh",
+     "`scripts/pi-plugin-prepack.sh#$root/packages/envoy-client/scripts/build-dispatch-cli.sh`, run by the pack "
+     "in `packages/daemon/internal/daemon/promptreferences_omp_test.go#packedPlugin`"),
     # The prompts this checkout ships, laid out for the agent-model probe as the release lays
     # them out: these were a RULES row of agentmodels_omp_test.go while the daemon-go race
     # step ran that test, which put skills/ on that job's filter and ran 1,083 s of Go tests
     # that could not see a skill (dispatch://INFRA-1413).
-    ("packages/pi-legion/agents/**", f"{at(PLUGIN_PACK_JOB, PLUGIN_PACK_STEP)}: internal/daemon/"
-                                     "agentmodels_omp_test.go:166 copyDir"),
-    ("scripts/pi-plugin-prepack.sh", f"{at(PLUGIN_PACK_JOB, PLUGIN_PACK_STEP)}: internal/daemon/"
-                                     "agentmodels_omp_test.go:176 --stage-skills"),
-    ("skills/**", f"{at(PLUGIN_PACK_JOB, PLUGIN_PACK_STEP)}: internal/daemon/agentmodels_omp_test.go:176 "
-                  "prepack stages skills/<name>"),
+    ("packages/pi-legion/agents/**", f"{at(PLUGIN_PACK_JOB, PLUGIN_PACK_STEP)}: "
+                                     "`packages/daemon/internal/daemon/agentmodels_omp_test.go#shippedPromptPlugin` copies it with copyDir"),
+    ("scripts/pi-plugin-prepack.sh", f"{at(PLUGIN_PACK_JOB, PLUGIN_PACK_STEP)}: "
+                                     "`packages/daemon/internal/daemon/agentmodels_omp_test.go#stageSkills` runs it with --stage-skills"),
+    ("skills/**", f"{at(PLUGIN_PACK_JOB, PLUGIN_PACK_STEP)}: `packages/daemon/internal/daemon/agentmodels_omp_test.go#stageSkills`, "
+                  "whose prepack stages skills/<name>"),
 ) + install_omp(PLUGIN_PACK_JOB)
   + setup_go(PLUGIN_PACK_JOB, f"{DAEMON}/go.mod") + bun_job(PLUGIN_PACK_JOB))
 GATE = with_reads(GATE, [

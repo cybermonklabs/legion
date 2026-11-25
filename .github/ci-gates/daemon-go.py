@@ -12,8 +12,8 @@
 # The plain step leaves two tests out as well, internal/supervise's table pins
 # (SUPERVISE_TABLE_TESTS), which the text-check job runs by name: they read that package's
 # source and the source of everything it imports, which their type-checker reads from source
-# too (table_test.go:108) and which of this repository is packages/daemon's own packages, so no
-# read leaves this job with them.
+# too (`packages/daemon/internal/supervise/table_test.go#importer.ForCompiler`) and which of this repository
+# is packages/daemon's own packages, so no read leaves this job with them.
 GATE = gate("daemon_go_tests", "daemon-go", runs=[
     script_run("scripts/e2e/stage1-skeleton.sh", 'go build -o "$work/legion" ./cmd/legion',
                at("daemon-go", "Stage 1 live proof"), DAEMON, ["./cmd/legion"], mode="build"),
@@ -56,19 +56,19 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
     ]),
 ], reads=reads(
     ("scripts/e2e/stage1-skeleton.sh", at("daemon-go", "Stage 1 live proof")),
-    ("scripts/e2e/lib/rig.sh", "scripts/e2e/stage1-skeleton.sh:152 sources it"),
+    ("scripts/e2e/lib/rig.sh", "`scripts/e2e/stage1-skeleton.sh#$root/scripts/e2e/lib/rig.sh` sources it"),
     ("scripts/e2e/lib/loopback-dsn.sh", "scripts/e2e/lib/rig.sh sources it (its `. \"$root/scripts/e2e/lib/loopback-dsn.sh\"` line)"),
     ("scripts/e2e/lib/port-file.sh", "scripts/e2e/lib/rig.sh sources it (its `. \"$root/scripts/e2e/lib/port-file.sh\"` line)"),
     ("scripts/e2e/lib/held-port.py", "scripts/e2e/lib/rig.sh's keep_port and _held_exec (start_held, start_kept) run it to hold a port for the daemon"),
     ("scripts/e2e/lib/process-tree.sh", "scripts/e2e/lib/rig.sh sources it (its `. \"$root/scripts/e2e/lib/process-tree.sh\"` line, the last)"),
-    ("scripts/e2e/lib/built-from.sh", "scripts/e2e/stage1-skeleton.sh:185 runs it over the checkout"),
-    ("packages/pi-legion/package.json", "scripts/e2e/stage1-skeleton.sh:267 copies its name, version and legion "
-                                        "block with jq into the pi-legion plugin the proof's home holds"),
-    ("packages/pi-envoy/package.json", "scripts/e2e/stage1-skeleton.sh:268 copies its name and version with jq "
+    ("scripts/e2e/lib/built-from.sh", "`scripts/e2e/stage1-skeleton.sh#$root/scripts/e2e/lib/built-from.sh` runs it over the checkout"),
+    ("packages/pi-legion/package.json", "`scripts/e2e/stage1-skeleton.sh#jq '{name, version, legion}'` copies its name, version "
+                                        "and legion block into the pi-legion plugin the proof's home holds"),
+    ("packages/pi-envoy/package.json", "`scripts/e2e/stage1-skeleton.sh#jq '{name, version}'` copies its name and version "
                                        "into the pi-envoy plugin the proof's home holds"),
     (".github/actions/install-uv/**", at("daemon-go", "./.github/actions/install-uv")),
-    (".github/ci-tools.yaml", ".github/actions/install-uv/action.yml:25 installs the uv row's binary"),
-    (".github/scripts/ci-tools.sh", ".github/actions/install-uv/action.yml:20 sources it, and ci_tools_fetch "
+    (".github/ci-tools.yaml", "`.github/actions/install-uv/action.yml#ci_tools_fetch uv` installs the uv row's binary"),
+    (".github/scripts/ci-tools.sh", "`.github/actions/install-uv/action.yml#$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh` sources it, and ci_tools_fetch "
                                     "reads the uv row's two sources"),
     (".github/actions/pull-test-images/**", at("daemon-go", "Pull the NATS test container images")),
     (f"{DAEMON}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} const Image, "
