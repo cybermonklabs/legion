@@ -60,11 +60,11 @@
  *  before its first row (`workerDatabase`) and before it seeds the review corpus, the delivery
  *  settings the delivery rows read (`deliverySettings`, handed to a row as its `delivery` place)
  *  and the review corpus the accessibility and foot-sweep rows read (`reviewCorpus`, handed to a
- *  row as its `reviewSeed`). The settings
- *  and the corpus are each written once into each database the worker empties - once for the
- *  worker, and again after a row that empties the database itself - and a row that changes one
- *  puts it back when it ends. A row that empties the database itself does it through
- *  `resetDatabase`, which counts that database too (`databasesEmptied`, e2e/seed.ts).
+ *  row as its `reviewSeed`). The settings are written once into each database the worker empties,
+ *  for the first delivery row that reads them there. The corpus is written into a database the
+ *  worker empties for it, for the first row that reads it in each database the worker holds. A
+ *  row that changes one puts it back when it ends. A row that empties the database itself does it
+ *  through `resetDatabase`, which counts that database too (`databasesEmptied`, e2e/seed.ts).
  *
  *  The stubbed layer takes no part in any of this: it reaches no server, no database and no
  *  sign-in, and declares a `test` of its own (e2e/stub/stub-test.ts). So does the containerised
@@ -351,8 +351,8 @@ type DispatchFixtures = {
 
 /** What this `test` keeps for a whole worker. */
 type DispatchWorkerFixtures = {
-  /** The database this worker empties once, before its first row (`resetDatabase`). It carries
-   *  no value: what `freshFakes` takes from it is that it ran. */
+  /** The database this worker empties before its first row (`resetDatabase`). It carries no
+   *  value: what `freshFakes` takes from it is that it ran. */
   workerDatabase: undefined;
   /** Writes the delivery settings the delivery rows read (`writeDeliverySettings`), unless the
    *  worker has written them into the database it holds now (`databasesEmptied`). */
@@ -365,14 +365,15 @@ type DispatchWorkerFixtures = {
 
 export const test = base.extend<DispatchOptions & DispatchFixtures, DispatchWorkerFixtures>({
   signedIn: ["alice", { option: true }],
-  // The worker's one emptying of its database, before its first row, for whatever a run before
+  // The worker's emptying of its database before its first row, for whatever a run before
   // it left there: a run of the suite against the same database, or the worker this stack served
   // before this one. A row that keys its data needs no more: it makes its data under names of
   // its own (`rowKey`, `rowPerson`, `rowSessionId`, `rowNumber`) or reads a dataset the worker
   // keeps, and takes out again what it added to a list the stack keeps whole (`ownPeople`,
   // `ownBroadcasts`, `ownArchitectureSources`), so it starts beside what the rows before it wrote
-  // and reads none of it. The few rows docs/testing.md names empty it again themselves, through
-  // `resetDatabase` too, which counts every database it empties (`databasesEmptied`).
+  // and reads none of it. `reviewCorpus` empties it again before it seeds the review corpus, and
+  // the few rows docs/testing.md names empty it again themselves, each through `resetDatabase`
+  // too, which counts every database it empties (`databasesEmptied`).
   workerDatabase: [
     // Playwright refuses a first argument that is not a destructuring pattern.
     // biome-ignore lint/correctness/noEmptyPattern: the emptying takes no other fixture.
@@ -460,15 +461,15 @@ export const test = base.extend<DispatchOptions & DispatchFixtures, DispatchWork
   ],
   // The delivery settings are one row for the whole deployment (`delivery_settings.singleton`),
   // which every delivery row reads and none owns, so the worker writes them rather than each row:
-  // once into each database it empties - the one it empties before its first row, and again
-  // after a row that empties it itself - with an upsert, which writes them whether or not a
-  // settings row stands and empties nothing. A row that changes them - the unconfigured page's
-  // row, which starts with none, a row that sets a staging job or a reconcile error - gets them
-  // back from the `delivery` fixture when it ends, as the fixture left them. No lock orders those
-  // rows: rows of one worker run one at a time on that worker's own stack, so the teardown is
-  // what keeps the next row's start, and Playwright has no lock that orders rows of one worker;
-  // rows of two workers never share a stack, so there is nothing for a lock between workers to
-  // guard.
+  // once into each database it empties - before its first row, before it seeds the review corpus
+  // (`reviewCorpus`) and after a row that empties it itself - with an upsert, which writes them
+  // whether or not a settings row stands and empties nothing. A row that changes them - the
+  // unconfigured page's row, which starts with none, a row that sets a staging job or a reconcile
+  // error - gets them back from the `delivery` fixture when it ends, as the fixture left them. No
+  // lock orders those rows: rows of one worker run one at a time on that worker's own stack, so the
+  // teardown is what keeps the next row's start, and Playwright has no lock that orders rows of one
+  // worker; rows of two workers never share a stack, so there is nothing for a lock between workers
+  // to guard.
   deliverySettings: [
     // biome-ignore lint/correctness/noEmptyPattern: the settings take no other fixture.
     async ({}, use) => {
@@ -506,24 +507,25 @@ export const test = base.extend<DispatchOptions & DispatchFixtures, DispatchWork
     await deleteDeliveryRowsBut(held, place.project);
     await writeDeliverySettings();
   },
-  // The review corpus is a dataset every accessibility row reads alike, so the worker seeds it
-  // once into each database it empties, as the delivery settings are, and hands each row the
+  // The review corpus is a dataset every accessibility row and every foot-sweep route row reads
+  // alike, so the worker seeds it once into a database it empties for it, and hands each row the
   // seed it returned. Its keys are the corpus's own (`CORE`, `ACME`), which the stubbed layer's
-  // recordings were made under and no other row writes, since every other row writes keys of
-  // its own. Two things of it a row before can change without touching those keys, and both are
-  // put back before a row reads it: the delivery settings, which a delivery row puts back to
+  // recordings were made under and no other row writes, since every other row writes keys of its
+  // own. Two things of it a row before can change without touching those keys, and both are put
+  // back before a row reads it: the delivery settings, which a delivery row puts back to
   // `writeDeliverySettings`'s and the corpus seeds with its Pipeline job names and its reconcile
-  // error, and the fake Envoy's sessions, which a row may set and a reset of the fakes empties.
-  // Its broadcast goes at the end of the row that seeded it (`ownBroadcasts`): every broadcast
-  // is one list a row reads whole, and no page these rows scan draws it. The seed reads lists
-  // the whole stack holds, every open question in the Inbox (`seedWorkspace`) and every check
-  // result (`seedReviewRoutes`), so the worker empties its database just before it seeds the
-  // corpus, whatever the rows before this one wrote there: they have ended, and every row after
-  // it writes under keys of its own. The first row to read it is often not the worker's first:
-  // seeded after the other rows of its worker, the seed's Inbox read never held exactly its five
-  // rows, and four rows failed so in CI run 45530954674. Emptying deletes every sign-in but
-  // alice's and bob's (the head comment above), so a row that reads the corpus opens its own
-  // contexts, as `asUser` and `withAlice` do.
+  // error, and the fake Envoy's sessions, which a row may set and a reset of the fakes empties. Its
+  // broadcast goes at the end of the row that seeded it (`ownBroadcasts`): every broadcast is one
+  // list a row reads whole. No page the accessibility rows scan draws it, and a foot-sweep row that
+  // opens a broadcast page sends its own (`seedReviewBroadcast`, e2e/review-seed.ts). The seed
+  // reads lists the whole stack holds, every open question in the Inbox (`seedWorkspace`) and every
+  // check result (`seedReviewRoutes`), so the worker empties its database just before it seeds the
+  // corpus, whatever the rows before this one wrote there: they have ended, and every row after it
+  // writes under keys of its own. The first row to read it is often not the worker's first: seeded
+  // after the other rows of its worker, the seed's Inbox read never held exactly its five rows, and
+  // four rows failed so in CI run 45530954674. Emptying deletes every sign-in but alice's and bob's
+  // (the head comment above), so a row that reads the corpus opens its own contexts, as `asUser`
+  // and `withAlice` do.
   reviewCorpus: [
     // biome-ignore lint/correctness/noEmptyPattern: the corpus takes no other fixture.
     async ({}, use) => {

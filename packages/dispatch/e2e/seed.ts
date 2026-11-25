@@ -402,10 +402,11 @@ export function databasesEmptied(): number {
  * Each reset that returns counts one more database emptied (`databasesEmptied`), whoever called
  * it, so the next row that reads a dataset the worker writes once writes it again into the
  * emptied database: no way to empty the database leaves the count behind. The real-stack suite
- * empties a worker's database through it once, before the worker's first row (`workerDatabase`,
- * e2e/test.ts), and again only where a row empties it itself (docs/testing.md names those rows).
- * The delete's side is the timing fixture's part `reset-sql` (e2e/measure.ts), and the fakes are
- * its part `reset-fakes`.
+ * empties a worker's database through it before the worker's first row (`workerDatabase`,
+ * e2e/test.ts), just before the worker seeds the review corpus for the first row that reads it
+ * in each database the worker holds (`reviewCorpus`, e2e/test.ts), and where a row empties it
+ * itself (docs/testing.md names those rows). The delete's side is the timing fixture's part
+ * `reset-sql` (e2e/measure.ts), and the fakes are its part `reset-fakes`.
  */
 export async function resetDatabase(): Promise<void> {
   const resets = await Promise.allSettled([

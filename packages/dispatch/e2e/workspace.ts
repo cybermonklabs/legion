@@ -87,6 +87,9 @@ export const workspaceSessionIds = workspaceSessions.map((session) => session.se
 const workspaceSessionNames = ["planner", "tester", "reviewer", "observer", "archivist"] as const;
 type WorkspaceSessionName = (typeof workspaceSessionNames)[number];
 
+/** The fixed session ids the review corpus, the local instance and the docs pictures use. */
+const fixedSessionId = (name: WorkspaceSessionName): string => sessionIds[name];
+
 const workflowSpec =
   "# Local testing workflow\n\nOne command, a seeded corpus, a signed-in browser.\n\n" +
   ':::ask{urgency="high" multiple="false"}\nWhich sign-in path?\n\n' +
@@ -118,7 +121,7 @@ function liveWorkspace(sessionId: (name: WorkspaceSessionName) => string) {
   }));
   const actor = (id: string, origin: Omit<ActorOrigin, "session_title"> = {}): Actor => {
     const session = live.find((candidate) => candidate.session_id === id);
-    if (session === undefined) throw new Error(`seedWorkspace: no workspace session ${id}`);
+    if (session === undefined) throw new Error(`liveWorkspace: no workspace session ${id}`);
     return { id, kind: "session", origin: { ...origin, session_title: session.title } };
   };
   return { actor, live };
@@ -131,7 +134,7 @@ function liveWorkspace(sessionId: (name: WorkspaceSessionName) => string) {
  *  sent. */
 export async function sendWorkspaceBroadcast({
   person,
-  sessionId = (name) => sessionIds[name],
+  sessionId = fixedSessionId,
 }: {
   readonly person?: SignInLogin;
   readonly sessionId?: (name: WorkspaceSessionName) => string;
@@ -147,12 +150,15 @@ export async function sendWorkspaceBroadcast({
     { login: person ?? "alice" }
   );
   if ((broadcast.excluded ?? []).length > 0) {
-    throw new Error(`seedWorkspace: the broadcast excluded ${JSON.stringify(broadcast.excluded)}`);
+    throw new Error(
+      `sendWorkspaceBroadcast: the broadcast excluded ${JSON.stringify(broadcast.excluded)}`
+    );
   }
   const plannerCopy = (broadcast.recipients ?? []).find(
     (recipient) => recipient.session_id === sessionId("planner")
   );
-  if (plannerCopy === undefined) throw new Error("seedWorkspace: the planner received no copy");
+  if (plannerCopy === undefined)
+    throw new Error("sendWorkspaceBroadcast: the planner received no copy");
   await replyToMessageDelivery(
     plannerCopy.message.id,
     { attempt: 1, body: "Standing down; build is green." },
@@ -189,7 +195,7 @@ export async function seedWorkspace({
   boundMs,
   person,
   projects,
-  sessionId = (name) => sessionIds[name],
+  sessionId = fixedSessionId,
   signal,
 }: {
   readonly boundMs: number;

@@ -1,6 +1,7 @@
 /** The timing fixture of INFRA-317: the four parts a row pays before its own work - the
- *  database's reset (`reset-sql`), which only a worker's first row and a row that empties the
- *  database itself pay (e2e/test.ts), the fakes' reset, the sign-in and the first page load -
+ *  database's reset (`reset-sql`), which only a worker's first row, a row whose fixture seeds
+ *  the review corpus (`reviewCorpus`) and a row that empties the database itself pay
+ *  (e2e/test.ts), the fakes' reset, the sign-in and the first page load -
  *  measured per row so a before/after run can be compared part by part. It is off unless
  *  `E2E_MEASURE_FILE` names the file e2e/measure-reporter.ts writes the rows to, and off it costs
  *  a call nothing: `measured` returns the body's own promise and adds no step. The fourth part,
