@@ -512,7 +512,7 @@ const (
 // missed, so that run reads as failed, not UNKNOWN: either is no pass. stall finds the lines the
 // same way, so a run read as past its bound always shows them.
 func ranPast(text string) bool {
-	for _, line := range strings.Split(text, "\n") {
+	for line := range strings.SplitSeq(text, "\n") {
 		if strings.HasPrefix(line, timeoutPanic) || strings.HasPrefix(line, quitKill) {
 			return true
 		}

@@ -270,14 +270,14 @@ type goRead struct {
 func readEvents(events []byte) goRead {
 	read := goRead{verdicts: map[string]string{}, said: map[string]string{}, last: map[string]string{}, built: map[string]string{}}
 	var output strings.Builder
-	for _, line := range strings.Split(string(events), "\n") {
-		if !strings.HasPrefix(line, "{") {
+	for line := range bytes.SplitSeq(events, []byte("\n")) {
+		if !bytes.HasPrefix(line, []byte("{")) {
 			continue
 		}
 		var e struct{ Action, Test, Output, ImportPath, FailedBuild string }
-		if json.Unmarshal([]byte(line), &e) != nil {
+		if json.Unmarshal(line, &e) != nil {
 			if read.unread == 0 {
-				read.firstUnread = line
+				read.firstUnread = string(line)
 			}
 			read.unread++
 			continue
