@@ -24,6 +24,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -31,6 +33,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 )
 
 // ---- the model stand-in of one driven pane, and the responses it served --------------------------
@@ -379,4 +382,140 @@ func TestTheStandInGivesEachResponseItsOwnID(t *testing.T) {
 			t.Fatalf("the response names the model %q; want the served model %q", response.model, standinModel("omp"))
 		}
 	})
+}
+
+// ---- the run: two issues, four driven panes, both real harnesses --------------------------------
+
+// stepModelsOmpProvider and stepModelsSpareProvider are the Oh My Pi providers of the run's
+// models.yml: one per driven implementer, and one every other Oh My Pi claim talks to, which
+// answers every turn with text alone.
+const stepModelsSpareProvider = "stepmodelsspare"
+
+// stepModelsClaudeModel is what each Claude pane is told to ask for (ANTHROPIC_MODEL) and what its
+// record's set model must therefore be, under the provider name a record spells it with.
+const (
+	stepModelsClaudeModel    = "claude-model"
+	stepModelsClaudeSetModel = "anthropic/" + stepModelsClaudeModel
+)
+
+// stepModelsEvidenceEnv names the directory the run writes its evidence to, which the CI job
+// uploads whatever the result. Unset, the run writes under its own temporary directory, so a
+// developer's run leaves nothing behind.
+const stepModelsEvidenceEnv = "LEGION_E2E_STEP_MODELS_EVIDENCE"
+
+// stepModelsIssue is one of the two issues the chain drives: its key as Dispatch made it, its
+// pull request, the commit every record names, the panes' shared workspace, GitHub's stand-in for
+// it, and the three claims of its roles.
+type stepModelsIssue struct {
+	name                           string
+	key, title, head, workspace    string
+	number                         int
+	github                         *liveGitHub
+	implementer, tester, architect claim.Token
+}
+
+// stepModelsLive is the run: the daemon booted over the local runtime, the real Dispatch this
+// branch builds, two issues whose implementers are real Oh My Pi panes and whose testers are real
+// Claude Code panes, and the evidence the job uploads.
+type stepModelsLive struct {
+	liveAgentProof
+	dispatch *handoffDispatch
+	tokens   *workflowTokenRecorder
+	// root is the checkout this driver was built from; work the run's own temporary directory;
+	// home and profile the Oh My Pi home and profile every pane runs under.
+	root, work, home, profile string
+	// bun, claude and pluginDir are what a Claude Code pane runs: the bun its MCP server runs on,
+	// the pinned Claude Code, and the claude-envoy plugin this run built from the checkout.
+	bun, claude, pluginDir string
+	// evidence is the directory the run writes its records, logs, transcripts and captures to.
+	evidence string
+	issues   []*stepModelsIssue
+	// panes is each driven claim's own stand-in, and spare the one every other claim talks to.
+	panes map[claim.Token]*stepModelsStandin
+	spare *paneStandin
+	// overlays is each Oh My Pi claim's PI_CONFIG_FILES, and spareOverlays every other claim's. A
+	// Claude Code claim reads none: its model comes from ANTHROPIC_MODEL in its pane's own
+	// environment (config.checkRoleConfigFiles refuses an overlay for such a role).
+	overlays      map[claim.Token][]string
+	spareOverlays []string
+	// gitRunner runs every git and jj command the driver makes.
+	gitRunner fixturegit.Runner
+	// failedAt is the assertion the running check failed at, which run prints.
+	failedAt string
+}
+
+// run runs one check as a subtest of its own, between its `== name` and `ok name (<s>s)` lines,
+// with the run's reads failing that subtest rather than the whole test: every read of
+// liveAgentProof goes through r.t, which is the check's own testing.T while it runs. So a failed
+// check leaves the later checks to run, and every measurement is printed.
+func (r *stepModelsLive) run(name string, body func()) {
+	parent := r.t
+	parent.Run(name, func(t *testing.T) {
+		r.t, r.failedAt = t, ""
+		started := time.Now()
+		defer func() {
+			r.t = parent
+			if t.Failed() {
+				at := r.failedAt
+				if at == "" {
+					at = "none of its named assertions (a wait or a read of its own)"
+				}
+				fmt.Printf("FAIL %s at %s (%ds)\n", name, at, int(time.Since(started).Seconds()))
+			}
+		}()
+		fmt.Printf("== %s\n", name)
+		body()
+		fmt.Printf("ok %s (%ds)\n", name, int(time.Since(started).Seconds()))
+	})
+}
+
+// fails ends the running check at its named assertion, which run prints.
+func (r *stepModelsLive) fails(assertion, format string, args ...any) {
+	r.t.Helper()
+	r.failedAt = assertion
+	r.t.Fatalf(format, args...)
+}
+
+// issueNamed is the run's issue of that name, A or B.
+func (r *stepModelsLive) issueNamed(name string) *stepModelsIssue {
+	for _, issue := range r.issues {
+		if issue.name == name {
+			return issue
+		}
+	}
+	r.t.Fatalf("this run has no issue %s", name)
+	return nil
+}
+
+// token is the claim token of role on key, as the daemon spells it.
+func (r *stepModelsLive) token(key string, role claim.Role) claim.Token {
+	r.t.Helper()
+	token, err := claim.NewToken(r.project, key, role)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	return token
+}
+
+// evidenceFileAt is the path of one file of the run's evidence.
+func (r *stepModelsLive) evidenceFileAt(name string) string {
+	return filepath.Join(r.evidence, name)
+}
+
+// writeEvidence writes one file of the run's evidence, which the job uploads whatever the result.
+func (r *stepModelsLive) writeEvidence(name string, body []byte) {
+	r.t.Helper()
+	if err := os.WriteFile(r.evidenceFileAt(name), body, 0o600); err != nil {
+		r.t.Fatalf("write the evidence file %s: %v", name, err)
+	}
+}
+
+// writeEvidenceJSON writes one file of the run's evidence as indented JSON.
+func (r *stepModelsLive) writeEvidenceJSON(name string, value any) {
+	r.t.Helper()
+	encoded, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		r.t.Fatalf("encode the evidence file %s: %v", name, err)
+	}
+	r.writeEvidence(name, append(encoded, '\n'))
 }
