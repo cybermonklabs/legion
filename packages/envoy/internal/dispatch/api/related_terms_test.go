@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // relatedTermsServer is a server whose term statistics and picker a test drives directly, with
@@ -33,14 +34,11 @@ func refreshTermStats(t *testing.T, database *store.Store, project string) int {
 }
 
 // awaitTermStatsRefresh waits for the refresh of project's statistics srv has running, if any,
-// to end, and starts none of its own.
+// to end, and starts none of its own. Its one bound is the test binary's deadline
+// (testwait.Receive): a refresh a loaded machine runs slowly still ends it.
 func awaitTermStatsRefresh(t *testing.T, srv *server, project string) {
 	t.Helper()
-	select {
-	case <-srv.termStats.DoChan(project, func() (any, error) { return nil, nil }):
-	case <-time.After(30 * time.Second):
-		t.Fatalf("the refresh of %s's statistics did not end", project)
-	}
+	testwait.Receive(t, fmt.Sprintf("the end of the refresh of %s's statistics", project), srv.termStats.DoChan(project, func() (any, error) { return nil, nil }))
 }
 
 // pickTerms picks from text as an ask's question is picked: the whole text is its title.
@@ -348,18 +346,13 @@ func TestRelatedTermsRefreshCountsADocumentOnceAtItsLatestVersion(t *testing.T) 
 	if edit.Code != http.StatusOK {
 		t.Fatalf("edit document: status=%d body=%s", edit.Code, edit.Body.String())
 	}
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	testwait.Until(t, "the edit's second artifact version (versions counted)", func() (int, bool) {
 		var versions int
 		if err := database.Pool.QueryRow(context.Background(), "select count(*) from artifact_versions where artifact_id = $1", issue.PrimaryArtifactID).Scan(&versions); err != nil {
 			t.Fatalf("count artifact versions: %v", err)
 		}
-		if versions >= 2 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("waiting for the second artifact version")
-		}
-	}
+		return versions, versions >= 2
+	})
 
 	if items := refreshTermStats(t, database, "VERS"); items != 2 {
 		t.Fatalf("items = %d, want 2: the issue and its spec, once", items)

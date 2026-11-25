@@ -58,7 +58,7 @@ func TestAStepWriteBehindItsRunsHeldRowIsRefusedBusyAtItsBound(t *testing.T) {
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	started := time.Now()
 	go func() { answered <- send() }()
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, 10*time.Second); waiting < 1 {
+	if waiting := storetest.WaitForLockWaiters(t, holder, 1); waiting < 1 {
 		t.Fatalf("the step's end never queued behind the row the holder holds")
 	}
 	var response *httptest.ResponseRecorder
@@ -80,7 +80,7 @@ func TestAStepWriteBehindItsRunsHeldRowIsRefusedBusyAtItsBound(t *testing.T) {
 	if waited < bound {
 		t.Fatalf("the step's end was refused %s after it was sent, inside its bound of %s", waited.Round(time.Millisecond), bound)
 	}
-	if waiting := storetest.WaitForLockWaiters(t, holder, 0, time.Second); waiting != 0 {
+	if waiting := storetest.WaitForLockWaiters(t, holder, 0); waiting != 0 {
 		t.Fatalf("%d sessions still wait behind the held row after the refusal, want none", waiting)
 	}
 

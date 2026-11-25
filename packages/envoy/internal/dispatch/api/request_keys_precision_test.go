@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // INFRA-258. A transaction that only locked rows - a claim's SELECT ... FOR UPDATE - is given a
@@ -134,12 +135,9 @@ func TestTheMaintenanceLoopKeepsAKeyForItsWholeWindow(t *testing.T) {
 		defer close(done)
 		RunMaintenanceSweep(ctx, rig.database.Pool, 50*time.Millisecond, sweepLeases(t, rig.database), nil)
 	}()
-	for deadline := time.Now().Add(30 * time.Second); countLeaseLines(logs, "dispatch duty: leased pass ran", duty.SuggestionOutcomeLease) == 0; {
-		if time.Now().After(deadline) {
-			t.Fatalf("the loop never made a pass:\n%s", logs.Lines("lease="))
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.UntilPolling(t, 20*time.Millisecond, "the maintenance loop's first leased pass (the lease lines it logged)", func() (string, bool) {
+		return logs.Lines("lease="), countLeaseLines(logs, "dispatch duty: leased pass ran", duty.SuggestionOutcomeLease) > 0
+	})
 	stop()
 	<-done
 	var keys []string

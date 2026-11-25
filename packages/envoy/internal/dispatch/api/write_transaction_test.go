@@ -103,7 +103,7 @@ func TestAWriteWhoseClientGoesAwayEndsItsTransactionAtOnce(t *testing.T) {
 	// The handler has returned, so its deferred rollback has run. The backend is out of its
 	// transaction and still connected: a rollback that was never sent would have taken the
 	// connection with it.
-	pollUntil(t, 5*time.Second, "the cancelled write's backend leaves its transaction", func() bool {
+	waitUntil(t, "the cancelled write's backend leaves its transaction", func() bool {
 		state, connected := backendState(t, database, backend)
 		return connected && state != "idle in transaction"
 	})

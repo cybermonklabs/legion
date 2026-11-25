@@ -1312,7 +1312,7 @@ func TestAnAnswerQueuedOnAHeldCopyLockIsRefusedBusyAtItsBound(t *testing.T) {
 	go func() {
 		answered <- answerSource(store.WithLockWaitForTest(ctx, bound), service, original, source, nil)
 	}()
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, roomWait(t)); waiting < 1 {
+	if waiting := storetest.WaitForLockWaiters(t, holder, 1); waiting < 1 {
 		t.Fatal("the answer never came to wait on the project's copy lock")
 	}
 	var refused error
@@ -1329,7 +1329,7 @@ func TestAnAnswerQueuedOnAHeldCopyLockIsRefusedBusyAtItsBound(t *testing.T) {
 		t.Fatalf("the answer queued on the held copy lock answered %v after %s, want ErrPoolBusy (503 DATABASE_BUSY) once its wait's bound of %s ran out",
 			refused, waited.Round(time.Millisecond), bound)
 	}
-	if waiting := storetest.WaitForLockWaiters(t, holder, 0, time.Second); waiting != 0 {
+	if waiting := storetest.WaitForLockWaiters(t, holder, 0); waiting != 0 {
 		t.Fatalf("%d sessions still wait on the project's copy lock after the refusal, want none", waiting)
 	}
 	if state := blockAskOn(t, service, original, "shared").State; state != "open" {

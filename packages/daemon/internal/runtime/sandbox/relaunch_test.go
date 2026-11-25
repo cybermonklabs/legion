@@ -2169,6 +2169,10 @@ func (sandboxMachineClock) AfterFunc(time.Duration, func()) supervise.Cancel {
 	return sandboxMachineCancel{}
 }
 
+func (sandboxMachineClock) At(time.Time, func()) supervise.Cancel {
+	return sandboxMachineCancel{}
+}
+
 func (sandboxMachineClock) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
 type sandboxMachineCancel struct{}

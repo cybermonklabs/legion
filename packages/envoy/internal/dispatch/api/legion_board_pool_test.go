@@ -71,7 +71,7 @@ func TestALegionBoardViewReadsThroughTheLivePoolWhileTheRequestPoolIsFullyAcquir
 	holdEveryConnection(t, database.Pool)
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("b", legionView("INFRA")))
-	snapshot := conn.snapshot(t, 5*time.Second, "b")
+	snapshot := conn.snapshot(t, "b")
 
 	if project := legionBodyProject(t, snapshot.Body); project != "INFRA" {
 		t.Errorf("the snapshot is of project %q, want INFRA", project)

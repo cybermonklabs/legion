@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func agentsHandler(t *testing.T, envoyURL string) http.Handler {
@@ -493,11 +494,8 @@ func TestAnAgentsListWhoseRequestEndsWhileItWaitsOnTheFetchAnswers503(t *testing
 	}()
 	awaitCalls(t, calls, 1)
 	cancel()
-	select {
-	case <-answered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("an agents list did not answer within 5 s of its request ending")
-	}
+	// The fetch is held until the release below, so a list that waited on it would never answer.
+	testwait.Receive(t, "the agents list to answer once its request ended", answered)
 	body := response.Body.String()
 	if response.Code != http.StatusServiceUnavailable || !strings.Contains(body, `"code":"ENVOY_UNAVAILABLE"`) ||
 		!strings.Contains(body, "context canceled") {

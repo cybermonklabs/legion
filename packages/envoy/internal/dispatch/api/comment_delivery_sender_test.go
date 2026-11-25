@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -315,16 +316,11 @@ func postMentionedCommentInBackground(
 	return answered
 }
 
-// awaitSend waits for the next send to arrive and returns the session it is for.
+// awaitSend waits for the next send to arrive and returns the session it is for. Its one bound is
+// the test binary's deadline (testwait.Receive).
 func (l *mentionListener) awaitSend(t *testing.T) string {
 	t.Helper()
-	select {
-	case session := <-l.arrived:
-		return session
-	case <-time.After(10 * time.Second):
-		t.Fatal("no mention send reached the listener")
-		return ""
-	}
+	return testwait.Receive(t, "a mention send to reach the listener", l.arrived)
 }
 
 func (l *mentionListener) sent() []mentionListenerSend {
@@ -1182,11 +1178,13 @@ func ageQueuedClaims(t *testing.T, pool *store.Pool, sender *mentionSender, by t
 }
 
 // awaitRefreshedClaims waits until every comment's attempt for target is under a claim written in
-// the last 5 s, for at most 10 s: the sender's refresh loop has written the claims it holds again.
+// the last 5 s: the sender's refresh loop has written the claims it holds again. Its one bound is
+// the test binary's deadline (testwait.UntilPolling), and its failure prints how many of the
+// attempts were under a claim written again when it last read them.
 func awaitRefreshedClaims(t *testing.T, database *store.Store, commentIDs []string, target string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	what := fmt.Sprintf("the sender's refresh loop to write the claims of the %d queued attempts again (the attempts under a claim written again)", len(commentIDs))
+	testwait.UntilPolling(t, 10*time.Millisecond, what, func() (int, bool) {
 		var refreshed int
 		if err := database.Pool.QueryRow(context.Background(), `
 			select count(*) from comment_deliveries
@@ -1195,15 +1193,8 @@ func awaitRefreshedClaims(t *testing.T, database *store.Store, commentIDs []stri
 		`, commentIDs, target).Scan(&refreshed); err != nil {
 			t.Fatalf("read the claims on the queued attempts: %v", err)
 		}
-		if refreshed == len(commentIDs) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d of %d queued attempts are still under the claim they aged to: nothing wrote the sender's claims again",
-				len(commentIDs)-refreshed, len(commentIDs))
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return refreshed, refreshed == len(commentIDs)
+	})
 }
 
 // postMentionOfS1 posts a comment on the issue mentioning s1 and answers its id.
@@ -1219,8 +1210,10 @@ func postMentionOfS1(t *testing.T, handler http.Handler, issueKey, body string) 
 // committed with, and the sender's refresh loop (keepClaims) writes each of those claims again
 // before it lapses, so a lane held longer than a claim lease keeps them: a delivery sweep pass
 // that runs while every attempt is old enough to be owed takes none of them and sends nothing
-// past the send in flight. The claims age to just short of a lease: one a lease old with no
-// refresh committed has lapsed, and the refresh no longer writes it (refreshMentionClaims), which
+// past the send in flight. The claims age to fifteen seconds short of a lease, which leaves the
+// refresh loop, ticking every 20 ms here, fifteen seconds to write them again, so a refresh a
+// loaded machine runs late still lands: one a lease old with no refresh committed has lapsed, and
+// the refresh no longer writes it (refreshMentionClaims), which
 // TestALostRefreshNeverRevivesALapsedClaim covers.
 func TestAHeldLaneKeepsItsQueuedCommentsInOrderThroughASweep(t *testing.T) {
 	t.Parallel()
@@ -1247,10 +1240,10 @@ func TestAHeldLaneKeepsItsQueuedCommentsInOrderThroughASweep(t *testing.T) {
 	}
 	// The lane has now been held longer than a claim lease: every attempt was opened that long
 	// ago, and the claims the sender took on the sends waiting on it were last written all but a
-	// lease ago, so they lapse within seconds unless the refresh writes them again.
+	// lease ago, so they lapse within fifteen seconds unless the refresh writes them again.
 	comments := append([]string{sending}, queued...)
 	ageAttempts(t, database, comments...)
-	ageQueuedClaims(t, database.Pool, served.mentions, model.DeliveryClaimLapse-5*time.Second)
+	ageQueuedClaims(t, database.Pool, served.mentions, model.DeliveryClaimLapse-15*time.Second)
 	awaitRefreshedClaims(t, database, queued, "session:s1")
 	if err := served.resumeOwedDeliveries(context.Background()); err != nil {
 		t.Fatalf("resume the owed deliveries: %v", err)

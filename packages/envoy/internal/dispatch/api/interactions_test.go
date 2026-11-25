@@ -184,10 +184,12 @@ func (g *firstReplaceGate) AcceptSuggestion(ctx context.Context, artifactID, mar
 }
 
 // waitForSecondReplacementOrCommentLock returns once the second accept has reached the document
-// service, waits on a database lock, or waits for the document's writer gate the first holds.
+// service, waits on a database lock, or waits for the document's writer gate the first holds. Its
+// one bound is the test binary's deadline (waitUntil): a request a loaded machine runs late still
+// ends the wait.
 func waitForSecondReplacementOrCommentLock(t *testing.T, database *store.Store, documents *docs.Service, secondReplacement <-chan struct{}) {
 	t.Helper()
-	if !testwait.Holds(time.Second, 5*time.Millisecond, func() bool {
+	waitUntil(t, "the second accept to reach the document service or wait for the comment lock", func() bool {
 		select {
 		case <-secondReplacement:
 			return true
@@ -204,9 +206,7 @@ func waitForSecondReplacementOrCommentLock(t *testing.T, database *store.Store, 
 			t.Fatalf("inspect database locks: %v", err)
 		}
 		return waiting > 0
-	}) {
-		t.Fatal("second accept did not reach document service or wait for the comment lock")
-	}
+	})
 }
 
 func TestAskWithoutOptionsEmitsEmptyOptionsArray(t *testing.T) {
@@ -1360,17 +1360,16 @@ func TestReopenOrphanedSuggestionSucceeds(t *testing.T) {
 	}
 }
 
+// waitForArtifactVersion waits until version number of artifactID is readable, which is when its
+// settlement has written it. Its one bound is the test binary's deadline (testwait.UntilPolling):
+// a settlement a loaded machine runs late still ends the wait, and one that never writes the
+// version fails it by name, with the status the read last answered.
 func waitForArtifactVersion(t *testing.T, handler http.Handler, artifactID string, number int) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	testwait.UntilPolling(t, 5*time.Millisecond, fmt.Sprintf("artifact version %d of %s to settle (the status of its read)", number, artifactID), func() (int, bool) {
 		version := dispatchRequest(t, handler, http.MethodGet, fmt.Sprintf("/api/v1/artifacts/%s/versions/%d", artifactID, number), nil, "alice")
-		if version.Code == http.StatusOK {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("artifact version %d did not settle", number)
+		return version.Code, version.Code == http.StatusOK
+	})
 }
 
 func TestSuggestionAcceptClearsPendingAuthorBeforeNextVersion(t *testing.T) {
@@ -1595,6 +1594,11 @@ func TestConcurrentSuggestionAcceptAppliesReplacementExactlyOnce(t *testing.T) {
 		}
 		return gate
 	})
+	// The first accept waits at the gate until the test lets it go, holding its transaction's
+	// pooled connection. A test that fails before then lets it go as it ends: the cleanups that run
+	// after this one, the pool's close among them, would otherwise wait on that connection for ever.
+	releaseFirst := sync.OnceFunc(func() { close(gate.releaseFirst) })
+	t.Cleanup(releaseFirst)
 	issue := createInteractionIssue(t, handler, "TEST", "Concurrent accepts", "foo")
 	suggestion := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
 		"body": "Replace foo.", "anchor": map[string]any{"artifact": "spec", "quote": "foo"},
@@ -1608,31 +1612,23 @@ func TestConcurrentSuggestionAcceptAppliesReplacementExactlyOnce(t *testing.T) {
 	go func() {
 		responses <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+commentID+"/accept", map[string]any{}, "alice")
 	}()
-	select {
-	case <-gate.firstEntered:
-	case <-time.After(time.Second):
-		t.Fatal("first acceptance did not reach the document replacement")
-	}
+	testwait.Receive(t, "the first acceptance's arrival at the document replacement", gate.firstEntered)
 	go func() {
 		responses <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+commentID+"/accept", map[string]any{}, "alice")
 	}()
 	waitForSecondReplacementOrCommentLock(t, database, documentService, gate.secondEntered)
-	close(gate.releaseFirst)
+	releaseFirst()
 
 	var success, conflict int
 	for range 2 {
-		select {
-		case response := <-responses:
-			switch response.Code {
-			case http.StatusOK:
-				success++
-			case http.StatusConflict:
-				if strings.Contains(response.Body.String(), `"code":"ALREADY_ACTIONED"`) {
-					conflict++
-				}
+		response := testwait.Receive(t, "an acceptance's answer once the first was let go", responses)
+		switch response.Code {
+		case http.StatusOK:
+			success++
+		case http.StatusConflict:
+			if strings.Contains(response.Body.String(), `"code":"ALREADY_ACTIONED"`) {
+				conflict++
 			}
-		case <-time.After(time.Second):
-			t.Fatal("concurrent acceptance did not complete")
 		}
 	}
 	if success != 1 || conflict != 1 {
@@ -2492,20 +2488,14 @@ func TestGetCommentReturnsNotFound(t *testing.T) {
 }
 
 // loadMarkProjection waits for the mark to reach the persisted document: the API answers once
-// the live document carries the mark, and persistence follows on its own schedule.
+// the live document carries the mark, and persistence follows on its own schedule. Its one bound
+// is the test binary's deadline (testwait.UntilPolling): persistence a loaded machine runs late
+// still ends the wait.
 func loadMarkProjection(t *testing.T, database *store.Store, artifactID, markID string) map[string]any {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		projection, found := findMarkProjection(t, database, artifactID, markID)
-		if found {
-			return projection
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("mark projection %q is missing", markID)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	return testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("mark %q to reach the persisted document %s", markID, artifactID), func() (map[string]any, bool) {
+		return findMarkProjection(t, database, artifactID, markID)
+	})
 }
 
 // awaitMarkProjection waits for the mark's durable record. A document's updates do not all
@@ -2513,17 +2503,13 @@ func loadMarkProjection(t *testing.T, database *store.Store, artifactID, markID 
 // transaction persists on the document service's own queue, and a Yjs update that depends on
 // one still in flight stays pending in a freshly loaded document until it lands. Reading the
 // instant a request returns is therefore a race with that queue, not a statement about the
-// write - the record either appears here or the caller's assertion fails on the empty result.
-func awaitMarkProjection(t *testing.T, database *store.Store, artifactID, markID string) (map[string]any, bool) {
+// write, so the record is waited for. Its one bound is the test binary's deadline
+// (testwait.UntilPolling): a record that never appears fails the test by name.
+func awaitMarkProjection(t *testing.T, database *store.Store, artifactID, markID string) map[string]any {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		projection, found := findMarkProjection(t, database, artifactID, markID)
-		if found || time.Now().After(deadline) {
-			return projection, found
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	return testwait.UntilPolling(t, 5*time.Millisecond, fmt.Sprintf("mark %q's durable record in document %s", markID, artifactID), func() (map[string]any, bool) {
+		return findMarkProjection(t, database, artifactID, markID)
+	})
 }
 
 func findMarkProjection(t *testing.T, database *store.Store, artifactID, markID string) (map[string]any, bool) {

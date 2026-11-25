@@ -143,16 +143,25 @@ func heldRosterListener(t *testing.T) (url string, calls *atomic.Int32, release 
 	return listener.URL, calls, release
 }
 
-// awaitCalls waits until the listener has seen want calls, failing after a few seconds.
+// awaitCalls waits until the listener has seen want calls. Its one bound is the test binary's
+// deadline (testwait.Until), and its failure names the calls the listener last saw.
 func awaitCalls(t *testing.T, calls *atomic.Int32, want int32) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for calls.Load() < want {
-		if time.Now().After(deadline) {
-			t.Fatalf("the listener saw %d calls, want %d", calls.Load(), want)
-		}
-		time.Sleep(time.Millisecond)
+	testwait.Until(t, fmt.Sprintf("the listener to see %d calls (the calls it saw)", want), func() (int32, bool) {
+		seen := calls.Load()
+		return seen, seen >= want
+	})
+}
+
+// storedRosterTimes reads the stored listener answer's sent_at and expires_at, both on the
+// database's clock: the moment the fetch that stored it counts as sent (the database's now() on
+// the read that found the row stale, before the call) and the moment it stops serving reads.
+func storedRosterTimes(t *testing.T, served *server) (sent, expires time.Time) {
+	t.Helper()
+	if err := served.deps.Store.Pool.QueryRow(context.Background(), `select sent_at, expires_at from route_roster`).Scan(&sent, &expires); err != nil {
+		t.Fatalf("read the stored listener answer: %v", err)
 	}
+	return sent, expires
 }
 
 // noRosterWait bounds a read the rows below require answered without waiting on the listener.
@@ -307,13 +316,30 @@ func TestAListenerThatFailedIsAskedAgainOnceItsSilenceWindowPasses(t *testing.T)
 // A listener that does not answer holds the refresh's fetch only for the fetch's own bound, not
 // the client's window (a minute here), and holds no read at all: a read while that fetch runs
 // reads unknown at once, the fetch's silence is stored once the bound has passed, and the reads
-// inside it read unknown without asking again. The bound is half a second, so even a loaded
-// machine's request reaches the listener inside it.
+// inside it read unknown without asking again. The listener client's window is that bound and a
+// millisecond, so a fetch that held its call past the bound it was given is ended by the client's
+// window instead, whatever the machine's speed, and the error says which ended it: the fetch's own
+// context (listRouteRoster) takes its deadline before the call begins and the window starts with
+// the call, so the call's context is the sooner of the two, net/http sets no deadline of its own
+// and its error says "context deadline exceeded"; a call the window ended says "Client.Timeout
+// exceeded" (net/http's setRequestCancel). That error is the fetch's own, which no read is served
+// (a stored silence is read as errListenerSilence), so the row makes the fetch's read itself,
+// before any read starts the loop. Whether a later read asked again is read off the stored answer,
+// not off the listener's count of calls: a fetch asked for again would have stored a silence of its
+// own, sent later, while a call a loaded machine sends past the half-second bound reaches the
+// listener late or not at all, so a count read after the read returns can miss it.
 func TestAListenerThatDoesNotAnswerHoldsTheFetchOnlyForItsBound(t *testing.T) {
 	t.Parallel()
-	served, calls, _ := heldRosterServer(t)
-	served.rosters.timeout, served.rosters.silenceTTL = 500*time.Millisecond, time.Minute
+	const bound = 500 * time.Millisecond
+	listenerURL, calls, _ := heldRosterListener(t)
+	_, _, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listenerURL, envoyTimeout: bound + time.Millisecond})
+	served.rosters.ttl, served.rosters.timeout, served.rosters.silenceTTL = time.Minute, bound, time.Minute
 
+	if own := served.listRouteRoster(context.Background()); own.answered || own.err == nil ||
+		!strings.Contains(own.err.Error(), context.DeadlineExceeded.Error()) || strings.Contains(own.err.Error(), "Client.Timeout exceeded") {
+		t.Fatalf("a fetch of a listener that does not answer ended with answered=%t err=%v, want its own %s bound's %v, not the listener client's window",
+			own.answered, own.err, bound, context.DeadlineExceeded)
+	}
 	started := time.Now()
 	if roster := readRoster(t, served, context.Background()); roster.answered {
 		t.Fatal("a read answered a roster though the listener never answered")
@@ -321,22 +347,21 @@ func TestAListenerThatDoesNotAnswerHoldsTheFetchOnlyForItsBound(t *testing.T) {
 	if waited := time.Since(started); waited > noRosterWait {
 		t.Fatalf("a read waited %s on a listener that does not answer, want an answer at once", waited)
 	}
-	awaitCalls(t, calls, 1)
 	if roster := awaitRoster(t, served); roster.answered {
 		t.Fatal("the stored answer of a fetch the listener never answered is an answer")
 	}
 	if waited := time.Since(started); waited > 10*time.Second {
 		t.Fatalf("the silence was stored %s after the first read, want about the 500ms fetch bound", waited)
 	}
-	first := calls.Load()
-	if first != 1 {
-		t.Fatalf("the refresh made %d listener calls by the silence, want 1", first)
-	}
+	sent, _ := storedRosterTimes(t, served)
 	if roster := readRoster(t, served, context.Background()); roster.answered {
 		t.Fatal("a read inside the silence window answered a roster")
 	}
-	if got := calls.Load(); got != first {
-		t.Fatalf("a read inside the silence window had the listener asked again: %d calls, want %d", got, first)
+	if got := calls.Load(); got > 2 {
+		t.Fatalf("the listener saw %d calls, want at most two, the fetch made here and the refresh's: a read inside the silence window had it asked again", got)
+	}
+	if again, _ := storedRosterTimes(t, served); !again.Equal(sent) {
+		t.Fatalf("a read inside the silence window had the listener asked again: the stored answer was sent at %s, after the first fetch's silence sent at %s", again, sent)
 	}
 }
 
@@ -393,29 +418,42 @@ func TestAnAnswersTTLCountsFromWhenItsCallWasSent(t *testing.T) {
 }
 
 // A failure's window counts from the moment the failure is known, so a listener that hangs is left
-// alone for the whole window after its call times out: a call bound at 1 s with a 1.5 s window is
-// stored to expire about 2.5 s in, and a read 2 s in is still served that stored silence, where a
-// window counted from the send would have ended at 1.5 s and left the read no answer within its
-// bound. The refresh's next call, due 0.75 s before the window ends, is held till 2.75 s, so
-// nothing has replaced the silence by then.
+// alone for the whole window after its call times out. A call bound at 1 s with a minute's window
+// is stored expiring at least a minute and a second after the call was sent, on the database's
+// clock, where a window counted from the send would expire a second sooner; and a read inside the
+// window is served that stored silence and asks the listener nothing, the refresh's next call
+// being due a lead before the window ends. That read is inside the minute however slow the
+// machine. The listener sees at most the refresh's one call, which a loaded machine can deliver
+// late or not at all, so the count is held to one or fewer; the stored answer, still the first
+// fetch's silence, says nothing has fetched since whether a call would have arrived or not.
 func TestAFailuresWindowCountsFromWhenTheFailureIsKnown(t *testing.T) {
 	t.Parallel()
-	served, _ := timedRosterServer(t, 0, true, nil)
-	served.rosters.ttl, served.rosters.silenceTTL, served.rosters.timeout = time.Minute, 1500*time.Millisecond, time.Second
-	started := time.Now()
+	const timeout, window = time.Second, time.Minute
+	served, calls := timedRosterServer(t, 0, true, nil)
+	served.rosters.ttl, served.rosters.silenceTTL, served.rosters.timeout = time.Minute, window, timeout
 	if awaitRoster(t, served).answered {
 		t.Fatal("a listener that hangs answered")
 	}
-	time.Sleep(time.Until(started.Add(2000 * time.Millisecond)))
+	sent, expires := storedRosterTimes(t, served)
+	if left := expires.Sub(sent); left < timeout+window {
+		t.Fatalf("the silence expires %s after its call was sent, want at least the call's %s bound and the %s window: the window must count from when the call timed out", left, timeout, window)
+	}
 	if roster := readRoster(t, served, context.Background()); roster.answered || errors.Is(roster.err, errRouteRosterPastBound) {
-		t.Fatalf("a read 2 s into a 1.5 s window that began when a 1 s call timed out was served answered=%t err=%v, want the stored silence of that call",
-			roster.answered, roster.err)
+		t.Fatalf("a read inside the silence window was served answered=%t err=%v, want the stored silence of the call that timed out", roster.answered, roster.err)
+	}
+	if got := calls.Load(); got > 1 {
+		t.Fatalf("the listener saw %d calls with a read inside the silence window, want at most the refresh's 1", got)
+	}
+	if again, _ := storedRosterTimes(t, served); !again.Equal(sent) {
+		t.Fatalf("a read inside the silence window had the listener asked again: the stored answer was sent at %s, after the first fetch's silence sent at %s", again, sent)
 	}
 }
 
 // A shutdown ends a fetch in flight: it runs on the server's lifetime, so a cold process's agents
 // list waiting on the refresh's fetch of a listener that hangs returns unanswered once the lifetime
-// ends, not when the fetch's bound (a minute here) runs out.
+// ends, not when the fetch's bound (a minute here) runs out. What ended the fetch is in the
+// answer's error, which the list is handed as the fetch's own: the lifetime's cancel, where the
+// fetch's bound or the client's window would each read as a deadline.
 func TestAShutdownEndsAFetchInFlight(t *testing.T) {
 	t.Parallel()
 	lifetime, shutdown := context.WithCancel(t.Context())
@@ -426,13 +464,12 @@ func TestAShutdownEndsAFetchInFlight(t *testing.T) {
 	go func() { answer <- readAgents(t, served, context.Background()) }()
 	awaitCalls(t, calls, 1)
 	shutdown()
-	select {
-	case roster := <-answer:
-		if roster.answered {
-			t.Fatal("an agents list answered a roster after the shutdown")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("an agents list waiting on a listener that hangs did not return within 5 s of the shutdown")
+	roster := testwait.Receive(t, "the answer of an agents list waiting on a listener that hangs, once the shutdown began", answer)
+	if roster.answered {
+		t.Fatal("an agents list answered a roster after the shutdown")
+	}
+	if roster.err == nil || !strings.Contains(roster.err.Error(), context.Canceled.Error()) {
+		t.Fatalf("the agents list's fetch ended with %v, want the shutdown's %v: a fetch the shutdown did not end ran out of a bound instead", roster.err, context.Canceled)
 	}
 }
 
@@ -513,14 +550,18 @@ func TestAColdAgentsListWhoseRequestEndsWhileItWaitsReturnsPromptly(t *testing.T
 	cancelLeader()
 	cancelJoiner()
 	for name, answer := range map[string]<-chan routeRoster{"the list that asked for the fetch": leader, "a list that joined it": joiner} {
-		select {
-		case roster := <-answer:
-			if roster.answered {
-				t.Fatalf("%s answered a roster though the listener has not answered yet", name)
-			}
-		case <-time.After(time.Second):
-			t.Fatalf("%s did not return within a second of its request ending", name)
+		if roster := testwait.Receive(t, "the answer of "+name+" once its request ended", answer); roster.answered {
+			t.Fatalf("%s answered a roster though the listener has not answered yet", name)
 		}
+	}
+	// Each returned while the shared fetch was still in flight, held at the listener until
+	// release: a read that waited for the fetch rather than for its own request could return only
+	// once the fetch had ended.
+	served.rosters.mu.Lock()
+	inFlight := served.rosters.fetch != nil
+	served.rosters.mu.Unlock()
+	if !inFlight {
+		t.Fatal("the reads whose requests ended returned only once the shared fetch had ended, not when their requests did")
 	}
 	select {
 	case <-patient:
@@ -529,13 +570,8 @@ func TestAColdAgentsListWhoseRequestEndsWhileItWaitsReturnsPromptly(t *testing.T
 	}
 
 	release()
-	select {
-	case roster := <-patient:
-		if got := sreReach(roster); got != "live ses-sre" {
-			t.Fatalf("the list that waited read %s, want live ses-sre", got)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the list that waited never returned")
+	if got := sreReach(testwait.Receive(t, "the answer of the list that waited, once the listener answered", patient)); got != "live ses-sre" {
+		t.Fatalf("the list that waited read %s, want live ses-sre", got)
 	}
 	if got := sreReach(readRoster(t, served, context.Background())); got != "live ses-sre" {
 		t.Fatalf("the cached answer reads %s, want live ses-sre: the fetch whose lists left must still fill the cache", got)

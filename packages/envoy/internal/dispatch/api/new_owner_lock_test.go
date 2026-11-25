@@ -103,7 +103,7 @@ func TestACreateBehindItsNewOwnersHeldLockIsRefusedBusyAtItsBound(t *testing.T) 
 			answered := make(chan *httptest.ResponseRecorder, 1)
 			started := time.Now()
 			go func() { answered <- send() }()
-			if waiting := storetest.WaitForLockWaiters(t, holder, 1, 10*time.Second); waiting < 1 {
+			if waiting := storetest.WaitForLockWaiters(t, holder, 1); waiting < 1 {
 				t.Fatalf("the create never queued behind the lock of %s", owner.LockKey())
 			}
 			var response *httptest.ResponseRecorder

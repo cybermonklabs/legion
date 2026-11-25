@@ -34,7 +34,7 @@ func TestABurstOfSlowIssueReferencesLeavesTheReadClassToOtherReads(t *testing.T)
 	for range readCap {
 		go func() { burst <- issueReferencesRequest(t, handler, issue.Key, "") }()
 	}
-	pollUntil(t, 10*time.Second, "a references read waiting on the held refs lock", func() bool {
+	waitUntil(t, "a references read waiting on the held refs lock", func() bool {
 		var waiting int
 		if err := database.Pool.QueryRow(context.Background(), `select count(*) from pg_stat_activity
 			where wait_event_type = 'Lock' and query like '%refs.Closure%'`).Scan(&waiting); err != nil {

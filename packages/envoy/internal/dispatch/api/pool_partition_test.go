@@ -208,7 +208,7 @@ func TestAHubSeedsItsEventsWhileTheRequestPoolIsFullyAcquired(t *testing.T) {
 
 	holdEveryConnection(t, database.Pool)
 	rig.hub.Subscribe(newFakeLiveConn(), subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
-	rig.waitFor(t, 0, eventFeedWait, "the hub's event feed with the request pool held", func(note deliveryHubNote) bool {
+	rig.waitFor(t, 0, "the hub's event feed with the request pool held", func(note deliveryHubNote) bool {
 		return note.what == "events seeded"
 	})
 

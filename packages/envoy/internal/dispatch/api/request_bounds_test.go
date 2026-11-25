@@ -461,7 +461,7 @@ func TestTheLiveSocketOutlivesTheReadDeadline(t *testing.T) {
 	opened := time.Now()
 	client := rig.dial(t, asUser("alice"))
 	for time.Since(opened) <= 3*heartbeat {
-		if frame := decodeSocketFrame(t, client.take(t, time.Second, "a heartbeat")); frame == nil {
+		if frame := decodeSocketFrame(t, client.take(t, "a heartbeat")); frame == nil {
 			t.Fatalf("the live socket sent a frame that is not one of its own after %v", time.Since(opened))
 		}
 	}

@@ -66,7 +66,7 @@ func writerGateHandler(
 	}
 	mux := http.NewServeMux()
 	t.Cleanup(Register(mux, t.Context(), deps).Wait)
-	return withDeadline(mux), service, database
+	return withDeadline(t, mux), service, database
 }
 
 // patientWriterLimiter is the server's admission with a write wait no test here can run out of.

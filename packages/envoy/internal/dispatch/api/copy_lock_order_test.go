@@ -52,13 +52,24 @@ var (
 // settleIssueBeforeClose calls, refuses a joined context; sweepClosedIssueAsks begins and commits
 // its own; settleRoomWithin calls settlePass in a loop, each pass opening a transaction of its
 // own and committing or rolling it back, so what one pass took is released before the next pass
-// takes the copy lock; and leaseSettlementPending, which settleRoomWithin calls before its first
+// takes the copy lock; leaseSettlementPending, which settleRoomWithin calls before its first
 // pass, extendSettlementLease, which a pass calls through leaseThroughWrite before it opens its
 // transaction, and releaseSettlementLease, which settleRoomWithin calls as it returns, each run
 // their one statement on the settlements pool outside any transaction, so the row lock it takes
-// ends with that statement. leaseThroughWrite is listed beside extendSettlementLease because a
+// ends with that statement (leaseThroughWrite is listed beside extendSettlementLease because a
 // call is ordered by what its callee reaches, and settlePass calls leaseThroughWrite, whose only
-// lock is that statement's.
+// lock is that statement's); writeIssue, the PATCH's write core, begins and commits its own, so
+// what one call of it takes does not order its caller's later calls; the pass of R25's boot fix
+// under its lease (parentStatusFixPass.run) holds no transaction and no ledger across its steps:
+// its planning transaction rolls back before the first step, each step commits its own in
+// writeIssue, and its record is a statement of its own, so the pass holds nothing when it returns
+// and a later try of the lease is not ordered after it; and the two boot one-shots that main runs
+// before that fix (api.RunParentStatusFixAtBoot) and that take a pending row or append an event
+// hold nothing when they return, so main holds neither when the fix runs: restoreDecidedWordings
+// runs docs.Service.RestoreDecidedWordings, which begins one transaction and commits it or rolls
+// it back before it returns; and repairIssueAsks runs api.RepairIssueAsks, which repairs each
+// issue in a transaction of its own (repairIssueAsksOf) that its ledger commits or its deferred
+// rollback ends.
 var ownTransactionFunctions = []string{
 	"docs.Service.settleOwedNow",
 	"docs.settlement.settlePass",
@@ -68,6 +79,10 @@ var ownTransactionFunctions = []string{
 	"docs.releaseSettlementLease",
 	"api.server.settleIssueBeforeClose",
 	"api.server.sweepClosedIssueAsks",
+	"api.server.writeIssue",
+	"api.parentStatusFixPass.run",
+	"main.restoreDecidedWordings",
+	"main.repairIssueAsks",
 }
 
 // TestCopyLockComesBeforeEveryPendingRowAndEvent enforces the order the copy lock's deadlock

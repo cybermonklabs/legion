@@ -419,7 +419,7 @@ func TestARequestBehindARowAnotherTransactionHoldsIsRefusedBusyAtItsBound(t *tes
 				response, err := send()
 				answered <- answer{response: response, err: err}
 			}()
-			if waiting := storetest.WaitForLockWaiters(t, holder, 1, 10*time.Second); waiting < 1 {
+			if waiting := storetest.WaitForLockWaiters(t, holder, 1); waiting < 1 {
 				t.Fatalf("the request never queued behind the row the holder holds")
 			}
 			var got answer
@@ -445,7 +445,7 @@ func TestARequestBehindARowAnotherTransactionHoldsIsRefusedBusyAtItsBound(t *tes
 			if waited < bound {
 				t.Fatalf("the request was refused %s after it was sent, inside its bound of %s", waited.Round(time.Millisecond), bound)
 			}
-			if waiting := storetest.WaitForLockWaiters(t, holder, 0, time.Second); waiting != 0 {
+			if waiting := storetest.WaitForLockWaiters(t, holder, 0); waiting != 0 {
 				t.Fatalf("%d sessions still wait behind the held row after the refusal, want none", waiting)
 			}
 
@@ -515,7 +515,7 @@ func TestAPlainLockWaitOfARequestTransactionIsRefusedBusyAtTheWriteLockBound(t *
 			answered := make(chan error, 1)
 			started := time.Now()
 			go func() { answered <- lock() }()
-			if waiting := storetest.WaitForLockWaiters(t, holder, 1, 10*time.Second); waiting < 1 {
+			if waiting := storetest.WaitForLockWaiters(t, holder, 1); waiting < 1 {
 				t.Fatalf("the request transaction never queued behind the held lock")
 			}
 			var refused error

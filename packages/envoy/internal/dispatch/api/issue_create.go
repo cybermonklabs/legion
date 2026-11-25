@@ -463,6 +463,28 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	if assignee == nil {
 		assignee = defaultAssignee(actor, parentAssignee, projectDefaultAssignee)
 	}
+	// R24 with the rule on: a new issue is in triage, so only a done parent holds the rule
+	// against it (createParentConflict). A create holds no owner lock of its parent, so the
+	// parent's row is read `for share`, as the statement just before the insert, in the write
+	// lock's bounded wait (store.LockRowsWithinBoundAndRead: the lock and the read are one batch,
+	// and a wait that runs out is refused 503 DATABASE_BUSY). A close of the parent whose update
+	// ran first makes this read wait for its commit and read done. A close whose update comes
+	// after this read waits for this create to commit, and its second read sees the new child
+	// (openChildrenOfAClose). With the rule off the create reads nothing here.
+	if parentKey != "" && s.deps.ParentStatusRule.On() {
+		var parentTitle, parentStatus string
+		if err := store.LockRowsWithinBoundAndRead(r.Context(), tx,
+			`select 1 from issues where key = $1 for share`, []any{parentKey},
+			`select title, status from issues where key = $1`, []any{parentKey},
+			func(row pgx.Row) error { return row.Scan(&parentTitle, &parentStatus) }); err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
+		if conflict := createParentConflict(parentKey, parentTitle, parentStatus); conflict != nil {
+			s.writeHandlerError(w, r, conflict)
+			return
+		}
+	}
 
 	if _, err := tx.Exec(r.Context(), `
 		insert into issues (key, project_key, number, title, parent_key, created_by, labels, priority, rank, assignee, repo)

@@ -577,7 +577,7 @@ to 48 connections for requests, 6 for its background work, 4 for the live socket
 settling documents, up to 4 for loading documents,
 up to 8 for saving what people type in documents, up to 2 for compacting documents,
 up to 2 for storing the display form of stored text,
-up to 27 for the work it runs once across the servers, the delivery intakes' holds and the
+up to 28 for the work it runs once across the servers, the delivery intakes' holds and the
 keyword fill's hold,
 one for the health check, two for publishing notifications,
 up to 2 for reading where the event log is safe to stream from (the event horizon),
@@ -590,7 +590,7 @@ background work when the rows that work reads change included. The other servers
 database find each server by the name of that shared connection. The fifth sends the cursors of
 the server's document sessions and its questions and answers to the other servers about a
 document. It opens the first time the server has one to send. A document edit's own notification
-goes out in the transaction that writes the edit, and needs no connection of its own. That is 116
+goes out in the transaction that writes the edit, and needs no connection of its own. That is 117
 connections for one server at its ceiling, and twice that for two, past a default Postgres's
 limit of 100. Each connection names what it is for in `application_name` (`dispatch-requests`,
 `dispatch-background`, `dispatch-room-appends` and so on), so `pg_stat_activity` shows which uses

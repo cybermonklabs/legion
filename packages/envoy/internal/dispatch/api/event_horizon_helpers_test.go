@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // appendOutOfOrder appends two events through broker so they commit out of id order: tx A
@@ -77,9 +78,9 @@ func appendOutOfOrder(
 // holdClusterTransactionID opens a transaction in the test cluster's postgres database and takes
 // a transaction id, as a job in another database or another package's test does. It holds no
 // event id of this database, so it holds no horizon back (events.Horizon): a row that needs the
-// horizon held holds it with holdEventWrite. It commits when release runs or after hold, whichever
-// comes first, and by the time the test ends; release returns once it has.
-func holdClusterTransactionID(t *testing.T, hold time.Duration) (release func()) {
+// horizon held holds it with holdEventWrite. It commits when release runs, at the test's first
+// failure, or when the test ends, whichever comes first, and at no other moment (endHold).
+func holdClusterTransactionID(t *testing.T) (release func()) {
 	t.Helper()
 	config, err := pgx.ParseConfig(os.Getenv(storetest.DatabaseURLEnv))
 	if err != nil {
@@ -100,24 +101,48 @@ func holdClusterTransactionID(t *testing.T, hold time.Duration) (release func())
 		_ = conn.Close(context.Background())
 		t.Fatalf("take a transaction id: %v", err)
 	}
-	released := make(chan struct{})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		timer := time.NewTimer(hold)
-		defer timer.Stop()
-		select {
-		case <-released:
-		case <-timer.C:
-		}
+	return endHold(t, func() {
 		_ = tx.Commit(context.Background())
 		_ = conn.Close(context.Background())
-	}()
+	})
+}
+
+// endHold answers the release of a hold that end ends, and runs end when release runs, at t's
+// first failure, or when t ends, whichever comes first, and at no other moment: a hold that also
+// ended on a clock of its own let a loaded machine's test see the horizon proven before the check
+// the hold was for. The first failure is read off t.Failed every testwait.Poll, and the test's end
+// off t.Context, which ends before any cleanup runs, so a wait that gives up lets the hold go
+// before anything else of its test is undone. A row whose wait hangs without failing holds it until
+// that wait gives up, at the test binary's deadline less testwait's margin: no failure is known
+// before then, and no release fits that ends the hold sooner without a clock of its own. release
+// returns once end has run.
+func endHold(t *testing.T, end func()) (release func()) {
 	var once sync.Once
+	released := make(chan struct{})
 	release = func() {
-		once.Do(func() { close(released) })
-		<-done
+		once.Do(func() {
+			close(released)
+			end()
+		})
 	}
+	go func() {
+		poll := time.NewTicker(testwait.Poll)
+		defer poll.Stop()
+		for {
+			select {
+			case <-released:
+				return
+			case <-t.Context().Done():
+				release()
+				return
+			case <-poll.C:
+				if t.Failed() {
+					release()
+					return
+				}
+			}
+		}
+	}()
 	t.Cleanup(release)
 	return release
 }
@@ -125,9 +150,10 @@ func holdClusterTransactionID(t *testing.T, hold time.Duration) (release func())
 // holdEventWrite opens an event write of Dispatch's own database and holds it: a transaction that
 // takes its transaction id and inserts an ownerless event, as events.Broker.Append does, so the
 // event's id is open and no horizon passes it (events.Horizon) until the write ends. It rolls back
-// when release runs or after hold, whichever comes first, and by the time the test ends, so the
-// id it drew stays a gap, and its end sends no notification; release returns once it has.
-func holdEventWrite(t *testing.T, database *store.Store, hold time.Duration) (release func()) {
+// when release runs, at the test's first failure, or when the test ends, whichever comes first,
+// and at no other moment (endHold), so the id it drew stays a gap, and its end sends no
+// notification; release returns once it has.
+func holdEventWrite(t *testing.T, database *store.Store) (release func()) {
 	t.Helper()
 	tx, err := database.Pool.Begin(t.Context())
 	if err != nil {
@@ -142,25 +168,7 @@ func holdEventWrite(t *testing.T, database *store.Store, hold time.Duration) (re
 			t.Fatalf("%s: %v", statement, err)
 		}
 	}
-	released := make(chan struct{})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		timer := time.NewTimer(hold)
-		defer timer.Stop()
-		select {
-		case <-released:
-		case <-timer.C:
-		}
-		_ = tx.Rollback(context.Background())
-	}()
-	var once sync.Once
-	release = func() {
-		once.Do(func() { close(released) })
-		<-done
-	}
-	t.Cleanup(release)
-	return release
+	return endHold(t, func() { _ = tx.Rollback(context.Background()) })
 }
 
 // holdTransactionIDWithoutAnEvent opens a transaction in Dispatch's own database that takes a

@@ -81,7 +81,7 @@ type Admission struct {
 	// catchingUp names each root the daemon's boot catch-up has yet to finish
 	// (HoldForCatchUp): its record may still miss what its Dispatch event log holds, so no pass
 	// decides whether it waits on a person (workflow's ReconcileAwaiting), nor resumes it once
-	// answered — it keeps the place its answer gives it in the waiting line's first part,
+	// answered — it keeps the place its answer gives it in the waiting line, within its priority,
 	// among the issues whose work came back, oldest first (record.Waiting) — until the catch-up
 	// has applied its window and releases it (ReleaseCatchUp). Unlike pending, a release's own
 	// pass does not lift it.
@@ -975,6 +975,7 @@ func (a *Admission) putNewRoot(ctx context.Context, tx pgx.Tx, observation intak
 		Generation:      1,
 		Status:          "todo",
 		Rank:            observation.Rank,
+		Priority:        observation.Priority,
 		HandedOver:      observation.HandedOver,
 		LastDispatchSeq: observation.Seq,
 		DispatchStatus:  observation.Status,
@@ -1171,7 +1172,7 @@ func (a *Admission) applyListed(ctx context.Context, tx pgx.Tx, summary intake.D
 		stored, status = refreshed, summary.Status
 	}
 	o := observed{
-		Title: summary.Title, Parent: summary.Parent, Rank: summary.Rank,
+		Title: summary.Title, Parent: summary.Parent, Rank: summary.Rank, Priority: summary.Priority,
 		Status: status, Shown: summary.Status, Ancestry: summary.Ancestry, HandedOver: handed, Seq: seq,
 	}
 	if summary.Status == "todo" && handed && stored.Readmittable() {
@@ -1220,16 +1221,16 @@ func (a *Admission) unrecordedSummaryStale(ctx context.Context, tx pgx.Tx, summa
 }
 
 // applyObservation records a newer Dispatch observation of a recorded issue: the one place a live
-// event's title, rank, parent, label, and status reach the record, so a re-rank, a rename, or the
-// label taken off or put back at the same status moves the waiting line at once. A todo on a
-// lingering or closed root handed to Legion is a re-admission.
+// event's title, rank, priority, parent, label, and status reach the record, so a re-rank, a
+// priority change, a rename, or the label taken off or put back at the same status reaches the
+// record at once. A todo on a lingering or closed root handed to Legion is a re-admission.
 func (a *Admission) applyObservation(ctx context.Context, tx pgx.Tx, stored record.Issue, observation intake.DispatchIssue) error {
 	if observation.Seq != 0 && observation.Seq <= stored.LastDispatchSeq {
 		return nil
 	}
 	handed := observation.HandedOver
 	o := observed{
-		Title: observation.Title, Parent: observation.Parent, Rank: observation.Rank,
+		Title: observation.Title, Parent: observation.Parent, Rank: observation.Rank, Priority: observation.Priority,
 		Status: observation.Status, Shown: observation.Status, Ancestry: observation.Ancestry, HandedOver: handed, Seq: observation.Seq,
 	}
 	if observation.DaemonActor && observation.HandedOver && observation.Status == "todo" {
@@ -1294,7 +1295,7 @@ func (a *Admission) consumeHandover(ctx context.Context, tx pgx.Tx, fact intake.
 		a.log.Info("admission hand-over", "issue", fact.Issue, "tree", fact.Tree, "linger", fact.Generation, "via", "outbox")
 	})
 	return a.readmit(ctx, tx, *stored, observed{
-		Title: stored.Title, Parent: deref(stored.Parent), Rank: stored.Rank, Ancestry: stored.Ancestry, Seq: stored.LastDispatchSeq,
+		Title: stored.Title, Parent: deref(stored.Parent), Rank: stored.Rank, Priority: stored.Priority, Ancestry: stored.Ancestry, Seq: stored.LastDispatchSeq,
 	}, stored.CarriesRun())
 }
 
@@ -1326,21 +1327,22 @@ func (a *Admission) orphan(ctx context.Context, tx pgx.Tx, stored record.Issue, 
 // the boot read: Shown is the status Dispatch showed, and Status the one the record takes, which is
 // Shown except from a boot listing no newer than the record, which keeps the record's own.
 // Ancestry is the Dispatch chain its preparation read, which a record takes as the engine's
-// Ancestry says.
+// Ancestry says, and Priority the issue's own Dispatch priority.
 type observed struct {
 	Title, Parent, Rank, Status, Shown string
+	Priority                           record.Priority
 	Ancestry                           []string
 	HandedOver                         bool
 	Seq                                int64
 }
 
 // recordObservation is where admission writes a Dispatch observation to an issue record: a live
-// event's and the boot read's, so a rename, a re-rank, a re-parent, a label or a status change is
-// written the same way whichever brought it. Each caller owns its own guards — the stream's
-// sequence fence, the boot read's — and this writes what they let through. The engine, which runs
-// first, writes the observation itself when it keeps its own status over the event's (its
-// keepStatus: a session's write it sets back, or an edit that changed no status), and a live event
-// it wrote then stops at the sequence fence here. A re-parent never changes the record's tree
+// event's and the boot read's, so a rename, a re-rank, a priority change, a re-parent, a label or a
+// status change is written the same way whichever brought it. Each caller owns its own guards — the
+// stream's sequence fence, the boot read's — and this writes what they let through. The engine,
+// which runs first, writes the observation itself when it keeps its own status over the event's
+// (its keepStatus: a session's write it sets back, or an edit that changed no status), and a live
+// event it wrote then stops at the sequence fence here. A re-parent never changes the record's tree
 // here: the only path that does is adoption, which the same fact's promote runs next
 // (adoptQueuedRoots) for a todo root that never ran and whose new parent is in a live tree.
 func (a *Admission) recordObservation(ctx context.Context, tx pgx.Tx, stored record.Issue, o observed) error {
@@ -1348,7 +1350,7 @@ func (a *Admission) recordObservation(ctx context.Context, tx pgx.Tx, stored rec
 	if err != nil {
 		return fmt.Errorf("read whether %s ran as a tree of its own: %w", stored.Key, err)
 	}
-	if stored.Title == o.Title && stored.Rank == o.Rank && stored.Status == o.Status && stored.DispatchStatus == o.Shown &&
+	if stored.Title == o.Title && stored.Rank == o.Rank && stored.Priority == o.Priority && stored.Status == o.Status && stored.DispatchStatus == o.Shown &&
 		stored.HandedOver == o.HandedOver && sameParent(stored.Parent, record.ParentOf(o.Parent)) && stored.LastDispatchSeq == o.Seq &&
 		slices.Equal(stored.Ancestry, ancestry) {
 		return nil
@@ -1356,6 +1358,7 @@ func (a *Admission) recordObservation(ctx context.Context, tx pgx.Tx, stored rec
 	stored.Title = o.Title
 	stored.Parent = record.ParentOf(o.Parent)
 	stored.Rank = o.Rank
+	stored.Priority = o.Priority
 	stored.Status = o.Status
 	stored.DispatchStatus = o.Shown
 	stored.HandedOver = o.HandedOver
@@ -1368,14 +1371,14 @@ func (a *Admission) recordObservation(ctx context.Context, tx pgx.Tx, stored rec
 }
 
 // readmit records a lingering or closed root's todo, or an orphan's, as a new generation waiting
-// for a slot, taking o's title, parent, rank, Dispatch chain (as the engine's Ancestry takes it;
-// a root that left another tree takes none) and sequence. A root starts a fresh generation: its
-// facts clear across its whole tree, as do those of an orphan readmitted without carry. An orphan
-// readmitted with carry (one that started a phase) is the same work moving from a finished root to
-// a root of its own, so its phase, phase rows, gate and pull request (with its observed head) carry
-// into the new generation, and its promotion starts both its architect and the role of that
-// carried phase. A merged pull request is never observed as merged again, and a review or an
-// acceptance would otherwise rerun work already decided or landed.
+// for a slot, taking o's title, parent, rank, priority, Dispatch chain (as the engine's Ancestry
+// takes it; a root that left another tree takes none) and sequence. A root starts a fresh
+// generation: its facts clear across its whole tree, as do those of an orphan readmitted without
+// carry. An orphan readmitted with carry (one that started a phase) is the same work moving from a
+// finished root to a root of its own, so its phase, phase rows, gate and pull request (with its
+// observed head) carry into the new generation, and its promotion starts both its architect and the
+// role of that carried phase. A merged pull request is never observed as merged again, and a review
+// or an acceptance would otherwise rerun work already decided or landed.
 //
 // An issue leaving another tree, a hand-over or an orphan, carried or not, records that tree
 // (record.Issue.HandedOverFrom) and stays a tree of its own from then on: re-admitting or reopening
@@ -1446,6 +1449,7 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 	stored.Generation++
 	stored.Status, stored.DispatchStatus = "todo", "todo"
 	stored.Rank = o.Rank
+	stored.Priority = o.Priority
 	stored.LingerUntil = nil
 	stored.LastDispatchSeq = o.Seq
 	if err := a.engine.WriteIssue(ctx, tx, stored); err != nil {
@@ -1873,9 +1877,9 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		return 0, nil, fmt.Errorf("reconcile the roots waiting on a person: %w", err)
 	}
 	// Reconcile wrote roots of the snapshot (a wait entered or answered, a resume told in place),
-	// so what follows reads them as they now stand: an answer it recorded puts its root in the
-	// first part of this pass's waiting line, among the issues whose work came back, oldest first
-	// (record.Waiting), at the moment its own wait was answered.
+	// so what follows reads them as they now stand: an answer it recorded puts its root in this
+	// pass's waiting line, within its priority, among the issues whose work came back, oldest
+	// first (record.Waiting), at the moment its own wait was answered.
 	if changed {
 		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {
 			return 0, nil, err
@@ -2632,7 +2636,7 @@ func (a *Admission) refreshHeldSummary(observation intake.DispatchIssue) {
 	a.stamps++
 	a.pending[observation.Key] = heldSummary{summary: intake.DispatchIssue{
 		Key: observation.Key, Seq: observation.Seq, Status: observation.Status, Title: observation.Title,
-		Parent: observation.Parent, Rank: observation.Rank, HandedOver: observation.HandedOver,
+		Parent: observation.Parent, Rank: observation.Rank, Priority: observation.Priority, HandedOver: observation.HandedOver,
 		ResolvedRepo: observation.ResolvedRepo, Ancestry: observation.Ancestry,
 	}, stamp: a.stamps}
 }

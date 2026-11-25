@@ -6,16 +6,19 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -575,6 +578,250 @@ func TestAReadOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne(t *testing.T) {
 			got, err := ciphertoken.SessionCaller(row.answer)
 			if !errors.Is(err, wantErr) || !reflect.DeepEqual(got, row.without) {
 				t.Fatalf("SessionCaller = %+v, %v; want %+v, %v", got, err, row.without, wantErr)
+			}
+		})
+	}
+}
+
+// TestANarrowedAnswerIsACallerOnlyToAVerifierThatServesReadOnly: a token narrowed to reading — a
+// narrowed project scope beside the scope read, or read person for a read-person token that names
+// its person — is a session's credential only to a verifier whose service serves a read-only
+// token, as the read entry's token is. With the switch, each answer of the golden file the
+// broker's own test holds its narrowed answers to is a Caller marked read-only, naming the
+// session, the person, the service and the projects the answer names, under the base word its
+// narrowed word narrows, with the answer's cut. Without the switch, and to SessionCaller, each is
+// ErrNotASession, as a build that predates the words refuses it.
+//
+// The switch widens the rule by nothing else. With it, these are ErrNotASession too: read person,
+// in either order, on a narrowed word that may not hold person, approve or machine beside read,
+// read named twice, no scope at all, a read-none token naming a person or a project, a read-named
+// token whose projects break the named rules, one naming no person and a service that is no
+// Kubernetes account, and one naming no person, an account and a project, a cut on a token that
+// writes, a cut on the read entry's token (the word none, which no trade that asks for read and a
+// cut carries), and a cut that is not an RFC 3339 time. The controls are the golden machine
+// login's answer with a cut, which the switch accepts with its cut, and the named token with no
+// cut, which both verifiers accept unmarked, so each refusal of a cut is the cut's. Each row goes
+// through Verify and through Live.
+func TestANarrowedAnswerIsACallerOnlyToAVerifierThatServesReadOnly(t *testing.T) {
+	caller := newSigner(t)
+	const session = "ses_narrowed"
+	answers := ciphertokentest.NarrowedAnswers(t, caller.jkt, session, time.Now().Add(time.Hour).Unix())
+	// bases is the word each narrowed word reads as, written out here rather than read from
+	// oauthwire.BaseProjectScope, so the test holds the helper to it.
+	bases := map[string]string{
+		oauthwire.ProjectScopeReadNamed:  ciphertoken.ProjectScopeNamed,
+		oauthwire.ProjectScopeReadPerson: ciphertoken.ProjectScopePerson,
+		oauthwire.ProjectScopeReadNone:   ciphertoken.ProjectScopeNone,
+	}
+	const cutText = "2026-11-18T09:30:00.123456Z"
+	cut := time.Date(2026, 11, 18, 9, 30, 0, 123456000, time.UTC)
+	// cuts is the cut of each golden answer that names one; every other names none.
+	cuts := map[string]time.Time{"machine-login-with-a-cut": cut}
+
+	type row struct {
+		name   string
+		answer ciphertoken.Introspection
+		// without and with are the Caller each verifier answers: the zero Caller is a refusal,
+		// which is ErrNotASession for every row here.
+		without ciphertoken.Caller
+		with    ciphertoken.Caller
+	}
+	var rows []row
+	narrowedWords := map[string]bool{}
+	for _, kind := range slices.Sorted(maps.Keys(answers)) {
+		answer := answers[kind]
+		base, narrowed := bases[answer.ProjectScope]
+		if !narrowed {
+			t.Fatalf("the golden answer %s carries the project scope %q, which is no narrowed word", kind, answer.ProjectScope)
+		}
+		narrowedWords[answer.ProjectScope] = true
+		rows = append(rows, row{name: "the golden answer " + kind, answer: answer, with: ciphertoken.Caller{
+			Session: session, Person: answer.Person, Service: answer.Service, Projects: answer.Projects,
+			ProjectScope: base, ReadOnly: true, Cut: cuts[kind],
+		}})
+	}
+	if len(narrowedWords) != len(bases) {
+		t.Fatalf("the golden answers carry the narrowed words %v, want each of %v", slices.Sorted(maps.Keys(narrowedWords)), slices.Sorted(maps.Keys(bases)))
+	}
+
+	// changed is the golden answer of kind with one change made, on a copy of its projects.
+	changed := func(kind string, change func(*ciphertoken.Introspection)) ciphertoken.Introspection {
+		answer, ok := answers[kind]
+		if !ok {
+			t.Fatalf("the golden file holds no answer for %s", kind)
+		}
+		answer.Projects = slices.Clone(answer.Projects)
+		change(&answer)
+		return answer
+	}
+	scoped := func(kind, scope string) ciphertoken.Introspection {
+		return changed(kind, func(answer *ciphertoken.Introspection) { answer.Scope = scope })
+	}
+	named := liveToken(caller.jkt, time.Hour)
+	namedCaller := ciphertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", Projects: []string{"INFRA"}, ProjectScope: ciphertoken.ProjectScopeNamed}
+	namedCut := liveToken(caller.jkt, time.Hour)
+	namedCut.AsOf = cutText
+	personCut := liveToken(caller.jkt, time.Hour)
+	personCut.ProjectScope, personCut.Projects, personCut.AsOf = ciphertoken.ProjectScopePerson, nil, cutText
+	readEntryCut := readOnlyToken(caller.jkt, time.Hour)
+	readEntryCut.AsOf = cutText
+	rows = append(rows,
+		row{name: "read person on read-named", answer: scoped("pod-entry", "read person")},
+		row{name: "read person on read-none", answer: scoped("read-entry", "read person")},
+		row{name: "read person on read-person naming a service", answer: scoped("google-identity-no-person", "read person")},
+		row{name: "approve beside read", answer: scoped("pod-entry", "read approve")},
+		row{name: "approve beside read person", answer: scoped("machine-login", "read person approve")},
+		row{name: "machine beside read", answer: scoped("machine-login", "read machine")},
+		row{name: "person before read on read-named", answer: scoped("pod-entry", "person read")},
+		row{name: "read named twice", answer: scoped("read-entry", "read read")},
+		row{name: "a narrowed word with no scope", answer: scoped("pod-entry", "")},
+		row{name: "read-none naming a person", answer: changed("read-entry", func(answer *ciphertoken.Introspection) {
+			answer.Person = "ada@example.com"
+		})},
+		row{name: "read-none naming a project", answer: changed("read-entry", func(answer *ciphertoken.Introspection) {
+			answer.Projects = []string{"ACME"}
+		})},
+		row{name: "read-named naming two projects", answer: changed("pod-entry", func(answer *ciphertoken.Introspection) {
+			answer.Projects = []string{"ACME", "OTHER"}
+		})},
+		row{name: "read-named naming no person and a service that is no account", answer: changed("pod-entry", func(answer *ciphertoken.Introspection) {
+			answer.Person, answer.Service, answer.Projects = "", "example-fleet", nil
+		})},
+		row{name: "read-named naming no person, an account and a project", answer: changed("pod-entry-no-person", func(answer *ciphertoken.Introspection) {
+			answer.Projects = []string{"ACME"}
+		})},
+		row{name: "a cut on a named token", answer: namedCut},
+		row{name: "a cut on a person token", answer: personCut},
+		row{name: "a cut that does not parse", answer: changed("machine-login-with-a-cut", func(answer *ciphertoken.Introspection) {
+			answer.AsOf = "yesterday"
+		})},
+		row{name: "a cut with a space for its T", answer: changed("machine-login-with-a-cut", func(answer *ciphertoken.Introspection) {
+			answer.AsOf = "2026-11-18 09:30:00.123456Z"
+		})},
+		row{name: "a cut at the zero time", answer: changed("machine-login-with-a-cut", func(answer *ciphertoken.Introspection) {
+			answer.AsOf = "0001-01-01T00:00:00Z"
+		})},
+		// A trade that asks for no scope keeps the read entry's word none, and the broker refuses a
+		// cut without scope=read, so no broker mints none beside a cut: only a narrowed word
+		// carries one.
+		row{name: "a cut on the read entry's token", answer: readEntryCut},
+		row{name: "the named token with no cut", answer: named, without: namedCaller, with: namedCaller},
+	)
+
+	for _, serves := range []bool{false, true} {
+		// The bucket is wide enough for every row's token: what is under test is the answer.
+		rig := newRig(t, func(options *ciphertoken.Options) {
+			options.ServesReadOnly = serves
+			options.AddressLimit = ratelimit.Limit{Every: time.Nanosecond, Burst: 2 * len(rows)}
+		})
+		verifier := "without the switch"
+		if serves {
+			verifier = "with the switch"
+		}
+		for _, row := range rows {
+			t.Run(verifier+"/"+row.name, func(t *testing.T) {
+				token := "a-token-of-" + strings.ReplaceAll(row.name, " ", "-")
+				rig.broker.Says(token, row.answer)
+				want := row.without
+				if serves {
+					want = row.with
+				}
+				var wantErr error
+				if reflect.DeepEqual(want, ciphertoken.Caller{}) {
+					wantErr = ciphertoken.ErrNotASession
+				}
+
+				decided, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, token))
+				if !errors.Is(err, wantErr) || !reflect.DeepEqual(decided, want) {
+					t.Fatalf("Verify = %+v, %v; want %+v, %v", decided, err, want, wantErr)
+				}
+				live, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, token))
+				if !errors.Is(err, wantErr) || !reflect.DeepEqual(live, want) {
+					t.Fatalf("Live = %+v, %v; want %+v, %v", live, err, want, wantErr)
+				}
+			})
+		}
+	}
+	for _, row := range rows {
+		t.Run("SessionCaller/"+row.name, func(t *testing.T) {
+			var wantErr error
+			if reflect.DeepEqual(row.without, ciphertoken.Caller{}) {
+				wantErr = ciphertoken.ErrNotASession
+			}
+			got, err := ciphertoken.SessionCaller(row.answer)
+			if !errors.Is(err, wantErr) || !reflect.DeepEqual(got, row.without) {
+				t.Fatalf("SessionCaller = %+v, %v; want %+v, %v", got, err, row.without, wantErr)
+			}
+		})
+	}
+}
+
+// TestShapeOfReadsTheScopeAsASet: a scope is a set of words, whose order means nothing (RFC
+// 6749, section 3.3). So each golden answer of a narrowed person's token, whose scope the broker
+// grants as read person, reads the same with its scope written person read: the same Caller,
+// marked read-only and carrying its cut, to a verifier that serves a read-only token, and the
+// same refusal to one that does not and to SessionCaller, as a read-only token's shape reads from
+// outside. Each row goes through Verify and through Live.
+func TestShapeOfReadsTheScopeAsASet(t *testing.T) {
+	caller := newSigner(t)
+	const session = "ses_scope_set"
+	answers := ciphertokentest.NarrowedAnswers(t, caller.jkt, session, time.Now().Add(time.Hour).Unix())
+	var kinds []string
+	for _, kind := range slices.Sorted(maps.Keys(answers)) {
+		if answers[kind].Scope == "read person" {
+			kinds = append(kinds, kind)
+		}
+	}
+	if len(kinds) == 0 {
+		t.Fatal("no golden answer carries the scope read person")
+	}
+	reordered := func(kind string) ciphertoken.Introspection {
+		answer := answers[kind]
+		answer.Projects = slices.Clone(answer.Projects)
+		answer.Scope = "person read"
+		return answer
+	}
+
+	for _, serves := range []bool{false, true} {
+		// The bucket is wide enough for both tokens of every kind: what is under test is the answer.
+		rig := newRig(t, func(options *ciphertoken.Options) {
+			options.ServesReadOnly = serves
+			options.AddressLimit = ratelimit.Limit{Every: time.Nanosecond, Burst: 4 * len(kinds)}
+		})
+		verifier := "without the switch"
+		if serves {
+			verifier = "with the switch"
+		}
+		for _, kind := range kinds {
+			t.Run(verifier+"/"+kind, func(t *testing.T) {
+				granted, written := "a-token-of-"+kind+"-granted", "a-token-of-"+kind+"-reordered"
+				rig.broker.Says(granted, answers[kind])
+				rig.broker.Says(written, reordered(kind))
+				for _, read := range []struct {
+					name string
+					call func(context.Context, *http.Request) (ciphertoken.Caller, error)
+				}{{"Verify", rig.verifier.Verify}, {"Live", func(ctx context.Context, r *http.Request) (ciphertoken.Caller, error) {
+					live, err := rig.verifier.Live(ctx, r)
+					return live.Caller(), err
+				}}} {
+					want, wantErr := read.call(t.Context(), caller.at(resourcePath, granted))
+					if serves && (wantErr != nil || !want.ReadOnly) {
+						t.Fatalf("%s of the scope read person = %+v, %v; want a read-only Caller", read.name, want, wantErr)
+					}
+					got, err := read.call(t.Context(), caller.at(resourcePath, written))
+					if !reflect.DeepEqual(got, want) || (err == nil) != (wantErr == nil) || (wantErr != nil && !errors.Is(err, wantErr)) {
+						t.Fatalf("%s of the scope person read = %+v, %v; want %+v, %v, as the scope read person reads", read.name, got, err, want, wantErr)
+					}
+				}
+			})
+		}
+	}
+	for _, kind := range kinds {
+		t.Run("SessionCaller/"+kind, func(t *testing.T) {
+			want, wantErr := ciphertoken.SessionCaller(answers[kind])
+			got, err := ciphertoken.SessionCaller(reordered(kind))
+			if !reflect.DeepEqual(got, want) || !errors.Is(err, wantErr) || (err == nil) != (wantErr == nil) {
+				t.Fatalf("SessionCaller of the scope person read = %+v, %v; want %+v, %v, as the scope read person reads", got, err, want, wantErr)
 			}
 		})
 	}

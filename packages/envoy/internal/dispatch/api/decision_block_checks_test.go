@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // testDecisionBlockCheck is one entry of an edit's advice.decision_block_checks.
@@ -230,9 +231,8 @@ func TestDecisionBlockCheckDoesNotHoldTheConditionalEditGate(t *testing.T) {
 	// once something waits on the lock. (Another waiter, the term statistics refresh the issue's
 	// own check started, may be the one seen: the commit is what the second edit needs.) The second
 	// edit is guarded by the paragraph it rewrites, which the first block's settlement leaves alone.
-	deadline := time.Now().Add(10 * time.Second)
 	var second map[string]any
-	for {
+	testwait.UntilPolling(t, 10*time.Millisecond, "the first edit to commit with a check waiting on the term statistics (the lock's waiters)", func() (int, bool) {
 		var waiting int
 		if err := database.Pool.QueryRow(context.Background(), `
 			select count(*) from pg_locks where relation = 'search_term_stats'::regclass and not granted
@@ -246,13 +246,10 @@ func TestDecisionBlockCheckDoesNotHoldTheConditionalEditGate(t *testing.T) {
 				"ops":          []map[string]string{{"op": "replace", "find": "Planning notes.", "with": "Planning notes, revised."}},
 				"precondition": map[string]any{"blocks": []map[string]string{{"id": paragraph.ID, "token": paragraph.Token}}},
 			}
-			break
+			return waiting, true
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("the first edit never committed with a check waiting on the term statistics")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return waiting, false
+	})
 
 	secondResponse := editDocument(t, handler, issue.PrimaryArtifactID, second)
 	select {

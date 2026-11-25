@@ -201,7 +201,7 @@ func TestARevokedBrokerTokenClosesTheLiveSocketWhateverTheRequestPoolHolds(t *te
 	rig.broker.Says(token, ciphertoken.Introspection{Active: false})
 	ahead.Store(int64(ciphertoken.AffirmativeCacheTTL + time.Second))
 	revoked := time.Now()
-	if closed := client.closeError(t, heartbeat+heartbeat/2); closed.Code != gws.ClosePolicyViolation {
+	if closed := client.closeError(t); closed.Code != gws.ClosePolicyViolation {
 		t.Fatalf("the live socket closed with %d %q once the broker stopped holding its token live, want 1008", closed.Code, closed.Text)
 	}
 	t.Logf("the live socket closed %s after its token was revoked (heartbeat %s)", time.Since(revoked).Round(time.Millisecond), heartbeat)
@@ -358,7 +358,7 @@ func TestABrokerSlowToAnswerHoldsNoPlaceOfTheShareOutsideAdmission(t *testing.T)
 			done <- struct{}{}
 		})
 	}
-	pollUntil(t, 10*time.Second, "every presentation waiting on the broker or answered", func() bool {
+	waitUntil(t, "every presentation waiting on the broker or answered", func() bool {
 		return int(broker.entered.Load())+len(done) == burst
 	})
 	if stats := limiter.Outside().Stats(); stats.InUse != 0 || stats.MaxQueued != 0 || stats.Refused != [len(stats.Refused)]admission.OutsideRefusals{} {
@@ -419,7 +419,7 @@ func TestADPoPDecisionAsksTheBrokerOnceHoweverLongItWaitsForAPlace(t *testing.T)
 	request := caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil)
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- rig.serve(request) }()
-	pollUntil(t, 10*time.Second, "the presentation's decision waiting for a place", func() bool {
+	waitUntil(t, "the presentation's decision waiting for a place", func() bool {
 		return limiter.Outside().Stats().Queued == 1
 	})
 	ahead.Store(int64(ciphertoken.AffirmativeCacheTTL + time.Second))
@@ -490,7 +490,7 @@ func admissionsQueueFullRefusal(t *testing.T, rig *brokerTokenRig, limiter *admi
 			}
 		})
 	}
-	pollUntil(t, 10*time.Second, "a full read queue", func() bool { return limiter.Stats()[admission.Read].Queued == burstCap })
+	waitUntil(t, "a full read queue", func() bool { return limiter.Stats()[admission.Read].Queued == burstCap })
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/whoami", nil)
 	request.Header.Set("X-Dispatch-User", "alice")
 	refusal := rig.serve(request)
@@ -608,7 +608,7 @@ func (rig *outsideWorkRig) arrive(t *testing.T, from, to int) ([]<-chan outsideW
 	arrived := make([]time.Time, 0, to-from)
 	for arrival := from; arrival < to; arrival++ {
 		answers = append(answers, rig.start(arrival))
-		pollUntil(t, 5*time.Second, fmt.Sprintf("arrival %d holding or waiting for a place", arrival), func() bool {
+		waitUntil(t, fmt.Sprintf("arrival %d holding or waiting for a place", arrival), func() bool {
 			stats := rig.limiter.Outside().Stats()
 			return stats.InUse+stats.Queued == arrival+1
 		})
@@ -688,7 +688,7 @@ func TestWorkOutsideAdmissionWaitsForAPlaceInOrderForAtMostASecond(t *testing.T)
 		release := holdEveryConnection(t, rig.database.Pool)
 		served := admission.OutsideLimit + admission.OutsideQueueLimit
 		answers, _ := rig.arrive(t, 0, served)
-		pollUntil(t, 5*time.Second, "the work holding the places waiting on the request pool", func() bool {
+		waitUntil(t, "the work holding the places waiting on the request pool", func() bool {
 			return requestPoolStats(t, rig.database.Pool).Acquire.Waiting == admission.OutsideLimit
 		})
 		for arrival := served; arrival < served+4; arrival++ {

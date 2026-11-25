@@ -99,7 +99,7 @@ func TestASocketWhoseHeartbeatReachesItsCeilingDuringTheLoadIsRefused503AndNotAG
 		t.Errorf("the refused socket's Retry-After is %q, want %q", got.retryAfter, admission.RetryAfter)
 	}
 	var access string
-	pollUntil(t, 10*time.Second, "the socket's access-log line", func() bool {
+	waitUntil(t, "the socket's access-log line", func() bool {
 		for _, line := range accessLines(t, logged) {
 			if strings.Contains(line, "path=/ws/doc/"+room) {
 				access = line

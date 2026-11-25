@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // pooledDocumentHandler serves a Dispatch API whose pool is maxConns wide and whose documents
@@ -22,7 +23,9 @@ func pooledDocumentHandler(t *testing.T, maxConns int32, settle time.Duration) (
 }
 
 // pooledDocumentHandlerWith lets a test wrap the document service the API sees, so it can hold
-// one document call open while it arranges the rest of the pool.
+// one document call open while it arranges the rest of the pool. The service's shutdown at the
+// test's end is waited for with one bound, the test binary's deadline (testwait.Receive): a
+// shutdown a loaded machine runs slowly passes, and one that never returns fails by name.
 func pooledDocumentHandlerWith(
 	t *testing.T,
 	maxConns int32,
@@ -47,9 +50,9 @@ func pooledDocumentHandlerWith(
 		t.Cleanup(requests.Close)
 		service = docs.New(docs.Deps{Store: database, Settle: settle})
 		t.Cleanup(func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := service.Shutdown(ctx); err != nil {
+			shut := make(chan error, 1)
+			go func() { shut <- service.Shutdown(context.Background()) }()
+			if err := testwait.Receive(t, "the document service's shutdown", shut); err != nil {
 				t.Errorf("shutdown document service: %v", err)
 			}
 		})
@@ -89,11 +92,7 @@ func TestConditionalEditFloodDoesNotStarveSmallPool(t *testing.T) {
 			group.Wait()
 			close(finished)
 		}()
-		select {
-		case <-finished:
-		case <-time.After(20 * time.Second):
-			t.Fatalf("round %d wedged: conditional edit flood did not return", round)
-		}
+		testwait.Receive(t, fmt.Sprintf("round %d's conditional edit flood to return (a wedged pool never returns it)", round), finished)
 	}
 }
 
@@ -129,10 +128,6 @@ func TestConcurrentConditionalAndUnconditionalEditsDoNotWedge(t *testing.T) {
 			group.Wait()
 			close(finished)
 		}()
-		select {
-		case <-finished:
-		case <-time.After(20 * time.Second):
-			t.Fatalf("round %d wedged: concurrent conditional and unconditional edits did not return", round)
-		}
+		testwait.Receive(t, fmt.Sprintf("round %d's concurrent conditional and unconditional edits to return (a wedged pool never returns them)", round), finished)
 	}
 }

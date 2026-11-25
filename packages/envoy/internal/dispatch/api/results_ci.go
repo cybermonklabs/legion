@@ -89,9 +89,12 @@ type ciRun struct {
 // loaded for it, which say whether it holds a recorded result and so is CI's at all. An issue
 // holding no check CI proves asks nothing of the database or of GitHub. issueKey is the route's
 // issue, whose Verification document holds the checks and whose pull request heads they are read
-// at. Only a failed read of Dispatch's own database, and a take-back refused after the read of
-// GitHub (readCIRuns), is an error; whatever GitHub answers is a case of the answer.
-func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []model.CheckBlock) error {
+// at. It runs after reader has learned the heads GitHub names (comparisonReader.learn) and reads
+// the newest head with reader's answers (delivery.NewestPullRequestHead), so a head this read's
+// read-through learned is the head a check CI proves is derived at. Only a failed read of
+// Dispatch's own database, and a take-back refused after the read of GitHub (readCIRuns), is an
+// error; whatever GitHub answers is a case of the answer.
+func (s *server) deriveCIResults(ctx context.Context, reader *comparisonReader, issueKey string, checks []model.CheckBlock) error {
 	var proved []provedCI
 	names := map[string]struct{}{}
 	for index := range checks {
@@ -110,7 +113,12 @@ func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []
 	if err != nil {
 		return err
 	}
-	head, found, err := delivery.NewestPullRequestHead(ctx, s.deps.Store.Pool, issueKey)
+	// The newest head is read after learn, so a writer's read finds the row its own read-through
+	// stored, and a read-only caller's read finds the head its own read-through learned, through
+	// the request's answers it passes as every other read of the heads does. A reader that named a
+	// commit learns nothing, so its answers are empty and it reads the stored rows alone, whoever
+	// reads.
+	head, found, err := delivery.NewestPullRequestHead(ctx, s.deps.Store.Pool, issueKey, reader.answers)
 	if err != nil {
 		return err
 	}

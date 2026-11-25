@@ -111,6 +111,16 @@ func StartIntakes(
 	github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}, pushes PushImports,
 	attributor *Attributor,
 ) (stop func(), err error) {
+	return startIntakes(ctx, newIntakeTuning(), connect, pool, leases, github, broker, settingsWake, pushes, attributor)
+}
+
+// startIntakes is StartIntakes with both intakes timed by tuning: production's values from
+// StartIntakes, or a test's.
+func startIntakes(
+	ctx context.Context, tuning *intakeTuning, connect func(name string) (*bus.Client, error), pool *store.Pool,
+	leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{},
+	pushes PushImports, attributor *Attributor,
+) (stop func(), err error) {
 	if github == nil {
 		slog.Info("dispatch delivery: no GitHub App key — the intakes are idle")
 		return func() {}, nil
@@ -125,9 +135,9 @@ func StartIntakes(
 		return nil, fmt.Errorf("connect the job intake: %w", err)
 	}
 	settings := newSettingsCache(pool, settingsWake)
-	intake := newIntake(intakeClient, pool, leases.events, github, broker, settings, attributor)
+	intake := newIntake(tuning, intakeClient, pool, leases.events, github, broker, settings, attributor)
 	intake.pushes = pushes
-	job := newJobIntake(jobClient, pool, leases.jobs, github, realJobClock{}, settings)
+	job := newJobIntake(tuning, jobClient, pool, leases.jobs, github, realJobClock{}, settings)
 	var running sync.WaitGroup
 	running.Go(func() { settings.Run(ctx) })
 	running.Go(func() { intake.Run(ctx) })

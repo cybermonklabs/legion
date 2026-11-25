@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // holdingListener is a fake Envoy listener that holds the first send of every idempotency key
@@ -185,12 +186,7 @@ func TestTheDeliverySweepFinishesEveryDeliveringRouteOnce(t *testing.T) {
 				_ = response.Body.Close()
 				answered <- response.StatusCode
 			}()
-			var key string
-			select {
-			case key = <-listener.started:
-			case <-time.After(10 * time.Second):
-				t.Fatal("the write never sent its attempt")
-			}
+			key := testwait.Receive(t, "the write's attempt sent to the listener", listener.started)
 			owner, _, _ := strings.Cut(key, ":")
 			if route.atCommit {
 				if status := <-answered; status != http.StatusCreated {
@@ -321,18 +317,14 @@ func TestACommentsMentionFinishesWhenItsClientGivesUp(t *testing.T) {
 			<-sending
 			abort()
 			letProceed()
-			deadline := time.Now().Add(10 * time.Second)
-			var state string
-			for time.Now().Before(deadline) {
+			state := testwait.UntilPolling(t, 20*time.Millisecond, "the mention's attempt to settle sent (its state)", func() (string, bool) {
+				var state string
 				if err := database.Pool.QueryRow(context.Background(),
 					`select coalesce(min(state), '') from comment_deliveries`).Scan(&state); err != nil {
 					t.Fatal(err)
 				}
-				if state == "sent" {
-					break
-				}
-				time.Sleep(20 * time.Millisecond)
-			}
+				return state, state == "sent"
+			})
 			server.Close()
 			served.detached.wait()
 			if state != "sent" || len(keysOf(sends)) != 1 {
@@ -418,10 +410,7 @@ func TestTheMaintenanceLoopResumesOwedDeliveries(t *testing.T) {
 		defer close(done)
 		RunMaintenanceSweep(ctx, database.Pool, 50*time.Millisecond, sweepLeases(t, database), served.resumeOwedDeliveries)
 	}()
-	deadline := time.Now().Add(30 * time.Second)
-	for len(keysOf(sends)) == 0 && time.Now().Before(deadline) {
-		time.Sleep(50 * time.Millisecond)
-	}
+	waitUntil(t, "the maintenance loop's send of the owed attempt", func() bool { return len(keysOf(sends)) > 0 })
 	stop()
 	<-done
 	served.detached.wait()
@@ -923,13 +912,8 @@ func TestTheSweepSettlesAnUndeliverableMentionBehindItsOwnersLockHoldingNoTransa
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatalf("release the owner lock: %v", err)
 	}
-	select {
-	case got := <-settled:
-		if got.err != nil || !got.settled {
-			t.Fatalf("the settle once the lock was released = %v (%v), want the attempt settled", got.settled, got.err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the settle never answered once the owner lock was released")
+	if got := testwait.Receive(t, "the settle's answer once the owner lock was released", settled); got.err != nil || !got.settled {
+		t.Fatalf("the settle once the lock was released = %v (%v), want the attempt settled", got.settled, got.err)
 	}
 	if failed := rig.count(`select count(*) from comment_deliveries where comment_id = any($1::uuid[]) and state = 'failed'`, gone); failed != 1 {
 		t.Fatalf("%d attempts of the stranded mention are failed, want its one", failed)

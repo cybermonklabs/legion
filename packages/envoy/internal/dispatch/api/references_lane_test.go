@@ -42,7 +42,7 @@ func TestAFloodOfIssueReferencesPastItsLaneIsRefusedWhileOtherReadsAreAdmitted(t
 		go func() { flood <- issueReferencesRequest(t, handler, issue.Key, "") }()
 	}
 	// Each read of the flood holds a read unit or waits in the lane's queue, holding none.
-	pollUntil(t, 10*time.Second, "the flood's references reads admitted or queued in their lane", func() bool {
+	waitUntil(t, "the flood's references reads admitted or queued in their lane", func() bool {
 		return limiter.Stats()[admission.Read].InFlight+referencesLane(t, limiter).Queued == held
 	})
 

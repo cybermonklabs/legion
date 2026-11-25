@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -24,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // sentStatement is one statement a store's connection sent, with its arguments.
@@ -130,7 +132,20 @@ func TestASocketOpenReadsTheIssueAndTheCallerOnce(t *testing.T) {
 	for _, open := range []string{"a cold open", "a warm open"} {
 		since := counter.mark()
 		peer := docstest.Dial(t, url, header, room, crdt.New())
-		scope, err := peer.Authenticate(schemaVersion, 10*time.Second)
+		// docstest's Authenticate waits under a bound of its own, so it is handed one no run reaches,
+		// and the room's answer is waited for here instead, whose one bound is the test binary's
+		// deadline (testwait.Receive). The peer's close at the test's end ends a call still waiting.
+		type authenticated struct {
+			scope string
+			err   error
+		}
+		answered := make(chan authenticated, 1)
+		go func() {
+			scope, err := peer.Authenticate(schemaVersion, math.MaxInt64)
+			answered <- authenticated{scope, err}
+		}()
+		reply := testwait.Receive(t, open+": the room's answer to the socket's auth token", answered)
+		scope, err := reply.scope, reply.err
 		if err != nil || scope != "read-write" {
 			t.Fatalf("%s: the socket is authenticated %q (%v), want read-write", open, scope, err)
 		}
@@ -217,9 +232,9 @@ func TestASocketWhoseCallerStopsResolvingDuringTheLoadIsAnsweredAsItsLoadAndNotA
 			// the pool busy, and the one after them checks the caller again. Two, written out rather
 			// than read off heartbeatTransientCeiling, so a ceiling lowered is a row that fails.
 			caller.busy.Store(2)
-			pollUntil(t, 10*time.Second, "two heartbeat checks that found the pool busy", func() bool { return caller.busy.Load() == 0 })
+			waitUntil(t, "two heartbeat checks that found the pool busy", func() bool { return caller.busy.Load() == 0 })
 			checked := caller.asked.Load()
-			pollUntil(t, 10*time.Second, "a heartbeat check after the two that found the pool busy", func() bool {
+			waitUntil(t, "a heartbeat check after the two that found the pool busy", func() bool {
 				return caller.asked.Load() > checked
 			})
 			select {
@@ -246,7 +261,7 @@ func TestASocketWhoseCallerStopsResolvingDuringTheLoadIsAnsweredAsItsLoadAndNotA
 			}
 
 			var access string
-			pollUntil(t, 10*time.Second, "the socket's access-log line", func() bool {
+			waitUntil(t, "the socket's access-log line", func() bool {
 				for _, line := range accessLines(t, logged) {
 					if strings.Contains(line, "path=/ws/doc/"+room) {
 						access = line

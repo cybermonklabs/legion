@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // fileIssue creates the project and issue a file upload lands on and returns the issue key.
@@ -366,12 +367,6 @@ func (h heldPut) Put(ctx context.Context, sha, mime string, body []byte) error {
 	return h.Memory.Put(ctx, sha, mime, body)
 }
 
-// uploadLockProbeWindow bounds how long the probe below retries the issue's owner lock. It is far
-// longer than any write this test's own setup makes - the issue create and the settlement of the
-// spec document it wrote - and shorter than the package's test timeout, so a holder the probe
-// cannot name is reported as a failure rather than a hang.
-const uploadLockProbeWindow = 20 * time.Second
-
 // issueOwnerLockKey is the pg_locks predicate for an issue's owner lock (store.LockOwner) in the
 // test's own database: a two-key advisory lock, the owner namespace as its classid and the hashtext
 // of the owner's lock key as its objid, both read as the unsigned 32-bit values that view carries.
@@ -426,8 +421,7 @@ func readIssueOwnerLockHolder(t *testing.T, database *store.Store, issue string)
 }
 
 // uploadLockProbe is what one run of probeIssueOwnerLock met: whether it took the issue's owner
-// lock before its window ran out, whether any attempt was refused, and what held the lock at the
-// first refusal.
+// lock, whether any attempt was refused, and what held the lock at the first refusal.
 type uploadLockProbe struct {
 	took   bool
 	looked bool
@@ -455,8 +449,8 @@ func (p uploadLockProbe) heldBy() string {
 // writing its object would sit on it for the whole of Put, and it is no statement of this test's
 // other writer: the settlement of the spec document fileIssue wrote shows one of the document's
 // own reads or its write phase's. An upload that ran further statements between that read and
-// Put would show one of those instead and be retried to the window's end, whose failure names
-// what it read rather than timing out mutely.
+// Put would show one of those instead and be retried until the test binary's deadline, whose
+// failure names what it read rather than timing out mutely.
 func (p uploadLockProbe) uploadHoldsTheLock() string {
 	if p.holder == nil || !strings.Contains(p.holder.query, issueStatusRead) {
 		return ""
@@ -464,26 +458,26 @@ func (p uploadLockProbe) uploadHoldsTheLock() string {
 	return fmt.Sprintf("the upload holds the issue's owner lock while its bytes are in the store: %s", p.holder)
 }
 
-// probeIssueOwnerLock tries issue's owner lock without waiting, over and over, until it takes it,
-// the holder it first met is an upload's own transaction - where retrying could only spend the
-// window - or within runs out. A lock it takes is released with the statement that took it, since
-// it runs on the pool outside a transaction (store.TryLockOwners).
+// probeIssueOwnerLock tries issue's owner lock without waiting, over and over, until it takes it
+// or the holder it first met is an upload's own transaction, where retrying could only wait for
+// ever. A lock it takes is released with the statement that took it, since it runs on the pool
+// outside a transaction (store.TryLockOwners). Its one bound is the test binary's deadline
+// (testwait.UntilPolling), whose failure names what the first refused attempt read.
 //
 // It is a function rather than a loop inside the test below so that the fast arm it answers is
 // shown to fire against a holder a test makes itself
 // (TestTheUploadLockProbeNamesAnUploadsOwnTransaction): an arm no run can reach guards nothing.
-func probeIssueOwnerLock(t *testing.T, database *store.Store, issue string, within time.Duration) uploadLockProbe {
+func probeIssueOwnerLock(t *testing.T, database *store.Store, issue string) uploadLockProbe {
 	t.Helper()
-	deadline := time.Now().Add(within)
 	var probe uploadLockProbe
-	for {
+	testwait.UntilPolling(t, 2*time.Millisecond, "issue "+issue+"'s owner lock to be taken while its upload's bytes are in flight (what the first refused attempt read)", func() (string, bool) {
 		taken, err := store.TryLockOwners(context.Background(), database.Pool, store.IssueOwner(issue))
 		if err != nil {
 			t.Fatalf("try the issue's owner lock while its upload's bytes are in flight: %v", err)
 		}
 		if len(taken) == 1 {
 			probe.took = true
-			return probe
+			return "taken", true
 		}
 		// Read once, at the first refusal: a reading per attempt would bury the one that
 		// matters, and a holder parked in Put is still there to be named at any later attempt.
@@ -492,21 +486,19 @@ func probeIssueOwnerLock(t *testing.T, database *store.Store, issue string, with
 			probe.holder = readIssueOwnerLockHolder(t, database, issue)
 			t.Logf("the issue's owner lock refused the probe; it is held by %s", probe.heldBy())
 			if probe.uploadHoldsTheLock() != "" {
-				return probe
+				return probe.heldBy(), true
 			}
 		}
-		if time.Now().After(deadline) {
-			return probe
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
+		return probe.heldBy(), false
+	})
+	return probe
 }
 
 // The negative control of that fast arm: a transaction of this test's own takes the issue's owner
 // lock and makes the read every upload makes under it (store.LockOwnerAndRead, issueStatusRead),
 // which is what pg_stat_activity shows of an upload's transaction parked in Put, and then holds
-// both. The probe must name that holder and answer there, rather than spend its window on a lock
-// it will never take. Without this nothing shows the arm can fire, and the test below could only
+// both. The probe must name that holder and answer there, rather than wait for ever on a lock it
+// will never take. Without this nothing shows the arm can fire, and the test below could only
 // ever fail by timing out.
 func TestTheUploadLockProbeNamesAnUploadsOwnTransaction(t *testing.T) {
 	t.Parallel()
@@ -527,7 +519,7 @@ func TestTheUploadLockProbeNamesAnUploadsOwnTransaction(t *testing.T) {
 		t.Fatalf("hold the issue's owner lock as an upload's transaction holds it: %v", err)
 	}
 
-	probe := probeIssueOwnerLock(t, database, issue, uploadLockProbeWindow)
+	probe := probeIssueOwnerLock(t, database, issue)
 	if probe.took {
 		t.Fatal("the probe took the issue's owner lock while this test's transaction held it")
 	}
@@ -563,7 +555,7 @@ func TestTheUploadLockProbeNamesAnUploadsOwnTransaction(t *testing.T) {
 // holder of the lock (readIssueOwnerLockHolder) and logs it, so a run that waited names the
 // writer it waited for, and a holder sitting on the statement an upload's transaction makes
 // under that lock fails the test there (uploadLockProbe.uploadHoldsTheLock), where retrying
-// could only spend the window. Most runs are refused nothing and log nothing: the settlement
+// could only wait for ever. Most runs are refused nothing and log nothing: the settlement
 // usually commits while fileIssue's own request is still answering, before there is an upload to
 // hold anything.
 func TestAnUploadHoldsNoIssueLockWhileTheStoreWrites(t *testing.T) {
@@ -615,12 +607,9 @@ func TestAnUploadHoldsNoIssueLockWhileTheStoreWrites(t *testing.T) {
 	case response := <-uploaded:
 		t.Fatalf("the upload answered without writing to the store: status=%d body=%s", response.Code, response.Body.String())
 	}
-	probe := probeIssueOwnerLock(t, database, issue, uploadLockProbeWindow)
+	probe := probeIssueOwnerLock(t, database, issue)
 	if holding := probe.uploadHoldsTheLock(); holding != "" {
 		t.Fatal(holding)
-	}
-	if !probe.took {
-		t.Fatalf("take the issue's owner lock while its upload's bytes are in flight, over %s of attempts; the first refusal read %s", uploadLockProbeWindow, probe.heldBy())
 	}
 	release()
 	if response := <-uploaded; response.Code != http.StatusCreated {

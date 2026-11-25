@@ -118,7 +118,7 @@ func TestASignInIssuerSlowToAnswerHoldsNoPlaceOfTheShareOutsideAdmission(t *test
 			sockets <- answered
 		})
 	}
-	pollUntil(t, 10*time.Second, "every lapsed sign-in's refresh waiting on the issuer", func() bool {
+	waitUntil(t, "every lapsed sign-in's refresh waiting on the issuer", func() bool {
 		return int(issuer.entered.Load()) == len(lapsed)
 	})
 
@@ -240,10 +240,10 @@ func TestAnIAPKeySetSlowToAnswerHoldsNoPlaceOfTheShareOutsideAdmission(t *testin
 			sockets <- answered
 		})
 	}
-	pollUntil(t, 10*time.Second, "every caller's resolution begun, and the key set's read", func() bool {
+	waitUntil(t, "every caller's resolution begun, and the key set's read", func() bool {
 		return int(person.begun.Load()) == admission.OutsideLimit && fetches.Load() > 0
 	})
-	pollUntil(t, 5*time.Second, "every place of the share given back while the key set stalls", func() bool {
+	waitUntil(t, "every place of the share given back while the key set stalls", func() bool {
 		return limiter.Outside().Stats().InUse == 0
 	})
 
@@ -405,7 +405,7 @@ func TestAnIAPKeySetAlreadyReadKeepsThePlaceOfTheShareThroughTheVerification(t *
 			// One more work waits for a place: the next place given back goes to it.
 			waiting := make(chan error, 1)
 			working.Go(func() { waiting <- outside.Take(context.Background(), admission.DPoPDecision) })
-			pollUntil(t, 5*time.Second, "a work waiting for a place of the full share", func() bool {
+			waitUntil(t, "a work waiting for a place of the full share", func() bool {
 				return outside.Stats().Queued == 1
 			})
 

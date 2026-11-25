@@ -306,16 +306,21 @@ func TestTheKeywordFillWritesWhileTheServerAnswers(t *testing.T) {
 	last := backlog[len(backlog)-1].ID
 
 	fill := startKeywordFill(t, filled)
-	fill.AwaitLine(t, keywordBatchLine, time.Minute)
+	fill.AwaitLine(t, keywordBatchLine)
 	if cursor := textversionstest.Cursor(t, filled.database); cursor >= last {
 		t.Fatalf("the fill's first batch took the cursor to %d, the backlog's last event %d: nothing is left to catch up beside the requests", cursor, last)
 	}
 	before := len(fill.Lines(t, keywordBatchLine))
 	var rounds [][]keywordAnswer
+	// The rounds run until the fill has caught up, however many that takes on this machine; a fill
+	// that never catches up fails by name before the test binary's deadline (binaryDeadlineGuard).
+	guard := binaryDeadlineGuard(t)
 	for round := 1; textversionstest.Cursor(t, filled.database) < last; round++ {
-		if round > keywordMaxRounds {
-			t.Fatalf("the fill had not caught up the backlog after %d rounds of requests: its cursor is %d of %d",
-				keywordMaxRounds, textversionstest.Cursor(t, filled.database), last)
+		select {
+		case <-guard:
+			t.Fatalf("the fill had not caught up the backlog after %d rounds of requests, %s before the test binary's deadline: its cursor is %d of %d",
+				round-1, binaryDeadlineMargin, textversionstest.Cursor(t, filled.database), last)
+		default:
 		}
 		rounds = append(rounds, keywordRound(t, filled, round, fill.Wake))
 	}
@@ -341,7 +346,7 @@ func TestTheKeywordFillWritesWhileTheServerAnswers(t *testing.T) {
 
 	// Every event has its rows.
 	newest := lastEventID(t, filled.database)
-	keywordAwaitCursor(t, filled.database, newest, time.Minute, fill.Wake)
+	keywordAwaitCursor(t, filled.database, newest, fill.Wake)
 	fill.Stop(t)
 	textversionstest.RequireRowsOf(t, filled.database, backlog)
 	written := keywordTableRows(t, filled.database, newest)
@@ -738,7 +743,10 @@ func keywordSlowRound(t *testing.T, server keywordServer, leases *store.RawPool,
 	}
 	held = keywordStartRead(t, server, answers)
 	testwait.Until(t, "the answers read to wait on message_deliveries", func() (int, bool) {
-		queued := storetest.WaitForLockWaiters(t, holder, 1, 0)
+		queued, err := storetest.LockWaiters(t.Context(), holder)
+		if err != nil {
+			t.Fatal(err)
+		}
 		return queued, queued >= 1
 	})
 	testwait.Until(t, "the answers read held by the lock to turn slow", func() (bool, bool) {
@@ -966,18 +974,16 @@ func keywordCountLines(lines []string, prefix string) int {
 }
 
 // keywordAwaitCursor waits until the fill's cursor reaches id, waking the fill each second.
-func keywordAwaitCursor(t *testing.T, database *store.Store, id int64, within time.Duration, wake func()) {
+// Its one bound is the test binary's deadline (testwait.UntilPolling).
+func keywordAwaitCursor(t *testing.T, database *store.Store, id int64, wake func()) {
 	t.Helper()
-	var cursor int64
-	if !testwait.Holds(within, time.Second, func() bool {
-		if cursor = textversionstest.Cursor(t, database); cursor >= id {
-			return true
+	testwait.UntilPolling(t, time.Second, fmt.Sprintf("the fill's cursor to reach event %d (the cursor)", id), func() (int64, bool) {
+		cursor := textversionstest.Cursor(t, database)
+		if cursor < id {
+			wake()
 		}
-		wake()
-		return false
-	}) {
-		t.Fatalf("the fill's cursor is %d %v on; want event %d", cursor, within, id)
-	}
+		return cursor, cursor >= id
+	})
 }
 
 // seedKeywordBacklog writes project ACME (textversionstest.SeedProject) and its issues ACME-1
@@ -1012,9 +1018,6 @@ func keywordTableRows(t *testing.T, database *store.Store, upTo int64) []string 
 	}
 	return lines
 }
-
-// keywordMaxRounds bounds the rounds of requests that run while the fill catches up.
-const keywordMaxRounds = 40
 
 // keywordAnswer is one request of a round and how it was answered: its status, and its body with
 // the ids and times a server draws masked (keywordMasked).

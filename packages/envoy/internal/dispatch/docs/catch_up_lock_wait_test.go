@@ -54,7 +54,7 @@ func TestACatchUpsConfirmationUnderTheDocumentLockWaitsForTheHolder(t *testing.T
 		replaced, err := service.historyReplacedUnderLock(store.WithLockWaitForTest(ctx, bound), artifactID, room)
 		answered <- answer{replaced, err}
 	}()
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, roomWait(t)); waiting < 1 {
+	if waiting := storetest.WaitForLockWaiters(t, holder, 1); waiting < 1 {
 		t.Fatal("the confirmation never came to wait on the document's lock")
 	}
 	select {

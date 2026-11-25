@@ -565,8 +565,9 @@ func TestCapturedIssueUpdatedEnvelopeDecodes(t *testing.T) {
 
 // Dispatch can add issue payload fields, or start filling one it has always sent empty, before a
 // deployed daemon consumes them: the old decoder must keep accepting those events until its
-// matching workflow change rolls out. The daemon reads no priority, and no key the captured
-// fixture lacks, which a decoder rejecting unknown fields would refuse.
+// matching workflow change rolls out. The daemon reads no key the captured fixture lacks, which a
+// decoder rejecting unknown fields would refuse; it does read the priority, which the filled
+// fixture carries as P1 and the fact carries beside everything the original says.
 func TestIssueEventIgnoresFieldsTheDaemonDoesNotConsume(t *testing.T) {
 	original := string(capturedIssueCreatedEnvelope(t))
 	filled := strings.Replace(original, `\"priority\":null`, `\"priority\":1`, 1)
@@ -586,8 +587,13 @@ func TestIssueEventIgnoresFieldsTheDaemonDoesNotConsume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode issue.created with a priority and a field the fixture lacks: %v", err)
 	}
-	if !reflect.DeepEqual(got.Fact, want.Fact) {
-		t.Fatalf("widened fact = %#v, want %#v", got.Fact, want.Fact)
+	carried, ok := want.Fact.(DispatchIssue)
+	if !ok {
+		t.Fatalf("captured issue.created decodes to %#v, want a Dispatch issue", want.Fact)
+	}
+	carried.Priority = record.P1
+	if !reflect.DeepEqual(got.Fact, carried) {
+		t.Fatalf("widened fact = %#v, want %#v", got.Fact, carried)
 	}
 }
 

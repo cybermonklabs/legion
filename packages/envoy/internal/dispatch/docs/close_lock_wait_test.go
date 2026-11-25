@@ -69,7 +69,7 @@ func TestAClosesWriteOfTheLatestEditSourceWaitsForTheDocumentsLockPastTheWriteLo
 
 	holdSettlements()
 	handled := closeIssueOnItsOwnGoroutine(t, service, "DOC-1")
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, roomWait(t)); waiting < 1 {
+	if waiting := storetest.WaitForLockWaiters(t, holder, 1); waiting < 1 {
 		t.Fatal("the close's write of the latest edit source never came to wait on the document's lock")
 	}
 	time.Sleep(time.Until(held.Add(pastTheWriteLockBound)))
@@ -79,7 +79,7 @@ func TestAClosesWriteOfTheLatestEditSourceWaitsForTheDocumentsLockPastTheWriteLo
 			"the latest edit source must wait for the holder", time.Since(held).Round(time.Millisecond))
 	default:
 	}
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, time.Second); waiting < 1 {
+	if waiting := storetest.WaitForLockWaiters(t, holder, 1); waiting < 1 {
 		t.Fatalf("no session waits on the document's lock %s after it was taken, want the close's write",
 			time.Since(held).Round(time.Millisecond))
 	}
