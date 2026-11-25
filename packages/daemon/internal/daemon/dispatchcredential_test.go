@@ -411,8 +411,10 @@ func TestTheBootLogNamesTheDispatchCredential(t *testing.T) {
 // Dispatch credential at the real broker, the client's own renewal loop trades for the next token
 // when boot's comes due, with no Dispatch call made, so the first call after that presents a new
 // token that the broker issued before the call was sent: no call traded for it. The broker's
-// tokens live 40 s, so boot's comes due 20 s in, and the transport would still present it until
-// 10 s before it lapses (cipherclient's liveMargin); the call goes between the two.
+// tokens live 40 s, so boot's comes due 20 s after it was issued, and the transport presents it
+// until 10 s before it lapses (cipherclient's liveMargin), 30 s after it was issued. The call goes
+// 29 s after boot's trade returned. A transport with no renewal loop fails either way: before 30 s
+// it presents boot's token, and after it the call trades for a token issued as it was sent.
 func TestTheDaemonRenewsItsDispatchTokenOffTheRequestPath(t *testing.T) {
 	t.Parallel()
 	const lifetime = 40 * time.Second
@@ -422,11 +424,14 @@ func TestTheDaemonRenewsItsDispatchTokenOffTheRequestPath(t *testing.T) {
 		cipherclient.BrokerURLVar: rig.URL, cipherclient.IdentityVar: cipherclient.IdentityKubernetes,
 		cipherclient.MachineTokenFileVar: writeSecret(t, "daemon-exchange-token", rig.MintSubjectToken(t, ciphertest.DaemonExchangeAccount, "daemon-pod-uid")),
 	}
-	booted := time.Now()
 	transport, err := dispatchCredential(t.Context(), brokerConfig(dispatchServer.URL), "", getenvOf(env), quietLogger())
 	if err != nil {
 		t.Fatalf("dispatchCredential: %v", err)
 	}
+	// Boot's token was issued before this, so the renewal loop's timer fires by booted + 20 s, and
+	// the renewal has until the call, less the second exp rounds to, to land: 8 s for the timer's
+	// wake and one trade, whatever boot's own trade took.
+	booted := time.Now()
 	client := dispatch.New(dispatchServer.URL, transport)
 	// presented makes one Dispatch call, answering the token it carried and when it was sent.
 	presented := func() (string, time.Time) {
@@ -445,7 +450,7 @@ func TestTheDaemonRenewsItsDispatchTokenOffTheRequestPath(t *testing.T) {
 	}
 
 	boot, _ := presented()
-	time.Sleep(time.Until(booted.Add(lifetime/2 + 5*time.Second)))
+	time.Sleep(time.Until(booted.Add(lifetime - 11*time.Second)))
 	renewed, sent := presented()
 	if renewed == boot {
 		t.Fatalf("the call %s after boot presented boot's token, want the one the renewal loop traded for when boot's came due",
