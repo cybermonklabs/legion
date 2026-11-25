@@ -1,6 +1,5 @@
 import {
   type KeyboardEvent,
-  type MouseEvent,
   type ReactNode,
   useCallback,
   useLayoutEffect,
@@ -38,16 +37,13 @@ import {
 import { parseNodeReference } from "../../refs/routes";
 import { appKeymap } from "../../shell/keymap";
 import { agentRoleWord } from "../agent-role";
-import { useDocumentAdmissions } from "../document-admission";
 import { useDocumentStage } from "../document-stage";
 import { chipName, type NodeChip, type TreeNode } from "../issue-tree";
-import { takesCaret, useRoomFacts } from "../model-rows/room-target";
 import { NodeFacts } from "../NodeFacts";
 import { NodeGlyph } from "../NodeGlyph";
 import { NodeParentLine } from "../node-line";
 import { shortDay } from "../node-time";
 import type { OutlineReads } from "../outline-reads";
-import { useOutlineWriter } from "../outline-writer";
 import { authorText, pageChrome } from "../page-structure";
 import {
   authorKind,
@@ -65,7 +61,7 @@ import {
 } from "../page-words";
 import { RowText } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
-import { type OnEditing, useNodeEditing } from "../useNodeEditing";
+import { type OnEditing, pressIsOwn, useNodeEditing, useTakesCaret } from "../useNodeEditing";
 import { moveToRow } from "../useTreeKeymap";
 import {
   type CheckReading,
@@ -297,13 +293,20 @@ export function VerificationFilterBody({
     }),
     ...namesLine,
   ];
+  // Each node the body draws a row of: each statement, the checks under it, each check that
+  // serves no statement, and each other row.
+  const drawnNodes = useMemo<readonly TreeNode[]>(
+    () =>
+      [...shown.flatMap((statement) => [statement, ...statement.checks]), ...loose]
+        .map((reading) => reading.node)
+        .concat(others),
+    [loose, others, shown]
+  );
   // Whether a row of the address's node is drawn: a statement, a check, or another row.
   useLayoutEffect(() => {
     if (!answered || addressed === undefined) return;
-    const readings = [...shown, ...shown.flatMap((statement) => statement.checks), ...loose];
-    const nodes = [...readings.map(({ node }) => node), ...others];
-    addressed.tell(nodes.some(({ id }) => addressed.named.has(id)));
-  }, [addressed, answered, loose, others, shown]);
+    addressed.tell(drawnNodes.some(({ id }) => addressed.named.has(id)));
+  }, [addressed, answered, drawnNodes]);
   // Each statement of the issue by its address, named as every chip of the page names a block
   // (`chipName`): by the line the names store projects beside its name from the reading the page
   // published for it, its first block that holds words (`KnownReferences.lines`), which "Also
@@ -398,14 +401,13 @@ export function VerificationFilterBody({
     editing?.row === id ? editing.artifactId : undefined;
   // Whether a row takes a caret, by the outline's one rule (`takesCaret`): over the room of the
   // issue the page's writer is of, and what each document's room admitted the page to.
-  const room = useRoomFacts(useOutlineWriter()?.issueKey);
-  const admissions = useDocumentAdmissions();
+  const takesCaret = useTakesCaret(artifacts, isClosed);
   /** Puts the caret in the node of the row with this id (`useNodeEditing`'s `edit`): from Enter,
    *  which always asks and is told why where no caret goes in, or from a pointer's press on the
    *  row's words (`pressed`), which asks only where the row takes a caret, and else leaves the row
    *  the focus the press gave it with nothing said. What a key reported before goes as it asks. */
   const editRow = (row: string, node: TreeNode, pressed: boolean) => {
-    if (pressed && !takesCaret(node, artifacts, room, isClosed, admissions)) return;
+    if (pressed && !takesCaret(node)) return;
     reportHere("");
     edit(row, node);
   };
@@ -415,10 +417,7 @@ export function VerificationFilterBody({
    *  and Enter there is left to the page. */
   const enterRow = (row: HTMLElement): boolean => {
     const id = row.dataset.verificationRow;
-    const node = [...shown.flatMap((statement) => [statement, ...statement.checks]), ...loose]
-      .map((reading) => reading.node)
-      .concat(others)
-      .find((drawn) => drawn.id === row.dataset.nodeId);
+    const node = drawnNodes.find((drawn) => drawn.id === row.dataset.nodeId);
     if (id === undefined || node === undefined) return false;
     editRow(id, node, false);
     return true;
@@ -846,19 +845,6 @@ const RESULT_FACTS = "mt-1 min-w-0 [&_dl]:grid-cols-[fit-content(50%)_minmax(0,1
  *  line of its earlier results: quiet words, underlined as a link of the page is. */
 const QUIET_CONTROL = `dispatch-inline-link mt-1 text-xs leading-5 font-medium underline decoration-page-hair underline-offset-[3px] ${pageQuietText}`;
 
-/** What a pointer's press inside a statement's words cell or a check's words belongs to rather
- *  than to the words, which a press puts the caret in: a link or a button, whose press is its own
- *  (a link in the words, the link of a statement's parent line), and the drawn facts, where a
- *  reader reads and selects rather than writes. */
-const OWN_PRESS = "a, button, [data-node-body]";
-
-/** Whether a pointer's press belongs to a link, a button or the drawn facts inside the element
- *  that heard it (`OWN_PRESS`) rather than to that element. */
-function pressIsOwn(event: MouseEvent<HTMLElement>): boolean {
-  const owner = event.target instanceof Element ? event.target.closest(OWN_PRESS) : null;
-  return owner !== null && event.currentTarget.contains(owner);
-}
-
 /** Every row of the tree, which it draws in the order `treeRows` names them, each carrying its
  *  id there as `data-verification-row`; a check's row, in its statement's group or of the
  *  table's own; and a statement's row. */
@@ -1184,7 +1170,6 @@ function Statement({
   const node = statement.node;
   const failing = statement.state === "not_met" || node.gaps.includes("no_check");
   const editing = editingFor(node.id);
-  const stage = useDocumentStage(editing);
   return (
     <div
       aria-expanded={statement.checks.length === 0 ? undefined : true}
@@ -1226,11 +1211,7 @@ function Statement({
           className={`relative min-w-0 text-[15px] leading-6 ${pageWordsText}`}
           data-node-words=""
         >
-          {editing === undefined ? (
-            <RowText markdown={node.text} source={node.source} tabStops tree={node.tree} />
-          ) : (
-            <div className="flex min-w-0 flex-col" ref={stage} {...authorText} />
-          )}
+          <RowWords editing={editing} node={node} />
         </div>
         {node.parentLine === undefined ? null : (
           <NodeParentLine line={node.parentLine} spaced tabStops />
@@ -1367,7 +1348,6 @@ function Check({
   // draws them before the click, and the click must shut only what was drawn before it.
   const drawnAtPress = useRef<boolean | undefined>(undefined);
   const node = check.node;
-  const stage = useDocumentStage(editing);
   const surface = node.facts.find((fact) => fact.name === "surface")?.value ?? "";
   const opened = pressed ?? focusInside;
   // The Facts control's press: the facts opened where they are shut and shut where they are
@@ -1422,11 +1402,7 @@ function Check({
             className={`mt-1.5 block size-[7px] shrink-0 rounded-full ${pageKindBullet.check}`}
           />
           <div className="min-w-0 break-words" data-node-words="">
-            {editing === undefined ? (
-              <RowText markdown={node.text} source={node.source} tabStops tree={node.tree} />
-            ) : (
-              <div className="flex min-w-0 flex-col" ref={stage} {...authorText} />
-            )}
+            <RowWords editing={editing} node={node} />
           </div>
         </div>
         {surface === "" ? null : (
@@ -1711,7 +1687,6 @@ function OtherRow({
   report: string | undefined;
   tabIndex: 0 | -1;
 }): ReactNode {
-  const stage = useDocumentStage(editing);
   return (
     <div
       aria-level={1}
@@ -1729,17 +1704,25 @@ function OtherRow({
         {NODE_TYPE_NAMES[node.type]}
       </p>
       <div className={`min-w-0 text-[15px] leading-6 ${pageWordsText}`} data-node-words="">
-        {editing === undefined ? (
-          <RowText markdown={node.text} source={node.source} tabStops tree={node.tree} />
-        ) : (
-          <div className="flex min-w-0 flex-col" ref={stage} {...authorText} />
-        )}
+        <RowWords editing={editing} node={node} />
       </div>
       {node.parentLine === undefined ? null : (
         <NodeParentLine line={node.parentLine} spaced tabStops />
       )}
       <RowReport className="mt-1" line={report} />
     </div>
+  );
+}
+
+/** A row's words, or while the row is the one edited (`editing`, the document its node's text
+ *  is being edited in) the stage that document's one editor is drawn on in their place
+ *  (`useDocumentStage`), as a statement, a check and another row of the table each draw them. */
+function RowWords({ editing, node }: { editing: string | undefined; node: TreeNode }): ReactNode {
+  const stage = useDocumentStage(editing);
+  return editing === undefined ? (
+    <RowText markdown={node.text} source={node.source} tabStops tree={node.tree} />
+  ) : (
+    <div className="flex min-w-0 flex-col" ref={stage} {...authorText} />
   );
 }
 

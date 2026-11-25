@@ -3051,8 +3051,7 @@ test("the view's tree answers the outline's keys, Enter and a press on a row's w
 // others. The ids are the tree's rows in reading order, the issue's first and each check under a
 // statement by that placement of it; and a key that moves onto a check that serves no statement,
 // or onto a node an address named, gives the tab stop to that row's own element, where Enter
-// asks for that check's editor and no other row's. Each block row carries its id as the key the
-// editing finds it by.
+// asks for that check's editor and no other row's.
 test("each row of the view's tree carries its own id, and a key gives the tab stop to the row it moves onto", async () => {
   const user = userEvent.setup();
   const one = passing("c-one");
@@ -3074,12 +3073,6 @@ test("each row of the view's tree carries its own id, and a key gives the tab st
       unserved.id,
       checkNode(loose).id,
       named.id,
-    ]);
-    // Each block row carries its row's id as its key, which the editing finds the row it edits
-    // by; the issue's row holds no text and carries none.
-    expect(rows.map((row) => row.getAttribute("data-row-key"))).toEqual([
-      null,
-      ...rows.slice(1).map((row) => row.getAttribute("data-verification-row")),
     ]);
     expect(view.container.querySelectorAll('[role="treeitem"]')).toHaveLength(rows.length);
     // The loose check's own element, and the named node's.

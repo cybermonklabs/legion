@@ -1,14 +1,16 @@
 import type { DisplayTree } from "@legion/contracts";
 import type { EditorView } from "@milkdown/kit/prose/view";
+import type { MouseEvent } from "react";
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 
 import type { Artifact } from "../../api/types";
 import { isCompositionKey } from "../refs/ref-picker";
 import { focusOnDocument } from "../shell/roving";
 import type { DocumentAdmissions } from "./document-admission";
+import { useDocumentAdmissions } from "./document-admission";
 import { documentOfNode, type NodeDocument } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
-import { roomTarget, useRoomFacts } from "./model-rows/room-target";
+import { roomTarget, takesCaret, useRoomFacts } from "./model-rows/room-target";
 import {
   caretInBlock,
   caretOutOfBlock,
@@ -103,6 +105,30 @@ export function nodeEditable(
   admissions: DocumentAdmissions
 ): boolean {
   return !isClosed && place !== undefined && admissions.get(place.artifact.id) !== true;
+}
+
+/** Whether a pointer's press on a row's words belongs to a link or a button inside the element
+ *  that heard it rather than to the words. A press on a row's words puts the caret in them where
+ *  the row takes one (`useTakesCaret`), as Enter on the row does, and one on a link or a button
+ *  inside them - a link in the words, a code block's copy control, the link of a parent line -
+ *  is that control's own. The Verification and Decisions views read it. */
+export function pressIsOwn(event: MouseEvent<HTMLElement>): boolean {
+  const owner = event.target instanceof Element ? event.target.closest("a, button") : null;
+  return owner !== null && event.currentTarget.contains(owner);
+}
+
+/** Whether a row takes a caret, by the outline's one rule (`room-target.ts`'s `takesCaret`), as
+ *  the Verification and Decisions views ask it of a press on a row's words: over the room of the
+ *  issue the page's writer is of, read as Enter reads it (`useNodeEditing`), and what each
+ *  document's room admitted the page to (`document-admission.tsx`), given each artifact of the
+ *  issue by its slug (`artifacts`) and whether the issue is closed (`isClosed`). */
+export function useTakesCaret(
+  artifacts: ReadonlyMap<string, Artifact>,
+  isClosed: boolean
+): (node: Pick<TreeNode, "id" | "reference" | "type">) => boolean {
+  const room = useRoomFacts(useOutlineWriter()?.issueKey);
+  const admissions = useDocumentAdmissions();
+  return (node) => takesCaret(node, artifacts, room, isClosed, admissions);
 }
 
 /**

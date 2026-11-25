@@ -83,15 +83,16 @@ export function roomTarget(
 }
 
 /**
- * Whether a row takes a caret, and so draws the cue that it takes typing and opens its editor at
- * a press on its text (`NodeRow`'s `editable`): what Enter does on it, answered before Enter has
- * opened anything. With no room facts (`room` undefined) it answers what `useNodeEditing.ts`'s
- * `nodeEditable` answers of the document `documentOfNode` finds. In a room it answers by
- * `roomTarget`: a node it names no artifact for takes none - a node of another issue, a result,
- * and on a converted issue a question, a comment or a message, an ask block too - and a node it
- * names one for takes a caret on an open issue, unless that artifact's room admitted the page
- * read-only. That is `nodeEditable`'s rule read over the room's artifact id rather than a
- * document's, written here because `useNodeEditing.ts` imports this file, so the two agree.
+ * Whether a row takes a caret: what Enter does on it, answered before Enter has opened anything.
+ * It is the outline row's cue that it takes typing (`NodeRow`'s `editable`) and, in the
+ * Verification and Decisions views, whether a press on a row's words puts the caret in. With no
+ * room facts (`room` undefined) it answers what `useNodeEditing.ts`'s `nodeEditable` answers of
+ * the document `documentOfNode` finds. In a room it answers by `roomTarget`: a node it names no
+ * artifact for takes none - a node of another issue, a result, and on a converted issue a
+ * question, a comment or a message, an ask block too - and a node it names one for takes a caret
+ * on an open issue, unless that artifact's room admitted the page read-only. That is
+ * `nodeEditable`'s rule read over the room's artifact id rather than a document's, written here
+ * because `useNodeEditing.ts` imports this file, so the two agree.
  *
  * A criterion written into the issue is why it exists: no document holds one, so `nodeEditable`
  * says it takes no typing, while Enter puts the caret in it in the tree artifact's own fragment.

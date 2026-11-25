@@ -137,9 +137,9 @@ export function TreeRows({
             {...(current === undefined ? {} : { current })}
             {...(place === undefined ? {} : { document: place.artifact })}
             editable={nodeEditable(place, isClosed, admissions)}
-            // A node written into the issue, such as a criterion, takes its place from the room
-            // rather than from a document, so where the room is read its row takes a caret by a
-            // press as it does by Enter.
+            // Where the room is read, the row carries the typing cue wherever Enter puts a caret,
+            // a criterion's row among them: a node written into the issue, such as a criterion,
+            // takes its place from the room rather than from a document.
             {...(room === undefined
               ? {}
               : { editable: takesCaret(row.node, artifacts, room, isClosed, admissions) })}

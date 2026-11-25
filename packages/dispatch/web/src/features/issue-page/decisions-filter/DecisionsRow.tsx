@@ -1,4 +1,4 @@
-import { type MouseEvent, type ReactNode, useRef, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { Actor, Artifact } from "../../../api/types";
@@ -45,6 +45,7 @@ import {
   NODE_TYPE_NAMES,
 } from "../page-words";
 import { RowText } from "../RowText";
+import { pressIsOwn } from "../useNodeEditing";
 import type { DecisionChange, DecisionsEntry, NamedEntry } from "./decisions-parts";
 import { entryStanding } from "./entry-standing";
 
@@ -422,18 +423,6 @@ export function DecisionsRow({
 /** Keep, by the mark `DecisionActions.tsx` writes and reads through its own
  *  `rowActionSelector`, so this file does not spell it. */
 const KEEP = rowActionSelector("keep");
-
-/** What a pointer's press inside a row's words belongs to rather than to the words, which a
- *  press puts the caret in: a link or a button, whose press is its own (a link in the words, a
- *  code block's copy control). */
-const OWN_PRESS = "a, button";
-
-/** Whether a pointer's press belongs to a link or a button inside the element that heard it
- *  (`OWN_PRESS`) rather than to that element. */
-function pressIsOwn(event: MouseEvent<HTMLElement>): boolean {
-  const owner = event.target instanceof Element ? event.target.closest(OWN_PRESS) : null;
-  return owner !== null && event.currentTarget.contains(owner);
-}
 
 /** A question's colour and a decision's; and for the node an address names, which is no entry
  *  of the list, the grey G's outline gives a node it draws for its context (`NodeRow.tsx`). */
