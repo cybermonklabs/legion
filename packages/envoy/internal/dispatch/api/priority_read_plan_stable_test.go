@@ -17,8 +17,9 @@ import (
 
 // prioritiesReadPlanRatio is what R3 of dispatch://INFRA-5791 holds each statement of the read
 // to with a project named: at most twice the shared buffers on the generic plan that it reads on
-// the plan made for its values, the rule dispatch://INFRA-5362 set for this read.
-const prioritiesReadPlanRatio = 2.0
+// the plan made for its values, the rule dispatch://INFRA-5362 set for this read, which
+// TestPrioritiesReadKeepsItsPlans holds with no project named (planBuffersRatio).
+const prioritiesReadPlanRatio float64 = planBuffersRatio
 
 // TestThePrioritiesReadKeepsItsPlansWithAProjectNamed holds the full read and the summary with
 // the largest project named, `?project=<p>` and `?project=<p>&summary=true`, to R3: on the
@@ -130,14 +131,7 @@ func TestThePrioritiesReadWalksIssuesOnceOnTheCorpus(t *testing.T) {
 	t.Log(corpus.census)
 	corpus.census.hold(t)
 	ctx := context.Background()
-	nodes, err := prioritystore.List(ctx, corpus.database.Pool)
-	if err != nil {
-		t.Fatalf("read the live priorities: %v", err)
-	}
-	ids := make([]string, 0, len(nodes))
-	for _, node := range nodes {
-		ids = append(ids, node.ID)
-	}
+	ids := livePriorityIDs(t, corpus.database)
 	seedKeys, seedIDs := priorityCorpusSeed(t, corpus.database, ids)
 	keys := explaintest.NewIndexKeys(corpus.database.Pool)
 	connection, err := corpus.database.Pool.Acquire(ctx)

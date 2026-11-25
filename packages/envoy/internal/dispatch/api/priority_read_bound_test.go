@@ -118,7 +118,7 @@ func measurePrioritiesRead(t *testing.T, corpus readCorpus, served prioritiesRea
 
 	sorted := slices.Clone(reads)
 	slices.Sort(sorted)
-	p50, p90 := nearestRankOf(sorted, 0.5), nearestRankOf(sorted, prioritiesReadQuantile)
+	p50, p90 := nearestRank(sorted, 0.5), nearestRank(sorted, prioritiesReadQuantile)
 	perRead := (executing + planned) / prioritiesReadReads
 	fmt.Printf("c-both-forms: reading: form=%s plan=%s p50=%.1f p90=%.1f db=%.1f\n",
 		form.name, served.plan.name, readMilliseconds(p50), readMilliseconds(p90), perRead)

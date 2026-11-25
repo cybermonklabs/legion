@@ -787,14 +787,7 @@ func firstRows(rows []string) string {
 func appendAsTheReleaseBefore(t *testing.T, database *store.Store) {
 	t.Helper()
 	ctx := context.Background()
-	nodes, err := prioritystore.List(ctx, database.Pool)
-	if err != nil {
-		t.Fatalf("read the live priorities: %v", err)
-	}
-	ids := make([]string, 0, len(nodes))
-	for _, node := range nodes {
-		ids = append(ids, node.ID)
-	}
+	ids := livePriorityIDs(t, database)
 	seedKeys, seedIDs := priorityCorpusSeed(t, database, ids)
 	picked := map[string]bool{}
 	var appended []string

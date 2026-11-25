@@ -84,13 +84,46 @@ type readCorpus struct {
 	census   readCorpusCensus
 }
 
-// seedPrioritiesReadCorpus writes the corpus, fills each issue's newest-event pair by running
-// 20261125094600's file as the runner applies it (fillNewestEventPairs), so the corpus stands as a
-// deployment does once this release has migrated it, settles it (settleSpeedCorpus) and reads
-// its counts. The caller prints them as its first line and holds them (readCorpusCensus.hold).
+// readCorpusTemplate is the key of the template the corpus is built in (storetest.OpenFrom).
+const readCorpusTemplate = "the priorities read's corpus of production's counts (buildPrioritiesReadCorpus)"
+
+// readCorpusBuilt is the template's census, read once when buildPrioritiesReadCorpus builds it.
+// Every clone holds the template's rows, so it is every clone's census until a test writes its
+// own; storetest.OpenFrom builds the template inside a sync.Once, which every caller passes
+// before it reads this.
+var readCorpusBuilt readCorpusCensus
+
+// seedPrioritiesReadCorpus is a database of its own holding the corpus, a clone of a template
+// built once per test binary (buildPrioritiesReadCorpus), whose every connection runs with JIT
+// off (withJITOff), and its counts. The caller prints them as its first line and holds them
+// (readCorpusCensus.hold). A clone copies the template's files, so it holds the statistics and
+// the visibility map the template's vacuum (analyze) wrote, and its planner reads the corpus as
+// the template's would; what a test writes stays in its clone.
 func seedPrioritiesReadCorpus(t *testing.T) readCorpus {
 	t.Helper()
-	database := withJITOff(t, storetest.Open(t))
+	database := storetest.OpenFrom(t, readCorpusTemplate, func(databaseURL string) error {
+		return buildPrioritiesReadCorpus(t, databaseURL)
+	})
+	return readCorpus{database: withJITOff(t, database), census: readCorpusBuilt}
+}
+
+// buildPrioritiesReadCorpus migrates the template databaseURL names with this tree's runner,
+// writes the corpus, fills each issue's newest-event pair by running 20261125094600's file as the
+// runner applies it (fillNewestEventPairs), so the corpus stands as a deployment does once this
+// release has migrated it, settles it (settleSpeedCorpus) and reads its counts into
+// readCorpusBuilt. It closes its pool before it returns, as storetest.OpenFrom requires of a
+// template.
+func buildPrioritiesReadCorpus(t *testing.T, databaseURL string) error {
+	t.Helper()
+	ctx := context.Background()
+	database, err := store.Open(ctx, databaseURL)
+	if err != nil {
+		return fmt.Errorf("open the corpus's template: %w", err)
+	}
+	defer database.Pool.Close()
+	if err := database.Migrate(ctx); err != nil {
+		return fmt.Errorf("migrate the corpus's template: %w", err)
+	}
 	at := time.Now().UTC().Add(-62 * 24 * time.Hour).Truncate(time.Second)
 	projects := append(slices.Clone(readCorpusProjects), readCorpusAdvancesProject)
 	projectRows := make([][]any, 0, len(projects))
@@ -111,28 +144,27 @@ func seedPrioritiesReadCorpus(t *testing.T) readCorpus {
 
 	// The file reads its projects from two settings and keeps its working tables as temporary
 	// ones, both of which belong to one session, so it runs on one connection after them.
-	ctx := context.Background()
 	connection, err := database.Pool.Acquire(ctx)
 	if err != nil {
-		t.Fatalf("take the connection the corpus is written on: %v", err)
+		return fmt.Errorf("take the connection the corpus is written on: %w", err)
 	}
 	began := time.Now()
 	if _, err := connection.Exec(ctx,
 		`select set_config('priorities_read_corpus.projects', $1, false), set_config('priorities_read_corpus.advances_project', $2, false)`,
 		strings.Join(readCorpusProjects, ","), readCorpusAdvancesProject); err != nil {
 		connection.Release()
-		t.Fatalf("name the corpus's projects: %v", err)
+		return fmt.Errorf("name the corpus's projects: %w", err)
 	}
 	if _, err := connection.Exec(ctx, prioritiesReadCorpusSQL); err != nil {
 		connection.Release()
-		t.Fatalf("write the corpus (testdata/priorities-read-corpus.sql): %v", err)
+		return fmt.Errorf("write the corpus (testdata/priorities-read-corpus.sql): %w", err)
 	}
 	connection.Release()
 	fillNewestEventPairs(t, database)
 	settleSpeedCorpus(t, database)
-	corpus := readCorpus{database: database, census: readCorpusCensusOf(t, database)}
-	corpus.census.took = time.Since(began)
-	return corpus
+	readCorpusBuilt = readCorpusCensusOf(t, database)
+	readCorpusBuilt.took = time.Since(began)
+	return nil
 }
 
 // withJITOff is a store on database's database whose every connection runs with JIT off, as

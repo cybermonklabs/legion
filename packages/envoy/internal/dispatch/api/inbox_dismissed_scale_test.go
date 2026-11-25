@@ -509,8 +509,8 @@ func measureDismissedScale(
 	sorted := slices.Clone(taken)
 	slices.Sort(sorted)
 	reading := dismissedScaleReading{
-		p50:  percentileOfDismissedScale(sorted, 0.50),
-		p95:  percentileOfDismissedScale(sorted, 0.95),
+		p50:  nearestRank(sorted, 0.50),
+		p95:  nearestRank(sorted, 0.95),
 		runs: taken,
 	}
 	t.Logf("%s @ %s: p50 %.1f ms, p95 %.1f ms over %d runs",
@@ -518,10 +518,11 @@ func measureDismissedScale(
 	return reading
 }
 
-// percentileOfDismissedScale is the nearest-rank percentile of sorted readings: the ceil(q*n)th,
-// so p50 of 20 is the tenth and p95 the nineteenth. No interpolation, so every number printed is
-// a run that happened.
-func percentileOfDismissedScale(sorted []time.Duration, quantile float64) time.Duration {
+// nearestRank is the nearest-rank percentile of sorted readings: the ceil(q*n)th, the smallest
+// reading that at least q of the readings are at or under, so p50 of 20 is the tenth and p95 the
+// nineteenth. No interpolation, so every number printed is a run that happened. The Inbox's
+// dismissed-scale readings and the priorities read's (priority_read_bound_test.go) both take it.
+func nearestRank(sorted []time.Duration, quantile float64) time.Duration {
 	rank := int(math.Ceil(quantile*float64(len(sorted)))) - 1
 	return sorted[max(rank, 0)]
 }

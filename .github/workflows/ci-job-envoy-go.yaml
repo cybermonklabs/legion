@@ -181,6 +181,11 @@ jobs:
         # passing them on the window's shape alone (storetest.XidRequireGapsEnv).
         env:
           DISPATCH_XID_REQUIRE_GAP_JUDGMENT: "1"
+      # The Postgres that preloads pg_stat_statements served only the step above, so it goes once
+      # that step has run, whatever its outcome, and the steps below run beside the service alone.
+      - name: Remove the Postgres that preloads pg_stat_statements
+        if: always()
+        run: docker rm -f pg-stat-statements
       # Everything the three race jobs run is left out here, since they run it under the detector,
       # and so is internal/integration, which the integration step below tests, and
       # internal/textcheck, whose tests are the text-check job's: that job runs them in a job

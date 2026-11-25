@@ -488,21 +488,29 @@ func measurePriorityNewestEvent(t *testing.T, runner *benchtime.Runner, database
 // measurement, since every statement over the relations would then read nothing.
 func priorityReadSeed(t *testing.T, database *store.Store) (ids, keys, priorities []string) {
 	t.Helper()
+	ids = livePriorityIDs(t, database)
+	keys, priorities = priorityCorpusSeed(t, database, ids)
+	if len(keys) == 0 {
+		t.Fatalf("the database holds %d live priorities and no advances relation of one, so every statement over the priorities read's relations reads nothing; is it the database cmd/dispatch-seed filled?",
+			len(ids))
+	}
+	t.Logf("the priorities read's seed: %d live priorities and %d advances relations, with no project named", len(ids), len(keys))
+	return ids, keys, priorities
+}
+
+// livePriorityIDs is the id of each live priority of database, in the order the priorities read
+// lists them (prioritystore.List).
+func livePriorityIDs(t *testing.T, database *store.Store) []string {
+	t.Helper()
 	nodes, err := prioritystore.List(context.Background(), database.Pool)
 	if err != nil {
 		t.Fatalf("read the live priorities: %v", err)
 	}
-	ids = make([]string, 0, len(nodes))
+	ids := make([]string, 0, len(nodes))
 	for _, node := range nodes {
 		ids = append(ids, node.ID)
 	}
-	keys, priorities = priorityCorpusSeed(t, database, ids)
-	if len(keys) == 0 {
-		t.Fatalf("the database holds %d live priorities and no advances relation of one, so every statement over the priorities read's relations reads nothing; is it the database cmd/dispatch-seed filled?",
-			len(nodes))
-	}
-	t.Logf("the priorities read's seed: %d live priorities and %d advances relations, with no project named", len(nodes), len(keys))
-	return ids, keys, priorities
+	return ids
 }
 
 // parkedMoveTiming names the group of the readings of the parked move (parkedMoveLateral)

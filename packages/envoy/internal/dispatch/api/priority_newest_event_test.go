@@ -512,25 +512,7 @@ var newestEventStates = []struct {
 func requireNewestEventProbes(t testing.TB, keys *explaintest.IndexKeys, plan json.RawMessage, subject string, want int) {
 	t.Helper()
 	plan = newestEventRead(t, plan, subject)
-	keys.RequireIndexKeyed(t, plan, newestEventIndex, subject, explaintest.CondRequired)
-	var loops float64
-	for _, node := range explaintest.Nodes(t, plan) {
-		if node.Relation != "events" {
-			continue
-		}
-		loops += node.Loops
-		if node.Type != "Index Scan" || node.Index != newestEventIndex {
-			t.Errorf("%s reads events by %s, want only Index Scans of %s:\n%s", subject, node, newestEventIndex, plan)
-			continue
-		}
-		if !explaintest.CondNamesFirstKey(node.IndexCond, "seq") {
-			t.Errorf("%s reads %s on `%s`, which names no seq, want the one event of last_seq:\n%s", subject, node, node.IndexCond, plan)
-		}
-		if node.Rows > 1 {
-			t.Errorf("%s reads %v rows of events through %s each of the %v times it runs, want at most one:\n%s",
-				subject, node.Rows, node, node.Loops, plan)
-		}
-	}
+	loops := newestEventProbeLoops(t, keys, plan, subject)
 	t.Logf("%s reads events %v times in its newest event, want %d", subject, loops, want)
 	if loops != float64(want) {
 		t.Errorf("%s reads events %v times in its newest event, want %d, one for each member issue whose newest-event pair does not name its event of last_seq:\n%s",
@@ -595,6 +577,26 @@ func newestEventMemberIssues(t *testing.T, database *store.Store, priorities, pr
 func requireOneEventOfEachMember(t testing.TB, keys *explaintest.IndexKeys, plan json.RawMessage, subject string, members int) {
 	t.Helper()
 	plan = newestEventRead(t, plan, subject)
+	loops := newestEventProbeLoops(t, keys, plan, subject)
+	if loops == 0 {
+		t.Errorf("%s ran no read of events, so its plan shows nothing of how it reads them:\n%s", subject, plan)
+	}
+	t.Logf("%s reads events %v times in all, for the %d member issues it joins", subject, loops, members)
+	if loops > float64(members) {
+		t.Errorf("%s reads events %v times in all, more than the %d member issues it joins, want at most one read for each member issue:\n%s",
+			subject, loops, members, plan)
+	}
+}
+
+// newestEventProbeLoops is how many times plan, the newest event's own read in an analyzed plan
+// (newestEventRead), reads events, the Actual Loops of its scans of events summed, and it holds
+// each of those scans to reading the one event of last_seq of a member issue: an Index Scan of
+// newestEventIndex whose Index Cond names issue_key, its first column
+// (IndexKeys.RequireIndexKeyed), and seq, answering at most one row each time it runs. Each
+// failure names subject and prints the plan through t.Errorf, which is what a control reads
+// (explaintest.RequireControlFails).
+func newestEventProbeLoops(t testing.TB, keys *explaintest.IndexKeys, plan json.RawMessage, subject string) float64 {
+	t.Helper()
 	keys.RequireIndexKeyed(t, plan, newestEventIndex, subject, explaintest.CondRequired)
 	var loops float64
 	for _, node := range explaintest.Nodes(t, plan) {
@@ -615,29 +617,28 @@ func requireOneEventOfEachMember(t testing.TB, keys *explaintest.IndexKeys, plan
 				subject, node.Rows, node, node.Loops, plan)
 		}
 	}
-	if loops == 0 {
-		t.Errorf("%s ran no read of events, so its plan shows nothing of how it reads them:\n%s", subject, plan)
-	}
-	t.Logf("%s reads events %v times in all, for the %d member issues it joins", subject, loops, members)
-	if loops > float64(members) {
-		t.Errorf("%s reads events %v times in all, more than the %d member issues it joins, want at most one read for each member issue:\n%s",
-			subject, loops, members, plan)
-	}
+	return loops
 }
 
 // newestEventWalk is the plan of the walk over the members in plan, an analyzed plan of a text of
-// the newest event: the one node that begins the subplan newestEventWalkCTE, with every node
-// under it. The walk is told by its place in the plan rather than by the tables it reads, so a
-// read of issues beside the walk is never taken for the walk's own. A plan that holds no such
-// node, or more than one, fails the test, since what is held of the walk would then be read off
-// nothing.
+// the newest event: the subplan newestEventWalkCTE (planSubplan). The walk is told by its place in
+// the plan rather than by the tables it reads, so a read of issues beside the walk is never taken
+// for the walk's own.
 func newestEventWalk(t testing.TB, plan json.RawMessage, subject string) json.RawMessage {
 	t.Helper()
-	walks := planSubplans(t, plan, newestEventWalkCTE, subject)
-	if len(walks) != 1 {
-		t.Fatalf("%s holds %d plans of %s, want one:\n%s", subject, len(walks), newestEventWalkCTE, plan)
+	return planSubplan(t, plan, newestEventWalkCTE, subject)
+}
+
+// planSubplan is the one node of plan, an analyzed plan, that begins the subplan named name, with
+// every node under it (planSubplans). A plan that holds no such node, or more than one, fails the
+// test, since what is held of the subplan would then be read off nothing.
+func planSubplan(t testing.TB, plan json.RawMessage, name, subject string) json.RawMessage {
+	t.Helper()
+	subplans := planSubplans(t, plan, name, subject)
+	if len(subplans) != 1 {
+		t.Fatalf("%s holds %d plans of %s, want one:\n%s", subject, len(subplans), name, plan)
 	}
-	return walks[0]
+	return subplans[0]
 }
 
 // newestEventRead is the plan of the newest event's own read in plan, an analyzed plan of a text

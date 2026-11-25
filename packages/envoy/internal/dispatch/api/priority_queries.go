@@ -503,10 +503,11 @@ func (a *priorityFaultAdvances) UnmarshalJSON(raw []byte) error {
 	if err := json.Unmarshal(raw, &columns); err != nil {
 		return err
 	}
-	if len(columns) != 3 {
-		return fmt.Errorf("the advances of a parked row hold %d values, want 3", len(columns))
+	targets := (*advancesScan)(a).targets()
+	if len(columns) != len(targets) {
+		return fmt.Errorf("the advances of a parked row hold %d values, want %d", len(columns), len(targets))
 	}
-	for index, target := range []any{&a.ids, &a.revision, &a.inherited} {
+	for index, target := range targets {
 		if err := json.Unmarshal(columns[index], target); err != nil {
 			return err
 		}

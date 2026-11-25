@@ -369,11 +369,7 @@ func TestTheParkedMoveReadsTheNewestMoveThroughItsIndex(t *testing.T) {
 		if part == "" {
 			return plan
 		}
-		parts := planSubplans(t, plan, part, subject)
-		if len(parts) != 1 {
-			t.Fatalf("%s holds %d plans of %s, want one:\n%s", subject, len(parts), part, plan)
-		}
-		return parts[0]
+		return planSubplan(t, plan, part, subject)
 	}
 	ctx := context.Background()
 	keys := explaintest.NewIndexKeys(corpus.database.Pool)

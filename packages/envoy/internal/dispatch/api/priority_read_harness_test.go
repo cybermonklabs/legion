@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -117,10 +116,7 @@ func newPrioritiesReadServer(t *testing.T, database *store.Store, plan prioritie
 func (s prioritiesReadServer) counted(t *testing.T, target string) (*httptest.ResponseRecorder, []speedStatement, int) {
 	t.Helper()
 	s.trace.take()
-	request := httptest.NewRequestWithContext(context.WithValue(context.Background(), countedRead{}, true), http.MethodGet, target, nil)
-	request.Header.Set("X-Dispatch-User", "alice")
-	response := httptest.NewRecorder()
-	s.handler.ServeHTTP(response, request)
+	response := listRead(t, s.handler, target, listReadOptions{counted: true})
 	if response.Code != http.StatusOK {
 		t.Fatalf("read %s under %s: status=%d body=%.300s", target, s.plan.called, response.Code, response.Body.String())
 	}
@@ -276,9 +272,6 @@ func percentOf(part, whole float64) float64 {
 	return 100 * part / whole
 }
 
-// prioritiesReadWalkCTE is the name EXPLAIN gives the plan of the walk (priorityMemberTerms).
-const prioritiesReadWalkCTE = "CTE members_spread"
-
 // explain runs statement on the forced plan's connection under EXPLAIN (ANALYZE, BUFFERS), with
 // the arguments it was sent with, prepared so the plan is the one the connection's mode forces,
 // and reads its plan. A plan that reads no shared buffer was not read, and stops the test.
@@ -317,7 +310,7 @@ func (s prioritiesReadServer) explain(t *testing.T, statement prioritiesReadStat
 	}
 	var visit func(node prioritiesPlanNode)
 	visit = func(node prioritiesPlanNode) {
-		if node.SubplanName == prioritiesReadWalkCTE {
+		if node.SubplanName == newestEventWalkCTE {
 			reading.walks++
 			reading.walkMilliseconds += node.TotalTime * node.Loops
 			reading.walkBuffers += node.SharedHitBlocks + node.SharedReadBlocks
@@ -504,12 +497,6 @@ func prioritiesReadStatementTimes(t *testing.T, database *store.Store, ids []int
 		t.Fatalf("cannot read the database's time of the read: read pg_stat_statements: %v", err)
 	}
 	return times
-}
-
-// nearestRankOf is the q quantile of sorted by the nearest-rank rule: the smallest read that at
-// least q of the reads are at or under.
-func nearestRankOf(sorted []time.Duration, q float64) time.Duration {
-	return sorted[int(math.Ceil(q*float64(len(sorted))))-1]
 }
 
 // readMilliseconds is d in milliseconds, as the reading lines print a time.
