@@ -10867,10 +10867,11 @@ func keywordFillTakeOverAfterFreeze(t *testing.T) time.Duration {
 }
 
 // keywordFillWrite is one write of the fill's cursor row: the holder that wrote it, the cursor it
-// left, and what duty_holds said of the fill's hold in the write's own transaction - holdHolder,
-// the holder its row named ("" where there was no row), and holdLive, whether that row was live as
-// the batch's own check reads it (expires_at > now(), the transaction's clock; textversions'
-// holdCheckQuery).
+// left, and what duty_holds said of the fill's hold as the batch wrote its cursor - holdHolder, the
+// holder its row named ("" where there was no row), and holdLive, whether that row was live by the
+// test the batch's own check makes (expires_at > now(), the transaction's clock; textversions'
+// holdCheckQuery). The batch makes that check earlier in the same transaction, in a statement of
+// its own; this is a second read of the hold, at the cursor write.
 type keywordFillWrite struct {
 	holder     string
 	eventID    int64
@@ -10892,8 +10893,9 @@ func (w keywordFillWrite) held() string {
 
 // recordKeywordFillWrites installs a trigger on the fill's cursor row that records each write of it
 // in its own transaction, so a batch that commits is recorded and one that rolls back is not, with
-// what duty_holds said of the fill's hold (keywordFillHoldName) in that transaction, and answers
-// the reader of what it recorded, in order.
+// what duty_holds says of the fill's hold (keywordFillHoldName) at that write - the trigger reads
+// it as the batch writes its cursor (textversions' advanceCursorQuery), after the batch's own
+// check of the hold - and answers the reader of what it recorded, in order.
 func recordKeywordFillWrites(t *testing.T, database *store.Store) func() []keywordFillWrite {
 	t.Helper()
 	ctx := context.Background()
@@ -10966,14 +10968,17 @@ func lineTime(t *testing.T, line string) time.Time {
 // or second, and by the holder duty_holds named live for the fill's hold in that write's own
 // transaction; and that second writes at least once, the take-over the row makes, every write
 // before its first being first's. It reads the product's own record and nothing else: no process's
-// line, and no line's time. That record is the product's rule: each batch locks the cursor row and
-// then, in the same transaction, checks that duty_holds names its holder live for the hold, and
-// writes nothing otherwise (textversions' lockCursorQuery and holdCheckQuery), and a holder takes
-// the hold only where its row is absent, lapsed or already its own (duty's takeHold). A write by
-// any other holder is a holder writing without its hold. The hold may lawfully move again after
-// the take-over - a loaded machine lets a holder's renewals run late, its hold lapses, and the
-// other process takes it and writes - and each write of such a move is by the holder duty_holds
-// names live then, whenever either process logs what it found.
+// line, and no line's time. Each batch locks the cursor row and then checks, in a statement of its
+// own and at READ COMMITTED, that duty_holds names its holder live for the hold, and writes nothing
+// otherwise (textversions' lockCursorQuery and holdCheckQuery); a holder takes the hold only where
+// its row is absent, lapsed or already its own (duty's takeHold); and a batch in flight as the
+// hold is lost rolls back (textversions' fillUnder). The trigger reads the hold again later in the
+// batch, at its cursor write, so a recorded write by a holder duty_holds does not name live there
+// is a batch that committed after its hold moved: another process took the hold between the
+// batch's check and its cursor write, and the batch did not roll back. The hold may lawfully move
+// again after the take-over - a loaded machine lets a holder's renewals run late, its hold
+// lapses, and the other process takes it and writes - and each write of such a move is by the
+// holder duty_holds names live at it, whenever either process logs what it found.
 func requireKeywordFillWritersInTurn(t *testing.T, recorded []keywordFillWrite, first, second string) {
 	t.Helper()
 	tookOver := false
@@ -10982,7 +10987,7 @@ func requireKeywordFillWritersInTurn(t *testing.T, recorded []keywordFillWrite, 
 		case write.holder != first && write.holder != second:
 			t.Fatalf("write %d of the cursor row is %+v, by a holder neither %s nor %s: %+v", i, write, first, second, recorded)
 		case write.holder != write.holdHolder || !write.holdLive:
-			t.Fatalf("write %d of the cursor row moved it to event %d as %s, while duty_holds held %s for the fill's hold %s in that write's own transaction: a holder wrote without its hold. Want every write by the holder duty_holds names live at it: %+v",
+			t.Fatalf("write %d of the cursor row moved it to event %d as %s, while duty_holds held %s for the fill's hold %s as the batch wrote its cursor, later in its transaction than its own check of the hold: a batch committed after its hold moved, where a batch in flight as its hold is lost rolls back. Want every write by the holder duty_holds names live at it: %+v",
 				i, write.eventID, write.holder, write.held(), keywordFillHoldName, recorded)
 		}
 		tookOver = tookOver || write.holder == second
