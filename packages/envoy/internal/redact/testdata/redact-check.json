@@ -11122,8 +11122,8 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/cipher",
       "test": "TestABrokerRedirectNamesNoRunOfTheDaemonsBearer/unparsed",
-      "production": "daemon cipher Client.do: a redirect whose Location does not parse names the call's URL as Unanswered names the URL a request asked (askedURL: its scheme, host and path, never its user information, query or fragment) and the failure by its class (oauth2call.Unanswered), never net/http's text, which quotes the Location",
-      "function": "(*github.com/sjawhar/legion/daemon/internal/cipher.Client).do",
+      "production": "daemon cipher Client.send: a redirect whose Location does not parse names the call's URL as Unanswered names the URL a request asked (askedURL: its scheme, host and path, never its user information, query or fragment) and the failure by its class (oauth2call.Unanswered), never net/http's text, which quotes the Location",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/cipher.Client).send",
       "capture": "cipher.redirect/unparsed",
       "mutation": {
         "file": "packages/daemon/internal/cipher/client.go",
