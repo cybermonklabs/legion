@@ -221,7 +221,7 @@ test("the ci-check-fail worlds: k1 passes from both roles, and k2's job fails at
   // The ports the hook above sets, which restoreEnvironment puts back after each test.
   process.env.DISPATCH_E2E_PORT = "18777";
   process.env.FAKE_GITHUB_PORT = "18778";
-  process.env.DISPATCH_E2E_NATS_URL = "nats://127.0.0.1:1";
+  process.env.DISPATCH_E2E_NATS_URLS = "nats://127.0.0.1:1";
   const failed = (head: string) => ({
     [head]: [{ name: "usage-test", status: "completed", conclusion: "failure" }],
   });
@@ -307,7 +307,7 @@ test("the ci-check-fail worlds: k1 passes from both roles, and k2's job fails at
 test("tester-reads-no-ci: k1 is the tester's, k3's job is still going in ci-late and failed in ci-red, and the tester gets the implement record", async () => {
   process.env.DISPATCH_E2E_PORT = "18777";
   process.env.FAKE_GITHUB_PORT = "18778";
-  process.env.DISPATCH_E2E_NATS_URL = "nats://127.0.0.1:1";
+  process.env.DISPATCH_E2E_NATS_URLS = "nats://127.0.0.1:1";
   expect(
     ["ci-late", "ci-red", "ci-check-fail", undefined].map((which) =>
       heads.headsWorld("tester-reads-no-ci", which)
