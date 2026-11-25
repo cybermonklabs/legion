@@ -273,3 +273,7 @@ function ReferenceList({
     </>
   );
 }
+
+/** The open list's rows and the words of its issue's own items, which the list of what references
+ *  an opened document draws too (part N's `issue-page/document-references.tsx`). */
+export { ReferenceList, useIssueItemWords };

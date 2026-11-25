@@ -3,10 +3,9 @@ import { type ReactNode, useLayoutEffect, useRef } from "react";
 import type { Artifact, Version } from "../../api/types";
 import { dangerText, pageQuietText } from "../../theme/classes";
 import { ArtifactBlobView, ArtifactHeader, versionsNewestFirst } from "../artifacts/ArtifactHeader";
-import { ReferencedBy } from "../refs/ReferencedBy";
-import { buildDispatchReference, type DispatchRoute, documentRoute } from "../refs/routes";
+import type { DispatchRoute } from "../refs/routes";
 import { DocumentVersions, VersionWords } from "./DocumentVersions";
-import { useListPages } from "./details-leaves";
+import { DocumentReferences } from "./document-references";
 import { IssueReferenceClosure } from "./IssueReferenceClosure";
 import { AUTHOR_TEXT_ATTRIBUTE, pageChrome } from "./page-structure";
 import { EMPTY_STATE_LINES, FILE_WORDS } from "./page-words";
@@ -24,25 +23,6 @@ function VersionByline({ version }: { version: Version }): ReactNode {
     >
       <VersionWords version={version} word={FILE_WORDS.version} />
     </p>
-  );
-}
-
-/**
- * What references the opened document, drawn open (part N's R2): `ReferencedBy` in the page's
- * shape, its own heading over it, 20 rows at a time with the control under them that says how
- * many are left and draws the next 20 (part M's `useListPages`, root R40), as Documents' list
- * draws its rows. It keeps the issue's own questions, comments and messages here
- * (`keepIssueItems`): beside an opened document no outline stands to hold them.
- */
-function DocumentReferences({ artifact }: { artifact: Artifact }): ReactNode {
-  const pages = useListPages();
-  return (
-    <ReferencedBy
-      keepIssueItems
-      page
-      pages={pages}
-      reference={buildDispatchReference(documentRoute(artifact))}
-    />
   );
 }
 

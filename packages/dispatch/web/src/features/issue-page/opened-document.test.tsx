@@ -38,7 +38,7 @@ import {
 import { NoTooltips } from "./NoTooltips";
 import { OpenedDocument } from "./OpenedDocument";
 import { TWO_THREADS } from "./outline-fixtures";
-import { CONTROL_LABELS } from "./page-words";
+import { CONTROL_LABELS, NODE_REFERENCES_WORDS } from "./page-words";
 import { SHOW_MORE, showMoreName } from "./show-more-fixture";
 import { ProvidersSlot } from "./slots/providers";
 import { StageSlot } from "./slots/stage";
@@ -417,12 +417,16 @@ test("what an opened document references is drawn open, 20 at a time", async () 
     expect(within(opened).queryByRole("button", { name: /^Referenced by/ })).toBeNull();
     const citing = within(opened).getByRole("region", { name: "Referenced by" });
     await waitFor(() =>
-      expect(within(citing).getAllByRole("link", { name: "Comment · CORE-2" })).toHaveLength(20)
+      expect(
+        within(citing).getAllByRole("link", { name: NODE_REFERENCES_WORDS.kinds.comment })
+      ).toHaveLength(20)
     );
     const more = within(citing).getByRole("button", { name: SHOW_MORE });
     expect(more.textContent).toBe(showMoreName(5));
     await user.click(more);
-    expect(within(citing).getAllByRole("link", { name: "Comment · CORE-2" })).toHaveLength(25);
+    expect(
+      within(citing).getAllByRole("link", { name: NODE_REFERENCES_WORDS.kinds.comment })
+    ).toHaveLength(25);
   } finally {
     view.unmount();
   }
