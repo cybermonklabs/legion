@@ -1705,9 +1705,11 @@ type supervision struct {
 	// openSupervision beside the wake limiter). Supervision keeps the reference because the
 	// refresh pass is its own: each sweep corrects the gate from the wakes the machines publish
 	// (waitingWakes) and then asks it for each stale claim it is about to post
-	// (refreshStalePlugins). Every supervision holds one, never nil: a test that builds one by
-	// hand gives it supervise.NewRefreshGate(0), the gate of a daemon that paces nothing, which
-	// grants every refresh.
+	// (refreshStalePlugins). openSupervision sets it beside the other fields that run the claims,
+	// so every supervision the daemon runs holds one, never nil: a test that builds one by hand
+	// and runs the refresh pass gives it supervise.NewRefreshGate(0), the gate of a daemon that
+	// paces nothing, which grants every refresh. The state fixtures' supervision (newSupervision
+	// alone) holds none, since the state route never reads it.
 	refreshGate supervise.RefreshAdmitter
 	// afterRefreshAdmit is a test's seam between Admit and supervisor.post in
 	// refreshStalePlugins, run for each admitted claim with no lock held; nil runs nothing. A
@@ -2087,8 +2089,9 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	stopping, beginStop := context.WithCancel(context.Background())
 	// The part the state route reads is newSupervision's, which the state fixtures build theirs
 	// with too; the rest is what runs the claims.
-	supervisionOf := newSupervision(cfg, log, p, rt, sup, claims, reports, refreshGate)
+	supervisionOf := newSupervision(cfg, log, p, rt, sup, claims, reports)
 	supervisionOf.stream, supervisionOf.tokens, supervisionOf.reportStore, supervisionOf.pauses = listener, tokens, st, pauses
+	supervisionOf.refreshGate = refreshGate
 	supervisionOf.cancel, supervisionOf.draining, supervisionOf.endDrain, supervisionOf.decided = cancel, draining, endDrain, api.NewRouteDecisions()
 	supervisionOf.stopping, supervisionOf.beginStop, supervisionOf.sessionStops = stopping, beginStop, &sessionStops
 	// The machines' report of a stalled turn they ended goes to supervision, which is built
@@ -2100,18 +2103,17 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 
 // newSupervision is the supervision the boot builds over sup, whose machines hold claims: the
 // daemon's configuration, logger and plan, the runtime rt and its repository caches
-// (repositoryCachesOf), the supervisor, the claims, their sessions' stored capability reports
-// (reportsOfClaims), and the daemon's one refresh gate, which every supervision holds. The state
-// route reads nothing else the boot gives a supervision (stateSource); the image probe's report
-// comes after, from run. openSupervision builds the daemon's supervision with it and adds
-// what runs the claims, and the state fixtures build theirs with it
-// (TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds), so a field set here reaches the
-// fixtures as it reaches the daemon's state.
+// (repositoryCachesOf), the supervisor, the claims and their sessions' stored capability reports
+// (reportsOfClaims). The state route reads nothing else the boot gives a supervision
+// (stateSource); the image probe's report comes after, from run. openSupervision builds the
+// daemon's supervision with it and adds what runs the claims, the refresh gate among them, and the
+// state fixtures build theirs with it (TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds),
+// so a field set here reaches the fixtures as it reaches the daemon's state.
 func newSupervision(cfg config.Config, log *slog.Logger, p plan, rt runtime.Runtime, sup *supervisor, claims []supervise.Claim,
-	reports []capabilities.Report, refreshGate supervise.RefreshAdmitter) *supervision {
+	reports []capabilities.Report) *supervision {
 	return &supervision{
 		cfg: cfg, log: log, plan: p, runtime: rt, supervisor: sup, claims: claims,
-		reports: reportsOfClaims(reports, claims), refreshGate: refreshGate, cacheStatuses: repositoryCachesOf(rt),
+		reports: reportsOfClaims(reports, claims), cacheStatuses: repositoryCachesOf(rt),
 	}
 }
 

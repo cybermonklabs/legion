@@ -252,8 +252,9 @@ func (s *seeding) served(c composition) []byte {
 	}
 	// The supervision the boot builds over them (newSupervision, as openSupervision builds it),
 	// with no runtime: the composition runs none, and gives the repository caches and the Dispatch
-	// token counts by hand. The image probe's report is set after, as run sets it.
-	supervising := newSupervision(cfg, log, p, nil, supervisorOf(s.t, claims...), claims, reports, supervise.NewRefreshGate(0))
+	// token counts by hand. It holds no refresh gate, which openSupervision adds for the run path and
+	// the state route never reads. The image probe's report is set after, as run sets it.
+	supervising := newSupervision(cfg, log, p, nil, supervisorOf(s.t, claims...), claims, reports)
 	supervising.imageReport, supervising.probed = c.image, c.probed
 	if c.caches != nil {
 		supervising.cacheStatuses = func() []sandbox.CacheStatus { return c.caches }
