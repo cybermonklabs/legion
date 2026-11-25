@@ -1013,22 +1013,29 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // while no publish has taken it, and one that finds it leased or given back to retry opens the
 // next. Nobody inside a tree is told: the message is the intake's, of no issue an architect runs,
 // and the controller replays or discards it (dispatch://INFRA-1575).
+//
+// A closed-check-failed notice names an issue that this release closed by its checks
+// (issues.closed_on_checks_at), the check, and the result that recorded a fail after that close.
+// Legion opens and reopens nothing for the issue, and the controller routes the fail as it routes
+// any defect. No earlier release decodes the kind, so block A of the done-by-checks migration
+// deletes its unsent rows.
 const (
-	TriageNotice           NoticeKind = "triage"
-	SlotFreeNotice         NoticeKind = "slot-free"
-	TodoNotice             NoticeKind = "todo"
-	TickNotice             NoticeKind = "tick"
-	UnslottedNotice        NoticeKind = "unslotted"
-	AwaitingPersonNotice   NoticeKind = "awaiting-person"
-	ParkedDecisionNotice   NoticeKind = "parked-decision"
-	UpdateStalledNotice    NoticeKind = "update-stalled"
-	ProviderErrorsNotice   NoticeKind = "provider-errors"
-	TreeStalledNotice      NoticeKind = "tree-stalled"
-	ArchitectStalledNotice NoticeKind = "architect-stalled"
-	MemoryGuardKillNotice  NoticeKind = "memory-guard-kill"
-	ProjectPausedNotice    NoticeKind = "project-paused"
-	ProjectResumedNotice   NoticeKind = "project-resumed"
-	IntakeGaveUpNotice     NoticeKind = "intake-gave-up"
+	TriageNotice            NoticeKind = "triage"
+	SlotFreeNotice          NoticeKind = "slot-free"
+	TodoNotice              NoticeKind = "todo"
+	TickNotice              NoticeKind = "tick"
+	UnslottedNotice         NoticeKind = "unslotted"
+	AwaitingPersonNotice    NoticeKind = "awaiting-person"
+	ParkedDecisionNotice    NoticeKind = "parked-decision"
+	UpdateStalledNotice     NoticeKind = "update-stalled"
+	ProviderErrorsNotice    NoticeKind = "provider-errors"
+	TreeStalledNotice       NoticeKind = "tree-stalled"
+	ArchitectStalledNotice  NoticeKind = "architect-stalled"
+	MemoryGuardKillNotice   NoticeKind = "memory-guard-kill"
+	ProjectPausedNotice     NoticeKind = "project-paused"
+	ProjectResumedNotice    NoticeKind = "project-resumed"
+	IntakeGaveUpNotice      NoticeKind = "intake-gave-up"
+	ClosedCheckFailedNotice NoticeKind = "closed-check-failed"
 )
 
 // ArchitectStallArm names which reading raised an architect-stalled notice. It is part of the
@@ -2871,6 +2878,13 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // not `session-lost` because the kind is published as the notice's one-line message, and that
 // session was not lost: nothing of it was deleted. No earlier release decodes it, so the way back
 // of migration 20261120042902 deletes its unsent rows.
+//
+// `close-waits`, `check-failed`, `check-unknown`, `defect-reported`, `next-change`,
+// `close-wait-no-result`, `close-wait-standing`, `checks-unapproved` and `next-change-count` are
+// the owning architect's notices of an issue that waits for its checks after its merge, and of
+// the next changes that wait starts. `next-change-count` reaches the controller too, as a
+// controller notice of the same kind. No earlier release decodes any of them, so block A of the
+// done-by-checks migration deletes their unsent rows.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
@@ -2879,6 +2893,8 @@ var validNoticeKinds = []NoticeKind{
 	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
 	"session-lost", "session-forgotten", "session-store-fault", "task-stopped", "plan-not-taken", "retro-held",
 	"next-change-workspace",
+	"close-waits", "check-failed", "check-unknown", "defect-reported", "next-change", "close-wait-no-result",
+	"close-wait-standing", "checks-unapproved", "next-change-count",
 }
 
 // VolumeNearFullNotice is the architect's notice of a sweep of its issue pod's volume that left
@@ -2981,7 +2997,7 @@ func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
 	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice,
 		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice, ArchitectStalledNotice, MemoryGuardKillNotice,
-		ProjectPausedNotice, ProjectResumedNotice, IntakeGaveUpNotice:
+		ProjectPausedNotice, ProjectResumedNotice, IntakeGaveUpNotice, ClosedCheckFailedNotice:
 		return true
 	default:
 		return false
