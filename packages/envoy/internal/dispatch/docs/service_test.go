@@ -6166,16 +6166,10 @@ func persistedProofTree(t *testing.T, database *store.Store, artifactID string) 
 
 func waitForPersistedProofText(t *testing.T, database *store.Store, artifactID, want string) {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
+	testwait.Until(t, fmt.Sprintf("the persisted document to read %q", want), func() (string, bool) {
 		markdown, err := renderTree(persistedProofTree(t, database, artifactID))
-		if err == nil && markdown == want {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	markdown, err := renderTree(persistedProofTree(t, database, artifactID))
-	t.Fatalf("persisted document = %q (%v), want %q", markdown, err, want)
+		return fmt.Sprintf("%q (%v)", markdown, err), err == nil && markdown == want
+	})
 }
 
 // editLiveTree writes a browser-style tree change through the live Yjs room.
