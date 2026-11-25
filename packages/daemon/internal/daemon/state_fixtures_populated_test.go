@@ -1,22 +1,16 @@
-package api_test
-
-//ci:reads packages/contracts/fixtures/daemon-api/* TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds (testgolden.Check, paths from api.GoldenPath)
+package daemon
 
 import (
 	"context"
-	"io"
-	"log/slog"
-	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
-	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/apifixture"
+	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -24,417 +18,19 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/testgolden"
-	"github.com/sjawhar/legion/daemon/internal/testpg"
-	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// The state fixtures are the daemon's own composition of a seeded record. Each case below seeds a
-// cloned database through the stores' own writers, then reads it back as internal/daemon's
-// source.State composes the state and as the state route completes it (composedState), and pins
-// what that composition answers. So a value no writer accepts fails the seed, and a value no rule
-// of the daemon serves over the seed cannot reach a fixture: the populated state's stranded
-// claims are workflow.Stranded's over its claims, its architect-stalled arms admission's, its
-// cap, project and settings the one settings file's, and its repositories those its live records
-// name.
-//
-// The populated state is written to internal/api/testdata/populated-state.json, which
-// populatedState reads back for this package's tests and TestStateGolden writes state.json from
-// (api.ComposedStateRewrite names the two commands in order). The paused, Stage 3,
-// operator-claim and last-pause states are fixtures of their own, written here.
-func TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		path string
-		seed func(s *seeding) composition
-	}{
-		{name: "populated", path: api.ComposedStatePath, seed: seedPopulated},
-		{name: "paused", path: api.GoldenPath("state-paused.json"), seed: seedPaused},
-		{name: "stage3", path: api.GoldenPath("state-stage3.json"), seed: seedStage3},
-		{name: "operator-claim", path: api.GoldenPath("state-operator-claim.json"), seed: seedOperatorClaim},
-		{name: "last-pause", path: api.GoldenPath("state-last-pause.json"), seed: seedLastPause},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			s := newSeeding(t)
-			c := tc.seed(s)
-			state := composedState(t, s.st, c)
-			testgolden.Check(t, filepath.FromSlash(tc.path), state, *api.UpdateGolden, api.ComposedStateRewrite)
-		})
-	}
-}
-
-// composition is what internal/daemon's source.State and the state route read beside the record
-// for one state. Every configured value comes from cfg, the one settings file, and every durable
-// one from the seeded store. The rest is the daemon's memory, which no store holds and so no seed
-// can: each such field below is an input of the composition, named as one.
-type composition struct {
-	cfg config.Config
-	// now is the daemon's one clock at the read (source.now), which the workflow engine and the
-	// admission read too (workflow.Config.Clock, admit's UseClock).
-	now time.Time
-	// startedAt is when this daemon process started (source.startedAt), which its boot row also
-	// records.
-	startedAt time.Time
-	// wakes are the launches the machines hold in memory (supervision.waitingWakes); reports each
-	// live claim's latest capability report as the supervisor keeps it (supervision.reports).
-	wakes   []supervise.WaitingWake
-	reports map[claim.Token]capabilities.Report
-	// What this boot learned (supervision.deploymentWith): the broker login's state, whether the
-	// image passed its probe, the model-fallback mark it read, and how many of the probe's
-	// attempts waited on the pool's capacity, with the scheduler's reason.
-	secretsLogin        string
-	probed              bool
-	modelFallback       string
-	probeCapacityWaits  int
-	probeCapacityReason string
-	// caches are the runtime's repository caches as their last health read found them
-	// (supervision.cacheStatuses), each as both the capability report and the repositories block
-	// read it (internal/daemon's supervision.caches and cacheView, which stay in internal/daemon
-	// because a sandbox.CacheStatus is the runtime's).
-	caches []repositoryCache
-	// answers is what GitHub last answered of each repository name (internal/daemon's
-	// repositories entries, answerLocked), the refresher's memory.
-	answers map[string]api.RepositoryAnswer
-	// consumers is the durable consumers' lag as NATS answers it after the state's commit
-	// (api.Options.ConsumerLag); nil is a daemon with no workflow, which serves none.
-	consumers []intake.ConsumerLag
-}
-
-// composedSchemaVersion is the database's schema version the fixtures name (DaemonInfo.SchemaVersion),
-// the one value of a composed state given by hand. The daemon reads its store's
-// (store.Store.SchemaVersionTx), which every migration added moves: read from the clone, it would
-// make every migration rewrite every state fixture and each reader's copy of it. The composition
-// holds the clone's own version to be at or above it.
-const composedSchemaVersion = 20261123212127
-
-// repositoryCache is one repository cache as the runtime last read it, in the two shapes the
-// state shows it in.
-type repositoryCache struct {
-	capability capabilities.Cache
-	view       api.CacheView
-}
-
-// composedState is the state c's daemon serves at c.now from st: the calls internal/daemon's
-// source.State makes, in its order, in the state route's own repeatable-read, read-only
-// transaction, then the two reads the route makes beside its source (internal/api's
-// projectState: the consumers' lag and the lowest plugin contract of the snapshot's claims).
-//
-// What the projection serves is everything internal/projection.Project answers: the issue views,
-// the admission block, the waiting wakes, the held outbox rows and the pending status writes. What
-// the composition adds beside it is, in source.State's order: the stranded claims
-// (workflow.Stranded), each root's architect-stalled arms (admission's ArchitectStallArms), each
-// issue's standing pod hold (store.Store.StandingPodHoldsTx, keyed on the claim token's spelling of
-// the project, as the idle pass writes it), the count of claims to refresh, the pause, the
-// daemon's identity and boots, the settings, the cap, the controller, the secrets login, the
-// capabilities and the repositories; then the route's consumers and lowest plugin contract.
-func composedState(t *testing.T, st *store.Store, c composition) api.State {
-	t.Helper()
-	ctx := context.Background()
-	cfg := c.cfg
-	projectToken, err := claim.ProjectToken(cfg.Project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	records := record.NewStore()
-	steps := cfg.Gates.Steps()
-	clock := func() time.Time { return c.now }
-	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
-	engine := workflow.New(records, workflow.Config{Project: cfg.Project, Steps: steps, Clock: clock}, quiet)
-	admission := admit.New(records, engine, cfg.AdmissionCap, cfg.Project, quiet)
-	admission.UseClock(clock)
-	admission.UseExperiments(cfg.ExperimentsDeclared())
-	var state api.State
-	var claims []supervise.Claim
-	if err := store.TransactWith(ctx, st.Pool(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		version, err := st.SchemaVersionTx(ctx, tx)
-		if err != nil {
-			return err
-		}
-		if version < composedSchemaVersion {
-			t.Fatalf("the clone's schema version is %d, below the %d the fixtures name", version, composedSchemaVersion)
-		}
-		boots, firstBootAt, err := st.BootsTx(ctx, tx, cfg.Project)
-		if err != nil {
-			return err
-		}
-		all, err := st.ClaimsTx(ctx, tx)
-		if err != nil {
-			return err
-		}
-		claims = nil
-		for _, held := range all {
-			if held.Project == projectToken {
-				claims = append(claims, held)
-			}
-		}
-		resumes, err := workflow.StrandedReleaseWakes(ctx, st, tx, projectToken, claims, c.now)
-		if err != nil {
-			return err
-		}
-		stranded, err := workflow.Stranded(ctx, tx, records, cfg.Project, steps, claims, resumes, c.now)
-		if err != nil {
-			return err
-		}
-		paced, err := api.PacedCatchUpsTx(ctx, tx, records, projectToken, cfg.Project, c.now)
-		if err != nil {
-			return err
-		}
-		if state, err = projection.Project(ctx, projection.Inputs{
-			Tx: tx, Store: records, Project: cfg.Project, Steps: steps, Experiments: cfg.ExperimentsDeclared(),
-			Claims: claims, Stranded: stranded, Reports: c.reports,
-			Wakes: api.WakesWaitingOf(c.wakes, paced), Now: c.now,
-		}); err != nil {
-			return err
-		}
-		state.StrandedClaims = api.StrandedClaimsOf(stranded)
-		stalls, err := admission.ArchitectStallArms(ctx, tx)
-		if err != nil {
-			return err
-		}
-		for key, arms := range stalls {
-			if view, shown := state.Issues[key]; shown {
-				view.ArchitectStalls = arms
-				state.Issues[key] = view
-			}
-		}
-		holds, err := st.StandingPodHoldsTx(ctx, tx, projectToken)
-		if err != nil {
-			return err
-		}
-		for key, hold := range holds {
-			if view, shown := state.Issues[key]; shown {
-				view.PodHold = api.PodHoldViewOf(hold)
-				state.Issues[key] = view
-			}
-		}
-		state.ClaimsToRefresh = supervise.ClaimsToRefresh(claims, api.DaemonAPIVersion, func(held supervise.Claim) bool { return cfg.NoPluginInstall(held.Role) })
-		if state.Paused, state.LastPause, err = api.PauseStateTx(ctx, tx, cfg.Project, c.now); err != nil {
-			return err
-		}
-		state.Daemon = api.DaemonInfo{Project: cfg.Project, SchemaVersion: composedSchemaVersion, Boots: boots, FirstBootAt: firstBootAt, StartedAt: c.startedAt}
-		state.Settings = api.SettingsOf(cfg)
-		state.Admission.Cap = cfg.AdmissionCap
-		controller, _, err := st.ControllerTx(ctx, tx, projectToken)
-		if err != nil {
-			return err
-		}
-		state.ControllerLocator = api.ControllerLocatorOf(cfg.Runtime.Name, controller)
-		if c.secretsLogin != "" {
-			state.AgentSecretsLogin = &api.AgentSecretsLoginView{State: c.secretsLogin}
-		}
-		state.Capabilities = api.CapabilityStatesOf(c.deployment(claims).Report())
-		issues, err := records.LiveIssues(ctx, tx, cfg.Project)
-		if err != nil {
-			return err
-		}
-		live, err := record.GitHubRepositoriesOf(issues)
-		if err != nil {
-			return err
-		}
-		views := make([]api.CacheView, len(c.caches))
-		for i, cache := range c.caches {
-			views[i] = cache.view
-		}
-		state.Repositories = api.RepositoriesViewOf(live, cfg.RepositoryRenames, func(repo ghrepo.Repository) api.RepositoryAnswer {
-			return c.answers[strings.ToLower(repo.String())]
-		}, views)
-		return nil
-	}); err != nil {
-		t.Fatalf("compose the state: %v", err)
-	}
-	if c.consumers != nil {
-		state.Consumers = api.ConsumerLagViewsOf(c.consumers)
-	}
-	state.LowestPluginContract = api.LowestPluginContract(claims)
-	return state
-}
-
-// deployment is the deployment's capabilities as internal/daemon's supervision.deploymentWith
-// states them: the configuration's (config.Config.Deployment), with what the boot learned, the
-// caches, and each live session's report, a session being a claim that said it is ready whose
-// report is of its current process (its locator's incarnation), in claim token order.
-func (c composition) deployment(claims []supervise.Claim) capabilities.Deployment {
-	d := c.cfg.Deployment()
-	d.SecretsLogin = c.secretsLogin
-	d.Probed, d.ModelFallback = c.probed, c.modelFallback
-	d.ProbeCapacityWaits, d.ProbeCapacityReason = c.probeCapacityWaits, c.probeCapacityReason
-	d.Caches = make([]capabilities.Cache, 0, len(c.caches))
-	for _, cache := range c.caches {
-		d.Caches = append(d.Caches, cache.capability)
-	}
-	for _, held := range claims {
-		report, ok := c.reports[held.Token]
-		if !ok || held.Locator == nil || report.Locator.Incarnation != held.Locator.Incarnation || !supervise.SaidReady(held.State) {
-			continue
-		}
-		d.Sessions = append(d.Sessions, capabilities.Session{Role: held.Role, Issue: held.Issue, Report: report})
-	}
-	slices.SortFunc(d.Sessions, func(a, b capabilities.Session) int {
-		return strings.Compare(string(a.Report.Claim), string(b.Report.Claim))
-	})
-	return d
-}
-
-// seeding is one cloned database of this package's template, written through the stores' own
-// writers.
-type seeding struct {
-	t       *testing.T
-	ctx     context.Context
-	st      *store.Store
-	records record.Store
-}
-
-func newSeeding(t *testing.T) *seeding {
-	t.Helper()
-	return &seeding{t: t, ctx: context.Background(), st: testpg.CloneStore(t, "legion_api_test"), records: record.NewStore()}
-}
-
-// in runs write in one transaction of the store, as the workflow's own writes run (store.Transact).
-func (s *seeding) in(what string, write func(ctx context.Context, tx pgx.Tx) error) {
-	s.t.Helper()
-	if err := store.Transact(s.ctx, s.st.Pool(), write); err != nil {
-		s.t.Fatalf("seed %s: %v", what, err)
-	}
-}
-
-// must fails the seed where a writer of the store refused what it was given.
-func (s *seeding) must(what string, err error) {
-	s.t.Helper()
-	if err != nil {
-		s.t.Fatalf("seed %s: %v", what, err)
-	}
-}
-
-// token is the claim token of role on issue in project.
-func (s *seeding) token(project, issue string, role claim.Role) claim.Token {
-	s.t.Helper()
-	projectToken, err := claim.ProjectToken(project)
-	s.must("the project token of "+project, err)
-	token, err := claim.NewToken(projectToken, issue, role)
-	s.must("the token of "+issue+" "+string(role), err)
-	return token
-}
-
-// recorded is one issue record and what Dispatch said of it, as admission records an issue from
-// the reading that handed it over (admit's record, admit.go): the record, its mirror row
-// (blockers.Mirror's write of the same reading), and the moment the daemon last saw it move
-// (record.Store.MarkIssueMoved, the one writer of that column).
-type recorded struct {
-	issue  record.Issue
-	mirror record.DispatchReading
-	moved  time.Time
-}
-
-// putRecorded writes each of rs: the mirror row first, then the record, its movement, and the
-// tree lifecycle a root the workflow started opens.
-func (s *seeding) putRecorded(rs ...recorded) {
-	s.t.Helper()
-	for _, r := range rs {
-		s.in("the record of "+r.issue.Key, func(ctx context.Context, tx pgx.Tx) error {
-			if err := s.records.PutDispatchIssue(ctx, tx, r.mirror); err != nil {
-				return err
-			}
-			if err := s.records.PutIssue(ctx, tx, r.issue); err != nil {
-				return err
-			}
-			return s.records.MarkIssueMoved(ctx, tx, r.issue.Key, r.moved)
-		})
-	}
-}
-
-// mirrorOnly writes what Dispatch says of an issue the daemon keeps no record of.
-func (s *seeding) mirrorOnly(reading record.DispatchReading) {
-	s.t.Helper()
-	s.in("the mirror row of "+reading.Key, func(ctx context.Context, tx pgx.Tx) error {
-		return s.records.PutDispatchIssue(ctx, tx, reading)
-	})
-}
-
-// openTrees opens each tree's lifecycle under the workflow, as admission's promotion does
-// (record.Store.OpenTreeLifecycle in the fact's transaction).
-func (s *seeding) openTrees(project string, trees ...string) {
-	s.t.Helper()
-	projectToken, err := claim.ProjectToken(project)
-	s.must("the project token", err)
-	for _, tree := range trees {
-		s.in("the lifecycle of "+tree, func(ctx context.Context, tx pgx.Tx) error {
-			_, err := s.records.OpenTreeLifecycle(ctx, tx, projectToken, tree, treelifecycle.AuthorityWorkflow)
-			return err
-		})
-	}
-}
-
-// claimAs admits c's claim to its tree's open lifecycle (store.Store.AdmitClaim, the one way a
-// claim enters the store) and then writes it as its machine last persisted it (store.Store.PutClaim,
-// or PutClaimAndDelivery where it holds a pending task), with the step the stream last reported
-// (store.Store.PutClaimStep).
-func (s *seeding) claimAs(c supervise.Claim) supervise.Claim {
-	s.t.Helper()
-	admitted, err := s.st.AdmitClaim(s.ctx, supervise.Claim{Token: c.Token, Project: c.Project, Tree: c.Tree, Issue: c.Issue,
-		Role: c.Role, Generation: c.Generation, State: supervise.StateQueued})
-	s.must("the admission of claim "+string(c.Token), err)
-	c.TreeEpoch = admitted.TreeEpoch
-	if pending := c.Pending; pending != nil {
-		c.Pending = nil
-		s.must("the claim "+string(c.Token)+" and its task", s.st.PutClaimAndDelivery(s.ctx, c, *pending))
-		c.Pending = pending
-	} else {
-		s.must("the claim "+string(c.Token), s.st.PutClaim(s.ctx, c))
-	}
-	if !c.Step.At.IsZero() {
-		known, err := s.st.PutClaimStep(s.ctx, c.Token, c.Step)
-		s.must("the step of claim "+string(c.Token), err)
-		if !known {
-			s.t.Fatalf("seed the step of claim %s: the store holds no such claim", c.Token)
-		}
-	}
-	return c
-}
-
-// enqueue queues payload for issue due at nextAt (record.Store.Enqueue), as the writer of that
-// row does, and answers the row's id.
-func (s *seeding) enqueue(issue string, payload record.OutboxPayload, nextAt time.Time) int64 {
-	s.t.Helper()
-	row, err := record.NewOutboxRow(issue, payload, nextAt)
-	s.must("the outbox row of "+issue, err)
-	var id int64
-	s.in("the outbox row of "+issue, func(ctx context.Context, tx pgx.Tx) error {
-		var err error
-		id, err = s.records.EnqueueID(ctx, tx, row)
-		return err
-	})
-	return id
-}
-
-// lease takes row id's lease at at for leaseFor, as a lane claims a row it runs
-// (record.Store.ClaimRow), and answers the leased row.
-func (s *seeding) lease(id int64, at time.Time, leaseFor time.Duration) record.OutboxRow {
-	s.t.Helper()
-	var row record.OutboxRow
-	s.in("the lease of outbox row", func(ctx context.Context, tx pgx.Tx) error {
-		leased, ok, err := s.records.ClaimRow(ctx, tx, id, at, leaseFor)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			s.t.Fatalf("seed the lease of outbox row %d: no lane may run it at %s", id, at)
-		}
-		row = leased
-		return nil
-	})
-	return row
-}
-
 // The populated state's moments. Every moment of a seed is a moment after the test's own
 // database writes, because a movement is only ever written forwards from the moment its record was
-// written (record.Store.MarkIssueMoved, record/store.go:318-323): so the seed is read a century
-// ahead of the wall clock, at populatedReadAt.
+// written (record.Postgres.MarkIssueMoved): so the seed is read a century ahead of the wall clock,
+// at populatedReadAt.
 var populatedReadAt = time.Date(2126, 9, 22, 9, 18, 0, 0, time.UTC)
 
 // at is a moment of September 2126 in the populated seed's month.
@@ -462,9 +58,9 @@ var populatedPods = map[string]string{
 
 const podUpdateReasons = "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved"
 
-// podLocator is one role process of issue's pod at generation, as the kubernetes runtime records
-// one at its launch.
-func podLocator(token claim.Token, issue string, generation uint64) *runtime.Locator {
+// populatedPodLocator is one role process of issue's pod at generation, as the kubernetes runtime
+// records one at its launch.
+func populatedPodLocator(token claim.Token, issue string, generation uint64) *runtime.Locator {
 	pod := populatedPods[issue]
 	return &runtime.Locator{
 		Runtime: runtime.RuntimeSandbox, Claim: token, Incarnation: pod + "/" + strconv.FormatUint(generation, 10),
@@ -739,9 +335,9 @@ func populatedRecord(s *seeding) {
 	})
 }
 
-// populatedClaims writes the populated record's phases rows and claims, and answers the claims as
-// written and the capability report of the one live session that has reported.
-func populatedClaims(s *seeding, rows populatedRows) map[claim.Token]capabilities.Report {
+// populatedClaims writes the populated record's phases rows and claims, and the capability report
+// of the one live session that has reported.
+func populatedClaims(s *seeding, rows populatedRows) {
 	token := func(issue string, role claim.Role) claim.Token { return s.token("LEGION", issue, role) }
 	architect208 := token("LEGION-208", claim.RoleArchitect)
 	planner208 := token("LEGION-208", claim.RolePlanner)
@@ -797,20 +393,20 @@ func populatedClaims(s *seeding, rows populatedRows) map[claim.Token]capabilitie
 	// replacement; the implementer was asked the same round and has not answered.
 	tasked := at(22, 9, 2, 0)
 	round := "pod:" + populatedPods["LEGION-208"]
-	implementerLocator := podLocator(implementer208, "LEGION-208", 5)
+	implementerLocator := populatedPodLocator(implementer208, "LEGION-208", 5)
 	for _, c := range []supervise.Claim{
 		// The pacing holds this claim's relaunch onto this daemon's plugin: its process registered
 		// at the fleet's floor.
 		{Token: token("LEGION-207", claim.RoleImplementer), Project: "legion", Tree: "LEGION-207", Issue: "LEGION-207", Role: claim.RoleImplementer,
 			Generation: 2, State: supervise.StateWorking, Session: "ses_implementer_207",
-			Locator: podLocator(token("LEGION-207", claim.RoleImplementer), "LEGION-207", 2), PluginContract: api.ServingFloor},
+			Locator: populatedPodLocator(token("LEGION-207", claim.RoleImplementer), "LEGION-207", 2), PluginContract: api.ServingFloor},
 		// The architect is ready in the pod: the turn it began and ended, its ready, the cause its
 		// process was last found gone under and a start failure of a launch since that ready, each
 		// with the time the daemon recorded it (the claim store's causeTime): the death before the
 		// ready, so the running agent survived it. Its handshake is that of the entry it was last
 		// queued, which a turn confirmed.
 		{Token: architect208, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208", Role: claim.RoleArchitect, Generation: 3,
-			State: supervise.StateReady, Session: "ses_architect_208", Locator: podLocator(architect208, "LEGION-208", 4), PluginContract: api.ServingFloor,
+			State: supervise.StateReady, Session: "ses_architect_208", Locator: populatedPodLocator(architect208, "LEGION-208", 4), PluginContract: api.ServingFloor,
 			GivenEntry: 2, Handshake: supervise.EntryHandshake{Entry: 2, Generation: 3, QueuedAt: at(22, 8, 58, 14), ConfirmedAt: at(22, 8, 58, 51)},
 			Step: supervise.StepRecord{
 				At: at(22, 9, 16, 58), TurnStartedAt: at(22, 9, 16, 40), Tool: "read", CallID: "toolu_arch_3",
@@ -822,7 +418,7 @@ func populatedClaims(s *seeding, rows populatedRows) map[claim.Token]capabilitie
 			UpdateRound: round, UpdateReasons: podUpdateReasons, UpdateTaskedAt: &tasked},
 		{Token: planner208, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208", Role: claim.RolePlanner, Generation: 3,
 			State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByDaemon, Session: "ses_planner_208",
-			Locator: podLocator(planner208, "LEGION-208", 2), PluginContract: api.ServingFloor,
+			Locator: populatedPodLocator(planner208, "LEGION-208", 2), PluginContract: api.ServingFloor,
 			UpdateRound: round, UpdateReasons: podUpdateReasons, UpdateTaskedAt: &tasked, UpdateSignalledAt: new(at(22, 9, 6, 30)),
 			UpdateHead: "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128"},
 		// Two of its turns ended in a provider error in a row; it holds the task of its entry and is
@@ -862,7 +458,7 @@ func populatedClaims(s *seeding, rows populatedRows) map[claim.Token]capabilitie
 			Budgets: supervise.Budgets{LaunchFailures: 4, Deaths: 1}},
 		{Token: token("LEGION-220", claim.RoleImplementer), Project: "legion", Tree: "LEGION-208", Issue: "LEGION-220", Role: claim.RoleImplementer,
 			Generation: 1, State: supervise.StateWorking, Session: "ses_implementer_220", GivenEntry: 1,
-			Locator: podLocator(token("LEGION-220", claim.RoleImplementer), "LEGION-220", 1), PluginContract: api.ServingFloor},
+			Locator: populatedPodLocator(token("LEGION-220", claim.RoleImplementer), "LEGION-220", 1), PluginContract: api.ServingFloor},
 		// A tester of its tree retired while the issue stood in its phase; its root waits on a
 		// person, whose answer resumes the tree, so the rule names it nowhere.
 		{Token: token("LEGION-212", claim.RoleTester), Project: "legion", Tree: "LEGION-212", Issue: "LEGION-212", Role: claim.RoleTester,
@@ -874,20 +470,20 @@ func populatedClaims(s *seeding, rows populatedRows) map[claim.Token]capabilitie
 		// The live roles of the two reviewing roots, each idle in its own issue pod.
 		{Token: token("LEGION-218", claim.RoleImplementer), Project: "legion", Tree: "LEGION-218", Issue: "LEGION-218", Role: claim.RoleImplementer,
 			Generation: 1, State: supervise.StateIdle, Session: "ses_implementer_218",
-			Locator: podLocator(token("LEGION-218", claim.RoleImplementer), "LEGION-218", 1), PluginContract: api.ServingFloor},
+			Locator: populatedPodLocator(token("LEGION-218", claim.RoleImplementer), "LEGION-218", 1), PluginContract: api.ServingFloor},
 		{Token: token("LEGION-218", claim.RoleReviewer), Project: "legion", Tree: "LEGION-218", Issue: "LEGION-218", Role: claim.RoleReviewer,
 			Generation: 1, State: supervise.StateIdle, Session: "ses_reviewer_218", GivenEntry: 1,
-			Locator: podLocator(token("LEGION-218", claim.RoleReviewer), "LEGION-218", 1), PluginContract: api.ServingFloor},
+			Locator: populatedPodLocator(token("LEGION-218", claim.RoleReviewer), "LEGION-218", 1), PluginContract: api.ServingFloor},
 		// The close of LEGION-219's run before this one retired its tree architect, and the tree
 		// runs again at generation 3 with no admission start of it queued (workflow.Stranded).
 		{Token: token("LEGION-219", claim.RoleArchitect), Project: "legion", Tree: "LEGION-219", Issue: "LEGION-219", Role: claim.RoleArchitect,
 			Generation: 2, State: supervise.StateRetired, Session: "ses_architect_219"},
 		{Token: token("LEGION-219", claim.RoleImplementer), Project: "legion", Tree: "LEGION-219", Issue: "LEGION-219", Role: claim.RoleImplementer,
 			Generation: 3, State: supervise.StateIdle, Session: "ses_implementer_219",
-			Locator: podLocator(token("LEGION-219", claim.RoleImplementer), "LEGION-219", 3), PluginContract: api.ServingFloor},
+			Locator: populatedPodLocator(token("LEGION-219", claim.RoleImplementer), "LEGION-219", 3), PluginContract: api.ServingFloor},
 		{Token: token("LEGION-219", claim.RoleReviewer), Project: "legion", Tree: "LEGION-219", Issue: "LEGION-219", Role: claim.RoleReviewer,
 			Generation: 3, State: supervise.StateIdle, Session: "ses_reviewer_219", GivenEntry: 2,
-			Locator: podLocator(token("LEGION-219", claim.RoleReviewer), "LEGION-219", 3), PluginContract: api.ServingFloor},
+			Locator: populatedPodLocator(token("LEGION-219", claim.RoleReviewer), "LEGION-219", 3), PluginContract: api.ServingFloor},
 	} {
 		s.claimAs(c)
 	}
@@ -900,7 +496,8 @@ func populatedClaims(s *seeding, rows populatedRows) map[claim.Token]capabilitie
 
 	// The session's capability report, from the process the locator names: two rows it proved and
 	// one it did not, with the fact its check found. The store keeps it (PutCapabilityReport), and
-	// the supervisor holds the same report in memory, which is what the state reads.
+	// the daemon's boot reads it back into the supervisor's memory (openSupervision,
+	// reportsOfClaims), which is what the state reads.
 	report := capabilities.Report{
 		Claim: implementer208, Generation: 3, Locator: *implementerLocator,
 		MeasuredAt: at(22, 9, 17, 3), ReportedAt: at(22, 9, 17, 4), ElapsedMs: 900,
@@ -911,7 +508,6 @@ func populatedClaims(s *seeding, rows populatedRows) map[claim.Token]capabilitie
 		},
 	}
 	s.must("the capability report of "+string(implementer208), s.st.PutCapabilityReport(s.ctx, report))
-	return map[claim.Token]capabilities.Report{implementer208: report}
 }
 
 // populatedRows is the outbox rows whose tasks the populated claims hold (the delivery's id names
@@ -951,8 +547,8 @@ func populatedOutbox(s *seeding) populatedRows {
 // populatedDeployment is the populated state's configuration and the daemon's memory beside the
 // record: the boot rows and the controller's registration are written to the store here, since
 // both are durable.
-func populatedDeployment(s *seeding, reports map[claim.Token]capabilities.Report) composition {
-	cfg := api.LoadSettingsFile(s.t, api.SettingsFixtureFile)
+func populatedDeployment(s *seeding) composition {
+	cfg := apifixture.LoadSettings(s.t, apiSettings(s.t, "settingsFixtureFile"))
 	// Four boots of this project, the first four days before this read (store.Store.RecordBoot).
 	for _, booted := range []time.Time{at(18, 14, 3, 27), at(19, 6, 12, 0), at(21, 2, 44, 9), at(22, 9, 15, 2)} {
 		_, err := s.st.RecordBoot(s.ctx, "LEGION", booted)
@@ -967,8 +563,33 @@ func populatedDeployment(s *seeding, reports map[claim.Token]capabilities.Report
 	if !registered {
 		s.t.Fatal("seed the controller's registration: the store did not register it")
 	}
+	// What GitHub answered of each name the live records give, as the refresher keeps each read
+	// (repositories.keepRead) and Dispatch's answer of its webhook App (keepWebhookAnswer):
+	// acme/gadgets, the review App not installed on it; acme/widgets, both role Apps installed;
+	// sjawhar/legion, which the records keep under its name before a configured transfer, both
+	// Apps answered on its new name cybermonklabs/legion; zeta/archive, whose implement App read
+	// GitHub did not answer; and zeta/tools, both Apps installed and Dispatch's GitHub App not.
+	repos := newRepositories(cfg.Project, cfg.RepositoryRenames)
+	installed, missing := appInstallation{answered: true, installed: true}, appInstallation{answered: true}
+	for _, read := range []struct {
+		name      string
+		apps      appInstallations
+		readError string
+	}{
+		{name: "acme/gadgets", apps: appInstallations{implement: installed, review: missing}},
+		{name: "acme/widgets", apps: appInstallations{implement: installed, review: installed}},
+		{name: "cybermonklabs/legion", apps: appInstallations{implement: installed, review: installed}},
+		{name: "sjawhar/legion", apps: appInstallations{implement: missing, review: missing}},
+		{name: "zeta/archive", apps: appInstallations{review: installed},
+			readError: "the implement App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again"},
+		{name: "zeta/tools", apps: appInstallations{implement: installed, review: installed}},
+	} {
+		repos.keepRead(ghrepo.MustParse(read.name), read.apps, read.readError)
+	}
+	repos.keepWebhookAnswer(ghrepo.MustParse("zeta/tools"),
+		"Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed")
 	return composition{
-		cfg: cfg, now: populatedReadAt, startedAt: at(22, 9, 15, 2), reports: reports,
+		cfg: cfg, now: populatedReadAt, startedAt: at(22, 9, 15, 2),
 		// A wave going out at its operator's pace, with one wake of each lane the machines hold:
 		// LEGION-207's implementer waits for its relaunch onto this daemon's plugin, and LEGION-208's
 		// planner for its launch onto the pod's replacement.
@@ -976,46 +597,27 @@ func populatedDeployment(s *seeding, reports map[claim.Token]capabilities.Report
 			{Claim: s.token("LEGION", "LEGION-207", claim.RoleImplementer), Issue: "LEGION-207", Role: claim.RoleImplementer, Kind: supervise.WakePluginRefresh, At: at(22, 9, 17, 56)},
 			{Claim: s.token("LEGION", "LEGION-208", claim.RolePlanner), Issue: "LEGION-208", Role: claim.RolePlanner, Kind: supervise.WakeLaunch, At: at(22, 9, 18, 11)},
 		},
-		// The image passed its probe after two attempts the pool had no room for, a gap the
-		// deployment's file decides (capabilities.decided.pool-capacity).
-		secretsLogin: "issued", probed: true, modelFallback: "on",
-		probeCapacityWaits: 2, probeCapacityReason: "0/3 nodes are available: 3 Insufficient cpu.",
+		// The broker login holds a credential. The image passed its probe after two attempts the
+		// pool had no room for, a gap the deployment's file decides
+		// (capabilities.decided.pool-capacity).
+		secretsIssued: true, probed: true,
+		image: bootprobe.ImageReport{ModelFallback: "on", CapacityWaits: 2, CapacityReason: "0/3 nodes are available: 3 Insufficient cpu."},
 		// acme/widgets' cache is Ready and read, and last answered its health with a repack that
 		// failed for lack of space; zeta/tools' is failing; acme/legacy's, which no live record
 		// names any more, keeps its cache until its retention ends.
-		caches: []repositoryCache{
-			{
-				capability: capabilities.Cache{Repo: "acme/widgets", Claim: "cache-legion-legion-cache-acme-widgets-d782c874", Read: true, Reported: true,
-					VolumeBytes: 20 << 30, AvailableBytes: 107374182, Bytes: 6612345678, RepackOutOfSpaceAt: time.Date(2126, 9, 16, 2, 15, 33, 0, time.UTC)},
-				view: api.CacheView{Repo: "acme/widgets", Sandbox: "legion-legion-cache-acme-widgets-d782c874", State: "ready", Ready: true,
-					Address: "http://legion-legion-cache-acme-widgets-d782c874.legion.svc:8418", Head: "34a7ac80e9c3389ffbc1bbeece371ccacc043992",
-					LastFetchAt: at(22, 9, 2, 30), Bytes: 6612345678},
-			},
-			{
-				capability: capabilities.Cache{Repo: "zeta/tools", Claim: "cache-legion-legion-cache-zeta-tools-1b2c3d4e"},
-				view: api.CacheView{Repo: "zeta/tools", Sandbox: "legion-legion-cache-zeta-tools-1b2c3d4e", State: "failing",
-					Reason: "container cache CrashLoopBackOff: back-off 5m0s restarting failed container (restarted 4 times)"},
-			},
-			{
-				capability: capabilities.Cache{Repo: "acme/legacy", Claim: "cache-legion-legion-cache-acme-legacy-0a1b2c3d"},
-				view: api.CacheView{Repo: "acme/legacy", Sandbox: "legion-legion-cache-acme-legacy-0a1b2c3d", State: "starting",
-					RetainedUntil: time.Date(2126, 9, 29, 9, 0, 0, 0, time.UTC)},
-			},
+		caches: []sandbox.CacheStatus{
+			{Repo: ghrepo.MustParse("acme/widgets"), Sandbox: "legion-legion-cache-acme-widgets-d782c874", State: "ready", Ready: true,
+				Address: "http://legion-legion-cache-acme-widgets-d782c874.legion.svc:8418", Claim: "cache-legion-legion-cache-acme-widgets-d782c874",
+				Health: &repocache.Health{Ready: true, Repo: "acme/widgets", Head: "34a7ac80e9c3389ffbc1bbeece371ccacc043992",
+					LastFetchAt: at(22, 9, 2, 30), Bytes: 6612345678, VolumeBytes: new(uint64(20 << 30)), AvailableBytes: new(uint64(107374182)),
+					RepackOutOfSpaceAt: time.Date(2126, 9, 16, 2, 15, 33, 0, time.UTC)}},
+			{Repo: ghrepo.MustParse("zeta/tools"), Sandbox: "legion-legion-cache-zeta-tools-1b2c3d4e", State: "failing",
+				Reason: "container cache CrashLoopBackOff: back-off 5m0s restarting failed container (restarted 4 times)",
+				Claim:  "cache-legion-legion-cache-zeta-tools-1b2c3d4e"},
+			{Repo: ghrepo.MustParse("acme/legacy"), Sandbox: "legion-legion-cache-acme-legacy-0a1b2c3d", State: "starting",
+				RetainedUntil: time.Date(2126, 9, 29, 9, 0, 0, 0, time.UTC), Claim: "cache-legion-legion-cache-acme-legacy-0a1b2c3d"},
 		},
-		// What GitHub answered of each name the live records give: acme/gadgets, the review App
-		// not installed on it; acme/widgets, both role Apps installed; sjawhar/legion, which the
-		// records keep under its name before a configured transfer, both Apps answered on its new
-		// name cybermonklabs/legion; zeta/archive, whose implement App read GitHub did not answer;
-		// and zeta/tools, both Apps installed and Dispatch's GitHub App not.
-		answers: map[string]api.RepositoryAnswer{
-			"acme/gadgets":         {Answered: true, Apps: api.AppInstallationsView{Implement: true}},
-			"acme/widgets":         {Answered: true, Apps: api.AppInstallationsView{Implement: true, Review: true}},
-			"cybermonklabs/legion": {Answered: true, Apps: api.AppInstallationsView{Implement: true, Review: true}},
-			"sjawhar/legion":       {Answered: true},
-			"zeta/archive":         {ReadError: "the implement App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again"},
-			"zeta/tools": {Answered: true, Apps: api.AppInstallationsView{Implement: true, Review: true},
-				WebhookApp: "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"},
-		},
+		repositories: repos,
 		// The three durable consumers the daemon opens, in the order Lag answers them
 		// (intake.Consumers.Lag): the Dispatch consumer is caught up; the GitHub consumer has 412
 		// messages waiting and has handled none for over a minute; the listener-wake consumer's
@@ -1029,14 +631,23 @@ func populatedDeployment(s *seeding, reports map[claim.Token]capabilities.Report
 	}
 }
 
-// seedPopulated is the populated state: the project running, unpaused.
-func seedPopulated(s *seeding) composition {
+// seedPopulatedRecord is the populated record the populated and paused states share, written in
+// the order its writers need: the issues, the outbox rows the claims' tasks name, the claims, the
+// deployment's boots and controller, the intake's give-ups and the pod's hold. It answers the
+// daemon's composition of it and the outbox rows the claims hold.
+func seedPopulatedRecord(s *seeding) (composition, populatedRows) {
 	populatedRecord(s)
 	rows := populatedOutbox(s)
-	reports := populatedClaims(s, rows)
-	c := populatedDeployment(s, reports)
+	populatedClaims(s, rows)
+	c := populatedDeployment(s)
 	populatedIntake(s)
 	populatedPodHolds(s)
+	return c, rows
+}
+
+// seedPopulated is the populated state: the project running, unpaused.
+func seedPopulated(s *seeding) composition {
+	c, _ := seedPopulatedRecord(s)
 	return c
 }
 
@@ -1072,7 +683,6 @@ func populatedPodHolds(s *seeding) {
 // (ClaimRow, FinishOutbox). The records' ids are the clone's sequence's, which an insert's
 // conflict consumes too.
 func populatedIntake(s *seeding) {
-	intakeRecords := record.NewStore()
 	publish := func(given record.IntakeFailure, at time.Time) {
 		s.t.Helper()
 		if given.NoticeID == 0 {
@@ -1089,16 +699,16 @@ func populatedIntake(s *seeding) {
 		Payload: []byte(`{"source":"dispatch","event_id":"dispatch-6044801","key":"LEGION-213"}`), EventSource: "dispatch", EventID: "dispatch-6044801"}
 	const boundError = "apply the issue event: read LEGION-213 from Dispatch: context deadline exceeded"
 	s.in("the first failed delivery of LEGION-213's event", func(ctx context.Context, tx pgx.Tx) error {
-		_, err := intakeRecords.NoteFailure(ctx, tx, bound, 1, boundError, at(22, 6, 30, 4))
+		_, err := s.records.NoteFailure(ctx, tx, bound, 1, boundError, at(22, 6, 30, 4))
 		return err
 	})
 	var boundGiven record.IntakeFailure
 	s.in("the give-up of LEGION-213's event at its bound", func(ctx context.Context, tx pgx.Tx) error {
-		failure, err := intakeRecords.NoteFailure(ctx, tx, bound, 21, boundError, at(22, 7, 31, 4))
+		failure, err := s.records.NoteFailure(ctx, tx, bound, 21, boundError, at(22, 7, 31, 4))
 		if err != nil {
 			return err
 		}
-		given, gaveUp, err := intakeRecords.GiveUpIntakeMessage(ctx, tx, "LEGION", failure.ID, record.GiveUpBound, boundError, at(22, 7, 31, 4))
+		given, gaveUp, err := s.records.GiveUpIntakeMessage(ctx, tx, "LEGION", failure.ID, record.GiveUpBound, boundError, at(22, 7, 31, 4))
 		if err == nil && !gaveUp {
 			s.t.Fatalf("seed the give-up of LEGION-213's event: record %d was no open failure", failure.ID)
 		}
@@ -1116,14 +726,14 @@ func populatedIntake(s *seeding) {
 		at        time.Time
 	}{{1, at(22, 6, 2, 3)}, {3, at(22, 6, 20, 0)}} {
 		s.in("a failed delivery of LEGION-208's review event", func(ctx context.Context, tx pgx.Tx) error {
-			_, err := intakeRecords.NoteFailure(ctx, tx, passed, failed.delivered, passedError, failed.at)
+			_, err := s.records.NoteFailure(ctx, tx, passed, failed.delivered, passedError, failed.at)
 			return err
 		})
 	}
 	var listed []record.OpenFailure
 	s.in("the sweep's pass that listed the review event", func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		listed, err = intakeRecords.ListPassedFailures(ctx, tx, "LEGION", passed.Consumer, passed.StreamSeq)
+		listed, err = s.records.ListPassedFailures(ctx, tx, "LEGION", passed.Consumer, passed.StreamSeq)
 		return err
 	})
 	if len(listed) != 1 {
@@ -1132,7 +742,7 @@ func populatedIntake(s *seeding) {
 	var swept []record.IntakeFailure
 	s.in("the sweep's give-up of the review event", func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		swept, err = intakeRecords.SweepPassedFailures(ctx, tx, "LEGION", []int64{listed[0].ID}, at(22, 7, 50, 0), at(22, 7, 55, 0))
+		swept, err = s.records.SweepPassedFailures(ctx, tx, "LEGION", []int64{listed[0].ID}, at(22, 7, 50, 0), at(22, 7, 55, 0))
 		return err
 	})
 	if len(swept) != 1 {
@@ -1145,7 +755,7 @@ func populatedIntake(s *seeding) {
 		Payload: []byte(`{"source":"dispatch","event_id":`)}
 	var undecodableGiven record.IntakeFailure
 	s.in("the give-up of LEGION-214's message that did not decode", func(ctx context.Context, tx pgx.Tx) error {
-		given, recorded, err := intakeRecords.RecordUndecodable(ctx, tx, undecodable, 1, "decode Envoy envelope: unexpected end of JSON input", at(22, 8, 40, 13))
+		given, recorded, err := s.records.RecordUndecodable(ctx, tx, undecodable, 1, "decode Envoy envelope: unexpected end of JSON input", at(22, 8, 40, 13))
 		if err == nil && !recorded {
 			s.t.Fatal("seed the give-up of LEGION-214's message: it was recorded as given up already")
 		}
@@ -1165,12 +775,7 @@ func populatedIntake(s *seeding) {
 // architect whose paced moment came three seconds into the pause, which names none, since a notice
 // names no claim.
 func seedPaused(s *seeding) composition {
-	populatedRecord(s)
-	rows := populatedOutbox(s)
-	reports := populatedClaims(s, rows)
-	c := populatedDeployment(s, reports)
-	populatedIntake(s)
-	populatedPodHolds(s)
+	c, rows := seedPopulatedRecord(s)
 	s.in("the finish of LEGION-208's start", func(ctx context.Context, tx pgx.Tx) error {
 		return s.records.FinishOutbox(ctx, tx, rows.running208, rows.runningLease)
 	})
@@ -1185,104 +790,8 @@ func seedPaused(s *seeding) composition {
 // at (internal/pause.New, which the daemon builds with its workflow).
 func pauseService(s *seeding, cfg config.Config, at time.Time) *pause.Service {
 	s.t.Helper()
-	pauses, err := pause.New(pause.Options{Store: s.st, Records: record.NewStore(), Project: cfg.Project, Config: cfg,
-		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Now: func() time.Time { return at }})
+	pauses, err := pause.New(pause.Options{Store: s.st, Records: s.records, Project: cfg.Project, Config: cfg,
+		Log: quietLogger(), Now: func() time.Time { return at }})
 	s.must("the pause service", err)
 	return pauses
-}
-
-// seedStage3 is a project at Stage 3: one root in review whose Dispatch status write has failed
-// twice and waits on its backoff, and a root queued behind it, on the smallest tmux file.
-func seedStage3(s *seeding) composition {
-	cfg := api.LoadSettingsFile(s.t, api.MinimalSettingsFile)
-	reviewing := record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Project: "LEGION", Title: "LEGION-208", Phase: phase.Reviewing,
-		Status: "needs_review", DispatchStatus: "needs_review", Generation: 4, LastDispatchSeq: 9,
-		Repo: "sjawhar/legion-smoke", DefaultBranch: "main", GitHubRepo: "sjawhar/legion-smoke", HandedOver: true}
-	queued := record.Issue{Key: "LEGION-209", Tree: "LEGION-209", Project: "LEGION", Title: "LEGION-209", Phase: phase.Admitted,
-		Status: "todo", DispatchStatus: "todo", Generation: 1, LastDispatchSeq: 10, Rank: "00009",
-		Repo: "sjawhar/legion-smoke", DefaultBranch: "main", GitHubRepo: "sjawhar/legion-smoke", HandedOver: true}
-	reading := func(key, status string, seq int64) record.DispatchReading {
-		return record.DispatchReading{Key: key, Project: "LEGION", Seq: seq, Status: record.Carry(status), Parent: record.Carry(""),
-			Blockers: record.Carry([]string{}), Applied: true}
-	}
-	s.putRecorded(
-		recorded{reviewing, reading("LEGION-208", "needs_review", 9), time.Date(2126, 9, 22, 17, 24, 0, 0, time.UTC)},
-		recorded{queued, reading("LEGION-209", "todo", 10), time.Date(2126, 9, 22, 16, 2, 0, 0, time.UTC)},
-	)
-	s.in("the slot of LEGION-208", func(ctx context.Context, tx pgx.Tx) error {
-		return s.records.PutSlot(ctx, tx, record.Slot{Issue: "LEGION-208", Index: 0, AdmittedAt: time.Date(2126, 9, 22, 14, 0, 0, 0, time.UTC)})
-	})
-	s.openTrees("LEGION", "LEGION-208")
-	// The move to review wrote LEGION-208's Dispatch status (workflow's status write,
-	// record.OrdinaryStatusWrite), and two attempts of it failed (the outbox's RetryOutbox).
-	write := s.enqueue("LEGION-208", record.OrdinaryStatusWrite("needs_review", "in_progress", ""), time.Date(2126, 9, 22, 17, 24, 0, 0, time.UTC))
-	for attempt, leasedAt := range []time.Time{time.Date(2126, 9, 22, 17, 24, 0, 0, time.UTC), time.Date(2126, 9, 22, 17, 28, 0, 0, time.UTC)} {
-		row := s.lease(write, leasedAt, time.Minute)
-		nextAt := time.Date(2126, 9, 22, 17, 28, 0, 0, time.UTC)
-		if attempt == 1 {
-			nextAt = time.Date(2126, 9, 22, 17, 32, 0, 0, time.UTC)
-		}
-		s.in("a failed attempt of LEGION-208's status write", func(ctx context.Context, tx pgx.Tx) error {
-			return s.records.RetryOutbox(ctx, tx, row.ID, row.LeaseToken, nextAt, "Dispatch unavailable")
-		})
-	}
-	stage3At := time.Date(2126, 9, 22, 17, 30, 0, 0, time.UTC)
-	for _, booted := range []time.Time{time.Date(2126, 9, 18, 14, 3, 27, 0, time.UTC), time.Date(2126, 9, 19, 9, 0, 0, 0, time.UTC),
-		time.Date(2126, 9, 20, 9, 0, 0, 0, time.UTC), time.Date(2126, 9, 21, 9, 0, 0, 0, time.UTC), stage3At} {
-		_, err := s.st.RecordBoot(s.ctx, "LEGION", booted)
-		s.must("a boot", err)
-	}
-	return composition{cfg: cfg, now: time.Date(2126, 9, 22, 17, 30, 30, 0, time.UTC), startedAt: stage3At}
-}
-
-// seedOperatorClaim is an operator's spawn of an architect on an issue the workflow keeps no record
-// of (internal/api's spawn route: store.Store.OpenOperatorTreeLifecycle, then the claim's admission),
-// idle in its tmux pane, on the smallest tmux file of its own project. No record moves, so its
-// moments are the wall clock's month.
-func seedOperatorClaim(s *seeding) composition {
-	const project = "AC91849371"
-	body, found := strings.CutPrefix(api.MinimalSettingsFile, "project: LEGION\n")
-	if !found {
-		s.t.Fatalf("the smallest settings file %q does not begin with its project", api.MinimalSettingsFile)
-	}
-	cfg := api.LoadSettingsFile(s.t, "project: "+project+"\n"+body)
-	spawnedAt := time.Date(2026, 9, 25, 5, 50, 0, 0, time.UTC)
-	_, err := s.st.RecordBoot(s.ctx, project, spawnedAt)
-	s.must("the boot", err)
-	_, err = s.st.OpenOperatorTreeLifecycle(s.ctx, "ac91849371", "AC91849371-900", func(context.Context, pgx.Tx) error { return nil })
-	s.must("the operator's tree", err)
-	token := s.token(project, "AC91849371-900", claim.RoleArchitect)
-	s.claimAs(supervise.Claim{Token: token, Project: "ac91849371", Tree: "AC91849371-900", Issue: "AC91849371-900", Role: claim.RoleArchitect,
-		Generation: 1, State: supervise.StateIdle, Session: "01a0d71d-aace-7448-a0d4-e401d736438f",
-		Locator: &runtime.Locator{Runtime: runtime.RuntimeTmux, Claim: token, Incarnation: "1618075:268131172", Tmux: &runtime.TmuxLocator{Window: "@1", Pane: "%1"}}})
-	return composition{cfg: cfg, now: spawnedAt.Add(5 * time.Minute), startedAt: spawnedAt}
-}
-
-// seedLastPause is a project that runs after a pause has ended: the operator paused it for a
-// provider's outage, and the controller resumed it from its session (internal/pause's Service.Pause
-// and Service.Resume), the pause the pause routes' goldens answer, on the deployment those routes
-// serve. Its daemon booted and its image passed the probe, and no session has reported to it, so
-// every image row of its capability report is present and every live row unchecked: the state a
-// boot reads. No record moves, so its moments are the wall clock's month.
-func seedLastPause(s *seeding) composition {
-	cfg := api.LoadSettingsFile(s.t, api.SettingsFixtureFile)
-	paused, ended := api.GoldenPause(false), api.GoldenPause(true)
-	startedAt := time.Date(2026, 11, 15, 8, 30, 0, 0, time.UTC)
-	for _, booted := range []time.Time{time.Date(2026, 11, 2, 14, 3, 27, 0, time.UTC), startedAt} {
-		_, err := s.st.RecordBoot(s.ctx, "LEGION", booted)
-		s.must("a boot", err)
-	}
-	_, err := pauseService(s, cfg, paused.Since).Pause(s.ctx, paused.By, paused.Reason)
-	s.must("the pause", err)
-	_, _, err = pauseService(s, cfg, ended.EndedAt).Resume(s.ctx, ended.EndedBy)
-	s.must("the resume", err)
-	// A daemon that holds a pause runs a workflow, whose three durable consumers are caught up.
-	caughtUp := ended.EndedAt.Add(19 * time.Minute)
-	return composition{cfg: cfg, now: ended.EndedAt.Add(20 * time.Minute), startedAt: startedAt,
-		secretsLogin: "issued", probed: true, modelFallback: "on",
-		consumers: []intake.ConsumerLag{
-			{Name: "legion-go-LEGION-dispatch", LastHandledAt: caughtUp},
-			{Name: "legion-go-LEGION-github", LastHandledAt: caughtUp},
-			{Name: "legion-go-LEGION-wake", LastHandledAt: caughtUp},
-		}}
 }

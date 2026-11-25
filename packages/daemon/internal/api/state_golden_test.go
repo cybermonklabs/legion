@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/apifixture"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -197,18 +198,11 @@ state_dir: /var/lib/legion
 `
 
 // loadSettingsFile writes body as a legion.yaml under t.TempDir() and loads it as the daemon does,
-// reading no environment, so the resolved values are the file's and the defaults alone.
+// reading no environment, so the resolved values are the file's and the defaults alone
+// (apifixture.LoadSettings, which internal/daemon's state fixtures load these files with too).
 func loadSettingsFile(t *testing.T, body string) config.Config {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "legion.yaml")
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatalf("write legion.yaml: %v", err)
-	}
-	cfg, err := config.Load(path, func(string) string { return "" })
-	if err != nil {
-		t.Fatalf("config.Load: %v", err)
-	}
-	return cfg
+	return apifixture.LoadSettings(t, body)
 }
 
 // settingsFixtureConfig is settingsFixtureFile loaded.
@@ -223,33 +217,34 @@ func minimalSettingsConfig(t *testing.T) config.Config {
 	return loadSettingsFile(t, minimalSettingsFile)
 }
 
-// composedStatePath is the populated state as the daemon composes it over a seeded record:
-// composed_state_test.go's TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds writes it
-// (`-update`) and fails where it differs from that composition. Every fixture this package writes
-// from the populated state reads it from here.
-const composedStatePath = "testdata/populated-state.json"
-
-// composedStateRewrite is the two commands that write the populated state and every fixture read
-// from it, in the order they must run: the composition, then this package's goldens. The first
-// test's name holds no `Golden`, so the second command does not run it.
-const composedStateRewrite = "go test ./internal/api/ -run '^TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds$' -update, " +
+// stateFixturesRewrite is the two commands that write the state fixtures and every fixture this
+// package writes from the populated one, in the order they must run: internal/daemon's
+// composition of the state fixtures over their seeds, then this package's goldens.
+const stateFixturesRewrite = "go test ./internal/daemon/ -run '^TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds$' -update, " +
 	"then go test ./internal/api/ -run Golden -update"
 
-// populatedState is the composed populated state, held to read back byte for byte as it was
-// written, so no field of it is lost or changed on the way into this package's tests.
+// populatedState is the populated state as internal/daemon's state source composes it over its
+// seed (TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds), read back from state.json byte
+// for byte, so no field of it is lost or changed on the way into this package's tests, with the
+// mark that file carries taken off: state.json is the body the state route serves a caller at this
+// daemon's own contract, and the mark is the route's own (shaping's stateFor), which no source
+// answers and every route this package's tests serve the state through writes again.
 func populatedState(t *testing.T) State {
 	t.Helper()
-	return composedFixture(t, composedStatePath)
+	state := composedFixture(t, goldenPath("state.json"))
+	state.Contract = nil
+	return state
 }
 
-// pausedState is the composed state of the populated record ten seconds into a pause, read back
-// from its fixture byte for byte, which the tests of the pause's keys read.
+// pausedState is the state of the populated record ten seconds into a pause, as internal/daemon's
+// state source composes it, read back from its fixture byte for byte, which the tests of the
+// pause's keys read.
 func pausedState(t *testing.T) State {
 	t.Helper()
 	return composedFixture(t, goldenPath("state-paused.json"))
 }
 
-// operatorClaimState is the composed state of an operator's spawn on an issue the workflow keeps
+// operatorClaimState is the state of an operator's spawn on an issue the workflow keeps
 // no record of, read back from its fixture: its architect is the one claim of the fixtures in a
 // tmux pane.
 func operatorClaimState(t *testing.T) State {
@@ -257,22 +252,23 @@ func operatorClaimState(t *testing.T) State {
 	return composedFixture(t, goldenPath("state-operator-claim.json"))
 }
 
-// composedFixture is the composed state written at path, held to read back byte for byte.
+// composedFixture is the state internal/daemon's state source composed at path, held to read back
+// byte for byte.
 func composedFixture(t *testing.T, path string) State {
 	t.Helper()
 	written, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read %s (run %s): %v", path, composedStateRewrite, err)
+		t.Fatalf("read %s (run %s): %v", path, stateFixturesRewrite, err)
 	}
 	var state State
 	if err := json.Unmarshal(written, &state); err != nil {
-		t.Fatalf("decode %s (run %s): %v", path, composedStateRewrite, err)
+		t.Fatalf("decode %s (run %s): %v", path, stateFixturesRewrite, err)
 	}
 	keepNullPriorities(t, path, written, state)
 	if again := testgolden.Encode(t, path, state); !bytes.Equal(again, written) {
 		line, held, read := testgolden.FirstDifference(written, again)
 		t.Fatalf("%s does not read back as it was written (run %s): line %d holds %q, and the state read from it writes %q",
-			path, composedStateRewrite, line, held, read)
+			path, stateFixturesRewrite, line, held, read)
 	}
 	return state
 }
@@ -307,16 +303,6 @@ func keepNullPriorities(t *testing.T, path string, written []byte, state State) 
 		}
 		state.Issues[key] = issue
 	}
-}
-
-// The state golden is the body the route serves a caller at this daemon's own contract: the
-// source answers no mark and the route writes one (shaping's stateFor), so the fixture carries
-// the two numbers of `contract` and the plugin's schema is held to them. A caller below the
-// contract that added it is served no such key, which TestANarrowedBodySaysSo holds.
-func TestStateGolden(t *testing.T) {
-	state := populatedState(t)
-	state.Contract = &ContractView{Daemon: DaemonAPIVersion, Caller: DaemonAPIVersion}
-	stateGolden(t, "state.json", state)
 }
 
 // The state route's body for a caller whose plugin is at the contract before
@@ -384,23 +370,6 @@ func TestNoSessionFacingBodyCarriesSuspendedBy(t *testing.T) {
 	}
 }
 
-// goldenPauseSince is when the goldens' pause began, and goldenPauseEnded when its resume ended it.
-var (
-	goldenPauseSince = time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
-	goldenPauseEnded = time.Date(2026, 11, 15, 9, 41, 30, 0, time.UTC)
-)
-
-// goldenPause is the goldens' pause: the operator paused LEGION for a provider's outage, and, once
-// ended, the controller resumed it from its session.
-func goldenPause(ended bool) store.Pause {
-	p := store.Pause{ID: 7, Project: "LEGION", Since: goldenPauseSince, By: store.PauseActor{Kind: store.PauseByOperator},
-		Reason: "the model provider is refusing every turn"}
-	if ended {
-		p.EndedAt, p.EndedBy = goldenPauseEnded, store.PauseActor{Kind: store.PauseByController, Session: "ses_controller"}
-	}
-	return p
-}
-
 // stubPauses is a pause service that answers what a golden asks of it: the pause routes are held
 // to the real service by TestPauseRoutes, and these goldens pin what the routes write of each
 // answer and each refusal, through the routes themselves.
@@ -465,14 +434,14 @@ func pauseRouteAnswer(t *testing.T, svc PauseService, target string, body any, w
 // project is paused (PROJECT_PAUSED, here the operator's spawn), naming the pause that stands.
 func TestPauseRouteGoldens(t *testing.T) {
 	const pauseRoute, resumeRoute = "/legion/v1/operator/project/pause", "/legion/v1/operator/project/resume"
-	reason := OperatorPauseRequest{Reason: goldenPause(false).Reason}
+	reason := OperatorPauseRequest{Reason: apifixture.Pause(false).Reason}
 
 	var paused ProjectPauseResponse
-	pauseRouteAnswer(t, stubPauses{pause: goldenPause(false)}, pauseRoute, reason, http.StatusOK, &paused)
+	pauseRouteAnswer(t, stubPauses{pause: apifixture.Pause(false)}, pauseRoute, reason, http.StatusOK, &paused)
 	golden(t, "project-pause.json", paused)
 
 	var resumed ProjectResumeResponse
-	pauseRouteAnswer(t, stubPauses{resumed: goldenPause(true), released: 3}, resumeRoute, nil, http.StatusOK, &resumed)
+	pauseRouteAnswer(t, stubPauses{resumed: apifixture.Pause(true), released: 3}, resumeRoute, nil, http.StatusOK, &resumed)
 	golden(t, "project-resume.json", resumed)
 
 	var blank Failure
@@ -487,10 +456,10 @@ func TestPauseRouteGoldens(t *testing.T) {
 		"project-pause-unavailable.json": {stubPauses{pauseErr: &pause.UnavailableError{Setting: pause.SettingTmux}}, pauseRoute, reason},
 		"project-pause-no-workflow.json": {nil, pauseRoute, reason},
 		"project-pause-refused.json": {stubPauses{pauseErr: fmt.Errorf("pause LEGION: %w",
-			&store.AlreadyPausedError{Standing: goldenPause(false)})}, pauseRoute, reason},
+			&store.AlreadyPausedError{Standing: apifixture.Pause(false)})}, pauseRoute, reason},
 		"project-resume-refused.json": {stubPauses{resumeErr: &store.NotPausedError{Project: "LEGION"},
-			last: goldenPause(true), lastFound: true}, resumeRoute, nil},
-		"project-paused.json": {stubPauses{paused: 7, open: goldenPause(false), openFound: true}, "/legion/v1/operator/claims",
+			last: apifixture.Pause(true), lastFound: true}, resumeRoute, nil},
+		"project-paused.json": {stubPauses{paused: 7, open: apifixture.Pause(false), openFound: true}, "/legion/v1/operator/claims",
 			SpawnRequest{Tree: "LEGION-208", Issue: "LEGION-209", Role: claim.RoleImplementer}},
 	} {
 		var refused PauseFailure
@@ -509,10 +478,10 @@ func golden(t *testing.T, name string, value any) {
 }
 
 // stateGolden is golden for a fixture written from the populated state, whose failure names the
-// two commands that write the state and the fixture, in order (composedStateRewrite).
+// two commands that write the state and the fixture, in order (stateFixturesRewrite).
 func stateGolden(t *testing.T, name string, value any) {
 	t.Helper()
-	testgolden.Check(t, goldenPath(name), value, *updateGolden, composedStateRewrite)
+	testgolden.Check(t, goldenPath(name), value, *updateGolden, stateFixturesRewrite)
 }
 
 // The register response is what the plugin reads its claim, its secret and the task agents its

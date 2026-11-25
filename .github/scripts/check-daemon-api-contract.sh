@@ -95,8 +95,10 @@ from urllib.parse import quote
 DECLARATION = "packages/daemon/internal/api/version.go"
 WORKFLOW = ".github/workflows/ci.yaml"
 # Where each file after version.go holds the number, which held_in reads: dotted key paths into
-# its JSON, each an integer. state.json holds it twice, since TestStateGolden writes the number as
-# both the daemon's and the caller's. version.go's reader is number_in.
+# its JSON, each an integer. state.json holds it twice, since the state route writes the number
+# as both the daemon's and the caller's for a caller at this contract, which internal/daemon's
+# TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds writes the body of. version.go's reader
+# is number_in.
 FIELDS = {
     "packages/contracts/fixtures/daemon-api/version.json": ("daemonApiVersion",),
     "packages/contracts/fixtures/daemon-api/state.json": ("contract.daemon", "contract.caller"),
@@ -435,8 +437,9 @@ for site in FIELDS:
             site,
             f"{site} holds daemon API contract {holds}, and {DECLARATION} declares {tree_number}. "
             f"The {len(SITES)} files that hold the number must agree on it: {', '.join(SITES)}. "
-            f"`go test ./internal/api -run '^(TestDaemonAPIVersionGolden|TestStateGolden)$' "
-            f"-update`, run in packages/daemon, writes the fixtures, and the manifests take the "
+            f"`go test ./internal/api -run '^TestDaemonAPIVersionGolden$' -update` and "
+            f"`go test ./internal/daemon -run '^TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds$' "
+            f"-update`, run in packages/daemon, write the fixtures, and the manifests take the "
             f"number in legion.daemonApiVersion.",
         )
 

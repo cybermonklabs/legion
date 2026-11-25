@@ -1,6 +1,6 @@
 package legion
 
-//ci:reads packages/contracts/fixtures/daemon-api/state.json TestTheDecodeReadsTheStateDocumentTheDaemonWrote os.ReadFile (goldenStatePath, ../../../../contracts/fixtures/daemon-api): the state document the daemon's own internal/api/state_golden_test.go writes, which the sampler's decode must read
+//ci:reads packages/contracts/fixtures/daemon-api/state.json TestTheDecodeReadsTheStateDocumentTheDaemonWrote os.ReadFile (goldenStatePath, ../../../../contracts/fixtures/daemon-api): the state document the daemon's own internal/daemon/state_fixtures_test.go writes, which the sampler's decode must read
 
 import (
 	"os"
@@ -10,9 +10,9 @@ import (
 )
 
 // goldenStatePath is the state document the Legion daemon's own code writes:
-// `packages/daemon/internal/api/composed_state_test.go` composes the daemon's populated state over
-// a seeded database by the calls the daemon's state route makes, and `state_golden_test.go` writes
-// it here (`stateGolden(t, "state.json", populatedState(t))`), so these bytes are the daemon's wire
+// `packages/daemon/internal/daemon/state_fixtures_test.go` builds the daemon's state source over
+// a seeded database and writes here what the state route serves from it
+// (TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds), so these bytes are the daemon's wire
 // shape rather than a reading of it. dispatch://INFRA-1077's acceptance A4 asks for a test on this
 // side that reads such a document, because a Dispatch-side decoder held only to hand-written
 // literals cannot tell when the daemon's own shape moves.

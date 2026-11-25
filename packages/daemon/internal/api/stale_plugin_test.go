@@ -37,7 +37,7 @@ func newStaleHarness(t *testing.T) (*harness, *bytes.Buffer) {
 }
 
 // newNoInstallHarness is a harness whose daemon knows which claims a launch installs no plugin
-// for (Options.NoPluginInstall, config.Config.NoPluginInstall over the configured backends),
+// for (Options.NoPluginInstall, the daemon's noPluginInstall over its configured backends),
 // relaunchable like newStaleHarness's so the rest of the stale-caller rule still applies.
 func newNoInstallHarness(t *testing.T, noInstall func(supervise.Claim) bool) *harness {
 	t.Helper()

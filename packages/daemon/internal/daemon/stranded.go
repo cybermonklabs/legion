@@ -20,6 +20,46 @@ import (
 // through the daemon's normal work or shutdown.
 const strandedReportTimeout = 5 * time.Second
 
+// strandedReleaseWakes is the wakes of released pods that workflow.Stranded judges R6 on: the
+// recorded resumes of project that have not reached the woken role's first turn
+// (store.UnfinishedPodResumesTx, read up to now so the ten-minute bound stays workflow's alone,
+// of each pod's newest release that suspended a role alone and the wakes a pause held, and the
+// rows a stuck pass has already marked included, since those are exactly the pods a wake never
+// brought back), each measured from its stuck clock and none of a project paused now (decision
+// 14 of dispatch://INFRA-3759). It is read only when the project holds a released claim, so a
+// deployment that releases no pod makes no query for one.
+//
+// It reads through tx, the transaction its caller is already in, which is also the snapshot the
+// claims it is judged against were read in: both callers wanted the wakes and the claims from
+// one moment, and neither can ask the pool for a connection of its own while holding one, since
+// a pool whose every connection is held by a transaction waiting for a second one never serves
+// either (INFRA-3169).
+//
+// It is the resumes table's cheap read: PodReleaseRecords, the other read of that table, carries
+// every release and hold of the project with it, so the state route — which judges this rule on
+// every request — must not read it.
+func strandedReleaseWakes(ctx context.Context, st *store.Store, tx pgx.Tx, projectToken string, claims []supervise.Claim, now time.Time) ([]workflow.ReleasedWake, error) {
+	released := false
+	for _, c := range claims {
+		if c.Released() {
+			released = true
+			break
+		}
+	}
+	if !released {
+		return nil, nil
+	}
+	resumes, err := st.UnfinishedPodResumesTx(ctx, tx, projectToken, now)
+	if err != nil {
+		return nil, err
+	}
+	wakes := make([]workflow.ReleasedWake, 0, len(resumes))
+	for _, resume := range resumes {
+		wakes = append(wakes, workflow.ReleasedWake{Issue: resume.Issue, Role: resume.Role, ClockAt: resume.ClockAt, Stuck: resume.Stuck})
+	}
+	return wakes, nil
+}
+
 // reportStranded logs, once the boot has re-adopted every claim and replayed the failed ones to
 // the workflow, the claims nothing will wake (workflow.Stranded), read from records as the state
 // route reads them: one error line, however many there are, naming each claim as `<issue> <role>`
@@ -42,7 +82,7 @@ func reportStranded(ctx context.Context, st *store.Store, records record.Store, 
 		}
 		claims = ofProject(claims, projectToken)
 		now := clock().UTC()
-		resumes, err := workflow.StrandedReleaseWakes(ctx, st, tx, projectToken, claims, now)
+		resumes, err := strandedReleaseWakes(ctx, st, tx, projectToken, claims, now)
 		if err != nil {
 			return err
 		}

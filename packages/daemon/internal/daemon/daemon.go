@@ -1710,6 +1710,47 @@ func (s *supervision) waitingWakes() []supervise.WaitingWake {
 	return waiting
 }
 
+// pacedCatchUps is every catch-up the wake pacing is still holding, as the state names them beside
+// the machines' own wakes (api.State.WakesWaiting): the notice a start writes to an architect
+// already running in place of a launch waits on its row's next_at rather than in a machine
+// (workflow's claimReady, record.Notice.PacedAt), so this lane of the wave is read from the store —
+// in the state's own snapshot, with everything else the state reads, rather than from a second
+// transaction that could see another instant.
+//
+// The rows are the ones a ready would otherwise release and the pacing holds back (the outbox's
+// releaseWaiting reads the same set through the same WaitingNotices and leaves behind exactly the
+// rows whose reserved moment is still ahead of now): a row whose moment has come is a wake that
+// is running or about to, or one whose attempt failed and is waiting on a backoff of its own, and
+// neither is a wake the pacing holds. Each goes to the architect of its own issue, a root's or a
+// child's, whose token it is composed for exactly as the line that wake writes composes it (the
+// outbox's wakeRan), since the row names the issue and the kind alone. A project whose outbox
+// holds no such row allocates nothing.
+func pacedCatchUps(ctx context.Context, tx pgx.Tx, records record.Store, project, dispatchProject string, now time.Time) ([]api.WakeWaiting, error) {
+	waiting, err := records.WaitingNotices(ctx, tx, dispatchProject, now)
+	if err != nil {
+		return nil, err
+	}
+	var wakes []api.WakeWaiting
+	for _, row := range waiting {
+		payload, err := record.DecodeOutboxPayload(row)
+		if err != nil {
+			return nil, fmt.Errorf("decode waiting notice row %d: %w", row.ID, err)
+		}
+		notice, ok := payload.(record.Notice)
+		if !ok || !notice.PacedAt.After(now) {
+			continue
+		}
+		architect, err := claim.NewToken(project, row.Issue, claim.RoleArchitect)
+		if err != nil {
+			return nil, fmt.Errorf("the architect of the catch-up on row %d: %w", row.ID, err)
+		}
+		wakes = append(wakes, api.WakeWaiting{
+			Claim: architect, Issue: row.Issue, Role: claim.RoleArchitect, Kind: supervise.WakeCatchUp, DueAt: row.NextAt.UTC(),
+		})
+	}
+	return wakes, nil
+}
+
 // openSupervision reads the claims the store holds and their sessions' capability reports, takes
 // the worker stream, and builds the runtime over it, for supervision's lifetime and with the
 // workflow's App tokens (nil without a workflow): every step of supervision that can refuse, so a
@@ -1839,7 +1880,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		PodStarts:          podStarts(cfg, p.clock),
 		PluginContract:     api.DaemonAPIVersion,
 		PluginRelaunchable: p.pluginRelaunchable,
-		NoPluginInstall:    func(c supervise.Claim) bool { return cfg.NoPluginInstall(c.Role) },
+		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
 	}
 	if pauses != nil {
 		sup.deps.Paused, sup.deps.PauseStopped, sup.deps.WakeLetOut = pauses.service.Paused, pauses.stopped, pauses.wakeLetOut
@@ -2258,23 +2299,23 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // so only the four states whose process has registered are read.
 //
 // A claim whose launch installs no plugin is never posted, whatever contract it records and
-// round or no round (config.Config.NoPluginInstall). A relaunch is the lane's whole act, and for
-// such a claim the relaunch cannot work: a Claude Code role's plugin under Kubernetes is the
-// worker image's own claude-envoy, which no install reaches, so the launch keeps the pod the claim
-// already runs in, the process comes back on that same plugin, registers the same contract again,
-// and the next registration is the second relaunch in a row — which staleRegistration would
-// charge, until the launch budget fails the claim. The contract decides nothing: a claim at this
-// release's own contract is as unreachable by an install as one below it, and the next bump would
-// walk exactly that claim to failed. Nothing here can move such a worker's plugin; a new image
-// can, which is what the pod round replaces the pod for. So it is left running and is asked its
-// round like any other worker, on its role's own Envoy topic (supervision.openPodUpdate).
-// staleRegistration accepts such a registration and charges it nothing, for the same reason
+// round or no round (noPluginInstall). A relaunch is the lane's whole act, and for such a claim
+// the relaunch cannot work: a Claude Code role's plugin under Kubernetes is the worker image's
+// own claude-envoy, which no install reaches, so the launch keeps the pod the claim already runs
+// in, the process comes back on that same plugin, registers the same contract again, and the next
+// registration is the second relaunch in a row — which staleRegistration would charge, until the
+// launch budget fails the claim. The contract decides nothing: a claim at this release's own
+// contract is as unreachable by an install as one below it, and the next bump would walk exactly
+// that claim to failed. Nothing here can move such a worker's plugin; a new image can, which is
+// what the pod round replaces the pod for. So it is left running and is asked its round like any
+// other worker, on its role's own Envoy topic (supervision.openPodUpdate). staleRegistration
+// accepts such a registration and charges it nothing, for the same reason
 // (supervise.Deps.NoPluginInstall).
 //
 // A claim in a pod round is passed over and a claim in a plugin round is not. That term is the
-// lane's own rather than this pass's: supervise.StaleForTheLane holds it and says what each kind
-// of round reads as and why, because the count of what the lane has left must name the claims
-// this pass posts and no others (supervise.ClaimsToRefresh).
+// lane's own rather than this pass's: staleForTheLane holds it and says what each kind of round
+// reads as and why, because the count of what the lane has left must name the claims this pass
+// posts and no others (claimsToRefresh).
 //
 // A daemon that cannot relaunch onto a plugin (PluginRelaunchable false, LEGION-164's degraded
 // Kubernetes mode) posts nothing; it logs one Error line per stale claim at boot only — a sweep's
@@ -2356,7 +2397,7 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // running wave relies on. It is posted mid-turn as well, since its turn is never waited out
 // (refreshPlugin).
 func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger string) {
-	noInstall := func(c supervise.Claim) bool { return s.cfg.NoPluginInstall(c.Role) }
+	noInstall := func(c supervise.Claim) bool { return noPluginInstall(s.cfg, c) }
 	parked, refreshes := s.parkedWakes()
 	s.refreshGate.Correct(refreshes)
 	refused := 0
@@ -2364,7 +2405,7 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 		if m, supervised := s.supervisor.Machine(c.Token); supervised {
 			c = m.Published()
 		}
-		if !supervise.StaleForTheLane(c, api.DaemonAPIVersion, noInstall) {
+		if !staleForTheLane(c, noInstall) {
 			continue
 		}
 		if !s.plan.pluginRelaunchable {
@@ -2402,6 +2443,78 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 	}
 }
 
+// staleForTheLane is the stale-plugin lane's own stale claim, in the five terms its two readers
+// read alike: a recorded session, a process that holds a capability, a recorded plugin contract
+// that is not this daemon's, no pod update round, and a launch that installs a plugin at all.
+// The readers are the pass that posts the lane's relaunches (refreshStalePlugins) and the count
+// of what the lane still has to do (claimsToRefresh), and they are one predicate because a term
+// added to one of them alone makes the count name work the lane never does or hide work it will
+// — which is the one thing the count exists not to do (dispatch://INFRA-2712 R4).
+//
+// A claim in a pod round is out of the set, whatever contract it records (InPodRound). That
+// round is carrying it, and the process is replaced when the round ends (reconcilePodUpdates),
+// so a StalePlugin post would relaunch mid-turn a claim the round is waiting on and take the
+// pod's replacement its answer; the count says the same, because a claim the pass will not
+// post is not work the lane has left.
+//
+// A claim in a plugin round is in the set, and the term is by round kind for that reason. The
+// boot's own de-round pass has posted such a claim its end a moment before the refresh pass
+// runs (endPluginRounds), and one machine's inbox is FIFO, so that end is decided ahead of the
+// post and the machine sees a claim in no round at all. What that pass reads is each claim as its
+// machine last published it, which still shows the round until the machine has decided that end,
+// and the count reads the claims the store holds, where the round stands until that end's own
+// write. So a term of "in any round" would pass over exactly the claims the de-round pass has just
+// freed and leave each of them a sweep — a whole minute, and a credit of the gate each — behind
+// the rest of the fleet, and would have the count hide that work at the one moment it exists to
+// be read: a boot over a fleet an earlier daemon left mid-round. A claim whose plugin round is
+// somehow still standing when its machine takes the post is decided nothing wrong by it either:
+// refreshPlugin relaunches it, and no plugin round holds a relaunch back, since the ask that did
+// was deleted with the round. A claim that left its round at a registration speaking this
+// daemon's contract (supervise's endCurrentPluginRound) is no longer stale at all, and the
+// contract term above passes over it.
+//
+// noPluginInstall nil is every launch installing a plugin, which only a source a test builds by
+// hand holds: serve gives the state's source the rule over this deployment's configuration and
+// the lane's own pass builds a closure of it at every sweep, so no daemon reads this term as
+// nil, a tmux daemon included (noPluginInstall, serve, refreshStalePlugins).
+func staleForTheLane(c supervise.Claim, noPluginInstall func(supervise.Claim) bool) bool {
+	if c.Session == "" || c.PluginContract == api.DaemonAPIVersion || !supervise.HoldsCapability(c.State) || c.InPodRound() {
+		return false
+	}
+	return noPluginInstall == nil || !noPluginInstall(c)
+}
+
+// claimsToRefresh is how many of claims the stale-plugin lane still has to relaunch onto this
+// daemon's plugin, which the state serves as `claimsToRefresh` (api.State.ClaimsToRefresh,
+// contract 73): a reader of a running wave can then tell what the lane has left from what it
+// has already admitted into the pacing, which `wakesWaiting` alone cannot say now that the gate
+// holds no more than a minute of that pacing at a time (dispatch://INFRA-2712 R4).
+//
+// The set is the one refreshStalePlugins walks, read through that pass's own predicate and the
+// whole of it (staleForTheLane): the round term is in there with the other four, so no claim
+// the pass would post is left out of this count and none it passes over is named by it. It is
+// computed here, where the lane's own rule lives, rather than in internal/api, which does not
+// own that rule and which cuts the body to its caller only after it is built (api's stateFor).
+//
+// A claim in a turn is counted, for the same reason the pass posts it: the lane has it left to
+// refresh, its relaunch is raised at that turn's end (supervise's holdStaleRelaunch, afterTurn),
+// and a count that left it out would read as a drained lane over a fleet still working.
+//
+// Whether this daemon can relaunch onto a plugin at all is deliberately not a term of it
+// (plan.pluginRelaunchable). On a daemon that cannot, the pass posts nothing and writes one
+// Error line per stale claim at boot, and this count is what that gap costs, standing at the
+// claims the lane cannot act on beside those lines. A count zeroed there would read as a lane
+// with nothing left, which is the one thing such a daemon is not.
+func claimsToRefresh(claims []supervise.Claim, noPluginInstall func(supervise.Claim) bool) int {
+	left := 0
+	for _, c := range claims {
+		if staleForTheLane(c, noPluginInstall) {
+			left++
+		}
+	}
+	return left
+}
+
 // parkedWakes is every claim of this daemon whose machine holds a waiting wake of any kind,
 // with the refreshes of that same reading counted beside it: the two answers the refresh pass
 // needs come from one walk of the published views, so the claims it passes over and the count
@@ -2428,6 +2541,32 @@ func (s *supervision) parkedWakes() (map[claim.Token]bool, int) {
 		}
 	}
 	return parked, refreshes
+}
+
+// noPluginInstall is c's launch installing no plugin at all, whatever contract the claim records:
+// the runtime is Kubernetes and the claim's role runs on Claude Code, whose plugin there is the
+// worker image's own claude-envoy. No install reaches it (specs.stalePluginInstall installs none
+// for that backend, and no workflow releases claude-envoy) and no relaunch moves it, because the
+// launch keeps the pod the claim already runs in: only a new image carries another claude-envoy,
+// which is what the pod round replaces the pod for.
+//
+// Under tmux a Claude Code role is exempt from nothing. Its pane loads the claude-envoy held at
+// LEGION_CLAUDE_PLUGIN_DIR (resolveClaude; tmux's ClaudeLaunch, whose MCP configuration and
+// plugin argument every launch writes afresh), so a relaunch once that pane's turn ends brings
+// the worker up on whatever that directory holds now, exactly as an Oh My Pi pane comes back on
+// the plugin installed on the daemon's host. No tmux launch installs a plugin for any backend
+// (specs.stalePluginInstall), so a relaunch is the whole of the lane there — and for this role
+// it is enough.
+//
+// It is one rule read in three places, each of which would otherwise act on a claim no install
+// of this deployment can move: this package's own stale-plugin pass (refreshStalePlugins); the
+// machine's stale registration, which supervise cannot decide for itself because a role's
+// backend is the daemon's configuration (supervise.Deps.NoPluginInstall, handed this same
+// function); and the API's stale-caller refusal, which would otherwise hold such a worker's
+// grants, its handoff_complete and its ready on a relaunch that never comes
+// (api.Options.NoPluginInstall, api's staleClaim).
+func noPluginInstall(cfg config.Config, c supervise.Claim) bool {
+	return cfg.Runtime.Name == "kubernetes" && runtime.Of(cfg.BackendFor(c.Role)) == runtime.BackendClaude
 }
 
 // podStarts is the gate the machines of this daemon start their roles' processes through
@@ -2665,30 +2804,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	// boot is the server goroutine below.
 	ready := &servingLatch{}
 	server := api.NewServer(cfg.Bind, cfg.Port, api.Options{
-		State: &source{
-			store:        st,
-			records:      records,
-			project:      cfg.Project,
-			projectToken: p.project,
-			runtime:      cfg.Runtime.Name,
-			admissionCap: cfg.AdmissionCap,
-			startedAt:    startedAt,
-			now:          p.clock.Now,
-			secretsLogin: p.secretsLogin,
-			deployment:   s.deploymentWith,
-			reports:      s.capabilityReports,
-			wakes:        s.waitingWakes,
-			repositories: p.repositories,
-			caches:       s.cacheStatuses,
-			gatedSteps:   cfg.Gates.Steps(),
-			experiments:  cfg.ExperimentsDeclared(),
-			settings:     api.SettingsOf(cfg),
-			// The same rule the lane itself reads, over the same configuration, so the count
-			// the state serves and the claims the pass posts are one set (refreshStalePlugins,
-			// and the NoPluginInstall option three lines below).
-			noPluginInstall: func(c supervise.Claim) bool { return cfg.NoPluginInstall(c.Role) },
-			architectStalls: architectStalls,
-		},
+		State:              stateSource(cfg, st, records, startedAt, s, p, architectStalls),
 		ConsumerLag:        consumerLag,
 		Intake:             giveUps,
 		CallerPod:          callerPodOf(s.runtime),
@@ -2704,7 +2820,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		Steps:              cfg.Gates.Steps(),
 		ControllerLaunched: keeper != nil,
 		PluginRelaunchable: p.pluginRelaunchable,
-		NoPluginInstall:    func(c supervise.Claim) bool { return cfg.NoPluginInstall(c.Role) },
+		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
 		Backend:            cfg.BackendFor,
 		Stopping:           s.stopping,
 		Drained:            s.draining,
@@ -2871,18 +2987,54 @@ type source struct {
 	// settings is the resolved configuration as the state shows it, built once here: Load reads
 	// legion.yaml once and an edit to it restarts the daemon, so once-at-boot is live.
 	settings api.Settings
-	// noPluginInstall is whether a claim's launch installs no plugin at all
-	// (config.Config.NoPluginInstall over this daemon's configuration), the one term of the
-	// stale-plugin lane's own rule that the claim itself does not carry, which State needs to
-	// count what that lane has left (api.State.ClaimsToRefresh). Nil is every launch installing a
-	// plugin, which only a source a test builds by hand reads as: serve sets this field over the
-	// daemon's own configuration, whatever the runtime.
+	// noPluginInstall is whether a claim's launch installs no plugin at all (the package's
+	// noPluginInstall over this daemon's configuration), the one term of the stale-plugin lane's
+	// own rule that the claim itself does not carry, which State needs to count what that lane
+	// has left (api.State.ClaimsToRefresh). Nil is every launch installing a plugin, which only
+	// a source a test builds by hand reads as: serve sets this field over the daemon's own
+	// configuration, whatever the runtime.
 	noPluginInstall func(supervise.Claim) bool
 	// architectStalls is, by root key, every arm of the architect-stalled reading that holds for
 	// that root's architect (admit.Admission.ArchitectStallArms over the workflow's own admission),
 	// which State serves as each root's `architectStalls`; nil for a daemon with no workflow,
 	// which weighs no architect and serves no arm.
 	architectStalls func(context.Context, pgx.Tx) (map[string][]record.ArchitectStallArm, error)
+}
+
+// stateSource is the state route's source of this daemon (api.Options.State), as serve builds it
+// over st and the records the route reads (records, the workflow's own where it runs one): the
+// configuration's project, runtime, cap, gated steps, experiments and settings; the boot's
+// start, clock and broker login (p); the supervision's deployment, capability reports, waiting
+// wakes and repository caches (s); p's repository state; and architectStalls, nil without a
+// workflow. It is the one place a source of a running daemon is built, so the state fixtures,
+// which build theirs with it (TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds), are what
+// a daemon of the same configuration and memory serves.
+func stateSource(cfg config.Config, st *store.Store, records record.Store, startedAt time.Time, s *supervision, p plan,
+	architectStalls func(context.Context, pgx.Tx) (map[string][]record.ArchitectStallArm, error)) *source {
+	return &source{
+		store:        st,
+		records:      records,
+		project:      cfg.Project,
+		projectToken: p.project,
+		runtime:      cfg.Runtime.Name,
+		admissionCap: cfg.AdmissionCap,
+		startedAt:    startedAt,
+		now:          p.clock.Now,
+		secretsLogin: p.secretsLogin,
+		deployment:   s.deploymentWith,
+		reports:      s.capabilityReports,
+		wakes:        s.waitingWakes,
+		repositories: p.repositories,
+		caches:       s.cacheStatuses,
+		gatedSteps:   cfg.Gates.Steps(),
+		experiments:  cfg.ExperimentsDeclared(),
+		settings:     api.SettingsOf(cfg),
+		// The same rule the lane itself reads, over the same configuration, so the count the state
+		// serves and the claims the pass posts are one set (refreshStalePlugins, and serve's
+		// NoPluginInstall option).
+		noPluginInstall: func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
+		architectStalls: architectStalls,
+	}
 }
 
 // projectRecords scopes the shared daemon database to the daemon's configured project without
@@ -3268,7 +3420,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	// internal/projection may not read. It is read through tx like every other durable fact
 	// here, so the body is still one snapshot, and it is what the state serves as
 	// `strandedClaims` below.
-	resumes, err := workflow.StrandedReleaseWakes(ctx, s.store, tx, s.projectToken, claims, now)
+	resumes, err := strandedReleaseWakes(ctx, s.store, tx, s.projectToken, claims, now)
 	if err != nil {
 		return api.State{}, nil, err
 	}
@@ -3283,7 +3435,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	//
 	// The two are read before the projection and handed to it, so the state's `wakesWaiting` and
 	// each claim view's own `wake` are set from one list. Each read is of this one snapshot.
-	paced, err := api.PacedCatchUpsTx(ctx, tx, records, s.projectToken, s.project, now)
+	paced, err := pacedCatchUps(ctx, tx, records, s.projectToken, s.project, now)
 	if err != nil {
 		return api.State{}, nil, err
 	}
@@ -3332,7 +3484,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 			state.Issues[key] = view
 		}
 	}
-	state.ClaimsToRefresh = supervise.ClaimsToRefresh(claims, api.DaemonAPIVersion, s.noPluginInstall)
+	state.ClaimsToRefresh = claimsToRefresh(claims, s.noPluginInstall)
 	// The project's pause, read through tx as every other durable fact here (api.PauseStateTx):
 	// `paused` with the roles it waits on and the rows it holds while the project is paused, and
 	// `lastPause` while it runs after a pause has ended (decision 25 of dispatch://INFRA-3759).
@@ -3369,7 +3521,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 		if err != nil {
 			return api.State{}, nil, err
 		}
-		live, err := record.GitHubRepositoriesOf(issues)
+		live, err := repositoriesOf(issues)
 		if err != nil {
 			return api.State{}, nil, err
 		}

@@ -57,7 +57,7 @@ const (
 	refreshWaveTurns = 8
 	// refreshWaveRounded is the stale claim seeded in a pod update round, which the lane passes
 	// over for as long as the round stands (refreshStalePlugins, InPodRound) and which the count
-	// of claims left to refresh leaves out (supervise.ClaimsToRefresh).
+	// of claims left to refresh leaves out (claimsToRefresh).
 	refreshWaveRounded = refreshWaveTurns + 1
 	// refreshWaveSweep is the orphan sweep of these cases, on the wall clock as the daemon's own
 	// ticker is: the sweep is what re-fills the gate, so a wave of fifteen minutes' refresh would
@@ -86,7 +86,7 @@ const (
 	refreshWaveRounds = 25
 	// refreshNoInstallRole is the role whose launch installs no plugin on these daemons: a Claude
 	// Code role under Kubernetes, whose plugin is the worker image's own claude-envoy and which
-	// no install of this daemon's reaches (config.Config.NoPluginInstall). The lane never
+	// no install of this daemon's reaches (internal/daemon's noPluginInstall). The lane never
 	// posts such a claim and the count never names it, which is what check c-bound reads it for.
 	refreshNoInstallRole = claim.RoleReviewer
 	// refreshWaveCluster is the API server the daemon's kubeconfig names. Nothing dials it: the
@@ -104,8 +104,8 @@ const (
 // refreshWaveConfig is waveConfig's daemon under Kubernetes, with the reviewer's launches on the
 // Claude Code backend: the one thing a wave of this lane needs that tmux cannot give it is a
 // claim whose launch installs no plugin, which the daemon reads from the runtime and the role's
-// backend together and from nothing else (config.Config.NoPluginInstall). Everything else is
-// waveConfig's: the shipped pace, and every other timer put out past the wave's own span.
+// backend together and from nothing else (noPluginInstall). Everything else is waveConfig's: the
+// shipped pace, and every other timer put out past the wave's own span.
 func refreshWaveConfig(t *testing.T) config.Config {
 	t.Helper()
 	cfg := kubernetesConfig(t, refreshWaveCluster)

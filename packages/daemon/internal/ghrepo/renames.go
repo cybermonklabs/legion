@@ -262,29 +262,6 @@ func (r Renames) Serving(recorded Repository, served func(Repository) bool) Repo
 	return to
 }
 
-// Serves is whether repo is served, Serving's `served`, from what GitHub answered of both role
-// Apps' installation on repo's own name: answered is that answer, whether both Apps are installed
-// and whether GitHub answered both reads at all (ok). Once GitHub has answered, that answer
-// stands. Until GitHub has answered both reads of a name a configured pair holds, the pair's `to`
-// is served and its `from` is not, which is the claim the operator configured: a read that failed
-// at boot must not send every tree on the old name to the old owner's installation
-// (internal/api's handoff_rename_test.go records the outage of 2026-11-06). A name no pair holds
-// is served exactly once GitHub answered both Apps installed, which Serving never asks of it.
-//
-// It is the one writing of that rule: the daemon asks it of its repository state (internal/daemon's
-// repositories.servesLocked), and the state's repositories block of the answers it is built from
-// (internal/api's RepositoriesViewOf).
-func (r Renames) Serves(repo Repository, answered func(Repository) (installed, ok bool)) bool {
-	if installed, ok := answered(repo); ok {
-		return installed
-	}
-	if _, moved := r.MovedTo(repo); moved {
-		return false
-	}
-	_, paired := r.Partner(repo.String())
-	return paired
-}
-
 // Pairs are the configured pairs, in configured order, as a copy no caller can use to change the
 // equivalence.
 func (r Renames) Pairs() []Rename { return slices.Clone(r.pairs) }

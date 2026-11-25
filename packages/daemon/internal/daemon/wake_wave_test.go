@@ -1749,7 +1749,7 @@ const staleRelaunchHeldLine = "supervise: the process speaks another plugin cont
 // The claims in a turn are still the lane's work, and both halves of that are read here: the
 // pass posts each of them, which is the line the machine writes as it holds the relaunch
 // (staleRelaunchHeldLine), and the count the state serves names them, because the lane has
-// them left to refresh (supervise.ClaimsToRefresh).
+// them left to refresh (claimsToRefresh).
 //
 // The negative control is the skip reverted (the StateWorking branch of refreshStalePlugins
 // removed): the claims in a turn then take the credits of the boot pass, which this test reads
@@ -1827,7 +1827,7 @@ func TestAStaleClaimInATurnIsPostedWithNoCreditWhileTheIdleClaimsTakeTheRate(t *
 	}
 
 	// And the lane still has them to do, which is what the count the state serves says of a
-	// fleet whose claims are in turns (supervise.ClaimsToRefresh).
+	// fleet whose claims are in turns (claimsToRefresh).
 	if left := d.state().ClaimsToRefresh; left < len(inATurn) {
 		t.Fatalf("the state says the lane has %d claims to refresh, want at least the %d in a turn: their relaunch is still owed", left, len(inATurn))
 	}

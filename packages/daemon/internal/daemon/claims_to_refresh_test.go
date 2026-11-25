@@ -24,9 +24,9 @@ import (
 
 // refreshCountSource is a source over cfg's project reading st, with the one rule the claims do
 // not carry: a claim of role reviewer is a role whose launch installs no plugin, which is what a
-// Claude Code role under Kubernetes is to the daemon's own source (config.Config.NoPluginInstall).
-// Nothing else of the source matters to the count, and the rest is what stranded_test.go's bare
-// source holds.
+// Claude Code role under Kubernetes is to the daemon's own source (noPluginInstall). Nothing
+// else of the source matters to the count, and the rest is what stranded_test.go's bare source
+// holds.
 func refreshCountSource(t *testing.T, cfg config.Config, st *store.Store) *source {
 	t.Helper()
 	project, err := claim.ProjectToken(cfg.Project)
@@ -62,9 +62,9 @@ func refreshCountState(t *testing.T, cfg config.Config, st *store.Store, view *s
 
 // `GET /legion/v1/state` says how many claims the stale-plugin lane still has to relaunch onto
 // this daemon's plugin, and the set it counts is the one the lane's own pass walks
-// (refreshStalePlugins, supervise.ClaimsToRefresh): a claim with a recorded session, whose process
-// holds a capability, whose recorded contract is not this daemon's, in no pod update round, and
-// whose launch installs a plugin.
+// (refreshStalePlugins, claimsToRefresh): a claim with a recorded session, whose process holds a
+// capability, whose recorded contract is not this daemon's, in no pod update round, and whose
+// launch installs a plugin.
 //
 // Each claim the count leaves out is here for a reason of its own, because the lane leaves it
 // out for a reason of its own: a claim already at this contract has nothing to refresh; a
@@ -77,7 +77,7 @@ func refreshCountState(t *testing.T, cfg config.Config, st *store.Store, view *s
 // A claim in a plugin round is counted, because the pass posts it: the boot's own de-round pass
 // has taken such a claim out of that round a moment before, and one machine's inbox is FIFO, so
 // the relaunch is the lane's work and a count that left it out would hide that work at the one
-// boot it exists to be read over (endPluginRounds, supervise.StaleForTheLane).
+// boot it exists to be read over (endPluginRounds, staleForTheLane).
 //
 // The count is read a second time with every claim brought onto this contract, because 0 is the
 // answer an operator reads a drained wave by and a count that can only rise says nothing.

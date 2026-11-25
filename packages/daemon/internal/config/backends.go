@@ -36,32 +36,6 @@ func (c Config) Backends() []runtime.Backend {
 	return backends
 }
 
-// NoPluginInstall is the launch of a claim of role installing no plugin at all, whatever contract
-// the claim records: the runtime is Kubernetes and role runs on Claude Code, whose plugin there is
-// the worker image's own claude-envoy. No install reaches it (internal/daemon's
-// specs.stalePluginInstall installs none for that backend, and no workflow releases claude-envoy)
-// and no relaunch moves it, because the launch keeps the pod the claim already runs in: only a new
-// image carries another claude-envoy, which is what the pod round replaces the pod for.
-//
-// Under tmux a Claude Code role is exempt from nothing. Its pane loads the claude-envoy held at
-// LEGION_CLAUDE_PLUGIN_DIR (internal/daemon's resolveClaude; tmux's ClaudeLaunch, whose MCP
-// configuration and plugin argument every launch writes afresh), so a relaunch once that pane's
-// turn ends brings the worker up on whatever that directory holds now, exactly as an Oh My Pi pane
-// comes back on the plugin installed on the daemon's host. No tmux launch installs a plugin for
-// any backend (specs.stalePluginInstall), so a relaunch is the whole of the lane there — and for
-// this role it is enough.
-//
-// It is one rule read in three places, each of which would otherwise act on a claim no install
-// of this deployment can move: internal/daemon's stale-plugin pass (refreshStalePlugins, through
-// supervise.StaleForTheLane); the machine's stale registration, which supervise cannot decide for
-// itself because a role's backend is the daemon's configuration (supervise.Deps.NoPluginInstall,
-// handed this same rule); and the API's stale-caller refusal, which would otherwise hold such a
-// worker's grants, its handoff_complete and its ready on a relaunch that never comes
-// (api.Options.NoPluginInstall, api's staleClaim).
-func (c Config) NoPluginInstall(role claim.Role) bool {
-	return c.Runtime.Name == "kubernetes" && runtime.Of(c.BackendFor(role)) == runtime.BackendClaude
-}
-
 // readWorkerBackends is `worker_backends`: a mapping of an issue role to the backend it runs on
 // (runtime.Backends). A role named twice, a name that is not an issue role, a backend there is no
 // entry for, and a backend that does not run the role are each refused naming the entry.

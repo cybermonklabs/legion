@@ -13,7 +13,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -25,7 +24,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/controller"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -365,77 +363,6 @@ type CacheView struct {
 	Bytes         int64     `json:"bytes,omitzero"`
 	HealthError   string    `json:"healthError,omitempty"`
 	RetainedUntil time.Time `json:"retainedUntil,omitzero"`
-}
-
-// RepositoryAnswer is what GitHub, and Dispatch of its webhook App, last answered for one
-// repository name, as the state's repositories block reads it (RepositoriesViewOf): Answered,
-// whether GitHub answered both role Apps' installation reads of the name, and Apps, each App's
-// installation as its last answered read found it, which the block shows only once Answered;
-// ReadError, why GitHub's last read under the name did not answer for it, "" once a read answered;
-// and WebhookApp, why Dispatch's webhook App is not known to be installed on the name, "" when
-// Dispatch answered that it is or was never asked. The zero value is a name nothing answered.
-// internal/daemon reads one from its repository state's entry for the name
-// (repositories.answerLocked).
-type RepositoryAnswer struct {
-	Answered   bool
-	Apps       AppInstallationsView
-	ReadError  string
-	WebhookApp string
-}
-
-// RepositoriesViewOf is the state's repositories block over live, the repositories the live
-// records of the state's own read name by their lowercased <owner>/<name>
-// (record.GitHubRepositoriesOf): one entry for each, sorted by that key, under the name the records
-// keep it under; the name the rename rule serves it under (renames.Serving, each name served as
-// renames.Serves answers from answer), where that is the other name of its configured pair; from
-// answer of the served name, each role App's installation once GitHub answered both reads, and
-// ReadError; and its repository cache from caches, matched whatever the case, where the
-// Kubernetes runtime has made one. Each of those whose served name's answer holds a WebhookApp is
-// the block's withoutWebhookApp, under the name the records keep it under with that as its reason,
-// in the same order: the one place the block reports Dispatch's webhook App. The rest of caches,
-// each cache of a repository no live record names, is the block's caches, in caches' order.
-//
-// answer is what GitHub and Dispatch last answered for one name, the zero RepositoryAnswer where
-// nothing has; internal/daemon's state route hands it its repository state's entries
-// (repositories.view). It performs no I/O.
-func RepositoriesViewOf(live map[string]ghrepo.Repository, renames ghrepo.Renames, answer func(ghrepo.Repository) RepositoryAnswer, caches []CacheView) RepositoriesView {
-	byRepo := make(map[string]CacheView, len(caches))
-	for _, cache := range caches {
-		byRepo[strings.ToLower(cache.Repo)] = cache
-	}
-	installed := func(name ghrepo.Repository) (bool, bool) {
-		held := answer(name)
-		return held.Apps.Implement && held.Apps.Review, held.Answered
-	}
-	served := func(name ghrepo.Repository) bool { return renames.Serves(name, installed) }
-	view := RepositoriesView{Live: make([]LiveRepositoryView, 0, len(live))}
-	for _, key := range slices.Sorted(maps.Keys(live)) {
-		repo := live[key]
-		entry := LiveRepositoryView{Repo: repo.String()}
-		name := renames.Serving(repo, served)
-		if name != repo {
-			entry.ServedAs = name.String()
-		}
-		held := answer(name)
-		if held.Answered {
-			entry.Apps = new(held.Apps)
-		}
-		entry.ReadError = held.ReadError
-		if held.WebhookApp != "" {
-			view.WithoutWebhookApp = append(view.WithoutWebhookApp, WebhookAppGapView{Repo: entry.Repo, Reason: held.WebhookApp})
-		}
-		if cache, cached := byRepo[key]; cached {
-			entry.Cache = new(cache)
-			delete(byRepo, key)
-		}
-		view.Live = append(view.Live, entry)
-	}
-	for _, cache := range caches {
-		if _, unnamed := byRepo[strings.ToLower(cache.Repo)]; unnamed {
-			view.Caches = append(view.Caches, cache)
-		}
-	}
-	return view
 }
 
 // MarshalJSON keeps the three lists arrays on the wire, and writes the block in contract 152's
@@ -2039,7 +1966,7 @@ type WakeWaiting struct {
 // held are the wakes the daemon's machines hold in memory, each as its machine last published it
 // (supervise.Machine.WaitingWake) — the launches and the refresh relaunches — and queued are the wakes
 // that wait on a durable row, which the caller composes from the store — today the paced catch-ups
-// (PacedCatchUpsTx). The two are merged here rather than at either source so that one read
+// (daemon's pacedCatchUps). The two are merged here rather than at either source so that one read
 // of the state is one ordered list, whichever lane is holding a wave back: an operator or a
 // controller asking whether a wave is still running must not have to know which lane each wake of
 // it is in.
@@ -2059,47 +1986,6 @@ func WakesWaitingOf(held []supervise.WaitingWake, queued []WakeWaiting) []WakeWa
 	wakes = append(wakes, queued...)
 	slices.SortStableFunc(wakes, func(a, b WakeWaiting) int { return cmp.Compare(a.Claim, b.Claim) })
 	return wakes
-}
-
-// PacedCatchUpsTx is every catch-up the wake pacing is still holding, as the state names them
-// beside the machines' own wakes (State.WakesWaiting): the notice a start writes to an architect
-// already running in place of a launch waits on its row's next_at rather than in a machine
-// (workflow's claimReady, record.Notice.PacedAt), so this lane of the wave is read from the store —
-// in the state's own snapshot, tx, with everything else the state reads, rather than from a second
-// transaction that could see another instant.
-//
-// The rows are the ones a ready would otherwise release and the pacing holds back (the outbox's
-// releaseWaiting reads the same set through the same WaitingNotices and leaves behind exactly the
-// rows whose reserved moment is still ahead of now): a row whose moment has come is a wake that
-// is running or about to, or one whose attempt failed and is waiting on a backoff of its own, and
-// neither is a wake the pacing holds. Each goes to the architect of its own issue, a root's or a
-// child's, whose token it is composed for exactly as the line that wake writes composes it (the
-// outbox's wakeRan), since the row names the issue and the kind alone. A project whose outbox
-// holds no such row allocates nothing.
-func PacedCatchUpsTx(ctx context.Context, tx pgx.Tx, records record.Store, project, dispatchProject string, now time.Time) ([]WakeWaiting, error) {
-	waiting, err := records.WaitingNotices(ctx, tx, dispatchProject, now)
-	if err != nil {
-		return nil, err
-	}
-	var wakes []WakeWaiting
-	for _, row := range waiting {
-		payload, err := record.DecodeOutboxPayload(row)
-		if err != nil {
-			return nil, fmt.Errorf("decode waiting notice row %d: %w", row.ID, err)
-		}
-		notice, ok := payload.(record.Notice)
-		if !ok || !notice.PacedAt.After(now) {
-			continue
-		}
-		architect, err := claim.NewToken(project, row.Issue, claim.RoleArchitect)
-		if err != nil {
-			return nil, fmt.Errorf("the architect of the catch-up on row %d: %w", row.ID, err)
-		}
-		wakes = append(wakes, WakeWaiting{
-			Claim: architect, Issue: row.Issue, Role: claim.RoleArchitect, Kind: supervise.WakeCatchUp, DueAt: row.NextAt.UTC(),
-		})
-	}
-	return wakes, nil
 }
 
 // WakeView is the wake the pacing holds for one claim, as that claim's view names it

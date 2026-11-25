@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/apifixture"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/pause"
@@ -520,7 +521,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 		Settings:     SettingsOf(loadSettingsFile(t, settingsFixtureFile+sandboxSettingsBlock)),
 		// Built as the state's read builds it (PauseStateTx), holding no row: the paused state's
 		// pause carries the held rows.
-		Paused:        pausedViewOf(goldenPause(false), stops, nil),
+		Paused:        pausedViewOf(apifixture.Pause(false), stops, nil),
 		IntakeGiveUps: giveUps,
 	}
 }
@@ -721,12 +722,12 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 	}
 }
 
-// controllerPause is the goldens' pause (goldenPause) begun by the controller from its session
-// rather than by the operator, and ended by the controller as the goldens' is, so a view of it
-// names a session at `by` and, once ended, at `endedBy` too: a fixture body is maximal, and the
-// operator's pause names no session at `by`.
+// controllerPause is the goldens' pause (apifixture.Pause) begun by the controller from its
+// session rather than by the operator, and ended by the controller as the goldens' is, so a view
+// of it names a session at `by` and, once ended, at `endedBy` too: a fixture body is maximal, and
+// the operator's pause names no session at `by`.
 func controllerPause(ended bool) store.Pause {
-	p := goldenPause(ended)
+	p := apifixture.Pause(ended)
 	p.By = store.PauseActor{Kind: store.PauseByController, Session: "ses_controller"}
 	return p
 }

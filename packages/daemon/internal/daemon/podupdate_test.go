@@ -246,7 +246,7 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 	s := &supervision{
 		// The rig's claims run in an issue pod, so its configuration is a Kubernetes
 		// deployment's: that is what the Claude Code role's exemption from the stale-plugin
-		// lane is read from, beside the role's backend (config.Config.NoPluginInstall).
+		// lane is read from, beside the role's backend (noPluginInstall).
 		cfg: config.Config{Project: "LEGION", Runtime: config.Runtime{Name: "kubernetes"},
 			PodUpdateGrace: podUpdateGrace, WorkerSilence: podUpdateSilence},
 		log:     log,
@@ -273,7 +273,7 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 		// (staleRegistration), and a rig that left it false would accept every stale registration
 		// whatever the rest of the rule says.
 		PluginRelaunchable: true,
-		NoPluginInstall:    func(c supervise.Claim) bool { return s.cfg.NoPluginInstall(c.Role) },
+		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(s.cfg, c) },
 		RefreshGate:        supervise.NewRefreshGate(0),
 		WakePace:           opts.wakePace,
 		// A firing timer and a prompt's send take a hold mark of their own, as openSupervision

@@ -320,32 +320,6 @@ func (i Issue) Repository() (ghrepo.Repository, error) {
 	return ghrepo.Parse("the repository of "+i.Key, i.Repo)
 }
 
-// GitHubRepositoriesOf is the repository each of issues, any slice of records, names, once each by
-// its lowercased <owner>/<name>, as the record keeps GitHub's spelling of it (Issue.GitHubRepo),
-// the first record's spelling where several name one; a record that keeps none names nothing, and
-// one whose spelling is no <owner>/<name> refuses the read, naming the issue. It is the one reading
-// of the repositories records name, all internal/daemon's: the live records' for the cache set and
-// the repository state's live set (refreshCacheRepositories) and for legion state's repositories
-// block (source.State), and every record's for what GitHub intake hears (heardRepositories) and
-// for the refresher's preparation at its start (recordedRepositories).
-func GitHubRepositoriesOf(issues []Issue) (map[string]ghrepo.Repository, error) {
-	live := map[string]ghrepo.Repository{}
-	for _, issue := range issues {
-		if issue.GitHubRepo == "" {
-			continue
-		}
-		if _, held := live[strings.ToLower(issue.GitHubRepo)]; held {
-			continue
-		}
-		repo, err := ghrepo.Parse("GitHub's spelling of the repository of "+issue.Key, issue.GitHubRepo)
-		if err != nil {
-			return nil, err
-		}
-		live[strings.ToLower(repo.String())] = repo
-	}
-	return live, nil
-}
-
 // Assignment is what one unit ran one experiment under: the arm drawn for it, the mode in force
 // when it was drawn and the instant, and how the issue drawn is done where the arm says so (Plan),
 // recorded once for that unit and never changed

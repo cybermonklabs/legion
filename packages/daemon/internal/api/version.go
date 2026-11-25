@@ -17,12 +17,15 @@ package api
 // Bump rule: a change to any of these surfaces raises this constant above the number its base
 // carries. The same commit writes the number in every other file that holds it:
 // `legion.daemonApiVersion` in `packages/pi-legion/package.json` and
-// `packages/claude-envoy/package.json`, and the two fixtures
-// that this package's golden tests write, `packages/contracts/fixtures/daemon-api/version.json`
-// and `packages/contracts/fixtures/daemon-api/state.json`. In `packages/daemon`,
-// `go test ./internal/api -run '^(TestDaemonAPIVersionGolden|TestStateGolden)$' -update` writes
-// the two fixtures. The plugin's test reads `version.json`, so that fixture holds this constant
-// and the plugin's field together. The bump's history is its numbered entry in this file, below.
+// `packages/claude-envoy/package.json`, and the two fixtures that hold it,
+// `packages/contracts/fixtures/daemon-api/version.json`, which this package's
+// TestDaemonAPIVersionGolden writes, and `packages/contracts/fixtures/daemon-api/state.json`, the
+// state route's body, which internal/daemon's TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds
+// writes. In `packages/daemon`, `go test ./internal/api -run '^TestDaemonAPIVersionGolden$' -update`
+// and `go test ./internal/daemon -run '^TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds$'
+// -update` write the two fixtures. The plugin's test reads `version.json`, so that fixture holds
+// this constant and the plugin's field together. The bump's history is its numbered entry in this
+// file, below.
 // `.github/scripts/check-daemon-api-contract.sh` refuses a change in which one of those files
 // disagrees with this constant, and, naming a free number, a change that touches the contract
 // below (that script's header says which edits do) and declares no number above its base's.
@@ -2303,7 +2306,7 @@ package api
 // release of main before this change lands, the one just before it included. The bound is named
 // by the entry and not by a number because a forward merge can move the number, as the history
 // below records, and a number written into prose stays where it was. That row does not fail
-// alone: `WaitingNotices` reads every waiting notice row of the project, `PacedCatchUpsTx`
+// alone: `WaitingNotices` reads every waiting notice row of the project, `pacedCatchUps`
 // returns on the first it cannot decode, and its one caller is the state read, so one row fails
 // `GET /legion/v1/state` for the whole project until somebody deletes it — the chain
 // `store/migrations/20261109060737_drop_awaiting_slot_notice.up.sql` records as this

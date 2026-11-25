@@ -10,7 +10,7 @@ import (
 // record.Notice, which record.DecodeOutboxPayload decodes with DisallowUnknownFields. So a row
 // the release before this one wrote fails to decode for ever on its backoff, and while that
 // backoff holds its next_at ahead of now it also fails every read of the project's state that
-// passes it: record.Store.WaitingNotices lists it and api.PacedCatchUpsTx returns its decode
+// passes it: record.Store.WaitingNotices lists it and daemon.pacedCatchUps returns its decode
 // error, so GET /legion/v1/state answers an error for the whole project — the state the
 // controller, legion state and this issue's own after_merge check read — until somebody deletes
 // the row by hand.

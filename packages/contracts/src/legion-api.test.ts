@@ -122,13 +122,15 @@ const CLAIM_SECRET = fixtureSecret("claim");
 /** Every fixture the Go golden test writes, with the schema that must accept it. A new fixture
  * with no entry here fails the first test rather than going unchecked. */
 const schemas: Record<string, z.ZodType> = {
-  // Written by internal/api's TestStateGolden from the populated state that
-  // TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds composes over a seeded database.
+  // Written by internal/daemon's TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds: the
+  // state route's body for a caller at this contract, over the daemon's own state source of a
+  // seeded database.
   "state.json": LegionStateResponse,
-  // The four states below are that composition's too, each over a seed of its own: a project at
-  // Stage 3, an operator's spawn on an issue the workflow keeps no record of, the populated record
-  // ten seconds into a pause, which carries `paused` (contract 178), and a project that runs after
-  // a pause has ended, which carries `lastPause` and no `paused`.
+  // The four states below are that composition's too, each over a seed of its own and before the
+  // route marks the shape it served: a project at Stage 3, an operator's spawn on an issue the
+  // workflow keeps no record of, the populated record ten seconds into a pause, which carries
+  // `paused` (contract 178), and a project that runs after a pause has ended, which carries
+  // `lastPause` and no `paused`.
   "state-stage3.json": LegionStateResponse,
   "state-operator-claim.json": LegionStateResponse,
   "state-paused.json": LegionStateResponse,
@@ -3027,7 +3029,7 @@ test("the state golden shows a claim's capability report beside its locator", ()
 });
 
 // The claims nothing will wake (contract 23): the golden's list is the daemon's own rule over its
-// seed (workflow.Stranded, which internal/api's composed_state_test.go composes the state with),
+// seed (workflow.Stranded, which internal/daemon's source.State composes the state with),
 // one entry for each claim state the rule names: LEGION-210's failed implementer, whose issue is
 // held, LEGION-218's tree architect, which the operator suspended, and LEGION-219's tree
 // architect, which the close of the run before retired and which only its tree's admission
