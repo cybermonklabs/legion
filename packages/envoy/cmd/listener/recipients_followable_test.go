@@ -3,6 +3,7 @@ package main
 import (
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/bus/bustest"
