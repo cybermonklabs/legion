@@ -1150,7 +1150,7 @@ test("a landing dropped to the body in the frame after the commit takes the focu
 // of their sight. The least scroll then shows that mark whole again, at its nearest edge. Here the
 // view moves 120 px and the commit leaves CORE-14's mark 1,200 px down, below the window's 768 px.
 test("a landing the view moved away from under the reader is shown whole again by the least scroll", () => {
-  const laidOut = layRowsOut("[data-row]", 9);
+  let laidOut = layRowsOut("[data-row]", 9);
   const view = render(
     <PlacedList count={2} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
   );
@@ -1167,21 +1167,18 @@ test("a landing the view moved away from under the reader is shown whole again b
     // the landing chose stands below the window.
     Object.defineProperty(window, "scrollY", { configurable: true, value: 120 });
     laidOut();
-    const relaid = layRowsOut("[data-row]", 0);
-    try {
-      view.rerender(
-        <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
-      );
-      expect(rowBox("CORE-14")).toHaveFocus();
-      expect<readonly unknown[]>(scroll.mock.calls).toEqual([[{ top: 1200 - window.innerHeight }]]);
-    } finally {
-      relaid();
-    }
+    laidOut = layRowsOut("[data-row]", 0);
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
+    );
+    expect(rowBox("CORE-14")).toHaveFocus();
+    expect<readonly unknown[]>(scroll.mock.calls).toEqual([[{ top: 1200 - window.innerHeight }]]);
   } finally {
     if (scrollY === undefined) Reflect.deleteProperty(window, "scrollY");
     else Object.defineProperty(window, "scrollY", scrollY);
     scroll.mockRestore();
     view.unmount();
+    laidOut();
   }
 });
 

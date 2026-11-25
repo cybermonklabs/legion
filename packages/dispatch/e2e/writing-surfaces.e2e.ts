@@ -197,9 +197,8 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       // lists everyone who has signed in.
       await expectRow(page, field, "agents-row-composer", "agent-message");
       await row.getByRole("button", { name: "Choose issue" }).click();
-      // The issue pick is the shared list (`components/MultiSelect.tsx`), which this branch draws
-      // in place of the native select: its options read as the issue's key and title, and a click
-      // on one picks it (`issueOption`).
+      // The issue pick is the shared list (`components/MultiSelect.tsx`): its options read as the
+      // issue's key and title, and a click on one picks it (`issueOption`).
       await issueOption(row, world.host).click();
       await expectRow(page, field, "agents-row-composer", "comment", () =>
         composerSend(page, "Comment", row).click()

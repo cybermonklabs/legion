@@ -122,7 +122,7 @@ function table(
     open,
     inMain = false,
   }: {
-    agents?: Promise<Agent[]> | (() => Promise<Agent[]>);
+    agents?: Promise<Agent[]>;
     client?: QueryClient;
     full?: Promise<IssueSummary[]>;
     open?: Promise<IssueSummary[]>;
@@ -155,9 +155,7 @@ function table(
     );
   });
   const state = spyOn(api, "getMyState").mockResolvedValue({});
-  const registry = spyOn(api, "listAgents").mockImplementation(async () =>
-    typeof agents === "function" ? agents() : (agents ?? [])
-  );
+  const registry = spyOn(api, "listAgents").mockImplementation(async () => agents ?? []);
   const viewer = spyOn(api, "whoAmI").mockResolvedValue({
     event_head: "0",
     login: "alice",
@@ -203,7 +201,7 @@ function table(
     if (descriptor) Object.defineProperty(HTMLElement.prototype, "clientHeight", descriptor);
     else Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
   });
-  return { client, listing, view };
+  return { client, listing, registry, view };
 }
 
 /** Fills in the in-page dialog an epic is named or renamed through, once it opens. */
@@ -1855,29 +1853,24 @@ test("a later read of a refused agent list keeps the counts it does not decide, 
   const refused = Promise.reject(new Error("agent list refused"));
   refused.catch(() => undefined);
   const held = Promise.withResolvers<Agent[]>();
-  let reads = 0;
-  const { client } = table(
+  const { client, registry } = table(
     [
       issue("CORE-1", { assignee: "alice", priority: 1 }),
       issue("CORE-2", { assignee: "bob", priority: 2 }),
     ],
     "?unclaimed=1",
-    {
-      agents: () => {
-        reads += 1;
-        return reads === 1 ? refused : held.promise;
-      },
-    }
+    { agents: refused }
   );
   await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
   await screen.findByTestId("unclaimed-unchecked");
   expect(await headerOptions(user, "Assignee")).toEqual(["alice, 1 issue", "bob, 1 issue"]);
   // The shell's next poll of the list: its read is out while the filters are read again.
+  registry.mockImplementation(() => held.promise);
   await act(async () => {
     void client.refetchQueries({ queryKey: ["agents"] });
     await Promise.resolve();
   });
-  expect(reads).toBe(2);
+  expect(registry).toHaveBeenCalledTimes(2);
   expect(await headerOptions(user, "Assignee")).toEqual(["alice, 1 issue", "bob, 1 issue"]);
   expect(await headerOptions(user, "Priority")).toEqual(["P1, 1 issue", "P2, 1 issue"]);
   expect(screen.getByTestId("unclaimed-unchecked")).toBeTruthy();

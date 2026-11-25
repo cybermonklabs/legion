@@ -166,27 +166,30 @@ export function useLastMarkedPlace(list: MarkedList): () => boolean {
   //    changed around it, which is a landing the reader cannot see: it is passed over, as the
   //    hand-off passes over a row out of sight, and the place is handed off again from the rows
   //    the list holds now, ending at the list's own stop where no row in sight can take it.
-  // A mark the commit leaves cut is already shown whole by the landing's own least scroll, and
+  // A mark the commit leaves cut is shown whole by the landing's own least scroll, or by the
+  // list's anchor where the landing took it with no scroll of its own (`ViewportAnchor`), and
   // nothing here moves the view for it; a mark the reader has left for another control is theirs,
   // and nothing here takes the focus back from it.
   useLayoutEffect(() => {
     const landing = landed.current;
     if (landing === null) return;
-    if (list.order().some((row) => list.leaving?.(row) === true)) return;
+    const { leaving } = list;
+    const order = list.order();
+    if (leaving !== undefined && order.some((row) => leaving(row))) return;
     landed.current = null;
     const mark = list.control(landing.id);
     if (mark === null || !mark.isConnected) return;
-    const focused = document.activeElement;
-    const lost = focused === null || focused === document.body;
-    if (!lost && focused !== mark) return;
+    const lost = focusOnDocument();
+    if (!lost && document.activeElement !== mark) return;
     const head = list.head?.() ?? null;
     // The row the mark is in is drawn again in this commit and in the frame it paints, and an
     // engine can drop the focus either time: the frame after this one reads it once more, and puts
     // it back on the mark where it fell to the page's body with nothing else taking it.
     const held = (keep: HTMLElement): void => {
+      if (frame.current !== null) window.cancelAnimationFrame(frame.current);
       frame.current = window.requestAnimationFrame(() => {
         frame.current = null;
-        if (keep.isConnected && document.activeElement === document.body) focusNoScroll(keep);
+        if (keep.isConnected && focusOnDocument()) focusNoScroll(keep);
       });
     };
     if (inSightNow(mark, new Map())) {
@@ -194,17 +197,18 @@ export function useLastMarkedPlace(list: MarkedList): () => boolean {
       held(mark);
       return;
     }
-    if (viewScrollOf(mark) !== landing.at) {
+    // The row the reader marked last takes the focus wherever it stands, so its own mark is shown
+    // whole rather than passed over; and so is a mark the view moved away from under them.
+    if (landing.id === landing.last || viewScrollOf(mark) !== landing.at) {
       if (lost && !focusNoScroll(mark)) return;
       landNearest(mark, head);
       held(mark);
       return;
     }
-    const kept = list.order().filter((id) => list.leaving?.(id) !== true);
     const place =
       landing.last === null
-        ? firstMarkShown(kept, list.control, EMPTY_LANDING, head)
-        : markAtPlace(kept, before.current, landing.last, list.control, EMPTY_LANDING, head);
+        ? firstMarkShown(order, list.control, EMPTY_LANDING, head)
+        : markAtPlace(order, before.current, landing.last, list.control, EMPTY_LANDING, head);
     const now = place === null ? null : list.control(place);
     if (place !== null && now !== null) {
       landMark(now, undefined, head);
@@ -228,7 +232,10 @@ export function useLastMarkedPlace(list: MarkedList): () => boolean {
     const mark = id === null ? null : list.control(id);
     if (id !== null && mark !== null) {
       landMark(mark, landing.moves.get(id), head);
-      landed.current = { at: viewScrollOf(mark), id, last };
+      // The landing is finished once this press's rows have gone (above), and only a press that
+      // is taking rows away has a commit to finish it in: where the list keeps every row it holds,
+      // nothing of the list or the box changes under the landing, and it is whole as it stands.
+      landed.current = kept.length < order.length ? { at: viewScrollOf(mark), id, last } : null;
       return true;
     }
     if (listed) return false;
@@ -269,10 +276,8 @@ interface Landing {
  *  leaving, no row moves and nothing is read. */
 function onceGone(order: readonly string[], list: MarkedList): Landing {
   const { control, leaving } = list;
+  if (leaving === undefined || !order.some((id) => leaving(id))) return EMPTY_LANDING;
   const moves = new Map<string, MovedUp>();
-  if (leaving === undefined || !order.some((id) => leaving(id))) {
-    return { listed: new Set(), moves };
-  }
   const idOf = new Map<Element, string>();
   for (const id of order) {
     const row = control(id)?.closest(ROW_SELECTOR);

@@ -6511,7 +6511,7 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
   ];
 }
 
-// SLOW(>=2s): twenty-five lists on nine pages, each list opened three times at each of two widths.
+// SLOW(>=2s): twenty-six lists on nine pages, each list opened three times at each of two widths.
 // R3: "Every list of options a reader picks from holds a text box that narrows the options."
 // The row covers the twenty-five single picks of the shared list (`components/MultiSelect.tsx`),
 // the lists whose options grow with the project among them: the search bar's Project and Status,
@@ -6521,11 +6521,12 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
 // Snooze selected asks (`Inbox`), the Agents composer's Issue, the Agents page's Delivery mode
 // (`AgentsPage`), the Spec tab's Version (`SpecToolbar`), a document page's Version
 // (`ArtifactHeader`) and its compare From and To (`ArtifactDetails`), the issue header's Assignee
-// (`AssigneeControl`), Repository (`RepoControl`) and Edit priorities (`IssuePriorityLine`),
+// (`AssigneeControl`) and Repository (`RepoControl`),
 // the Create issue dialog's Project (`CreateIssueDialog`), the Settings page's Default assignee
 // of a project and the New project form's Default assignee (`ProjectsSection`), and its Source
 // project (`ProjectSelect`), and the Delivery page's Window (`WindowControl`) and
-// Color merges by (`DeliveryPage`). The issue header's Status is the shared single pick too
+// Color merges by (`DeliveryPage`), and, in multi-pick mode, the issue header's Edit priorities
+// (`IssuePriorityLine`). The issue header's Status is the shared single pick too
 // (20f534c5); this row does not open it, and its own unit cases hold its text box
 // (`features/issue/IssuePage.test.tsx`, `features/issue/issue-writes.test.tsx`). At each width
 // each list is
@@ -12551,7 +12552,11 @@ test("the Inbox bar's Dismiss with the row marked last cut by 70% at the list's 
     `${focused.name}, the box scrolled ${scrolled} px, and the checkbox now at the place stands at ` +
     `top ${Math.round(landed.top)} to bottom ${Math.round(landed.bottom)} in a sight from ` +
     `${Math.round(now.top)} to ${Math.round(now.bottom)}`;
-  expect(focused.onMark && landed.top >= now.top - 1 && landed.bottom <= now.bottom + 1, text).toBe(
-    true
-  );
+  expect(
+    focused.onMark &&
+      landed.top >= now.top - 1 &&
+      landed.bottom <= now.bottom + 1 &&
+      Math.abs(scrolled) <= cut + 1,
+    text
+  ).toBe(true);
 });

@@ -2552,10 +2552,8 @@ test("the fault tabs draw a holder's claim whole, and no status bar of these pag
 
 // INFRA-2947 R15 and check 0abe1d81 (Verification v69): a project's Issues tab, the one page
 // outside the priorities pages this change reaches. At 1280 by 800 the search box, View, Columns
-// and the row's Filters trigger each stand 34 px high - the trigger stands where Needs you and
-// Unread stood, which are chips of its panel now; at 900 px wide the search box takes a row of
-// its own above the other controls; and at 390 by 844 each of those controls is at least
-// 44 px high.
+// and Filters each stand 34 px high; at 900 px wide the search box takes a row of its own above
+// the other controls; and at 390 by 844 each of those controls is at least 44 px high.
 // SLOW(>=2s): a project and one issue written, and the tab read at three sizes.
 test("a project's Issues tab draws its toolbar 34 px high at 1280, its search box on a row of its own at 900, and each control 44 px or more on a phone", async ({
   browser,

@@ -249,9 +249,8 @@ export function AgentMessageComposer({
           }}
           onPick={commitIssue}
           open={issuePickerOpen}
-          // agent-message-issue-option: an option of the shared pick reads as its characters, as
-          // the `<option>` of the native select this control replaced did, so an issue's key and
-          // title are that one line here (`DISPATCH_READING_SURFACES`).
+          // An issue's key and title, as the characters they are: the reading list's
+          // `agent-message-issue-option`.
           optionLabel={(key) =>
             key === ""
               ? "No issue"

@@ -1296,7 +1296,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   {
     files: ["packages/dispatch/web/src/features/agents/AgentMessageComposer.tsx"],
     reach: "/agents, the options of a row composer's issue pick (`components/MultiSelect.tsx`)",
-    reason: `${NO_MARKUP_REASON} An \`<option>\` can hold no markup, and an issue's key and title are that one line; the plain-text projection (\`PlainText\`) is for a record's own markdown, which a title is not.`,
+    reason: `${NO_MARKUP_REASON} The shared pick takes each option's label as a string (\`optionLabel\`) and draws it as the characters it is, so an issue's key and title are that one line; the plain-text projection (\`PlainText\`) is for a record's own markdown, which a title is not.`,
     record: false,
     rendered: false,
     surface: "agent-message-issue-option",
