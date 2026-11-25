@@ -6,7 +6,8 @@ body: |-
   `TestADatabaseMainMigratedTakesThisBranchsMigrationsLast` migrates a database with the base
   commit's own migration files and then upgrades it. CI gives it the commit the run's tree lands
   onto as `LEGION_TEST_MIGRATION_BASE`. Under GitHub Actions that test fails when the variable is
-  unset, and every store test fails, and does not skip, when `LEGION_TEST_PG_DSN` is unset.
+  unset, and each store test that needs a database fails, and does not skip, when
+  `LEGION_TEST_PG_DSN` is unset.
 time: 2026-11-25T22:41:37Z
 custom:
     Issue: pr5580

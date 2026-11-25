@@ -50,7 +50,7 @@ import (
 // Under GITHUB_ACTIONS an unset LEGION_TEST_PG_DSN fails the test instead (the daemon's rule for a
 // test this machine cannot run, internal/launcher's skipOutsideCI): ci-job-daemon-go.yaml's
 // daemon-go-legs job names its Postgres service, so a run without one is a broken job, and a skip
-// there would pass every store test unrun.
+// there would pass every test of this package that needs a database unrun.
 func testDSN(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("LEGION_TEST_PG_DSN")

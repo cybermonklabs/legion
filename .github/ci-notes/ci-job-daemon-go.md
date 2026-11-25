@@ -113,11 +113,12 @@ and prints it, and the plain step hands it to the test as `LEGION_TEST_MIGRATION
 plain leg runs the step, so the test keeps its base when `.github/go-legs.yaml` moves
 internal/store to another leg.
 
-On a dispatch of a branch the base is the branch's merge base with main, the commit the branch
-lands onto, as the script picks it for envoy-go-build. The branch's tree then holds none of the
-migrations main took after that commit, so this run cannot see one of them conflict with the
-branch's. The pull request's run sees it: its tree is GitHub's merge commit, and its base is
-main's tip, so both hold that migration of main's.
+On a dispatch of a branch that names no `migration-base`, the base is the branch's merge base with
+main, the commit the branch lands onto, as the script picks it for envoy-go-build. The branch's
+tree then holds none of the migrations main took after that commit, so this run cannot see one of
+them conflict with the branch's. The merge queue's run sees it, and so does a pull request's run
+that runs this job (the `full-ci` or `lane:daemon_go_tests` label): the tree is the merge, and the
+base is main or the entry before, so both hold that migration of main's.
 
 The test fails under `GITHUB_ACTIONS` when the variable is unset, so a step that stops handing it
 over turns the job red, not the test into a skip. On a dispatch of main the step needs the
