@@ -85,17 +85,27 @@ case "$mode" in
       # process of a named group, `<pid> <ticks> <group>`. The machine line is written by the
       # BEGIN block, so it is always this tick's first line, and the reading below counts a tick
       # by it.
+      #
+      # `dispatch` is the Dispatch server, told by the program it runs, `$2`, the first word of
+      # its arguments: run-server.sh execs it as the path DISPATCH_E2E_SERVER_BIN names, which in
+      # both browser jobs is the binaries job's build, `.../out/dispatch-e2e-broker/dispatch`, and
+      # as `./dispatch-e2e` where it builds its own. The pattern this replaced, `dispatch-e2e( |$)`
+      # anywhere in the line, does not match that path - the directory's name goes on past `-e2e`
+      # - so CI's server was counted under `everything else` and every reading said
+      # `dispatch 0 (0%)`. The broker's commands sit in the same directory
+      # (`.../dispatch-e2e-broker/cipherd`) and are not the server, which is why the program's own
+      # name is read rather than its directory.
       ps -eo pid=,args= | awk '
-        function group(args) {
+        function group(args, program) {
           if (args ~ /ms-playwright/)     return "browser"
           if (args ~ /(^|\/)bun( |$)/)    return "bun"
           if (args ~ /playwright/)        return "runner"
-          if (args ~ /dispatch-e2e( |$)/) return "dispatch"
+          if (program ~ /(^|\/)dispatch(-e2e)?$/) return "dispatch"
           if (args ~ /postgres|psql/)     return "postgres"
           return ""
         }
         BEGIN { while ((getline l < "/proc/stat") > 0) if (l ~ /^cpu /) { split(l, c); print "machine", c[2]+c[3]+c[4]+c[7]+c[8]+c[9]; break } }
-        { g = group($0); if (g == "") next
+        { g = group($0, $2); if (g == "") next
           if ((getline l < ("/proc/" $1 "/stat")) <= 0) next
           close("/proc/" $1 "/stat"); sub(/^[^ ]+ \(.*\) /, "", l); split(l, s)
           print $1, s[12] + s[13], g }' >> "$cpu"

@@ -3,7 +3,7 @@
 `migrations/` holds every `<version>_<name>.up.sql` boot applies in version order, with the `<version>_<name>.census.sql` each one declares for the pre-deploy census.
 `<version>` is one of the numbers the set grew up with, each of whose files keeps the number it landed with, and for every migration added since the UTC moment its author created it, `YYYYMMDDHHMMSS` (`date -u +%Y%m%d%H%M%S`):
 two pull requests open at once cannot both claim one timestamp, while both would claim the next number.
-This file sits beside that directory rather than in it because the directory is embedded with `all:` and `pgmigrate.Load` refuses a set holding a file named anything but `<version>_<name>.up.sql`, `.down.sql` or `.census.sql`, which would refuse every boot.
+This file sits beside that directory rather than in it because the directory is embedded with `all:`, and both readers of it, `pgmigrate.LoadBuilt` at boot and `pgmigrate.Load` in the store's tests, refuse a set holding a file named anything but `<version>_<name>.up.sql`, `.down.sql` or `.census.sql`, which would refuse every boot.
 
 Boot applies every version `schema_migrations` lacks, in version order, so a fresh database applies the whole set in that order, and a migration that merges below one a database has already applied still runs there, once.
 A deployed database applies a migration when the release carrying it deploys:
@@ -33,8 +33,8 @@ a database that ran another branch's or an earlier commit's migration, or an edi
 The concurrent mode above is the way through: `pgmigrate/census.go`'s `ConcurrentIndex` flag exempts a marked migration from the size limit by name, so a log that has grown past the limit is indexed by a migration whose whole body is one statement, in the shape `20261102233630_embeddings_window_owner.up.sql` uses:
 a first line of exactly `-- pgmigrate:non-transactional`, then one `CREATE INDEX CONCURRENTLY IF NOT EXISTS`, non-unique and named.
 `graph_tuples` and `graph_nodes` are unpartitioned for that reason, and a later index on either is one such migration:
-`20261116172615_graph_nodes_proposed_index` is one, a partial index of the nodes at `proposed`, and `20261116232634_going_requests_ends_at_index` builds `going_requests_ends_at` the same way, because `going_requests` keeps every run of the command bar now and a plain build would hold off every question asked while it reads the table.
-Each has a `.down.sql`, the `DROP INDEX CONCURRENTLY` an operator runs by hand outside a transaction; nothing depends on either index, so rolling back past one is an image rollback alone.
+`20261116172615_graph_nodes_proposed_index` is one, a partial index of the nodes at `proposed`, and `20261122230407_graph_nodes_interaction_live_index` builds `graph_nodes_interaction_live`, a partial index of the interaction nodes of the source `going_requests` that are not gone, which the sweep reads for the runs past the hour whose row is gone.
+Each has a `.down.sql`, the `DROP INDEX CONCURRENTLY` an operator runs by hand outside a transaction; nothing depends on any of these indexes, so rolling back past one is an image rollback alone.
 An enabled DDL event trigger voids the exemption, and a UNIQUE build is refused, so a unique key on a table that size needs a stop-the-world migration instead.
 
 **A migration must leave the release before it able to read and write the schema.**
@@ -44,9 +44,13 @@ the expanding migration adds, with a default or a backfill, and the release that
 No migration is an exception:
 a change that cannot be written that way is split into releases that can, so no release stops every server process.
 The node and tuple store's migrations of lenses and runs of the command bar expand alone:
-`20261116123354_lens_catalogue` and `20261116123355_lens_catalogue_further_kinds` write type nodes and catalogue nodes with their tuples, `20261116205055_interaction_nodes` writes the interaction node and `frame` values of every run recorded before it, `20261116081010_block_pointer_targets_present` and `20261117042519_block_moved_to_lens` restate a function that answers every call the release before makes as it did, and `20261117020856_graph_edges_asks_and_store_class` restates `graph_edges` with every arm the release before reads.
-During a roll the release before records a run with no node, appends its frames with no `frame` value and no lock on the node, and deletes a run an hour old.
-A frame of this release takes the run's interaction node row `for no key update` before the run's `going_requests` row, the order the erase of a run takes them in; a run with none gets its node from its row first, under that row, and no frame waits on a node's row while it holds the run's (`api/going.go`'s `lockGoingRun`).
+`20261123174710_lens_catalogue` and `20261123174720_lens_catalogue_further_kinds` write type nodes and catalogue nodes with their tuples, `20261122230406_interaction_source` writes the interaction type's `source` attribute node with its tuples the same way, `20261116081010_block_pointer_targets_present` and `20261117042519_block_moved_to_lens` restate a function that answers every call the release before makes as it did, and `20261117020856_graph_edges_asks_and_store_class` and `20261121104002_graph_edges_store_class_last`, the view's last restatement, restate `graph_edges` with every arm the release before reads.
+No migration writes a run's node: the tables past `pgmigrate.CensusTableLimit` are `graph_nodes` and `graph_tuples`, where the census takes only a bounded write of literal rows, and a node for each recorded run is no fixed set of literal rows.
+So `envoy-dispatch backfill-graph-store` writes the interaction node and `frame` values of each run recorded before this release, row by row, once the roll that brings it is done.
+During a roll the release before records a run with no node, appends its frames with no `frame` value and no lock on the node, and deletes a run's rows an hour old, leaving its node live.
+This release keeps a run readable for one hour too; then its sweep states the run's node gone and removes its rows, and the node, its words and its frames stay in the store (`api/going.go`'s `sweepGoingRequests`), and it states gone the node of a run the release before deleted.
+The sweep deletes no row of `graph_nodes` or `graph_tuples`.
+A frame of this release takes the run's interaction node row `for no key update` before the run's `going_requests` row, so frames of one run queue at the node; a run with none gets its node from its row first, under that row, and no frame waits on a node's row while it holds the run's (`api/going.go`'s `lockGoingRun`).
 The `going_events_terminal` index and the frame's `on conflict do nothing` settle a frame both releases write at one sequence, and `backfill-graph-store` mends what the release before wrote.
 The same rule holds for everything else the two builds share (request bodies and routes, query values, socket frames, response members, stored documents, NATS stream and consumer settings and subjects, messages, and settings), and the two-build test checks it (`go test -tags twobuild ./cmd/dispatch`).
 **Messages:** envelope and payload members are additive, and every consumer ignores a member it does not know;
@@ -59,8 +63,9 @@ The decoders that make this true are the listener's (`cmd/listener/delivery.go`)
 **The keyword table holds each past version of the searchable text.**
 Migration `20261120021308_search_text_versions` creates two tables, with no foreign key.
 `search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask, with the vector of that text.
-A row is never updated, a new version being a new row, but for the erase (`envoy-dispatch erase`): it deletes an erased comment's rows and writes again the vector of an issue's rows that name a version of its spec it deleted (`textversions.RestateIssueVectors`).
+A new version is a new row, and a row is updated in one case alone: the fill's re-read, after a fill of a lower rules version wrote (`textversions`' `rereadBatch`), writes again a post's row whose cut body that version read from another source than this build reads first, with its body, its `body_from` and its vector.
 `search_text_versions_fill` holds the one cursor row of the keyword fill (`internal/dispatch/textversions`): every event at or below its `event_id` has its rows.
+Its `rules` is the lowest rules version that wrote the rows up to the cursor; a batch of a higher version that finds a lower one stored reads again what that version passed over before it writes past the cursor, and only that re-read raises the column.
 The fill writes both tables from the event log while Dispatch serves, under the hold `search-text-versions-fill`.
 It pauses while an answers read that its process serves takes longer than 800 ms (`../../../cmd/dispatch/README.md`, "Background loops").
 No migration writes a row of either table.
@@ -70,7 +75,8 @@ A version holds at the cut when it started at or before the cut, and no later ve
 So an item has at most one version at a time, and none before its first version started.
 The SQL writes the cut as a literal in UTC to the microsecond, from the time value and never from the text of a request.
 It names each table with the schema `public`, so a common table expression of the statement that joins it cannot replace them.
-Its columns, in this order, are a contract (`TestTheKeywordRelationAnswersTheContractColumns`): `kind`, `id`, `issue_key`, `project_key`, `event_id`, `event_seq`, `started_at`, `body`, `spec_artifact_id`, `spec_version`, `search` and `deleted_at`, which is null in this build.
+Its columns, in this order, are a contract (`TestTheKeywordRelationAnswersTheContractColumns`): `kind`, `id`, `issue_key`, `project_key`, `event_id`, `event_seq`, `started_at`, `body`, `spec_artifact_id`, `spec_version`, `search` and `deleted_at`.
+`deleted_at` is the post's own delete mark as the post stands now, `comments.deleted_at` or `messages.deleted_at`, on every version of a deleted comment or message at every cut, and null on every other version, so a reader leaves out or marks every version of a deleted post.
 `Store.TextVersionsAt(ctx, cut)` answers the relation only for a cut at or before the reach.
 For a later cut it answers `*TextVersionsNotReachedError`, whose `Error()` names the reach and the cut.
 With no cursor row, the error has `Reached` false and says that the fill has reached no time yet.

@@ -1,7 +1,8 @@
 /** `bun outside-agent-probe.ts <command> [arguments]`: the calls of the outside agent's acceptance
  *  that need a broker credential, which a shell cannot make: every call carries a DPoP proof that
  *  only the holder of the token's key can sign. `outside-agent-public.sh` runs it for rows P3 and
- *  P5-P8, and `outside-agent-tailnet.sh` runs its `peer` command for the peer session of row P4.
+ *  P5-P8, `outside-agent-codex.sh` for rows C1 and C3-C5, and `outside-agent-tailnet.sh` runs its
+ *  `peer` command for the peer session of row P4.
  *
  *  It trades the machine's identity for a broker token as every session of the machine does
  *  (`brokerTokenFor`, `@legion/envoy-client/broker-credential`), from the broker settings of its
@@ -59,6 +60,19 @@
  *                            a token that names OUTSIDE_FOREIGN_PROJECT alone, prints whether
  *                            that listener lists it, and keeps it registered until it is stopped:
  *                            the session outside the project that row P6 must not find.
+ *    issue <project> <title> GET /api/v1/issues of <project>: `key`, the key of its issue titled
+ *                            <title>, or null (the Codex leg's scratch issue, row C3).
+ *    comment-find <issue> <text>
+ *                            GET /api/v1/issues/<issue>/comments: `found`, whether a comment
+ *                            holds <text>, its `id`, and its author as Dispatch records it:
+ *                            `author_kind`, `author_id` (the session, for a broker token's
+ *                            write), `proven`, `owner` and `project`, each null where absent
+ *                            (commentAuthor; row C3).
+ *    receive <seconds> <text>
+ *                            registers the session, opens its relay socket, prints {ready: true}
+ *                            once the socket holds its own subject, and waits up to <seconds> for
+ *                            a message holding <text>: {read, from, at}, the sender's session and
+ *                            the time it read it in Unix ms, or {read: null} (row C5).
  */
 import { randomUUID } from "node:crypto";
 import { type Envelope, EnvelopeSchema } from "@legion/contracts";
@@ -569,6 +583,34 @@ async function scriptedModel(): Promise<never> {
   return Promise.withResolvers<never>().promise;
 }
 
+/** What `comment-find` reads of the first comment of `comments` (an issue's comments as Dispatch
+ *  answers them) whose body holds `wanted`: its id, and its author as Dispatch records a write
+ *  made with a broker-issued token (api/broker_token.go): kind `session`, the session as `id`,
+ *  `proven` true, the person as `owner`, and `project` only for a token mapped to one project.
+ *  Each field absent reads null. Exported for the Codex leg's tests, which give it Dispatch's
+ *  shape. */
+export function commentAuthor(
+  comments: unknown,
+  wanted: string
+): Record<string, string | boolean | null> {
+  const read = (value: unknown, name: string): unknown =>
+    typeof value === "object" && value !== null ? Reflect.get(value, name) : undefined;
+  const text = (value: unknown): string | null => (typeof value === "string" ? value : null);
+  const found = (Array.isArray(comments) ? comments : []).find((each) =>
+    String(read(each, "body") ?? "").includes(wanted)
+  );
+  const author = read(found, "author");
+  return {
+    found: found !== undefined,
+    id: text(read(found, "id")),
+    author_kind: text(read(author, "kind")),
+    author_id: text(read(author, "id")),
+    proven: read(author, "proven") === true,
+    owner: text(read(author, "owner")),
+    project: text(read(author, "project")),
+  };
+}
+
 async function main(): Promise<void> {
   const [command, ...args] = Bun.argv.slice(2);
   switch (command) {
@@ -835,6 +877,75 @@ async function main(): Promise<void> {
         await Promise.withResolvers<never>().promise;
       }
       return;
+    case "issue": {
+      const [project = "", ...words] = args;
+      const title = words.join(" ");
+      if (project === "" || title === "") throw new Unreadable("issue needs a project and a title");
+      const query = new URLSearchParams({ project, limit: "250", offset: "0" });
+      const answer = await call("GET", dispatch(`/api/v1/issues?${query}`));
+      const issues: unknown =
+        typeof answer.body === "object" && answer.body !== null
+          ? Reflect.get(answer.body, "issues")
+          : undefined;
+      let key: string | null = null;
+      for (const issue of Array.isArray(issues) ? issues : []) {
+        if (typeof issue !== "object" || issue === null) continue;
+        const named: unknown = Reflect.get(issue, "key");
+        if (Reflect.get(issue, "title") === title && typeof named === "string") key = named;
+      }
+      print({ ...flat(answer), key });
+      return;
+    }
+    case "comment-find": {
+      const [issue = "", ...words] = args;
+      const wanted = words.join(" ");
+      if (issue === "" || wanted === "")
+        throw new Unreadable("comment-find needs an issue and a text");
+      const answer = await call(
+        "GET",
+        dispatch(`/api/v1/issues/${encodeURIComponent(issue)}/comments`)
+      );
+      print({ ...flat(answer), ...commentAuthor(answer.body, wanted) });
+      return;
+    }
+    case "receive": {
+      const [seconds = "", ...words] = args;
+      const waitMs = Number(seconds) * 1000;
+      const wanted = words.join(" ");
+      if (!(waitMs > 0) || wanted === "") throw new Unreadable("receive needs seconds and a text");
+      const registered = await subscribe([]);
+      if (registered.status >= 300) {
+        throw new Unreadable(`the receiver's registration answered ${registered.status}`);
+      }
+      const relay = await openRelay();
+      if (!("socket" in relay))
+        throw new Unreadable(`the listener serves no relay socket (${relay.status})`);
+      const own = await ask(relay, `${deliverPrefix}${session()}`);
+      if (!own.granted)
+        throw new Unreadable(`the relay socket refused the receiver's own subject (${own.code})`);
+      print({ ready: true });
+      // The registration is kept fresh as a session's heartbeat keeps it.
+      const heartbeat = setInterval(() => void subscribe([]).catch(() => {}), 30_000);
+      const until = Date.now() + waitMs;
+      for (;;) {
+        const frame = await nextFrame(relay, Math.max(0, until - Date.now()));
+        if (frame === undefined) break;
+        if (frame.op !== "msg") continue;
+        receipt(relay, frame);
+        const envelope = envelopeOf(frame);
+        const read = (envelope?.payload ?? envelope?.payload_summary ?? "").trim();
+        if (!read.includes(wanted)) continue;
+        const from = envelope?.source_session ?? envelope?.sender?.session_id ?? "";
+        print({ read: wanted, from, at: Date.now() });
+        clearInterval(heartbeat);
+        relay.socket.close(1000, "the probe is done");
+        return;
+      }
+      clearInterval(heartbeat);
+      print({ read: null, from: null, at: Date.now() });
+      relay.socket.close(1000, "the probe is done");
+      return;
+    }
     case "model":
       await scriptedModel();
       return;
@@ -843,10 +954,12 @@ async function main(): Promise<void> {
   }
 }
 
-try {
-  await main();
-  process.exit(0);
-} catch (error) {
-  print({ unknown: error instanceof Error ? error.message : String(error) });
-  process.exit(2);
+if (import.meta.main) {
+  try {
+    await main();
+    process.exit(0);
+  } catch (error) {
+    print({ unknown: error instanceof Error ? error.message : String(error) });
+    process.exit(2);
+  }
 }

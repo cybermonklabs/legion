@@ -1,0 +1,22 @@
+kind: Fixed
+body: |-
+    After a kill, the launcher's memory guard measures each process's growth since that kill from
+    its size as of the kill: the lowest of its reads of the program it runs, from its last read
+    before the kill's reading to the read the kill was decided on; for a process it first read after
+    the kill, that first read; and 0 for a process every read of which before the kill was a fork's
+    read where it is no fork now. A fork's read is one where the process runs its parent's
+    executable with its parent's arguments, its parent read at that reading, before or after it, or
+    earlier, whether or not the guard reads the fork again after its parent and whatever it then
+    finds the fork running. Each read has its own flag, never one taken from a read of another
+    program, so a fork that runs its own program between two reads before the kill has its size from
+    its read of that program. The process stays a fork, its parent gone or not, until its executable
+    or arguments change. An argument rewrite (setproctitle, process.title) is not a new program: a
+    process that was no fork keeps its size as of the kill whatever its arguments become. In the
+    order's tier of growth since the stay's first kill, a process first read after that kill counts
+    from 0 unless that first read is a fork's read. A grower that steps between a reading and the
+    guard's reads at it, whose read at the kill failed, that runs its own program only after the
+    kill's reading or after a read of it made before its parent's, or that the guard first read
+    after the stay's first kill, now counts as grown, so the guard ends it rather than waiting or
+    ending a larger process that never grew.
+custom:
+    Issue: pr4273

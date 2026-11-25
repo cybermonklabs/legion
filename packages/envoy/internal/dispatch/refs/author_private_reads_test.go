@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphseedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -31,11 +31,11 @@ var (
 
 // reserveForAuthor reserves the store's node of kind and id for privateAuthor, as the rows a
 // write that asked for `author` would store, seeded straight into the store
-// (graphstoretest.SeedAuthorOnly), since its writer takes a node reserved for its author of no
+// (graphseedtest.SeedAuthorOnly), since its writer takes a node reserved for its author of no
 // kind these reads answer (graphstore.ErrVisibilityNotAdmitted). What is under test is the read.
 func reserveForAuthor(t *testing.T, tx pgx.Tx, kind, id string) {
 	t.Helper()
-	if err := graphstoretest.SeedAuthorOnly(context.Background(), tx, graphstore.Node{
+	if err := graphseedtest.SeedAuthorOnly(context.Background(), tx, graphstore.Node{
 		Kind: kind, ID: id, Supertag: kind, State: graphstore.StateLive,
 		MadeAt: time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC), MadeBy: privateAuthor, SourceEvent: graphstore.NoEvent,
 	}); err != nil {
@@ -71,8 +71,8 @@ func TestTheClosureAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *testing.
 		t.Errorf("another person's closure = %#v; want no member, since one link is the private comment's and the other reaches the private document", got)
 	}
 	want := []Member{
-		documentMember(t, tx, privateDocument, 1, model.ReferenceVia{Kind: "comment", ID: publicComment}),
-		documentMember(t, tx, publicDocument, 1, model.ReferenceVia{Kind: "comment", ID: privateComment}),
+		documentMember(t, tx, privateDocument, model.ReferenceVia{Kind: "comment", ID: publicComment}),
+		documentMember(t, tx, publicDocument, model.ReferenceVia{Kind: "comment", ID: privateComment}),
 	}
 	sort.Slice(want, func(left, right int) bool { return want[left].RefKey < want[right].RefKey })
 	if got := closureOf(t, tx, privateAuthor); !reflect.DeepEqual(got, want) {
@@ -107,7 +107,7 @@ func TestTheClosureAnswersADocumentReservedForItsAuthorTwoHopsAwayToThatAuthorAl
 	insertReference(t, tx, "artifact", privateDocument, "comment", comment)
 	reserveForAuthor(t, tx, "artifact", privateDocumentKey)
 
-	firstHop := documentMember(t, tx, publicDocumentKey, 1, model.ReferenceVia{Kind: "comment", ID: comment})
+	firstHop := documentMember(t, tx, publicDocumentKey, model.ReferenceVia{Kind: "comment", ID: comment})
 	linkedFrom := func(references References) []string {
 		rows := []string{}
 		for _, row := range references.LinkedFrom {
@@ -128,6 +128,47 @@ func TestTheClosureAnswersADocumentReservedForItsAuthorTwoHopsAwayToThatAuthorAl
 	}
 	if got, want := linkedFrom(author), []string{"artifact " + privateDocument + " via comment " + comment}; !slices.Equal(got, want) {
 		t.Errorf("the author's linked_from = %v; want %v", got, want)
+	}
+}
+
+// linkedFromOf is the nodes that link to CORE-1 or to its own content, as who reads them, each as
+// the tests compare a row of linked_from (relatedSummary): its node, its name, the kinds of its
+// links and its via, sorted.
+func linkedFromOf(t *testing.T, tx pgx.Tx, who model.Actor) []string {
+	t.Helper()
+	references := referencesOf(t, tx, who)
+	rows := make([]string, 0, len(references.LinkedFrom))
+	for _, row := range references.LinkedFrom {
+		rows = append(rows, relatedSummary(row.Node.Kind, row.Node.ID, row.Name, row.Kinds, row.Via))
+	}
+	slices.Sort(rows)
+	return rows
+}
+
+// The references read reads the links into the issue under the visibility of the reader too. A
+// public document A and a document B reserved for its author each link the issue CORE-1 itself.
+// Another person's read lists A alone among the nodes that link in, through the issue: nothing of
+// B, which is reserved for its author. The author's read lists A and B, each through the issue. A
+// link in carries no depth: its row is the node that links, the kinds of its links and its via,
+// the node of the issue's own at the near end (Closure's LinkedFrom, the in statement's rows).
+func TestTheReferencesReadAnswersALinkFromADocumentReservedForItsAuthorToThatAuthorAlone(t *testing.T) {
+	tx := prefixFixture(t)
+	publicDocument, _ := createReferenceArtifact(t, tx, "", "CORE", "public-md")
+	privateDocument, privateDocumentKey := createReferenceArtifact(t, tx, "", "CORE", "private-md")
+	insertReference(t, tx, "artifact", publicDocument, "issue", "CORE-1")
+	insertReference(t, tx, "artifact", privateDocument, "issue", "CORE-1")
+	reserveForAuthor(t, tx, "artifact", privateDocumentKey)
+
+	via := model.ReferenceVia{Kind: "issue", ID: "CORE-1"}
+	public := relatedSummary("artifact", publicDocument, "public-md", []string{"mentions"}, via)
+	if got, want := linkedFromOf(t, tx, privateReader), []string{public}; !slices.Equal(got, want) {
+		t.Errorf("another person's linked_from = %q; want %q, without the private document %s",
+			got, want, privateDocumentKey)
+	}
+	want := []string{public, relatedSummary("artifact", privateDocument, "private-md", []string{"mentions"}, via)}
+	slices.Sort(want)
+	if got := linkedFromOf(t, tx, privateAuthor); !slices.Equal(got, want) {
+		t.Errorf("the author's linked_from = %q; want %q", got, want)
 	}
 }
 

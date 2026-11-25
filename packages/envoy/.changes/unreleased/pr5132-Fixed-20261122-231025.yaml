@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  A role message stored for a role's previous holder after a takeover now reaches the new holder
+  when the role bucket has three copies. Before it delivers a role message, the session relay reads
+  the role's claim; that read was a direct get, which any copy near enough to current answers. A
+  copy that had not applied the takeover answered the previous holder's claim, and the relay handed
+  that holder the message: the sender got its answer, and the new holder never received it. The
+  relay's read, and the kept lane's handover's resolution of the holder, now read the claim from
+  the bucket stream's leader. A stale read in the handover used to give the copy up until the next
+  sweep, five minutes later. A role send's first routing read is unchanged.
+time: 2026-11-22T23:10:25Z
+custom:
+    Issue: pr5132

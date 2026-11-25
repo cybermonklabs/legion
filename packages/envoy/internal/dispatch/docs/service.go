@@ -511,6 +511,10 @@ type Service struct {
 	// appended while the load ran, which reaches no instance of its own (roomLoad).
 	instances sync.Map
 	roomLoads sync.Map
+	// layoutMoved is the latest instant by which a transaction of this process that joined a
+	// document to an issue room had committed (noteLayoutMoved, Ledger.closeJoinedRooms), nil until
+	// one has. A room's load takes no layout a socket's admission read before it (admittedIssueRead).
+	layoutMoved atomic.Pointer[time.Time]
 	// reads holds the renderings of the documents cold reads served, each under the stored state
 	// it was rendered from (coldRead), within the budget New gives it from the Go memory limit
 	// (readBudgetFor).
@@ -590,22 +594,27 @@ type Service struct {
 
 // artifactOwner is what lockArtifactOwner reads of an artifact beside the owner row it locks: its
 // issue or project, its slug and name, and its kind, which tells an issue's tree, whose room is the
-// issue room (settlement.readLocked), from a document.
+// issue room (settlement.readLocked), from a document. Retired is whether the artifact is retired
+// (artifacts.retired_at, RetireDocument), read in the statement after the owner's lock, which the
+// retirement takes too: a writer that holds the lock reads a retirement that committed before it,
+// and no retirement commits until the writer's transaction ends.
 type artifactOwner struct {
 	IssueKey *string
 	Project  string
 	Slug     string
 	Name     string
 	Kind     string
+	Retired  bool
 }
 
 // lockArtifactOwner loads an artifact's owner, then takes that owner's lock (store.LockOwner): the
 // artifact itself for a project document, its issue otherwise. The lock is a transaction advisory
 // lock, so it serialises this writer against every other writer of the owner without taking a row
 // lock, and so without giving the transaction a transaction id or blocking the `for key share` a
-// child insert takes - see lockDocumentRoom for why that is the rule. Whether the issue is open is
-// read in the statement after the lock, sent with it (store.LockOwnerAndRead), so a close committed
-// while this waited is seen.
+// child insert takes - see lockDocumentRoom for why that is the rule. Whether the issue is open,
+// and whether the document is retired (artifactOwner.Retired), are read in the statement after
+// the lock, sent with it (store.LockOwnerAndRead), so a close or a retirement committed while this
+// waited is seen.
 func lockArtifactOwner(ctx context.Context, tx pgx.Tx, artifactID string) (artifactOwner, bool, error) {
 	var owner artifactOwner
 	if err := tx.QueryRow(ctx, `
@@ -616,16 +625,17 @@ func lockArtifactOwner(ctx context.Context, tx pgx.Tx, artifactID string) (artif
 	}
 	if owner.IssueKey == nil {
 		if err := store.LockOwnerAndRead(ctx, tx, store.ArtifactOwner(artifactID), `
-			select true from artifacts where id = $1 and issue_key is null
-		`, []any{artifactID}, new(bool)); err != nil {
+			select retired_at is not null from artifacts where id = $1 and issue_key is null
+		`, []any{artifactID}, &owner.Retired); err != nil {
 			return artifactOwner{}, false, fmt.Errorf("lock and read document artifact: %w", err)
 		}
 		return owner, true, nil
 	}
 	var open bool
 	if err := store.LockOwnerAndRead(ctx, tx, store.IssueOwner(*owner.IssueKey), `
-		select closed_at is null from issues where key = $1
-	`, []any{*owner.IssueKey}, &open); err != nil {
+		select i.closed_at is null, a.retired_at is not null
+		from issues i, artifacts a where i.key = $1 and a.id = $2
+	`, []any{*owner.IssueKey, artifactID}, &open, &owner.Retired); err != nil {
 		return artifactOwner{}, false, fmt.Errorf("lock and read document issue: %w", err)
 	}
 	return owner, open, nil

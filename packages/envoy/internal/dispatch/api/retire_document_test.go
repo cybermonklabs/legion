@@ -76,6 +76,7 @@ func approvalStateOf(t *testing.T, handler http.Handler, artifactID string) stri
 // approved; each of its versions still reads; and the issue's document list and its summary leave
 // it out. A second retirement of it is refused.
 func TestRetireDocument(t *testing.T) {
+	t.Parallel()
 	handler, database := blockIndexHandler(t)
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
@@ -166,6 +167,7 @@ func TestRetireDocument(t *testing.T) {
 // its retirement and to the issue KEY after it (refs' loadArtifactNodes), through refs.Node and
 // GET /api/v1/references alike; read by its id, the retired document is still the document.
 func TestARetiredDocumentsAddressResolvesToItsIssue(t *testing.T) {
+	t.Parallel()
 	handler, database := blockIndexHandler(t)
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
@@ -207,6 +209,7 @@ func TestARetiredDocumentsAddressResolvesToItsIssue(t *testing.T) {
 // its slug, a create of a document under its name, and an edit by its slug and by its id. A
 // document of another name is still taken.
 func TestAWriteToARetiredDocumentIsRefused(t *testing.T) {
+	t.Parallel()
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE", "The spec.\n")
@@ -234,4 +237,72 @@ func TestAWriteToARetiredDocumentIsRefused(t *testing.T) {
 		t.Fatalf("the retired document reads version %d after the refused writes, want 1", versions.Number)
 	}
 	uploadIssueDocument(t, handler, issue.Key, "other.md", "Another document is taken.\n")
+}
+
+// A write api does not test the row for itself - a comment's mark on a quote of the document -
+// reaches the document service, which refuses it under the document owner's lock (docs'
+// joinLiveWrite, docs.RetiredDocumentError), and api answers that refusal as it answers an edit of
+// the retired document (documentRetiredRefusal): 409 DOCUMENT_RETIRED naming the document, not 500.
+func TestACommentsMarkOnARetiredDocumentIsRefusedAsItsEditIs(t *testing.T) {
+	t.Parallel()
+	handler, database := blockIndexHandler(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	design := createProjectDocument(t, handler, "CORE", "Design notes", "# Design notes\n")
+	retireTestDocument(t, database, design.ID)
+
+	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+design.ID+"/comments", map[string]any{
+		"body": "Use Plan.", "anchor": map[string]string{"artifact": design.Slug, "quote": "notes"},
+	}, "alice")
+	body := response.Body.String()
+	if response.Code != http.StatusConflict || responseCode(t, response) != "DOCUMENT_RETIRED" || !strings.Contains(body, design.ID) {
+		t.Fatalf("a comment's mark on the retired document %s: status=%d body=%s, want 409 DOCUMENT_RETIRED naming it", design.ID, response.Code, body)
+	}
+	if versions := latestVersion(t, database, design.ID); versions.Number != 1 {
+		t.Fatalf("the retired document reads version %d after the refused mark, want 1", versions.Number)
+	}
+}
+
+// The same refusal holds for a document of an issue room: an issue born converted, whose spec and
+// uploaded Verification document are fragments of the issue's room, has the Verification document
+// retired. A comment's mark on a quote of it reaches the document service's write to the room,
+// which reads the document's own retirement under the issue's owner lock (docs' joinLiveWrite) and
+// refuses it 409 DOCUMENT_RETIRED naming the Verification document, not the room, with no version
+// written. A comment's mark on the spec, the room's document that stands, lands.
+func TestACommentsMarkOnARetiredDocumentOfAnIssueRoomIsRefusedAndTheSpecsLands(t *testing.T) {
+	handler, database := blockIndexHandler(t)
+	ctx := context.Background()
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", "The spec's words.\n")
+	verification := uploadIssueDocument(t, handler, issue.Key, "verification.md", "The check the retirement keeps.\n")
+	var rooms []string
+	for _, document := range []string{issue.PrimaryArtifactID, verification.ID} {
+		var room string
+		if err := database.Pool.QueryRow(ctx, `select room::text from document_rooms where artifact_id = $1`, document).Scan(&room); err != nil {
+			t.Fatalf("read the room of %s: %v, want the issue born converted with %s a fragment of its room", document, err, document)
+		}
+		rooms = append(rooms, room)
+	}
+	if rooms[0] != rooms[1] {
+		t.Fatalf("the spec is edited in room %s and the Verification document in %s, want one issue room", rooms[0], rooms[1])
+	}
+	retireTestDocument(t, database, verification.ID)
+
+	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
+		"body": "Keep it.", "anchor": map[string]string{"artifact": verification.ID, "quote": "check"},
+	}, "alice")
+	body := response.Body.String()
+	if response.Code != http.StatusConflict || responseCode(t, response) != "DOCUMENT_RETIRED" || !strings.Contains(body, verification.ID) || strings.Contains(body, rooms[0]) {
+		t.Fatalf("a comment's mark on the retired Verification document %s of the issue room %s: status=%d body=%s, want 409 DOCUMENT_RETIRED naming the document",
+			verification.ID, rooms[0], response.Code, body)
+	}
+	if versions := latestVersion(t, database, verification.ID); versions.Number != 1 {
+		t.Fatalf("the retired Verification document reads version %d after the refused mark, want 1", versions.Number)
+	}
+
+	spec := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
+		"body": "Agreed.", "anchor": map[string]string{"artifact": issue.PrimaryArtifactID, "quote": "words"},
+	}, "alice")
+	if spec.Code != http.StatusCreated {
+		t.Fatalf("a comment's mark on the spec of the same issue room: status=%d body=%s, want 201", spec.Code, spec.Body.String())
+	}
 }

@@ -17,7 +17,7 @@ import { answerIssuePatches } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
 import { issueQuery } from "../../api/queries";
 import type { DispatchQueryClient } from "../../api/query-client";
-import type { Issue, IssueDetails, RepoProject, UpdateIssueInput } from "../../api/types";
+import type { Issue, IssueDetails, Project, UpdateIssueInput } from "../../api/types";
 import { writesOf } from "../writes/write-store";
 import { AssigneeControl } from "./AssigneeControl";
 import { RepoControl } from "./RepoControl";
@@ -33,14 +33,18 @@ const details: IssueDetails = { ...issueDetails, ...issue };
 
 const detailKey = issueQuery(issue.key).queryKey;
 
-const mappings: RepoProject[] = ["acme/widgets", "acme/gadgets", "acme/tools"].map((repo) => ({
-  created_at: "2026-10-01T00:00:00Z",
-  created_by: { id: "alice", kind: "user" },
-  default: repo === "acme/widgets",
-  project: "CORE",
-  renamed_to: null,
-  repo,
-}));
+/** CORE, whose default repository, acme/widgets, is the one repository the box suggests. */
+const projects: Project[] = [
+  {
+    created_at: "2026-10-01T00:00:00Z",
+    default_repo: "acme/widgets",
+    gated_steps: [],
+    key: "CORE",
+    name: "Core",
+    open_asks: 0,
+    proven_sessions: false,
+  },
+];
 
 /**
  * Dispatch's side of CORE-1's saves and reads: the first save is held until the row lets it go
@@ -94,14 +98,14 @@ function Picker({
   );
 }
 
-/** Renders the picker of `field` on CORE-1, with the people who have signed in and the
- *  project's repositories read once the reader reaches for it. The assignee's picker is a
- *  `<select>`; the repository's is a box, which suggests the project's repositories. */
+/** Renders the picker of `field` on CORE-1, with the people who have signed in read once the
+ *  reader reaches for it, and the project list. The assignee's picker is a `<select>`; the
+ *  repository's is a box, which suggests the project's default repository. */
 async function renderPicker(field: "assignee" | "repo") {
   const listUsers = spyOn(api, "listUsers").mockResolvedValue(
     ["alice", "bob", "carol", "dave"].map((login) => ({ login }))
   );
-  const listRepoProjects = spyOn(api, "listRepoProjects").mockResolvedValue(mappings);
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue(projects);
   const server = dispatch();
   // The page's query client, signed in, holding CORE-1 as Dispatch last answered it.
   const client = signedInHolding([detailKey, details]);
@@ -114,16 +118,13 @@ async function renderPicker(field: "assignee" | "repo") {
   const select = () => screen.getByRole("combobox", { name }) as HTMLSelectElement;
   const box = () => screen.getByRole("combobox", { name }) as HTMLInputElement;
   const user = userEvent.setup();
-  // What the control offers is read once the reader reaches for it: the select's people,
-  // Unassigned first, or the box's suggestions, the project's repositories.
+  // What the control offers: the select's people, Unassigned first, read once the reader reaches
+  // for it, or the box's suggestion, the project's default repository from the project list.
   if (field === "assignee") {
     await user.hover(select());
     await waitFor(() => expect(select().options.length).toBe(5));
   } else {
-    await user.hover(box());
-    await waitFor(() =>
-      expect(repoSuggestions(box())).toEqual(["acme/gadgets", "acme/tools", "acme/widgets"])
-    );
+    await waitFor(() => expect(repoSuggestions(box())).toEqual(["acme/widgets"]));
   }
   return {
     ...server,
@@ -139,7 +140,7 @@ async function renderPicker(field: "assignee" | "repo") {
     unmount: () => {
       view.unmount();
       server.patchIssue.mockRestore();
-      listRepoProjects.mockRestore();
+      listProjects.mockRestore();
       listUsers.mockRestore();
     },
   };

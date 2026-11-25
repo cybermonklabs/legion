@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+    A question block's `copied_from` is read only from a real opener: the server's scan of a document's question blocks skips a footnote's label, as it skips quote and list markers, so a fence opened on that line is tracked and an opener quoted in its code names no ask a copy's `#id` resolves to. The scan also skips the front matter a document opens with, which pmdoc keeps as one node and no line of which opens a block.
+time: 2026-11-24T05:00:53.000000000Z
+custom:
+    Issue: pr4173

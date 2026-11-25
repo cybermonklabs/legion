@@ -19,7 +19,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/text/unicode/norm"
 
-	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -256,6 +255,14 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 	if err != nil {
 		return refused(err)
 	}
+	// The check may be on an issue of another project, which a parent of another project puts
+	// above the recording issue, and the result is appended to that issue. The pre-handler
+	// check read only the path's issue, so a credential scoped to one project is refused such a
+	// check here, before anything is written.
+	callerProject, _ := s.callerProject(r)
+	if err := refuseCheckOutsideCallerProject(r.Context(), pool, callerProject, check.IssueKey); err != nil {
+		return refused(err)
+	}
 	// A check CI proves takes no result from a role, refused here, before refuseUnknownCommit,
 	// so no GitHub read is spent on it.
 	if err := refuseCheckProvedByCI(r.Context(), pool, check); err != nil {
@@ -443,6 +450,13 @@ func (s *server) recordResultUnderOwnerLocks(
 	if _, err := lockIssueOwners(ctx, tx, issueKey, check.IssueKey); err != nil {
 		return recordedCheckResult{}, indexedCheck{}, err
 	}
+	// The result moves the record of the check's issue's Verification query, which takes a version
+	// in its issue's room once the result is written (reviseQueriesUnder). That room's lock comes
+	// here, after the owner locks and before the event's owner row and every write, in the order
+	// docs/persistence.go sets for a transaction that takes both (docs.LockQueryRooms).
+	if err := docs.LockQueryRooms(ctx, tx, check.IssueKey); err != nil {
+		return recordedCheckResult{}, indexedCheck{}, err
+	}
 	recordingOpen, checkOpen, err := issuesOpenForResult(ctx, tx, issueKey, check.IssueKey)
 	if err != nil {
 		return recordedCheckResult{}, indexedCheck{}, err
@@ -514,6 +528,9 @@ func (s *server) recordResultUnderOwnerLocks(
 	seq := int64(event.Seq)
 	result.EventSeq = &seq
 	if err := writeRecordedResult(ctx, tx, &result, project, check.NodeAddress, screenshots, event.ID); err != nil {
+		return recordedCheckResult{}, indexedCheck{}, err
+	}
+	if err := s.reviseQueriesUnder(ctx, tx, check.IssueKey, actor, event.ID); err != nil {
 		return recordedCheckResult{}, indexedCheck{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -627,7 +644,9 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, body)
 }
 
-// refusal is every refusal a result's own fields earn, before anything is read.
+// refusal is every refusal a result's own fields earn, before anything is read. The three counts
+// are each a non-negative number check_results keeps in an integer column, so a count past that
+// column (fitsIntegerColumn) is refused here, before the query that would fail to encode it.
 func (input checkResultInput) refusal() error {
 	if strings.TrimSpace(input.Check) == "" {
 		return errorf(http.StatusBadRequest, "RESULT_INPUT", "check names the check block the result proves")
@@ -642,9 +661,12 @@ func (input checkResultInput) refusal() error {
 	if !resultCommitSHA.MatchString(input.Commit) {
 		return errorf(http.StatusBadRequest, "RESULT_INPUT", "commit is the 40-character lowercase hex commit the check ran at")
 	}
-	for name, count := range map[string]int{"failed": input.Failed, "skipped": input.Skipped, "excluded": input.Excluded} {
-		if count < 0 {
-			return errorf(http.StatusBadRequest, "RESULT_INPUT", "%s counts cases and cannot be negative", name)
+	for _, count := range []struct {
+		name  string
+		cases int
+	}{{"failed", input.Failed}, {"skipped", input.Skipped}, {"excluded", input.Excluded}} {
+		if count.cases < 0 || !fitsIntegerColumn(count.cases) {
+			return errorf(http.StatusBadRequest, "RESULT_INPUT", "%s counts cases, from 0 to %d", count.name, maxIntegerColumn)
 		}
 	}
 	if input.Verdict == "pass" && (input.Failed > 0 || input.Skipped > 0 || input.Excluded > 0) {
@@ -1457,6 +1479,27 @@ func writeRecordedResult(ctx context.Context, tx pgx.Tx, result *model.CheckResu
 			return nil
 		}
 		graphstore.QueueWrite(b, nodes, tuples)
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nodes, tuples))
+		return nil
+	})
+}
+
+// reviseQueriesUnder appends, in tx, a version of each query document of the issue issueKey whose
+// record the route's write, which has run in tx, moved (docs.Service.ReviseQueries): a result
+// recorded or retracted moves the record of the Verification query of the check's issue, and a
+// version of that document holds it where the issue has converted. It causes what those versions
+// state under event, the event the route appended for its write (graphstore.QueueCaused), and their
+// head rows after them in the same batch (graphstore.QueueHeads). The route
+// holds the issue's owner lock and took the issue room's lock right after it, before its event
+// and its first write (docs.LockQueryRooms), so the room lock ReviseQueries takes waits on nothing.
+func (s *server) reviseQueriesUnder(ctx context.Context, tx pgx.Tx, issueKey string, writer model.Actor, event int64) error {
+	revised, err := s.deps.Docs.ReviseQueries(ctx, tx, issueKey, writer)
+	if err != nil {
+		return err
+	}
+	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, revised, event)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(revised))
 		return nil
 	})
 }
@@ -1526,7 +1569,7 @@ func (s *server) readThroughPullRequests(ctx context.Context, checkIssueKey, sha
 	if repo == nil || s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return
 	}
-	known, err := delivery.HeadAttributedTo(ctx, s.deps.Store.Pool, checkIssueKey, sha)
+	known, err := s.deps.Attributor.HeadAttributedTo(ctx, s.deps.Store.Pool, checkIssueKey, sha)
 	if err != nil {
 		slog.Warn("dispatch: read the pull request heads of a recorded result", "issue", checkIssueKey, "error", err)
 		return
@@ -1534,7 +1577,7 @@ func (s *server) readThroughPullRequests(ctx context.Context, checkIssueKey, sha
 	if known {
 		return
 	}
-	if _, _, err := delivery.ReadThroughCommitPulls(
+	if _, _, err := s.deps.Attributor.ReadThroughCommitPulls(
 		ctx, s.deps.Store.Pool, s.deps.GitHub, s.deps.Events, *repo, sha, time.Now()); err != nil {
 		slog.Info("dispatch: GitHub named no pull request for a recorded result's commit",
 			"repo", *repo, "commit", sha, "error", err)

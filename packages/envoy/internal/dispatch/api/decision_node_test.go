@@ -205,6 +205,7 @@ func decisionNode(id, text string, attributes pmdoc.Attrs) *pmdoc.Node {
 // browser's settlement - and a later write, by the same writer or another, moves nothing of it.
 // An answered ask holds no uncertainty: a write giving it one is refused, naming the attribute.
 func TestDecisionNodeCarriesItsTuplesAndItsCertainty(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour, browserPeers: true})
 	documents := deps.Docs.(*docs.Service)
 	ctx := context.Background()
@@ -578,6 +579,7 @@ func requireLiveDecision(t *testing.T, database *store.Store, peer *syncedPeer, 
 // naming a block of another issue. A browser's write is never refused, and settlement stores it
 // with no tie to the other issue stated, while a tie of the same write inside the issue stands.
 func TestATieToAnotherIssueIsRefusedOnEveryWritePath(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour, browserPeers: true})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -684,6 +686,7 @@ func requireTypedNode(t *testing.T, database *store.Store, what, address, want, 
 // never alice, whom the version lists first. The author is the one the room's update observer
 // recorded for the update that introduced the block (docs' askBlockSources.author).
 func TestADecisionInASettlementOfSeveralWritersNamesTheOneWhoWroteIt(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour, browserPeers: true})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -733,6 +736,7 @@ func TestADecisionInASettlementOfSeveralWritersNamesTheOneWhoWroteIt(t *testing.
 // ask block holding a reading shows no ask at all - no row, no source - and settlement flags it
 // invalid, so the reading in it is a block like any other: supertag block, placed in the ask block.
 func TestAReadingInAnAskBlockStandsUnderTheAskTheBlockShows(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour, browserPeers: true})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")

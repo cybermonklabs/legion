@@ -195,6 +195,7 @@ func wantCatchUpOpensWith(t *testing.T, pool *store.Pool, sentence string) {
 // ready queued opens with the same record's sentence. The turn that takes the task tells the
 // record; the catch-up's copy tells nothing.
 func TestARelaunchSentenceReachesARootArchitectRelaunchedHoldingATask(t *testing.T) {
+	t.Parallel()
 	rig := newRootArchitectRig(t)
 	const task = "Decide the acceptance of LEGION-209."
 	rig.handle(supervise.RequestDeliver{Claim: rig.token, Task: task, ID: "outbox:7", Generation: 1},
@@ -240,6 +241,7 @@ func TestARelaunchSentenceReachesARootArchitectRelaunchedHoldingATask(t *testing
 // process gone — is given a delivery of the daemon's own that carries the sentence alone, with no
 // phase, no run and no entry, and is sent it at once. Its catch-up opens with the same sentence.
 func TestARelaunchSentenceReachesARootArchitectRelaunchedHoldingNothing(t *testing.T) {
+	t.Parallel()
 	rig := newRootArchitectRig(t)
 	if held := rig.claim().Pending; held != nil {
 		t.Fatalf("the started architect holds %+v, want nothing", held)
@@ -275,6 +277,7 @@ func TestARelaunchSentenceReachesARootArchitectRelaunchedHoldingNothing(t *testi
 // record describes. So the catch-up its ready queues states the tree with no relaunch sentence in
 // front of it, and the claim is given no delivery of the daemon's own.
 func TestARelaunchSentenceGivesWayToTheAbandonedSessionInTheCatchUp(t *testing.T) {
+	t.Parallel()
 	rig := newRootArchitectRig(t)
 	rig.report()
 	rig.rt.ScriptResume(fake.SpawnResult{Err: fmt.Errorf("resume %s: %w: the session table holds no such session",
@@ -337,6 +340,7 @@ func workTurn(sh *shim, prompt shimwire.Prompt) {
 // queued first would make the start procedure wait behind a sentence. The start message is the
 // delivery that carries the sentence, in front of it, and the turn that takes it tells the record.
 func TestARelaunchSentenceGoesInFrontOfTheDaemonLaunchedControllersStartMessage(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.ControllerLaunch = config.ControllerLaunchDaemon
 	rt := fake.NewRuntime()
@@ -389,7 +393,8 @@ func TestARelaunchSentenceGoesInFrontOfTheDaemonLaunchedControllersStartMessage(
 		return c.State == string(supervise.StateIdle) && c.Pending == nil
 	})
 	// The record is told by the confirmation's own write, at the turn's start, before the end
-	// that leaves the claim idle (supervise's confirm), so it is read once the turn is over.
+	// that leaves the claim idle (supervise's confirmCarrying), so it is read once the turn is
+	// over.
 	if !storedClaim(t, cfg, token).EndedWork.Told {
 		t.Fatal("the start turn left the record untold, want it told by the turn that took the start message")
 	}
@@ -401,6 +406,7 @@ func TestARelaunchSentenceGoesInFrontOfTheDaemonLaunchedControllersStartMessage(
 // delivery's acknowledged prompt is the session's next and goes once its turn is over. That turn
 // tells the record, so the resume task goes as it was queued.
 func TestARelaunchSentenceDeliveryLeavesAPhaseWorkerItsResumeTask(t *testing.T) {
+	t.Parallel()
 	rig := newReadyWorkerRig(t)
 	rig.workTheTask()
 	rig.report("subagent")
@@ -435,11 +441,12 @@ func TestARelaunchSentenceDeliveryLeavesAPhaseWorkerItsResumeTask(t *testing.T) 
 	rig.dueNow()
 	rig.run()
 	held := rig.claim().Pending
-	if held == nil || held.Task != workflow.ResumePhaseTask(rig.issue) || held.Phase != phase.Testing {
+	resume := resumeTaskOf(t, rig.pool, rig.engine, rig.issue.Key)
+	if held == nil || held.Task != resume || held.Phase != phase.Testing {
 		t.Fatalf("after the sentence's turn the tester holds %+v, want the testing phase's resume task", held)
 	}
 	prompts = rig.conn.Prompts()
-	if sent := prompts[len(prompts)-1]; sent.DeliveryID != held.ID || sent.Message != workflow.ResumePhaseTask(rig.issue) {
+	if sent := prompts[len(prompts)-1]; sent.DeliveryID != held.ID || sent.Message != resume {
 		t.Fatalf("the resume task was sent as %+v, want it as it was queued: the record was told", sent)
 	}
 }
@@ -449,6 +456,7 @@ func TestARelaunchSentenceDeliveryLeavesAPhaseWorkerItsResumeTask(t *testing.T) 
 // and carries the sentence in front of itself: the phase worker's resume task is not held behind
 // a sentence nobody is reading.
 func TestARelaunchSentenceDeliveryGivesWayToAPhaseWorkersResumeTask(t *testing.T) {
+	t.Parallel()
 	rig := newReadyWorkerRig(t)
 	rig.workTheTask()
 	rig.report("subagent")
@@ -468,7 +476,8 @@ func TestARelaunchSentenceDeliveryGivesWayToAPhaseWorkersResumeTask(t *testing.T
 	sentBefore := len(rig.conn.Prompts())
 	rig.run()
 	held := rig.claim().Pending
-	if held == nil || held.Task != workflow.ResumePhaseTask(rig.issue) || held.Relaunch() {
+	resume := resumeTaskOf(t, rig.pool, rig.engine, rig.issue.Key)
+	if held == nil || held.Task != resume || held.Relaunch() {
 		t.Fatalf("after the resume task's row the tester holds %+v, want the resume task in the place of the sentence's delivery", held)
 	}
 	if sent := rig.conn.Prompts(); len(sent) != sentBefore {
@@ -484,7 +493,7 @@ func TestARelaunchSentenceDeliveryGivesWayToAPhaseWorkersResumeTask(t *testing.T
 	sent := prompts[sentBefore]
 	if sent.DeliveryID != held.ID || !strings.HasPrefix(sent.Message, "Your previous process ended because the process died") ||
 		!strings.Contains(sent.Message, "Each subagent that you started stopped with that process.") ||
-		!strings.HasSuffix(sent.Message, "\n\n"+workflow.ResumePhaseTask(rig.issue)) {
+		!strings.HasSuffix(sent.Message, "\n\n"+resume) {
 		t.Fatalf("the resume task was sent as %+v, want it under %s behind the relaunch's sentence", sent, held.ID)
 	}
 }
@@ -508,6 +517,7 @@ func (r *readyWorkerRig) dueNow() {
 // was in no turn of the stopped process, and the sentence says that the turn the agent was in
 // was interrupted, never its previous turn on this task (supervise's EndedWork.inFrontOf).
 func TestARelaunchSentenceTellsTheOperatorsRetryOfAStoppedWorkerWhatTheStopEnded(t *testing.T) {
+	t.Parallel()
 	rig := newReadyWorkerRig(t)
 	ctx := context.Background()
 	// The operator's own routes over this rig's supervisor and workflow, wired as the daemon wires

@@ -845,8 +845,8 @@ func TestMemoryGuardTheAcknowledgementBytesDecode(t *testing.T) {
 }
 
 // Each number of the settings is refused one below its minimum and one above its maximum, by a
-// refusal that names the member and its range, and taken at either bound. The defaults are inside
-// every range.
+// refusal that names the member and its range, and taken at either bound. The defaults, the
+// controller pod's wait among them, are inside every range.
 func TestMemoryGuardSettingsValidateRefusesEachSideOfEachBound(t *testing.T) {
 	defaults := LauncherMemoryGuard{
 		ActPercent: MemoryGuardActDefault, FloorPercent: MemoryGuardFloorDefault,
@@ -854,6 +854,11 @@ func TestMemoryGuardSettingsValidateRefusesEachSideOfEachBound(t *testing.T) {
 	}
 	if err := defaults.Validate(); err != nil {
 		t.Fatalf("the defaults are refused: %v", err)
+	}
+	controller := defaults
+	controller.WaitSeconds = MemoryGuardControllerWaitDefault
+	if err := controller.Validate(); err != nil {
+		t.Fatalf("the controller pod's defaults are refused: %v", err)
 	}
 	for _, tc := range []struct {
 		member string

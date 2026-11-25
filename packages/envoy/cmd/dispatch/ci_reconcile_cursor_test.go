@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -56,18 +57,25 @@ func TestTheCIReconcileCursorResumesInTheDispatchProcess(t *testing.T) {
 	github := startCIReconcileCursorGitHub(t)
 	process, natsURL := startCIReconcileCursorProcess(t, github)
 
-	// The passes until the first that covers the whole order, which is the first cycle.
+	// The passes until the first that covers the whole order, which is the first cycle, and the
+	// first of them that began reading GitHub (readingCIReconcilePass): a pass before it whose own
+	// bound fell before it read anything -- a loaded machine's first second -- read no head and
+	// moved no cursor, so the cycle's reading begins with the pass after it.
 	cycle := waitForCIReconcilePasses(t, process, "a cycle of bounded passes covering every head",
 		func(passes []map[string]string) bool {
 			return cycleCompleted(passes) >= 0
 		})
 	cycle = cycle[:cycleCompleted(cycle)+1]
-	if len(cycle) < 2 {
+	first := readingCIReconcilePass(cycle, 0)
+	if first < 0 {
+		t.Fatalf("no pass of the cycle began reading GitHub (every pass line counts requests=0), yet the last of them covered all %d heads: %v", ciReconcileCursorHeads, cycle)
+	}
+	if first == len(cycle)-1 {
 		t.Fatalf("one pass covered all %d heads, which is not the cycle this test is about: %v", ciReconcileCursorHeads, cycle)
 	}
 
-	// Every pass says where in the order it read, and the first of them ended on its own bound
-	// rather than covering the order.
+	// Every pass says where in the order it read, and the first that began reading ended on its
+	// own bound rather than covering the order.
 	for i, pass := range cycle {
 		if _, named := pass["first_head"]; !named {
 			t.Fatalf("pass %d logged no first_head: %v", i, pass)
@@ -76,30 +84,34 @@ func TestTheCIReconcileCursorResumesInTheDispatchProcess(t *testing.T) {
 			t.Fatalf("pass %d logged no last_head: %v", i, pass)
 		}
 	}
-	if cycle[0]["deadline_reached"] != "true" {
-		t.Errorf("the first pass reports deadline_reached = %q, want true: ten heads do not fit one second: %v",
-			cycle[0]["deadline_reached"], cycle[0])
+	if cycle[first]["deadline_reached"] != "true" {
+		t.Errorf("the first pass that began reading GitHub reports deadline_reached = %q, want true: ten heads do not fit one second: %v",
+			cycle[first]["deadline_reached"], cycle[first])
 	}
-	if cycle[0]["last_head"] == ciReconcileHeadName(ciReconcileRecordedHead) {
-		t.Fatalf("the first pass reached the last head of the order, so nothing about this test's starvation is proved: %v", cycle[0])
+	if cycle[first]["last_head"] == ciReconcileHeadName(ciReconcileRecordedHead) {
+		t.Fatalf("the first pass that began reading GitHub reached the last head of the order, so nothing about this test's starvation is proved: %v", cycle[first])
 	}
 	requireCIReconcileCursorOrder(t, cycle)
 
-	// The check run at the last head of the order, which the first pass never reached, is in
-	// that head's record once the cycle has closed: no head starves behind the heads the order
-	// holds before it. The record is read from the CI bucket itself, not from the passes' records
-	// count: a write the pass's own bound cut off can land all the same, and the pass that reads
-	// the head again then changes nothing (recordHead), so no pass line need count that record.
-	if cycle[0]["records"] != "0" {
-		t.Errorf("the first pass changed %s records, want none: the one run to record sits at the last head of the order: %v",
-			cycle[0]["records"], cycle[0])
+	// The check run at the last head of the order, which the first pass that began reading never
+	// reached, is in that head's record once the cycle has closed: no head starves behind the heads
+	// the order holds before it. The record is read from the CI bucket itself, not from the
+	// passes' records count: a write the pass's own bound cut off can land all the same, and the
+	// pass that reads the head again then changes nothing (recordHead), so no pass line need count
+	// that record.
+	if cycle[first]["records"] != "0" {
+		t.Errorf("the first pass that began reading GitHub changed %s records, want none: the one run to record sits at the last head of the order: %v",
+			cycle[first]["records"], cycle[first])
 	}
 	requireCIReconcileRecordedRun(t, natsURL, process)
 
 	// A rate limit partway through one head's reads: GitHub gives that head's check runs and
-	// refuses its check suites, so the head was not read whole.
-	github.rateLimitNext(ciReconcileCursorSuitesPath(ciReconcileLimitedHead), 2*time.Second)
+	// refuses its check suites, so the head was not read whole. The passes are counted before the
+	// limit is armed: passes run back to back, so one can meet the limit the moment it is armed,
+	// and a count taken after that would hold its line and leave the wait below a pass that never
+	// comes once the reset has passed.
 	before := len(ciReconcilePasses(process.Output.String()))
+	github.rateLimitNext(ciReconcileCursorSuitesPath(ciReconcileLimitedHead), 2*time.Second)
 	after := waitForCIReconcilePasses(t, process, "a pass GitHub's rate limit stopped",
 		func(passes []map[string]string) bool {
 			for _, pass := range passes[min(before, len(passes)):] {
@@ -158,10 +170,15 @@ func TestTheCIReconcileCursorResumesInTheDispatchProcess(t *testing.T) {
 //
 // GitHub holds the first head's check suites, the second of its two reads, until the bound of
 // the pass that asks for them gives the request up, so that pass lists the ten heads and reads
-// none of them whole however fast the machine runs. The row reads the pass after that one,
-// whichever pass of the process it is: in the second case GitHub also holds the process's first
-// query until the first pass's bound gives it up, so the first pass lists nothing and the starved
-// pass is never the first, as a machine too slow to start a pass within its second leaves it.
+// none of them whole however fast the machine runs. The row reads the first pass after that one
+// that began reading GitHub at all (readingCIReconcilePass), whichever passes of the process they
+// are: in the second case GitHub also holds the process's first query until the first pass's
+// bound gives it up, so the first pass lists nothing and the starved pass is never the first, as a
+// machine too slow to start a pass within its second leaves it. A pass between the two whose own
+// bound fell before it began reading -- before or inside its read of the repositories it covers,
+// which a loaded machine can take a second over -- set no pace, and its line says 0s; the process
+// keeps the floor across it, since its own bound ended it too (cireconcile.Reconciler.Pass), so
+// the pass that begins reading next is the one whose pace the row is about.
 func TestTheCIReconcileCursorResumesInTheDispatchProcessAfterAPassThatReadNoHead(t *testing.T) {
 	for _, row := range []struct {
 		name string
@@ -179,18 +196,19 @@ func TestTheCIReconcileCursorResumesInTheDispatchProcessAfterAPassThatReadNoHead
 			}
 			process, _ := startCIReconcileCursorProcess(t, github)
 
-			passes := waitForCIReconcilePasses(t, process, "a pass that listed every head and reached none, and the pass after it",
+			passes := waitForCIReconcilePasses(t, process, "a pass that listed every head and reached none, and a pass after it that began reading GitHub",
 				func(passes []map[string]string) bool {
 					starved := starvedCIReconcilePass(passes)
-					return starved >= 0 && starved+1 < len(passes)
+					return starved >= 0 && readingCIReconcilePass(passes, starved+1) >= 0
 				})
 			starved := starvedCIReconcilePass(passes)
 			if row.firstQuery && starved == 0 {
 				t.Fatalf("the first pass listed every head although GitHub held its query: nothing here is tested: %v", passes[0])
 			}
-			if got, want := passes[starved+1]["pace"], "100ms"; got != want {
-				t.Fatalf("the pass after one that read no head whole paced itself at %s, want the floor %s: at the ceiling a one-second pass reads no head: starved %v, after it %v",
-					got, want, passes[starved], passes[starved+1])
+			next := readingCIReconcilePass(passes, starved+1)
+			if got, want := passes[next]["pace"], "100ms"; got != want {
+				t.Fatalf("the pass after one that read no head whole paced itself at %s, want the floor %s: at the ceiling a one-second pass reads no head: starved %v, the next pass that began reading GitHub %v",
+					got, want, passes[starved], passes[next])
 			}
 			waitForCIReconcilePasses(t, process, "a cycle of bounded passes covering every head",
 				func(passes []map[string]string) bool {
@@ -208,6 +226,25 @@ func starvedCIReconcilePass(passes []map[string]string) int {
 	for i, pass := range passes {
 		if pass["deadline_reached"] == "true" && pass["rate_limited"] == "false" && pass["heads"] == "0" &&
 			pass["heads_known"] == strconv.Itoa(ciReconcileCursorHeads) {
+			return i
+		}
+	}
+	return -1
+}
+
+// readingCIReconcilePass is the index of the first pass at or after from whose line counts a
+// GitHub read, and -1 while none has. The line's `requests` is the queries and REST reads the
+// pass asked of its GitHub client, each counted as it is asked -- a read a rate limit already held
+// answers without sending counts too -- and the installation lookup and token mint are not among
+// them. The pass asks for none before it has read the repositories it covers and set its pace
+// (cireconcile.Reconciler.reconcile), so a count above zero is a pass that set its pace and began
+// reading, and a pass whose own bound fell before then -- a second a loaded machine can spend
+// binding the CI record writer or reading those repositories -- counts none, set no pace and says
+// nothing of the order or of how it would have paced itself. This reads what the pass did, not
+// where it sits among the passes.
+func readingCIReconcilePass(passes []map[string]string, from int) int {
+	for i := from; i < len(passes); i++ {
+		if sent, err := strconv.Atoi(passes[i]["requests"]); err == nil && sent > 0 {
 			return i
 		}
 	}
@@ -243,13 +280,13 @@ func requireCIReconcileRecordedRun(t *testing.T, natsURL string, process *dispat
 }
 
 // startCIReconcileCursorProcess starts the envoy-dispatch process the cursor tests read: one
-// mapped repository whose GitHub is github, a NATS server holding the CI state bucket, and the
-// reconcile loop on a one-second interval, which is each pass's bound as well. It answers the
-// process and that NATS server's URL.
+// project whose default repository's GitHub is github (seedCIReconcileDefault), a NATS server
+// holding the CI state bucket, and the reconcile loop on a one-second interval, which is each
+// pass's bound as well. It answers the process and that NATS server's URL.
 func startCIReconcileCursorProcess(t *testing.T, github *cursorGitHub) (*dispatchProcess, string) {
 	t.Helper()
 	database := storetest.Open(t)
-	mapCIReconcileRepository(t, database)
+	seedCIReconcileDefault(t, database)
 	_, natsURL := testnats.Start(t)
 	makeCIStateBucket(t, natsURL)
 	_, pemText := githubapptest.Key(t)
@@ -331,22 +368,16 @@ func ciReconcilePasses(output string) []map[string]string {
 	return passes
 }
 
-// waitForCIReconcilePasses waits up to a minute for the pass lines the process has logged to
-// satisfy enough, and answers them. The passes run a second apart, so a cycle of them is
-// several seconds of waiting.
+// waitForCIReconcilePasses waits for the pass lines the process has logged to satisfy enough,
+// and answers them. The passes run a second apart, so a cycle of them is several seconds.
 func waitForCIReconcilePasses(t *testing.T, process *dispatchProcess, what string, enough func([]map[string]string) bool) []map[string]string {
 	t.Helper()
-	deadline := time.Now().Add(time.Minute)
-	for {
-		passes := ciReconcilePasses(process.Output.String())
-		if enough(passes) {
-			return passes
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the process never logged %s:\n%s", what, process.Output.String())
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	var passes []map[string]string
+	testwait.Until(t, what, func() (fmt.Stringer, bool) {
+		passes = ciReconcilePasses(process.Output.String())
+		return process.Output, enough(passes)
+	})
+	return passes
 }
 
 // ciReconcileHeadName is how the pass line names one head of the stand-in: the repository GitHub

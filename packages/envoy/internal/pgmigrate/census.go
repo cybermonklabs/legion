@@ -29,9 +29,10 @@ import (
 // table above the limit is also admitted, table by table, where every statement of the migration
 // that touches it is a bounded write of it (boundedWrites): an insert of at most BoundedWriteRows
 // literal rows, or an update of at most that many rows by their primary key, which costs the same
-// whatever the table holds and fires no event trigger; an earlier pending migration that can
-// create or alter an event trigger unseen voids it too, since such a statement can also change the
-// table the census read. Sizes and lock holders are still reported, holders still refuse, and
+// whatever the table holds and fires no event trigger, on a table whose every enabled trigger is
+// one a person has reviewed (reviewedTriggers); an earlier pending migration that can create or
+// alter an event trigger unseen voids it too, since such a statement can also change the table
+// the census read. Sizes and lock holders are still reported, holders still refuse, and
 // no table above the limit is counted: an exact count that large during a deploy is load for
 // nothing.
 const CensusTableLimit int64 = 1 << 30
@@ -105,8 +106,8 @@ type TableCensus struct {
 	// BoundedWrites is, for a table above the limit that the migration names, how many of the
 	// migration's statements touch it where every one of them is a bounded write of it, which
 	// admits the table (boundedWrites); 0 otherwise. Triggers are then the table's enabled
-	// triggers, which run for each row those writes write and whose bodies the census does not
-	// read, so the report names them.
+	// triggers, which run for each row those writes write, each of them on reviewedTriggers since
+	// the census does not read their bodies, and the report names them.
 	BoundedWrites int
 	Triggers      []string
 }
@@ -297,16 +298,21 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 	// statement names is of pg_catalog or reads one, since that read resolves no name
 	// (catalogRelation). A recorded migration, which the loop skips, changes nothing.
 	catalogTrusted := true
-	// laterEventTrigger names the first pending migration that can create or enable an event
-	// trigger that the census does not see, or that does not parse, and says why
-	// (laterExemptionsOff); "" until one does. Such an event trigger can run code of its own on
-	// the statements of every later migration, as an enabled one does, so no later migration is
-	// exempt from the limit.
-	var laterEventTrigger string
+	// laterEventTrigger is why the first pending migration that can create or enable an event
+	// trigger that the census does not see, or that does not parse, stops the exemptions
+	// (laterExemptionsOff), with its words naming that migration; the zero value until one does.
+	// Such an event trigger can run code of its own on the statements of every later migration,
+	// as an enabled one does, so no later migration is exempt from the limit.
+	var laterEventTrigger exemptionsOff
 	// changedBy names, by table, the first pending migration that touches the table with anything
-	// but bounded writes: after it, the keys, rules and triggers the census reads of the table are
-	// not certain to be the ones a later migration's writes meet, so no later migration is admitted
-	// for bounded writes of it (boundedWrites).
+	// but bounded writes or a concurrent index build (ConcurrentIndex), or a catalog-only
+	// migration that only adds plain columns (addsPlainColumns) or only references the table by
+	// its primary key (referencedByItsPrimaryKey): after it, the keys, rules and triggers the
+	// census reads of the table are not certain to be the ones a later migration's writes meet,
+	// so no later migration is admitted for bounded writes of it (boundedWrites). None of the
+	// three left out changes what boundedWrites decides by, of what it reads of the table
+	// (boundedTableQuery): its primary key and the key's types, the columns foreign keys
+	// reference, its rules, its row-level security, its child tables and its enabled triggers.
 	changedBy := map[string]string{}
 	for _, migration := range migrations {
 		if recorded[migration.Version] {
@@ -330,8 +336,8 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 		switch {
 		case ddlEventTriggers != "":
 			runsCode = "the enabled event triggers " + ddlEventTriggers + " run code of their own on"
-		case laterEventTrigger != "":
-			runsCode = laterEventTrigger + ", which can run code of its own on"
+		case laterEventTrigger.does != "":
+			runsCode = laterEventTrigger.String() + ", which can run code of its own on"
 		}
 		if kinds := classified.exemption; kinds != "" && runsCode == "" {
 			entry.TableSizeExemption = kinds
@@ -355,15 +361,16 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 		writes := &writeReading{c: &classifier{ctx: ctx, census: tx, catalog: catalog}, statements: classified.statements, changedBy: changedBy}
 		switch {
 		case classified.statements == nil:
-		case classified.laterExemptionsOff != "":
-			writes.voided = "the migration " + strings.TrimSuffix(classified.laterExemptionsOff, cannotSeeAnEventTrigger) + ", and the census cannot read what such a statement changes of the table before the writes run"
+		case classified.laterExemptionsOff.does != "":
+			writes.voided = "the migration " + classified.laterExemptionsOff.does + ", and the census cannot read what such a statement changes of the table before the writes run"
 		case classified.readsOff:
 			writes.voided = "a statement of the migration can change what its names resolve to, as a set of any setting but lock_timeout and statement_timeout can, so its writes can reach another table than the one the census read"
-		case laterEventTrigger != "":
-			writes.voided = strings.TrimSuffix(laterEventTrigger, cannotSeeAnEventTrigger) + ", and the census cannot read what such a statement changes of the table before this migration runs"
+		case laterEventTrigger.does != "":
+			writes.voided = laterEventTrigger.does + ", and the census cannot read what such a statement changes of the table before this migration runs"
 		}
-		if laterEventTrigger == "" && classified.laterExemptionsOff != "" {
-			laterEventTrigger = "the earlier pending migration " + migration.Name + " " + classified.laterExemptionsOff
+		if laterEventTrigger.does == "" && classified.laterExemptionsOff.does != "" {
+			laterEventTrigger = classified.laterExemptionsOff
+			laterEventTrigger.does = "the earlier pending migration " + migration.Name + " " + laterEventTrigger.does
 		}
 		if len(report.Pending) == 0 && len(unrecorded) > 0 {
 			entry.refuse("%s records no version, yet the database holds %s: the runner would apply every migration from this one over it", versionTable, someTables(unrecorded))
@@ -383,8 +390,34 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 				return nil, err
 			}
 		}
+		// A concurrent index build (ConcurrentIndex) is a single non-unique index: it changes none of
+		// the keys, the rules, the row-level security, the children and the triggers a later
+		// migration's bounded writes are judged by (boundedTableQuery), so it leaves a table
+		// unchanged for them. So does a migration the census exempts from the limit as catalog-only
+		// (TableSizeExemption, which no event trigger can run code on) and that only adds plain
+		// columns (addsPlainColumns): a nullable column with no default and no constraint is in no
+		// primary key, no foreign key references it, and it adds no rule, row-level security, child
+		// table or trigger. A column with a default is not plain: an insert that leaves the column out
+		// runs its default for each row, as a trigger does, and the census does not read it.
+		// A catalog-only migration whose foreign keys reference a table by its primary key, and that
+		// touches the table in no other way (referencedByItsPrimaryKey), leaves it unchanged for
+		// them too: the key's columns are ones an update may not set anyway, and the triggers
+		// Postgres makes for the key are internal, which the census leaves out. It is judged only
+		// where the migration's own statements leave the catalog reads on (readsOff) and Census
+		// gives it a catalog, in which referencedByItsPrimaryKey reads the primary key.
+		plainColumns := entry.TableSizeExemption != "" && classified.addsPlainColumns
+		judgeKeys := entry.TableSizeExemption != "" && !classified.readsOff
 		for _, table := range entry.Tables {
-			if table.Exists && table.Through == "" && table.BoundedWrites == 0 && changedBy[table.Name] == "" {
+			if table.Exists && table.Through == "" && table.BoundedWrites == 0 && !entry.ConcurrentIndex && !plainColumns && changedBy[table.Name] == "" {
+				if judgeKeys {
+					referenced, err := writes.referencedByItsPrimaryKey(text.code, table.Name)
+					if err != nil {
+						return nil, fmt.Errorf("census: %s: read the foreign keys to %s: %w", migration.Name, table.Name, err)
+					}
+					if referenced {
+						continue
+					}
+				}
 				changedBy[table.Name] = migration.Name
 			}
 		}

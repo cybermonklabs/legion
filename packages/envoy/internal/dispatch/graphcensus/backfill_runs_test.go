@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -160,29 +163,12 @@ func TestTheBackfillMendsWhatAnOlderPodWroteOfARun(t *testing.T) {
 		t.Errorf("the run an older pod deleted reads node %+v (held %t, %v), want it kept at state gone", node, held, err)
 	}
 
-	after := storeCensusOf(t, database)
-	for _, kind := range after.Kinds {
-		for _, difference := range append(append([]Difference{}, kind.ReportedRows...), kind.ReportedNodes...) {
-			t.Errorf("the census after the backfill reads a difference of kind %s at %s: %s", kind.Kind, difference.At, difference.Cause)
-		}
-	}
-	if after.Differences() != 0 {
-		t.Errorf("the census after the backfill reads %d difference(s), want none", after.Differences())
-	}
-	for _, kind := range []struct {
-		name        string
-		rows, nodes int64
-	}{
+	requireTheCensusAfterTheBackfill(t, database, []checkedKind{
 		{graphstore.KindInteraction, 2, 2},
 		{"frame", 4, 2},
 		{graphstore.KindInteraction + "_visibility_state", 2, 2},
 		{graphstore.KindPerson, 2, 2},
-	} {
-		if held := censusKind(t, after, kind.name); held.Rows != kind.rows || held.Nodes != kind.nodes {
-			t.Errorf("the census after the backfill checked %d rows and %d nodes of %s, want %d and %d",
-				held.Rows, held.Nodes, kind.name, kind.rows, kind.nodes)
-		}
-	}
+	})
 
 	second, err := Backfill(ctx, database, io.Discard)
 	if err != nil {
@@ -203,6 +189,162 @@ func hasDifference(found []Difference, at, cause string) bool {
 		}
 	}
 	return false
+}
+
+// checkedKind is how many rows and nodes of one kind the census is to have checked.
+type checkedKind struct {
+	name        string
+	rows, nodes int64
+}
+
+// requireTheCensusAfterTheBackfill takes the store census of database once the backfill is done,
+// reports every difference it reads, requires it to read none, and holds each of kinds to the
+// rows and nodes the census checked of it.
+func requireTheCensusAfterTheBackfill(t *testing.T, database *store.Store, kinds []checkedKind) {
+	t.Helper()
+	census := storeCensusOf(t, database)
+	for _, kind := range census.Kinds {
+		for _, difference := range append(append([]Difference{}, kind.ReportedRows...), kind.ReportedNodes...) {
+			t.Errorf("the census after the backfill reads a difference of kind %s at %s: %s", kind.Kind, difference.At, difference.Cause)
+		}
+	}
+	if census.Differences() != 0 {
+		t.Errorf("the census after the backfill reads %d difference(s), want none", census.Differences())
+	}
+	for _, kind := range kinds {
+		if held := censusKind(t, census, kind.name); held.Rows != kind.rows || held.Nodes != kind.nodes {
+			t.Errorf("the census after the backfill checked %d rows and %d nodes of %s, want %d and %d",
+				held.Rows, held.Nodes, kind.name, kind.rows, kind.nodes)
+		}
+	}
+}
+
+// TestTheBackfillGivesEveryRunRecordedBeforeThisReleaseItsNode holds backfillRuns to the runs a
+// process of the release before records, which no migration gives a node: `envoy-dispatch
+// backfill-graph-store` gives each its node once the roll that brings this release is done. They
+// are going_requests rows and their going_events rows, with no interaction node and no frame value
+// (olderPodRun), asked by a person's cookie (a login recorded in another spelling than its
+// canonical one), by a session a broker's token proved its owner's, by a personal token whose act
+// claims a session, by a person whose act names a session the server proved, and by nobody, the
+// deployment's shared token. The backfill writes each run's node, reserved for its author and
+// live, with its words, its ends_at as Go's RFC 3339 text and its project; the authored_by tuple
+// and the author's node where AuthorOf names one, the aliases the server proved and the raw login
+// it was recorded under; and a frame value of each frame. A run whose author is nobody gets the
+// node and no authored_by. The store census then reads zero differences.
+func TestTheBackfillGivesEveryRunRecordedBeforeThisReleaseItsNode(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+
+	carol, dave := "Carol", "dave"
+	type run struct {
+		name       string
+		author     model.Actor
+		project    string
+		frames     []string
+		authoredBy string
+	}
+	runs := []run{
+		{"a person's cookie", model.Actor{Kind: "user", ID: "Alice"}, "CORE", []string{"Half an ", "answer."}, "person:alice"},
+		{"a session proved its owner's", model.Actor{Kind: "session", ID: "sess-carol", Owner: &carol,
+			Act: &model.ActorAct{Session: "sess-carol"}}, "", []string{"One."}, "session:sess-carol"},
+		{"a personal token", model.Actor{Kind: "session", Owner: &dave,
+			Act: &model.ActorAct{Session: "claimed-in-a-body", TokenID: "tok-1"}}, "", nil, "person:dave"},
+		{"a person whose act names a session the server proved", model.Actor{Kind: "user", ID: "erin",
+			Act: &model.ActorAct{Session: "sess-erin"}}, "", []string{"Two."}, "person:erin"},
+		{"nobody", model.Actor{}, "", []string{"Three."}, ""},
+	}
+	ids := make([]string, len(runs))
+	for index, written := range runs {
+		ids[index] = olderPodRun(t, database, written.author, written.project, "What does "+written.name+" ask?", written.frames...)
+	}
+
+	done, err := backfillRuns(ctx, database)
+	if err != nil {
+		t.Fatalf("backfill the runs: %v", err)
+	}
+	if done.Rows != int64(len(runs)) || done.Remaining != 0 || !done.Complete {
+		t.Errorf("the backfill reports %#v, want the %d runs written and none remaining", done, len(runs))
+	}
+
+	for index, written := range runs {
+		id := ids[index]
+		node, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindInteraction, id)
+		if err != nil || !held {
+			t.Fatalf("the run of %s reads no node after the backfill (held %t, %v)", written.name, held, err)
+		}
+		var endsAt time.Time
+		if err := database.Pool.QueryRow(ctx, `select ends_at from going_requests where id = $1::uuid`, id).Scan(&endsAt); err != nil {
+			t.Fatalf("read the ends_at of the run of %s: %v", written.name, err)
+		}
+		if node.Visibility != graphstore.VisibilityAuthor || node.State != graphstore.StateLive || node.Project != written.project ||
+			node.Attributes[graphstore.AttributeEndsAt] != endsAt.UTC().Format(time.RFC3339Nano) ||
+			node.Attributes[graphstore.AttributeWords] != "What does "+written.name+" ask?" {
+			t.Errorf("the run of %s reads node %+v, want it reserved for its author, live, in %q, ending %s", written.name, node,
+				written.project, endsAt.UTC().Format(time.RFC3339Nano))
+		}
+		authors, err := graphstore.CurrentOut(ctx, database.Pool, graphstore.KindInteraction, id, []string{graphstore.TupleAuthoredBy})
+		if err != nil {
+			t.Fatalf("read the authored_by of the run of %s: %v", written.name, err)
+		}
+		var named []string
+		for _, author := range authors {
+			named = append(named, author.ToKind+":"+author.ToID)
+		}
+		if want := slices.DeleteFunc([]string{written.authoredBy}, func(s string) bool { return s == "" }); !slices.Equal(named, want) {
+			t.Errorf("the run of %s states authored_by %v, want %v", written.name, named, want)
+		}
+		var frames, values int
+		if err := database.Pool.QueryRow(ctx, `
+			select (select count(*) from going_events where request_id = $1::uuid),
+			       (select count(*) from going_events e where e.request_id = $1::uuid and exists (
+			          select 1 from graph_tuples v where v.from_kind = $2 and v.from_id = $5 and v.kind = $3 and v.to_kind = $4
+			            and v.to_id = jsonb_build_object('sequence', e.sequence, 'name', e.name, 'data', e.data)::text
+			            and v.at = e.created_at and v.who = '{"kind": "system", "id": "going"}'::jsonb))
+		`, id, graphstore.KindInteraction, graphstore.AttributeFrame, graphstore.KindValue, id).Scan(&frames, &values); err != nil {
+			t.Fatalf("count the frames of the run of %s: %v", written.name, err)
+		}
+		if frames != len(written.frames) || values != frames {
+			t.Errorf("the run of %s holds %d frames and %d frame values stating them, want %d of each", written.name, frames, values, len(written.frames))
+		}
+	}
+
+	rows, err := database.Pool.Query(ctx, `
+		select from_kind || ':' || from_id || ' ' || kind || ' ' || to_kind || ':' || to_id from graph_tuples
+		where kind in ($1, $2) order by 1`, graphstore.TupleAliasOf, graphstore.TupleRecordedAs)
+	if err != nil {
+		t.Fatalf("read the alias tuples: %v", err)
+	}
+	facts, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the alias tuples: %v", err)
+	}
+	want := []string{"person:alice recorded_as value:Alice", "session:sess-carol alias_of person:carol", "session:sess-erin alias_of person:erin"}
+	if !slices.Equal(facts, want) {
+		t.Errorf("the backfill states the aliases %v, want %v", facts, want)
+	}
+	var people, sessions []string
+	for kind, into := range map[string]*[]string{graphstore.KindPerson: &people, graphstore.KindSession: &sessions} {
+		nodes, err := graphstore.NodesOfKind(ctx, database.Pool, kind)
+		if err != nil {
+			t.Fatalf("read the %s nodes: %v", kind, err)
+		}
+		for _, node := range nodes {
+			*into = append(*into, node.ID)
+		}
+	}
+	if !slices.Equal(people, []string{"alice", "carol", "dave", "erin"}) || !slices.Equal(sessions, []string{"sess-carol"}) {
+		t.Errorf("the backfill made person nodes %v and session nodes %v, want alice, carol, dave and erin, and sess-carol", people, sessions)
+	}
+
+	// Each kind compared the runs: five runs, five frames over the four runs that hold one, the four
+	// people and the one session the authors name.
+	requireTheCensusAfterTheBackfill(t, database, []checkedKind{
+		{graphstore.KindInteraction, 5, 5},
+		{"frame", 5, 4},
+		{graphstore.KindInteraction + "_visibility_state", 5, 5},
+		{graphstore.KindPerson, 4, 4},
+		{graphstore.KindSession, 1, 1},
+	})
 }
 
 // requireTheOwedRunLockOrder holds writeOwedRun to its steps. A run stands under no owner row, so
@@ -286,10 +428,10 @@ func requireTheRunFramesLockOrder(t *testing.T) {
 }
 
 // requireTheGoneRunLockOrder holds writeGoneRun to its steps. It takes no owner row and starts at
-// the run's interaction node row, `for no key update`, the lock a frame and the erase of the run
-// take it at or above, and reads the node and whether its row stands only under that lock; then it
-// moves the node to gone, which appends the state tuple. While it waits at the node row it has
-// appended no tuple. The run is one this build gave its node, whose row an older pod deleted.
+// the run's interaction node row, `for no key update`, the lock a frame of the run takes it at,
+// and reads the node and whether its row stands only under that lock; then it moves the node to
+// gone, which appends the state tuple. While it waits at the node row it has appended no tuple.
+// The run is one this build gave its node, whose row an older pod deleted.
 func requireTheGoneRunLockOrder(t *testing.T) {
 	database := storetest.Open(t)
 	run := olderPodRun(t, database, model.Actor{Kind: "user", ID: "carol"}, "", "asked and deleted an hour on", "Gone ")

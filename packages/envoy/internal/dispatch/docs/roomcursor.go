@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+	"time"
 	"weak"
 
 	"github.com/reearth/ygo/crdt"
@@ -173,15 +174,25 @@ func (load *roomLoad) took(version persistence.Version) {
 // start is the instance this load leaves behind: it stands at the head the load read, with every
 // version took recorded since folded in, in order and only where each follows the one before, as
 // every advance of a cursor is (advanceRoomCursor). The load holds it from here, so a version
-// appended before ygo publishes the loaded room still reaches it.
-func (load *roomLoad) start() *roomInstance {
+// appended before ygo publishes the loaded room still reaches it. resident and layout are the
+// instance's (roomInstance.resident, roomInstance.layout), set here under the load's lock, so a
+// reader that finds the instance on the load (roomShadow.cursorLocked, roomLoadUnpublished) reads
+// them as well as one that finds it listed (instanceOf).
+func (load *roomLoad) start(resident *residentLoad, layout roomLayout) *roomInstance {
 	load.mu.Lock()
 	defer load.mu.Unlock()
-	load.instance = &roomInstance{hold: roomHold{loaded: load.head}, cursor: roomCursor{through: load.head}}
+	load.instance = &roomInstance{hold: roomHold{loaded: load.head}, cursor: roomCursor{through: load.head}, resident: resident, layout: layout}
 	for _, version := range load.appended {
 		advanceRoomCursor(&load.instance.cursor, persistence.Version(version))
 	}
 	load.appended = nil
+	return load.instance
+}
+
+// started is the instance the load left behind (start), nil while it has left none.
+func (load *roomLoad) started() *roomInstance {
+	load.mu.Lock()
+	defer load.mu.Unlock()
 	return load.instance
 }
 
@@ -198,15 +209,72 @@ func (s *Service) tookResidentVersion(room string, version persistence.Version) 
 	}
 }
 
+// awaitRoomLoad waits while the load of room under way when it is called has not been published:
+// until ygo publishes the room that load leaves behind or the load ends without one, or until ctx
+// ends or catchUpLoadingTimeout passes. ygo tells no one when it publishes a room it has loaded and
+// reports the room absent until then (Server.GetDoc), so this looks again every catchUpLoadingWait,
+// as a catch-up of a room still loading looks for ygo to publish it (roomCatchUps.takeLoading). It
+// holds no lock while it waits: the load takes the room's state lock and its own record's, and its
+// caller holds no lock of the room or its issue (Ledger.closeJoinedRooms).
+//
+// The load it waits for is the one whose record it finds when it is called (roomLoads): ygo loads
+// one room of a name at a time, and a load stores its record before it reads anything
+// (beginRoomLoad). A load that begins after this call stores a record of its own, which this does
+// not wait for: it reads the room's layout after this call, so after the commit of the join that
+// calls it, and sees the joined document. The one read it could take from before that commit, the
+// layout a socket's admission read before the load began, it does not take: the join is recorded
+// before this call (noteLayoutMoved), and the load then reads the layout itself
+// (admittedIssueRead).
+// The load this finds may have read the layout on either side of that commit, and keeps what it
+// read to itself until it starts its instance, right before ygo publishes it (keepInstance), so it
+// is waited for either way; the layout it read decides only whether the room it published is
+// closed then.
+func (s *Service) awaitRoomLoad(ctx context.Context, room string) {
+	value, ok := s.roomLoads.Load(room)
+	if !ok {
+		return
+	}
+	load := value.(*roomLoad)
+	if !s.roomLoadUnpublished(room, load) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, catchUpLoadingTimeout)
+	defer cancel()
+	tick := time.NewTicker(catchUpLoadingWait)
+	defer tick.Stop()
+	for s.roomLoadUnpublished(room, load) {
+		select {
+		case <-tick.C:
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// roomLoadUnpublished is whether load, room's, is under way or has left an instance ygo has not
+// published yet: its record still stands for the room - a load that fails takes it out
+// (failRoomLoad, onLoadDocument), and the room's next load replaces it (beginRoomLoad) - ygo
+// publishes no room under the name, and the load has left no instance yet, or one whose room has
+// not unloaded (loadEnded). ygo publishes a room right after its load hook returns (sjawhar/ygo
+// v1.55.1-sami.2, provider/websocket/server.go:1912-1993), and a room published and closed since
+// has unloaded, or is unloading and does so once its persistence has drained.
+func (s *Service) roomLoadUnpublished(room string, load *roomLoad) bool {
+	if current, ok := s.roomLoads.Load(room); !ok || current != load || s.srv.GetDoc(room) != nil {
+		return false
+	}
+	instance := load.started()
+	return instance == nil || !s.loadEnded(instance.resident)
+}
+
 // keepInstance starts the bookkeeping of live, the document room's load read, and lists it for
 // the instance's writes (instanceOf) while live is resident (listResident). The load is the first
 // advance of the instance's cursor: the instance holds every durable update through the head that
 // load read, and every version this process appended while it ran (roomLoad). The load's record
 // goes with the document from here, as the listing does: until then took still reaches this
 // instance through it, which is what ygo's loading window needs it for. counted is the token of
-// the load the instance stands for, which its updates' bytes count against (classifyDrained); it
-// is set before the instance is listed, so every reader of a listed instance reads it too, and so
-// is layout, the room's layout as that load read it.
+// the load the instance stands for, which its updates' bytes count against (classifyDrained), and
+// layout is the room's layout as that load read it; the load starts the instance with both
+// (roomLoad.start), so every reader of the instance, listed or found on the load, reads them.
 //
 // It also schedules one catch-up of the instance (roomCatchUps.schedule), which waits for ygo to
 // publish it once this load hook returns (roomCatchUps.takeLoading): a load reads the store with
@@ -221,9 +289,7 @@ func (s *Service) keepInstance(room string, live *crdt.Doc, counted *residentLoa
 		value = s.beginRoomLoad(room)
 	}
 	load := value.(*roomLoad)
-	instance := load.start()
-	instance.resident = counted
-	instance.layout = layout
+	instance := load.start(counted, layout)
 	listResident(&s.instances, live, instance)
 	// The cleanup holds the service weakly because runtime.AddCleanup keeps a cleanup's closure
 	// alive for as long as the object it is attached to, and the service reaches every resident

@@ -169,7 +169,7 @@ var RebuildMarkStatement = `
 	select id, now(), $1::integer from artifacts where kind = 'doc'
 	on conflict (artifact_id) do update set version = null,
 		store_owed_at = coalesce(document_block_versions.store_owed_at, excluded.store_owed_at),
-		store_owed_rule = ` + OwedRuleKept("document_block_versions", "excluded.store_owed_rule", "\n\t\t\t") + `
+		store_owed_rule = ` + OwedRuleKept("document_block_versions", "excluded.store_owed_rule") + `
 `
 
 func loadSourceIDs(ctx context.Context, pool Pool, query string) ([]string, error) {
@@ -203,7 +203,7 @@ func loadSourceIDs(ctx context.Context, pool Pool, query string) ([]string, erro
 // mentions tuple to each target it inserts and a retraction to each it deletes, dated at its rows'
 // own created_at, the transaction's now(), and signed by the first author of the document's newest
 // version (DocumentMentioning). The rebuild appends no event, so each is appended at the sentinel
-// and an assertion keeps its row's source_seq, none, as its legacy_source_seq (graphstore.Caused
+// and an assertion keeps its row's source_seq, none, as its legacy_source_seq (graphstore.QueueCaused
 // with NoEvent).
 func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL string) (bool, error) {
 	read, err := sourceRead(fromKind, fromID)
@@ -248,7 +248,12 @@ func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL str
 	}); err != nil {
 		return false, err
 	}
-	if err := graphstore.Caused(ctx, tx, graphstore.Uncaused{Tuples: mentions}, graphstore.NoEvent); err != nil {
+	stated := graphstore.Uncaused{Tuples: mentions}
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, stated, graphstore.NoEvent)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(stated))
+		return nil
+	}); err != nil {
 		return false, fmt.Errorf("state the references of document %s: %w", fromID, err)
 	}
 	return true, tx.Commit(ctx)
@@ -256,12 +261,14 @@ func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL str
 
 // sourceRead is the statement that reads the text one reference source writes, with the author it
 // records and the time that text was written: a document's latest version's markdown (id its
-// uuid), the first of that version's authors, which is null where it records none, and its
-// created_at; an ask's question, a comment's body, or an issue message's body, with the row's
-// author and its edited_at where its table has one (asks, comments) and its created_at
-// otherwise. The author is whom the text's short ids resolve for (NewReader). It locks nothing: a
-// caller that orders itself against the edits of that text holds the source's owner lock and
-// runs this statement after it (replaceInTx, ReindexOwed).
+// uuid), the first of that version's authors, which is null where it records none; an ask's
+// question, a comment's body, or an issue message's body, with the row's author. The time is the
+// row's coalesce(edited_at, created_at) in each of the three tables that records an edit - asks,
+// comments and issue messages, whose edit is PATCH /api/v1/messages/{id} - and the version's
+// created_at for a document, since a stored version is rewritten by nothing. The author is whom
+// the text's short ids resolve for (NewReader). It locks nothing: a caller that orders itself
+// against the edits of that text holds the source's owner lock and runs this statement after it
+// (replaceInTx, ReindexOwed).
 func sourceRead(kind, id string) (string, error) {
 	switch kind {
 	case "artifact":
@@ -272,7 +279,7 @@ func sourceRead(kind, id string) (string, error) {
 	case "comment":
 		return `select body, author, coalesce(edited_at, created_at) from comments where id = $1::uuid`, nil
 	case "message":
-		return `select body, author, created_at from messages where id = $1::uuid and issue_key is not null`, nil
+		return `select body, author, coalesce(edited_at, created_at) from messages where id = $1::uuid and issue_key is not null`, nil
 	}
 	return "", fmt.Errorf("read the text of %s %s: not a reference source", kind, id)
 }
@@ -301,7 +308,8 @@ func sourceText(ctx context.Context, q Queryer, kind, id string) (string, time.T
 // It is how a background pass reads a source it is about to re-index (replaceInTx, ReindexOwed,
 // IndexOwedItemBlocks): the lock excludes every writer of that source, and the read sees what the
 // lock's previous holder committed. A source whose owner is nil - a direct message, whose
-// conversation is no owner - is read with no lock, since nothing rewrites a message's body.
+// conversation is no owner - is read with no lock, since nothing rewrites a direct message's
+// body: only an issue message is edited or deleted.
 // found is false when the source is gone, before the lock or while the pass waited for it: no row
 // is a source that does not exist rather than a failure.
 func readSourceUnderOwner(ctx context.Context, tx pgx.Tx, kind, id, read string, dest ...any) (bool, error) {
@@ -490,12 +498,13 @@ func queueSettleOwed(b *store.WriteBatch, source Owed) {
 // takes the source's owner lock (sourceOwner), the lock every writer of that text takes, and
 // reads the text in the statement after it (readSourceUnderOwner, sourceRead), so a write
 // committed while it waited is the text it indexes; a direct message, whose conversation is no
-// owner, has no such lock and needs none, since nothing rewrites a message's body. It takes no
-// source row: a row lock would assign the transaction a transaction id to hold through
-// everything it reads and plans, and what it would exclude beyond the owner lock is a writer of
-// that row that takes no owner lock, which no writer a server runs is: api's lock table queues
-// behind that item's owner lock the serving writers of a comment, a message or an ask that open
-// their own transaction (TestEveryWriterOnTheLockTableWaitsForTheOwnerLockOfTheRowItWrites,
+// owner, has no such lock and needs none, since nothing rewrites a direct message's body: only an
+// issue message is edited or deleted. It takes no source row: a row lock would assign the
+// transaction a transaction id to hold through everything it reads and plans, and what it would
+// exclude beyond the owner lock is a writer of that row that takes no owner lock, which no writer
+// a server runs is: api's lock table queues behind that item's owner lock the serving writers of
+// a comment, a message or an ask that open their own transaction
+// (TestEveryWriterOnTheLockTableWaitsForTheOwnerLockOfTheRowItWrites,
 // item_row_owner_lock_test.go), and those that write inside a transaction their caller opened
 // rest on the lock that caller took, which that table does not drive; its gap map names each with
 // why (TestTheLockTablePlacesEveryWriterTheCensusNames). Everything it writes is read and planned

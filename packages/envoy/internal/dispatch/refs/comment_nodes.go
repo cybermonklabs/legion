@@ -170,6 +170,7 @@ func (w CommentWrite) Queue(b *store.WriteBatch) {
 		from unnest($1::text[], $2::text[]) as p (id, address)
 		where c.id = p.id::uuid
 	`, w.ids, w.ids, graphstore.KindComment)
+	graphstore.QueueHeads(b, graphstore.HeadsOf(w.Nodes, w.Tuples))
 }
 
 // commentWriteOf builds the write of one batch of comments rows (CommentWrite). One write writes

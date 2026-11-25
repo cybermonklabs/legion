@@ -16,14 +16,24 @@ import (
 
 // RefusedMessage is the line Current writes, at ERROR, when a secret under the prefix becomes one
 // the policy refuses to serve, or is refused for another reason than before: name (the secret's
-// whole name in the store), reason (one of the Reason* values), owner (Refusal.Owner: its owner
-// tag, "" for ReasonOwnerTagMissing and ReasonOwnerTagMalformed), first_load (true on every line
-// of the pod's first load, which writes one for each secret it refuses, false after it) and, on
-// a change of reason, was (the reason before). A load or a reread that refuses a secret for the
-// reason the live policy already held writes nothing: the line is the record of when the state
-// changed, and broker_unservable_secrets (NewUnservableSecrets) is what holds the standing
-// state. The operate guide documents its text, so the text changes only with that guide.
+// whole name in the store, or "profile:" and a profile's name for a profile the policy refuses),
+// reason (one of the Reason* values), owner (Refusal.Owner: its owner tag, "" for
+// ReasonOwnerTagMissing and ReasonOwnerTagMalformed), first_load (true on every line of the pod's
+// first load, which writes one for each secret it refuses, false after it), on a change of
+// reason, was (the reason before), and, for a refusal that carries one, detail (Refusal.Detail). A
+// load or a reread that refuses a secret for the reason the live policy already held writes
+// nothing: the line is the record of when the state changed, and broker_unservable_secrets
+// (NewUnservableSecrets) is what holds the standing state. The operate guide documents its text,
+// so the text changes only with that guide.
 const RefusedMessage = "agent secret policy refused"
+
+// ProfilesAppliedMessage is the line Current writes, at INFO, once, at its first publish: served
+// and refused, the counts of the profiles file's entries it serves and refuses, and file_digest,
+// the SHA-256 of the file's bytes as the boot read it ("" with no profiles file). Each refused
+// profile also writes RefusedMessage, named "profile:" and its name. A reader of a pod's log then
+// tells a boot that refused no profile from one that read no file, or never started. The operate
+// guide documents its text, and the production check reads it.
+const ProfilesAppliedMessage = "broker: profiles applied"
 
 // ServableMessage is the line Current writes, at INFO, when a secret the live policy refused is
 // refused no longer: name, reason (the reason it had) and owner as its refusal last held them,
@@ -121,12 +131,13 @@ const (
 	// ReasonMaxGrantMalformed: max-grant is not a Go duration of at least one second
 	// (ParseMaxGrant).
 	ReasonMaxGrantMalformed = "max-grant-malformed"
-	// ReasonGitHubOwnersMissing: a github-app secret has no github-owners tag, or one that names no
-	// account (ParseGitHubOwners). A public App can be installed on any account, so the broker mints
-	// only for the accounts the deployment lists.
+	// ReasonGitHubOwnersMissing: a github-app or github-installations secret has no github-owners
+	// tag, or one that names no account (ParseGitHubOwners). A public App can be installed on any
+	// account, so the broker hands over tokens only for the accounts the deployment lists.
 	ReasonGitHubOwnersMissing = "github-owners-missing"
-	// ReasonGitHubOwnersMalformed: a github-app secret's github-owners tag holds a comma, its logins
-	// being separated by spaces, or an entry that is not a GitHub login (ParseGitHubOwners).
+	// ReasonGitHubOwnersMalformed: a github-app or github-installations secret's github-owners
+	// tag holds a comma, its logins being separated by spaces, or an entry that is not a GitHub
+	// login (ParseGitHubOwners).
 	ReasonGitHubOwnersMalformed = "github-owners-malformed"
 	// ReasonDefaultGrantMalformed: default-grant is set to anything but "session".
 	ReasonDefaultGrantMalformed = "default-grant-malformed"
@@ -196,6 +207,47 @@ const (
 	// that value is refused too, and a value that decodes or a secret that leaves the listing
 	// ends it.
 	ReasonValueMalformed = "value-malformed"
+	// ReasonProfileSourceMissing: a profile's source is not a stored secret the policy serves:
+	// none of that name is under the prefix (a profile is never the source of another), or the one
+	// there is refused or waits for its value. Its detail names the source and that reason.
+	ReasonProfileSourceMissing = "profile-source-missing"
+	// ReasonProfileNameTaken: a profile's name is a stored secret's other than its source, and that
+	// stored secret is not superseded by the profile's source (TagSupersededBy). The profile is
+	// refused, and so is that stored secret, by its own id, until one of the two goes: a name a
+	// profile holds is never released as a stored value.
+	ReasonProfileNameTaken = "profile-name-taken"
+	// ReasonProfileBlockMismatch: a profile's github or google block does not fit its source's
+	// type and tags: a github block on a source that is no github-app or github-installations
+	// secret (ServesGitHubTokens), or naming an account the source's github-owners does not; such a
+	// source's profile with no github block; or a google block on a source that is no
+	// google-service-account secret, or naming a scope the source's scopes tag does not. Its detail
+	// says which.
+	ReasonProfileBlockMismatch = "profile-block-mismatch"
+	// ReasonProfileLooser: a profile is looser than its source: agent tier on a human-tier source,
+	// a requester the source's requesters tag does not name (a source with no such tag serves
+	// every session and pod, so any list narrows it), or a maxGrant above the source's max-grant.
+	// Its detail says which.
+	ReasonProfileLooser = "profile-looser"
+	// ReasonProfileNeedsProxy: a profile with no proxy block on a stored value, a google-login or
+	// an azure-login source, whose credential a profile cannot narrow at a mint, so only the
+	// proxy's hosts, methods and paths scope it.
+	ReasonProfileNeedsProxy = "profile-needs-proxy"
+	// ReasonProfileMinted: a profile whose proxy block is of kind dpop. It is proxy configuration
+	// for a capability the broker mints for a grant of its own and holds, never a secret the
+	// policy serves, so serve answers it whatever the store holds - with no stored secret of its
+	// name, and with one, which would otherwise be requested and approved like any stored secret -
+	// and apply serves it as nothing and records it in no Refused, since it is no fault to report.
+	ReasonProfileMinted = "profile-minted"
+	// ReasonGitHubAppNoProfile: a github-app secret no profile names, as its own name or as its
+	// source. Every GitHub token the broker hands over is a profile's, held to that profile's
+	// accounts and permissions, so such a secret is refused by its name rather than released with
+	// every permission its installations hold. Such a secret profiles of other names use is no
+	// refusal: it is served through them (ErrServedOnlyAsProfiles).
+	ReasonGitHubAppNoProfile = "github-app-no-profile"
+	// ReasonGitHubInstallationsNoProfile: a github-installations secret no profile names, as its
+	// own name or as its source, refused by its name for the reason ReasonGitHubAppNoProfile gives:
+	// every GitHub token the broker hands over is a profile's.
+	ReasonGitHubInstallationsNoProfile = "github-installations-no-profile"
 )
 
 // slugPattern is a secret's name under the prefix: the lowercase form of an environment-variable
@@ -242,10 +294,11 @@ type Loader struct {
 	// another account releases no token. An empty or nil map binds nothing, and every such secret
 	// then stands on its tags alone.
 	ServiceAccounts map[string]string
-	// AirlockDigest is the fingerprint of the secret's airlock entry, "" for a secret the rules
-	// do not name. In production: the loaded rules' Rules.Digest. A nil field is "" for every
-	// secret, which is a deployment with no rules file.
-	AirlockDigest func(name string) string
+	// Profiles is the deployment's profiles file (BROKER_PROFILES_FILE), the zero Profiles for a
+	// deployment with none. Load and LoadOne read the store alone, and Current applies the
+	// profiles to every set it makes live (withhold): each is served by its name as its source
+	// allows, or refused, and a source profiles of other names use is served only through them.
+	Profiles Profiles
 	// StoreReads counts each call to the store this loader makes, and Current makes through it,
 	// in broker_policy_store_reads_total (NewStoreReads): read=list for the List a Load takes,
 	// read=describe for the Describe a LoadOne takes, and read=value for each Read of a type
@@ -320,34 +373,42 @@ func (l Loader) Load(ctx context.Context) (*Set, error) {
 }
 
 // refusalOf is the Refusal of the secret ls lists for reason: its owner tag as the store holds
-// it, or "" for the two reasons that tag is itself the fault, missing or malformed.
+// it, or "" for the two reasons that tag is itself the fault, missing or malformed, and its
+// superseded-by tag as written.
 func refusalOf(ls secrets.Listing, reason string) Refusal {
 	switch reason {
 	case ReasonOwnerTagMissing, ReasonOwnerTagMalformed:
-		return Refusal{Reason: reason}
+		return Refusal{Reason: reason, SupersededBy: ls.Tags[TagSupersededBy]}
 	}
-	return Refusal{Reason: reason, Owner: ls.Tags[TagOwner]}
+	return Refusal{Reason: reason, Owner: ls.Tags[TagOwner], SupersededBy: ls.Tags[TagSupersededBy]}
 }
 
-// pendingOf is the Pending of the secret ls lists waiting for its value: its owner tag and when
-// the store created it.
+// pendingOf is the Pending of the secret ls lists waiting for its value: its owner tag, when
+// the store created it, and its superseded-by tag.
 func pendingOf(ls secrets.Listing) Pending {
-	return Pending{Owner: ls.Tags[TagOwner], Created: ls.Created}
+	return Pending{Owner: ls.Tags[TagOwner], Created: ls.Created, SupersededBy: ls.Tags[TagSupersededBy]}
 }
 
 // Lookup is LoadOne's answer: Served with the Secret; or Reason, a Reason* refusal constant, with
 // Owner as a Refusal carries it; or ReasonAbsent or ReasonPendingValue, neither of which is a
-// refusal.
+// refusal. Current.RefreshOne answers one too, with Moved.
 type Lookup struct {
 	Secret Secret
 	Served bool
 	Reason string
 	Owner  string
+	// Moved is, in Current.RefreshOne's answer, every name whose value that reread may have
+	// moved (movedByReread): the names the airlock's proxy drops what it holds of. LoadOne
+	// leaves it nil.
+	Moved []string
 	// version is a served type secret's value's version, as Set's versions holds it, and "" for
 	// every other answer.
 	version string
 	// created is, for ReasonPendingValue, when the store created the secret.
 	created time.Time
+	// supersededBy is, for a refusal or ReasonPendingValue, the secret's superseded-by tag, as
+	// Refusal and Pending carry it.
+	supersededBy string
 }
 
 // refusal is the Refusal lk answers, and the zero Refusal for a secret served, absent or pending.
@@ -355,7 +416,7 @@ func (lk Lookup) refusal() Refusal {
 	if lk.Served || lk.Reason == ReasonAbsent || lk.Reason == ReasonPendingValue {
 		return Refusal{}
 	}
-	return Refusal{Reason: lk.Reason, Owner: lk.Owner}
+	return Refusal{Reason: lk.Reason, Owner: lk.Owner, SupersededBy: lk.supersededBy}
 }
 
 // pending is the Set.Pending entry lk answers, and the zero Pending for a secret not pending.
@@ -363,7 +424,7 @@ func (lk Lookup) pending() Pending {
 	if lk.Reason != ReasonPendingValue {
 		return Pending{}
 	}
-	return Pending{Owner: lk.Owner, Created: lk.created}
+	return Pending{Owner: lk.Owner, Created: lk.created, SupersededBy: lk.supersededBy}
 }
 
 // secretName is the one place that answers whether name can name a secret under the prefix: its
@@ -405,11 +466,11 @@ func (l Loader) LoadOne(ctx context.Context, name string) (Lookup, error) {
 	}
 	if reason == ReasonPendingValue {
 		waiting := pendingOf(ls)
-		return Lookup{Reason: reason, Owner: waiting.Owner, created: waiting.Created}, nil
+		return Lookup{Reason: reason, Owner: waiting.Owner, created: waiting.Created, supersededBy: waiting.SupersededBy}, nil
 	}
 	if reason != "" {
 		refusal := refusalOf(ls, reason)
-		return Lookup{Reason: refusal.Reason, Owner: refusal.Owner}, nil
+		return Lookup{Reason: refusal.Reason, Owner: refusal.Owner, supersededBy: refusal.SupersededBy}, nil
 	}
 	lk := Lookup{Secret: secret, Served: true}
 	if secret.Type() != "" {
@@ -539,6 +600,9 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing, now
 		}
 		s.ProjectChannels = raw
 	}
+	// Read as written: only a profile's claim on this secret's name reads it (supersededBy), and a
+	// value that is no profile's source matches none, so the name stays the stored secret's.
+	s.SupersededBy = ls.Tags[TagSupersededBy]
 	if !ls.HasCurrentValue {
 		// A secret `agent-secrets secret create` made before its value (Unfilled: the create label,
 		// no version) is a create waiting for that value for PendingValueWindow (pendingAt), whose
@@ -549,10 +613,6 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing, now
 			return Secret{}, ReasonPendingValue, nil
 		}
 		return Secret{}, ReasonNoCurrentValue, nil
-	}
-	// The airlock names a secret by its policy name, the uppercased one Secret.Name holds.
-	if l.AirlockDigest != nil {
-		s.AirlockDigest = l.AirlockDigest(s.Name)
 	}
 	return s, "", nil
 }

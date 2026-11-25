@@ -142,8 +142,12 @@ const RoleTopicPrefix = "notifications.role."
 // ending in a provider error (`provider-errors`, supervise's tellControllerOfProviderErrors), a
 // tree of the project that has stopped (`tree-stalled`, admit's tellStalledTrees, once for each
 // stall), a root whose own architect is not taking the work the daemon states it is owed
-// (`architect-stalled`, admit's wakeStalledArchitects, once for each arm and run of its tree), and
-// the slot wakes admission sends through wakeController, `slot-free`, `todo` and `tick`
+// (`architect-stalled`, admit's wakeStalledArchitects, once for each arm and run of its tree), one
+// of the controller's own programs its pod's memory guard ended (`memory-guard-kill`, workflow's
+// controllerMemoryGuardKill, once for each kill), the messages the intake gave up, counted in one
+// notice that waits a minute for the give-ups after its first (`intake-gave-up`, record's
+// Postgres.GiveUpIntakeMessage), and the slot wakes admission sends through wakeController,
+// `slot-free`, `todo` and `tick`
 // (admit.Admission.wakeController and its callers say when; the tick alone carries
 // `openCapabilities`, the deployment capabilities with no decision,
 // admit.Admission.ReportCapabilities). The controller takes no issue for `slot-free`,

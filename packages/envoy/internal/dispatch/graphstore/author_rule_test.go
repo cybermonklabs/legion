@@ -22,7 +22,7 @@ import (
 // shared bearer proves nobody. This test writes a node under each writer through Write, so its
 // made_by is stored as every write stores it, and reads it back under each reader through
 // AuthorIsSQL bound with ActingCredential, the pair every author-private read binds. It also
-// asks the Go half (sameAuthor, ProvesAuthor and provedAuthor), so the two halves of the one rule
+// asks the Go half (SameAuthor, ProvesAuthor and provedAuthor), so the two halves of the one rule
 // cannot answer one pair differently. Last, it holds the write half of the rule: a node reserved
 // for its author is refused on every credential that proves nobody, the shared bearer, a token
 // naming an empty owner and a session only a body named among them, and granted on every
@@ -107,8 +107,8 @@ func TestTheAuthorIsThePersonACredentialProvedAndNothingElseJoinsTwo(t *testing.
 		}
 		writer, _ := provedAuthor(row.writer)
 		reader, read := provedAuthor(row.reader)
-		if inGo := sameAuthor(row.writer, row.reader); inGo != row.want {
-			t.Errorf("%s: sameAuthor answers %t (writer %+v, reader %+v), want %t", row.name, inGo, writer, reader, row.want)
+		if inGo := SameAuthor(row.writer, row.reader); inGo != row.want {
+			t.Errorf("%s: SameAuthor answers %t (writer %+v, reader %+v), want %t", row.name, inGo, writer, reader, row.want)
 		}
 		if ProvesAuthor(row.reader) != read {
 			t.Errorf("%s: ProvesAuthor answers %t for the reader, and provedAuthor %t", row.name, ProvesAuthor(row.reader), read)
@@ -249,14 +249,4 @@ func TestARunIsReadByTheCredentialThatAskedItWhateverItsRecordProves(t *testing.
 			}
 		}
 	}
-}
-
-// sameAuthor is the one rule stated in Go over two actors, as AuthorIsSQL states it in SQL: true
-// when the author writer's record proved (provedAuthor) and the author reader's credential proves
-// are one author, and false where either proves none. No code of the store asks it of two actors;
-// TestTheAuthorIsThePersonACredentialProvedAndNothingElseJoinsTwo holds it to AuthorIsSQL.
-func sameAuthor(writer, reader model.Actor) bool {
-	written, proved := provedAuthor(writer)
-	read, reads := provedAuthor(reader)
-	return proved && reads && written == read
 }

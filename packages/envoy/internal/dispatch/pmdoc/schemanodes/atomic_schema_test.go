@@ -175,7 +175,7 @@ func requireReadersSeeWholeValues(t *testing.T, ctx context.Context, pool *store
 		// that version, since a manifest holding one is refused, so it leaves with the version
 		// and comes back with it. A type or an attribute carries its since on its node and goes
 		// gone. An item kind of an attribute's items carries it in the attribute's item_versions
-		// - plan_task's needs takes an issue from version 6 - and leaves the attribute's items:
+		// - plan_task's needs takes an issue from version 7 - and leaves the attribute's items:
 		// the statement writes each such attribute's items as this build's manifest gives them
 		// at the version (itemsAsOf).
 		if _, err := pool.Exec(ctx, `

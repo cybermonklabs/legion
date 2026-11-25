@@ -19,6 +19,7 @@ import (
 // Its control is the removal's node write taken out: the node then stays live after the removal,
 // and the new document's node keeps the removed one's event.
 func TestARemovedDocumentsNodeIsGoneAndItsAddressIsTakenAgain(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "RMV", "A document removed and made again", "The spec.\n")
 
@@ -70,6 +71,7 @@ func TestARemovedDocumentsNodeIsGoneAndItsAddressIsTakenAgain(t *testing.T) {
 // gone statement is dated past the live one all the same. Its control is the removal's own date
 // of the gone statement taken alone, which then states the node gone an hour before it was live.
 func TestARemovalOfADocumentWithNoNodeDatesTheNodeAtItsCreation(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name    string
 		created func() time.Time

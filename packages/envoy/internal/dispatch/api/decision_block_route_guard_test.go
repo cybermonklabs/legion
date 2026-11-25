@@ -96,6 +96,7 @@ var decisionBlockGuardSees = []string{
 // a condition passes here, as it does in the other static guards of this package
 // (keyed_write_guard_test.go), and the route's own tests hold the branch.
 func TestEveryRouteThatTakesABodyRefusesADecisionBlock(t *testing.T) {
+	t.Parallel()
 	graph := copyLockGraph(t)
 	for _, function := range []string{sharedBodyCheck, sharedBodyRefusal} {
 		if graph.named[function] == nil {
@@ -146,6 +147,7 @@ func TestEveryRouteThatTakesABodyRefusesADecisionBlock(t *testing.T) {
 // as a server that checks everything: the three writes the issue exists for are in its inventory,
 // each taking a body and each reaching the check.
 func TestTheDecisionBlockGuardSeesWhatItGuards(t *testing.T) {
+	t.Parallel()
 	graph := copyLockGraph(t)
 	routes := decisionBlockRouteHandlers(t, graph)
 	for _, name := range decisionBlockGuardSees {
@@ -169,6 +171,7 @@ func TestTheDecisionBlockGuardSeesWhatItGuards(t *testing.T) {
 // is renamed, or whose body stops being a string, drops its route out of the inventory and takes
 // the rule off it in silence.
 func TestTheGuardReadsABodyStringOffARequestType(t *testing.T) {
+	t.Parallel()
 	type embedded struct {
 		Body string `json:"body"`
 	}
@@ -203,10 +206,22 @@ func TestTheGuardReadsABodyStringOffARequestType(t *testing.T) {
 }
 
 // decisionBlockRouteHandlers is every POST and PATCH row of the table, by "<method> <pattern>",
-// with the handler bodies that row mounts. It is read from the source of routes() rather than from
-// a server's own table so that each row's handler comes with it: a handler read at run time is a
-// function value, and what this guard asks is what that function's source runs.
+// with the handler bodies that row mounts (routeTableHandlers).
 func decisionBlockRouteHandlers(t *testing.T, graph *lockGraph) map[string][]*lockFunction {
+	t.Helper()
+	routes := routeTableHandlers(t, graph, keyedMethod)
+	if len(routes) == 0 {
+		t.Fatal("the guard reads no POST or PATCH row off the routes table")
+	}
+	return routes
+}
+
+// routeTableHandlers is every row of graph's routes table (api.server.routes) whose method keep
+// keeps, by "<method> <pattern>", with the handler bodies that row mounts: none for a handler the
+// graph does not resolve, which its caller judges. It is read from the source of routes() rather
+// than from a server's own table so that each row's handler comes with it: a handler read at run
+// time is a function value, and what a guard asks is what that function's source runs.
+func routeTableHandlers(t *testing.T, graph *lockGraph, keep func(verb string) bool) map[string][]*lockFunction {
 	t.Helper()
 	table := graph.named["api.server.routes"]
 	if table == nil {
@@ -223,7 +238,7 @@ func decisionBlockRouteHandlers(t *testing.T, graph *lockGraph) map[string][]*lo
 			return true
 		}
 		verb := strings.ToUpper(strings.TrimPrefix(method.Sel.Name, "Method"))
-		if !keyedMethod(verb) {
+		if !keep(verb) {
 			return false
 		}
 		pattern, ok := literalText(row.Elts[1], table.pkg, graph.constants)
@@ -234,9 +249,6 @@ func decisionBlockRouteHandlers(t *testing.T, graph *lockGraph) map[string][]*lo
 		routes[verb+" "+pattern] = graph.functionValue(row.Elts[4])
 		return false
 	})
-	if len(routes) == 0 {
-		t.Fatal("the guard reads no POST or PATCH row off the routes table")
-	}
 	return routes
 }
 

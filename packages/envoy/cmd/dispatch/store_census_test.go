@@ -1,6 +1,6 @@
 //go:build basebuild
 
-// Three tests of this tag are cybermonklabs/legion#3178's acceptance runs:
+// Three acceptance tests of this tag are cybermonklabs/legion#3178's acceptance runs:
 // TestTheStoreCensusReadsZeroDifferences in this file, and TestNoWritePathThisChildChangesGetsSlower
 // (write_cost_test.go) and TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode
 // (read_cost_test.go), which share graph_cost_test.go. The fourth is cybermonklabs/legion#4193's
@@ -8,6 +8,8 @@
 // too and runs only where LEGION_SCALE_TEST=1 is set. Each builds the server at the commit
 // BASELINE_SHA names (baseBuild, testbaseline.Commit) and compares it with this build, so each
 // needs a checkout that holds that commit, and each takes from 2 to 45 minutes on an issue pod.
+// The tag also holds TestThe8001BlockVersionIsHeldToTheLowerOfItsRatioAndItsRise, a unit test of
+// one bound that needs neither a database nor that commit and takes milliseconds.
 // They carry a build tag of their own and no CI job runs it: they are run on the pod, one at a
 // time and by name, as
 //
@@ -1605,6 +1607,14 @@ func readOnlySession(t *testing.T, ctx context.Context, databaseURL string) stri
 // projection equality says nothing about this: both sides can agree and the answer a reader gets
 // still change.
 //
+// decodeRead drops `as_of` from both answers (withoutTheMomentOfTheRead), and the two rules below
+// hold apart the members and elements they name. GET /api/v1/issues/{key}/references, the one read
+// here that answers graph nodes and closure members, answers four fields beside the older build's:
+// each node's state and visibility, and each member's address and kind, which the model marks
+// `required:"false"` for the release before. withoutTheAddedFields removes those four from this
+// build's answer, and one that is missing or holds another value than this build's rule gives
+// fails the run. Every other difference fails, printing both answers.
+//
 // A read counts as compared only where the older build's answer holds something
 // (answerElements): two empty lists agree field for field and prove nothing, so each read that
 // answers nothing fails the run by name, and the denominator printed is the reads that compared
@@ -1638,21 +1648,22 @@ func compareTheOldReadWithTheNew(t *testing.T, ctx context.Context, older, datab
 	// what the read lists; a read that names none lists its own items, or is one object. added
 	// names the members this build adds to the read's answer, and unlisted the elements of its
 	// list answer that only this build writes and lists nowhere: the issue's needs, duplicate_of
-	// and filed_from, a document's room and fragment, a reference member's kind and address, and the
-	// state and visibility of the node of each of an issue's links, and the tree artifacts and
-	// decisions queries of the issues this build creates.
+	// and filed_from, a document's room and fragment, and the tree artifacts and decisions queries
+	// of the issues this build creates. issueReferences marks the one read whose answer holds graph
+	// nodes and closure members, the answer withoutTheAddedFields reads.
 	reads := []struct {
-		path     string
-		lists    []string
-		added    []censusAddedMember
-		unlisted []string
+		path            string
+		lists           []string
+		added           []censusAddedMember
+		unlisted        []string
+		issueReferences bool
 	}{
 		{path: "/api/v1/issues/" + seeded.issue, added: append([]censusAddedMember{
 			censusNeeds(""), censusNoneYet("duplicate_of"), censusNoneYet("filed_from"),
 		}, censusArtifactMembers("artifacts[].")...)},
 		{path: "/api/v1/issues/" + seeded.issue + "/comments"},
 		{path: "/api/v1/issues/" + seeded.issue + "/references", lists: []string{"members"},
-			added: slices.Concat(censusReferenceMembers("members[]."), censusArtifactMembers("members[].artifact."), censusNodeMembers("links[].node."))},
+			added: censusArtifactMembers("members[].artifact."), issueReferences: true},
 		{path: "/api/v1/issues/" + seeded.issue + "/asks"},
 		{path: "/api/v1/issues?project=" + seeded.project, added: []censusAddedMember{censusNeeds("[].")}},
 		{path: "/api/v1/artifacts/" + seeded.artifact, added: censusArtifactMembers("")},
@@ -1677,6 +1688,9 @@ func compareTheOldReadWithTheNew(t *testing.T, ctx context.Context, older, datab
 			compared++
 		}
 		held := holdTheAddedMembers(t, read.path, was, is, read.added)
+		if read.issueReferences {
+			withoutTheAddedFields(t, read.path, is)
+		}
 		if !reflect.DeepEqual(was, is) {
 			differing++
 			t.Errorf("GET %s answers differently on the two builds:\nthe older build %s\nthis build     %s",
@@ -1722,41 +1736,6 @@ func censusArtifactMembers(at string) []censusAddedMember {
 	return []censusAddedMember{
 		{path: at + "room", want: func(was map[string]any) any { return was["id"] }},
 		{path: at + "fragment", want: func(map[string]any) any { return model.ArtifactFragmentOwn }},
-	}
-}
-
-// censusReferenceMembers are the members this build adds to a member of an issue's reference
-// closure at at (model.ReferenceMember's Kind and Address): a citation of a document the older
-// build wrote reaches that document, so the member is an artifact at the document's address, as
-// refs.ArtifactRef writes it from the fields the older build answers for the document.
-func censusReferenceMembers(at string) []censusAddedMember {
-	return []censusAddedMember{
-		{path: at + "kind", want: func(map[string]any) any { return graphstore.KindArtifact }},
-		{path: at + "address", want: func(was map[string]any) any {
-			document, _ := was["artifact"].(map[string]any)
-			text := func(name string) string {
-				value, _ := document[name].(string)
-				return value
-			}
-			optional := func(name string) *string {
-				if value, held := document[name].(string); held {
-					return &value
-				}
-				return nil
-			}
-			primary, _ := document["primary"].(bool)
-			return refs.ArtifactRef(optional("issue_key"), text("project"), optional("session_id"), text("slug"), text("kind"), primary)
-		}},
-	}
-}
-
-// censusNodeMembers are the members this build adds to a node of the graph at at (model.GraphNode's
-// State and Visibility): a node the older build wrote stands and everyone in its project reads it,
-// which the older build's answer implies by answering it at all.
-func censusNodeMembers(at string) []censusAddedMember {
-	return []censusAddedMember{
-		{path: at + "state", want: func(map[string]any) any { return graphstore.StateLive }},
-		{path: at + "visibility", want: func(map[string]any) any { return graphstore.VisibilityProject }},
 	}
 }
 
@@ -1928,7 +1907,9 @@ func decodeRead(t *testing.T, body []byte) any {
 
 // withoutTheMomentOfTheRead drops `as_of` wherever an answer carries it. It is the clock of the
 // read and no answer about the data: two reads of one database a millisecond apart carry
-// different ones, and nothing of this child moves it. Every other field is compared.
+// different ones, and nothing of this child moves it. Every other field is compared, but the
+// members holdTheAddedMembers takes out and the four that withoutTheAddedFields removes from this
+// build's answer.
 func withoutTheMomentOfTheRead(answer any) any {
 	switch held := answer.(type) {
 	case map[string]any:
@@ -1954,6 +1935,122 @@ func mustEncode(t *testing.T, answer any) string {
 		t.Fatalf("encode a read's answer: %v", err)
 	}
 	return string(encoded)
+}
+
+// withoutTheAddedFields removes from answer, this build's decoded answer to path, GET
+// /api/v1/issues/{key}/references (model.IssueReferences), the four fields this build adds beside
+// the older build's answer, and no field of those names elsewhere: the state and the visibility
+// of the node of each item of links and of linked_from (model.ReferenceLink, model.GraphNode), and
+// the address and the kind of each item of members (model.ReferenceMember). It logs how many of
+// each it removed. Each must be present and hold the value this build's rule gives: one absent or
+// holding another, a list or an item of another shape, and a member whose document node the answer
+// does not hold each fail the run, naming the place and what was found there.
+//
+// The rule is the census rows': every node this read answers over them is live and reaches the
+// project (graphstore.StateLive, graphstore.VisibilityProject), since the census moves the state of
+// none of those nodes and reserves none for its author. A member is what refs.Closure makes of the
+// document node a link out reaches, which links lists too: its address is that node's ref and its
+// kind that node's kind, artifact (getIssueReferences). So a member is held to the artifact node
+// of the answer whose id is its artifact's id. The census moves no document's address to a lens,
+// so a member of kind lens, or of no such node, is another value.
+func withoutTheAddedFields(t *testing.T, path string, answer any) {
+	t.Helper()
+	read := "GET " + path + ": this build's answer"
+	references, isObject := answer.(map[string]any)
+	if !isObject {
+		t.Errorf("%s is %s, not an object", read, mustEncode(t, answer))
+		return
+	}
+	// object answers value, found at place, as an object, and fails the run where it is not one.
+	object := func(place string, value any) (map[string]any, bool) {
+		held, isObject := value.(map[string]any)
+		if !isObject {
+			t.Errorf("%s: %s holds %s, not an object", read, place, mustEncode(t, value))
+		}
+		return held, isObject
+	}
+	// list answers the items of the answer's list name, and fails the run where it holds none.
+	list := func(name string) []any {
+		value, found := references[name]
+		items, isList := value.([]any)
+		switch {
+		case !found:
+			t.Errorf("%s holds no %q", read, name)
+		case !isList:
+			t.Errorf("%s: %s holds %s, not a list", read, name, mustEncode(t, value))
+		}
+		return items
+	}
+	removed := map[string]int{}
+	// take deletes field from the object at place, counted, and answers what it held; one the
+	// object does not hold fails the run.
+	take := func(place string, from map[string]any, field string) (any, bool) {
+		value, held := from[field]
+		if !held {
+			t.Errorf("%s: %s holds no %q", read, place, field)
+			return nil, false
+		}
+		delete(from, field)
+		removed[field]++
+		return value, true
+	}
+	// hold takes field from the object at place, and fails the run unless it held want.
+	hold := func(place string, from map[string]any, field, want string) {
+		if value, held := take(place, from, field); held && value != want {
+			t.Errorf("%s: %s.%s holds %s, where this build's rule gives %q", read, place, field, mustEncode(t, value), want)
+		}
+	}
+	// documents is each artifact node of links and linked_from, by its id: its place and its ref.
+	type artifactNode struct {
+		place string
+		ref   any
+	}
+	documents := map[string]artifactNode{}
+	for _, name := range []string{"links", "linked_from"} {
+		for i, item := range list(name) {
+			at := fmt.Sprintf("%s[%d]", name, i)
+			link, isObject := object(at, item)
+			if !isObject {
+				continue
+			}
+			place := at + ".node"
+			node, isObject := object(place, link["node"])
+			if !isObject {
+				continue
+			}
+			hold(place, node, "state", graphstore.StateLive)
+			hold(place, node, "visibility", graphstore.VisibilityProject)
+			if id, named := node["id"].(string); named && node["kind"] == graphstore.KindArtifact {
+				documents[id] = artifactNode{place, node["ref"]}
+			}
+		}
+	}
+	for i, item := range list("members") {
+		place := fmt.Sprintf("members[%d]", i)
+		member, isObject := object(place, item)
+		if !isObject {
+			continue
+		}
+		artifact, _ := member["artifact"].(map[string]any)
+		id, _ := artifact["id"].(string)
+		document, found := documents[id]
+		if !found {
+			t.Errorf("%s: %s stands for the document %s, and the answer holds no artifact node of that id, so its address and its kind have no node to be held to",
+				read, place, mustEncode(t, artifact["id"]))
+			take(place, member, "address")
+			take(place, member, "kind")
+			continue
+		}
+		address, _ := document.ref.(string)
+		if !strings.HasPrefix(address, "dispatch://") {
+			t.Errorf("%s: %s, the node %s stands for, holds the ref %s, which is no dispatch:// address",
+				read, document.place, place, mustEncode(t, document.ref))
+		}
+		hold(place, member, "address", address)
+		hold(place, member, "kind", graphstore.KindArtifact)
+	}
+	t.Logf("GET %s: removed from this build's answer %d \"state\" and %d \"visibility\" field(s) of the nodes of links and linked_from, and %d \"address\" and %d \"kind\" field(s) of members",
+		path, removed["state"], removed["visibility"], removed["address"], removed["kind"])
 }
 
 // ───── running a subcommand of a build ────────────────────────────────────

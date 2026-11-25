@@ -48,7 +48,7 @@ func TestAReindexLeavesAProposedRequirementProposed(t *testing.T) {
 	}
 
 	first := index(1, withRequirement("We ship it."))
-	requireRestatedBlock(t, document, requirement, graphstore.StateLive, []string{graphstore.StateLive})
+	requireBlockState(t, document, requirement, graphstore.StateLive, graphstore.VisibilityProject, []string{graphstore.StateLive})
 
 	// A write that owns the state - a plain write, as the state route's is - marks it proposed.
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
@@ -60,65 +60,23 @@ func TestAReindexLeavesAProposedRequirementProposed(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("mark the requirement proposed: %v", err)
 	}
-	requireRestatedBlock(t, document, requirement, graphstore.StateProposed,
+	requireBlockState(t, document, requirement, graphstore.StateProposed, graphstore.VisibilityProject,
 		[]string{graphstore.StateLive, graphstore.StateProposed})
 
 	index(2, withRequirement("We ship it today."))
 	if changed := document.changes(t)[requirement]; changed.version != 2 {
 		t.Fatalf("the requirement's text last changed in version %d, want 2: the pass did not write its node again", changed.version)
 	}
-	requireRestatedBlock(t, document, requirement, graphstore.StateProposed,
+	requireBlockState(t, document, requirement, graphstore.StateProposed, graphstore.VisibilityProject,
 		[]string{graphstore.StateLive, graphstore.StateProposed})
 
 	index(3, without)
-	requireRestatedBlock(t, document, requirement, graphstore.StateGone,
+	requireBlockState(t, document, requirement, graphstore.StateGone, graphstore.VisibilityProject,
 		[]string{graphstore.StateLive, graphstore.StateProposed, graphstore.StateGone})
 
 	index(4, withRequirement("We ship it today."))
-	requireRestatedBlock(t, document, requirement, graphstore.StateLive,
+	requireBlockState(t, document, requirement, graphstore.StateLive, graphstore.VisibilityProject,
 		[]string{graphstore.StateLive, graphstore.StateProposed, graphstore.StateGone, graphstore.StateLive})
-}
-
-// requireRestatedBlock fails unless the block's node row holds state and the project's
-// visibility, the log's newest state and visibility are the row's, and the log states exactly
-// states, in order, and the project's visibility once.
-func requireRestatedBlock(t *testing.T, document parentDocument, blockID, state string, states []string) {
-	t.Helper()
-	ctx := context.Background()
-	address := document.address(blockID)
-	node, held, err := graphstore.ReadNode(ctx, document.database.Pool, BlockNodeKind, address)
-	if err != nil || !held {
-		t.Fatalf("read block %s's node: held %t, %v", blockID, held, err)
-	}
-	if node.State != state || node.Visibility != graphstore.VisibilityProject {
-		t.Errorf("block %s's node reads state %q and visibility %q, want %q and %q",
-			blockID, node.State, node.Visibility, state, graphstore.VisibilityProject)
-	}
-	for _, attribute := range []struct {
-		name, row string
-		want      []string
-	}{
-		{graphstore.AttributeState, node.State, states},
-		{graphstore.AttributeVisibility, node.Visibility, []string{graphstore.VisibilityProject}},
-	} {
-		current, held, err := graphstore.CurrentValue(ctx, document.database.Pool, BlockNodeKind, address, attribute.name)
-		if err != nil || !held || current != attribute.row {
-			t.Errorf("block %s's row reads %s %q and the log's newest is %q (held %t, %v)",
-				blockID, attribute.name, attribute.row, current, held, err)
-		}
-		history, err := graphstore.History(ctx, document.database.Pool, BlockNodeKind, address, attribute.name)
-		if err != nil {
-			t.Fatalf("read block %s's %s history: %v", blockID, attribute.name, err)
-		}
-		stated := make([]string, len(history))
-		for position, tuple := range history {
-			stated[position] = tuple.ToID
-		}
-		if !slices.Equal(stated, attribute.want) {
-			t.Errorf("block %s's log states %s %v, want %v: one value for each write that moved it, none for one that kept it",
-				blockID, attribute.name, stated, attribute.want)
-		}
-	}
 }
 
 // laterBlockState is the state this build marks a requirement with (graphstore.StateProposed),
@@ -206,7 +164,7 @@ func TestAWriteOfANodeAgainKeepsTheValuesItDoesNotOwn(t *testing.T) {
 // markBlockState writes, by SQL, a state of a block's node as a later release's build
 // writes it: one state tuple, an attribute of the node with the value itself as its far end
 // (graphstore.KindValue), carrying the write's time and writer at the sentinel cause, as the
-// store's writer states a base attribute it moved (write.go's queueAppend), and the node
+// store's writer states a base attribute it moved (append.go's queueAppend), and the node
 // row's state moved to match, its cause kept.
 func markBlockState(t *testing.T, document parentDocument, blockID, state string, who model.Actor, at time.Time) {
 	t.Helper()

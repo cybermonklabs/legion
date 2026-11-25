@@ -149,7 +149,8 @@ type oneHopFixture struct {
 	database *store.Store
 	issue    string
 	// links and linkedFrom are the rows each field must hold, as relatedSummary writes them,
-	// sorted; members is the documents of links, each at depth 1 with its via, by ref_key.
+	// sorted; members is the documents of links, each at depth 1 with its via and of kind artifact
+	// at its own address (documentMember), by ref_key.
 	links, linkedFrom []string
 	members           []Member
 	// own is every node of the issue and its own content as a graph node names it, which neither
@@ -571,7 +572,7 @@ func newOneHopFixture(t *testing.T, whole bool) oneHopFixture {
 		if key[0] == "artifact" {
 			for _, doc := range first {
 				if doc.id.String() == key[1] {
-					fixture.members = append(fixture.members, documentMember(t, database.Pool, doc.refKey, 1, row.via))
+					fixture.members = append(fixture.members, documentMember(t, database.Pool, doc.refKey, row.via))
 				}
 			}
 		}

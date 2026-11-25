@@ -148,9 +148,10 @@ func (s *Service) verifyLauncherRequest(ctx context.Context, compact string, now
 }
 
 // checkLauncherRequest is verifyLauncherRequest short of its jti: the object's signature and
-// freshness (record.VerifyRequestObject), exactly one launcher_credential detail, a reason naming
-// no more projects than a new request may (record.CheckReasonProjects), then the caller's own
-// check. It reads and writes nothing.
+// freshness (record.VerifyRequestObject), exactly one launcher_credential detail, on a broker that
+// holds a project-access client (the enrollment's Projects) a reason naming no more projects than
+// a new request may (record.CheckReasonProjects), then the caller's own check. It reads and writes
+// nothing. A broker with no project-access client takes any reason, as before that bound (R9).
 func (s *Service) checkLauncherRequest(compact string, now time.Time, check func(record.RequestObject) error) (record.RequestObject, error) {
 	obj, err := record.VerifyRequestObject(compact, s.Audience, s.Skew, now)
 	if err != nil {
@@ -159,8 +160,10 @@ func (s *Service) checkLauncherRequest(compact string, now time.Time, check func
 	if len(obj.Details) != 1 || obj.Details[0].Type != record.KindLauncherCredential {
 		return record.RequestObject{}, fmt.Errorf("%w: exactly one launcher_credential detail is required", record.ErrRequestInvalid)
 	}
-	if err := record.CheckReasonProjects(obj.Reason); err != nil {
-		return record.RequestObject{}, err
+	if s.Enroll.Projects != nil {
+		if err := record.CheckReasonProjects(obj.Reason); err != nil {
+			return record.RequestObject{}, err
+		}
 	}
 	if err := check(obj); err != nil {
 		return record.RequestObject{}, err

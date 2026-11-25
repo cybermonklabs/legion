@@ -56,7 +56,8 @@ var blockProjections = []projection{{
 		from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id"),
 	pastBound: `
 		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
-	owed:    `(` + typedNodeOwed + ` or ` + roomNodeOwed + `)`,
+	owed: `(` + typedNodeOwed + ` or ` + roomNodeOwed + `)`,
+	// kept for one release: deferred-typed-rows
 	rowOwed: typedRowOwed,
 }, {
 	name:     "block_ref",
@@ -94,11 +95,14 @@ var blockProjections = []projection{{
 	// placement, its shaped, its from_ask, its decided_by, or tuples no block_refs row projects -
 	// its authored_by among them, which the block index states through graphstore.AuthorFacts -
 	// states no link here and is no node of this kind; the block kind holds its placement. A
-	// finding of a lens is a block no document holds, so no block_refs row names it.
+	// finding of a lens is a block no document holds, so no block_refs row names it. The kinds are
+	// one array the statement reads once (an initplan), not a select each node's links run again:
+	// that select reads the store's type nodes, so per node it cost a scan of graph_nodes, the
+	// block count times the store's size over a deployment's blocks.
 	nodes: `
 		select held.id, md5(held.id || '|' || held.links)
 		from (
-			select n.id, ` + currentLinks(refs.BlockNodeKind, `t.kind in (`+blockRefKinds+`)`) + ` as links
+			select n.id, ` + currentLinks(refs.BlockNodeKind, `t.kind = any (array(`+blockRefKinds+`))`) + ` as links
 			from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id") + `
 		) held
 		where held.links <> ''`,
@@ -106,6 +110,7 @@ var blockProjections = []projection{{
 		select count(*) from block_refs r
 		where (octet_length(r.from_node) > ` + addressBound + ` or octet_length(r.to_id) > ` + addressBound + `)
 		  and r.kind in (` + blockRefKinds + `) and r.node_kind is distinct from '` + graphstore.KindAsk + `'`,
+	// kept for one release: deferred-typed-rows
 	rowOwed: typedRowOwed,
 }, {
 	name:     "block_rank",
@@ -136,16 +141,15 @@ var blockProjections = []projection{{
 	note: "the text of every block of a document that owes no block index: the row side is each document_blocks row" +
 		" that names its node, and the digest is the sha256 of the newest text its document_block_texts rows hold, or" +
 		" the row's text_sha256 where none holds one, against the sha256 of the text value its node holds now, so a" +
-		" block with no text, or with another text than the one its rows hold, is a difference, and an erase that" +
-		" rewrites both alike reads none; a block of a document still owed its index, or of an issue room any" +
+		" block with no text, or with another text than the one its rows hold, is a difference; a block of a document" +
+		" still owed its index, or of an issue room any" +
 		" artifact of which is, is on neither side, since the reconciliation writes its text, and a census of" +
 		" documents that all owe theirs reads none of this kind; and a block of a document of an issue that has not" +
 		" converted which no pass of this build's rule has stated, as the release before leaves every document it" +
 		" indexed, is on neither side and counted as unstated_rows, since only this build's pass writes its text",
 	// The projection of a text value is the newest document_block_texts row of its block (R15 of
 	// dispatch://INFRA-1253), and text_sha256 only for a block no row of that table records the
-	// text of: the erase rewrites the quote of an erased block in both a holding block's rows and
-	// its text values (grapherase's redactBlocks) and leaves text_sha256 as the version stated it.
+	// text of.
 	rows: `
 		select 'block_text ' || d.node_id, d.node_kind, d.node_address,
 		       md5(d.node_id || '|' || coalesce((

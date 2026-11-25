@@ -163,7 +163,7 @@ named after `<n>` rather than after the hub's own name:
 | Deployment `<n>-tailnet` (only with `tailnet`) | `tailnet.replicas` tailnet hosts (see [The tailnet hosts](#the-tailnet-hosts)), rolled with `maxUnavailable: 0` and `maxSurge: 1`. It waits on the Secret, the ConfigMap, the ServiceAccount and the priority class read. |
 | PodDisruptionBudget `<n>-tailnet` (only with `tailnet`) | `maxUnavailable: 1` over the tailnet hosts. |
 | ServiceAccount `<n>-listener` (only with `tailnet`) | The session listener's account, which mounts no token: the listener calls no Kubernetes API. |
-| Deployment `<n>-listener` (only with `tailnet`) | One session listener pod (see [The session listener](#the-session-listener)), rolled with `maxUnavailable: 0` and `maxSurge: 1`. It waits on the ServiceAccount and the priority class read. |
+| Deployment `<n>-listener` (only with `tailnet`) | One session listener pod (see [The session listener](#the-session-listener)), rolled with `maxUnavailable: 0` and `maxSurge: 1`; with `listener.replaceUnderHold: true` or `tailnet.listener.replaceUnderHold: true`, `Recreate` with no `rollingUpdate` block, and `pulumi.com/skipAwait: "true"` ([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)). It waits on the ServiceAccount and the priority class read. |
 | Service `<n>-listener` (only with `tailnet`) | Port 9020 to the listener pod's port 9020. Each tailnet host forwards the Tailscale Service's port 9020 to it. |
 | NetworkPolicy `<n>-listener` (only with `tailnet`) | An Ingress policy on the listener's pods with exactly one rule: TCP 9020 from the tailnet hosts' pods. Every other port of that pod is admitted to nobody. |
 | PodDisruptionBudget `<n>-listener` (only with `tailnet`) | `maxUnavailable: 1` over the one listener pod, so a node drain or an Autopilot upgrade moves it rather than stalling on it. |
@@ -184,13 +184,14 @@ refuses to reload them: a change of `sessionUser` (a changed `no_auth_user`); a 
 file store's limit, `maxFileStoreGb` given or derived (a lower `max_file_store` is refused, and a
 refused reload blocks every later one, a `users` change's included, until the server restarts);
 and, while `authCallout` is set, a change of the callout's lines (`core.Authorization.CalloutLines()`:
-the `auth_callout` block and the ping lines), which a change of `authCallout` or of the keys in
-`users`, a user added or removed among them, makes (`auth_users` lists every user's key).
+the `auth_callout` block, the ping lines and, beside `privateProjects`, the server tag), which a
+change of `authCallout`, of `privateProjects` or of the keys in `users`, a user added or removed
+among them, makes (`auth_users` lists every user's key).
 [A reload, not a replacement](docs/nats-hub.md#a-reload-not-a-replacement) says why a change of
-the ping lines, which nats-server would reload, rolls the pods too. The StatefulSet carries
-`config.kubernetes.io/depends-on` naming the chart's ConfigMap `<n>-config`, so Pulumi applies it
-only once the ConfigMap holding the new `nats.conf` and `auth.conf` is applied, and every restarted
-pod starts on them.
+the ping lines or the server tag, either of which nats-server can reload, rolls the pods too.
+The StatefulSet carries `config.kubernetes.io/depends-on` naming the chart's ConfigMap
+`<n>-config`, so Pulumi applies it only once the ConfigMap holding the new `nats.conf` and
+`auth.conf` is applied, and every restarted pod starts on them.
 
 ### Inputs
 
@@ -213,12 +214,12 @@ pod starts on them.
 | `metricsNamespaces` | `gmp-system`, `gke-gmp-system` | The namespaces admitted to the exporter's port, 7777, with the same rules: by default Google Managed Prometheus's, whose collectors run in `gmp-system` on a Standard cluster and in `gke-gmp-system` on Autopilot. |
 | `users` | none | The NATS server's nkey users, as `gcp:NatsHub`'s are (see [The hub's users](docs/nats-hub.md#the-hubs-users)). At least one is required unless the hub runs a session listener, which is a user of its own. |
 | `sessionUser` | unset | `name` and `nkey`, the user a client presenting no credential becomes, granted `SessionPermissions()`, as for `gcp:NatsHub`. |
-| `authCallout` | unset | The auth service's callout, a `nats:AuthCallout` (`issuer`, `xkey`, `serviceUser`, each required), as for `gcp:NatsHub` (see [The auth service](docs/nats-hub.md#the-auth-service)). Refused beside `tailnet`, whose listener connects as a user with a stored seed until its service identity, with which it would connect through the auth service, arrives in a later change. Set, `auth.conf` ends with the ping lines ([NATS authorization](#nats-authorization)), and `nats.conf`'s `cluster` block keeps the routes' ping at `ping_interval: "30s"` and `ping_max: 2` ([routes](docs/nats-hub.md#two-ports-guarded-by-the-networkpolicy-alone)). The hub pods' annotation `envoy-infra.sjawhar.dev/auth-callout` is the SHA-256 of `core.Authorization.CalloutLines()`, the `auth_callout` block and the ping lines, so a change to `authCallout`, to the keys of `users` while it is set, or to the ping lines rolls the hub pods ([why](docs/nats-hub.md#a-reload-not-a-replacement)). A change of a user's grant alone does not roll them. Unset, the hub renders exactly what it rendered before callouts existed. |
-| `privateProjects` | `false` | The deployment may make a Dispatch project private, as for `gcp:NatsHub`: refused without `authCallout`, beside `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant, and beside `monitorNamespaces`. |
+| `authCallout` | unset | The auth service's callout, a `nats:AuthCallout` (`issuer`, `xkey`, `serviceUser`, each required), as for `gcp:NatsHub` (see [The auth service](docs/nats-hub.md#the-auth-service)). Refused beside a session listener, `listener` or `tailnet.listener`, and so beside `tailnet`, which always runs one: the listener connects as a user with a stored seed until its service identity, with which it would connect through the auth service, arrives in a later change. Set, `auth.conf` ends with the ping lines, followed beside `privateProjects` by the server tag ([NATS authorization](#nats-authorization)), and `nats.conf`'s `cluster` block keeps the routes' ping at `ping_interval: "30s"` and `ping_max: 2` ([routes](docs/nats-hub.md#two-ports-guarded-by-the-networkpolicy-alone)). The hub pods' annotation `envoy-infra.sjawhar.dev/auth-callout` is the SHA-256 of `core.Authorization.CalloutLines()`, the `auth_callout` block, the ping lines and, beside `privateProjects`, the server tag, so a change to `authCallout`, to the keys of `users` while it is set, to `privateProjects`, or to the ping lines rolls the hub pods ([why](docs/nats-hub.md#a-reload-not-a-replacement)). A change of a user's grant alone does not roll them. Unset, the hub renders exactly what it rendered before callouts existed. |
+| `privateProjects` | `false` | The deployment may make a Dispatch project private, as for `gcp:NatsHub`: refused without `authCallout`, beside `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant, and beside `monitorNamespaces`. Set, the chart waits on the hub pods' NetworkPolicy, so no pod takes the server tag, by reload or by restart, before the policy that closes the monitoring port, 8222, is applied. Nothing orders its removal, so turn it off only after every project is public again, and give `monitorNamespaces` back only in a later apply, after the removal has restarted every hub pod on the untagged lines (see [The auth service](docs/nats-hub.md#the-auth-service)). |
 | `routeAuthorization` | unset | The routes' credential: `secretName` and `secretKey`, an existing Kubernetes Secret in `namespace` and its key, holding the route password, which the component names by reference and never reads; and `stage`, `env`, `routes` or `authorization`, each one apply after the one before it has finished. `env` gives the nats container `NATS_ROUTE_PASSWORD` and `NATS_ROUTE_URLS` and rolls the pods, `routes` names `$NATS_ROUTE_URLS` as `nats.conf`'s cluster routes, and `authorization` names the user `route` and `$NATS_ROUTE_PASSWORD` as its authorization, each applied by the reloader. The password holds letters and digits only, a letter first, and at least 32 characters. Change `secretKey` only together with `stage: env`. Unset, routes carry no credential, as before. See [Route authorization](docs/nats-hub.md#route-authorization). |
 | `listener` | unset | The session listener the hub runs as a workload of its own, declared beside the tailnet entry rather than inside it (see [The session listener](#the-session-listener)): the fields `tailnet.listener` takes, below. It always requires a credential of its callers: `oidcIssuer`, `oidcAudience` and `oidcAccounts` are required and `allowedHosts` is refused, and its `image` must be `legion-envoy-v30.32.0` or later, the first listener that reads `ENVOY_OIDC_ACCOUNTS`: an older one admits every subject the issuer signs for the audience. With `tailnet` the hosts forward the Service's port 9020 to it, and the hub renders what the same listener renders as `tailnet.listener` but for the listener container's token check; without `tailnet` it is reached inside the cluster alone, so `machineId` and at least one `clientNamespaces` entry are required. Refused beside `tailnet.listener`, since the hub runs one listener, and beside `authCallout`, as `tailnet` is. |
 | `tailnet` | unset | The tailnet entry: `serviceName`, the Tailscale Service's name without `svc:`, under `gcp:NatsHub`'s `hostname` rule (2 to 26 lowercase letters, digits and hyphens, starting with a letter and not ending with a hyphen); `tailnetDnsName`, the tailnet's DNS name, such as `example-tailnet.ts.net`; `tags`, at least one `tag:<name>`, which every host joins with; `replicas`, the number of hosts, 2 by default and at least 2, so a drained host leaves another serving; `tailscaleImage`, pinned by digest; and `listener`, the session listener the hosts forward the Service's port 9020 to, unless the hub's own `listener` declares it. |
-| `tailnet.listener` | required with `tailnet`, unless `listener` is set | The session listener the hub runs as a workload of its own, which the tailnet hosts forward the Service's port 9020 to (see [The session listener](#the-session-listener)): `image`, pinned by digest, and `legion-envoy-v30.32.0` or later wherever the listener requires a credential (with `clientNamespaces`), the first listener that reads `ENVOY_OIDC_ACCOUNTS`; `machineId`, `tailnet.serviceName` by default; `nkey`, the public key of the listener user's seed; `seedSecretName` and `seedSecretKey`, an existing Kubernetes Secret in `namespace` and its key, which hold that seed and which the component mounts by reference and never reads; `clientNamespaces`, the namespaces whose pods reach the listener at its cluster Service, `<n>-listener.<namespace>.svc.cluster.local:9020`, beside the tailnet hosts, none by default, each a DNS label, none repeated; `oidcIssuer`, `oidcAudience` and `oidcAccounts`, the credential the listener requires of every caller, a projected ServiceAccount token `oidcIssuer` (an https URL with no user, query or fragment, an empty one included, such as the cluster's own `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>`) signed for `oidcAudience`, of a subject `oidcAccounts` lists as `system:serviceaccount:<namespace>:<name>`, none repeated, all three required with `clientNamespaces` or as the hub's own `listener` and refused otherwise; `allowedHosts`, any further address a client dials a listener with no credential by, beyond `<tailnet.serviceName>.<tailnetDnsName>`, which it always serves, refused where the listener requires a credential, since it then serves any `Host`; and `cpu` and `memory`, the listener container's size, each its request and its limit, `500m` and `1Gi` by default. Two more inputs are optional: `senderMessagesPerMinute`, from 1 to 60000, and `senderMessageBurst`, at least 1 and only with a rate, the listener's limit on the messages each agent session sends ([The listener's sender limit](#the-listeners-sender-limit)). |
+| `tailnet.listener` | required with `tailnet`, unless `listener` is set | The session listener the hub runs as a workload of its own, which the tailnet hosts forward the Service's port 9020 to (see [The session listener](#the-session-listener)): `image`, pinned by digest, and `legion-envoy-v30.32.0` or later wherever the listener requires a credential (with `clientNamespaces`), the first listener that reads `ENVOY_OIDC_ACCOUNTS`; `machineId`, `tailnet.serviceName` by default; `nkey`, the public key of the listener user's seed; `seedSecretName` and `seedSecretKey`, an existing Kubernetes Secret in `namespace` and its key, which hold that seed and which the component mounts by reference and never reads; `clientNamespaces`, the namespaces whose pods reach the listener at its cluster Service, `<n>-listener.<namespace>.svc.cluster.local:9020`, beside the tailnet hosts, none by default, each a DNS label, none repeated; `oidcIssuer`, `oidcAudience` and `oidcAccounts`, the credential the listener requires of every caller, a projected ServiceAccount token `oidcIssuer` (an https URL with no user, query or fragment, an empty one included, such as the cluster's own `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>`) signed for `oidcAudience`, of a subject `oidcAccounts` lists as `system:serviceaccount:<namespace>:<name>`, none repeated, all three required with `clientNamespaces` or as the hub's own `listener` and refused otherwise; `allowedHosts`, any further address a client dials a listener with no credential by, beyond `<tailnet.serviceName>.<tailnetDnsName>`, which it always serves, refused where the listener requires a credential, since it then serves any `Host`; and `cpu` and `memory`, the listener container's size, each its request and its limit, `500m` and `1Gi` by default. Two more inputs are optional: `senderMessagesPerMinute`, from 1 to 60000, and `senderMessageBurst`, at least 1 and only with a rate, the listener's limit on the messages each agent session sends ([The listener's sender limit](#the-listeners-sender-limit)). Two more prepare a replacement under the writer hold: `consumerNames`, `fixed` or `fresh`, and `replaceUnderHold`, `false` by default ([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)). |
 | `tailnetAuthKey` | required with `tailnet` | A secret: the Tailscale auth key the tailnet hosts join with, which [Before the first deployment](#before-the-first-deployment) says how to make. Refused without `tailnet`. May come from another resource or stack. |
 
 Only `kubeconfig` and `tailnetAuthKey` may come from another resource's output. Every other input
@@ -232,11 +233,14 @@ input:
 - an nkey seed (`bus.HoldsSeed`) in the hub's own name, first, then in any plain string input:
   `namespace`, `name`, `serviceName`, the images, `storageClassName`, `natsCpu`, `natsMemory`,
   `priorityClassName`, an entry of any of the three namespace lists, a user's `machineId`,
-  `listenerMachineId` or `dispatchMachineId`, and, of `tailnet`, `serviceName`, `tailnetDnsName`, `tailscaleImage`, a tag,
+  `listenerMachineId` or `dispatchMachineId`, `routeAuthorization`'s `secretName`, `secretKey` and
+  `stage`, and, of `tailnet`, `serviceName`, `tailnetDnsName`, `tailscaleImage`, a tag,
   and, of `listener` or `tailnet.listener`, `image`, `seedSecretName`, `seedSecretKey`, `machineId`,
-  `cpu`, `memory`, `oidcIssuer`, `oidcAudience`, `clientNamespaces`, `allowedHosts` and
-  `oidcAccounts` entries. The refusal names the
-  input by its path and never its value. A seed in
+  `cpu`, `memory`, `oidcIssuer`, `oidcAudience`, `consumerNames`, and `clientNamespaces`,
+  `allowedHosts` and `oidcAccounts` entries, and `authCallout`'s `issuer`, `xkey` and
+  `serviceUser`. The refusal's message names the input by its path and never its value;
+  its `core.InputError` names an entry of a list by the list's own name (`clientNamespaces` for
+  `clientNamespaces[1]`), as `gcp:NatsHub` and `gcp:Dispatch` do. A seed in
   a user's name, a rule entry or an `nkey` is refused by the authorization, as for `gcp:NatsHub`;
 - no `kubeconfig`;
 - a `name` that is not a DNS-1035 label or is over 43 bytes, a `namespace` that is not a DNS
@@ -266,8 +270,9 @@ input:
   one that begins with `..`), no `clientNamespaces` without `tailnet` and an entry that is not a DNS label
   or repeats an earlier one, an `allowedHosts` entry refused as `gcp:NatsHub`'s
   `listener.allowedHosts` entries are, a `senderMessagesPerMinute` outside 1 to 60000, a
-  `senderMessageBurst` below 1 or without `senderMessagesPerMinute`, and a `cpu` or `memory` at
-  which Autopilot would not run the listener pod as rendered (see [Sizing](#sizing)); of a listener
+  `senderMessageBurst` below 1 or without `senderMessagesPerMinute`, a `consumerNames` other than
+  `fixed` or `fresh`, and a `cpu` or `memory` at which Autopilot would not run the listener pod as
+  rendered (see [Sizing](#sizing)); of a listener
   that requires a credential (the hub's own `listener`, or a `tailnet.listener` with
   `clientNamespaces`): no `oidcIssuer`, `oidcAudience` or `oidcAccounts`, an `oidcIssuer` that is
   not an https URL with a host and no user, query or fragment, an `oidcAudience` holding whitespace
@@ -333,7 +338,8 @@ one per zone, held hard, with `minDomains` the lesser of `replicas` and 3. With
 ### The session listener
 
 The Deployment `<n>-listener` runs Envoy's session listener as a workload of its own, in one pod,
-rolled with `maxUnavailable: 0` and `maxSurge: 1`. The listener is declared once, as `listener`
+rolled with `maxUnavailable: 0` and `maxSurge: 1`, or recreated with `pulumi.com/skipAwait: "true"`
+under `<l>.replaceUnderHold: true` (below). The listener is declared once, as `listener`
 or as `tailnet.listener`, and the hub renders the same objects either way but for the listener
 container's token check, which a listener declared as `listener` always carries (below); `<l>`
 stands for the path it is declared at. The pod runs under the ServiceAccount
@@ -366,6 +372,10 @@ pod's 33 seconds, its 5-second preStop wait and its 28-second stop, and what has
 new pod's own 135-second bind deadline, counted from its `/v1` open. A new pod that never becomes
 Ready leaves the old one serving while the new one restarts on its bind deadline.
 
+With `<l>.replaceUnderHold` the Deployment is recreated instead, so the old pod stops before the
+new one starts, and the apply does not wait for the new pod
+([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)).
+
 Three more objects carry that pod:
 
 - the Service `<n>-listener`, port 9020 to the pod's port 9020, which each tailnet host's serve
@@ -385,8 +395,10 @@ to NATS at `serviceUrl` with `ENVOY_ALLOW_REMOTE_NATS=1`.
 `streamMaxBytes` are. `ENVOY_SENDER_MESSAGES_PER_MINUTE` and `ENVOY_SENDER_MESSAGE_BURST` are set
 exactly when `<l>.senderMessagesPerMinute` and `<l>.senderMessageBurst`
 are ([The listener's sender limit](#the-listeners-sender-limit)). Setting, changing or removing
-either changes the pod's environment, so the update rolls the pod as above. `NATS_NKEY_SEED_FILE`
-names the mounted seed. There is no `ENVOY_API_TOKEN`.
+either changes the pod's environment, so the update rolls the pod as above. `ENVOY_CONSUMER_NAMES`
+is set exactly when `<l>.consumerNames` is, and a change to it rolls the pod the same way
+([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)).
+`NATS_NKEY_SEED_FILE` names the mounted seed. There is no `ENVOY_API_TOKEN`.
 
 How `/v1` admits a caller depends on who reaches the listener:
 
@@ -413,7 +425,7 @@ How `/v1` admits a caller depends on who reaches the listener:
   background, and answers every projected token 503 with `Retry-After: 1` until it has read it.
   Its pod still needs egress to the issuer, such as GKE's cluster issuer,
   `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>`:
-  without it, or with a wrong `<l>.oidcIssuer`, the pod becomes Ready, the rolling update replaces
+  without it, or with a wrong `<l>.oidcIssuer`, the pod becomes Ready, the update replaces
   the old pod, and every `/v1` caller then gets that 503. `/healthz`'s `oidc` field reads `false`
   and `envoy_listener_oidc_issuer_discovered{issuer="cluster"}` reads `0` while the listener has
   not read the issuer. None of the probes below reads either, and this component renders no scrape
@@ -433,7 +445,8 @@ Three probes read the pod's own loopback, two routes between them:
   served; the pattern matches that line and never the gauge's `# HELP` or `# TYPE` line, which
   every scrape carries. The kubelet runs neither of the other two probes, and the pod is not
   Ready, until this one has passed, so a new pod stays out of the Service until its `/v1`
-  serves, and the rolling update keeps the old pod serving until then. `/v1` opens without
+  serves, and the rolling update keeps the old pod serving until then (under
+  `<l>.replaceUnderHold` the Deployment is recreated instead). `/v1` opens without
   waiting for the durable consumer, which the old pod holds until it stops, so the gate cannot
   wait on the old pod. The listener writes the sample this way since `legion-envoy-v29.15.0`; an
   older listener writes it from its first answer, so there the probe passes at that answer, as
@@ -723,7 +736,7 @@ resources each of those is, the sandbox and the public origin in the paragraph u
 | ServiceAccount `<hostname>-tailnet`, Role and RoleBinding `<hostname>-tailnet-tls` | The front door's pods run as an account of their own, which the Role lets `get` and `patch` the one Secret `<hostname>-tailnet-tls` and nothing else (no `create`, since the component creates it, and no `update`, since the pods send merge patches), so neither the app nor the listener, nor the account `serviceAccountSubject` names, can write the certificate. The pod does not automount the account's token: only `cert-publish`, which calls the API server, mounts it, so the tailnet-facing `tailscale` and `advertiser` containers hold no credential for the Secret. The RoleBinding names the Role by an output that waits on the Role's ID, so a preview that creates the Role leaves the name unknown and pulumi-kubernetes sends no server-side dry run of the binding, which an account without the `bind` verb would see refused as "not found" while the Role does not exist. | Not built |
 | Secret `<hostname>-tailnet-tls` | The Tailscale Service's certificate, its key and the ACME account key (keys `tls.crt`, `tls.key` and `acme-account.key.pem`), which the front door's pods publish and seed from ([The front door](#the-front-door)). The component declares it with no data and ignores its contents, so a later preview never plans to undo what the pods wrote, and no pod template carries its checksum, so a renewed certificate rolls no pod. | Not built |
 | Three ClusterIP Services and three NetworkPolicies (two Services with `natsInCluster`) | Dispatch's API on port 8766, to the `allowedNamespaces` and the front door; the front door's SOCKS5 proxy on port 1055, to the app and the listener, neither the Service nor that rule rendered with `natsInCluster`, which leaves the front door's policy admitting nothing; the listener's API on port 9020, to the app. Each policy admits those sources alone among pods (Kubernetes still admits each pod's own node). | Not built |
-| Three Deployments | The app at `replicas` pods, the front door at `frontDoorReplicas` (2 by default) and the listener at `listenerReplicas` (1 by default), each `Recreate` at one pod and `RollingUpdate` (`maxUnavailable: 0`, `maxSurge: 1`) above one, by its own count. Every pod carries required pod anti-affinity on `kubernetes.io/hostname` and a `topology.kubernetes.io/zone` spread with `minDomains: 2`, both over its own Deployment's pods, and every serving container a startup and a liveness probe ([The pods](#the-pods)). The app and the listener each have a five-second pre-stop wait and the stop each is built for, and their termination grace periods differ: the app 35 seconds, the listener 40. The front door has 60 seconds, for its drain ([The front door](#the-front-door)). Every container has equal requests and limits. A pod template whose Deployment has no PodDisruptionBudget carries `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`; one whose Deployment has a budget does not. | Not built |
+| Three Deployments | The app at `replicas` pods, the front door at `frontDoorReplicas` (2 by default) and the listener at `listenerReplicas` (1 by default), each `Recreate` at one pod and `RollingUpdate` (`maxUnavailable: 0`, `maxSurge: 1`) above one, by its own count. With `replaceUnderHold: true`, the app and the listener are `Recreate` at any count, with no `rollingUpdate` block, and carry `pulumi.com/skipAwait: "true"`; the front door keeps its strategy ([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)). Every pod carries required pod anti-affinity on `kubernetes.io/hostname` and a `topology.kubernetes.io/zone` spread with `minDomains: 2`, both over its own Deployment's pods, and every serving container a startup and a liveness probe ([The pods](#the-pods)). The app and the listener each have a five-second pre-stop wait and the stop each is built for, and their termination grace periods differ: the app 35 seconds, the listener 40. The front door has 60 seconds, for its drain ([The front door](#the-front-door)). Every container has equal requests and limits. A pod template whose Deployment has no PodDisruptionBudget carries `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`; one whose Deployment has a budget does not. | Not built |
 | Up to three PodDisruptionBudgets | `<hostname>` with `appPdbMinAvailable`, `<hostname>-tailnet` with `frontDoorPdbMinAvailable` and `<hostname>-listener` with `listenerPdbMinAvailable`, each over its own Deployment's pods (`app=<name>`) alone, with that `minAvailable` and Kubernetes' default `unhealthyPodEvictionPolicy`, so a drain cannot take that workload below that many ready pods. | Not built |
 
 Three inputs change what the first four rows register:
@@ -764,8 +777,11 @@ RoleBinding `<hostname>-tailnet-tls`, and no `<hostname>-serve` ConfigMap. Two D
 remain, the app and the listener, each with its Service, its NetworkPolicy and the budget its own
 input turns on, and the app's policy admits the `allowedNamespaces` alone. The Secret
 `<hostname>-dispatch` holds `DATABASE_URL`, `DISPATCH_AGENT_TOKEN` and `DISPATCH_SIGNING_KEY`
-alone, since the mode takes no sign-in input. A Dispatch at `publicOrigin` builds exactly what the
-sandbox builds, and its Secret adds `DISPATCH_SIGNIN_CLIENT_SECRET` with the sign-in inputs.
+alone, since the mode takes no sign-in input. A Dispatch at `publicOrigin` builds what the sandbox
+builds but for its entrance's two inputs: with `networkEndpointGroupName` the app's Service carries
+the `cloud.google.com/neg` annotation, and with `loadBalancerSourceRanges` the app's policy carries
+a rule that admits those ranges to port 8766 ([Inputs](#inputs-1)). Its Secret adds
+`DISPATCH_SIGNIN_CLIENT_SECRET` with the sign-in inputs.
 
 ### A cluster and a database instance the component does not make
 
@@ -1266,8 +1282,9 @@ instance waits for nothing of the consumer's.
 
 `replicas`, `frontDoorReplicas` and `listenerReplicas` are the pod counts of the app, the front
 door and the listener: 1, 2 and 1 by default, each refused by name below 1 before the component
-registers a resource. Each Deployment takes its update strategy from its own count ([The
-pods](#the-pods)). The front door runs two by default, since with one pod every node drain,
+registers a resource. Each Deployment takes its update strategy from its own count, but for the
+app's and the listener's while `replaceUnderHold` is `true` ([The pods](#the-pods)). The front door
+runs two by default, since with one pod every node drain,
 upgrade or scale-down that moves it takes Dispatch off the tailnet until its replacement is ready.
 Raise `replicas` above 1 only on an envoy image that meets "Running more than one process" in
 `packages/envoy/cmd/dispatch/README.md` (below). Raise `listenerReplicas` above 1 only on an envoy
@@ -1317,6 +1334,15 @@ equals the rate. Each of the `listenerReplicas` pods keeps its own count for eac
 session whose requests reach more than one pod can send more than the rate in all. The component
 refuses a rate outside 1 to 60000, a burst below 1 and a burst with no rate, each by name, before
 it registers a resource, and `clusterOnly` refuses both inputs by name.
+
+`consumerNames` and `replaceUnderHold` prepare a replacement under the writer hold
+([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)):
+`consumerNames`, `fixed` or `fresh`, is `ENVOY_CONSUMER_NAMES` on the app's `envoy-dispatch` and
+the listener's `envoy-listener`, the two containers that create JetStream consumers, rendered only
+when it is set. `replaceUnderHold`, `false` by default, recreates the app's and the listener's
+Deployments at any replica count and lets the apply finish without waiting for them; the front door
+keeps its own strategy. The component refuses a `consumerNames` other than `fixed` or `fresh` by
+name before it registers a resource, and `clusterOnly` refuses both inputs by name.
 
 `signingKeyGenerations`, `[0]` by default, is the ordered key set `DISPATCH_SIGNING_KEY` holds:
 the first generation in the list signs every new session cookie and seals every new refresh
@@ -1380,6 +1406,27 @@ deployment that leaves it unset renders the pod it always had. Before it registe
 component refuses, by name, a value outside 1-65535 and the two ports the app pod already binds on
 its loopback, `envoy-dispatch`'s `8766` and the `cloud-sql-proxy` sidecar's `5432`. Setting or
 unsetting it replaces the app's pods as any change to its pod template does.
+
+`parentStatusRule`, `false` by default, turns on Dispatch's parent-status rule: `true` renders
+`DISPATCH_PARENT_STATUS_RULE=on` on the `envoy-dispatch` container alone, in every mode that runs
+Dispatch, right after `DISPATCH_SERVER_URL` and the variables that follow it with the outside
+inputs: `DISPATCH_OUTSIDE_ORIGIN` with `outsideOrigin`, then `DISPATCH_SIGNIN_PASSKEY` with
+`signInPasskey`. With it Dispatch refuses a write that leaves a parent's status out of line with
+its children's, and at boot it runs the one-time fix of the parents and children that break the
+rule. The fix runs once per database, so turning the input off and on again runs nothing: a
+parent and a child that came to break the rule while it was off still break it once it is on
+again, and each status move of that child is refused until a person takes the child off that
+parent or closes it (`packages/envoy/cmd/dispatch/README.md`, the fix's bullet). Set
+it only when two conditions hold. First, each Legion daemon that writes to this Dispatch runs
+the releases with the daemon's side of the rule, which send the parent-status options. Second,
+each project's instructions retry a failed root architect with a status write of `todo` alone,
+not `backlog` and then `todo`, and that project's daemon and controller have read them. The
+rule refuses that `backlog` while an issue under the root is in work. Set it with no process
+of the earlier setting serving beside the new one ([The pods](#the-pods)). Unset, nothing is
+rendered, so a deployment that leaves it unset renders the pod it always had. An `envoyImage`
+whose `envoy-dispatch` predates the setting ignores it, as it ignores every variable its
+settings table (`packages/envoy/cmd/dispatch/settings.go`) does not list. Setting or unsetting
+it replaces the app's pods as any change to its pod template does.
 
 `priorityClassName`, `appPdbMinAvailable`, `frontDoorPdbMinAvailable` and
 `listenerPdbMinAvailable` protect the pods from being displaced; with none set the component
@@ -1504,6 +1551,13 @@ Setting the App also starts Dispatch's webhook redelivery sweep, which needs the
 bucket the hub's Dispatch user is granted (`DispatchPermissions`): a pod whose NATS user lacks it
 exits at boot. With either group unset, nothing renders and the app's pod template is unchanged.
 
+`verdictAppId` (plain, optional, with the App) is the id of the App that writes `legion-verdict`,
+rendered as `DISPATCH_VERDICT_APP_ID` after the App's three variables and only when given: Dispatch's
+CI reconcile pass, which the App's key runs, leaves that App's check suites out of the CI record, as
+the listener does under `ENVOY_VERDICT_APP_ID` (`aws:WebhookListener`'s `verdictAppId`). Set the
+listener's and this one to the same App id, or neither: with the listener's set and this one unset,
+the pass writes the App's completed suite back into a settled record and the head is published twice.
+
 The Azure embedder's inputs are a third optional group, which takes no secret value either, and
 which reaches the app's `envoy-dispatch` container alone. `azureEmbedEndpoint` turns meaning search
 onto Azure AI Foundry: `DISPATCH_EMBEDDER=azure` and `DISPATCH_AZURE_EMBED_ENDPOINT`, the base URL
@@ -1579,8 +1633,9 @@ namespaces, allowed namespaces, an `appCpu`, `appMemory`, `proxyCpu`, `proxyMemo
 Autopilot's bounds for the app pod (above), a `pprofPort` outside 1-65535 or on a port the app pod
 already binds (above), a `replicas`, `frontDoorReplicas` or `listenerReplicas` below 1, a
 `natsReplicas` outside 1 to 5 or a `streamMaxBytes` below 1, a `senderMessagesPerMinute` outside
-1 to 60000, a `senderMessageBurst` below 1 or without `senderMessagesPerMinute`, a
-`priorityClassName` that is empty, not a DNS subdomain or a `system-` class, an
+1 to 60000, a `senderMessageBurst` below 1 or without `senderMessagesPerMinute`, a `consumerNames`
+other than `fixed` or `fresh`, a `priorityClassName` that is empty, not a DNS subdomain or a
+`system-` class, an
 `appPdbMinAvailable`, `frontDoorPdbMinAvailable` or `listenerPdbMinAvailable` outside 1 to its
 Deployment's replica count, a `databaseAvailabilityType` other than `ZONAL` or `REGIONAL`, a
 negative `signingKeyGenerations` entry, which names no resource, or a repeated one, which would
@@ -1598,7 +1653,8 @@ inputs or with an entry Dispatch would refuse, an
 `appClientId`, `appId`, `appPrivateKeySecretName` or `appPrivateKeySecretKey` set without the
 others (each missing input named), an `appId` that is not digits or is 0, an
 `appPrivateKeySecretName` that is not a DNS subdomain, an `appPrivateKeySecretKey` that is no
-Secret's key (as `seedSecretKey`'s rule above), and an `agentSecretsUrl` that is not an absolute http(s) URL with no path; and,
+Secret's key (as `seedSecretKey`'s rule above), a `verdictAppId` without the App, blank, or not a
+GitHub App id (a whole number above 0 with no leading zero), and an `agentSecretsUrl` that is not an absolute http(s) URL with no path; and,
 of the Azure embedder's group, any `azureEmbed` input without `azureEmbedEndpoint`, an endpoint
 without `azureEmbedTokensPerMinute` or with one below 1, both credential forms or neither,
 `azureTenantId` or `azureClientId` without the other, an `azureFederationAudience` without them or
@@ -1718,15 +1774,19 @@ Azure form, which `azureChatEndpoint` takes too, the projected token at
 `/var/run/secrets/azure-federation/token`; and with `chatTokenSecret`, the answerer's bearer token
 at `/var/run/secrets/chat-token/token`.
 
-Each Deployment takes its update strategy from its own replica count. At one pod it is recreated,
-stopping the old pod before the new one starts: a roll would run the outgoing and the incoming
-builds together, which is safe only once the outgoing build follows the rules for two builds
-running side by side and keeps its assets in the shared store, and a one-pod release cannot know
-that of the build it replaces. Above one pod it rolls, with `maxUnavailable: 0` and `maxSurge: 1`,
-so a new pod is ready before any old one goes down: an operator who runs a workload above one pod
-runs such builds and wants no gap in service. There is no strategy or surge input, since the safe
-strategy follows from the count. So at one replica an input or image update recreates that
-workload's one pod, which is a brief outage, and the front door, at its default of two, rolls.
+With `replaceUnderHold` unset or false, each Deployment takes its update strategy from its own
+replica count. At one pod it is recreated, stopping the old pod before the new one starts: a roll
+would run the outgoing and the incoming builds together, which is safe only once the outgoing
+build follows the rules for two builds running side by side and keeps its assets in the shared
+store, and a one-pod release cannot know that of the build it replaces. Above one pod it rolls,
+with `maxUnavailable: 0` and `maxSurge: 1`, so a new pod is ready before any old one goes down: an
+operator who runs a workload above one pod runs such builds and wants no gap in service. So at one
+replica an input or image update recreates that workload's one pod, which is a brief outage, and
+the front door, at its default of two, rolls. The one input that sets a strategy is
+`replaceUnderHold`: with `true`, the app and the listener are recreated at any count and carry
+`pulumi.com/skipAwait: "true"`, for a replacement under the writer hold, and the front door keeps
+the strategy its count gives it
+([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)).
 
 Every pod carries two rules over its own Deployment's pods, at any replica count. Required pod
 anti-affinity on `kubernetes.io/hostname` puts at most one of them on a node, so a node's loss
@@ -1827,10 +1887,15 @@ a process reads the event log for its live readers only up to the safe horizon b
 event is final. A build from before that change (#2392) reads past an event still open below the
 newest one, so during a roll that first brings the change, at more than one replica, an old pod's
 live stream and delivery hub can skip an event a new pod commits out of id order; deploy that
-release at one replica, which recreates the pod, and raise the count afterwards. Each process
-closes a client connection after its next response once the connection is 60 seconds old, so
-after a roll the front door's and the in-cluster callers' keep-alive connections spread onto the
-pods that have just come up.
+release at one replica, which recreates the pod, and raise the count afterwards.
+`parentStatusRule` makes a crossing too: a process with the rule off still takes writes that
+break it after the one fix at boot has run, and the fix does not run again. So no process of the
+earlier setting may serve once a process of the new one does, whether the apply changes the input
+or first brings an image that reads it. At one replica the app's `Recreate` strategy stops the
+old pod before the new one starts; at more replicas, scale the app to zero before that apply.
+Each process closes a client connection after its next response once the connection is 60
+seconds old, so after a roll the front door's and the in-cluster callers' keep-alive connections
+spread onto the pods that have just come up.
 
 Every container reads its environment once, at start, and Dispatch reads the Azure key file and
 the NATS seed once, at boot, as the listener reads the seed, so a pod boots on a secret's new value
@@ -2320,8 +2385,10 @@ every request that needs a person answers `401 NO_IDENTITY`, one carrying a `dse
 a stack that ran sign-in before included.
 
 A stack behind the IAP door sets no tailnet input and no Google client, and sets `publicOrigin`,
-the origin its own load balancer serves, `iapAudience`, the audience of that load balancer's
-backend service, and `signInDomain`, the domain whose accounts may use Dispatch:
+the origin its own load balancer serves, `loadBalancerSourceRanges`, the ranges that load
+balancer's proxies and health checks reach the app's pods from, `networkEndpointGroupName`, the
+group its backend service takes as its backend, `iapAudience`, the audience of that backend
+service, and `signInDomain`, the domain whose accounts may use Dispatch:
 
 ```yaml
 resources:
@@ -2340,6 +2407,8 @@ resources:
       natsInCluster: true
       natsSeedSecret: projects/example-project/secrets/example-nats-seed
       publicOrigin: https://dispatch.example.com
+      loadBalancerSourceRanges: [35.191.0.0/16, 130.211.0.0/22]
+      networkEndpointGroupName: example-dispatch
       iapAudience: /projects/<project number>/global/backendServices/${backendService.generatedId}
       signInDomain: example.com
       allowedNamespaces: [example-agents]
@@ -2351,8 +2420,37 @@ resources:
 
 Its `url` output is `https://dispatch.example.com`, and its app carries `DISPATCH_IDENTITY=iap`,
 `DISPATCH_IAP_AUDIENCE` and `DISPATCH_SIGNIN_DOMAIN=example.com` and no other `DISPATCH_SIGNIN_*`
-setting. The load balancer, its backend service with IAP on, its certificate and the
-NetworkPolicy that admits its ranges to the app's port 8766 are the stack's own ([Inputs](#inputs-1)).
+setting. The app's NetworkPolicy admits the two ranges to port 8766 beside the pods of
+`example-agents`, and the app's Service carries the `cloud.google.com/neg` annotation that has GKE
+make the group `example-dispatch` in each zone of the cluster's region. The load balancer, its
+backend service with IAP on, whose backends are that group in each zone, and its certificate are
+the stack's own ([Inputs](#inputs-1)).
+
+One `pulumi up` cannot build all of this. Pulumi registers a component only once each of its
+inputs resolves, so Dispatch waits for the backend service whose id `iapAudience` holds. The
+backend service's backends are the group in each zone, which GKE makes only once Dispatch's
+Service carries the annotation, within a few minutes of it, and Compute Engine answers a reference
+to a group that does not exist with
+`Error 404: The resource '…/networkEndpointGroups/<name>' was not found`. A backend that waits for
+Dispatch instead closes a dependency cycle. So the stack applies twice:
+
+1. The first `pulumi up` creates the backend service with no backend yet, and then Dispatch with
+   the inputs above. GKE then makes the group `example-dispatch` in each zone of the cluster's
+   region. Until the second apply no request through the load balancer reaches Dispatch, since its
+   backend service has no backend.
+2. Once `gcloud compute network-endpoint-groups list --filter=name=example-dispatch` lists the
+   group in every zone of the region, add one backend per zone to the backend service in the
+   stack, and run `pulumi up` again. Each backend names its zone's group by URL in `group`,
+   `projects/<project>/zones/<zone>/networkEndpointGroups/example-dispatch`, and sets
+   `balancingMode: RATE` and a `maxRatePerEndpoint`, since a network endpoint group does not take
+   the provider's default mode, `UTILIZATION`
+   ([Utilization balancing mode](https://cloud.google.com/load-balancing/docs/backend-service#utilization_balancing_mode)).
+   Dispatch's inputs do not change, so this apply leaves Dispatch as it is.
+
+Do not create the groups in the stack instead: GKE syncs no endpoint into a group of that name
+that it did not make itself
+([NEG is not synced with Service](https://cloud.google.com/kubernetes-engine/docs/how-to/standalone-neg#neg_is_not_synced_with_service)).
+
 A stack that runs Google sign-in at its own origin instead sets the sign-in group in place of
 `iapAudience`, and its Google client lists `https://dispatch.example.com/auth/callback`.
 
@@ -2779,6 +2877,7 @@ environment, in this order:
 | `ENVOY_NATS_REPLICAS` | `natsReplicas` |
 | `ENVOY_WEBHOOKS` | `webhooks`, joined with commas, when it lists one |
 | `ENVOY_GITHUB_MENTION_TRIGGER`, `ENVOY_REVIEWER_APP_ID` | `mentionTrigger`, `reviewerAppId`, with `github` |
+| `ENVOY_VERDICT_APP_ID` | `verdictAppId`, with `github`, only when given |
 
 ECS injects its secrets from their ARNs: `ENVOY_GITHUB_WEBHOOK_SECRET` with `github`,
 `ENVOY_SLACK_SIGNING_SECRET` with `slack`, `ENVOY_API_TOKEN`, and `NATS_NKEY_SEED` with
@@ -2819,6 +2918,7 @@ Its outputs are `serviceArn`, `serviceName`, `logGroupName`, `taskDefinitionArn`
 | `seedSecretArn` | unset | The secret holding the seed of the NATS user the listener connects as. Unset, it connects with none. |
 | `webhooks` | required | The webhooks the listener serves: `["github", "slack"]`, or `[]` for none. With `[]` the container carries no webhook's setting or secret, and the listener mounts no webhook route. This version takes no other list. |
 | `githubWebhookSecretArn`, `reviewerAppId`, `mentionTrigger` | with `github` | Required while `webhooks` lists `github`, refused while it does not. |
+| `verdictAppId` | optional, with `github` | The App whose own check suites the listener leaves out of the CI record. Written only when given; refused blank, refused when it is not a GitHub App id (a whole number above 0 with no leading zero), and refused while `webhooks` does not list `github`. Give Dispatch the same App id (`envoy-infra:gcp:Dispatch`'s `verdictAppId`, or `DISPATCH_VERDICT_APP_ID`), or the head is published twice: Dispatch's CI reconcile pass otherwise writes the App's completed suite back into a settled record. |
 | `slackSigningSecretArn` | with `slack` | Required while `webhooks` lists `slack`, refused while it does not. |
 | `clusterArn`, `executionRoleArn`, `taskRoleArn` | required | The ECS cluster and the task's two roles. |
 | `executionRoleName` | required | The execution role's name, which the read policies attach to. |
@@ -3173,7 +3273,7 @@ authorization {
 ### webhook-listener-env
 
 ```text
-envoy-infra render webhook-listener-env --machine-id <id> --nats-url <url>... [--webhook <name>]... [--reviewer-app-id <id>] [--mention-trigger <t>] --listen-host <h> --nats-replicas <n> [--sender-messages-per-minute <n>] [--sender-message-burst <n>]
+envoy-infra render webhook-listener-env --machine-id <id> --nats-url <url>... [--webhook <name>]... [--reviewer-app-id <id>] [--verdict-app-id <id>] [--mention-trigger <t>] --listen-host <h> --nats-replicas <n> [--sender-messages-per-minute <n>] [--sender-message-burst <n>]
 ```
 
 Prints `aws:WebhookListener`'s container environment, one `KEY=value` line per variable in the
@@ -3198,6 +3298,9 @@ none for `webhooks: []`, and refuses `--reviewer-app-id` and `--mention-trigger`
 
 Without `--reviewer-app-id`, it prints
 `refused: --reviewer-app-id: reviewerAppId is required with webhook "github"` and exits 2.
+
+`--verdict-app-id` sets `verdictAppId` and prints `ENVOY_VERDICT_APP_ID` after the other GitHub
+lines; left out, it prints none.
 
 `--sender-messages-per-minute` and `--sender-message-burst` set `senderMessagesPerMinute` and
 `senderMessageBurst`. Each prints its variable, `ENVOY_SENDER_MESSAGES_PER_MINUTE` or
@@ -3302,6 +3405,46 @@ echo, repeat or `403` costs nothing only while the send has made no forward, sin
 forward may have stored the message. A repeat that finds the count at 0 is refused as a new
 message is. The listener's own two settings are on the documentation site's
 [Envoy page](https://cybermonklabs.github.io/legion/dispatch/envoy/#the-sender-limit).
+
+## The consumer-name mode and the writer hold's update rule
+
+Two optional inputs prepare a deployment for a replacement under the writer hold, which refuses
+every NATS client but the operator's. `gcp:ClusteredNatsHub` takes them under `listener` or
+`tailnet.listener`, and `gcp:Dispatch` takes them as its own inputs. The components that take
+them render something only where an input is set, so a deployment that sets neither renders
+exactly what it rendered before.
+
+`consumerNames` is how each consumer creator names the JetStream consumers it creates: `fixed`,
+one name for each consumer, or `fresh`, a new physical name at each creation behind a selection
+record. The component renders it as `ENVOY_CONSUMER_NAMES` on each creator: the hub's listener
+container, and Dispatch's `envoy-dispatch` and `envoy-listener` containers. Dispatch's front door
+creates no consumer and gets nothing. Unset, the component renders nothing, and a creator runs
+`fixed`. A creator reads the setting only at its start, so a change rolls its pod; a creator built
+before the setting existed reads no such variable and runs as it always did. The component refuses
+any other value before it registers anything, with an error that names the input and quotes the
+value, as `tailnet.listener.consumerNames "Fresh" must be "fixed" or "fresh"
+(ENVOY_CONSUMER_NAMES); leave it unset for fixed`. Case and surrounding whitespace count.
+
+`replaceUnderHold`, `false` by default, is the update rule of each creator's Deployment for that
+replacement. Under the hold a new pod cannot connect to NATS, so it does not become ready: the hub
+listener's startup probe passes only once its `/v1` serves, and a rolling update keeps the old pod
+beside a new pod that never becomes ready. With `true`:
+
+- each creator's Deployment uses `strategy: {type: Recreate}`, with no `rollingUpdate` block, at
+  any replica count, so every old pod stops before a new one starts;
+- each creator's Deployment carries the annotation `pulumi.com/skipAwait: "true"` on its own
+  metadata, so the apply does not wait for its rollout. A check of the running pods, not the
+  apply, shows the replacement.
+
+The creators are the hub's listener, `<n>-listener`, and Dispatch's app, `<hostname>`, and
+listener, `<hostname>-listener`. The pod template does not change, so the rule by itself rolls no
+pod. Dispatch's front door keeps the strategy its replica count gives it. With `false` every
+Deployment renders exactly as before: the hub's listener rolls with `maxSurge: 1` and
+`maxUnavailable: 0`, and each Dispatch Deployment is recreated at one replica and rolls with those
+bounds above one. Each of those rolling strategies writes its bounds itself, so the component's
+field manager owns `rollingUpdate`, and server-side apply removes it when `true` stops rendering
+it. Set `replaceUnderHold` back to `false` once the hold is released: under Recreate every later
+release stops every pod before its replacement serves.
 
 ## NATS seeds
 
@@ -3755,7 +3898,8 @@ unexpected first protocol response during connection initialization (`nats.go:29
 `noAuthUser`, `no_auth_user` follows the authorization block, naming that user's key.
 
 With a callout, the text then ends with three top-level lines, after the authorization block and
-after `no_auth_user`. Without a callout, none of them is rendered.
+after `no_auth_user`, and beside `privateProjects` with two more after them (below). Without a
+callout, none of them is rendered.
 
 ```text
 # a replica of the auth service that answers nothing is dropped from the callout's queue group within 80 s
@@ -3822,11 +3966,34 @@ times the payload: about 8 to 17 KB/s. The first PING to a new client stays at 2
 (`client.go:7128-7142`, `server.go:60` `firstClientPingInterval`), so the answer budget above is
 unchanged.
 
-`core.Authorization.CalloutLines()` is every line the callout adds: the `auth_callout` block and
-the ping lines, or `""` without a callout. `gcp:ClusteredNatsHub` rolls its pods when that text
-changes, and beside a callout it keeps its routes' own ping at 30 s, since the top-level
-`ping_interval` also governs routes (see the hub's [reload](docs/nats-hub.md#a-reload-not-a-replacement)
-and [routes](docs/nats-hub.md#two-ports-guarded-by-the-networkpolicy-alone)).
+Beside `privateProjects`, the server tag's two lines follow the ping lines and end the text:
+
+```text
+# this hub is rendered with privateProjects: nats-server names this tag in each authorization request it sends the auth service
+server_tags: ["envoy-private-projects"]
+```
+
+nats-server v2.15.1 copies its tags into every authorization request it sends the auth service
+(`server/auth_callout.go:377`). The request's server claim also carries the server's name, host,
+id, version, cluster and xkey, and none of those says how the hub was rendered, so the tag,
+`natsgrant.PrivateProjectsServerTag`, is how a request can show that its hub was rendered with
+`privateProjects`. The auth service does not read it yet: its private-hub admission, which is to
+admit Dispatch's hub-admission proof, and a listener only in required privacy mode, only on a
+request that carries the tag, is later work. The comment line says only what the tag is, so it
+stays true then. Without `privateProjects` no line holds `server_tags`.
+`core/nats_server_tags_test.go` reads the tag off a request an in-process server sends.
+
+`core.Authorization.CalloutLines()` is every line the callout adds: the `auth_callout` block, the
+ping lines and, beside `privateProjects`, the server tag's lines, or `""` without a callout.
+`gcp:ClusteredNatsHub` rolls its pods when that text changes, so that each server takes a change
+at one known moment, its restart, after the chart's ConfigMap is applied. nats-server also
+reloads `server_tags`, so a change of the tag alone reaches a pod by its reloader before the roll
+restarts it, when the kubelet updates the mounted file, which nothing orders. Each reload decides
+every callout connection again: it closes each client the auth service named, which reconnects
+through the callout. Beside a callout the hub keeps its routes' own ping at 30 s, since the
+top-level `ping_interval` also governs routes (see the hub's
+[reload](docs/nats-hub.md#a-reload-not-a-replacement) and
+[routes](docs/nats-hub.md#two-ports-guarded-by-the-networkpolicy-alone)).
 
 For three keyed users, a pending `example-pending` and `noAuthUser` `example-fallback`, `core`'s
 tests pin this text:
@@ -3953,8 +4120,9 @@ relay frames, and `agentstream.*.frames`, and subscribes to its own relay subjec
 and to nothing else — no other `notifications.` subject,
 so a session can read no topic the listener does not relay to it. While sessions share one user,
 each holds the same set, so the relay subject carries `*` and one session can read another's
-relay frames, until the auth service's
-per-session credentials.
+relay frames. A session the NATS auth service admits holds `natsgrant.Session` instead, which
+names its own id alone and publishes its replies under `_INBOX.*.<session id>.>` alone
+(`bus.SessionReplies`).
 It does not
 subscribe to `_INBOX.>`, so a client holding this set alone may answer a request but not make one:
 sessions that share one user holding it, as a `gcp:NatsHub`'s `sessionUser` does, would otherwise
@@ -4001,6 +4169,172 @@ subscribe stays rather than being dropped because a change to a set rewrites eve
 authorization, which replaces a VM hub's instance and reaches a clustered hub only as a live
 reload. This repository's listener runs under this set against the real servers below: it answers
 a registration `consumer` and relays a send on the session's relay subject, with no refusal.
+
+`EdgePermissions(machineID, projects)` is the grant of an edge listener's own NATS user: the
+listener that serves the sessions of an outside person's projects (`ENVOY_EDGE_PROJECTS`), which no
+session and no other listener shares. It is `ListenerPermissions(machineID)` with these changes and
+no other. It refuses a machine id that is not one subject token and a project list that is empty
+or not project keys, sorted, each once. In place of `notifications.>` it publishes this list and
+no other notification topic: `notifications.agent.>` (a send); `notifications.role.<KEY>.>` for
+each project (a role message in the form that names the project); `notifications.envoy.deliver.*`
+(a relay frame); `notifications.envoy.relayreply.>` (every edge machine's relay receipts, since the
+listener serving a session's relay socket answers on the family of the machine holding the
+session's consumer); `notifications.envoy.resume.>` (where a deleted session consumer stopped); and
+`notifications.envoy.exceptions.notifications.agent.>` and
+`notifications.envoy.exceptions.notifications.role.<KEY>.>` for each project (a failed delivery's
+report, and an unheld role's refusal). So a direct publish of the edge's reaches no Dispatch,
+GitHub, Slack, team or Legion event, no other project's role lane and no role lane in the form
+that names no project, nothing on the kept role lane `notifications.envoy.kept.>` and no other
+exception lane. A message on a role lane of its own project that names a role of another project
+is the shared listeners' role lane to refuse, which it does with the edge mode of #4810
+(`roleLaneProjectError`). It holds no `$JS.API.STREAM.CREATE` or `UPDATE` of
+`ENVOY_NOTIFICATIONS` or of any bucket's stream (`KV_<bucket>`), and no `$JS.API.DIRECT.GET` of any
+bucket, so it can change no stream's subjects, limits or republish:
+
+- A republish to a `$JS.API.…` subject is a JetStream API request in the stream's account, with
+  the stored value as its body. On the hub's image an empty value republished to a stream delete
+  deletes the stream, and a non-empty one is refused as that request's body. That is why the edge
+  holds no stream update.
+- The stream itself answers a direct get, on whatever reply subject the request names and with the
+  stored value as its body, so a direct get aimed at `$JS.API.…` is such a request too: on the
+  hub's image a value written as a stream update changes that stream, and an empty one aimed at a
+  stream delete deletes it. So an edge listener reads its buckets with stream message gets
+  (`$JS.API.STREAM.MSG.GET.KV_<bucket>`). Their answer is the API's own, and aimed at the API it
+  takes no action there, nor does a stream info answer or a stored publish's acknowledgement.
+- It can, though, delete any stream of its account without changing it: a `no_wait` pull on a
+  consumer with nothing to deliver is answered a `404 No Messages` status, and a synchronous ack
+  an empty reply, each with no body on whatever reply subject it names and needing no other
+  client, so one aimed at `$JS.API.STREAM.DELETE.<s>` deletes stream `<s>` on the hub's nats-server
+  (2.15.1). That reach is availability only - no message of any project crosses it - accepted for
+  day one until the hub's nats-server is raised to 2.15.3, which refuses a reply into `$JS.API.`.
+
+An edge listener reads the stream and its start ends, naming the stream, on a server that has
+none. It finds each bucket it opens: the interest, role, session and DPoP-proof buckets end its
+start, naming the refused create or raise, when the server lacks one or holds it at fewer copies
+than `ENVOY_NATS_REPLICAS`. The Legion agent bucket's open logs one ERROR and is retried in the
+background, and so is the known-session bucket's, which raises no bucket it finds with fewer
+copies. Every listener on this build that is not an edge listener creates the DPoP-proof bucket
+`envoy_dpop_proofs` at its start, whether or not it takes broker tokens, so a full listener on
+this build starts before an edge listener does. It subscribes its own machine's inbox prefix
+`_INBOX_envoy_edge_<machine id>.>` in place of `_INBOX.>`, so one edge machine is delivered no
+other machine's replies, every session's relay subject `notifications.envoy.deliver.*`, its own
+machine's relay receipts `notifications.envoy.relayreply.<machine id>.>`, so no edge machine
+subscribes another machine's receipts, and no stream it reads captures them, and no role lane: every
+connection of an edge listener names its inboxes under that prefix, and a shared listener forwards
+a role message held at the edge to the holder's agent subject. Its lists name no `agentstream.`
+subject.
+
+The relay receipts, and the subscription to the relay subjects, are the relay socket's
+(`cmd/listener/relay_socket.go`): the replica serving a session's socket subscribes the session's
+relay subject and publishes each receipt the client sends on the receipt subject of the machine
+that relayed the frame, under which that machine's session relay names it. Since every edge machine
+publishes every machine's receipts and subscribes every session's relay subject, which carries
+each frame's receipt subject, one edge machine can forge a receipt for another machine's frame. It
+is not the only user that can: every grant built on the listener grant (`Listener`,
+`ListenerHost`, `Dispatch` and `Host`) publishes all of `notifications.>`, the receipt family
+included, and `ListenerHost` and `Host` also subscribe `notifications.>`, so they read each frame's
+receipt subject as it is relayed and can answer it too. A forged `done` acknowledges a frame its
+session then never receives. For an edge machine and a `ListenerHost` user that adds nothing past
+the reach below, since each can already update or delete any session consumer; a `Host` user holds
+no session-consumer call, so for it the receipt is reach it would not have otherwise, which a deny
+of `notifications.envoy.relayreply.>` on every grant but the edge's would take away.
+
+An edge listener holds itself to that list. It keeps no role message for a role's next holder and
+hands no kept lane over, so a publish to a role no session holds is answered 404 with its refusal's
+exception, and the shared listeners' sweeps, every five minutes, hand the kept lane of a role held
+at the edge to its holder. A claim at the edge that takes a role from another session writes no
+takeover record and runs no takeover pass, and its session relay copies no role message to a kept
+lane: a frame of a role another session holds goes to the edge session as every frame does. Two
+limits of edge mode follow from that, against the role takeover's promise that a session taking a
+role receives what the previous holder had not read. When a claim lands at the edge, the role's
+new holder does not receive the role messages its previous holder had not read: they stay on the
+previous holder's own subject, which that session receives if it comes back and nothing else
+reads. And a role message forwarded to an edge session that has since lost the role still reaches
+that session, while a takeover pass a shared listener runs for the new holder copies it to the new
+holder too, so both sessions receive it (read from the code, not run). A
+delivery exception whose lane the list does not hold, such as the
+report of a refused GitHub or Dispatch event a session follows, is not published: the message is
+acknowledged undelivered to that session and counted on
+`envoy_edge_exceptions_withheld_total{topic_prefix, reason}`.
+
+What the lists do not hold back:
+
+- The session consumers' calls name the consumer by `*`, since each session's consumer is named
+  for its session. A NATS wildcard matches a whole token and a consumer name is one token, so no
+  permission can hold these calls to the edge's own consumers. The edge can create, update,
+  delete, read and pull any consumer of the stream, every other listener's durable, Dispatch's
+  and every session's consumer among them. By updating another listener's durable it can take
+  that listener's push deliveries, and a consumer it creates on any filter reads any stored
+  message, another project's Dispatch event among them.
+- nats-server checks a push consumer's deliver subject against no permission, only that the
+  stream does not carry it, and delivers only where a client subscribes. A delivery is sent under
+  the message's own stream subject, not the deliver subject: each subscription matching the
+  deliver subject receives it as a message of the stream's subject. So through a consumer it
+  creates, the edge can hand any message it stored, or any message of the stream, to any
+  subscriber of any subject the stream does not carry: every project's role lanes and their
+  exception lanes, any reply inbox, and the agent stream subjects. A deliver subject the stream
+  carries is refused as a cycle: the agent subjects, Dispatch, GitHub, Slack, Legion, Ghostwispr,
+  WhatsApp and team topics, the exception lanes of the agent subjects and of team topics, the
+  kept lane, the resume lane and the takeover lane.
+- A push consumer's delivery takes no JetStream API action: the API's import sees the stream
+  subject, not `$JS.API.`, so a delivery to `$JS.API.STREAM.DELETE`, `PURGE` or `UPDATE` of a
+  stream, or to the delete of a bucket's stream, leaves the stream as it was. A stream whose
+  subjects take the deliver subject - another stream of the account, a key-value bucket's stream
+  among them - stores the delivery under its stream subject, as a message of that stream and
+  never as a key, and counts it toward that stream's limits. Both need some other client to
+  subscribe the deliver subject. A consumer created with an idle heartbeat also sends heartbeats,
+  empty status messages that carry no stored subject, to its deliver subject while a client
+  subscribes it; on the hub's image such a heartbeat aimed at a stream delete deletes the stream
+  (`TestAPushConsumersHeartbeatOnTheAPIDeletesAStreamWhileAClientSubscribesIt`). No Envoy client
+  subscribes a `$JS.API.` subject, and the edge's own grant subscribes none.
+- nats-server 2.15.1 admits a subscription to `notifications.envoy.deliver.>` under the allow
+  entry `notifications.envoy.deliver.*`, and delivers it a subject two tokens past the prefix. No
+  Envoy program publishes such a subject: a relay subject names its session by one token.
+- Today's agent, relay and resume subjects name no project, so an edge listener can publish on
+  any session's.
+- Its key-value calls write every record of the seven listener buckets: interests, roles,
+  sessions, known sessions, Legion agents, CI state and DPoP proofs. They include a consumer on
+  each bucket's stream, which does not carry the notification subjects, so such a consumer can
+  deliver a bucket's message onto the Dispatch, GitHub, Slack, Legion, team, kept, resume and
+  takeover subjects wherever a client subscribes them: the cycle refusal above holds only for the
+  notification stream's own consumers. No row creates such a consumer: this one is read from the
+  server's rule above.
+
+Its read is the whole bus until subjects and keys name their project, and its writes through the
+consumer calls are as wide until something other than the edge creates its consumers. The auth
+service answers an `edge-listener` entry of `BROKER_NATS_SERVICES` with the same set for the
+projects the entry lists, and the deployment repository's hub user for an edge listener copies it
+entry for entry from `packages/envoy/natsgrant/testdata/edge.golden.json`, rendered for machine `m`
+and project `PRIV`.
+
+Under the `natslive` tag, against the hub's image, `natsgrant/natsgrant_live_test.go` publishes on
+each subject of the list and on the kept lane, another project's role, a role that names no
+project, the Legion wake topic, a Slack topic and a GitHub exception lane, and the server refuses
+exactly the second group. `TestAnEdgeMachineAnswersAnotherMachinesFrameAndReadsOnlyItsOwnReceipts`
+there has one edge machine answer another machine's frame on that machine's receipt subject, and
+be refused a subscription to that machine's receipts.
+`TestTheEdgeGrantsConsumerCallsReachPastItsPublishList` pins the notification stream's consumer
+reach above: a push consumer of the edge's delivers on another project's role subject, a consumer
+of the edge's reads another project's stored Dispatch event, a deliver subject the stream carries
+is refused as a cycle, the edge updates and deletes another listener's durable, and a subscription
+under `deliver.>` is delivered a two-token subject.
+`TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI` pins the JetStream API and capture
+outcomes on scratch streams and buckets of the edge's account, and the stream subject a delivery
+is received under, and `TestAPushConsumersHeartbeatOnTheAPIDeletesAStreamWhileAClientSubscribesIt`
+the heartbeat's. `TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI` has the server refuse
+the edge's update of a bucket's stream, and its control has an administrator's republish of an
+empty value delete a stream. `TestTheEdgeHoldsNoDirectGetWhoseAnswerReachesTheJetStreamAPI` has a
+listener's direct gets aimed at the API change one stream and delete another, the edge's refused,
+and its stream message get, stream info and key write aimed the same way take no action.
+`TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream` has a `no_wait` pull's `404 No Messages`
+status and a synchronous ack's empty reply, each aimed at the stream-delete API, delete a scratch
+stream with no subscriber, the edge's own direct delete refused and the same pull and ack answered
+on its inbox as controls (nats-server 2.15.1; the deletes are refused once the hub runs 2.15.3).
+`cmd/listener/edge_live_test.go` runs the listener under the set: it starts, relays a send, is
+reached by a role message through a shared listener, takes a role another session holds and is
+relayed a role message of a role another session holds, with no refusal, and its start ends,
+naming the prefix, under the set without it. Its relay frames are answered by an observer whose
+grant publishes the edge's inbox prefix, reach no rendered set holds.
 
 `DaemonPermissions()` is the grant of a Legion daemon's dedicated NATS user. It publishes the
 notification stream's info request, its stored-message get

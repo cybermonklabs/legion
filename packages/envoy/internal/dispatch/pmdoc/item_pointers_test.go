@@ -69,7 +69,7 @@ func TestCheckBlockPointersHoldsAParentAndANeedsToTheirReach(t *testing.T) {
 	// The write lands in the spec of CORE-1, under CORE-7; CORE-2 is its child and CORE-3 a child
 	// of CORE-2; CORE-8 is a sibling tree.
 	fleet := func(creatable int) func() (int, error) { return func() (int, error) { return creatable, nil } }
-	writing := BlockWriting{Document: "CORE-1/spec", Issue: "CORE-1", Ancestors: []string{"CORE-7"}, Descendants: []string{"CORE-2", "CORE-3"}, Creatable: fleet(6)}
+	writing := BlockWriting{Document: "CORE-1/spec", Issue: "CORE-1", Ancestors: []string{"CORE-7"}, Descendants: []string{"CORE-2", "CORE-3"}, Creatable: fleet(7)}
 	resolver := func(writing BlockWriting) func([]text.Ref) (BlockWriting, map[string]BlockTarget, error) {
 		return func(refs []text.Ref) (BlockWriting, map[string]BlockTarget, error) {
 			found := map[string]BlockTarget{}
@@ -156,23 +156,23 @@ func TestCheckBlockPointersHoldsAParentAndANeedsToTheirReach(t *testing.T) {
 	}
 
 	// A document a project holds has no issue to hold a conversation or an issue under it.
-	project := BlockWriting{Document: "CORE/handbook-md", Creatable: fleet(6)}
+	project := BlockWriting{Document: "CORE/handbook-md", Creatable: fleet(7)}
 	for _, tree := range []*Node{parent("criterion", personComment), needs("dispatch://CORE-2")} {
 		if err := CheckBlockPointers(tree, nil, resolver(project)); !errors.Is(err, ErrBlockPointer) || !strings.Contains(err.Error(), "a document a project holds") {
 			t.Errorf("a project document's pointer = %v, want it refused as one a project holds", err)
 		}
 	}
 
-	// An issue under needs is an item of a kind version 6 adds (needs' ItemVersions): a write
+	// An issue under needs is an item of a kind version 7 adds (needs' ItemVersions): a write
 	// introduces one only while the processes serving the database may create it, and a build of
-	// version 5 would read it as a value outside the schema. A plan task's needs, a needs the tree
+	// version 6 would read it as a value outside the schema. A plan task's needs, a needs the tree
 	// before the write already held, and a parent of no versions are taken whatever the fleet.
 	behind := writing
-	behind.Creatable = fleet(5)
+	behind.Creatable = fleet(6)
 	err := CheckBlockPointers(needs("dispatch://CORE-2"), nil, resolver(behind))
 	for _, want := range []string{`"needs"`, "dispatch://CORE-2", `cannot write it yet`, `item "issue" of attribute "needs" of typed block "plan_task"`} {
 		if !errors.Is(err, ErrBlockPointer) || !strings.Contains(err.Error(), want) {
-			t.Fatalf("an issue needs while the fleet creates up to 5 = %v, want it refused naming %s", err, want)
+			t.Fatalf("an issue needs while the fleet creates up to 6 = %v, want it refused naming %s", err, want)
 		}
 	}
 	for name, write := range map[string][2]*Node{
@@ -181,7 +181,7 @@ func TestCheckBlockPointersHoldsAParentAndANeedsToTheirReach(t *testing.T) {
 		"a parent":                      {parent("criterion", personComment), nil},
 	} {
 		if err := CheckBlockPointers(write[0], write[1], resolver(behind)); err != nil {
-			t.Errorf("%s while the fleet creates up to 5 = %v, want it taken", name, err)
+			t.Errorf("%s while the fleet creates up to 6 = %v, want it taken", name, err)
 		}
 	}
 	unread := writing
@@ -217,38 +217,38 @@ func TestAParentHoldsOneReferenceAndOnlyItNamesTheConversation(t *testing.T) {
 	}
 }
 
-// An issue under a plan task's needs is an element of the manifest read from version 6, as the
-// attribute's ItemVersions give it: a document holding one needs version 6 of a page that writes it
-// (DocumentSince), and the manifest as a build of version 5 installs it leaves the item kind out of
+// An issue under a plan task's needs is an element of the manifest read from version 7, as the
+// attribute's ItemVersions give it: a document holding one needs version 7 of a page that writes it
+// (DocumentSince), and the manifest as a build of version 6 installs it leaves the item kind out of
 // needs, which keeps the plan tasks it points at.
-func TestAnIssueUnderNeedsIsAnElementReadFromVersionSix(t *testing.T) {
+func TestAnIssueUnderNeedsIsAnElementReadFromVersionSeven(t *testing.T) {
 	element := Element{Kind: ItemElement, Block: "plan_task", Attribute: "needs", Name: string(BlockItemIssue)}
-	if versions, declared := element.Versions(); !declared || versions.Since != 6 || versions.CreatableSince != 6 {
-		t.Fatalf("%s = %+v, %t; want since and creatable_since 6", element, versions, declared)
+	if versions, declared := element.Versions(); !declared || versions.Since != 7 || versions.CreatableSince != 7 {
+		t.Fatalf("%s = %+v, %t; want since and creatable_since 7", element, versions, declared)
 	}
 	tree, err := Parse(":::plan_task{#t1 needs=\"dispatch://CORE-2\"}\nAfter the child.\n:::\n")
 	if err != nil {
 		t.Fatalf("parse a plan task needing an issue: %v", err)
 	}
-	if since := DocumentSince(tree); since != 6 {
-		t.Errorf("DocumentSince of a plan task needing an issue = %d, want 6", since)
+	if since := DocumentSince(tree); since != 7 {
+		t.Errorf("DocumentSince of a plan task needing an issue = %d, want 7", since)
 	}
 	plain, err := Parse(":::plan_task{#t1 needs=\"dispatch://CORE-1/spec#b-t0\"}\nAfter it.\n:::\n")
 	if err != nil {
 		t.Fatalf("parse a plan task needing a plan task: %v", err)
 	}
-	if since := DocumentSince(plain); since >= 6 {
-		t.Errorf("DocumentSince of a plan task needing a plan task = %d, want below 6", since)
+	if since := DocumentSince(plain); since >= 7 {
+		t.Errorf("DocumentSince of a plan task needing a plan task = %d, want below 7", since)
 	}
 
 	var store BlockSchema
 	if err := json.Unmarshal(SchemaJSON(), &store); err != nil {
 		t.Fatalf("decode the installed schema: %v", err)
 	}
-	five := asOfVersion(store, 5)
-	index := slices.IndexFunc(five.Types, func(typ BlockTypeSchema) bool { return typ.Name == "plan_task" })
-	needs, declared := five.Types[index].Attributes.Lookup("needs")
+	six := asOfVersion(store, 6)
+	index := slices.IndexFunc(six.Types, func(typ BlockTypeSchema) bool { return typ.Name == "plan_task" })
+	needs, declared := six.Types[index].Attributes.Lookup("needs")
 	if !declared || len(needs.Items) != 0 || len(needs.ItemVersions) != 0 || !slices.Equal(needs.Targets, []string{"plan_task"}) {
-		t.Errorf("needs as a build of version 5 installs it = %+v (declared %t), want the plan tasks it points at and no item", needs, declared)
+		t.Errorf("needs as a build of version 6 installs it = %+v (declared %t), want the plan tasks it points at and no item", needs, declared)
 	}
 }

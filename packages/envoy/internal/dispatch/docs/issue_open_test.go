@@ -190,7 +190,11 @@ func requireKeystrokeDropped(t *testing.T, service *Service, peer *docstest.Peer
 // closes through task B's pool, as a PATCH on task B commits it: both rooms close, task B's
 // included, since the process that writes the change hears it like every other; each browser
 // reconnects read-only, and a keystroke there is neither taken nor stored. The issue reopens through
-// task A: both rooms close again, each browser reconnects read-write, and its edit is stored.
+// task A: both rooms close again, each browser reconnects read-write, and its edit is stored. A
+// browser reconnects only once the room it was in is gone from both processes (waitForRoomGone),
+// not as soon as its socket ended: the close ends the sockets before it takes the room away, and a
+// browser that dials in between lands in that room and has its socket ended again, which the
+// dashboard's editor answers by dialing once more and this test's browser does not.
 func TestClosingAnIssueOnOneProcessClosesEveryProcessesRoomsAndReopeningMakesThemWritable(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
@@ -204,18 +208,24 @@ func TestClosingAnIssueOnOneProcessClosesEveryProcessesRoomsAndReopeningMakesThe
 	alice := connectWithScope(t, serverA.URL, artifactID, "alice", "read-write", "before\n")
 	bob := connectWithScope(t, serverB.URL, artifactID, "bob", "read-write", "before\n")
 
+	roomA, roomB := taskA.srv.GetDoc(artifactID), taskB.srv.GetDoc(artifactID)
 	writeIssueClosed(t, taskB.store, "DOC-1", true)
 	requireEnds(t, alice, "closing the issue through task B left alice's browser on task A connected")
 	requireEnds(t, bob, "closing the issue through task B left bob's browser on task B connected")
+	waitForRoomGone(t, taskA, artifactID, "DOC-1", roomA)
+	waitForRoomGone(t, taskB, artifactID, "DOC-1", roomB)
 	alice = connectWithScope(t, serverA.URL, artifactID, "alice", "readonly", "before\n")
 	bob = connectWithScope(t, serverB.URL, artifactID, "bob", "readonly", "before\n")
 	closedHead := storedHead(t, database, artifactID)
 	requireKeystrokeDropped(t, taskA, alice, artifactID, closedHead)
 	requireKeystrokeDropped(t, taskB, bob, artifactID, closedHead)
 
+	roomA, roomB = taskA.srv.GetDoc(artifactID), taskB.srv.GetDoc(artifactID)
 	writeIssueClosed(t, taskA.store, "DOC-1", false)
 	requireEnds(t, alice, "reopening the issue through task A left alice's read-only browser on task A connected")
 	requireEnds(t, bob, "reopening the issue through task A left bob's read-only browser on task B connected")
+	waitForRoomGone(t, taskA, artifactID, "DOC-1", roomA)
+	waitForRoomGone(t, taskB, artifactID, "DOC-1", roomB)
 	alice = connectWithScope(t, serverA.URL, artifactID, "alice", "read-write", "before\n")
 	typeOver(t, alice, "before", "reopened by alice")
 	waitFor(t, roomWait(t), "alice's edit on the reopened issue to be stored", func() bool {
@@ -673,7 +683,7 @@ func TestWritingIssueAskStatesOnARunTheCloseCutsStoresNothing(t *testing.T) {
 // A close notified while the listener has no connection reaches nobody and is never sent again:
 // the issue-open lane reads the issue of every resident room once each LISTEN stands
 // (recheckResidentIssues), so the room closes on the reconnect, with no keystroke to make the
-// gate notice.
+// gate notice. The browser reconnects once that room is gone (waitForRoomGone).
 func TestAnIssueClosedWhileTheListenerWasDownClosesItsRoomsOnTheReconnect(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
@@ -697,10 +707,12 @@ func TestAnIssueClosedWhileTheListenerWasDownClosesItsRoomsOnTheReconnect(t *tes
 	}
 	startRoomSync(t, hub, newRoomSync(service))
 	alice := connectWithScope(t, server.URL, artifactID, "alice", "read-write", "before\n")
+	room := service.srv.GetDoc(artifactID)
 
 	writeIssueClosed(t, database, "DOC-1", true)
 	close(up)
 	requireEnds(t, alice, "the issue closed while the listener was down, and the reconnect left alice's browser connected")
+	waitForRoomGone(t, service, artifactID, "DOC-1", room)
 	connectWithScope(t, server.URL, artifactID, "alice", "readonly", "before\n")
 }
 
@@ -710,21 +722,28 @@ func roomResident(service *Service, artifactID string) bool {
 }
 
 // waitForRoomGone waits for service to stop holding room, the room of artifactID the test's
-// browsers were in, which the close of its issue issueKey takes from it (closeRoomForIssue). The
-// close may run on a goroutine of its own - the append gate's refusal starts one
-// (refuseClosedIssueAppend) - and ygo waits inside it for a caller in the room to leave, so the
-// room can go after the call that closed it returns. It waits for that room alone, not for the
-// service to hold none: the room's last browser leaving runs the settlement the document owes at
-// once (settleLastPeer), on the closed issue as on an open one, and its warm-up can load the
-// document into a new room before the poll reads the old one gone. That room stays resident until
-// the departing browser's socket ends and retires it, or until it idles out (roomIdleTimeout) when
-// something took it up (retireSettlementRoom), which says nothing about the close.
+// browsers were in, which a close or a reopen of its issue issueKey takes from it
+// (closeRoomForIssue). The close may run on a goroutine of its own - the append gate's refusal
+// starts one (refuseClosedIssueAppend) - and ygo waits inside it for a caller in the room to
+// leave, so the room can go after the call that closed it returns. The room also goes after its
+// browsers' sockets end: ygo ends them first, then flushes the room's persistence, and only then
+// takes the room out of its map, admitting a browser into the room until then (CloseRoom's doc
+// comment, provider/websocket/inject.go:480-484 in the ygo go.mod pins), so a browser that dials
+// as soon as its socket ended can land in the room being closed and have its socket ended again
+// by the same close. The dashboard's editor dials again after such a close
+// (features/doc/connection.ts); a test's browser does not, so a test reconnects a browser only
+// after this wait. It waits for that room alone, not for the service to hold none: the room's
+// last browser leaving runs the settlement the document owes at once (settleLastPeer), on the
+// closed issue as on an open one, and its warm-up can load the document into a new room before
+// the poll reads the old one gone. That room stays resident until the departing browser's socket
+// ends and retires it, or until it idles out (roomIdleTimeout) when something took it up
+// (retireSettlementRoom), which says nothing about the close.
 func waitForRoomGone(t *testing.T, service *Service, artifactID, issueKey string, room *crdt.Doc) {
 	t.Helper()
 	if room == nil {
 		t.Fatalf("no room of %s was resident to wait on", artifactID)
 	}
-	waitFor(t, roomWait(t), "the room of "+artifactID+", whose issue "+issueKey+" closed, to stop being resident", func() bool {
+	waitFor(t, roomWait(t), "the room of "+artifactID+", whose issue "+issueKey+" closed or reopened, to stop being resident", func() bool {
 		return service.srv.GetDoc(artifactID) != room
 	})
 }

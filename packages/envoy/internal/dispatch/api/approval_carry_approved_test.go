@@ -51,6 +51,7 @@ func attributeRemovalSentence(from int) string {
 // rendering equals the approved rendering after both have had those eight attributes removed from
 // every ask block").
 func TestAnApprovedVersionShowingADecisionOtherThanItsRowsCarriesToTheVersionWithoutIt(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		attribute string
 		shown     any
@@ -104,6 +105,7 @@ func TestAnApprovedVersionShowingADecisionOtherThanItsRowsCarriesToTheVersionWit
 // write that changes one further character supersedes the approval"). The agent adds a second
 // block and the human answers it, which writes one version of its block's state alone, so the approval stays stale.
 func TestAnApprovedVersionShowingADecidedBlockUnderOtherWordingCarriesNothing(t *testing.T) {
+	t.Parallel()
 	handler, database, documents := settlingCarryDocuments(t, 2*time.Second)
 	issue := createInteractionIssue(t, handler, "TEST", "Approved under other wording", "Context\n\n"+regionAsk)
 	asks := settledDecisionBlocks(t, handler, documents, issue.Key, issue.PrimaryArtifactID, map[string]string{"region": "Which region goes first?"})

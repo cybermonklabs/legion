@@ -4,13 +4,13 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphseedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -23,9 +23,10 @@ import (
 // the kind comment, and nothing of it is stored - the issue's comment list, the comments table and
 // the store's comment nodes hold what they held. On the shared bearer the same ask is refused
 // earlier, 403 AUTHOR_NAMES_NOBODY, by the one author rule; a word that is no visibility is 400
-// INVALID_ATTRIBUTE_VALUE. `project`, or no visibility at all, writes the comment as today,
-// project-visible.
+// INVALID_ATTRIBUTE_VALUE, naming the attribute, the word and the two values it takes. `project`,
+// or no visibility at all, writes the comment as today, project-visible.
 func TestACommentAskedForAuthorIsRefusedNamingItsKind(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "VIS", "A comment asked for author", "# Spec\n\nA passage.\n")
 	comments := "/api/v1/issues/" + issue.Key + "/comments"
@@ -42,23 +43,24 @@ func TestACommentAskedForAuthorIsRefusedNamingItsKind(t *testing.T) {
 	beforeListed, beforeRows, beforeNodes := held()
 
 	for _, refused := range []struct {
-		name    string
-		send    func() *httptest.ResponseRecorder
-		status  int
-		code    string
-		message string
+		name   string
+		send   func() *httptest.ResponseRecorder
+		status int
+		code   string
+		names  []string
 	}{
 		{"author on a person's cookie", func() *httptest.ResponseRecorder {
 			return dispatchRequest(t, handler, http.MethodPost, comments, map[string]any{"body": "Only for me.", "visibility": "author"}, "alice")
-		}, http.StatusBadRequest, "VISIBILITY_NOT_ADMITTED", "the node kind comment takes no node reserved for its author"},
+		}, http.StatusBadRequest, "VISIBILITY_NOT_ADMITTED", []string{graphstore.KindComment}},
 		{"author on the shared bearer", func() *httptest.ResponseRecorder {
 			return sessionRequest(t, handler, http.MethodPost, comments, map[string]any{
 				"body": "Only for me.", "visibility": "author", "actor": sessionActor(),
 			})
-		}, http.StatusForbidden, "AUTHOR_NAMES_NOBODY", "names nobody"},
+		}, http.StatusForbidden, "AUTHOR_NAMES_NOBODY", nil},
 		{"a word that is no visibility", func() *httptest.ResponseRecorder {
 			return dispatchRequest(t, handler, http.MethodPost, comments, map[string]any{"body": "For whom?", "visibility": "public"}, "alice")
-		}, http.StatusBadRequest, "INVALID_ATTRIBUTE_VALUE", `the node visibility "public" is none of project, author`},
+		}, http.StatusBadRequest, "INVALID_ATTRIBUTE_VALUE",
+			[]string{graphstore.AttributeVisibility, "public", graphstore.VisibilityProject, graphstore.VisibilityAuthor}},
 	} {
 		response := refused.send()
 		t.Logf("%s: status=%d body=%s", refused.name, response.Code, response.Body.String())
@@ -66,8 +68,8 @@ func TestACommentAskedForAuthorIsRefusedNamingItsKind(t *testing.T) {
 			t.Fatalf("%s: status=%d body=%s, want %d", refused.name, response.Code, response.Body.String(), refused.status)
 		}
 		refusal := decodeBody[refusalAnswer](t, response)
-		if refusal.Code != refused.code || !strings.Contains(refusal.Error, refused.message) {
-			t.Errorf("%s is refused %+v, want %s naming %q", refused.name, refusal, refused.code, refused.message)
+		if refusal.Code != refused.code || !graphstoretest.NamesAsAWord(refusal.Error, refused.names...) {
+			t.Errorf("%s is refused %+v, want %s naming %q", refused.name, refusal, refused.code, refused.names)
 		}
 		if listed, rows, nodes := held(); listed != beforeListed || rows != beforeRows || nodes != beforeNodes {
 			t.Errorf("after %s the issue lists %d comments, holds %d comment rows and %d comment nodes, and held %d, %d and %d before",
@@ -110,10 +112,11 @@ func TestACommentAskedForAuthorIsRefusedNamingItsKind(t *testing.T) {
 //
 // The store's writer takes no comment reserved for its author (graphstore.ErrVisibilityNotAdmitted),
 // so each such comment's node is seeded as such a write would store it
-// (graphstoretest.SeedAuthorOnly), with its row and its authored_by tuple beside it. The lens is
+// (graphseedtest.SeedAuthorOnly), with its row and its authored_by tuple beside it. The lens is
 // written through the one write path of its kind (writeReasoningNodes), and each run through the
 // going POST's own record (recordGoingRequest), the token's as the token resolves.
 func TestAPersonPageAnswersOnlyWhereThePersonHoldsANodeTheReaderMaySee(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	server := directServer(deps)
 	ctx := context.Background()
@@ -233,7 +236,7 @@ func writeAuthorOnlyLens(t *testing.T, database *store.Store, issue string, auth
 
 // seedAuthorOnlyComment writes a comment on issue reserved for author as the comment write would
 // store it if the store took one: its node, its row naming that node, and its authored_by tuple
-// with the author's own person node (graphstore.Authored). It answers the comment's id.
+// with the author's own person node (graphstore.QueueAuthored). It answers the comment's id.
 func seedAuthorOnlyComment(t *testing.T, database *store.Store, issue string, author model.Actor, body string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -247,7 +250,7 @@ func seedAuthorOnlyComment(t *testing.T, database *store.Store, issue string, au
 		t.Fatalf("begin the comment's write: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if err := graphstoretest.SeedAuthorOnly(ctx, tx, graphstore.Node{
+	if err := graphseedtest.SeedAuthorOnly(ctx, tx, graphstore.Node{
 		Kind: graphstore.KindComment, ID: id, Supertag: graphstore.KindComment, State: graphstore.StateLive,
 		MadeAt: at, MadeBy: author, SourceEvent: graphstore.NoEvent,
 	}); err != nil {

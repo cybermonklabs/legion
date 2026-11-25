@@ -1,0 +1,7 @@
+kind: Changed
+custom:
+  Issue: pr3995
+body: |-
+  The `legion` tool's `request_backward_move` description says: "The architect that owns an issue
+  in accepting moves it, named by `issue`, back to planning, implementing or testing." Before, it
+  named implementing and testing alone.

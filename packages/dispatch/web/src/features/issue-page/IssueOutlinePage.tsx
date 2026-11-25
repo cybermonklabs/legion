@@ -5,6 +5,7 @@ import { Link, useLocation } from "react-router-dom";
 import { ApiError } from "../../api/client";
 import { issueQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
+import { DOCUMENT_SCROLL_ATTRIBUTE } from "../../hooks/useFootInset";
 import {
   linkHoverText,
   linkText,
@@ -101,6 +102,13 @@ function IssueOutline({ route }: { route: IssueRoute }): ReactNode {
   // short the stage is; then Details' slot, whose fill the shell draws in its drawer
   // (R14). At 1440 px, beside the rail of 56 px, the page is 1384 px wide:
   // under a view the stage has 1328 px inside its insets, and beside the 260 px pane 1068 px.
+  // The column is where the document's content ends, and it says so (`data-document-scroll`,
+  // `hooks/useFootInset.ts`): the foot's end room for the floats goes in it, as its bottom
+  // padding, rather than in the shell's `main`. The pane is stuck in the row, which holds it
+  // within the row's content box, and that box ends where the column, the row's tallest child,
+  // ends: room in the column grows both, so the pane keeps its place at the end of the scroll.
+  // Room below the column - in `main`, or as the row's own padding, outside its content box -
+  // carried the pane 180px off its place at 1024x500.
   const props: SlotProps = { issue: issue.data, route };
   return (
     <ProvidersSlot {...props}>
@@ -111,6 +119,7 @@ function IssueOutline({ route }: { route: IssueRoute }): ReactNode {
         <div
           className={`flex min-h-dvh min-w-0 flex-1 flex-col pt-2.5 ${PAGE_INSET}`}
           data-testid="issue-column"
+          {...{ [DOCUMENT_SCROLL_ATTRIBUTE]: "" }}
         >
           <StageSlot {...props} />
           <FootSlot {...props} />

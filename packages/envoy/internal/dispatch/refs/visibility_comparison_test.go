@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphseedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -87,7 +87,7 @@ func TestTheKindsThatTakeAuthorAreThisChildsRegisteredKinds(t *testing.T) {
 	// a finding of a lens and a risk are flagged and compare the author a credential proved, the
 	// one rule of cybermonklabs/legion#3178, an interaction is flagged and compares the whole
 	// credential, and a lens kind of the catalogue is registered unflagged. The first two are
-	// written by migration 20261116123354, the next three by the reasoning write and an
+	// written by migration 20261123174710, the next three by the reasoning write and an
 	// interaction by the going POST, which is where they register. A finding is stored as a
 	// block, so its entry reads the store under that kind, and every other entry under its own.
 	for _, kind := range []string{graphstore.KindConstraint, graphstore.KindLens, graphstore.KindLensBlock, graphstore.KindRisk} {
@@ -128,7 +128,7 @@ func TestTheKindsThatTakeAuthorAreThisChildsRegisteredKinds(t *testing.T) {
 		compares comparison
 	}{
 		{"resolvedKind", resolvedKind(loadStoreNodes, nodeVisibility{}), false, comparesAuthor},
-		{"unresolvedKind", unresolvedKind(nodeVisibility{}), false, comparesAuthor},
+		{"unresolvedKind", unresolvedKind(), false, comparesAuthor},
 		{"authoredKind", authoredKind(loadStoreNodes), true, comparesAuthor},
 		{"credentialAuthoredKind", credentialAuthoredKind(loadStoreNodes), true, comparesCredential},
 	} {
@@ -176,7 +176,7 @@ func TestAKindComparesTheAuthorOrTheCredentialItsEntryStates(t *testing.T) {
 	defer tx.Rollback(ctx)
 	// The two test kinds are types of no migration, and the store writes a node only of a type it
 	// holds, so their types are seeded first.
-	if err := graphstoretest.SeedSupertags(ctx, tx, authorComparedTestKind, credentialComparedTestKind); err != nil {
+	if err := graphseedtest.SeedSupertags(ctx, tx, authorComparedTestKind, credentialComparedTestKind); err != nil {
 		t.Fatalf("seed the test kinds' types: %v", err)
 	}
 	name := func(login string) *string { return &login }
@@ -271,7 +271,7 @@ func TestAKindComparesTheAuthorOrTheCredentialItsEntryStates(t *testing.T) {
 		// refuses (graphstore.ErrVisibilityNotAdmitted), so a comment's rows are seeded as such
 		// a write would have stored them.
 		if written.node.Kind == graphstore.KindComment {
-			if err := graphstoretest.SeedAuthorOnly(ctx, tx, written.node); err != nil {
+			if err := graphseedtest.SeedAuthorOnly(ctx, tx, written.node); err != nil {
 				t.Fatalf("seed %s: %v", written.name, err)
 			}
 			continue

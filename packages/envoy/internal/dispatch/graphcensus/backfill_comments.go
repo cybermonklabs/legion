@@ -65,25 +65,10 @@ func backfillComments(ctx context.Context, database *store.Store) (KindBackfill,
 // first comment.created event that names it, or the sentinel (graphstore.NoEvent) where no event
 // does, which is the cause of what the batch states of it, and whether its node would be between
 // a party graphstore.PartiesValue refuses (partiesRefused), which no writer writes
-// (refs.CommentsNamingNoNode reads the rest of the row again under the owner locks).
+// (refs.CommentsNamingNoNode reads the rest of the row again under the owner locks)
+// (CommentRowsStatement).
 func readCommentRows(ctx context.Context, database *store.Store, after string) (ids []string, causes []int64, refused []bool, err error) {
-	rows, err := database.Pool.Query(ctx, `
-		select c.id::text,
-		       coalesce((
-			select e.id from events e
-			where coalesce(e.issue_key, e.artifact_id::text, e.project_key)
-			      = coalesce(c.issue_key, c.artifact_id::text)
-			  and e.type = 'comment.created'
-			  and e.payload->>'id' = c.id::text
-			order by e.id limit 1
-		       ), $3),
-		       coalesce(issue.project_key, owner.project_key, ''), coalesce(owner.session_id, '')
-		from comments c`+refs.CommentStoreJoins+`
-		left join issues issue on issue.key = c.issue_key
-		where c.node_kind is null and c.id > $1::uuid and `+refs.CommentInTheStore+`
-		order by c.id
-		limit $2
-	`, after, backfillBatch, graphstore.NoEvent)
+	rows, err := database.Pool.Query(ctx, CommentRowsStatement, after, backfillBatch, graphstore.NoEvent)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("read the comments naming no node: %w", err)
 	}
@@ -100,6 +85,34 @@ func readCommentRows(ctx context.Context, database *store.Store, after string) (
 	return ids, causes, refused, rows.Err()
 }
 
+// CommentRowsStatement is readCommentRows' selection: at most $2 of the comments naming no node
+// whose relations fit the store's bound, past the comment $1, in id order, each with the first
+// comment.created event that names it, or $3, the store's sentinel, where none does, and the
+// project and the session its node would be scoped to.
+//
+// The event is read once per comment, and each such read probes events_comment_created_id
+// (migration 20261119020800) by the comment, whose expression it compares as that index writes it,
+// and whose predicate its own type clause proves: with no index to serve it, each one read the
+// whole of events, so a run took time growing with the square of the data
+// (TestTheBackfillsEventReadsProbeTheirIndexes).
+var CommentRowsStatement = `
+		select c.id::text,
+		       coalesce((
+			select e.id from events e
+			where coalesce(e.issue_key, e.artifact_id::text, e.project_key)
+			      = coalesce(c.issue_key, c.artifact_id::text)
+			  and e.type = 'comment.created'
+			  and e.payload->>'id' = c.id::text
+			order by e.id limit 1
+		       ), $3),
+		       coalesce(issue.project_key, owner.project_key, ''), coalesce(owner.session_id, '')
+		from comments c` + refs.CommentStoreJoins + `
+		left join issues issue on issue.key = c.issue_key
+		where c.node_kind is null and c.id > $1::uuid and ` + refs.CommentInTheStore + `
+		order by c.id
+		limit $2
+	`
+
 // writeCommentBatch writes one batch's comment nodes, the comments of ids each caused by the event
 // beside it in causes (readCommentRows), the facts each row projects and who wrote each, in one
 // transaction, and answers how many rows it gave a node, how many nodes it wrote and how many
@@ -110,12 +123,11 @@ func readCommentRows(ctx context.Context, database *store.Store, after string) (
 // project or its parties where it belongs to one (refs.CommentWrite.BaseAttributes): every
 // comment here is new, since a row that already names its node is never read.
 //
-// The batch is read before this transaction, and another run can mark a row and the erase can
-// then remove it before this run writes. So the transaction takes the owner lock of every comment
-// of the batch first (refs.LockCommentOwners), the lock every writer of a comments row and the
-// erase take, and reads the rows again under it (refs.CommentsNamingNoNode), so a row a writer of
-// the comment moved or named meanwhile, or the erase removed, is written as it now stands, or
-// left alone, and a cached batch cannot restore an erased node.
+// The batch is read before this transaction, and another run can mark a row before this run
+// writes. So the transaction takes the owner lock of every comment of the batch first
+// (refs.LockCommentOwners), the lock every writer of a comments row takes, and reads the rows
+// again under it (refs.CommentsNamingNoNode), so a row a writer of the comment moved or named
+// meanwhile, or another run marked, is written as it now stands, or left alone.
 // Then it runs its writes back to back in one batch, holding a transaction id for those statements
 // alone: every node of the batch goes in its one store write, the comments' and their authors',
 // so the transaction takes every node row in ascending (kind, id) before it appends its first

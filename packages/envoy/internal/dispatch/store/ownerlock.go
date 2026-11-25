@@ -17,12 +17,42 @@ import (
 // module are the owner lock gate's (OwnerLockGateNamespace, "OWNG"), the copy locks'
 // (docs.copiedAsksLockNamespace, "COPY"), the duty leases' (duty.leaseNamespace, "LOOP"), a
 // conditional edit's admission's (docs.conditionalEditQueueLockNamespace, "QUEU"), the API's test
-// hooks' (api.testHookLockNamespace, "HOOK") and the hashtext of a name (the dependency and
-// repository-mapping locks), none of which is this value, so an owner lock never waits on one of
-// those whatever its owner hashes to. It is exported, with LockKey, so a test reads an owner's lock
-// out of pg_locks by the keys this file takes it with rather than by spelling them again
-// (api/files_test.go).
+// hooks' (api.testHookLockNamespace, "HOOK"), the boot's repository rename pass's
+// (repoRenameLockNamespace, "RNAM"), the head fill's (HeadFillLockNamespace, "HEAD") and the
+// hashtext of a name (the dependency locks), none of which is this value, so an owner lock never
+// waits on one of those whatever its owner hashes to. It is exported, with LockKey, so a test reads
+// an owner's lock out of pg_locks by the keys this file takes it with rather than by spelling them
+// again (api/files_test.go).
 const OwnerLockNamespace int32 = 0x4F574E52
+
+// HeadFillLockNamespace is the first key of the head fill's lock ("HEAD"), whose second key is the
+// hashtext of the issue's owner lock key, `issue:<key>`, as the owner lock hashes it (LockKey). Two
+// takers take it and nothing else does: the fill of an issue's head rows (graphcensus'
+// FillIssueHeads), in exclusive mode right after the issue's owner lock and before it reads the
+// issue's rows, holding it until it commits the issue's mark; and the trigger of graph_tuples,
+// graph_nodes and document_blocks (issue_head_marks_drop, migration 20261123180100_issue_tree_head), in share mode, for
+// a write of a build that keeps no head rows, before it deletes the issue's mark. So such a write
+// that holds no owner lock of the issue - an issue's create - waits for a fill of the issue that
+// runs and then deletes the mark the fill committed, while the fill waits for nothing that write, or
+// any other writer of the issue, holds: a writer of the issue holds the owner lock, which the fill
+// takes first, and no writer takes this lock but the trigger, which takes it last. Two such writes
+// of one issue share it and never wait for each other on it. The migration spells the value.
+const HeadFillLockNamespace int32 = 0x48454144
+
+// LockHeadFill takes the head fill's lock of the issue key (HeadFillLockNamespace) in exclusive
+// mode in q's transaction, until it ends. The fill takes it right after the issue's owner lock,
+// which it tries rather than waits for (TryLockOwners).
+func LockHeadFill(ctx context.Context, q OwnerLocker, key string) error {
+	rows, err := q.Query(ctx, `select pg_advisory_xact_lock($1, hashtext($2::text))`, HeadFillLockNamespace, IssueOwner(key).LockKey())
+	if err != nil {
+		return fmt.Errorf("lock the head fill of issue %s: %w", key, err)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("lock the head fill of issue %s: %w", key, err)
+	}
+	return nil
+}
 
 // OwnerLockGateNamespace and OwnerLockGateKey are the two keys of the owner lock gate ("OWNG", 0),
 // a transaction advisory lock that migration 20261115200014_owner_lock_legacy_gate's functions take
@@ -67,12 +97,12 @@ const OwnerLockProtocol = 1
 //
 // OwnerLockMarkWindow covers an earlier build's boot from its dashboard publish, the arrival its
 // boot makes first, to its registration, which then keeps it in the fleet. Every step of that
-// boot is bounded at 30 to 60 seconds and its admission at 20, but SeedRepoProjects is not, so the
-// mark holds an hour; an earlier build whose boot takes longer than that from its publish to its
-// registration is not in the fleet from the hour's end until it registers. The migration stamps
-// the mark too, at the newest dashboard_builds row an earlier build wrote when that is within the
-// hour (it spells the hour again), so an earlier boot whose publish came before the migration is
-// covered as one after it is.
+// boot is bounded at 30 to 60 seconds and its admission at 20, but the boot seed an earlier build
+// runs is not, so the mark holds an hour; an earlier build whose boot takes longer than that from
+// its publish to its registration is not in the fleet from the hour's end until it registers. The
+// migration stamps the mark too, at the newest dashboard_builds row an earlier build wrote when
+// that is within the hour (it spells the hour again), so an earlier boot whose publish came before
+// the migration is covered as one after it is.
 var (
 	OwnerLockLegacyWindow = 10 * time.Minute
 	OwnerLockMarkWindow   = time.Hour

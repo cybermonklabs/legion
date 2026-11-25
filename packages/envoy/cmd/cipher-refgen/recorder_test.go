@@ -1,5 +1,9 @@
 package main
 
+//ci:reads packages/envoy/internal/cipher/api/*.go !**/*_test.go TestARefusalIsWrittenOnlyThroughARegisteredWriter checkRefusalWrites(repo root) parses it
+//ci:reads packages/envoy/internal/cipher/approval/*.go !**/*_test.go TestARefusalIsWrittenOnlyThroughARegisteredWriter checkRefusalWrites(repo root) parses it
+//ci:reads packages/envoy/internal/cipher/proxy/*.go !**/*_test.go TestARefusalIsWrittenOnlyThroughARegisteredWriter checkRefusalWrites(repo root) parses it
+
 import (
 	"fmt"
 	"maps"

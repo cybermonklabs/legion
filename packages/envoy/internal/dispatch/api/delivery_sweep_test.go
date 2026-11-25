@@ -143,6 +143,7 @@ var sweepRoutes = map[string]sweepRoute{
 // drops if the first frame did land; a second pass sends nothing more, and the dead sender's late
 // outcome changes nothing.
 func TestTheDeliverySweepFinishesEveryDeliveringRouteOnce(t *testing.T) {
+	t.Parallel()
 	for name, route := range sweepRoutes {
 		t.Run(name, func(t *testing.T) {
 			listener := newHoldingListener(t)
@@ -267,6 +268,7 @@ func TestTheDeliverySweepFinishesEveryDeliveringRouteOnce(t *testing.T) {
 // connection while a mention is still being sent leaves that send to finish, and its attempt
 // settles as what the listener answered rather than as cut off or pending.
 func TestACommentsMentionFinishesWhenItsClientGivesUp(t *testing.T) {
+	t.Parallel()
 	for name, path := range map[string]func(issue, document string) string{
 		"an issue comment":   sweepRoutes["a comment's mention"].path,
 		"a document comment": sweepRoutes["a document comment's mention"].path,
@@ -344,6 +346,7 @@ func TestACommentsMentionFinishesWhenItsClientGivesUp(t *testing.T) {
 // later retry overtook, one opened inside the last minute that its writer has not claimed yet, and
 // one past the window a repeat is recognised in are each left alone.
 func TestTheDeliverySweepLeavesWhatIsNotOwed(t *testing.T) {
+	t.Parallel()
 	listener, sends := newBroadcastListener(t, agentSessions)
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 	author, err := json.Marshal(model.Actor{Kind: "user", ID: "alice"})
@@ -391,6 +394,7 @@ func TestTheDeliverySweepLeavesWhatIsNotOwed(t *testing.T) {
 // The maintenance loop's pass is what runs the sweep: started as cmd/dispatch starts it, with the
 // server's resume, it sends what a dead process owed without anybody asking.
 func TestTheMaintenanceLoopResumesOwedDeliveries(t *testing.T) {
+	t.Parallel()
 	listener, sends := newBroadcastListener(t, agentSessions)
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 	author, err := json.Marshal(model.Actor{Kind: "user", ID: "alice"})
@@ -558,16 +562,17 @@ func (rig sweepRig) strandMentionAttempts(rows pgx.Rows, ago string, mentioned b
 
 // INFRA-258, INFRA-448. The sweep never sticks on an attempt nothing can send. A closed issue is
 // no longer one of those: every sender takes a delivery there (lockIssue,
-// lockedCommentForDelivery), so the attempts a dead process left on a closed issue - a message's,
-// a keyed send with no attempt at all, a comment mention's - are sent like any other, each under
-// its own attempt number. What nothing can send is a mention attempt whose comment no longer
-// holds its mention, settled failed with that cause and the receipt its row owes instead of being
-// picked again on every pass, and one whose document is no longer a project's, which the pass
-// reads with its own cause (undeliverableDocumentGone) and keeps out of what it sends. However
-// many of either there are, they never crowd what can be sent out of a pass's batch: a batch's
-// worth and one more of each cause, all older than the closed issue's three sendable attempts. A
-// second pass changes nothing.
+// lockedCommentAllowingClosed), so the attempts a dead process left on a closed issue - a
+// message's, a keyed send with no attempt at all, a comment mention's - are sent like any other,
+// each under its own attempt number. What nothing can send is a mention attempt whose comment no
+// longer holds its mention, settled failed with that cause and the receipt its row owes instead
+// of being picked again on every pass, and one whose document is no longer a project's, which the
+// pass reads with its own cause (undeliverableDocumentGone) and keeps out of what it sends.
+// However many of either there are, they never crowd what can be sent out of a pass's batch: a
+// batch's worth and one more of each cause, all older than the closed issue's three sendable
+// attempts. A second pass changes nothing.
 func TestTheDeliverySweepSettlesWhatItCannotSend(t *testing.T) {
+	t.Parallel()
 	listener, sends := newBroadcastListener(t, agentSessions)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 	rig := sweepRig{t: t, database: database}
@@ -683,6 +688,7 @@ func TestTheDeliverySweepSettlesWhatItCannotSend(t *testing.T) {
 // retry's to answer, and its sender settles it superseded once its own send has landed
 // (supersedeOvertakenAttempts); a message's is left as it stands.
 func TestTheDeliverySweepSendsTheAttemptItFoundOwed(t *testing.T) {
+	t.Parallel()
 	t.Run("a comment's mention", func(t *testing.T) {
 		listener, sends := newBroadcastListener(t, agentSessions)
 		handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
@@ -772,6 +778,7 @@ func TestTheDeliverySweepSendsTheAttemptItFoundOwed(t *testing.T) {
 // whatever its indexes: the assertion is that the index serves the query, as the custom plan a
 // statement's first runs get and as the generic plan Postgres may cache for it afterwards.
 func TestTheSweepsKeyedSendReadUsesItsPartialIndex(t *testing.T) {
+	t.Parallel()
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -817,6 +824,7 @@ func TestTheSweepsKeyedSendReadUsesItsPartialIndex(t *testing.T) {
 // holding no transaction id. The test holds the lock and requires exactly that, then lets the
 // settle through and requires the attempt settled failed.
 func TestTheSweepSettlesAnUndeliverableMentionBehindItsOwnersLockHoldingNoTransactionID(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	rig := sweepRig{t: t, database: database}
 	issue := createTestIssue(t, handler, "STUCK", "A mention that is gone")

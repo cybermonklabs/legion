@@ -129,6 +129,7 @@ func seedUploadedDocument(t *testing.T, handler http.Handler, issueKey, name, ma
 
 // A token that matches the live document is taken, and the version is written.
 func TestUploadReplacingADocumentTakesTheBaseItNames(t *testing.T) {
+	t.Parallel()
 	handler, database := uploadBaseHandler(t)
 	issue := createArtifactIssue(t, handler)
 	artifactID := seedUploadedDocument(t, handler, issue.Key, "notes.md", "# Notes\n\nbefore\n")
@@ -159,6 +160,7 @@ func TestUploadReplacingADocumentTakesTheBaseItNames(t *testing.T) {
 // `precondition`, and one whose field is not the JSON object that token is written as is refused
 // naming the field.
 func TestMultipartUploadNamesItsBaseInItsForm(t *testing.T) {
+	t.Parallel()
 	handler, database := uploadBaseHandler(t)
 	issue := createArtifactIssue(t, handler)
 	artifactID := seedUploadedDocument(t, handler, issue.Key, "notes.md", "# Notes\n\nbefore\n")
@@ -190,6 +192,7 @@ func TestMultipartUploadNamesItsBaseInItsForm(t *testing.T) {
 // misspelled key cannot do is pass as the key it misspells: a precondition left naming nothing is
 // refused by its own shape, in a form field as in a body, and that upload writes nothing.
 func TestAMemberNeitherUploadShapeDeclaresIsIgnoredAndAMisspelledTokenIsRefused(t *testing.T) {
+	t.Parallel()
 	handler, database := uploadBaseHandler(t)
 	issue := createArtifactIssue(t, handler)
 	artifactID := seedUploadedDocument(t, handler, issue.Key, "notes.md", "# Notes\n\nbefore\n")
@@ -253,6 +256,7 @@ func TestAMemberNeitherUploadShapeDeclaresIsIgnoredAndAMisspelledTokenIsRefused(
 // `artifact` has no flag for one (INFRA-4980). This is the control of the no-token replacement
 // below: a token that is named is still checked, inside the write's lock, and refused 409.
 func TestUploadNamingABaseBehindTheDocumentIsRefusedAndWritesNothing(t *testing.T) {
+	t.Parallel()
 	handler, database := uploadBaseHandler(t)
 	issue := createArtifactIssue(t, handler)
 	artifactID := seedUploadedDocument(t, handler, issue.Key, "notes.md", "# Notes\n\nbefore\n")
@@ -417,6 +421,7 @@ func TestUploadReplacingADocumentWithNoTokenIsTakenCountedAndLogged(t *testing.T
 
 // A first upload replaces no version, so it names no token.
 func TestFirstUploadOfANameNoArtifactHoldsNeedsNoToken(t *testing.T) {
+	t.Parallel()
 	handler, _ := uploadBaseHandler(t)
 	issue := createArtifactIssue(t, handler)
 
@@ -440,6 +445,7 @@ func TestFirstUploadOfANameNoArtifactHoldsNeedsNoToken(t *testing.T) {
 // caller's belief about what it is replacing is false, which is a failed precondition, and
 // nothing is written.
 func TestFirstUploadNamingABaseIsRefused(t *testing.T) {
+	t.Parallel()
 	handler, database := uploadBaseHandler(t)
 	issue := createArtifactIssue(t, handler)
 	// The issue's create writes its spec and, for an issue born converted, the documents of its
@@ -506,6 +512,7 @@ func issueArtifactIDs(t *testing.T, database *store.Store, issueKey string) []st
 // A file holds no document tree and so no token, so a token on one guards nothing: it is refused
 // rather than taken and dropped, since the caller believes its write was conditional.
 func TestFileUploadNamingABaseIsRefused(t *testing.T) {
+	t.Parallel()
 	handler, _ := uploadBaseHandler(t)
 	issue := createArtifactIssue(t, handler)
 	path := "/api/v1/issues/" + issue.Key + "/artifacts"
@@ -523,6 +530,7 @@ func TestFileUploadNamingABaseIsRefused(t *testing.T) {
 
 // A file is not a document: it is replaced naming no token.
 func TestFileUploadNeedsNoBase(t *testing.T) {
+	t.Parallel()
 	handler, _ := uploadBaseHandler(t)
 	issue := createArtifactIssue(t, handler)
 	path := "/api/v1/issues/" + issue.Key + "/artifacts"
@@ -547,6 +555,7 @@ func TestFileUploadNeedsNoBase(t *testing.T) {
 // so no caller could name one for it, and the upload is the only way to repair it: it is taken
 // as it is.
 func TestRepairingUploadNeedsNoToken(t *testing.T) {
+	t.Parallel()
 	for _, test := range outsideSchemaCorruptions {
 		t.Run(test.Name, func(t *testing.T) {
 			handler, database, deps := newTestServer(t, testServerOptions{})
@@ -570,6 +579,7 @@ func TestRepairingUploadNeedsNoToken(t *testing.T) {
 // on it has named a token the document has never had: it is refused with a sentence of its own,
 // nothing is written, and the repair that names none is taken after it.
 func TestRepairingUploadNamingABaseIsRefused(t *testing.T) {
+	t.Parallel()
 	for _, test := range outsideSchemaCorruptions {
 		t.Run(test.Name, func(t *testing.T) {
 			handler, database, deps := newTestServer(t, testServerOptions{})
@@ -614,6 +624,7 @@ func TestRepairingUploadNamingABaseIsRefused(t *testing.T) {
 // sends one (INFRA-4980). They are driven in sequence through the one handler, which is that
 // outcome.
 func TestSecondUploadOfARacedNewNameIsAReplacement(t *testing.T) {
+	t.Parallel()
 	registry := metrics.New()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour, metrics: registry})
 	issue := createArtifactIssue(t, handler)
@@ -642,6 +653,7 @@ func TestSecondUploadOfARacedNewNameIsAReplacement(t *testing.T) {
 // An upload replaces the whole document, so a blocks precondition says nothing about what it
 // replaces and is refused.
 func TestUploadNamingBlocksAsItsBaseIsRefused(t *testing.T) {
+	t.Parallel()
 	handler, database := uploadBaseHandler(t)
 	issue := createArtifactIssue(t, handler)
 	artifactID := seedUploadedDocument(t, handler, issue.Key, "notes.md", "# Notes\n\nbefore\n")
@@ -672,6 +684,7 @@ func TestUploadNamingBlocksAsItsBaseIsRefused(t *testing.T) {
 // names is behind the document by then: the version the client named is the one its own call
 // replaced, and the repeat is that same call, not a second one.
 func TestRepeatedUploadUnderOneKeyIsAnsweredByItsFirstCall(t *testing.T) {
+	t.Parallel()
 	handler, database := uploadBaseHandler(t)
 	issue := createArtifactIssue(t, handler)
 	artifactID := seedUploadedDocument(t, handler, issue.Key, "notes.md", "# Notes\n\nbefore\n")
@@ -717,6 +730,7 @@ func projectUploadBaseHandler(t *testing.T) (http.Handler, *store.Store) {
 // PRECONDITION_FAILED naming the token and the version number the document stands at, with
 // nothing written.
 func TestUploadReplacingAProjectDocumentHoldsTheBaseItNames(t *testing.T) {
+	t.Parallel()
 	const target = "/api/v1/projects/TEST/artifacts"
 	for _, test := range []struct {
 		name   string
@@ -798,6 +812,7 @@ func TestUploadReplacingAProjectDocumentHoldsTheBaseItNames(t *testing.T) {
 // before the lock would have read the document as it stood while the first upload was still
 // uncommitted, found the token live, and taken the second upload, losing the first's text.
 func TestConcurrentUploadsOfOneBaseLandTheFirstAndRefuseTheSecond(t *testing.T) {
+	t.Parallel()
 	f := newUploadRaceFixture(t)
 	base := uploadBase(t, f.handler, f.document.ID)
 	ctx, cancel := context.WithCancel(context.Background())

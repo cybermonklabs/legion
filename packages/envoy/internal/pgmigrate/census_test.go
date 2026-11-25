@@ -75,11 +75,11 @@ func TestTouchedTablesReadsVerticalTabAsSpace(t *testing.T) {
 	}
 }
 
-// Statements reads a migration as TouchedTables reads it. A statement inside a comment is no
+// CensusStatements reads a migration as TouchedTables reads it. A statement inside a comment is no
 // statement, a string literal and a function's body are emptied, so a table the body names is
 // named by no statement, and a DO block's body is read as statements of its own. A semicolon
 // inside a literal, a function's body or a quoted name ends no statement.
-func TestStatementsReadsAMigrationAsTouchedTablesReadsIt(t *testing.T) {
+func TestCensusStatementsReadsAMigrationAsTouchedTablesReadsIt(t *testing.T) {
 	sql := "-- drop table commented_out;\n" +
 		"create function f() returns void language sql as $fn$ select 1 from artifact_versions; $fn$;\n" +
 		"insert into notes (body) values ('a; b');\n" +
@@ -93,8 +93,8 @@ func TestStatementsReadsAMigrationAsTouchedTablesReadsIt(t *testing.T) {
 		"end",
 		"alter table things add column x text",
 	}
-	if got := Statements(sql); !slices.Equal(got, want) {
-		t.Errorf("Statements = %q, want %q", got, want)
+	if got := CensusStatements(sql); !slices.Equal(got, want) {
+		t.Errorf("CensusStatements = %q, want %q", got, want)
 	}
 	var touched []string
 	for _, statement := range want {

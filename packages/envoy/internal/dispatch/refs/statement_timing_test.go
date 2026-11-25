@@ -426,7 +426,7 @@ func linksIntoIssue(issue string) string {
 }
 
 // closureBudgetStatement is the statement the route's budget sends before each statement of the
-// references read (setStatementBudget, api/references.go; api imports this package, so the text
+// references read (setStatementBudget, api/references_budget.go; api imports this package, so the text
 // after ClosureTag is written again here), with the whole of the read's 2 s bound. The route sets
 // what is left of the bound, a value that changes from one statement to the next but not what a
 // statement reads: the earlier builds Job read the whole read with these statements at -3.3% and

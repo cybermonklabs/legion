@@ -8,7 +8,13 @@ package main
 //	DISPATCH_DEFECTS_SERVER_BINARY=$TMPDIR/base-dispatch go test -tags basebuild ./cmd/dispatch/ -run '^TestTheThreeDefectsOfTheFirstFilingAreGoneFromTheModel$' -count=1 -v
 //
 // Whatever binary that names, the test asserts all three defects, so a run with the variable set
-// passes only for a binary in which all three are gone.
+// passes only for a binary in which all three are gone. It passes only for a build of the commit
+// this checkout stands on, too, which reports that commit on /healthz:
+//
+//	go build -ldflags "-X main.buildCommit=$(git rev-parse HEAD)" -o $TMPDIR/head-dispatch ./cmd/dispatch
+//
+// A binary whose /healthz names another commit, the base release among them, still has all three
+// defects checked, and then fails the run.
 
 import (
 	"context"
@@ -19,6 +25,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -292,6 +299,20 @@ func defectsServerCommit(t *testing.T, process *dispatchProcess) string {
 	return *health.Commit
 }
 
+// defectsCheckoutCommit is the commit this checkout stands on, as `git rev-parse HEAD` reads it in
+// the test's directory, as the e2e drivers read theirs (decisions-gone.sh): the commit the build
+// DISPATCH_DEFECTS_SERVER_BINARY names must report. A checkout git cannot read fails the test, which
+// then records no pass.
+func defectsCheckoutCommit(t *testing.T) string {
+	t.Helper()
+	out, err := exec.Command("git", "rev-parse", "--verify", "--quiet", "HEAD").Output()
+	commit := strings.TrimSpace(string(out))
+	if err != nil || commit == "" {
+		t.Fatalf("reading the commit this checkout stands on failed: git rev-parse --verify HEAD in the test's directory: %v", err)
+	}
+	return commit
+}
+
 // defectsDatabase creates an empty database on the test server for the build
 // DISPATCH_DEFECTS_SERVER_BINARY names alone, as censusDatabase does, and answers its URL: that
 // build runs its own migrations on it, which a clone of this build's migrated template would
@@ -343,7 +364,10 @@ func defectsDatabase(t *testing.T) string {
 // accepts: the spec with the ask bob answers. The test prints the commit the binary's /healthz
 // names and asserts all three defects as above, so a binary of this head passes and the base
 // release fails at the first assertion, printing defect 1's words, for the base answers an empty
-// list for an issue with no decisions.md.
+// list for an issue with no decisions.md. A binary whose /healthz names a commit other than the
+// one this checkout stands on (defectsCheckoutCommit) is held to all three defects all the same,
+// and the run then fails, saying which commit it checked and which it did not, so it records no
+// pass for this checkout: a build of another commit never stands in for this head's.
 func TestTheThreeDefectsOfTheFirstFilingAreGoneFromTheModel(t *testing.T) {
 	ctx := context.Background()
 	base := strings.TrimSpace(os.Getenv(defectsServerBinaryEnv))
@@ -361,7 +385,19 @@ func TestTheThreeDefectsOfTheFirstFilingAreGoneFromTheModel(t *testing.T) {
 	process := startDispatchProcessWith(t, databaseURL, options)
 	process.waitHealthy(t)
 	if base != "" {
-		t.Logf("the build %s that %s names is stamped with the commit %q (its /healthz)", base, defectsServerBinaryEnv, defectsServerCommit(t, process))
+		checkout := defectsCheckoutCommit(t)
+		built := defectsServerCommit(t, process)
+		t.Logf("the build %s that %s names is stamped with the commit %q (its /healthz), and this checkout stands on %s", base, defectsServerBinaryEnv, built, checkout)
+		if built != checkout {
+			// Deferred, so a defect's failure, which ends the run, still prints first, and a run in
+			// which all three hold fails here once they have. The closure makes the failure name
+			// this line rather than the runtime's frame that runs the deferred call after a Fatalf.
+			defer func() {
+				t.Errorf("the commit rule: the run checked the build %s, a build of the commit %q, and not of %s, the commit this checkout's HEAD stands on: "+
+					"it records no pass. Build this checkout with -ldflags \"-X main.buildCommit=%s\" and name that build in %s",
+					base, built, checkout, checkout, defectsServerBinaryEnv)
+			}()
+		}
 	}
 	database, err := pgx.Connect(ctx, databaseURL)
 	if err != nil {

@@ -97,6 +97,7 @@ var seededLensKinds = []string{
 // holds no lens and no tuple of it after. The schema version the store's type nodes build is one
 // value before and after.
 func TestLensKindCatalogueIsSeededWithItsSources(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	versionBefore := storeSchemaVersion(t, ctx, database)

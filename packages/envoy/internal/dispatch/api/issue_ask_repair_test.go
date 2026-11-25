@@ -258,6 +258,7 @@ func captureLogs(t *testing.T) *storetest.LockedLog {
 // stores, dated when the repair ran. A second repair changes nothing, and a later reopen restores
 // them.
 func TestRepairWithdrawsTheOpenAsksOfAnIssueClosedWithoutWithdrawing(t *testing.T) {
+	t.Parallel()
 	f := newRepairFixture(t)
 	issue := createInteractionIssue(t, f.handler, "TEST", "Closed by an older release", closeDecision)
 	awaitIndexedAskBlock(t, f.handler, issue.PrimaryArtifactID, "close-decision", "Ship it?")
@@ -345,6 +346,7 @@ func TestRepairWithdrawsTheOpenAsksOfAnIssueClosedWithoutWithdrawing(t *testing.
 
 // Two repairs started together serialise on the issue's row: each ask is withdrawn once.
 func TestTwoRepairsAtOnceWithdrawEachAskOnce(t *testing.T) {
+	t.Parallel()
 	f := newRepairFixture(t)
 	issue := createInteractionIssue(t, f.handler, "TEST", "Repaired twice at once", closeDecision)
 	awaitIndexedAskBlock(t, f.handler, issue.PrimaryArtifactID, "close-decision", "Ship it?")
@@ -420,6 +422,7 @@ func TestRepairSkipsAClosedIssueWithNoClosingEvent(t *testing.T) {
 // restoration - gets them back, credited to the actor of the event that reopened it, not to a
 // later editor.
 func TestRepairRestoresTheWithdrawnAsksOfAnIssueReopenedWithoutRestoring(t *testing.T) {
+	t.Parallel()
 	f := newRepairFixture(t)
 	issue := createInteractionIssue(t, f.handler, "TEST", "Reopened by an older release", closeDecision)
 	awaitIndexedAskBlock(t, f.handler, issue.PrimaryArtifactID, "close-decision", "Ship it?")
@@ -498,6 +501,7 @@ func TestRepairRestoresTheWithdrawnAsksOfAnIssueReopenedWithoutRestoring(t *test
 // settlement is not touched. The sweep writes the state only while another build serves, for that
 // build's pages (docs.WriteIssueAskStates), so the test registers a process of each of two builds.
 func TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess(t *testing.T) {
+	t.Parallel()
 	f := newRepairFixture(t)
 	registerTwoBuilds(t, f.database)
 	swept := createInteractionIssue(t, f.handler, "TEST", "Written after its close", "Context\n")
@@ -601,6 +605,7 @@ func TestRepairSweepsAClosedConvertedIssueWhoseRoomOwesASettlement(t *testing.T)
 // it is swept. The sweep writes only while another build serves (docs.WriteIssueAskStates), so
 // the test registers a process of each of two builds.
 func TestAnIntervalRepairSweepsOnlyTheDocumentsMarkedSinceItsLastPass(t *testing.T) {
+	t.Parallel()
 	f := newRepairFixture(t)
 	registerTwoBuilds(t, f.database)
 	stale := createInteractionIssue(t, f.handler, "TEST", "Marked before the bound", "Context\n")
@@ -662,6 +667,7 @@ func TestAnIntervalRepairSweepsOnlyTheDocumentsMarkedSinceItsLastPass(t *testing
 // the sweep write block states only while another build serves (docs.WriteIssueAskStates), so the
 // test registers a process of each of two builds.
 func TestARepairThatChangesNothingAppendsNoUpdateAndMarksNoDocument(t *testing.T) {
+	t.Parallel()
 	// An hour, so the only settlement is the one the close through PATCH runs.
 	f := newRepairFixtureSettlingAfter(t, time.Hour)
 	registerTwoBuilds(t, f.database)
@@ -765,6 +771,7 @@ func (d *issueAskFailingDocs) takeWrites() map[string]int {
 // its block states, which it does only while another build serves (docs.WriteIssueAskStates), so
 // the test registers a process of each of two builds.
 func TestARepairPassThatFailsOneIssueStillMovesTheWindowAndRetriesIt(t *testing.T) {
+	t.Parallel()
 	// An hour, so the only settlement is the one each close through PATCH runs.
 	f := newRepairFixtureSettlingAfter(t, time.Hour)
 	registerTwoBuilds(t, f.database)
@@ -830,6 +837,7 @@ func TestARepairPassThatFailsOneIssueStillMovesTheWindowAndRetriesIt(t *testing.
 // new version with nothing owed, the ask is still withdrawn with its one ask.resolved, and every
 // block of the document resolves by its dispatch://KEY/spec#b- reference.
 func TestTheBlockIndexAfterTheBootRepairIndexesAClosedIssuesDocument(t *testing.T) {
+	t.Parallel()
 	f := newRepairFixture(t)
 	registerTwoBuilds(t, f.database)
 	issue := createInteractionIssue(t, f.handler, "TEST", "Closed by an older release", closeDecision)

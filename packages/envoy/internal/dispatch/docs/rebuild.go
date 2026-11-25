@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -144,9 +147,14 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	}
 	// The owner's lock before the room lock the write below takes, as every writer that takes both
 	// does (lockDocumentRoom). Held, it also keeps the open asks the replacement must keep, and
-	// the approval request the version moves, from changing under this transaction.
+	// the approval request the version moves, from changing under this transaction. A retired
+	// document, which takes no new text, read beside that lock, is refused (retiredWriteRefusal):
+	// its history is not replaced and no version is written.
 	owner, open, err := lockArtifactOwner(ctx, tx, artifactID)
 	if err != nil {
+		return RebuildReport{}, VersionResult{}, err
+	}
+	if err := retiredWriteRefusal(ctx, tx, artifactID, owner); err != nil {
 		return RebuildReport{}, VersionResult{}, err
 	}
 	latest, err := latestVersion(ctx, tx, artifactID)
@@ -226,8 +234,8 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	// (anotherBuildServes), as the close writes it: while another build serves, each block gets the
 	// attributes that build's pages read its state from, from the rows; once the fleet is one build,
 	// each gets the ones a version keeps, which the release before's readers of a stored version
-	// read its state from, written from its ask's node, and none of the rest of the seven
-	// (readIssueAskStateWrites, keptAskState, onItsNode). The ask
+	// read its state from, written from its ask's node, or from its row where the node is behind it,
+	// and none of the rest of the seven (readIssueAskStateWrites, keptAskState, keptFromItsNode). The ask
 	// rows are taken before RebuildTx takes the document's advisory lock, the order the close's own
 	// write takes them in (WriteIssueAskStates). Once this transaction commits, the rebuilt document
 	// reads as the issue's other documents do. In an issue room the sweep is written into the whole
@@ -235,6 +243,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	var closedStates *issueAskStateWrites
 	if !open {
 		// kept for one release: roll-window-attributes
+		// kept for one release: stored-ask-state
 		twoBuilds, err := anotherBuildServes(ctx, tx)
 		if err != nil {
 			return RebuildReport{}, VersionResult{}, err
@@ -311,6 +320,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 		if err := owed.exec(ctx, tx); err != nil {
 			return RebuildReport{}, VersionResult{}, err
 		}
+		// kept for one release: roll-window-attributes
 		logUnindexedAskBlocks(*owner.IssueKey, closedStates.marked)
 	}
 	if markdown == nil || canonical == latest.markdown {
@@ -322,9 +332,13 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	if err != nil {
 		return RebuildReport{}, VersionResult{}, err
 	}
+	// A rebuild's route marks its write (WithDeferredBlockIndex): nothing after this version reads
+	// its block index or its record, so a version above deferBlockIndexBlocks leaves its blocks to
+	// the block-index reconciliation (versionWrite.deferLarge).
 	written, err := s.writeVersionTx(ctx, tx, artifactID, renderedTree{tree: tree, markdown: canonical, offsets: offsets}, actor, &versionWrite{
-		authors: actorSlice(capture.authors),
-		capture: &capture,
+		authors:    actorSlice(capture.authors),
+		capture:    &capture,
+		deferLarge: deferredBlockIndex(ctx),
 	})
 	if err != nil {
 		return RebuildReport{}, VersionResult{}, err
@@ -397,14 +411,66 @@ func liveRebuildRefusal(ctx context.Context, tx pgx.Tx, artifactID, cause, next 
 		ErrDocumentLive, artifactID, cause, latest, next)
 }
 
-// savedVersionNumber is the number of artifactID's latest saved version, which a refused rebuild
-// names: a rebuild discards every edit made after it.
-func savedVersionNumber(ctx context.Context, tx pgx.Tx, artifactID string) (int, error) {
+// savedVersionNumber is the number of artifactID's latest saved version, read in q: the version a
+// refused rebuild names, since a rebuild discards every edit made after it, and the one a refused
+// write into a retired document names (RetiredDocumentError). A retired document takes no new
+// version, so its number stays the latest, and the version's own address
+// (GET /api/v1/artifacts/{id}/versions/{number}) answers a read of it.
+func savedVersionNumber(ctx context.Context, q Queryer, artifactID string) (int, error) {
 	var number int
-	if err := tx.QueryRow(ctx, `
+	if err := q.QueryRow(ctx, `
 		select coalesce(max(number), 0) from artifact_versions where artifact_id = $1
 	`, artifactID).Scan(&number); err != nil {
 		return 0, fmt.Errorf("read latest document version number: %w", err)
 	}
 	return number, nil
+}
+
+// joinedSeeds is the one tree an issue room's seed holds, every fragment's in the room's order
+// (joinFragments), a fragment that holds nothing read as no block: what the rules that read the
+// room's ask blocks read.
+func joinedSeeds(seeds []*pmdoc.Node) *pmdoc.Node {
+	parts := make([]*pmdoc.Node, len(seeds))
+	for index, seed := range seeds {
+		parts[index] = seed
+		if seed == nil {
+			parts[index] = &pmdoc.Node{Type: "doc"}
+		}
+	}
+	joined, _ := joinFragments(parts)
+	return joined
+}
+
+// encodeDocumentSeed writes trees, each into the fragment of fragments beside it, and margin into a
+// fresh document and returns its one durable update, as encodeDocumentTreeHolding does for a tree
+// alone: an issue room's seed carries every fragment of the room. A fragment whose tree is nil
+// holds nothing, and is left so. held is each live tree the seed is cut from, whose elements the
+// document already holds (pmdoc.UpdateHolding), so an element a newer build wrote there is put
+// back rather than refused.
+func encodeDocumentSeed(fragments []string, trees, held []*pmdoc.Node, margin map[string]any) ([]byte, error) {
+	doc := crdt.New()
+	written := make([]*crdt.YXmlFragment, len(fragments))
+	for index, name := range fragments {
+		if trees[index] != nil {
+			written[index] = doc.GetXmlFragment(name)
+		}
+	}
+	marks := doc.GetMap(marksMapName)
+	if err := doc.TransactE(func(transaction *crdt.Transaction) error {
+		for index, fragment := range written {
+			if fragment == nil {
+				continue
+			}
+			if err := pmdoc.UpdateHolding(transaction, fragment, trees[index], held[index]); err != nil {
+				return err
+			}
+		}
+		for _, key := range slices.Sorted(maps.Keys(margin)) {
+			marks.Set(transaction, key, margin[key])
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return crdt.EncodeStateAsUpdateV1(doc, nil), nil
 }

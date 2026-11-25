@@ -34,7 +34,7 @@ fi
 # and for the last of them to this step's own time. No install here may reach the
 # seconds .github/scripts/ci-tools-proof.sh holds every timed install to, which
 # this step reads from that script rather than writing the number again: the rig holds
-# the sixteen corrupted cases below to that same bound, and a bound written in two
+# the eighteen corrupted cases below to that same bound, and a bound written in two
 # places is a bound that drifts, with the job then refusing two different things.
 # INSTALL_BOUND in that script is where the number lives, and the comment on it says
 # why it is the number it is. A window also names the install that hung.

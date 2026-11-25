@@ -1,7 +1,7 @@
-import { type ReactNode, useCallback, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
-import type { DecisionEntry } from "../../api/types";
+import type { DecisionEntry, DisplayTree } from "../../api/types";
 import {
   card,
   decisionUnsureBorder,
@@ -13,7 +13,12 @@ import {
   textMutedOnSelectedCard,
   textPrimaryOnSurface,
 } from "../../theme/classes";
-import { decisionName } from "../issue/decision-text";
+import {
+  decisionName,
+  holdsUnsureParagraph,
+  plainParagraph,
+  unsureWords,
+} from "../issue/decision-text";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { buildReferencePath, parseDispatchReference } from "../refs/routes";
 import { regionOrigin } from "./ThreadList";
@@ -23,6 +28,25 @@ import type { DecisionMarginItem, MarkPlacement } from "./useMarginItems";
  *  the Decisions tab read it (`decisionName`), a heading by its words and not by its `#`. */
 export function entryHeading(decision: DecisionEntry): string {
   return decision.question ?? decisionName(decision.text_tree, decision.text);
+}
+
+/** What a card previews of a decision: its words, and after them the doubt its node holds
+ *  (`unsureWords`) where those words hold no `Unsure:` paragraph, as the paragraph it was moved
+ *  from ran on in the preview. */
+function previewOf(decision: DecisionEntry): { markdown: string; tree: DisplayTree | undefined } {
+  const { text, text_tree: tree } = decision;
+  const doubt = unsureWords(decision);
+  if (doubt === undefined || holdsUnsureParagraph(tree, text)) {
+    return { markdown: text, tree };
+  }
+  const content = tree?.content;
+  return {
+    markdown: `${text}\n\n${doubt}`,
+    tree:
+      tree === undefined || !Array.isArray(content)
+        ? tree
+        : { ...tree, content: [...(content as DisplayTree[]), plainParagraph(doubt)] },
+  };
 }
 
 /** One decision beside a spec block it shaped: whose decision it is, whether its maker was
@@ -44,6 +68,8 @@ export function DecisionCard({
   const active = selected || hovered;
   const heading = entryHeading(decision);
   const unsure = decision.uncertainty === "high";
+  // Read once per decision, so a repaint of the card repaints no preview it already drew.
+  const preview = useMemo(() => previewOf(decision), [decision]);
   return (
     <article
       aria-current={selected ? "true" : undefined}
@@ -84,8 +110,8 @@ export function DecisionCard({
       <MarkdownPreview
         className={`mt-1 ${textPrimaryOnSurface}`}
         lines={3}
-        markdown={decision.text}
-        tree={decision.text_tree}
+        markdown={preview.markdown}
+        tree={preview.tree}
       />
     </article>
   );

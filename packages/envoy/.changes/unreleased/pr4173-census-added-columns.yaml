@@ -1,0 +1,5 @@
+kind: Fixed
+body: The pre-deploy migration census no longer refuses the bounded writes of a table above its limit because an earlier pending migration only builds a concurrent index of that table, only adds to it nullable columns with no default and no constraint, or only adds, as a catalog-only change, foreign keys that reference it by its primary key, since none of the three changes what the census judges those writes by.
+time: 2026-11-23T22:40:27.000000000Z
+custom:
+    Issue: pr4173

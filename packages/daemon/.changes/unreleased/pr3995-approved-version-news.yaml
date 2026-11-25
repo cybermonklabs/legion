@@ -1,0 +1,108 @@
+kind: Added
+custom:
+  Issue: pr3995
+body: |-
+  When a person approves a new version of a gated document, each worker that holds an affected
+  issue's phase gets a task. The task names the version its phase last took, the new version, the
+  `##` sections, the text outside them by where it stands, and the requirements or checks that
+  changed, and the `dispatch doc-read` command that prints the new version. A `spec` version
+  affects every issue of the tree, and a `criteria` version the root alone. A version that
+  changes only ask blocks, or holds the same text as the version before, sends no task,
+  except at an opening, where the task says that nothing changed. The tree's root architect gets
+  one task that names every issue of the tree and what it is told, an issue whose holder holds a
+  task it has not taken yet named as waiting for that task, and an issue in `accepting` is told
+  through the architect that owns it. That is the issue's own architect while its claim holds its
+  role, else the nearest architect above it whose claim does, else the root's. It gets the issue's
+  news task, which leads with the gate's opening where one is owed, and the root architect's task
+  names it as the one told. The daemon
+  moves no issue and stops no turn: a running worker gets the task between its turns, and news that
+  a worker did not confirm goes with its next start or with the entry sweep. The daemon's own
+  message of what a relaunch ended is not a task the worker has not taken: a task with news takes
+  its place and starts with its sentence.
+
+  A task with news alone never takes the place of a worker's phase task. While the worker is in a
+  turn on its phase task, or owes that task again after a provider error, the news task waits, and
+  a provider error in that turn still sends the phase task again. A task with news alone is not the
+  phase's task either: a worker that holds only a news task is still given its phase task when it
+  comes back ready, when its held phase is retried, and by the repair of a silent worker. A start
+  queued for news alone is not counted as the phase's start, and it does not keep an idle pod from
+  its release. A start of a phase entry carries the news its role is owed, so the task of an entry
+  takes the place of a news task that no turn has taken yet: the worker gets its entry's work and
+  the news in one task, and its entry does not wait behind the news. A start with no entry still
+  waits behind the news task. A root's architect holds a phases row of its entries, so it gets a
+  news task only while its claim was given the entry that row names, as a phase worker does, and
+  otherwise the start of its owed entry carries its summary. A news task tells a member only while
+  the claim it is held for holds that member's
+  phase: an architect's task does not tell a member that the architect signed off while the task
+  waited, and the member's next holder is told instead. If the gate closes and opens again while a
+  holder's news task waits, that task carries the opening, so the holder gets the opening once.
+  After a restart, the daemon sends a news task that no prompt reached the agent with. A turn the
+  agent started by itself does not count as that task's turn. A send whose working-copy adoption
+  or identity mint failed counts as no prompt.
+
+  A turn records as told only what the prompt of that turn carried. A later send can render more
+  of the news, such as an opening the gate owes since, and the turn that starts can still be the
+  earlier prompt's: the turn after a restart, or the late turn of a prompt whose resend Oh My Pi
+  answered busy. That turn records only what the earlier prompt said. An opening is recorded under
+  a number, so a task that carried an opening before the gate closed and opened again does not
+  clear the new opening, and the holder gets a task that tells it. The opened message and the
+  close settle the opening too, so a holder told the opening by message is not sent it again with
+  a later version that changes only ask blocks. What a turn records is that delivery's own
+  credit, and what a
+  holder took is read from the credits that stand: a credit counts only from the version its news
+  started from. So a news task that a newer task replaces while its turn runs, or whose turn ends
+  with no result the daemon waited on, gives back exactly its own news, and anything counted from
+  the version it gave goes with it. A provider error in that turn loses nothing: the next task
+  tells it again. A second confirmation of the same task replaces the first one's credit. What a
+  task told counts only in the run it was told to: when an issue's run starts again (a child set
+  back to todo, an issue moved into another tree, or its tree's root set back to todo), a task
+  sent before that tells the new run nothing, even where its turn starts or ends afterwards, and
+  the new run is told what it is owed. A task's
+  text and the news it records are rendered together, so a root architect's task narrowed to the
+  decisions its tree still owes carries exactly the news its text names. Dispatch's error text and
+  a document's block ids are quoted where a task names them. Dispatch's error text is stored and
+  told as any far side's error text is: cut to 2048 runes, with its whole text in the log.
+
+  The daemon reads the change set from Dispatch (`GET /api/v1/artifacts/{id}/changes`). Against a
+  Dispatch without that route, the task names the two versions and says why it lists no change.
+  Where the record does not know the version a worker last took, the daemon reads it from the
+  document's review history. If Dispatch cannot answer that read, the task says that the version
+  could not be read and why, never that no version was approved before, and the next reconcile
+  reads the history again. While that reconcile is queued, no new task tells the old failure. A
+  task that already tells it keeps it until the worker takes the task, and tells the version the
+  history gives once that read is recorded. A merger's start waits until those reads are recorded,
+  and so does the wake of a released merger for the message that its pull request left the merge
+  queue. At the gate's opening, a holder owed news gets the opening as the first sentence of that
+  task's news, and every other holder gets the opened message, which now says, where the record
+  shows it, that nothing its issue holds changed. Migration `20261119203047_design_news` adds the
+  tables `design_news_told` (with its columns `opening_seq` and `unreached`), `design_changes` and
+  `design_history_unread`, the functions `design_news_known`, `design_news_folded`,
+  `design_news_opening_settled`, `design_news_opening_told`, `design_news_current`,
+  `design_news_credits`, `design_news_openings` and `design_news_told_in`, and the
+  columns `pending_task_deliveries.design_news`, `carried_news`, `carried_ran` and `news_only`.
+
+  A rollback to the release before this one needs no schema restore, but it needs four statements
+  first, because that release refuses an outbox payload member it does not know, its upsert of a
+  pending task keeps the news and the news-only mark this release wrote, and it reads a task queued
+  for news alone as its claim's phase task. Stop this release's daemon, run the four statements
+  that `docs/kubernetes.md` gives in "Rolling back the release that tells a holder of an approved
+  new version", and then start the release before it. The first deletes each start queued for news
+  alone. The second takes `holds` out of each queued design-gates publish. The third deletes each
+  pending task queued for news alone, and the fourth takes the news, and the copy of it a prompt
+  carried, off each other task delivery that is still pending. News that no turn took stays owed in
+  `design_news_told`, so this release sends it again after the roll forward. A confirmed task whose
+  turn's result had not come holds its credit in its own row, so these statements give that credit
+  back, and this release tells that news again after the roll forward. That section also says why
+  each statement is needed.
+
+  While the project is paused, news waits as every task does: a start queued for news alone is held
+  with the other starts, and the resume lets it out through the wake pacing. The reconcile that
+  reads the change set from Dispatch still runs, so the news is recorded when the project resumes,
+  and the entry sweep queues no reconcile until the pause ends. A rollback that also goes past the
+  project pause takes the first two steps of "Rolling back the project pause" while this release
+  still runs, then these four statements, and then that section's three statements.
+
+  A reviewer's task that carries news still ends with the daemon's two sentences of its review
+  round (`Last reviewed commit: …. Review entry: ….`): the news goes before them, and a task of news
+  alone names the round the record holds, the reviewed commit and the entry, so the reviewer reads
+  what changed since the commit it last reviewed, and a review it then submits moves that commit.

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The project of every node, which a read limited to a project depends on. Each object a project
@@ -217,11 +217,11 @@ const (
 // for a comment and a block already (projections), so the project census reads them for these
 // alone. A kind added to objectKinds is read every way from that one list.
 var orphanKindList = func() string {
-	quoted := make([]string, len(objectKinds))
+	kinds := make([]string, len(objectKinds))
 	for index, kind := range objectKinds {
-		quoted[index] = "'" + kind.kind + "'"
+		kinds[index] = kind.kind
 	}
-	return strings.Join(quoted, ", ")
+	return store.QuoteLiterals(kinds)
 }()
 
 // ownLiveStatement is, for the node of a document row a removal can take away, whether the newest
@@ -394,20 +394,25 @@ func writeProjectCensus(w io.Writer, kinds []ProjectKindReport) {
 // a node's project would answer wrongly. An empty answer is every row and every node of every kind
 // complete. The cure is the backfill for a row with no node, a node that is not the row's, or a
 // node naming neither a project nor parties (backfillCure), but for a row that names a party the
-// store refuses, which no writer and no pass of the backfill writes a node for (refusedCure); the
-// erase that removes it for an orphaned node, since no backfill reads a node no row stands behind
-// (`; remove it with: ` and eraseCommand's line); and none for a node that names another project
-// or other parties than its row, since the backfill walks no node naming either and only a person
-// can tell which of the two is wrong (differsCure).
+// store refuses, which no writer and no pass of the backfill writes a node for (refusedCure); none
+// in band for an orphaned node, since no backfill reads a node no row stands behind, unless an
+// older build's removal made it during a two-build roll, whose node this build's block-index tick
+// then states gone (orphanedCure); and none for a node that names another project or
+// other parties than its row, since the backfill walks no node naming either and only a person can
+// tell which of the two is wrong (differsCure).
 func ProjectComplete(ctx context.Context, q graphstore.Queryer) ([]string, error) {
 	return projectIncomplete(ctx, q, nil)
 }
 
-// The cures ProjectComplete ends its lines with, but an orphaned node's, which names its node.
+// The cures ProjectComplete ends its lines with.
 const (
 	backfillCure = "; run envoy-dispatch backfill-graph-store"
 	differsCure  = "; no command cures it: compare the row with its node"
 	refusedCure  = "; no command cures it: the row names a party the store refuses, one empty or holding white space"
+	// orphanedCure: an orphaned node an older build's removal left during a two-build roll is
+	// stated gone by this build's block-index tick (docs/block_index_roll.go:424-436, its sweep of
+	// graphcensus.OrphanedDocumentNodes through StateOrphanedGone); no pass cures any other.
+	orphanedCure = "; no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone"
 )
 
 // projectIncomplete is ProjectComplete's read, of at most limit lines in its order when limit is
@@ -431,7 +436,7 @@ func projectIncomplete(ctx context.Context, q graphstore.Queryer, limit *int) ([
 		line := kind + " " + id + ": " + class
 		switch {
 		case class == classOrphaned:
-			line += "; remove it with: " + eraseCommand(kind, id)
+			line += orphanedCure
 		case class == classDiffers:
 			line += differsCure
 		case refused:
@@ -446,18 +451,3 @@ func projectIncomplete(ctx context.Context, q graphstore.Queryer, limit *int) ([
 	}
 	return incomplete, nil
 }
-
-// eraseCommand is the command line that erases the node kind:id (grapherase.Erase), written as a
-// POSIX shell reads it: the node bare where it holds only characters no shell treats specially,
-// and otherwise in single quotes, each quote in it closed, escaped and opened again. Run as
-// printed, it lists what the erase would remove and the digest its --confirm takes.
-func eraseCommand(kind, id string) string {
-	node := kind + ":" + id
-	if !shellBare.MatchString(node) {
-		node = "'" + strings.ReplaceAll(node, "'", `'\''`) + "'"
-	}
-	return "envoy-dispatch erase --node " + node
-}
-
-// shellBare is a word a POSIX shell passes through unquoted and unchanged.
-var shellBare = regexp.MustCompile(`^[A-Za-z0-9._/:@%+=,-]+$`)

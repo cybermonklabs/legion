@@ -15,6 +15,7 @@ import type {
   RequirementCoverage,
 } from "../../../api/types";
 import { isDecisionEntry } from "../../issue/decision-entries";
+import { type PostDeletion, postDeletion } from "../../refs/post-marks";
 import {
   buildDispatchReference,
   parseDispatchReference,
@@ -25,12 +26,13 @@ import {
   blockIdOfNode,
   decisionNodeChanges,
   decisionNodes,
+  deletedPostIds,
   firstOfEachId,
   inReviewList,
   parentsIn,
 } from "../decision-review";
 import type { IssueTreeReads, NodeChip, TreeAsk, TreeNode } from "../issue-tree";
-import { blockAttributeLabel, type NodeType } from "../page-words";
+import { blockAttributeLabel, coverageNotes, type NodeType } from "../page-words";
 import {
   addDocumentChips,
   answerOf,
@@ -41,6 +43,7 @@ import {
   type Draft,
   deciderOf,
   decisionState,
+  deletedPostLine,
   markKeptAndUnsure,
   plainWords,
   requirementGaps,
@@ -90,6 +93,13 @@ export interface TreeWords extends TreeContext {
   readonly lineWords: (node: Pick<TreeNode, "text" | "tree">) => string;
 }
 
+/** What the author of a comment or a message did to it: deleted it (`postDeletion`), or last
+ *  replaced its body (`editedAt`). */
+export interface PostMarks {
+  readonly deleted: PostDeletion | null;
+  readonly editedAt: string | null;
+}
+
 /** The page's other reads, each row by the tree id of the node it tells about (`treeIdOf`): the
  *  facts the answer does not hold, each row's `dispatch://` address read to a node id as the
  *  outline's builders read it (`blockNodeId`, `nodeIdOf`), so a row and its node meet by one
@@ -109,6 +119,14 @@ export interface KeptReads {
   readonly requirements: ReadonlyMap<string, RequirementCoverage>;
   /** Each result of the results read, by its own id. */
   readonly results: ReadonlyMap<string, CheckResult>;
+  /** The coverage read's own lines, which name no requirement's gap: while a document of the
+   *  issue is still being indexed, its line, which the server writes in place of every missing
+   *  check (`coverageNotes`). Each requirement the read holds draws them. */
+  readonly coverageNotes: string[];
+  /** What the author of each comment and message of the comments read and the messages read did
+   *  to it, by the post's own id: the tree read answers its words, a deleted post's none, and no
+   *  mark of either. A post nobody corrected has no entry. */
+  readonly posts: ReadonlyMap<string, PostMarks>;
   /** The artifact id of the issue's Verification document (`roleDocument`): a check block of it
    *  is a check, which draws a state, and one of any other document is a block and nothing more,
    *  since the results read never answers for it. */
@@ -232,7 +250,7 @@ export function treeDraftsFrom(
   let offered = false;
   const drafting: TreeDraftContext = {
     ...context,
-    changes: decisionNodeChanges(answer, idOfNode),
+    changes: decisionNodeChanges(answer, idOfNode, deletedPostIds(reads.comments)),
     drafted: (readId) => drafts.has(idOf(readId)),
     kept: keptReads(reads, context, answer, idOfNode),
     lineOf: (readId) => {
@@ -429,6 +447,7 @@ function draftRequirement(
   if (isStatementNode(node, context)) draft.statement = true;
   if (coverage !== undefined) {
     draft.counts = { checks: coverage.checks, planTasks: coverage.plan_tasks };
+    if (context.kept.coverageNotes.length > 0) draft.coverageNotes = context.kept.coverageNotes;
     // The decisions that shaped it count only against an origin (`requirementGaps`), so they are
     // read only where it has one.
     const origin = originOf(node, context);
@@ -675,7 +694,13 @@ function draftAsk(
 
 /** A turn of the conversation, a comment or a message: who wrote it and when, and the record
  *  its words are, which its body's links resolve against, kept by the reading of its words
- *  (`stableSourceOf`). */
+ *  (`stableSourceOf`). A turn its author corrected keeps its place (INFRA-1523, R2 and R3): an
+ *  edited one keeps its words and carries when it was last edited (`editedAt`); a deleted one
+ *  carries when and by whom (`deletedAt`, `deletedBy`) and holds the deleted line as its text
+ *  (`deletedPostLine`) and no reading, so no line, body, filter or citation read from the node
+ *  reads any part of its body. It carries no `editedAt`: the deleted line already says what
+ *  became of the text. The marks are the comments read's and the messages read's, by the post's
+ *  id (`KeptReads.posts`): the tree read holds neither. */
 function draftTurn(
   node: TreeAnswerNode,
   _answer: TreeAnswer,
@@ -684,6 +709,18 @@ function draftTurn(
   if (node.supertag !== "comment" && node.supertag !== "message") return undefined;
   const draft = draftOf(node, node.supertag, context);
   madeBy(draft, node);
+  const marks = context.kept.posts.get(node.id);
+  if (marks?.deleted != null) {
+    // The read answers a deleted post with no body, and no mark of the delete: the line is made
+    // from the delete alone, so it holds no part of the body even where a read still carries
+    // one, and the post keeps no reading.
+    draft.deletedAt = marks.deleted.at;
+    if (marks.deleted.by !== null) draft.deletedBy = marks.deleted.by;
+    draft.text = deletedPostLine(marks.deleted);
+    delete draft.tree;
+  } else if (marks?.editedAt != null) {
+    draft.editedAt = marks.editedAt;
+  }
   draft.source = stableSourceOf(draft.tree ?? node, node.supertag, node.id);
   return draft;
 }
@@ -1023,10 +1060,12 @@ function keptReads(
     asks: indexBy([...asksOf(reads).values()], (ask) => askNodeId(ask, context.slugOf)),
     checks,
     children: indexBy(reads.issue.children ?? [], (child) => child.key),
+    coverageNotes: coverageNotes(reads.coverage),
     decisions: indexBy(decisions, (decision) => {
       const node = nodes.get(decision.ref);
       return node === undefined ? undefined : idOf(node);
     }),
+    posts: postMarksOf(reads),
     requirements: indexBy(reads.coverage?.requirements ?? [], (requirement) =>
       blockNodeId(context.specSlug, requirement.block_id)
     ),
@@ -1036,6 +1075,24 @@ function keptReads(
     ),
     verification,
   };
+}
+
+/** What the author of each comment and message did to it (`PostMarks`), by the post's id: the
+ *  comments read's and the messages read's, which carry the marks the tree read does not. A post
+ *  nobody deleted or edited has none, and a deleted post has no edit mark, since the deleted
+ *  line says what became of its text. */
+function postMarksOf(reads: Pick<IssueTreeReads, "comments" | "messages">): Map<string, PostMarks> {
+  const marks = new Map<string, PostMarks>();
+  const posts = [
+    ...(reads.comments ?? []),
+    ...(reads.messages ?? []).flatMap((thread) => [thread.message, ...(thread.replies ?? [])]),
+  ];
+  for (const post of posts) {
+    const deleted = postDeletion(post);
+    const editedAt = deleted === null ? (post.edited_at ?? null) : null;
+    if (deleted !== null || editedAt !== null) marks.set(post.id, { deleted, editedAt });
+  }
+  return marks;
 }
 
 /** `rows` by the id `idOf` gives each, a row with none left out and a later row over an earlier

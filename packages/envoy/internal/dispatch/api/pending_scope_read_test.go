@@ -73,6 +73,7 @@ func countedCreate(t *testing.T, handler http.Handler, path string, body map[str
 // source's own row for its document before (refs.ScopeOf), and asked it only here, so a body
 // naming no question block sends what it always sent.
 func TestACreateWithNoQuestionCandidateReadsNoScope(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	counter := &roundTrips{}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}

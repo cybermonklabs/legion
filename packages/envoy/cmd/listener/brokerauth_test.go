@@ -73,21 +73,26 @@ func listenerBrokerTokens(t *testing.T, broker *ciphertokentest.StubBroker) *bro
 }
 
 // listenerBrokerTokensOver is the same credential over the broker at brokerURL and the spent-proof
-// store named, which is how the outcomes of that store reach apiAuth.
-func listenerBrokerTokensOver(t *testing.T, brokerURL string, replay rfc9449.DPoPReplayStorage) *brokerTokens {
+// store named, which is how the outcomes of that store reach apiAuth. Each of adjust changes the
+// verifier's options before it is built, as a row that needs its own clock or bucket sets them.
+func listenerBrokerTokensOver(t *testing.T, brokerURL string, replay rfc9449.DPoPReplayStorage, adjust ...func(*ciphertoken.Options)) *brokerTokens {
 	t.Helper()
 	tokens := newBrokerTokens(listenerBrokerConfig{
 		BrokerURL:        brokerURL,
 		AccountTokenFile: "/var/run/secrets/broker/token",
 		Origin:           listenerBrokerOrigin,
 	})
-	verifier, err := ciphertoken.New(ciphertoken.Options{
+	options := ciphertoken.Options{
 		BrokerURL: brokerURL,
 		Account:   listenerBrokerAccount("listener-account-token"),
 		Origin:    listenerBrokerOrigin,
 		Replay:    replay,
 		Address:   listenerSourceAddress,
-	})
+	}
+	for _, change := range adjust {
+		change(&options)
+	}
+	verifier, err := ciphertoken.New(options)
 	if err != nil {
 		t.Fatalf("build the broker-token verifier: %v", err)
 	}
@@ -286,8 +291,8 @@ func TestAPIAuthBrokerToken(t *testing.T) {
 			// change for that: its verifier is built without the read-only switch, so the token
 			// is refused as a build before the switch refuses it. The row "admits a token naming
 			// a service and no person" sends the same request under a token of the same kind — a
-			// session and a service, no person — whose project scope is named, with a project
-			// and no scope read, and it is admitted, so the refusal is the scope's.
+			// session and a service, no person and no project — whose project scope is person
+			// and which holds no scope read, and it is admitted, so the refusal is the scope's.
 			name:       "refuses a token that only reads",
 			configured: true,
 			started:    true,

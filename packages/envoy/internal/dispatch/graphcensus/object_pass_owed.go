@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // EventsOweObjectPass answers whether an event with an id in (after, through] leaves the store
@@ -48,7 +49,7 @@ func EventsOweObjectPass(ctx context.Context, q graphstore.Queryer, after, throu
 // it (objectKinds), the removed documents' nodes that stand orphaned, and the stale lenses on the
 // node at each address a removal or a create names: the removed artifact's own, and the created
 // one's, as its event's payload carries it and as the row the event names holds it, each read
-// into the node through graph_tuples_as_of_in (staleLensesOnSQL). Read per event instead, the
+// into the node through graph_tuples_as_of_in (refs.StaleLensesOnSQL). Read per event instead, the
 // planner hashes each kind's rows and nodes whole.
 var eventsOweObjectPass = `
 	with named as (
@@ -76,6 +77,6 @@ var eventsOweObjectPass = `
 			union
 			select a.ref_key from named c join artifacts a on a.id::text = any(c.documents)
 		) addressed
-		cross join lateral (` + staleLensesOnSQL(`1`, `addressed.ref`) + `
+		cross join lateral (` + refs.StaleLensesOnSQL(`1`, `addressed.ref`) + `
 			limit 1
 		) stale_lens)`

@@ -39,7 +39,7 @@ func (s *server) listProjectArtifacts(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := loadArtifactDetails(r.Context(), s.deps.Store.Pool, artifactPointers(artifacts)); err != nil {
+	if err := loadArtifactDetails(r.Context(), s.deps.Store.Pool, artifactPointers(artifacts), artifactVersionsStatement); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

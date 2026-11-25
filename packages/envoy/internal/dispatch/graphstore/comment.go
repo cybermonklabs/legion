@@ -54,19 +54,12 @@ func RoomRefKeySQL(artifact string) string {
 // AnchorBlockAddressSQL is the address of the block node the anchor of the comments row aliased
 // alias names, as SQL text answering text, whether or not the anchor is orphaned: the ref_key of
 // the room its document is edited in (RoomRefKeySQL), '#' and the anchor's block_id, as the block
-// index addresses that block. It is null where the row holds no anchor, its anchor names no block,
-// or an erase of that block ran at or after the comment was written (graph_erasures), as the
-// census reads a record an erase left behind (graphcensus' erasedSince): the erase deletes every
-// tuple into the block it takes, the comment's anchored_in among them, and leaves the comment's row
-// and its anchored_to as they were, so the row states no anchored_in to the erased block and no
-// writer states or retracts one to a node that is no more. A block written again at that address
-// after the erase is anchored by a comment written after it, which the rule leaves alone.
+// index addresses that block. It is null where the row holds no anchor or its anchor names no
+// block.
 func AnchorBlockAddressSQL(alias string) string {
 	anchor := alias + ".anchor"
 	address := RoomRefKeySQL(`(`+anchor+`->>'artifact_id')::uuid`) + ` || '#' || (` + anchor + `->>'block_id')`
 	return `(case when nullif(` + anchor + `->>'block_id', '') is not null
-		and not exists (select 1 from graph_erasures erased
-			where erased.node_kind = '` + blockKind + `' and erased.node_id = ` + address + ` and erased.ran_at >= ` + alias + `.created_at)
 		then ` + address + ` end)`
 }
 

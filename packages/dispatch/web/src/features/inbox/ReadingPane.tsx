@@ -9,7 +9,9 @@ import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { borderDefault } from "../../theme/classes";
 import { versionsNewestFirst } from "../artifacts/ArtifactHeader";
 import { CHANGED_BLOCK_CLASS } from "../doc/change-marks";
+import { liveTextQueryOptions, ownerAsksQueryOptions } from "../doc/ProofDocument";
 import { scrollElementToTop } from "../doc/scroll-block";
+import { type ServedAsk, servedAskOfBlock } from "../doc/typed-block-drawing";
 import { VersionView } from "../doc/VersionView";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { AskCard } from "./AskCard";
@@ -198,6 +200,33 @@ function ApprovalBody({
     },
     queryKey: ["artifact", artifactId, "version", latestVersion],
   });
+  // The server's read of the ask each block of the version shows, read as the document page reads
+  // it (`ProofDocument`'s `servedAsk`), under its keys: the asks of the document's owner, and then
+  // what the live text answers for the block in its asks. A version this build writes keeps an
+  // answered block's state, and who answered it and when, but not the words or the options
+  // chosen: the server holds those on the ask alone, so the block's card reads them from here.
+  // Both reads wait for the version and start only where it holds an ask block, by the test the
+  // server makes of a text before it reads its asks (docs.TextWithAsks): `VersionView` reads the
+  // server's read only for an ask block of that version.
+  const issueKey = artifact?.issue_key ?? null;
+  const readsAsks =
+    settled &&
+    artifact !== undefined &&
+    isText(versionQuery.data) &&
+    versionQuery.data.markdown.includes("ask{");
+  const asksQuery = useQuery({
+    ...ownerAsksQueryOptions(artifactId, issueKey),
+    enabled: readsAsks,
+  });
+  const liveTextQuery = useQuery({ ...liveTextQueryOptions(artifactId), enabled: readsAsks });
+  const servedAsk = (blockId: string): ServedAsk | undefined =>
+    servedAskOfBlock(
+      asksQuery.data ?? [],
+      liveTextQuery.data,
+      artifactId,
+      blockId,
+      issueKey === null ? artifact?.project : undefined
+    );
   /** The request the column has read a version for, which is what the start of the column is
    *  written for: the one scroller outlives the row, so a second request on a document opens
    *  where the first one was left unless the column is sent back. The write waits for the
@@ -296,9 +325,8 @@ function ApprovalBody({
         ) : (
           <VersionView
             artifactId={artifact.id}
-            // The pane draws no ask row over a stored version: the blocks of the version carry
-            // what was decided in them, and a column the reader flips through with `j` reads no
-            // list of the document's asks to name their askers.
+            // The pane names no asker over a stored version, so it passes no ask rows. Each
+            // block's answer is the server's read of its ask (`servedAsk`).
             asks={[]}
             changeBaseline={changeBaseline}
             createdAt={
@@ -311,6 +339,7 @@ function ApprovalBody({
                 ? { project: artifact.project, slug: artifact.slug }
                 : undefined
             }
+            servedAsk={servedAsk}
             version={latestVersion}
           />
         )}

@@ -12,8 +12,12 @@ import { buildDispatchReference } from "../refs/routes";
  * This module is pure: it holds no React and makes no request.
  */
 
-/** The Decisions read as a server of either release answers it: this build's carries `entries`,
- *  and a server of the release before answers no such member (`withEntries`). */
+/**
+ * The Decisions read as a server of either release answers it: this build's carries `entries`,
+ * and a server of the release before answers no such member (`withEntries`).
+ *
+ * kept for one release: compat-objects
+ */
 export type DecisionsRead = Omit<IssueDecisions, "entries"> & {
   readonly entries?: IssueDecisions["entries"];
 };
@@ -49,9 +53,13 @@ export function withEntries(read: DecisionsRead, issueKey: string): IssueDecisio
   };
 }
 
-/** An open question of a read of the release before, as its ask's entry: the ask's own node and
- *  address, its wording, and open. It names no document, since no view reads one of a question,
- *  and no sum, since no Keep is of an ask. */
+/**
+ * An open question of a read of the release before, as its ask's entry: the ask's own node and
+ * address, its wording, and open. It names no document, since no view reads one of a question,
+ * and no sum, since no Keep is of an ask.
+ *
+ * kept for one release: compat-objects
+ */
 function openQuestionEntry(ask: IssueAskRow, issueKey: string): DecisionEntry {
   return {
     answer: null,
@@ -97,6 +105,8 @@ function openQuestionEntry(ask: IssueAskRow, issueKey: string): DecisionEntry {
  * section that cites an ask is a person's decision, which an entry names answered; the asks a
  * section cites are the questions it settles (`from_ask`), and its doubt is a `high`
  * uncertainty. No entry of that read names a decider or a reading.
+ *
+ * kept for one release: compat-objects
  */
 function sectionEntry(decision: Decision): DecisionEntry {
   return {

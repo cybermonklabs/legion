@@ -21,6 +21,7 @@ const conversationSession = "session-0123456789abcdef"
 // of those reads, and every route over the row, to that on the row as 0071 stores it; the only other
 // no-project shape, a document whose project is nulled, is one artifacts_one_owner refuses.
 func TestArtifactReadsServeARowWithNoProject(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	s := directServer(deps)
 	ctx := context.Background()
@@ -98,8 +99,8 @@ func TestArtifactReadsServeARowWithNoProject(t *testing.T) {
 	}
 	read, err := s.loadArtifact(ctx, database.Pool, photoID)
 	wantNoProject("loadArtifact of the conversation's file", read, err, photoID)
-	read, err = s.loadArtifactByRefKey(ctx, database.Pool, photoRefKey)
-	wantNoProject("loadArtifactByRefKey of the conversation's file", read, err, photoID)
+	read, err = artifactRowByRefKey(ctx, database.Pool, photoRefKey)
+	wantNoProject("artifactRowByRefKey of the conversation's file", read, err, photoID)
 	read, err = s.findArtifactByNameOrSlug(ctx, database.Pool, artifactTarget{Session: conversationSession}, "photo.png")
 	wantNoProject("findArtifactByNameOrSlug in the conversation", read, err, photoID)
 

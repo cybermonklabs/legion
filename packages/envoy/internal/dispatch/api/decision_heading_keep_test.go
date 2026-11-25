@@ -25,6 +25,7 @@ import (
 // in it. The Keep, posted with the sum the heading's section reads at, queues behind that
 // transaction, which then commits.
 func TestAHeadingKeepThatWaitsBehindTheStepsRetirementIsNotFound(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	handler, database, service := settlingCarryDocuments(t, 20*time.Millisecond)
 	createReferenceAPIProject(t, handler, "KEEP")
@@ -105,6 +106,7 @@ const holdVersionEvents = `
 // heading's section read at before the pass, queues behind the pass, and the test's transaction
 // then lets the pass go on and commit.
 func TestAHeadingKeepThatWaitsBehindTheStepsConversionOfItsSectionIsNotFound(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	handler, database, service := settlingCarryDocuments(t, 20*time.Millisecond)
 	createReferenceAPIProject(t, handler, "KEPT")

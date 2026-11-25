@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // declinedAsksOf is the declined_asks part of a write's advice and whether the write carried the
@@ -75,6 +76,7 @@ func addAnAskBlock(t *testing.T, handler http.Handler, artifactID string, actor 
 }
 
 func TestTheNextAskOnTheIssueNamesTheDeclinedAsk(t *testing.T) {
+	t.Parallel()
 	const question = "Which transport should the billing exporter use?"
 	const note = "I have no view on this one; pick what the team can run."
 	// theDeclinedAsk is the part the write's answer carries, once the person has declined.
@@ -169,6 +171,39 @@ func TestTheNextAskOnTheIssueNamesTheDeclinedAsk(t *testing.T) {
 		if !carried || !slices.Equal(items, want) {
 			t.Fatalf("declined_asks = %#v, want all three declined asks oldest first %#v", items, want)
 		}
+	})
+
+	// A decline is read off the ask's node, as every read of an answer reads it (R3): an ask its
+	// node holds declined is named though its row reads it open, and an ask its row reads declined
+	// is not named while its node holds it open. The two differ only while a process of the
+	// release before has written the row and the decisions step's catch-up has not yet stated that
+	// write on the node; here the row alone is written each way.
+	t.Run("the decline its node holds, not its row", func(t *testing.T) {
+		handler, database := newTestHandlerWithStore(t)
+		createAdviceProject(t, handler, "NODE")
+		spec := "# Read off the node\n"
+		issue := createAdviceIssue(t, handler, "NODE", "Declines its node holds", &spec)
+		declinedID := openAskAs(t, handler, issue.Key, "session-node", question)
+		declineTheAsk(t, handler, declinedID, note)
+		openID := openAskAs(t, handler, issue.Key, "session-node", "Which store should it write to?")
+		ctx := t.Context()
+		if tag, err := database.Pool.Exec(ctx, `update asks set state = 'open', resolution = null where id = $1`, declinedID); err != nil || tag.RowsAffected() != 1 {
+			t.Fatalf("reopen the row of the declined ask %s alone, as the release before writes it: %v", declinedID, err)
+		}
+		if tag, err := database.Pool.Exec(ctx, `
+			update asks set state = 'resolved',
+			       resolution = jsonb_build_object('kind', $2::text, 'reason', 'Not mine to say.', 'actor', jsonb_build_object('kind', 'user', 'id', 'alice'), 'at', now())
+			where id = $1`, openID, model.AskResolutionDeclined); err != nil || tag.RowsAffected() != 1 {
+			t.Fatalf("decline the row of the open ask %s alone, as the release before writes it: %v", openID, err)
+		}
+
+		asked := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
+			"question": "Which window do we deploy in?", "actor": adviceSessionActor("session-node"),
+		})
+		if asked.Code != http.StatusCreated {
+			t.Fatalf("the next ask: status=%d body=%s", asked.Code, asked.Body.String())
+		}
+		requireNamesTheDeclinedAsk(t, "the ask after a decline its node holds and its row does not", asked.Body.String(), theDeclinedAsk(declinedID))
 	})
 
 	// The part stands apart from the related-item check's own result: a check that filled all
@@ -273,6 +308,7 @@ const adviceBoundBytes = 64 * 1024
 // such an issue paid that, and the cost grew with each decline. The read sends heads now
 // (declinedAskHead), and this test fails if they ever go.
 func TestTheDeclinedAskReminderStaysBoundedWhateverThePeopleWrote(t *testing.T) {
+	t.Parallel()
 	const declines = 10
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "HEAVY")

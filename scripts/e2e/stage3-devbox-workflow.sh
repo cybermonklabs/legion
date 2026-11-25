@@ -306,7 +306,7 @@ nats_urls:
 dispatch_url: http://127.0.0.1:$port_dispatch
 dispatch_token_file: $work/dispatch-token
 # The project's repository is no key of legion.yaml: the PUT below sets $repo as the project's
-# default repository in Dispatch. `production_check: tester` is the word that names the role a merge's production check
+# default repository in Dispatch. \`production_check: tester\` is the word that names the role a merge's production check
 # is handed to, written out here rather than left to the default, so the run proves the setting is
 # read; Stage 4b's rig names no key and proves the default.
 projects:
@@ -499,10 +499,15 @@ assert_claim_endpoints() {
     fail "ABORT: $role pane on $issue (OMP pid $omp) has $mismatch"
   fi
 }
-# pane_watcher checks every pane the daemon launches — including those it starts on its own —
-# as soon as its OMP process exists, which is before the plugin registers and before any turn.
-# A mismatch is recorded, the private tmux server is killed so no agent can act, and the next
-# bounded wait aborts naming the pane.
+# pane_watcher polls every 0.2 s and checks every pane the daemon launches — including those it
+# starts on its own — once its OMP process runs and its environment is laid out, usually before the
+# plugin registers, though no barrier holds the pane back for it. The kernel names the program an
+# exec starts before it lays out that program's environment (environ_laid_out, lib/process-tree.sh),
+# so an OMP found inside that window is read again at the next poll, never counted: a read there
+# would find no environment. One that never lays its environment out stays out of
+# pane-endpoints-checked.txt, and every_launch_checked fails naming it. A mismatch is recorded, the
+# private tmux server is killed, which ends every agent of the run, and the next bounded wait aborts
+# naming the pane.
 pane_watcher() {
   local claims inc issue role pane omp mismatch
   trap - EXIT ERR
@@ -513,6 +518,7 @@ pane_watcher() {
         grep -qF "$inc " "$evidence/pane-endpoints-checked.txt" 2>/dev/null && continue
         pane=$(incarnation_pid "$inc") || continue
         omp=$(omp_descendant "$pane") || continue
+        environ_laid_out "$omp" || continue
         if mismatch=$(endpoint_mismatch "$omp"); then
           printf '%s pane on %s (incarnation %s, OMP pid %s) has %s\n' "$role" "$issue" "$inc" "$omp" "$mismatch" \
             >"$evidence/pane-endpoint-violation.txt"
@@ -750,7 +756,7 @@ until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | gre
 start_listener
 start_dispatch
 dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "Stage 3 proof $project" '{key:$key,name:$name}')" >/dev/null
-dispatch_human PUT "settings/repo-projects/$repo" "$(jq -cn --arg project "$project" '{project:$project,default:true}')" >/dev/null
+dispatch_human PUT "projects/$project/default-repository" "$(jq -cn --arg repo "$repo" '{repo:$repo}')" >/dev/null
 # This is the production Envoy ingress bridge, subscribe-only from its perspective. GitHub events
 # are observed, never manufactured, and only the smoke repository is forwarded to this run's NATS.
 SMOKE_REPO="$repo" SMOKE_RIG_NATS="nats://127.0.0.1:$port_nats" \
@@ -900,9 +906,9 @@ primary_issue() {
   wait_for_worker "$root_issue" reviewer
   pass
 
-  # Three real GitHub changes-requested reviews, each posted by the reviewer pane and ended by its
-  # completion, exercise the round counter, the return to implementing, and the third `pr-blocked`
-  # publication. Every recovery repeats the real workers.
+  # Three real GitHub changes-requested reviews, each posted by the reviewer pane, which then
+  # completes its phase, exercise the round counter, the return to implementing, and the third
+  # `pr-blocked` publication. Every recovery repeats the real workers.
   for round in 1 2 3; do
     begin "review-round-$round-changes-requested"
     # A review that names no correction leaves the implementer nothing it may change under a spec
@@ -916,9 +922,10 @@ primary_issue() {
       review_note="A bot's review thread on the pull request asks whether the file change is needed, and the implementer answered it: judge the answer, reply on that thread in your own words, and name its thread id to the implementer as accepted, as your role says for a bot's thread (the change is needed: the spec asks for it)."
     fi
     request_changes_as_reviewer "$root_issue" "$round" "Stage 3 proof review, round $round: append the line \`$(round_line "$round")\` to the end of the same file this pull request changes, below the lines already there, and change nothing else. The spec permits one more line in that file for a review round, so this correction is in scope." "$review_note"
-    # The round ends when the reviewer completes it: its review, its handoff record, its completion.
+    # The review ends the round whether or not the reviewer has completed, so the reviewer's
+    # handoff record is checked once the daemon records the completion that names it.
     wait_for_phase "$root_issue" implementing 1200
-    assert_handoff_record "$root_issue" reviewer reviewing "$round"
+    assert_review_round_handoff "$root_issue" "$round"
     assert_review_of_head "$root_issue" "$round" CHANGES_REQUESTED
     until_true 180 "round $round to write in_progress on the Dispatch board" dispatch_status_is "$root_issue" in_progress
     wait_for_worker "$root_issue" implementer
@@ -1216,9 +1223,9 @@ no_change_close() {
   send_agent "$nochange_issue" architect "Stage 3 no-change proof: the human reviewing your spec requested changes: \"$reason\" End your tree as your role says, and change nothing else."
   until_true 600 "the no-change root to be done in Dispatch" dispatch_status_is "$nochange_issue" "done"
   dispatch_events "$nochange_issue" >"$evidence/nochange-events.json"
-  jq -e '(map(select(.type == "message.created" and (.payload.body | contains("Closed by its architect before its first phase:")))) | first | .seq) as $message
-    | (map(select(.type == "issue.closed")) | first | .seq) as $closed
-    | $message != null and $closed != null and $message < $closed' "$evidence/nochange-events.json" >/dev/null ||
+  # lib/stage3-no-change-close.jq: the reason is on the issue before its close, and a message its
+  # author deleted counts as not posted.
+  jq -e -f "$root/scripts/e2e/lib/stage3-no-change-close.jq" "$evidence/nochange-events.json" >/dev/null ||
     fail "the architect's reason was not posted on $nochange_issue before its close; see $evidence/nochange-events.json"
   jq -e --arg daemon "legion-daemon:$project" '[.[] | select(.type | IN("issue.updated", "issue.closed")) | select(.payload.status | IN("in_progress", "done"))]
     | (map(.payload.status) | unique) == ["done", "in_progress"] and all(.actor.id == $daemon)' "$evidence/nochange-events.json" >/dev/null ||

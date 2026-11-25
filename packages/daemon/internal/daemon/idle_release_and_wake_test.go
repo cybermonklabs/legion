@@ -63,6 +63,7 @@ const idleRigSender = "idle-rig-sender"
 // releases them all: each live claim suspended with the source `released`, and the pod, its disk
 // and its Sandbox deleted. Each subtest then drives its own pods' wakes.
 func TestIdleReleaseAndWake(t *testing.T) {
+	t.Parallel()
 	// The rig is given every plan that sets a field a role process reads as it starts (idleRigPlan):
 	// the topic the subscribed pod's session takes, as `envoy_subscribe` does, and how each
 	// just-released pod's process ends. The stuck pod's plan is left alone until its own subtest,

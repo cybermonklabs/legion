@@ -96,6 +96,7 @@ func aMentionThePreviousBuildDelivered(
 // resends the attempt that build left behind: the resend goes under the key the frame that landed
 // went under, so the recipient's host drops it and the attempt records a duplicate.
 func TestAMentionThePreviousBuildDeliveredIsDroppedAsARepeatAfterTheDeploy(t *testing.T) {
+	t.Parallel()
 	const body = "The build that sent this one is gone."
 	for _, tc := range []struct {
 		name   string

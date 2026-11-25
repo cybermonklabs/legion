@@ -20,13 +20,14 @@ import (
 // A CI settlement moves no issue, in any phase (dispatch://INFRA-714/spec R1): a failed check is
 // information the worker holding the phase decides on - re-run, wait, or fix - and not the
 // daemon's to read the semantics of. What the settlement says is told instead, as one message per
-// role to three roles: the worker holding the issue's phase, the implementer, whose code the
-// checks ran on, and the architect that owns the issue, here the root's, since the issue is the
-// tree's root. Each message names every check the settlement reports and the conclusion it
-// reports for it, in name order. A role named twice - the implementer holding the phase, the
-// architect holding admitted or accepting - is told once, and a phase no worker holds names none.
-// Nothing else happens: no phase moves, no architect hears checks-red, no worker is started, and
-// no return is counted.
+// role to the roles that decide: the worker holding the issue's phase, the implementer, whose code
+// the checks ran on, and the architect that owns the issue, here the root's, since the issue is the
+// tree's root. In merging the implementer is not told: the merge and what breaks it are the
+// merger's, which asks the implementer when it needs it (cybermonklabs/legion#4979). Each message
+// names every check the settlement reports and the conclusion it reports for it, in name order. A
+// role named twice - the implementer holding the phase, the architect holding admitted or
+// accepting - is told once, and a phase no worker holds names none. Nothing else happens: no phase
+// moves, no architect hears checks-red, no worker is started, and no return is counted.
 func TestASettlementMovesNothingAndTellsTheThreeRoles(t *testing.T) {
 	for _, tc := range []struct {
 		from   phase.Phase
@@ -40,7 +41,7 @@ func TestASettlementMovesNothingAndTellsTheThreeRoles(t *testing.T) {
 		{phase.Reviewing, "needs_review", []claim.Role{claim.RoleArchitect, claim.RoleReviewer, claim.RoleImplementer}},
 		{phase.Accepting, "needs_review", []claim.Role{claim.RoleArchitect, claim.RoleImplementer}},
 		{phase.Retro, "retro", []claim.Role{claim.RoleArchitect, claim.RoleImplementer}},
-		{phase.Merging, "retro", []claim.Role{claim.RoleArchitect, claim.RoleMerger, claim.RoleImplementer}},
+		{phase.Merging, "retro", []claim.Role{claim.RoleArchitect, claim.RoleMerger}},
 	} {
 		t.Run(string(tc.from), func(t *testing.T) {
 			pool := migratedPool(t)
@@ -359,7 +360,7 @@ func TestACompletionHandsOnASettledHeadWithoutReadingIt(t *testing.T) {
 // nothing to act on. Nothing goes back, so no worker is started, no status is written, and the
 // implementer is counted no pass and no round. Each case reads the head twice, a minute apart, so
 // a CONFLICTING answer is a confirmed conflict, and every case's base requires a check that is not
-// green on the head, so that conflict needs the merge in every phase.
+// green on the head, so that conflict needs the merge in every phase that acts on one.
 func TestNoMergeabilityReadMovesTheIssue(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -413,10 +414,10 @@ func TestEveryConflictingReadDecidesAndTheAskItselfStopsTheRepeat(t *testing.T) 
 	if due := conflictConfirms(t, pool); len(due) != 0 {
 		t.Fatalf("second reads due at %v, want none: the record already held the conflict", due)
 	}
-	askedOnce(t, pool, phase.Merging, "retro", record.ConflictMergeNext, claim.RoleMerger)
+	askedOnce(t, pool, phase.Merging, "retro", record.ConflictMergeNext, "")
 
 	applyRefusingNothing(t, pool, readsAfter(time.Minute), conflictingRead(&record.BaseRules{}))
-	askedOnce(t, pool, phase.Merging, "retro", record.ConflictMergeNext, claim.RoleMerger)
+	askedOnce(t, pool, phase.Merging, "retro", record.ConflictMergeNext, "")
 }
 
 // settledAt is a CI settlement of head reporting the two check runs build and unit, generation
@@ -587,4 +588,37 @@ func recordedPR(t *testing.T, pool *pgxpool.Pool, issue string) record.PullReque
 		t.Fatalf("%s has no pull request recorded", issue)
 	}
 	return *pr
+}
+
+// A hold keeps the phase's work where it stood, so its worker still needs the CI result.
+// In merging that worker is the merger, and the implementer is not a substitute for it.
+func TestASettlementOfAHeldIssueTellsTheWorkerOfItsHeldPhase(t *testing.T) {
+	for _, tc := range []struct {
+		from  phase.Phase
+		roles []claim.Role
+	}{
+		{phase.Testing, []claim.Role{claim.RoleArchitect, claim.RoleTester, claim.RoleImplementer}},
+		{phase.Reviewing, []claim.Role{claim.RoleArchitect, claim.RoleReviewer, claim.RoleImplementer}},
+		{phase.Merging, []claim.Role{claim.RoleArchitect, claim.RoleMerger}},
+	} {
+		t.Run(string(tc.from), func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+				Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Held, Hold: &record.Hold{From: tc.from},
+				Generation: 1, Status: PhaseStatus(tc.from), Rank: "U"})
+			seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion",
+				Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head"})
+			applyRefusingNothing(t, pool, mergingEngine(), settledAt("head", 1, "unit"))
+
+			want := make([]record.RoleMessage, 0, len(tc.roles))
+			for _, role := range tc.roles {
+				want = append(want, record.RoleMessage{Role: roleToken(t, role), Body: toldBody("CI settled at head: \"build\" succeeded, \"unit\" failed")})
+			}
+			assertRoleMessages(t, pool, "LEGION-208", want)
+			if issue := storedIssue(t, pool, "LEGION-208"); issue.Phase != phase.Held || issue.Hold == nil || issue.Hold.From != tc.from {
+				t.Fatalf("the settlement changed the held issue to %+v", issue)
+			}
+			assertOutboxCount(t, pool, "supervise", 0)
+		})
+	}
 }
