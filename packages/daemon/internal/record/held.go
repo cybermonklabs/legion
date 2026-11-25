@@ -96,8 +96,9 @@ const (
 // test of `why`'s sentence table (the projection's heldSentences) holds that table to. The table
 // states which words `why` serves under which state. The order is decided in HeldReasonOf's own
 // body, and this list must follow that body's cases exactly, since a reorder here moves the
-// words that test requires of the table; a word added there is added here and to
-// `LEGION_HELD_REASONS` in `packages/contracts/src/legion-api.ts`.
+// words that test requires of the table; a word added there is added here, to
+// `LEGION_HELD_REASONS` in `packages/contracts/src/legion-api.ts`, and as a row of the table in
+// `skills/legion-controller/references/admission.md`.
 var HeldReasons = []HeldReason{
 	HeldTreeClosed,
 	HeldTreeParked,

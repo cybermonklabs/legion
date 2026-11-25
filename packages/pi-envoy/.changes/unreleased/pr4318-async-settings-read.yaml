@@ -1,0 +1,22 @@
+kind: Fixed
+body: |-
+  A `!` token command in envoy.json no longer holds the Oh My Pi process while it runs: the
+  extension's load awaits the start read, and every Dispatch reply, open-ask read, accept of a
+  person's turn, whole-body and picture read, AskGate read and decision record waits for its read
+  without stopping the session's timers, deliveries and NATS pings for up to the command's 10 s.
+  AskGate's dry run of a `dispatch` command kills its process group once the script's shell
+  exits, so a helper the script left running neither outlives it nor holds its answer open until
+  the limit. The process groups of a dry run and of a person's `!command` end with the session's
+  process however it ends, a signal or a crash included, where only its own exit took them before.
+  Both now start under `/bin/sh`, which runs the group's watch before the command: a person's
+  `!command` whose host shell cannot be run answers with exit status 127 and the shell's "not
+  found" line, where it answered "The command could not start: …" (ENOENT), and AskGate's dry run
+  on a machine with no `bash` ends the same way.
+  A delivery addressed to a session the host then leaves keeps that session's broker client until
+  the delivery and the work it handed off (a person's `!command`, a side turn, a typed input) end:
+  a reply posted after the move's pass used to trade again under the session the host had left,
+  and keep that second client for the life of the process. The next pass after the delivery ends
+  forgets the session's client.
+time: 2026-11-17T12:31:04Z
+custom:
+  Issue: pr4318

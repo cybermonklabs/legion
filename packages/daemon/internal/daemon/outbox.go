@@ -2225,7 +2225,11 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // that lock for minutes, so waiting for it would hold every role message of this issue behind one
 // decision. The row keeps its place, nothing was published, and its next attempt is the first
 // publish. A claim an earlier ask of the round already reached is published nothing, so a second
-// row of one round asks no role twice.
+// row of one round asks no role twice. A claim that holds an answer of the round is published
+// nothing either (supervise.Machine.PublishUpdateAsk answers UpdateAskAnswered), and the row
+// finishes with one line of its own: the sweep read the claim before the row ran, and the role
+// answered in between. A claim the daemon suspended after it answered ends there too, on that
+// line, rather than at UpdateAskSuspended.
 //
 // A topic with no live holder (notify.ErrNoHolder) is logged on one line and ends the row with
 // nothing marked: the ask is lost, not given, and the sweep's next reading of the round asks the
@@ -2278,6 +2282,8 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 		r.updateAskLeftRound(row, payload, token, machine.View().UpdateRound)
 	case supervise.UpdateAskSuspended:
 		r.log.Info("outbox update ask finished without a publish: the daemon suspended the claim", fields...)
+	case supervise.UpdateAskAnswered:
+		r.log.Info("outbox update ask finished without a publish: the role has answered its round", fields...)
 	}
 	return nil
 }
