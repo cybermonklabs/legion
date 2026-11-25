@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { settled, until } from "@legion/test-fixtures/wait";
 import { connect, Events, StringCodec } from "nats";
 import {
   type EnvoyStack,
@@ -29,39 +30,24 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
   beforeAll(async () => {
     const start = startStoppableEnvoyStack({ work: stackDirectory });
     stopStack = start.stop;
-    stack = await start.started;
-    // A hang guard: what can hang is the stack's start, which builds natsd and the listener with
-    // `go build` and waits for each to serve. It is the start the live describes of pi-envoy and
-    // claude-envoy make. Worst measured cost of that start: 249 197.32 ms over 20 runs at the 96
-    // rung in the Job infra-1580-krows-kfh-tgvmp of the cluster's `builds` namespace, two CPUs and
-    // 8 GiB (218 busy loops, at which row A's runs took 33.5 s against the calibration's 31.2 s),
-    // 2026-11-22T08:32Z to 09:41Z. The room one hang has in this file's step of the
-    // `envoy-session-stall` job (`.github/workflows/ci-job-envoy-session-stall.yaml`) is 1 130 s:
-    // the job's `timeout-minutes: 20`, less the 68 s from the job's start to this step's in the
-    // slowest of its twelve green runs on this branch from d62604fd to a467c066 (the run at
-    // b202d173), and less 2 s for the steps that run after a failed step (the ci-ok report, which
-    // runs `if: always()`, and the post steps). The steps after this one are not counted: a step
-    // that fails skips them. Six times the worst is 1 495 s, past that room, so the room decides:
-    // 1 130 s less the 30 s kept for the `afterAll` is 1 100 s, and 1_100_000 is 4.4 times the
-    // worst.
-  }, 1_100_000);
+    // What can hang is the stack's start, which builds natsd and the listener with `go build`
+    // and waits for each to serve: the start the live describes of pi-envoy and claude-envoy make.
+    stack = await settled("the Envoy stack's start", start.started);
+  });
   afterAll(async () => {
-    await stopStack?.();
-    // A hang guard: what can hang is the stop of natsd or the listener, which a start cut off
-    // makes too. A stop that hangs to this limit fits the room the `beforeAll` above names:
-    // 1 130 s less the stack's worst start (249 s) and the three rows' worst (101.3 s) leaves
-    // 779.7 s, and 60 s is inside it. This limit takes the place of the 30 s the other limits
-    // keep for this hook.
-  }, 60_000);
+    // What can hang is the stop of natsd or the listener, which a start cut off makes too.
+    if (stopStack !== undefined) await settled("the Envoy stack's stop", stopStack());
+  });
 
   // The row running: its signal, which each of its waits checks on every poll, and the close of
   // each thing it opened, held from the moment the open starts. The `afterEach` below aborts the
-  // one and runs the others, so a row its limit abandoned stops polling and leaves no client,
-  // publisher or proxy open into the row after it.
+  // one and runs the others, so a row that ended, at its guard included, stops polling and leaves
+  // no client, publisher or proxy open into the row after it.
   let rowEnd = new AbortController();
   const closes: (() => Promise<void>)[] = [];
-  /** `opening`, whose result the row closes once it has ended, an open its limit cut off included:
-   *  the close is held from the moment the open starts, and waits for the open to settle. */
+  /** `opening`, whose result the row closes once it has ended, an open its guard cut off
+   *  included: the close is held from the moment the open starts, and waits for the open to
+   *  settle. */
   const closedWithRow = <T extends { close(): Promise<void> }>(opening: Promise<T>): Promise<T> => {
     closes.push(async () => {
       await (await opening.catch(() => undefined))?.close();
@@ -73,17 +59,11 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
   });
   afterEach(async () => {
     rowEnd.abort(new Error("the row ended"));
-    await releaseAll(closes, "the row's closes");
-    // A hang guard: what can hang is a close, or a connect the row's limit cut off, which its own
-    // dial timeout ends: nats.js's 20 s default for the publisher, `NATS_DIAL_TIMEOUT_MS`'s 10 s
-    // for the client. The opens run one after another, so at most one is pending. In CI runs
-    // 45437325102 at 06d187e7 and 45515356217 at 473ab6ae (the `envoy-session-stall` job), each
-    // row made the three closes in its own `finally`. The gap between each row's last log line
-    // and its pass line, which holds those closes, was at most 2.1 ms. 60_000 is three times the
-    // longer dial timeout. An `afterEach` that hangs to this limit fits the room the `beforeAll`
-    // above names: the stack's worst start (249 s), the three rows' worst (101.3 s), this 60 s
-    // and the 30 s kept for the `afterAll` come to 440.3 s, inside 1 130 s.
-  }, 60_000);
+    // What can hang is a close, or a connect the row's end cut off, which its own dial timeout
+    // ends: nats.js's 20 s default for the publisher, `NATS_DIAL_TIMEOUT_MS`'s 10 s for the
+    // client. The opens run one after another, so at most one is pending.
+    await settled("the row's closes", releaseAll(closes, "the row's closes"));
+  });
 
   for (const { row, slug, stalledRedials, unackedBytes } of [
     {
@@ -109,11 +89,13 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
     },
   ]) {
     test(row, async () => {
-      if (stack === undefined) throw new Error("the Envoy stack did not start");
+      // Held in a const, so the waits' probes below read it narrowed.
+      const envoy = stack;
+      if (envoy === undefined) throw new Error("the Envoy stack did not start");
       const { signal: ended } = rowEnd;
-      const proxy = await closedWithRow(startStallProxy(stack.natsHostPort));
+      const proxy = await closedWithRow(startStallProxy(envoy.natsHostPort));
       const publisher = await closedWithRow(
-        connect({ servers: [stack.natsUrl], name: `nats-stall-pub-${slug}` })
+        connect({ servers: [envoy.natsUrl], name: `nats-stall-pub-${slug}` })
       );
       const client = await closedWithRow(
         connect(
@@ -138,7 +120,7 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
       await client.flush();
       publisher.publish(subject, codec.encode("before"));
       await publisher.flush();
-      await before.promise;
+      await settled("the message published before the freeze", before.promise);
 
       let reconnectedAt: number | undefined;
       void (async () => {
@@ -162,20 +144,28 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
       // What is measured is nats.js's own wall-clock ping and dial timers, so the wait is real
       // time. A publish reaches the client only once it has subscribed again on a path that
       // answers, and each one before that goes to the frozen connection and is lost, so one
-      // goes out every quarter second until one arrives or the bound passes. A natsd or listener
-      // that exits meanwhile fails the wait by name (`EnvoyStack.exited`). A row that has ended
-      // stops the wait at its next poll.
-      const recovering = "waiting for a publish to arrive";
-      for (
-        let attempt = 0;
-        arrivedAt === undefined && Date.now() - frozenAt < RECOVERY_BOUND_MS;
-        attempt += 1
-      ) {
-        throwIfRowEnded(ended, recovering);
-        throwIfExited(stack, recovering);
+      // goes out every quarter second, the row's pacing of its send, until one arrives or the
+      // bound passes. A natsd or listener that exits meanwhile fails the wait by name
+      // (`EnvoyStack.exited`), and so does the row's end.
+      const recovering = "a publish to arrive, or the recovery's bound to pass";
+      let attempt = 0;
+      const publish = (): void => {
+        // A row that ended publishes nothing more: the `afterEach` closes the publisher after it
+        // has aborted the row's signal.
+        if (ended.aborted) return;
         publisher.publish(subject, codec.encode(`after-${attempt}`));
-        await publisher.flush();
-        await Bun.sleep(250);
+        attempt += 1;
+      };
+      publish();
+      const publishing = setInterval(publish, 250);
+      try {
+        await until(recovering, () => {
+          throwIfRowEnded(ended, `waiting for ${recovering}`);
+          throwIfExited(envoy, `waiting for ${recovering}`);
+          return arrivedAt !== undefined || Date.now() - frozenAt >= RECOVERY_BOUND_MS;
+        });
+      } finally {
+        clearInterval(publishing);
       }
 
       const reconnectMs = reconnectedAt === undefined ? undefined : reconnectedAt - frozenAt;
@@ -200,36 +190,24 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
       // nats.js abandons a dial after its dial timeout; the socket it opened must go with it, so
       // the client holds no socket to a redial it gave up on. The proxy never closes a stalled
       // connection, so its close is the client's. Real nats.js dial timers: the wait polls the
-      // real clock, and fails by name once natsd or the listener has exited. It has no deadline
-      // of its own: if the client never closes the socket, the wait ends at the row's limit,
-      // which names the row. The wait of a row its limit abandoned stops at its next poll, once
-      // the describe's `afterEach` has aborted the row's signal.
-      const closing = "waiting for the client to close a hung redial";
+      // real clock, and fails by name once natsd or the listener has exited or the row has
+      // ended. It has no deadline of its own: if the client never closes the socket, the wait
+      // fails at its row's deadline, naming the close it waited for.
+      const closing = "the client to close a hung redial";
       for (const hung of redials.slice(0, stalledRedials)) {
-        let closedAt = hung.closedAt;
-        while (closedAt === undefined) {
-          throwIfRowEnded(ended, closing);
-          throwIfExited(stack, closing);
-          await Bun.sleep(250);
-          closedAt = hung.closedAt;
-        }
+        const closedAt = await until(closing, () => {
+          throwIfRowEnded(ended, `waiting for ${closing}`);
+          throwIfExited(envoy, `waiting for ${closing}`);
+          return hung.closedAt;
+        });
         const accepted = seconds(hung.acceptedAt - frozenAt);
         const closed = seconds(closedAt - hung.acceptedAt);
         console.log(
           `${label} hung redial: accepted ${accepted} after the freeze, closed ${closed} after it was accepted`
         );
       }
-      // A hang guard, not a bound on work: what can hang is a wait for the freeze's recovery or
-      // for the client's close of a hung redial. Worst measured cost of each row, bun's time for
-      // it, in the twelve green runs of the `envoy-session-stall` job on this branch from
-      // d62604fd to a467c066, on the job's own GitHub Actions runner: A 30 428.16 ms,
-      // B 40 463.93 ms and C 30 439.10 ms, all three in the run at f3ff8793. Six times the worst
-      // is 242.8 s, and 250_000 is 6.2 times the worst. A row that hangs to this limit fits the
-      // room the `beforeAll` above names. When A or C hangs, the stack's worst start (249 s), this
-      // row's 250 s, B's worst (40.5 s), the other row's worst (30.4 s) and the 30 s kept for the
-      // `afterAll` come to 599.9 s, inside 1 130 s. When B hangs, the other two rows take 30.4 s
-      // each, and the sum is 589.8 s. Those readings include the closes the `afterEach` now
-      // makes: in those runs each row made them in its own `finally`.
-    }, 250_000);
+      // What can hang is a wait for the freeze's recovery or for the client's close of a hung
+      // redial.
+    });
   }
 });

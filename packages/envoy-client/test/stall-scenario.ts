@@ -1,4 +1,5 @@
 import { expect } from "bun:test";
+import { timeLeft } from "@legion/test-fixtures/wait";
 import { connect, type KV } from "nats";
 import { z } from "zod";
 import { deliverSubject } from "../src/consumer-delivery";
@@ -10,8 +11,8 @@ import type { StallProxy } from "./stall-proxy";
 export const RECOVERY_BOUND_MS = 60_000;
 
 /**
- * The session's `ENVOY_HEARTBEAT_MS` for this scenario: an hour between heartbeats, past the limit
- * of each row that runs it and the 20-minute job that runs those rows. After the start's
+ * The session's `ENVOY_HEARTBEAT_MS` for this scenario: an hour between heartbeats, past the
+ * guard of each row that runs it and the 20-minute job that runs those rows. After the start's
  * registration no heartbeat registers within a row, so the reconnect's registration is the only
  * one that can carry a new epoch. `envoySettings` takes any finite number above zero and holds it
  * under 2 147 483 647 ms (`resolvedInterval`, `src/envoy-settings.ts`), so the hour stands.
@@ -32,7 +33,8 @@ export interface FreezeScenarioHost {
   shown(marker: string): readonly string[];
   /** Resolves once `condition` holds; throws, naming `what`, when `deadline` passes first, when
    *  a process of `stack` has exited (`EnvoyStack.exited`), checked on each poll, or once the
-   *  row has ended. A wait given no deadline ends at the row's own limit, the host's hang guard. */
+   *  row has ended. A wait given no deadline ends at its row's guard: for a host that waits
+   *  through `until` (`@legion/test-fixtures/wait`), at the row's deadline, naming `what`. */
   waitFor(
     condition: () => boolean | Promise<boolean>,
     deadline: number | undefined,
@@ -69,18 +71,9 @@ async function sessionEntry(
 }
 
 /**
- * The observer's timeouts: an hour, past the limit of each row that runs this scenario and the
- * 20-minute job that runs those rows, so a row's own limit, which names the row, ends a read
- * that never answers. nats.js's defaults, 20 s for the handshake and 5 s for each JetStream
- * request, are inside those limits, and a loaded host could fail the row on the observer's own
- * read.
- */
-const OBSERVER_TIMEOUT_MS = 3_600_000;
-
-/**
  * Whether a connection natsd accepted at or after `since` (`Date.now()` time) subscribes `subject`.
  * The read has no timeout of its own: how long natsd's monitor takes to answer is the host's
- * speed, and a monitor that never answers is the row's limit to end, which names the row.
+ * speed, and a monitor that never answers holds the read to its row's guard.
  */
 async function subscribedSince(monitorUrl: string, subject: string, since: number) {
   const response = await fetch(`${monitorUrl}/connz?subs=1`);
@@ -107,8 +100,8 @@ async function subscribedSince(monitorUrl: string, subject: string, since: numbe
  * The host runs on nats.js's real ping and dial timers against a real listener, so each wait is
  * real time. Only the recovery's wait has a deadline: the message sent while the path was frozen
  * must be shown within `RECOVERY_BOUND_MS` of the freeze, which the scenario asserts. Every other
- * wait passes the host's `waitFor` no deadline, so it ends at the row's own limit, which names
- * the row.
+ * wait passes the host's `waitFor` no deadline, so it ends at its row's guard, naming what it
+ * waited for.
  */
 export async function runFreezeScenario(host: FreezeScenarioHost): Promise<void> {
   const { label, stack, sessionID, proxy, shown, waitFor } = host;
@@ -127,14 +120,16 @@ export async function runFreezeScenario(host: FreezeScenarioHost): Promise<void>
   const observer = await connect({
     servers: [stack.natsUrl],
     name: `stall-observer-${run}`,
-    // A hang guard: what can hang is natsd's answer to the observer's handshake.
-    timeout: OBSERVER_TIMEOUT_MS,
+    // The handshake may take until the row's deadline: nats.js's 20 s default could fail the row
+    // on a loaded host on the observer's own handshake.
+    timeout: timeLeft(),
   });
   try {
     const sessions = await observer
-      // A hang guard: what can hang is natsd's answer to a JetStream request, the bind's account
-      // check below and each read of the session entry.
-      .jetstream({ timeout: OBSERVER_TIMEOUT_MS })
+      // Each JetStream request may take the time left before the row's deadline as read here, at
+      // least what is left when any later request is made: nats.js's 5 s default could fail the
+      // row on a loaded host on the bind's account check below or a read of the session entry.
+      .jetstream({ timeout: timeLeft() })
       .views.kv("envoy_sessions", { bindOnly: true });
     let firstEpoch: string | undefined;
     await waitFor(
@@ -181,7 +176,7 @@ export async function runFreezeScenario(host: FreezeScenarioHost): Promise<void>
     // claude-envoy's row once saw the message shown 1.8 s after the resubscribe while the entry
     // still named the first epoch (Job infra-1580-krows-kc-g4zvc, run 10, at 39bc1254), so the
     // scenario waits for the entry to name a new epoch rather than read it once. The wait has no
-    // deadline: a session that never registers one ends at the row's limit, which names the row.
+    // deadline: a session that never registers one fails it at its row's guard.
     let renewed: z.infer<typeof SessionEntrySchema> | undefined;
     await waitFor(
       async () => {

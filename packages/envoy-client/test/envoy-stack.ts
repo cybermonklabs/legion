@@ -1,6 +1,7 @@
 import { closeSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import * as path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { until } from "@legion/test-fixtures/wait";
 import type { Subprocess } from "bun";
 import { z } from "zod";
 
@@ -27,7 +28,7 @@ export interface EnvoyStack {
   /**
    * Names the first of natsd and the listener found ended, with its exit code or signal and the
    * last lines of its log, or undefined while both run. A live row's wait checks it on each poll,
-   * so a process that exits mid-row fails the wait by name rather than at the row's limit.
+   * so a process that exits mid-row fails the wait by name rather than at the row's deadline.
    */
   exited(): string | undefined;
   /** Stops the listener and natsd. Their scratch directory is the caller's, and goes with it. */
@@ -89,8 +90,8 @@ export interface EnvoyStackOptions {
   /**
    * Aborted to stop a start still in progress: the start ends the build or the wait it is in,
    * stops each process it started, and rejects. A live describe's `afterAll` aborts it through
-   * {@link startStoppableEnvoyStack}, so a `beforeAll` its limit cut off leaves no natsd or
-   * listener running.
+   * {@link startStoppableEnvoyStack}, so a `beforeAll` that failed while the start ran, or that
+   * its guard cut off, leaves no natsd or listener running.
    */
   readonly signal?: AbortSignal;
 }
@@ -235,15 +236,16 @@ export function throwIfExited(stack: EnvoyStack, doing: string): void {
 
 /** Throws `stopped ${doing}: the row ended` once `ended`, the signal of the row that is `doing`
  *  it, has aborted. A live describe's `afterEach` aborts each row's signal, so a wait of a row
- *  its limit abandoned stops at its next poll rather than poll on into the row after it. */
+ *  that ended, at its guard included, stops at its next poll rather than poll on into the row
+ *  after it. */
 export function throwIfRowEnded(ended: AbortSignal, doing: string): void {
   if (ended.aborted) throw new Error(`stopped ${doing}: the row ended`);
 }
 
 /**
  * Answers `read` inside the row whose signal is `ended`: throws once that row has ended, before
- * the read and in place of its answer, so a wait of a row its limit abandoned stops there. A read
- * that fails while `exited` names an exit throws naming that exit, with the read's error as its
+ * the read and in place of its answer, so a wait of a row that ended stops there. A read that
+ * fails while `exited` names an exit throws naming that exit, with the read's error as its
  * cause: with the listener gone, a fetch fails on a refused connection, which names neither the
  * exit nor its log tail.
  */
@@ -287,36 +289,19 @@ export async function releaseAll(releases: (() => Promise<void>)[], what: string
   }
 }
 
-/**
- * How long a rig gives a process to come up, and how much of its log an error quotes. With no
- * `timeoutMs` the wait has no deadline of its own: it ends when the process serves or exits, and
- * a process that does neither is the caller's hook limit to end.
- */
+/** How long a rig gives a process to come up, and how much of its log an error quotes. */
 export interface ReadyBudget {
-  readonly timeoutMs?: number;
+  readonly timeoutMs: number;
   readonly tailLines: number;
-  /** Aborted to stop the wait, as a stopped start does (`EnvoyStackOptions.signal`). */
-  readonly signal?: AbortSignal;
 }
 
-// natsd, the listener and natsd's ENVOY_NOTIFICATIONS stream are given no deadline: the time from
-// spawn to serving is the host's speed. Under 131 busy loops (the 96 rung) on two CPUs, over 20
-// starts in the Job infra-1580-krows-st-vbknv of the cluster's `builds` namespace (row A at 35.0 s
-// against the calibration's 31.2 s), 2026-11-22T18:20Z to 19:24Z, natsd took up to 2 699.19 ms,
-// the stream 394.97 ms and the listener 10 101.91 ms, past a tenth of the 60 s it was given. The
-// live describes that start the stack bound the start with their `beforeAll`'s limit.
-const ENVOY_READY: ReadyBudget = { tailLines: TAIL_LINES };
-
 /**
- * Polls `ready` until it holds, throwing when `child` exits first or the budget, where it has a
- * `timeoutMs`, passes. The budget bounds each check too: `ready` is handed a signal that aborts
- * when the budget passes, for a check that waits on a server's answer, and a check still pending
- * then counts as not ready, so a server that takes a check and never answers it fails the wait by
- * name rather than holding it. A budget of 0 or less, a caller's deadline spent before the wait
- * began, ends the wait at once: one check, or two about 100 ms apart when the first answers false
- * before the spent signal fires. A budget with no `timeoutMs` hands `ready` a signal that never
- * aborts, so the wait ends only when the process serves or exits. A budget's `signal`, once
- * aborted, aborts the check pending then and ends the wait at its next poll, by name.
+ * Polls `ready` until it holds, throwing when `child` exits first or the budget passes. The budget
+ * bounds each check too: `ready` is handed a signal that aborts when the budget passes, for a
+ * check that waits on a server's answer, and a check still pending then counts as not ready, so a
+ * server that takes a check and never answers it fails the wait by name rather than holding it.
+ * A budget of 0 or less, a caller's deadline spent before the wait began, ends the wait at once:
+ * one check, or two about 100 ms apart when the first answers false before the spent signal fires.
  */
 export async function awaitReady(
   what: string,
@@ -325,31 +310,49 @@ export async function awaitReady(
   budget: ReadyBudget,
   ready: (signal: AbortSignal) => Promise<boolean>
 ): Promise<void> {
-  const { timeoutMs } = budget;
-  // Aborts once the budget's deadline passes; with no deadline, a signal that never aborts.
-  const spent =
-    timeoutMs === undefined
-      ? new AbortController().signal
-      : AbortSignal.timeout(Math.max(0, timeoutMs));
-  const checks = budget.signal === undefined ? spent : AbortSignal.any([spent, budget.signal]);
+  const timeoutMs = Math.max(0, budget.timeoutMs);
+  const spent = AbortSignal.timeout(timeoutMs);
   const passed = Promise.withResolvers<false>();
-  checks.addEventListener("abort", () => passed.resolve(false), { once: true });
+  spent.addEventListener("abort", () => passed.resolve(false), { once: true });
   for (;;) {
-    const ended = exitOf(what, child, log, budget.tailLines);
-    if (ended !== undefined) throw new Error(ended);
-    if (budget.signal?.aborted === true) {
-      throw new Error(`${what} was not ready: its wait was stopped`);
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error(
+        `${what} exited (${child.exitCode ?? child.signalCode}): ${tail(log, budget.tailLines)}`
+      );
     }
-    if (await Promise.race([ready(checks).catch(() => false), passed.promise])) return;
-    if (timeoutMs !== undefined && spent.aborted) {
+    if (await Promise.race([ready(spent).catch(() => false), passed.promise])) return;
+    if (spent.aborted) {
       const why =
         timeoutMs > 0
           ? `within ${timeoutMs} ms`
-          : `by its deadline, which had passed ${-timeoutMs} ms before its wait began`;
+          : `by its deadline, which had passed ${-budget.timeoutMs} ms before its wait began`;
       throw new Error(`${what} was not ready ${why}: ${tail(log, budget.tailLines)}`);
     }
     await Bun.sleep(100);
   }
+}
+
+/**
+ * The probe of a stack's wait (`until`, `@legion/test-fixtures/wait`) for `what` to come up:
+ * whether `ready` holds. It throws, which ends the wait at once, once `child` has exited, naming
+ * the exit and the last lines of `log`, and once `stopped`, the start's stop, has aborted. `ready`
+ * is handed `stopped`, or a signal that never aborts, for a check that waits on a server's answer:
+ * a stopped start aborts the check pending then. A check that fails counts as not ready.
+ */
+function serving(
+  what: string,
+  child: Subprocess,
+  log: string,
+  stopped: AbortSignal | undefined,
+  ready: (signal: AbortSignal) => Promise<boolean>
+): () => Promise<boolean> {
+  const checks = stopped ?? new AbortController().signal;
+  return async () => {
+    const ended = exitOf(what, child, log, TAIL_LINES);
+    if (ended !== undefined) throw new Error(ended);
+    if (checks.aborted) throw new Error(`${what} was not ready: its wait was stopped`);
+    return await ready(checks).catch(() => false);
+  };
 }
 
 const StatusSchema = z.object({ status: z.string() });
@@ -416,7 +419,6 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
   };
   // Left out when unset: claude-envoy compiles this file with exactOptionalPropertyTypes.
   const stopping = options.signal === undefined ? {} : { signal: options.signal };
-  const readyBudget: ReadyBudget = { ...ENVOY_READY, ...stopping };
   try {
     const bin = path.join(work, "bin");
     await buildGoBinaries({
@@ -441,13 +443,24 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
       log: natsLog,
     });
     processes.push(natsd);
-    await awaitReady("natsd", natsd, natsLog, readyBudget, async (signal) => {
-      const reported = natsdAddresses(natsLog);
-      if (reported === undefined) return false;
-      return (
-        (await getJson(`http://${reported.monitor}/healthz`, StatusSchema, signal))?.status === "ok"
-      );
-    });
+    // natsd, the listener and natsd's ENVOY_NOTIFICATIONS stream are given no deadline of their
+    // own: the time from spawn to serving is the host's speed. Under 131 busy loops (the 96 rung)
+    // on two CPUs, over 20 starts in the Job infra-1580-krows-st-vbknv of the cluster's `builds`
+    // namespace (row A at 35.0 s against the calibration's 31.2 s), 2026-11-22T18:20Z to 19:24Z,
+    // natsd took up to 2 699.19 ms, the stream 394.97 ms and the listener 10 101.91 ms, past a
+    // tenth of the 60 s each was once given. Each waits through `until`, which ends at its row's
+    // deadline, the one the command's `--timeout` sets.
+    await until(
+      "natsd to answer healthy",
+      serving("natsd", natsd, natsLog, options.signal, async (signal) => {
+        const reported = natsdAddresses(natsLog);
+        if (reported === undefined) return false;
+        return (
+          (await getJson(`http://${reported.monitor}/healthz`, StatusSchema, signal))?.status ===
+          "ok"
+        );
+      })
+    );
     // Ready means natsd reported both addresses, and its log only grows.
     const addresses = natsdAddresses(natsLog);
     if (addresses === undefined) throw new Error(`natsd reported no ports: ${tail(natsLog, 10)}`);
@@ -478,25 +491,25 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
     );
     processes.push(listener);
     const envoyUrl = `http://127.0.0.1:${listenerPort}`;
-    await awaitReady(
-      "the listener",
-      listener,
-      listenerLog,
-      readyBudget,
-      async (signal) =>
-        (await getJson(`${envoyUrl}/healthz`, StatusSchema, signal))?.status === "healthy"
+    await until(
+      "the listener to answer healthy",
+      serving(
+        "the listener",
+        listener,
+        listenerLog,
+        options.signal,
+        async (signal) =>
+          (await getJson(`${envoyUrl}/healthz`, StatusSchema, signal))?.status === "healthy"
+      )
     );
-    await awaitReady(
-      "natsd's ENVOY_NOTIFICATIONS stream",
-      natsd,
-      natsLog,
-      readyBudget,
-      async (signal) => {
+    await until(
+      "natsd to hold the ENVOY_NOTIFICATIONS stream",
+      serving("natsd", natsd, natsLog, options.signal, async (signal) => {
         const jsz = await getJson(`${monitor}/jsz?streams=true`, JszSchema, signal);
         return (jsz?.account_details ?? []).some((account) =>
           (account.stream_detail ?? []).some((stream) => stream.name === "ENVOY_NOTIFICATIONS")
         );
-      }
+      })
     );
     const exited = () =>
       exitOf("natsd", natsd, natsLog, TAIL_LINES) ??
@@ -513,9 +526,10 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
 /**
  * Starts a stack ({@link startEnvoyStack}) and keeps the start with its stop, for a live
  * describe: its `beforeAll` starts the stack and awaits `started`, and its `afterAll` calls
- * `stop`. A `beforeAll` its limit cut off leaves the start running and the stack unset, and `stop`
- * aborts the start, which ends the build or the wait it is in, stops what it started and rejects.
- * A start that resolved is stopped. So nothing the start began runs on past the describe.
+ * `stop`. A `beforeAll` that gave up on the start, or that its guard cut off, leaves the start
+ * running and the stack unset, and `stop` aborts the start, which ends the build or the wait it
+ * is in, stops what it started and rejects. A start that resolved is stopped. So nothing the
+ * start began runs on past the describe.
  */
 export function startStoppableEnvoyStack(options: Omit<EnvoyStackOptions, "signal">): {
   readonly started: Promise<EnvoyStack>;

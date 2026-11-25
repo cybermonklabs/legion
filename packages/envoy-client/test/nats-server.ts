@@ -39,9 +39,10 @@ export interface NatsServer {
   /**
    * The server's own log so far (nats-server writes it to stderr), where it names every publish
    * it refused: `Publish Violation`, then the subject. The `docker logs` call is killed at
-   * `deadline` (a `performance.now()` reading), and one that fails throws naming the container.
+   * `deadline` (a `performance.now()` reading) where one is given, and runs until it returns
+   * where none is; one that fails throws naming the container.
    */
-  log(deadline: number): Promise<string>;
+  log(deadline?: number): Promise<string>;
 }
 
 /**
@@ -112,18 +113,21 @@ export function sessionReplySubject(inbox: string, sessionID: string): string {
 }
 
 /** Runs `docker args…` and returns its stdout and stderr, trimmed. It throws on a non-zero exit,
- *  naming the exit and what docker printed on stderr, and kills the call once `deadline` (a
- *  `performance.now()` reading) has passed, naming what it ran and that `whose` time ran out. */
+ *  naming the exit and what docker printed on stderr. Given a `deadline` (a `performance.now()`
+ *  reading), it kills the call once that has passed, naming what it ran and that `whose` time ran
+ *  out; given none, the call runs until it returns. */
 async function docker(
-  deadline: number,
+  deadline: number | undefined,
   whose: string,
   ...args: string[]
 ): Promise<{ stdout: string; stderr: string }> {
   const run = Bun.spawn(["docker", ...args], {
     stdout: "pipe",
     stderr: "pipe",
-    timeout: Math.max(1, Math.ceil(deadline - performance.now())),
-    killSignal: "SIGKILL",
+    // Left out with no deadline: claude-envoy compiles this file with exactOptionalPropertyTypes.
+    ...(deadline === undefined
+      ? {}
+      : { timeout: Math.max(1, Math.ceil(deadline - performance.now())), killSignal: "SIGKILL" }),
   });
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(run.stdout).text(),
@@ -131,7 +135,11 @@ async function docker(
     run.exited,
   ]);
   if (run.signalCode !== null) {
-    throw new Error(`docker ${args.join(" ")} had not returned when ${whose} time ran out`);
+    throw new Error(
+      deadline === undefined
+        ? `docker ${args.join(" ")} was ended by ${run.signalCode}`
+        : `docker ${args.join(" ")} had not returned when ${whose} time ran out`
+    );
   }
   if (exitCode !== 0) {
     throw new Error(`docker ${args.join(" ")} exited ${exitCode}: ${stderr.trim()}`);

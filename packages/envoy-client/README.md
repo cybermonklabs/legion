@@ -288,12 +288,13 @@ accepted, first subscribed and closed; a real natsd and listener that each stack
 `go build` from `packages/envoy` into its own scratch directory (its `monitorUrl` is natsd's
 monitoring port); and `runFreezeScenario`, the freeze both plugins' stall tests put their session
 through. The stack's `exited()` names natsd or the listener once either has exited, with its exit
-code or signal, and each live wait checks it on every poll, so a process that exits mid-row fails
-the wait by name rather than at the row's limit. A `signal` handed to `startEnvoyStack` stops a
-start still in progress: the start ends its build or its wait, stops the processes it started and
-rejects. `startStoppableEnvoyStack` keeps a start with that stop: a live describe's `beforeAll`
-starts the stack with it and its `afterAll` calls the `stop` it answers, which aborts a start still
-running and stops a stack that started, so a `beforeAll` its limit cut off leaves nothing running.
+code or signal, and each live wait (`@legion/test-fixtures/wait`'s `until`) checks it on every
+poll, so a process that exits mid-row fails the wait by name rather than at the command's guard.
+A `signal` handed to `startEnvoyStack` stops a start still in progress: the start ends its build or
+its wait, stops the processes it started and rejects. `startStoppableEnvoyStack` keeps a start with
+that stop: a live describe's `beforeAll` starts the stack with it and its `afterAll` calls the
+`stop` it answers, which aborts a start still running and stops a stack that started, so a
+`beforeAll` the guard cut off leaves nothing running.
 The stack's listener answers `consumer`, so the scenario checks consumer delivery across the
 freeze: the connection nats.js dials in place of the frozen one subscribes the relay subject again
 (`/connz`), the session's `envoy_sessions` entry names a new epoch, and the message sent during the

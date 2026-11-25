@@ -19,7 +19,7 @@ GATE = gate("envoy_session_stall", STALL, runs=[
 ], reads=reads(
     ("packages/envoy-client/**", f"{at(STALL, STALL_CLIENT)}: src/__tests__/nats-stall.test.ts and test/*.ts, which the other two import"),
     ("packages/pi-envoy/**", at(STALL, "Stall test of pi-envoy")),
-    (TEST_FIXTURES_SRC, "packages/pi-envoy/extensions/envoy.test.ts imports @legion/test-fixtures/environment"),
+    (TEST_FIXTURES_SRC, "the stall steps preload @legion/test-fixtures/row-deadline, their files wait through @legion/test-fixtures/wait, and packages/pi-envoy/extensions/envoy.test.ts imports @legion/test-fixtures/environment"),
     ("packages/claude-envoy/**", f"{at(STALL, 'Stall test of claude-envoy')} (tests/envoy-channel-stall.test.ts runs bin/envoy-channel.ts)"),
     ("packages/pi-shared/src/**", "packages/pi-envoy and packages/claude-envoy import @legion/pi-shared/*"),
     ("packages/contracts/**", at(STALL, "Build contracts for the stall suites")),
