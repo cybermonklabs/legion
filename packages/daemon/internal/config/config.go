@@ -874,8 +874,9 @@ var paneGitHubEnv = []string{"GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN", "GH_HO
 // readProviderKeys is `provider_keys`: a mapping of the variable OMP reads to the key that holds
 // it, both sides environment variable names, or to `file:` and the absolute path of the file that
 // holds it, in file order. A variable named twice is refused rather than one entry silently
-// winning, as is one the daemon sets on every pane itself. Which runtime reads a file is resolve's
-// to check (checkProviderKeyFiles).
+// winning, as is one the daemon sets on every pane itself. Which runtime reads a file, and which
+// of the names runtime.PaneVariableRefusal refuses a tmux pane, are resolve's to check
+// (checkProviderKeyFiles, checkTmuxProviderKeyNames).
 func readProviderKeys(value *yaml.Node, key string) ([]ProviderKey, error) {
 	if value.Tag == "!!null" {
 		return nil, nil
@@ -1142,6 +1143,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	if err := checkProviderKeyFiles(file); err != nil {
 		return Config{}, err
 	}
+	if err := checkTmuxProviderKeyNames(file); err != nil {
+		return Config{}, err
+	}
 
 	switch {
 	case file.AdmissionCap != nil:
@@ -1278,6 +1282,26 @@ func checkProviderKeyFiles(file fileConfig) error {
 	for _, key := range file.ProviderKeys {
 		if key.File != "" {
 			return fmt.Errorf("provider_keys.%s names the file %s, which only runtime tmux reads: under runtime kubernetes a provider key is a key of the providers Secret", key.Env, key.File)
+		}
+	}
+	return nil
+}
+
+// checkTmuxProviderKeyNames refuses, under runtime tmux, a `provider_keys` entry with a name
+// runtime.PaneVariableRefusal refuses with no value, naming the variable and that function's
+// reason. The shim exports a provider key into the agent's environment, where it acts as the pane
+// variable of that name, so the tmux runtime refuses the same name at its construction, at boot
+// (tmux's readProviderKeyNames, which also refuses names only the tmux runtime knows, such as one
+// every pane carries); refusing it here lets `legion config check` see it. Under runtime
+// kubernetes it refuses nothing: there sandbox.CheckPod holds each provider key to the variables a
+// pod sets (podVariables).
+func checkTmuxProviderKeyNames(file fileConfig) error {
+	if file.Kubernetes != nil {
+		return nil
+	}
+	for _, key := range file.ProviderKeys {
+		if why := runtime.PaneVariableRefusal(key.Env, ""); why != "" {
+			return fmt.Errorf("provider_keys names %s: %s", key.Env, why)
 		}
 	}
 	return nil
