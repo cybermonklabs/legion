@@ -7,4 +7,4 @@ body: |-
     Kubernetes guide gives the kept-look reset for rollback.
 time: 2026-11-24T21:48:49Z
 custom:
-    Issue: look-names-its-check
+    Issue: pr5463
