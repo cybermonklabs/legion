@@ -1711,16 +1711,17 @@ function Gaps({ node }: { node: TreeNode }): ReactNode {
 /** A row the filter kept that is neither a statement nor a check: a node an address named,
  *  which outranks the filter. It is drawn by its kind and its words, so nothing the filter drew
  *  is lost. It is a row of the tree and of the table, as a check that serves no statement is.
+ *  Enter on it asks for the caret in its node's text, as on every row of the table, and the row
+ *  says why where none goes in; a pointer's press on its words asks for it too where the row
+ *  takes a caret (`takesCaret`), as on a statement's words or a check's, and else only gives the
+ *  row the focus.
  *  The links in its words are tab stops, as every control of the view is: the tree's keys move
- *  between rows and reach no link inside one. Enter on it asks for the caret in its node's text,
- *  as on every row of the table, and the row says why where none goes in; a pointer's press on
- *  its words asks for it too where the row takes a caret (`takesCaret`), as on a statement's
- *  words or a check's, and else only gives the row the focus. A comment or a message its author
- *  corrected carries its mark as the outline's row does (INFRA-1523, R2 and R3): a deleted one
- *  draws the deleted line in place of its words (`DeletedLine`), from the delete and never from
- *  its text, which names the actor as no registry knows it and the time as stored; an edited one
- *  says ` · edited` after its kind (`EditedMark`), outside its words, as the outline's row says it
- *  in its margin. */
+ *  between rows and reach no link inside one. A comment or a message its author corrected
+ *  carries its mark as the outline's row does (INFRA-1523, R2 and R3): a deleted one draws the
+ *  deleted line in place of its words (`DeletedLine`), from the delete and never from its text,
+ *  which names the actor as no registry knows it and the time as stored; an edited one says
+ *  ` · edited` after its kind (`EditedMark`), outside its words, as the outline's row says it in
+ *  its margin. */
 function OtherRow({
   editing,
   node,
