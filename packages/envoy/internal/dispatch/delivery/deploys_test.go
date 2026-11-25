@@ -103,8 +103,8 @@ func TestAWorkflowRunKeepsItsKnownOrUnknownAttempt(t *testing.T) {
 		{"absent", "", nil}, {"second attempt", `,"run_attempt":2`, new(2)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-	pool, ctx := deliveryTestPool(t)
-	settings := seedDeliverySettings(t, ctx, pool)
+			pool, ctx := deliveryTestPool(t)
+			settings := seedDeliverySettings(t, ctx, pool)
 			var item workflowRunItem
 			body := fmt.Sprintf(`{"id":700,"head_sha":%q,"head_branch":"main","created_at":"2026-11-20T00:00:00Z"%s}`, fmt.Sprintf("%040d", 700), test.attempt)
 			if err := json.Unmarshal([]byte(body), &item); err != nil {

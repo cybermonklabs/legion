@@ -1723,9 +1723,18 @@ test("a recorded result refreshes the results of the check's issue and of the re
 });
 
 test("a recorded deploy refreshes the receiving issue's verification results", () => {
-  const incoming = event("deploy.recorded", { repo: "acme/widgets", program: "worker", commit: "c".repeat(40), deployed_at: "2026-10-25T00:00:00Z", source: "route" });
+  const incoming = event("deploy.recorded", {
+    repo: "acme/widgets",
+    program: "worker",
+    commit: "c".repeat(40),
+    deployed_at: "2026-10-25T00:00:00Z",
+    source: "route",
+  });
   expect(eventRefreshTargets(incoming, "alice").map((target) => target.queryKey)).toEqual([
-    ["issue", "CORE-1"], ["events", "CORE-1"], ["issues", "project", "CORE"], ["issue", "CORE-1", "results"],
+    ["issue", "CORE-1"],
+    ["events", "CORE-1"],
+    ["issues", "project", "CORE"],
+    ["issue", "CORE-1", "results"],
   ]);
 });
 
@@ -1942,7 +1951,13 @@ const eventsByType: Record<EventType, DispatchEvent> = {
   "issue.closed": event("issue.closed", issue({ status: "done" })),
   "issue.created": event("issue.created", issue()),
   "issue.deployed": event("issue.deployed", { number: 1, repo: "acme/widgets" }),
-  "deploy.recorded": event("deploy.recorded", { repo: "acme/widgets", program: "worker", commit: "c".repeat(40), deployed_at: "2026-10-25T00:00:00Z", source: "route" }),
+  "deploy.recorded": event("deploy.recorded", {
+    repo: "acme/widgets",
+    program: "worker",
+    commit: "c".repeat(40),
+    deployed_at: "2026-10-25T00:00:00Z",
+    source: "route",
+  }),
   "issue.released": event("issue.released", { key: "CORE-1" }),
   "issue.updated": event("issue.updated", issue()),
   "message.accepted": event("message.accepted", { target: "session:planner" }),

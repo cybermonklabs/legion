@@ -78,10 +78,17 @@ test("eventDescription labels an edited comment", () => {
 
 test("a recorded deploy names its program and build without claiming a check passed", () => {
   const payload = {
-    repo: "acme/widgets", program: "worker", commit: "c".repeat(40),
-    deployed_at: "2026-10-25T00:00:00Z", source: "route" as const,
+    repo: "acme/widgets",
+    program: "worker",
+    commit: "c".repeat(40),
+    deployed_at: "2026-10-25T00:00:00Z",
+    source: "route" as const,
   };
-  const recorded: DispatchEvent = { ...commentEvent("comment.edited"), type: "deploy.recorded", payload };
+  const recorded: DispatchEvent = {
+    ...commentEvent("comment.edited"),
+    type: "deploy.recorded",
+    payload,
+  };
   expect(eventDescription(recorded)).toEqual([
     `Recorded a deploy of worker in acme/widgets at ${payload.commit}, deployed ${payload.deployed_at}.`,
   ]);

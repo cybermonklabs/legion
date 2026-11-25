@@ -15,7 +15,9 @@ func TestAnUnboundPersonalDeployNamesItsProvedAccount(t *testing.T) {
 	if minted.Code != http.StatusCreated {
 		t.Fatalf("mint the personal token: %d %s", minted.Code, minted.Body)
 	}
-	token := decodeBody[struct{ Token string `json:"token"` }](t, minted).Token
+	token := decodeBody[struct {
+		Token string `json:"token"`
+	}](t, minted).Token
 	before := rig.serve(brokerRequest(t, http.MethodGet, "/api/v1/whoami", nil, "Bearer "+token, ""))
 	written := rig.serve(brokerRequest(t, http.MethodPost, "/api/v1/deploys", deployBody("worker", afterMergeC1), "Bearer "+token, ""))
 	if written.Code != http.StatusCreated {
