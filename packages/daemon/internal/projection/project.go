@@ -291,7 +291,7 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			return api.State{}, fmt.Errorf("name the starts of %s that wait for its pod: %w", issue.Key, err)
 		}
 		for _, start := range starts {
-			view.StartWaitsForPod = append(view.StartWaitsForPod, api.StartWaitView{Role: start.Role, Token: start.Claim})
+			view.StartWaitsForPod = append(view.StartWaitsForPod, api.StartWaitView{Role: start.Role, Token: start.Token})
 		}
 		// Each role's row now (record.PhaseRowOf), the row with the highest entry: a role that
 		// stands at two steps of a task has a row for each, and its worker is served from the row of

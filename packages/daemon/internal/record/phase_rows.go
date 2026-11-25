@@ -377,19 +377,30 @@ func StartClaim(project, issue string, role claim.Role, named claim.Token, rows 
 	return WorkerClaim(project, issue, role, rows)
 }
 
-// StartClaims is each of starts, starts of issue that wait for its pod (pods.WaitingStart), with
-// the claim it starts in its Claim (StartClaim over rows), each once and in the order of starts: a
+// WaitingClaim is a start that waits for its issue's pod with the claim it starts: Role, the role
+// of the start's step, and Token, the claim StartClaim gives the start, never "". It is a type of
+// its own, apart from pods.WaitingStart, whose Claim is the claim the start's row names and "" for
+// a row that names none. So a start as the readers of those rows keep it
+// (pods.IdleView.StartsWaitingForPod, Store.StartsWaitingForPod) does not compile where the claim
+// a start acts on is wanted (internal/daemon's podWaitHeldWords): only StartClaims makes one.
+type WaitingClaim struct {
+	Role  claim.Role
+	Token claim.Token
+}
+
+// StartClaims is each of starts, starts of issue that wait for its pod (pods.WaitingStart), as the
+// claim it starts (WaitingClaim, StartClaim over rows), each once and in the order of starts: a
 // row that names a claim and a row of its role that names none can start one claim, and two rows
 // can be one start queued twice. The readers of those rows keep each row (Store.StartsWaitingForPod,
 // pods.IdleView.StartsWaitingForPod), so this is the one place they are made distinct.
-func StartClaims(project, issue string, starts []pods.WaitingStart, rows []PhaseRow) ([]pods.WaitingStart, error) {
-	claims := make([]pods.WaitingStart, 0, len(starts))
+func StartClaims(project, issue string, starts []pods.WaitingStart, rows []PhaseRow) ([]WaitingClaim, error) {
+	claims := make([]WaitingClaim, 0, len(starts))
 	for _, start := range starts {
 		token, err := StartClaim(project, issue, start.Role, start.Claim, rows)
 		if err != nil {
 			return nil, fmt.Errorf("the claim of %s's start of %s that waits for its pod: %w", issue, start.Role, err)
 		}
-		if started := (pods.WaitingStart{Role: start.Role, Claim: token}); !slices.Contains(claims, started) {
+		if started := (WaitingClaim{Role: start.Role, Token: token}); !slices.Contains(claims, started) {
 			claims = append(claims, started)
 		}
 	}

@@ -152,10 +152,10 @@ func TestTheStartsThatWaitForAPodAreEachTheClaimTheyStartOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []pods.WaitingStart{
-		{Role: claim.RoleImplementer, Claim: keyAToken},
-		{Role: claim.RoleImplementer, Claim: keyBToken},
-		{Role: claim.RoleTester, Claim: "legion-legion-legion-208-tester"},
+	want := []WaitingClaim{
+		{Role: claim.RoleImplementer, Token: keyAToken},
+		{Role: claim.RoleImplementer, Token: keyBToken},
+		{Role: claim.RoleTester, Token: "legion-legion-legion-208-tester"},
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("the starts = %v, want %v", got, want)

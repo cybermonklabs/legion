@@ -370,14 +370,14 @@ func operatorSuspended(view pods.IdleView) []string {
 // podWaitHeldWords is what the controller is told of starts, the starts that wait whose pod of
 // issue the operator's suspension of the claims suspended, each named as operatorSuspended names
 // it, holds, for the controller agent in plain words. Each start is named by the
-// claim it starts as `legion state` names a claim (api.ClaimNameInIssue): by its role where it
-// starts the role's own claim, and by its role with the claim's token beside it for any other claim
-// of the role, since the role alone would name a second agent's start as a start of the role's own
-// agent.
-func podWaitHeldWords(issue string, starts []pods.WaitingStart, suspended []string, idle time.Duration) string {
+// claim it starts (record.WaitingClaim), as `legion state` names a claim (api.ClaimNameInIssue): by
+// its role where it starts the role's own claim, and by its role with the claim's token beside it
+// for any other claim of the role, since the role alone would name a second agent's start as a
+// start of the role's own agent.
+func podWaitHeldWords(issue string, starts []record.WaitingClaim, suspended []string, idle time.Duration) string {
 	names := make([]string, len(starts))
 	for i, start := range starts {
-		names[i] = api.ClaimNameInIssue(start.Role, start.Claim)
+		names[i] = api.ClaimNameInIssue(start.Role, start.Token)
 	}
 	waiting := strings.Join(names, ", ")
 	return fmt.Sprintf("%s of %s cannot start. The pod of %s was made without the slot or the role that each of those starts needs, and no role runs in it. "+
