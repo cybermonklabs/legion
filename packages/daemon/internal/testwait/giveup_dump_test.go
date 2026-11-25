@@ -81,9 +81,11 @@ type heardReading struct {
 }
 
 // TestAGiveUpDumpChild is the child of TestAGiveUpPrintsTheStacksAndWhatItsReadingHolds. Its first
-// wait holds; its second starts a goroutine that holds the fact back and waits, from
-// awaitTheFactThatNeverComes, until its planted deadline's margin passes on a stepped clock; its
-// third begins past the margin. It runs only when the parent re-executes this binary.
+// wait holds; its second starts a goroutine that holds the fact back, takes that goroutine's word
+// that it runs inside holdsTheFactBack (so the goroutine's stack names it however late the machine
+// runs it), and waits, from awaitTheFactThatNeverComes, until its planted deadline's margin passes
+// on a stepped clock; its third begins past the margin. It runs only when the parent re-executes
+// this binary.
 func TestAGiveUpDumpChild(t *testing.T) {
 	if os.Getenv(childEnv) == "" {
 		t.Skip(childEnv + " is not set: this test is the child of TestAGiveUpPrintsTheStacksAndWhatItsReadingHolds")
@@ -92,9 +94,10 @@ func TestAGiveUpDumpChild(t *testing.T) {
 		Until(t, "a reading that holds", func() (int, bool) { return 1, true })
 	})
 	t.Run("until", func(t *testing.T) {
-		release := make(chan struct{})
+		started, release := make(chan struct{}), make(chan struct{})
 		t.Cleanup(func() { close(release) })
-		go holdsTheFactBack(release)
+		go holdsTheFactBack(started, release)
+		<-started
 		c := &steppedClock{now: time.Now()}
 		onClock(t, c)
 		awaitTheFactThatNeverComes(plantedDeadline{t, c.Now().Add(margin + 50*time.Millisecond)})
@@ -119,7 +122,8 @@ func awaitTheFactThatNeverComes(t testing.TB) {
 }
 
 // holdsTheFactBack is the goroutine the child's test starts, which holds the fact back until the
-// test ends.
-func holdsTheFactBack(release <-chan struct{}) {
+// test ends. It closes started once it runs, inside this function.
+func holdsTheFactBack(started chan<- struct{}, release <-chan struct{}) {
+	close(started)
 	<-release
 }
