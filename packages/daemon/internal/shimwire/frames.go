@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
@@ -885,8 +886,11 @@ type Shutdown struct{}
 // FixFrom, where set, is the commit a fix's working copy starts from: the shim makes or moves that
 // working copy, in the directory beside its own workspace (workspace.FixDir), and adopts it in
 // place of its own workspace. MoveTo, where set, is the commit the task's working copy moves to
-// before anything else runs. Each is a full commit id. A shim built before them ignores both and
-// answers with neither echo.
+// before anything else runs. Each is a full commit id. FixBranch, where set, is the fix's own
+// branch (claim.BesideBranch), which the fix pushes its work in progress to: where the directory
+// beside the workspace holds no working copy, the shim makes it at that branch's head on origin
+// where origin holds the branch, and at FixFrom otherwise. A shim built before them ignores all
+// three and answers with neither echo.
 type AdoptWorkingCopy struct {
 	ID        string `json:"id"`
 	JJUser    string `json:"jjUser"`
@@ -894,6 +898,7 @@ type AdoptWorkingCopy struct {
 	TimeoutMs int    `json:"timeoutMs"`
 	FixFrom   string `json:"fixFrom,omitempty"`
 	MoveTo    string `json:"moveTo,omitempty"`
+	FixBranch string `json:"fixBranch,omitempty"`
 }
 
 // AdoptWorkingCopyResult answers AdoptWorkingCopy (worker-shim.ts:332-341). FixDir is the
@@ -1328,7 +1333,8 @@ func (f Hello) Validate() error {
 
 // Validate refuses an adoption request the shim would refuse. The daemon is its only sender, so
 // a malformed one is a bug to name rather than a condition to paper over
-// (worker-shim.ts:171-180). A FixFrom or a MoveTo that is set must be a full commit id.
+// (worker-shim.ts:171-180). A FixFrom or a MoveTo that is set must be a full commit id, and a
+// FixBranch that is set a branch beside a fix (claim.IsBesideBranch).
 func (f AdoptWorkingCopy) Validate() error {
 	switch {
 	case f.ID == "":
@@ -1341,6 +1347,8 @@ func (f AdoptWorkingCopy) Validate() error {
 		return fmt.Errorf("%w: adopt-working-copy fixFrom %q is not a full commit id", ErrMalformedFrame, f.FixFrom)
 	case f.MoveTo != "" && !commitShape.MatchString(f.MoveTo):
 		return fmt.Errorf("%w: adopt-working-copy moveTo %q is not a full commit id", ErrMalformedFrame, f.MoveTo)
+	case f.FixBranch != "" && !claim.IsBesideBranch(f.FixBranch):
+		return fmt.Errorf("%w: adopt-working-copy fixBranch %q is no branch beside a fix", ErrMalformedFrame, f.FixBranch)
 	}
 	return nil
 }

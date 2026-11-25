@@ -101,15 +101,17 @@ func TestRuntimeRecordsEveryCallInOrderWithItsArguments(t *testing.T) {
 	}
 }
 
-// An adoption names a fix's commit and the task's move beside the identity, and the fake records
-// both members with the call. It answers as the shim of this release does, echoing each member it
-// was asked: the fix's working copy (FixDir) for a fix's commit and the commit it moved to for a
-// move. Told to answer as a shim built before those members, it answers ok with neither echo,
-// which is what the daemon reads as a pod its update round must replace.
+// An adoption names a fix's commit, the fix's own branch and the task's move beside the identity,
+// and the fake records each member with the call. It answers as the shim of this release does,
+// echoing each member it was asked: the fix's working copy (FixDir) for a fix's commit or its own
+// branch, and the commit it moved to for a move. Told to answer as a shim built before those
+// members, it answers ok with neither echo, which is what the daemon reads as a pod its update round
+// must replace.
 func TestAnAdoptionRecordsItsFixAndMoveAndEchoesThem(t *testing.T) {
 	ctx := context.Background()
 	identity := runtime.GitIdentity{Name: "Legion", Email: "legion@example.com"}
 	const fixFrom, moveTo = "c0de000000000000000000000000000000000001", "c0de000000000000000000000000000000000002"
+	const fixBranch = "legion-beside/LEGION-208/1/default/fix-1/implementer"
 	for _, tc := range []struct {
 		name     string
 		older    bool
@@ -121,6 +123,9 @@ func TestAnAdoptionRecordsItsFixAndMoveAndEchoesThem(t *testing.T) {
 		{name: "a move alone", adoption: runtime.Adoption{MoveTo: moveTo}, want: runtime.Adopted{MovedTo: moveTo}},
 		{name: "neither", adoption: runtime.Adoption{}},
 		{name: "a fix's commit and a move to an older shim", older: true, adoption: runtime.Adoption{FixFrom: fixFrom, MoveTo: moveTo}},
+		{name: "a fix's commit and its own branch", adoption: runtime.Adoption{FixFrom: fixFrom, FixBranch: fixBranch},
+			want: runtime.Adopted{FixDir: FixDir}},
+		{name: "a fix's commit and its own branch to an older shim", older: true, adoption: runtime.Adoption{FixFrom: fixFrom, FixBranch: fixBranch}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := NewRuntime()
@@ -144,7 +149,7 @@ func TestAnAdoptionRecordsItsFixAndMoveAndEchoesThem(t *testing.T) {
 			if err != nil || adopted != tc.want {
 				t.Fatalf("the connection's AdoptWorkingCopy = %+v, %v; want %+v", adopted, err, tc.want)
 			}
-			want := Adoption{Identity: identity, Timeout: time.Minute, FixFrom: tc.adoption.FixFrom, MoveTo: tc.adoption.MoveTo}
+			want := Adoption{Identity: identity, Timeout: time.Minute, FixFrom: tc.adoption.FixFrom, MoveTo: tc.adoption.MoveTo, FixBranch: tc.adoption.FixBranch}
 			if adoptions := conn.Adoptions(); len(adoptions) != 1 || adoptions[0] != want {
 				t.Fatalf("the connection recorded %+v, want %+v", adoptions, want)
 			}

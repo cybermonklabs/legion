@@ -14,10 +14,11 @@ import (
 )
 
 // The heads a fix's task names: the head the fix's working copy is made at, and the head the
-// task's working copy moves to first.
+// task's working copy moves to first; and the fix's own branch.
 const (
-	fixFromHead = "c0de000000000000000000000000000000000001"
-	moveToHead  = "c0de000000000000000000000000000000000002"
+	fixFromHead   = "c0de000000000000000000000000000000000001"
+	moveToHead    = "c0de000000000000000000000000000000000002"
+	fixBranchName = "legion-beside/LEGION-208/5/default/fix-1/implementer"
 )
 
 // olderShimLine is the one line a send writes when the issue's pod runs a shim built before an
@@ -29,11 +30,11 @@ const olderShimLine = "supervise: the issue's pod runs a shim that does not make
 var adoptingBot = runtime.GitIdentity{Name: "legion-implementer[bot]", Email: "7+legion-implementer[bot]@users.noreply.github.com"}
 
 // fixTask is a fix's task as the start executor hands it to its claim (the daemon's startTask):
-// phase implementing, run 5, fix 1, the head the fix's working copy is made at and the head the
-// task's working copy moves to.
+// phase implementing, run 5, fix 1, the head the fix's working copy is made at, the fix's own
+// branch and the head the task's working copy moves to.
 func fixTask() RequestDeliver {
 	return RequestDeliver{Claim: testToken, Task: "Fix the CI check k-ci, which failed at " + fixFromHead + ".",
-		Phase: phase.Implementing, Generation: 5, Fix: 1, FixFrom: fixFromHead, MoveTo: moveToHead}
+		Phase: phase.Implementing, Generation: 5, Fix: 1, FixFrom: fixFromHead, FixBranch: fixBranchName, MoveTo: moveToHead}
 }
 
 // promptCountingRuntime is the fake runtime with one thing more: each adoption it is asked for
@@ -74,11 +75,11 @@ func fixAdoptingHarness(t *testing.T) (*harness, *promptCountingRuntime) {
 	return h, counting
 }
 
-// A fix's task carries its fix, the head its working copy is made at and the head the task's
-// working copy moves to, from the start that queued it into the delivery the claim holds. The
-// send adopts first: the runtime is asked to make the fix's working copy at that head and to move
-// the task's, under the role's identity, before the task's prompt goes out, and the task is sent
-// once the shim echoes both.
+// A fix's task carries its fix, the head its working copy is made at, the fix's own branch and the
+// head the task's working copy moves to, from the start that queued it into the delivery the claim
+// holds. The send adopts first: the runtime is asked to make the fix's working copy at that head,
+// or at the branch where origin holds it, and to move the task's, under the role's identity, before
+// the task's prompt goes out, and the task is sent once the shim echoes them.
 func TestAFixDeliveryAdoptsItsCopyFirst(t *testing.T) {
 	h, counting := fixAdoptingHarness(t)
 
@@ -86,15 +87,15 @@ func TestAFixDeliveryAdoptsItsCopyFirst(t *testing.T) {
 
 	prompts := h.wantPrompts(1)
 	p := h.pending()
-	if p.Fix != 1 || p.FixFrom != fixFromHead || p.MoveTo != moveToHead {
-		t.Fatalf("the pending delivery holds fix %d from %q moving to %q, want fix 1 from %s moving to %s",
-			p.Fix, p.FixFrom, p.MoveTo, fixFromHead, moveToHead)
+	if p.Fix != 1 || p.FixFrom != fixFromHead || p.MoveTo != moveToHead || p.FixBranch != fixBranchName {
+		t.Fatalf("the pending delivery holds fix %d from %q on %q moving to %q, want fix 1 from %s on %s moving to %s",
+			p.Fix, p.FixFrom, p.FixBranch, p.MoveTo, fixFromHead, fixBranchName, moveToHead)
 	}
 	if prompts[0].DeliveryID != p.ID {
 		t.Fatalf("the prompt carries delivery %s, want the fix's task %s", prompts[0].DeliveryID, p.ID)
 	}
 	adoptions := h.rt.CallsOf("AdoptWorkingCopy")
-	want := runtime.Adoption{FixFrom: fixFromHead, MoveTo: moveToHead}
+	want := runtime.Adoption{FixFrom: fixFromHead, MoveTo: moveToHead, FixBranch: fixBranchName}
 	if len(adoptions) != 1 || adoptions[0].Adoption != want || adoptions[0].Identity != adoptingBot {
 		t.Fatalf("adoptions = %+v, want one naming %+v under %v", adoptions, want, adoptingBot)
 	}
@@ -106,22 +107,26 @@ func TestAFixDeliveryAdoptsItsCopyFirst(t *testing.T) {
 	}
 }
 
-// A pod built before a fix ran beside the other steps runs a shim that ignores the adoption's two
-// members and answers ok with neither echo. The daemon reads the missing echo as that pod: the
-// task is not sent, the claim's prompt budget is not charged, and one WARN line names the claim and
-// the pod. The task stays pending, unconfirmed, and goes once the pod answers the echo, as the pod
-// its update round builds does. A task that only moves the task's working copy is held the same
-// way. The control is the same task to a shim that echoes: it is sent at once, so the hold is the
-// missing echo's.
+// A pod built before a fix ran beside the other steps runs a shim that ignores the adoption's
+// members and answers ok with no echo. The daemon reads the missing echo as that pod: the task is
+// not sent, the claim's prompt budget is not charged, and one WARN line names the claim and the
+// pod. The task stays pending, unconfirmed, and goes once the pod answers the echo, as the pod its
+// update round builds does. A task that only moves the task's working copy is held the same way,
+// and so is a fix's task that names its own branch and moves nothing, whose echo is the fix's
+// working copy. The control is the same task to a shim that echoes: it is sent at once, so the hold
+// is the missing echo's.
 func TestAnOlderShimHoldsTheFixWithoutCharge(t *testing.T) {
 	moveOnly := fixTask()
-	moveOnly.Fix, moveOnly.FixFrom, moveOnly.Task = 0, "", "Implement the plan. Move to "+moveToHead+" first."
+	moveOnly.Fix, moveOnly.FixFrom, moveOnly.FixBranch, moveOnly.Task = 0, "", "", "Implement the plan. Move to "+moveToHead+" first."
+	branchOnly := fixTask()
+	branchOnly.MoveTo = ""
 	for _, tc := range []struct {
 		name    string
 		deliver RequestDeliver
 	}{
 		{name: "a fix's task", deliver: fixTask()},
 		{name: "a task that moves the task's working copy alone", deliver: moveOnly},
+		{name: "a fix's task that names its own branch and moves nothing", deliver: branchOnly},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, _ := fixAdoptingHarness(t)
@@ -136,7 +141,7 @@ func TestAnOlderShimHoldsTheFixWithoutCharge(t *testing.T) {
 				t.Fatalf("pending %+v, want the task still queued and unread", p)
 			}
 			if adoptions := h.rt.CallsOf("AdoptWorkingCopy"); len(adoptions) != 1 ||
-				adoptions[0].Adoption != (runtime.Adoption{FixFrom: tc.deliver.FixFrom, MoveTo: tc.deliver.MoveTo}) {
+				adoptions[0].Adoption != (runtime.Adoption{FixFrom: tc.deliver.FixFrom, MoveTo: tc.deliver.MoveTo, FixBranch: tc.deliver.FixBranch}) {
 				t.Fatalf("adoptions = %+v, want the one adoption naming the task's members", adoptions)
 			}
 			lines := h.records.of(olderShimLine)
