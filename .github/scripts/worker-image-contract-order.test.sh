@@ -3,9 +3,9 @@
 # build job, its own `run:` text read out of the workflow, over a shallow clone of a scratch
 # repository, as that job runs it over its one-commit checkout. On a pull request the workflow
 # comes from the merge ref while the checkout is the pull request's head, so the step meets heads
-# from before the cutover to entry files (dispatch://INFRA-1569): such a head declares
-# `const DaemonAPIVersion = <n>` in version.go, holds no scripts/daemon-contract-order.sh, and
-# its Dockerfile takes no stamp. The cases require:
+# from before the cutover to entry files (dispatch://INFRA-1569): in such a head, version.go
+# declares `const DaemonAPIVersion = <n>`, no scripts/daemon-contract-order.sh exists, and its
+# Dockerfile takes no stamp. The cases require:
 #
 #   - a head from before the cutover: the step exits 0 and writes an empty stamp;
 #   - a head after it: the step writes the stamp its scripts/daemon-contract-order.sh prints;

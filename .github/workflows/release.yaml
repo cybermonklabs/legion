@@ -210,6 +210,7 @@ jobs:
           PI_ENVOY_VERSION: ${{ steps.plugin_versions.outputs.pi_envoy_version }}
           LEGION_CONTRACT_ORDER: ${{ steps.contract_order.outputs.stamp }}
         run: .github/scripts/release-build-legion.sh
+
       # `legion version` names the release, the commit and the linked plugin pair. Then `legion
       # version --contracts` is held line by line to the stamp the build linked: `contract` L plus
       # the stamp's count of ids, L the greatest number of

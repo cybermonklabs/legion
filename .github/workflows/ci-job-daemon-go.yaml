@@ -1,6 +1,6 @@
 name: CI job daemon-go
 
-# The steps of ci.yaml's `daemon-go` job, in a file of its own.
+# The steps of `.github/workflows/ci.yaml#daemon-go` job, in a file of its own.
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
 #
@@ -10,7 +10,7 @@ name: CI job daemon-go
 # the shape gate of internal/api a second time, stamped with HEAD's merge order, the race step
 # over those five packages, the forced-order step over the daemon's TestForcedOrder
 # tests on a hooked nats-server, and the Stage 1 live proof, which builds ./cmd/legion
-# and boots it against this job's Postgres. They left ci.yaml's `test` job, which runs
+# and boots it against this job's Postgres. They left `.github/workflows/ci.yaml#test` job, which runs
 # the shell-script harnesses and a handful of Bun suites behind one filter: that filter
 # had to cover everything the daemon's Go closure reads, so a change to a shell script or to
 # packages/claude-envoy ran
@@ -53,13 +53,13 @@ name: CI job daemon-go
 # merge-group run at the front of the queue, it posts the failing ci-ok at once
 # (.github/actions/ci-ok-report, which says when it posts nothing), as every job of ci.yaml ends,
 # so a failure of either job does not wait for the other to end.
-# `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
@@ -147,7 +147,7 @@ jobs:
 
       # The tmux runtime's tests drive a real tmux server and skip without one, and the daemon
       # supervises under tmux and refuses to start without it, which is also what the Stage 1
-      # proof's boot needs (scripts/e2e/stage1-skeleton.sh:173-176).
+      # proof's boot needs (`scripts/e2e/stage1-skeleton.sh#tmux is required`).
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
 

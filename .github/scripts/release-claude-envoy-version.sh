@@ -42,10 +42,11 @@ for manifest in packages/claude-envoy/package.json \
   mv tmp.json "$manifest"
 done
 
-# package.json's `legion.daemonApiVersion`, the contract of this tree (scripts/daemon-contract.sh),
-# which no committed manifest names: the daemon built from the same commit requires it of the
-# installed manifest, and verify-build.sh, which runs next, bundles this manifest into dist/, so
-# the code the plugin runs states the same number. The other four manifests carry no contract.
+# Claude Envoy's manifest takes `legion.daemonApiVersion`, the contract of this tree
+# (scripts/daemon-contract.sh), which no committed manifest names: the daemon built from the same
+# commit requires it of the installed manifest, and verify-build.sh, which runs next, bundles this
+# manifest into dist/, so the code the plugin runs states the same number. The other four
+# manifests carry no contract.
 contract=$(bash scripts/daemon-contract.sh)
 jq --argjson contract "$contract" '.legion.daemonApiVersion = $contract' \
   packages/claude-envoy/package.json > tmp.json
