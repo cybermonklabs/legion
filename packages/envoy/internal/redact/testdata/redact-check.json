@@ -4105,6 +4105,18 @@
         "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
         "files": ["packages/daemon/internal/controller/liveness_url_join_test.go"],
         "capture": "controller.envoy-url/reparsed"
+      },
+      {
+        "row": "brokertoken-introspect-url-unparsed",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": ["packages/envoy/internal/ciphertoken/introspect_url_join_test.go"],
+        "capture": "brokertoken.introspect-url/unparsed"
+      },
+      {
+        "row": "listener-edge-url-unparsed",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": ["packages/envoy/cmd/listener/edge_repositories_url_join_test.go"],
+        "capture": "listener.edge-url/unparsed"
       }
     ],
     "boundary_fields": {
@@ -4303,11 +4315,6 @@
       "record": "github.com/sjawhar/envoy/internal/redact.Carried",
       "recorder": "(github.com/sjawhar/envoy/internal/redact.RemoteText).WithoutTokens",
       "exempt": [
-        {
-          "file": "packages/envoy/internal/oidc/clientcheck.go",
-          "function": "github.com/sjawhar/envoy/internal/oidc.CheckClient",
-          "why": "retrieve is the *oauth2.RetrieveError redact.OAuth2 answered, whose ErrorCode the boundary holds as the rule's reading with every credential the exchange's record names redacted (newOAuthAnswer), and empty where no record covers it: the code holds no word of the request"
-        },
         {
           "file": "packages/envoy/internal/dispatch/auth/callback.go",
           "function": "github.com/sjawhar/envoy/internal/dispatch/auth.ParseCallback",
@@ -7351,7 +7358,7 @@
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
       "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/grant-list",
-      "production": "agent-secrets grantRow: each cell's field held as redact.RemoteText with the list's record, printed through idWordsOf and cipheraddr.Address.Words of the rule's reading"
+      "production": "agent-secrets grantRow: each cell's field held as redact.RemoteText with the list's record; a cell of one field printed through fieldCell (cipheraddr.Address.WordsOf), the grant id through idWordsOf, and a cell of several fields (the secrets, the session) and the expiry through cipheraddr.Address.Words of their readings joined"
     },
     {
       "id": "agentsecrets-answer-words-machine-list",
@@ -16408,6 +16415,412 @@
       "package": "github.com/sjawhar/legion/daemon/internal/notify",
       "test": "TestADeleteWhoseInstanceTheRuleWouldChangeIsNotSent/none",
       "production": "notify DeleteSession: an entry naming no instance is deleted on the moment alone, no instance parameter"
+    },
+    {
+      "id": "agentsecrets-url-join-query",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestTheClientJoinsItsRoutesOntoTheBrokerAddress/query",
+      "production": "agent-secrets client.target/send/proofCall: an AGENT_SECRETS_URL with a path and a query (http://host/broker?sig=...) is called at that path joined with each route, the query kept ahead of the route's own (cipheraddr.Address.Join: GET /broker/v1/requests/<id>?sig=...&wait=5, POST /broker/v1/secrets/<name>/reread?sig=...), and the proof signs proof.TargetURI of the call's URL, where the route appended to the address's text sat inside the query and the broker was asked /broker"
+    },
+    {
+      "id": "agentsecrets-url-join-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestTheClientJoinsItsRoutesOntoTheBrokerAddress/query-trailing-slash",
+      "production": "agent-secrets client: an address whose path ends in a slash and that has a query (http://host/broker/?sig=...) is called at /broker/v1/..., the query kept, where the route sat inside the query"
+    },
+    {
+      "id": "agentsecrets-url-join-user-information",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestTheClientJoinsItsRoutesOntoTheBrokerAddress/user-information",
+      "production": "agent-secrets proofCall: an address with user information signs its proof over proof.TargetURI of the call's URL, which holds none of it (the request still carries it as Basic credentials), where the proof named the user name and the password and the broker, checking its public URL and the path, refused it"
+    },
+    {
+      "id": "agentsecrets-url-join-no-query",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestTheClientJoinsItsRoutesOntoTheBrokerAddress/no-query",
+      "production": "agent-secrets client: an address with a path and no query is called at /broker/v1/... and its proof names that URL, as before the join"
+    },
+    {
+      "id": "helper-url-join-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/helper",
+      "test": "TestTheHelperJoinsItsBrokerCallsOntoTheAddress/query",
+      "production": "agent-secrets-helper Broker.request and oauthConfig: an address with a path and a query is called at that path joined with each route (enrolment, renew, revoke, retire, device authorization, token), the query kept (cipheraddr.Address.Join), and each proof signs proof.TargetURI of the call's URL, where the route appended to URL.Raw() sat inside the query"
+    },
+    {
+      "id": "helper-url-join-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/helper",
+      "test": "TestTheHelperJoinsItsBrokerCallsOntoTheAddress/query-trailing-slash",
+      "production": "agent-secrets-helper: an address whose path ends in a slash and that has a query is called at /broker/v1/..., the query kept"
+    },
+    {
+      "id": "helper-url-join-user-information",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/helper",
+      "test": "TestTheHelperJoinsItsBrokerCallsOntoTheAddress/user-information",
+      "production": "agent-secrets-helper: each proof of a call to an address with user information names proof.TargetURI of the call's URL, none of the user information, where the proof named it and the broker refused it"
+    },
+    {
+      "id": "helper-url-join-no-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/helper",
+      "test": "TestTheHelperJoinsItsBrokerCallsOntoTheAddress/no-query",
+      "production": "agent-secrets-helper: an address with a path and no query is called at /broker/v1/..., as before the join"
+    },
+    {
+      "id": "helper-sign-launcher-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/helper",
+      "test": "TestSignLauncherSignsTheOperatorRoutesOfAnAddressWithAQuery/query",
+      "production": "agent-secrets-helper operatorRoute: sign-launcher signs the four operator routes under operatorRoot, proof.TargetURI of /v1/operator joined onto an address with user information and a query, the URL agent-secrets signs, where it compared the URL with the address's text and refused all four"
+    },
+    {
+      "id": "helper-sign-launcher-no-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/helper",
+      "test": "TestSignLauncherSignsTheOperatorRoutesOfAnAddressWithAQuery/no-query",
+      "production": "agent-secrets-helper operatorRoute: an address with neither signs the same four routes, as before"
+    },
+    {
+      "id": "cipherclient-dpop-target-user-information",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipherclient",
+      "test": "TestADPoPProofNamesTheURLAsTheServerChecksIt/user-information",
+      "production": "cipherclient dpopTransport.send: a DPoP proof names proof.TargetURI of the request's URL, no query, fragment or user information, where it named the URL's user name and password"
+    },
+    {
+      "id": "cipherclient-dpop-target-plain",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipherclient",
+      "test": "TestADPoPProofNamesTheURLAsTheServerChecksIt/plain",
+      "production": "cipherclient dpopTransport.send: a URL with none of the three is named whole, as before"
+    },
+    {
+      "id": "brokerclient-url-join-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipherclient",
+      "test": "TestATradeIsPostedToTheTokenPathJoinedOntoTheBrokerAddress/query",
+      "production": "cipherclient Client.post: a broker address with user information, a port, a path and a query (http://user:password@host:port/broker?key=...) is posted at that path joined with the token path, the query kept and the user information sent (cipheraddr.Address.Join: /broker/v1/oauth/token?key=...), and its DPoP proof's htu names that path, where the path appended to the address's text sat inside the query and the broker was asked /broker"
+    },
+    {
+      "id": "brokerclient-url-join-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipherclient",
+      "test": "TestATradeIsPostedToTheTokenPathJoinedOntoTheBrokerAddress/query-trailing-slash",
+      "production": "cipherclient Client.post: a broker address whose path ends in a slash and that has a query (http://host:port/broker/?key=...) is posted at /broker/v1/oauth/token?key=..., where the path appended to the address's text sat inside the query and the broker was asked /broker/"
+    },
+    {
+      "id": "brokerclient-url-join-fragment",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipherclient",
+      "test": "TestATradeIsPostedToTheTokenPathJoinedOntoTheBrokerAddress/fragment",
+      "production": "cipherclient Client.post: a broker address with a fragment (http://host:port/broker#...) is posted at /broker/v1/oauth/token, the fragment dropped, where the path appended to the address's text sat inside the fragment and the broker was asked /broker"
+    },
+    {
+      "id": "brokerclient-url-join-no-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipherclient",
+      "test": "TestATradeIsPostedToTheTokenPathJoinedOntoTheBrokerAddress/no-query",
+      "production": "cipherclient Client.post: a broker address with a path and no query (http://host:port/broker) is posted at /broker/v1/oauth/token, as before the join"
+    },
+    {
+      "id": "brokerclient-url-join-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipherclient",
+      "test": "TestABrokerAddressThatDoesNotParsePrintsNoneOfIt/unparsed-twin",
+      "production": "the probe of the unparsed broker-address row: url.Parse's error for that address quotes its user information and its access token, so the row can see them printed"
+    },
+    {
+      "id": "brokerclient-url-join-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipherclient",
+      "test": "TestABrokerAddressThatDoesNotParsePrintsNoneOfIt/unparsed",
+      "production": "cipherclient Client.post: a broker address that url.Parse refuses is refused by its class, \"not a valid URL\" (redact.Masked with redact.ClassNotAURL), in the trade's error and in the renewal loop's log line about it, never url.Parse's error, which quotes the address whole, its user information and query included",
+      "function": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).post",
+      "capture": "brokerclient.url-join/unparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/cipherclient/brokerclient.go",
+        "preimage": "redact.Masked(err, redact.ClassNotAURL)",
+        "replacement": "func() error { _, perr := url.Parse(c.brokerURL.Raw()); return perr }()"
+      }
+    },
+    {
+      "id": "brokertoken-introspect-url-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/ciphertoken",
+      "test": "TestAnIntrospectionGoesToTheRouteJoinedOntoTheBrokerURL/query",
+      "production": "ciphertoken Verifier.introspect: a broker URL with a port, a path and a query (http://host:port/broker?key=...) is asked at that path joined with the introspection route, the query kept (urljoin.Join: /broker/v1/oauth/introspect?key=...), where the route appended to the URL's text sat inside the query and the broker was asked /broker"
+    },
+    {
+      "id": "brokertoken-introspect-url-no-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/ciphertoken",
+      "test": "TestAnIntrospectionGoesToTheRouteJoinedOntoTheBrokerURL/no-query",
+      "production": "ciphertoken Verifier.introspect: a broker URL with a path and no query (http://host:port/broker) is asked at /broker/v1/oauth/introspect, as before the join"
+    },
+    {
+      "id": "brokertoken-introspect-url-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/ciphertoken",
+      "test": "TestAnIntrospectionAtABrokerURLThatDoesNotParsePrintsNoneOfIt/unparsed-twin",
+      "production": "the probe of the unparsed introspection-URL row: url.Parse's error for that URL quotes its user information and its access token, so the row can see them printed"
+    },
+    {
+      "id": "brokertoken-introspect-url-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/ciphertoken",
+      "test": "TestAnIntrospectionAtABrokerURLThatDoesNotParsePrintsNoneOfIt/unparsed",
+      "production": "ciphertoken Verifier.introspect: a broker URL that url.Parse refuses is ErrBrokerUnreachable named by its class, \"not a valid URL\" (redact.Masked with redact.ClassNotAURL), never http.NewRequestWithContext's error, which quotes the URL whole, its user information and query included",
+      "function": "(*github.com/sjawhar/envoy/internal/ciphertoken.Verifier).introspect",
+      "capture": "brokertoken.introspect-url/unparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/ciphertoken/introspect.go",
+        "preimage": "\"%w: the broker URL: %w\", ErrBrokerUnreachable, redact.Masked(err, redact.ClassNotAURL)",
+        "replacement": "\"%w: the broker URL: %w\", ErrBrokerUnreachable, func() error { _, perr := url.Parse(v.brokerURL); return perr }()"
+      }
+    },
+    {
+      "id": "listener-edge-url-query",
+      "requirement": "r3-each-site",
+      "package": "./cmd/listener",
+      "test": "TestAnEdgeRepositoryReadGoesToTheRouteJoinedOntoTheBrokerURL/query",
+      "production": "listener edgeRepositories.read: a broker URL with a port, a path and a query (http://host:port/broker?key=...) is asked at that path joined with the repositories route, the configured query kept ahead of the read's own (urljoin.Join: /broker/v1/project-repositories?key=...&project=<KEY>), where the route appended to the URL's text sat inside the query with a second '?' and the broker was asked /broker"
+    },
+    {
+      "id": "listener-edge-url-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "./cmd/listener",
+      "test": "TestAnEdgeRepositoryReadGoesToTheRouteJoinedOntoTheBrokerURL/query-trailing-slash",
+      "production": "listener edgeRepositories.read: a broker URL whose path ends in a slash and that has a query (http://host:port/broker/?key=...) is asked at /broker/v1/project-repositories?key=...&project=<KEY>, where the route appended to the URL's text sat inside the query and the broker was asked /broker/"
+    },
+    {
+      "id": "listener-edge-url-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "./cmd/listener",
+      "test": "TestAnEdgeRepositoryReadGoesToTheRouteJoinedOntoTheBrokerURL/trailing-slash",
+      "production": "listener edgeRepositories.read: a broker URL whose path ends in a slash and that has no query (http://host:port/broker/) is asked at /broker/v1/project-repositories?project=<KEY>, as before the join, with no trim of the URL"
+    },
+    {
+      "id": "listener-edge-url-no-query",
+      "requirement": "r3-each-site",
+      "package": "./cmd/listener",
+      "test": "TestAnEdgeRepositoryReadGoesToTheRouteJoinedOntoTheBrokerURL/no-query",
+      "production": "listener edgeRepositories.read: a broker URL with a path and no query (http://host:port/broker) is asked at /broker/v1/project-repositories?project=<KEY>, as before the join"
+    },
+    {
+      "id": "listener-edge-url-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./cmd/listener",
+      "test": "TestAnEdgeRepositoryReadAtABrokerURLThatDoesNotParsePrintsNoneOfIt/unparsed-twin",
+      "production": "the probe of the unparsed edge broker-URL row: url.Parse's error for that URL quotes its user information and its access token, so the row can see them printed"
+    },
+    {
+      "id": "listener-edge-url-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./cmd/listener",
+      "test": "TestAnEdgeRepositoryReadAtABrokerURLThatDoesNotParsePrintsNoneOfIt/unparsed",
+      "production": "listener edgeRepositories.read: a broker URL that url.Parse refuses is errRepositoriesUnknown named by its class, \"not a valid URL\" (redact.Masked with redact.ClassNotAURL), never http.NewRequestWithContext's error, which quotes the URL whole, its user information and query included",
+      "function": "(*github.com/sjawhar/envoy/cmd/listener.edgeRepositories).read",
+      "capture": "listener.edge-url/unparsed",
+      "mutation": {
+        "file": "packages/envoy/cmd/listener/edge_repositories.go",
+        "preimage": "\"%w: the broker URL: %w\", errRepositoriesUnknown, redact.Masked(err, redact.ClassNotAURL)",
+        "replacement": "\"%w: the broker URL: %w\", errRepositoriesUnknown, func() error { _, perr := url.Parse(e.brokerURL); return perr }()"
+      }
+    },
+    {
+      "id": "oidc-check-client-code-unnamed",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestACheckNamesTheOAuthErrorFromTheClosedSet/unnamed-code",
+      "production": "oidc.CheckClient: a refusal whose OAuth error code the closed set does not name (a 401 with a code of the issuer's own) names the set's words for that case (redact.RefusalCode), never the code the issuer wrote, which the check printed as the rule's reading of the answer's ErrorCode"
+    },
+    {
+      "id": "oidc-check-client-code-named",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestACheckNamesTheOAuthErrorFromTheClosedSet/named-code",
+      "production": "oidc.CheckClient: a refusal naming a code the closed set names (401 invalid_client) names that code as the wire spells it (redact.RefusalCode), so the set's reading is what a caller's log holds"
+    },
+    {
+      "id": "oidc-check-client-code-absent",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestACheckNamesTheOAuthErrorFromTheClosedSet/no-code",
+      "production": "oidc.CheckClient: a refusal that names no OAuth error at all (a 403 with no code) says so in the set's own words (redact.OAuthNone), where the check printed an empty quoted field"
+    },
+    {
+      "id": "oauthrefusal-record-client",
+      "requirement": "r3-each-site",
+      "package": "./internal/oauthrefusal",
+      "test": "TestRecordSendsThroughTheClientItIsGiven",
+      "production": "oauthrefusal.Record: a recorded call goes out on the client its caller resolved and handed it, never one the context carries, under one redact.RefusalClient and one Recorder, keeping that client's timeout and redirect rule, so the Recorder reads a redirect's own status and body and the Location is sent nothing"
+    },
+    {
+      "id": "agentsecrets-request-audience-query",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestARequestObjectNamesTheBrokersURL/query",
+      "production": "agent-secrets fileSigner.SignRequestObject (signRequestFor): a session's request object for the broker at an AGENT_SECRETS_URL with a query names proof.Audience of the address as its aud (scheme, host, port and path), which the broker verifies for its own public URL exactly, where it named the address's whole text, query included, and the broker refused it"
+    },
+    {
+      "id": "agentsecrets-request-audience-user-information",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestARequestObjectNamesTheBrokersURL/user-information",
+      "production": "agent-secrets fileSigner.SignRequestObject (signRequestFor): at an address with user information the request object's aud is proof.Audience of the address, none of the user name and password, where it named both and the broker refused it"
+    },
+    {
+      "id": "agentsecrets-request-audience-fragment",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestARequestObjectNamesTheBrokersURL/fragment",
+      "production": "agent-secrets fileSigner.SignRequestObject (signRequestFor): at an address with a fragment the request object's aud is proof.Audience of the address, no fragment, where it named the fragment and the broker refused it"
+    },
+    {
+      "id": "agentsecrets-request-audience-plain",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestARequestObjectNamesTheBrokersURL/plain",
+      "production": "agent-secrets fileSigner.SignRequestObject (signRequestFor): at an address with none of a query, user information or a fragment the aud is the address as written, as before"
+    },
+    {
+      "id": "agentsecrets-pod-login-audience-query",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestAPodsLoginRequestNamesTheBrokersURL/query",
+      "production": "agent-secrets enroll --pod (enrolPod, signRequestFor): the token login's request object at an AGENT_SECRETS_URL with user information and a query names proof.Audience of the address, so the broker takes it and the pod enrols, where it named the address's whole text"
+    },
+    {
+      "id": "agentsecrets-pod-login-audience-plain",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestAPodsLoginRequestNamesTheBrokersURL/plain",
+      "production": "agent-secrets enroll --pod (enrolPod): at the broker's own URL the token login's request object names that URL and the pod enrols, as before"
+    },
+    {
+      "id": "helper-request-audience-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/helper",
+      "test": "TestARequestObjectTheHelperSignsNamesTheBrokersURL/query",
+      "production": "agent-secrets-helper Broker.Login and Server.signRequest (Broker.audience): the machine login's request object, sent with the device authorization, and a session's, which sign-request answers, name proof.Audience of an address with a query, where each named the address's whole text and the broker refused it"
+    },
+    {
+      "id": "helper-request-audience-user-information",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/helper",
+      "test": "TestARequestObjectTheHelperSignsNamesTheBrokersURL/user-information",
+      "production": "agent-secrets-helper Broker.Login and Server.signRequest (Broker.audience): both request objects at an address with user information name proof.Audience of it, none of the user information, where each named it and the broker refused it"
+    },
+    {
+      "id": "helper-request-audience-plain",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/helper",
+      "test": "TestARequestObjectTheHelperSignsNamesTheBrokersURL/plain",
+      "production": "agent-secrets-helper Broker.Login and Server.signRequest: at an address with neither both request objects name the address as written, as before"
+    },
+    {
+      "id": "proof-audience",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/proof",
+      "test": "TestAudienceIsTheBrokersOwnURL",
+      "production": "proof.Audience: a request object's audience is proof.TargetURI of the address joined with no route, its scheme, host, port and path, for an address with user information, a query and a fragment, and urljoin.ErrBase, which quotes none of it, for an address with no host"
+    },
+    {
+      "id": "agentsecrets-reread-command-url-join-query",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestTheRereadCommandJoinsTheRouteOntoTheAddress/query",
+      "production": "agent-secrets rereadCommand: the printed reread, run in bash at an AGENT_SECRETS_URL with a path and a query (/broker?sig=...), posts to /broker/v1/secrets/<name>/reread with the query after the route, where the route appended to the address's text sat inside the query, the broker was asked /broker and curl failed"
+    },
+    {
+      "id": "agentsecrets-reread-command-url-join-query-trailing-slashes",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestTheRereadCommandJoinsTheRouteOntoTheAddress/query-trailing-slashes",
+      "production": "agent-secrets rereadCommand: at an address whose path ends in slashes and that has a query (/broker//?sig=...) the printed reread posts to /broker/v1/secrets/<name>/reread?sig=..., the slashes dropped and the query kept after the route"
+    },
+    {
+      "id": "agentsecrets-reread-command-url-join-fragment",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestTheRereadCommandJoinsTheRouteOntoTheAddress/fragment",
+      "production": "agent-secrets rereadCommand: at an address with a fragment the printed reread drops the fragment and posts to /broker/v1/secrets/<name>/reread, where the route sat inside the fragment, which curl never sends"
+    },
+    {
+      "id": "agentsecrets-reread-command-url-join-no-query",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestTheRereadCommandJoinsTheRouteOntoTheAddress/no-query",
+      "production": "agent-secrets rereadCommand: at an address with a path and neither a query nor a fragment the printed reread posts to /broker/v1/secrets/<name>/reread, as before"
+    },
+    {
+      "id": "agentsecrets-answer-words-self-projects",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/self-projects",
+      "production": "agent-secrets cmdSelf and projectsWordsOf: each project the self answer names held as redact.RemoteText with the read's record, printed on the projects line through cipheraddr.Address.WordsOf"
+    },
+    {
+      "id": "agentsecrets-answer-words-print-reread-reason",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestARereadAnswerPrintsNoProofItEchoes/print-reread-reason",
+      "production": "agent-secrets printReread: the broker's refusal line on stdout (broker: refusing <name> from <store> (reason=...)) prints the reread's reason, held as redact.RemoteText (Reread) with the signed reread's record, through cipheraddr.Address.WordsOf"
+    },
+    {
+      "id": "agentsecrets-answer-words-print-reread-type",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestARereadAnswerPrintsNoProofItEchoes/print-reread-type",
+      "production": "agent-secrets printReread: the broker's serving line on stdout (broker: serving <name> from <store> (type ...)) prints the reread's type, held as redact.RemoteText (Reread) with the signed reread's record, through cipheraddr.Address.WordsOf"
+    },
+    {
+      "id": "agentsecrets-field-cell",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestATableCellOfOneFieldPrintsOneWay",
+      "production": "agent-secrets grantRow and machineRow (fieldCell): a table cell of one field of the broker's answer (GRANTED, APPROVER, DECIDED_BY, OPERATOR; a machine login's APPROVED_BY) prints as the field prints itself beside a clean address (cipheraddr.Address.WordsOf), \"-\" for a field the answer leaves null or empty there, where an empty granted time printed as an empty cell, and cipheraddr.WordsNotPrinted beside an address that is not clean"
+    },
+    {
+      "id": "helper-sign-launcher-refusal-own-broker-route",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/helper",
+      "test": "TestSignLauncherRefusalPrintsNothingTheCallerSent/a_route_of_this_helper's_broker_that_is_no_operator_route",
+      "production": "agent-secrets-helper operatorRouteRefusal: a sign-launcher call to a route of this helper's own broker that is no operator route is refused naming its method and route as none of the four, the address checked against the broker's own URL as a proof names it (Broker.audience), where the comparison with the operator routes' root refused it as a call to another address"
+    },
+    {
+      "id": "helper-revoke-unsendable-fragment",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/helper",
+      "test": "TestARevokeOfAnIDNoURLCanHoldIsRefusedUnsent/fragment",
+      "production": "agent-secrets-helper Broker.request (revokeUnder): a revoke whose typed enrollment id holds a '#' is refused before it is signed or sent (errPathUnsendable), its error naming none of the id, where net/http cut the id at the '#' and revoked the enrollment the rest began with"
+    },
+    {
+      "id": "helper-revoke-unsendable-bad-escape",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/helper",
+      "test": "TestARevokeOfAnIDNoURLCanHoldIsRefusedUnsent/bad-escape",
+      "production": "agent-secrets-helper Broker.request (revokeUnder): a revoke whose typed id holds a bad escape is refused unsent as a path no URL can hold (errPathUnsendable), not as an address that is not a valid URL"
+    },
+    {
+      "id": "helper-revoke-unsendable-control-byte",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/helper",
+      "test": "TestARevokeOfAnIDNoURLCanHoldIsRefusedUnsent/control-byte",
+      "production": "agent-secrets-helper Broker.request (revokeUnder): a revoke whose typed id holds a control byte is refused unsent as a path no URL can hold (errPathUnsendable)"
+    },
+    {
+      "id": "helper-revoke-unsendable-plain",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/helper",
+      "test": "TestARevokeOfAnIDNoURLCanHoldIsRefusedUnsent/plain",
+      "production": "agent-secrets-helper revokeUnder: a revoke of a plain id reaches the broker, as before"
     }
   ],
   "bun": [
@@ -19597,6 +20010,116 @@
       "site": "packages/daemon/internal/notify/notify.go DeleteSession (round 6's finding 6)",
       "source": "the round-9 decisions of #4368",
       "guard": "notify-delete-instance-echoed"
+    },
+    {
+      "site": "agent-secrets client.route: each broker call was AGENT_SECRETS_URL's text with the route appended (Raw() + path), so a configured query took the route into its last value and the proof signed that text, user information included",
+      "source": "the round-9 decisions of #4368",
+      "guard": "agentsecrets-url-join-query"
+    },
+    {
+      "site": "agent-secrets-helper broker.go (oauthConfig, retireReplaced, enrollUnder, renewIdentity, revokeUnder): each call was URL.Raw() with the route appended, and each proof signed that text",
+      "source": "the round-9 decisions of #4368",
+      "guard": "helper-url-join-query"
+    },
+    {
+      "site": "agent-secrets-helper server.go operatorRoute: sign-launcher compared the URL with the address's text (strings.CutPrefix of Raw)",
+      "source": "the round-9 decisions of #4368",
+      "guard": "helper-sign-launcher-query"
+    },
+    {
+      "site": "cipherclient dpop.go: the DPoP htu kept the request URL's user information",
+      "source": "the round-9 decisions of #4368",
+      "guard": "cipherclient-dpop-target-user-information"
+    },
+    {
+      "site": "cipherclient Client.post: the trade's URL was the broker address's text with /v1/oauth/token appended, so a configured query took that path into its last value (and a fragment hid it), the broker was asked the address's path and the DPoP proof named that path as its htu",
+      "source": "the round-9 decisions of #4368",
+      "guard": "brokerclient-url-join-query"
+    },
+    {
+      "site": "ciphertoken Verifier.introspect: the introspection's URL was the broker URL's text with /v1/oauth/introspect appended, so a configured query took the route into its last value and the broker was asked the URL's path",
+      "source": "the round-9 decisions of #4368",
+      "guard": "brokertoken-introspect-url-query"
+    },
+    {
+      "site": "ciphertoken Verifier.introspect: a broker URL that did not parse was ErrBrokerUnreachable wrapping http.NewRequestWithContext's error, which quotes the URL whole, its user information and query included",
+      "source": "the round-9 decisions of #4368",
+      "guard": "brokertoken-introspect-url-unparsed"
+    },
+    {
+      "site": "listener edgeRepositories.read: the read's URL was the broker URL's text with /v1/project-repositories?project=<KEY> appended, so a configured query took the route and a second '?' into its last value and the broker was asked the URL's path with no project of its own",
+      "source": "the round-9 decisions of #4368",
+      "guard": "listener-edge-url-query"
+    },
+    {
+      "site": "listener edgeRepositories.read: a broker URL that did not parse was errRepositoriesUnknown wrapping http.NewRequestWithContext's error, which quotes the URL whole, its user information and query included",
+      "source": "the round-9 decisions of #4368",
+      "guard": "listener-edge-url-unparsed"
+    },
+    {
+      "site": "oidc/clientcheck.go, the OAuth error a client check's refusal names: the closed set's reading of the code, never the answer's ErrorCode",
+      "source": "the round-8 quality review",
+      "guard": "oidc-check-client-code-unnamed"
+    },
+    {
+      "site": "oauthrefusal.Record, the client a recorded call goes out on and the one record layer it carries",
+      "source": "the round-8 quality review",
+      "guard": "oauthrefusal-record-client"
+    },
+    {
+      "site": "agent-secrets fileSigner.SignRequestObject and enrolPod, and agent-secrets-helper Broker.Login and Server.signRequest: each request object named the configured address's whole text (Raw) as its aud, query, fragment and user information included, so the broker, which verifies the aud for its own public URL, refused every one at such an address",
+      "source": "the round-9 decisions of #4368",
+      "guard": "agentsecrets-request-audience-query"
+    },
+    {
+      "site": "agent-secrets-helper Broker.Login and Server.signRequest: the machine login's and a session's request object named the address's whole text as aud",
+      "source": "the round-9 decisions of #4368",
+      "guard": "helper-request-audience-query"
+    },
+    {
+      "site": "agent-secrets enrolPod: the pod's token login request object named the address's whole text as aud",
+      "source": "the round-9 decisions of #4368",
+      "guard": "agentsecrets-pod-login-audience-query"
+    },
+    {
+      "site": "agent-secrets rereadCommand: the printed shell reread appended its route to AGENT_SECRETS_URL's text, so an address's query took the route into its last value and a fragment hid it",
+      "source": "the round-9 decisions of #4368",
+      "guard": "agentsecrets-reread-command-url-join-query"
+    },
+    {
+      "site": "agent-secrets projectsWordsOf: the self form's projects line printed through the rule's printer with no row that ran it",
+      "source": "the round-9 decisions of #4368",
+      "guard": "agentsecrets-answer-words-self-projects"
+    },
+    {
+      "site": "agent-secrets printReread: the broker's serving and refusal lines on stdout printed through the rule's printer with no row that read stdout alone",
+      "source": "the round-9 decisions of #4368",
+      "guard": "agentsecrets-answer-words-print-reread-reason"
+    },
+    {
+      "site": "agent-secrets grantRow: each one-field cell read as the box's String and then by the rule again (Address.Words), and machineRow's approver cell's rule written by hand",
+      "source": "the round-8 quality review",
+      "guard": "agentsecrets-field-cell"
+    },
+    {
+      "site": "agent-secrets stateOf: the request states a closed set returned as a plain string, and compared both as stateOf's answer against literals and as State.Equal of a literal",
+      "source": "the round-8 quality review",
+      "guard": "agentsecrets-answer-words-exec-state"
+    },
+    {
+      "site": "agent-secrets GrantValues.LeftOutAccounts: a second map keyed by the broker's raw account keys beside the decoded github_left_out map",
+      "source": "the round-8 quality review",
+      "guard": "agentsecrets-answer-words-exec-left-out"
+    },
+    {
+      "site": "agent-secrets-helper operatorRouteRefusal: a sign-launcher call to a route of the helper's own broker outside /v1/operator was refused as a call to another address, since the check compared the call with the operator routes' root",
+      "source": "the round-9 decisions of #4368",
+      "guard": "helper-sign-launcher-refusal-own-broker-route"
+    },
+    {
+      "site": "agent-secrets-helper revokeUnder: a typed enrollment id holding a '#' was cut by net/http and the enrollment the rest began with was revoked",
+      "source": "the round-9 decisions of #4368",
+      "guard": "helper-revoke-unsendable-fragment"
     }
   ]
 }
