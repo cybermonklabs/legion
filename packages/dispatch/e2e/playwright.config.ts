@@ -347,10 +347,10 @@ const parallelProjects = [
   // socket the engine reconnects and the paint after it.
   // A focused control taken away, itself or with a parent, which the HTML spec's focus fixup
   // does with no `focusout`: `table-controls`'s page-own focus row, its row whose focused row a
-  // live update takes away, its row that Add a priority opens its form in view with the focus on
-  // Priority to advance, whose `+` takes itself away, its row that Change answer opens the
-  // answer form with its first choice whole in the window, whose button takes itself away, its
-  // row that an ask withdrawn
+  // live update takes away, its row that Edit priorities opens its list in view with the focus in
+  // its text box and Escape gives the focus back, whose Escape takes the focused text box away,
+  // its row that Change answer opens the answer form with its first choice whole in the window,
+  // whose button takes itself away, its row that an ask withdrawn
   // while the reader types its answer in the Inbox's list takes none of their next keys as text,
   // whose answer box the record takes away, its row that a Conversation turn resolved
   // elsewhere while its Reply holds the focus hands the focus into no other turn, whose turn the

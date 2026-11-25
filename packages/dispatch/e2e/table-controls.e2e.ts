@@ -6952,18 +6952,16 @@ test("a picked value too long for its list's trigger ends in an ellipsis before 
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
 
-// SLOW(>=2s): one issue page at two widths, its form opened four times.
-// INFRA-3135, round 13 (the tester's, measured in builds Jobs at 43b5b641): `+` on the issue
-// header's priority line takes itself away and puts the form in its place, whose first control
-// is Priority to advance. In Chromium the focus lands on that list's trigger; in Firefox and
-// WebKit it lands on the rail's Edit labels, after the form, and at 390 the details rail
-// scrolls to it, leaving the form the reader opened out of view (the trigger at -389 px in
-// Firefox and -274 px in WebKit, with the rail scrolled 426 and 311 px). At the merge base
-// 6ef60ff0 the form stands in view in all three engines. A focused control taken away, for which
-// these engines fire no `focusout`: the clause of the `webkit` and `firefox` projects that names
-// the page-own focus row (e2e/playwright.config.ts). By a press of Enter and by a click, at 1440
-// and 390: the trigger holds the focus and stands whole in the window and in the rail.
-test("Add a priority opens its form in view with the focus on Priority to advance, at 1440 and 390 @firefox @webkit", async ({
+// SLOW(>=2s): one issue page at two widths, Edit priorities opened and dismissed four times.
+// INFRA-3135, round 13 (the tester's, rewritten in round 28 after main's #4316 replaced the
+// inline Add a priority form with the Edit priorities multi-pick trigger): pressing Edit
+// priorities opens its list wholly in view with the focus in its Priority to advance text box,
+// and Escape closes the list and gives the focus back to the trigger. Escape unmounts the
+// portalled list while its text box holds the focus, for which Firefox and WebKit fire no
+// `focusout`: the clause of the `webkit` and `firefox` projects that names the page-own focus row
+// (e2e/playwright.config.ts). By a press of Enter and by a click, at 1440 and 390: the panel
+// stands whole in the window, its text box holds the focus, and Escape returns it to the trigger.
+test("Edit priorities opens its list in view with the focus in its text box, and Escape gives the focus back, at 1440 and 390 @firefox @webkit", async ({
   page,
 }) => {
   test.setTimeout(120_000);
@@ -6979,17 +6977,20 @@ test("Add a priority opens its form in view with the focus on Priority to advanc
     for (const press of ["Enter", "click"] as const) {
       const at = `${size.width}x${size.height}, by ${press}`;
       await page.goto(`/issues/${issue.key}`);
-      const add = page.getByRole("button", { exact: true, name: `Add a priority to ${issue.key}` });
-      await expect(add).toBeVisible();
+      const trigger = page
+        .getByTestId("issue-header")
+        .getByRole("button", { exact: true, name: "Edit priorities" });
+      await expect(trigger).toBeVisible();
       if (press === "Enter") {
-        await add.focus();
+        await trigger.focus();
         await page.keyboard.press("Enter");
       } else {
-        await add.click();
+        await trigger.click();
       }
-      const trigger = listTrigger(page, "Priority to advance");
-      await expect(trigger, `${at}: the form opened no Priority to advance`).toBeVisible();
-      const focused = await expect(trigger)
+      const panel = listOf(trigger);
+      await expect(panel, `${at}: Edit priorities opened no list`).toBeVisible();
+      const search = panel.getByRole("combobox", { name: "Priority to advance" });
+      const focused = await expect(search)
         .toBeFocused()
         .then(
           () => true,
@@ -7004,30 +7005,47 @@ test("Add a priority opens its form in view with the focus on Priority to advanc
       }
       const placed = await expect
         .poll(() =>
-          trigger.evaluate((node) => {
+          panel.evaluate((node) => {
             const box = node.getBoundingClientRect();
-            const rail = node
-              .closest('[data-testid="issue-metadata-rail"]')
-              ?.getBoundingClientRect();
-            const inWindow = box.left >= 0 && box.right <= window.innerWidth;
-            const inRail =
-              rail === undefined || (box.left >= rail.left - 1 && box.right <= rail.right + 1);
-            return inWindow && inRail
+            const inWindow =
+              box.left >= -1 &&
+              box.right <= window.innerWidth + 1 &&
+              box.top >= -1 &&
+              box.bottom <= window.innerHeight + 1;
+            return inWindow
               ? "whole"
-              : `at ${Math.round(box.left)}-${Math.round(box.right)} px`;
+              : `at ${Math.round(box.left)}-${Math.round(box.right)} x ${Math.round(box.top)}-${Math.round(box.bottom)} px in ${window.innerWidth}x${window.innerHeight}`;
           })
         )
         .toBe("whole")
         .then(
           () => "whole",
           async () =>
-            trigger.evaluate(
-              (node) =>
-                `at ${Math.round(node.getBoundingClientRect().left)}-${Math.round(node.getBoundingClientRect().right)} px`
-            )
+            panel.evaluate((node) => {
+              const box = node.getBoundingClientRect();
+              return `at ${Math.round(box.left)}-${Math.round(box.right)} x ${Math.round(box.top)}-${Math.round(box.bottom)} px in ${window.innerWidth}x${window.innerHeight}`;
+            })
         );
       if (placed !== "whole") {
-        wrong.push(`${at}: Priority to advance stands ${placed}, out of the window or the rail`);
+        wrong.push(`${at}: the Priorities list stands ${placed}, out of the window`);
+      }
+      await page.keyboard.press("Escape");
+      await expect(trigger, `${at}: Escape left the list open`).toHaveAttribute(
+        "aria-expanded",
+        "false"
+      );
+      const back = await expect(trigger)
+        .toBeFocused()
+        .then(
+          () => true,
+          () => false
+        );
+      if (!back) {
+        const holder = await page.evaluate(
+          () =>
+            `${document.activeElement?.tagName.toLowerCase()} "${document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.textContent?.trim().slice(0, 40)}"`
+        );
+        wrong.push(`${at}: Escape left the focus on ${holder}, not on Edit priorities`);
       }
     }
   }
