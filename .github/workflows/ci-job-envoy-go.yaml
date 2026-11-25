@@ -140,14 +140,20 @@ jobs:
       # 17 s on a dev box. Measured over three
       # runs on a two-vCPU pod: the bus under a tenth of a second and the documents package 92 to
       # 127 s; with the xid window tests in, one run on a two-vCPU pod took the API 134.082 s and
-      # delivery 4.106 s (INFRA-636). 10 minutes each is ample.
+      # delivery 4.106 s (INFRA-636). The API line also runs the priorities read's three tests over
+      # its corpus of production's counts (13,298 issues, 678,943 events), each of which seeds its
+      # own: on a four-CPU build pod, at the head of cybermonklabs/legion#5316, the bound's test
+      # (TestThePrioritiesReadAnswersWithinItsBoundOnEveryPlan) took 84.5 s for its 840 reads,
+      # TestThePrioritiesReadKeepsItsPlansWithAProjectNamed 28.1 s and
+      # TestThePrioritiesReadAnswersAsTheMergeBaseAnswers 24.8 s (INFRA-5791). 10 minutes each is
+      # ample.
       - name: Test what the race build cannot run at all or at full size
         run: |
           go test -count=1 -timeout 10m -run '^(TestXidWindowAttributionMoveRecorded|TestXidWindowDeployedEventRecorded)$' ./internal/dispatch/delivery
           go test -count=1 -timeout 10m -run '^(TestACommitThatEndsAfterTheCaptureIsInsideTheTrace|TestAGapsDeviceSoftirqsHoldOnlyTheirMeasuredTime|TestAMeasureUnderGoTestTraceSaysSo|TestAQuotasReadingSeesASleepAsASleep|TestAQuotasThrottlingReadsAsAWaitForACPU|TestARigProblemHidesNoViolation|TestASleepAfterARuntimeHandoffIsNotErasedByIt|TestASoftirqCountIsReadAtItsCPUsColumn|TestASoftirqCountThatWrappedInAGapReadsItsRuns|TestAStallInTheTracesCalibrationShiftsNoMoment|TestAStalledCalibrationLeavesAGapOfTheCodesCPUMade|TestAStatementTheRigCouldNotReadIsUnknown|TestAStoppedMeasureLeavesTheNextItsOwnTrace|TestAWaitOnAPHandedToALockedThreadDecidesNothing|TestAWindowThatKeepsD6OnlyOnARuntimeWaitIsUnknown|TestRuleTwoReadsTheStatementsTheCodeMade|TestTheKernelsInterruptAccountingIsReadOffProcStat|TestTheRigCountsTheSoftirqsItsPinnedCPURuns|TestTheTracersEventsInAWindowTouchNoFreshPage|TestXidGapJudgmentNeedsReadableThreadClocks)$' ./internal/dispatch/store/storetest
           go test -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
           go test -count=1 -timeout 10m -run '^(TestACalloutStormAfterAServerRestartAdmitsEveryConnection)$' ./internal/cipher/natscallout
-          go test -count=1 -timeout 10m -run '^(TestXidWindowApprovalAnswerOverTwoDocuments|TestXidWindowAskAnswerBlock|TestXidWindowAskBlockEditThenIssueClose|TestXidWindowAskResolveBlock|TestXidWindowDeliveries|TestXidWindowDocumentRebuild|TestXidWindowIssueAskRepairRestoration|TestXidWindowIssueAskRepairWithdrawal|TestXidWindowRouteTable|TestXidWindowUploadRestoringTheApprovedText|TestXidWindowsOnTheLargeSpec)$' ./internal/dispatch/api
+          go test -count=1 -timeout 10m -run '^(TestThePrioritiesReadAnswersAsTheMergeBaseAnswers|TestThePrioritiesReadAnswersWithinItsBoundOnEveryPlan|TestThePrioritiesReadKeepsItsPlansWithAProjectNamed|TestXidWindowApprovalAnswerOverTwoDocuments|TestXidWindowAskAnswerBlock|TestXidWindowAskBlockEditThenIssueClose|TestXidWindowAskResolveBlock|TestXidWindowDeliveries|TestXidWindowDocumentRebuild|TestXidWindowIssueAskRepairRestoration|TestXidWindowIssueAskRepairWithdrawal|TestXidWindowRouteTable|TestXidWindowUploadRestoringTheApprovedText|TestXidWindowsOnTheLargeSpec)$' ./internal/dispatch/api
           go test -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound|TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP|TestXidWindowKeepsD6WhenTheLoadHoldsThePs|TestXidWindowRigHoldsAGapsSoftirqsToTheirCap|TestXidWindowRigNeverExcusesASleepForSoftirqs)$' ./internal/dispatch/docs
         working-directory: packages/envoy
         # This step judges the xid window tests' statement-free gaps (storetest.XidJudgesGaps).
