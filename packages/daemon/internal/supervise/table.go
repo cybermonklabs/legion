@@ -3431,6 +3431,7 @@ func (m *Machine) clearUpdate() {
 	m.claim.UpdateRound, m.claim.UpdateReasons, m.claim.UpdateHead = "", "", ""
 	m.claim.UpdateOpenedAt, m.claim.UpdateTaskedAt = nil, nil
 	m.claim.UpdateSignalledAt, m.claim.UpdateToldAt = nil, nil
+	m.claim.UpdateHoldToldAt, m.claim.UpdateAskedAgainAt = nil, nil
 	m.claim.UpdateLeftRound = ""
 }
 

@@ -742,6 +742,13 @@ type FailureBudget struct {
 // claim rather than read the whole claims list to find out who is in the round; what each entry
 // says is UpdateWaiting's. The notice's issue is the outbox row's own.
 //
+// It also carries one case that need not be past the bound: under dispatch_token_broker with no
+// dispatch_token_transition_file, a launch that waits on a pod built before the exchange identity
+// (runtime.ErrAwaitingPodRound) while the work hold keeps that pod from the round's replacement for
+// the held work (internal/daemon's tellWaitingLaunches). Nothing but the hold's opening or the
+// operator's transition token lets that launch in, so the notice is told once for each launch
+// that begins to wait, and its reason says so; Waiting lists the waiting claim among the others.
+//
 // Reasons is one string, never a list: a single reason carries ", " inside it already — a moved
 // address reads `<where> <held>, now <handed>`, a pod-shape drift `image <was>, now <now>`, and a
 // plugin round's reason, which only an earlier daemon's round carries, names both contracts — so
@@ -948,7 +955,11 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // operator's suspension holds a role of it, where the runtime cannot say which pod the issue's
 // Sandbox holds, or where the replacement by issue is refused or not offered
 // (runtime.IssuePodReplacer): otherwise the daemon replaces that pod by issue at the bound. It is
-// told once per round (the daemon's reconcilePodUpdates). A
+// told once per round (the daemon's reconcilePodUpdates). The same notice also names an issue
+// whose round's pod the work hold keeps while a launch waits on that pod, which nothing but the
+// hold's opening or the operator's dispatch_token_transition_file lets in (the daemon's
+// tellWaitingLaunches): that one is told once for each launch that begins to wait, whatever the
+// round's bound. A
 // provider-errors notice names an issue whose role has ended six turns in a row in a provider
 // error: its Role is that role, and its Reason the model and the HTTP status the provider
 // answered, where it answered one, in words built from structured fields alone (supervise's

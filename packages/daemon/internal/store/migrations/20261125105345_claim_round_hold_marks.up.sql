@@ -1,0 +1,33 @@
+-- 20261125105345_claim_round_hold_marks.up.sql — the two marks a pod update round writes on a
+-- claim while the tree's work hold keeps the round's pod.
+--
+-- claims.update_hold_told_at is supervise.Claim.UpdateHoldToldAt: when the daemon told the
+-- claim's role that its round waits for the work hold, null until it did. The round's read of the
+-- issue workspace kept the pod for the work of a claim the hold stopped, so the round cannot end
+-- before the hold's opening or a read that finds that work pushed. While the mark is set, the
+-- claim's answer to the round holds none of its tasks, and the answer still counts for the round.
+-- It is in the store so that a restart neither sends that message again nor holds the claim's
+-- tasks behind its answer once more.
+-- claims.update_asked_again_at is supervise.Claim.UpdateAskedAgainAt: when the round asked this
+-- claim again, once the replacement could be made again, null while it has not. The round's new
+-- bound starts at the latest such stamp of its claims and not at claims.update_opened_at, and it
+-- is in the store so that a restart reads that bound and not the old one, which has usually
+-- passed by the hold's opening.
+-- The round's end clears both, with every other column the round writes.
+--
+-- It back-fills nothing: no release before this one wrote either mark, so every row reads null,
+-- which is a round that told no role of the hold and asked nobody again.
+--
+-- There is no down file: migrations here are forward-only. The release before this one names each
+-- column of claims it reads and writes (the claim store's claimSelect and upsertClaim), so it
+-- boots with the two columns standing, reads neither, and leaves each as it is on every write; the
+-- database needs nothing taken off for a rollback. What a rollback costs is the marks' meaning
+-- while it runs: that release holds the tasks of every claim that answered, as it always did, and
+-- bounds the round from its opening. It also leaves a mark standing where it ends the round the
+-- mark is of, or opens the next round over the row. This release reads a mark back only where it
+-- is no older than the opening the row holds (the claim store's scanClaim, sinceOpening), so after
+-- the roll forward such a mark reads as none: a round that ended holds no opening, and the next
+-- round's opening is later than every mark of the round before it. No statement is owed on the way
+-- back, so this header carries none.
+alter table claims add column update_hold_told_at timestamptz;
+alter table claims add column update_asked_again_at timestamptz;

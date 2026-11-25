@@ -504,6 +504,12 @@ type Claim struct {
 	// process there. Three functions of internal/daemon read it: podLocator, awaitsRoundPod and
 	// podProcess. The doc of awaitsRoundPod says what the round does with such a claim.
 	AwaitsPod *runtime.Locator
+	// AwaitsPodSince is when the wait for that pod began: the refusal that began it, not a retry
+	// of it (startWaitsForPodRound), and the zero time where AwaitsPod is nil. It is memory only,
+	// as AwaitsPod is, and Machine.Claim and View report it beside AwaitsPod. The daemon's update
+	// round reads it to tell the operator's side once of each wait that begins on a pod the work
+	// hold keeps (internal/daemon's tellWaitingLaunches), and not at each minute's retry.
+	AwaitsPodSince time.Time
 	// RegisteredPods is the set of pods, by uid, in which an agent of this claim registered a
 	// session, as its machine knows it: each registration adds the pod of the process that
 	// registered (register), and a process in no pod (a tmux pane, a locator with no pod) adds
@@ -568,6 +574,23 @@ type Claim struct {
 	// UpdateToldAt is when this round was last reported to the operator's side, so one round is
 	// not reported again at every sweep that finds it open.
 	UpdateToldAt *time.Time
+	// UpdateHoldToldAt is when the daemon told this claim's role that its round waits for the
+	// tree's work hold, and nil until it did (Machine.PodUpdateHoldTold, internal/daemon's
+	// liftAnswerHolds): the round's read of the workspace kept the pod for the work of a claim the
+	// work hold stopped, so the round cannot end before the hold's opening or a read that finds
+	// that work pushed. While it is set, this claim's answer holds none of its tasks
+	// (answeredOpenRound), and the answer still counts for the round, so the round does not ask
+	// the claim again at each sweep. The round's ask again clears it (Machine.PodUpdateAskedAgain),
+	// and so does the round's end.
+	UpdateHoldToldAt *time.Time
+	// UpdateAskedAgainAt is when the round asked this claim again, and nil while it has not: the
+	// work hold kept the round's pod and lifted the hold of this claim's answer on its tasks
+	// (UpdateHoldToldAt), and the replacement can be made again, at the hold's opening or once a
+	// read finds the held work pushed (internal/daemon's askRoundAgain). The round's new bound
+	// starts at the latest such stamp of its claims and not at the opening (internal/daemon's
+	// roundStartedAt, roundBound), so every role the round asks gets the round's whole grace once
+	// more. A later ask again moves it on, and the round's end clears it.
+	UpdateAskedAgainAt *time.Time
 	// UpdateLeftRound is the pod round this claim left, and "" when it has left none: the daemon
 	// started the claim's process again in another pod than the one that round was opened over
 	// (launchAfter).
@@ -1869,6 +1892,10 @@ type Machine struct {
 	// the launch, so a sweep that reads the claim while that try runs still finds the pod; that
 	// try's outcome then settles it (launchTries). Memory only, as podRoundWaiting is.
 	awaitsPod *runtime.Locator
+	// awaitsPodSince is when the wait awaitsPod is for began: the refusal that began it, which
+	// startWaitsForPodRound stamps, and not a retry of it. It is what Claim.AwaitsPodSince reports
+	// while awaitsPod is set (current). Memory only, as awaitsPod is.
+	awaitsPodSince time.Time
 	// registeredPods is the set of pods an agent of the claim registered a session in: what
 	// Claim.RegisteredPods reports (current). NewMachine reads it off the claim it is built over
 	// (bootRegisteredPods), and register adds to it; nothing else writes it, so neither letGo nor a
@@ -2289,6 +2316,78 @@ func (m *Machine) ReleaseUncertainLaunch(ctx context.Context) (bool, error) {
 // it makes then.
 func (m *Machine) PodUpdateTold(ctx context.Context, round string) (bool, error) {
 	return m.markRound(ctx, round, &m.claim.UpdateToldAt)
+}
+
+// PodUpdateHoldTold lifts the hold this claim's answer to round puts on its tasks, because the
+// tree's work hold keeps the round's pod (internal/daemon's liftAnswerHolds): the round's read of
+// the workspace found work of a claim the hold stopped that origin does not hold, failed, or could
+// not be made, so the round cannot end before the hold's opening or a read that finds that work
+// pushed, and the answer would hold the claim's every task until then. tell queues the message
+// that tells the claim's role so, on the outbox; it must not call into this machine, whose lock
+// it runs under. Once tell has queued it, the mark is stamped (Claim.UpdateHoldToldAt), and the
+// task the answer was holding is sent (sendPending). The answer itself stands: the round still
+// counts it, and asks the claim nothing more until it asks the claim again once the replacement
+// can be made (PodUpdateAskedAgain).
+//
+// It does nothing and reports false where the claim is not in round, has not answered it, left
+// it (Claim.LeftPodRound), was told already, or has no agent that said it is ready (SaidReady): a
+// message to a role no live session holds raises a wake of that role, and the answer of a claim
+// with no process holds nothing that runs. A write the store refuses takes the stamp back and is
+// returned with false, so the next sweep tells the role again: one message more, never a hold
+// left on a task. It is no event, as PodUpdateTold is none: the sweep decides that the hold keeps
+// the pod, and the mark is bookkeeping of that decision.
+func (m *Machine) PodUpdateHoldTold(ctx context.Context, round string, tell func(context.Context) error) (bool, error) {
+	m.mu.Lock()
+	defer m.unlock()
+	c := m.claim
+	if c.UpdateRound != round || c.UpdateSignalledAt == nil || c.UpdateHoldToldAt != nil || c.LeftPodRound(round) || !SaidReady(c.State) {
+		return false, nil
+	}
+	if err := tell(ctx); err != nil {
+		return false, err
+	}
+	at := m.deps.Clock.Now()
+	m.claim.UpdateHoldToldAt = &at
+	if err := m.putClaim(ctx); err != nil {
+		m.claim.UpdateHoldToldAt = nil
+		return false, err
+	}
+	return true, m.sendPending(ctx)
+}
+
+// PodUpdateAskedAgain is the round asking this claim again, at at, once the work hold no longer
+// keeps its pod (internal/daemon's askRoundAgain): the hold's opening, or a read that finds the
+// held work pushed. It is asked of a claim whose answer's hold on its tasks the work hold lifted
+// (UpdateHoldToldAt), and of no other: that claim went on with its work, so its answer says
+// nothing of the work it did since. Its answer, its ask mark and its mark of the hold's message go
+// (UpdateSignalledAt, UpdateTaskedAt, UpdateHoldToldAt), so the sweep asks it again, and at is
+// stamped as the start of the round's new bound (UpdateAskedAgainAt). The round's notice mark
+// stays (UpdateToldAt): one round is told late once. A claim that left the round since keeps its
+// answer and its ask, and only its mark of the hold's message goes: the round asks it nothing, and
+// what it had answered when it left is what the round's end reads of it (Claim.LeftPodRound).
+//
+// It does nothing and reports false where the claim is not in round or carries no mark of the
+// hold's message, so a second call for the same ask clears no answer given to it. A write the store
+// refuses puts every field back and is returned with false, and the claim still carries its mark,
+// so the sweep asks again at the next tick. The task the answer was holding is sent, as at any end
+// of an answer (openPodUpdate).
+func (m *Machine) PodUpdateAskedAgain(ctx context.Context, round string, at time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.unlock()
+	if m.claim.UpdateRound != round || m.claim.UpdateHoldToldAt == nil {
+		return false, nil
+	}
+	before := m.claim
+	m.claim.UpdateHoldToldAt = nil
+	if !m.claim.LeftPodRound(round) {
+		m.claim.UpdateAskedAgainAt = &at
+		m.claim.UpdateTaskedAt, m.claim.UpdateSignalledAt, m.claim.UpdateHead = nil, nil, ""
+	}
+	if err := m.putClaim(ctx); err != nil {
+		m.claim = before
+		return false, err
+	}
+	return true, m.sendPending(ctx)
 }
 
 // ErrMachineBusy is PublishUpdateAsk finding the machine's lock held — a decision in flight, or
@@ -2783,6 +2882,9 @@ func (m *Machine) current() Claim {
 	c.Compacting = m.compacting != nil
 	c.ProcessGone = m.processGone
 	c.AwaitsPod = cloneLocator(m.awaitsPod)
+	if m.awaitsPod != nil {
+		c.AwaitsPodSince = m.awaitsPodSince
+	}
 	c.RegisteredPods = m.registeredPods.clone()
 	return c
 }
@@ -2791,10 +2893,11 @@ func (m *Machine) current() Claim {
 // its own, and the store holds none of the fields current overlays on the claim the machine
 // reports: a suspension held for its turn (SuspensionHeld, SuspensionHeldBy), a compaction in
 // flight (Compacting), a process the runtime reported gone (ProcessGone), the pod a launch waits
-// on (AwaitsPod) and the pods an agent of the claim registered in (RegisteredPods). Only the
-// machine holds them, in memory, and internal/store writes none of them, so the one statement
-// below clears every one, and no stored claim, nor a claim compared with one, carries any of
-// them. A field that current comes to overlay belongs in that statement too.
+// on and when that wait began (AwaitsPod, AwaitsPodSince) and the pods an agent of the claim
+// registered in (RegisteredPods). Only the machine holds them, in memory, and internal/store
+// writes none of them, so the one statement below clears every one, and no stored claim, nor a
+// claim compared with one, carries any of them. A field that current comes to overlay belongs in
+// that statement too.
 //
 // No caller needs one of them on the claim it hands the store: the machine's own writes hand it
 // the claim the machine holds, which carries none of them (stored); the boot's repair hands it a
@@ -2802,8 +2905,8 @@ func (m *Machine) current() Claim {
 // hands it the claim one of those writes built (internal/daemon's projectPause.stopTx). Call
 // NormalizeClaim before this when c will also construct a machine.
 func StoredClaim(c Claim) Claim {
-	c.Pending, c.SuspensionHeld, c.SuspensionHeldBy, c.Compacting, c.ProcessGone, c.AwaitsPod, c.RegisteredPods =
-		nil, false, "", false, false, nil, RegisteredPods{}
+	c.Pending, c.SuspensionHeld, c.SuspensionHeldBy, c.Compacting, c.ProcessGone, c.AwaitsPod, c.AwaitsPodSince, c.RegisteredPods =
+		nil, false, "", false, false, nil, time.Time{}, RegisteredPods{}
 	return c
 }
 
@@ -3695,12 +3798,16 @@ const podRoundWaitLine = "supervise: this start waits for its pod's update round
 // The claim records no process while it waits, and it may be its issue's only claim, so it keeps
 // the pod the refusal names (awaitsPod, Claim.AwaitsPod): that is what the daemon's update round
 // opens over and replaces the pod through, where no claim records a process in it. Without it no
-// round would come, and this wait would never end. The write below publishes it, before the
-// retry is due.
+// round would come, and this wait would never end. The refusal that begins the wait stamps when it
+// began (awaitsPodSince, Claim.AwaitsPodSince), and a retry keeps that stamp, so the daemon tells
+// the operator's side once of each wait on a pod the work hold keeps, not at each retry
+// (internal/daemon's tellWaitingLaunches). The write below publishes both, before the retry is
+// due.
 func (m *Machine) startWaitsForPodRound(ctx context.Context, cause error, charged, exempt, waiting bool) error {
 	err := errors.Join(cause, m.stopPrevious(ctx))
 	if !waiting {
 		m.log.Warn(podRoundWaitLine, "generation", m.claim.Generation, "retry", podRoundRetry, "error", err)
+		m.awaitsPodSince = m.deps.Clock.Now()
 	}
 	m.relaunchLater(podRoundRetry, func(ctx context.Context) error {
 		return m.launchAfter(ctx, charged, exempt, false, time.Time{}, noEnd)

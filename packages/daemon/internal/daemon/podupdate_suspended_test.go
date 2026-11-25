@@ -322,8 +322,11 @@ const heldWorkKeepsLine = "supervise: the work hold stopped a claim of this upda
 // the daemon keeps no copy of. The round reads the issue workspace through the role the pod is
 // replaced through, as an idle release's check does, and where the read finds work that origin
 // does not hold it does not replace the pod: a line names the issue, the held claim and what the
-// read found, and the round stays open. The next sweep reads again, and once a read finds nothing
-// unpushed the pod is replaced.
+// read found, and the round stays open. Each worker that answered is told once, on its role's
+// topic, that the round waits for the hold, and its answer holds none of its tasks from then on.
+// The next sweep reads again, and once a read finds nothing unpushed the round asks each such
+// worker again, since its earlier answer says nothing of the work it did since, and replaces the
+// pod only once each has answered again.
 func TestWorkHoldAnUpdateRoundKeepsThePodWhileTheWorkspaceHoldsTheHeldWork(t *testing.T) {
 	const held = claim.RolePlanner
 	workers := []claim.Role{claim.RoleImplementer, claim.RoleTester}
@@ -360,8 +363,39 @@ func TestWorkHoldAnUpdateRoundKeepsThePodWhileTheWorkspaceHoldsTheHeldWork(t *te
 		t.Fatalf("after the kept replacement the %s is in round %q, want the round still open", held, c.UpdateRound)
 	}
 
+	var told []string
+	for _, row := range rig.rows(record.OutboxKindRoleMessage) {
+		payload, err := record.DecodeOutboxPayload(row)
+		if err != nil {
+			t.Fatalf("decode role message %d: %v", row.ID, err)
+		}
+		if message := payload.(record.RoleMessage); message.Body == heldRoundWaits {
+			told = append(told, message.Role)
+		}
+	}
+	if want := []string{string(rig.tokens[workers[0]]), string(rig.tokens[workers[1]])}; !slices.Equal(slices.Sorted(slices.Values(told)), slices.Sorted(slices.Values(want))) {
+		t.Fatalf("the round told %v that it waits for the hold, want each worker that answered once: %v", told, want)
+	}
+
 	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead})
-	replaced := rig.awaitReplacement(1, "once a read found the held claim's work pushed")
+	for _, role := range workers {
+		rig.awaitSwept(role, "its answer taken back once a read found the held claim's work pushed", func(c supervise.Claim) bool {
+			return c.UpdateRound == podUpdateRound && c.UpdateSignalledAt == nil
+		})
+	}
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("the pod was replaced %d times before the workers answered the round again, want none", len(calls))
+	}
+	for _, role := range workers {
+		rig.awaitAsked(role, podUpdateRound)
+	}
+	rig.signal(workers[0], "a1b2c3d")
+	rig.sweepSettled()
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("the pod was replaced %d times before the %s answered the round again, want none", len(calls), workers[1])
+	}
+	rig.signal(workers[1], "a1b2c3d")
+	replaced := rig.awaitReplacement(1, "once a read found the held claim's work pushed and each worker answered again")
 	through, _ := replaced[0].Pod.Claim.Role()
 	if !slices.Contains(workers, through) {
 		t.Fatalf("the pod was replaced through %+v, want a worker's process", replaced[0].Pod)
@@ -382,8 +416,10 @@ func TestWorkHoldAnUpdateRoundKeepsThePodWhileTheWorkspaceHoldsTheHeldWork(t *te
 // round's bound has come the operator's side is told once, naming the held work. The round still
 // asks the held claim nothing. Once a role runs in the pod again — here the tester, which the
 // operator resumes into the round's own pod, kept for the held work — the round reads the
-// workspace through that role's process and replaces the pod where the read finds nothing
-// unpushed.
+// workspace through that role's process. The tester answered while the hold kept the pod, so its
+// answer holds none of its tasks; once the read finds nothing unpushed the round asks it again,
+// under a bound of the round's own length from that ask, and replaces the pod once it answered
+// again.
 func TestWorkHoldAnUpdateRoundKeepsAPodWithNoProcessToReadTheHeldWork(t *testing.T) {
 	const held, worker = claim.RolePlanner, claim.RoleTester
 	rig := newPodUpdateRig(t,
@@ -421,8 +457,21 @@ func TestWorkHoldAnUpdateRoundKeepsAPodWithNoProcessToReadTheHeldWork(t *testing
 	}
 	rig.signal(worker, "a1b2c3d")
 	rig.settleAll()
-
-	rig.awaitReplacement(1, "once a role process runs in the pod to read the held work")
+	rig.awaitSwept(worker, "its answer taken back once the read through it found nothing unpushed", func(c supervise.Claim) bool {
+		return c.UpdateRound == podUpdateRound && c.UpdateSignalledAt == nil
+	})
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("the pod was replaced %d times before the %s answered the round again, want none", len(calls), worker)
+	}
+	rig.awaitAsked(worker, podUpdateRound)
+	asks := rig.asks()
+	if want := "The round ends at " + podUpdateBound.Add(podUpdateGrace).UTC().Format(time.RFC3339); len(asks) == 0 ||
+		asks[len(asks)-1].Role != worker || !strings.Contains(asks[len(asks)-1].Text, want) {
+		t.Fatalf("the round's asks are %+v, want the last one the %s's, saying %q: a bound of the round's own length from the ask again", asks, worker, want)
+	}
+	rig.signal(worker, "a1b2c3d")
+	rig.settleAll()
+	rig.awaitReplacement(1, "once a role process runs in the pod to read the held work and the tester answered again")
 	if reads := rig.rt.CallsOf("WorkspaceWork"); len(reads) == 0 || reads[len(reads)-1].Role != worker {
 		t.Fatalf("the workspace was read %+v, want a read through the %s before the replacement", reads, worker)
 	}

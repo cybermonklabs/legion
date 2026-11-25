@@ -59,7 +59,7 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.last_start_failure, c.last_start_failure_at, c.last_start_failure_digest, c.last_ready,
 	c.turn_outcomes, c.abandoned_session, c.ended_work,
 	c.update_round, c.update_reasons, c.update_opened_at, c.update_tasked_at, c.update_signalled_at,
-	c.update_head, c.update_told_at,
+	c.update_head, c.update_told_at, c.update_hold_told_at, c.update_asked_again_at,
 	c.update_left_round, c.provider_error_run, c.death_charged,
 	c.step_at, c.turn_started_at, c.step_tool, c.step_call_id, c.step_args_bytes,
 	c.step_args_hash, c.step_started_at, c.step_ended_at,
@@ -432,7 +432,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		last_turn_start, last_turn_end,
 		last_death_cause, last_start_failure, last_ready, turn_outcomes, abandoned_session,
 		update_round, update_reasons, update_opened_at, update_tasked_at, update_signalled_at,
-		update_head, update_told_at,
+		update_head, update_told_at, update_hold_told_at, update_asked_again_at,
 		update_left_round, provider_error_run, serving_check_look, serving_check_opened_at, death_charged,
 		pod_end, failure_cause, failed_at, pending_cause, leak_check_cause, ended_work,
 		handshake_entry, handshake_generation, handshake_queued_at, handshake_confirmed_at,
@@ -440,7 +440,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		retired_at_write_mark)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
 		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
-		$55, $56, $57, $58, $59, $60, $61, $62, $63,
+		$55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
@@ -478,6 +478,8 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		update_opened_at = excluded.update_opened_at, update_tasked_at = excluded.update_tasked_at,
 		update_signalled_at = excluded.update_signalled_at, update_head = excluded.update_head,
 		update_told_at = excluded.update_told_at,
+		update_hold_told_at = excluded.update_hold_told_at,
+		update_asked_again_at = excluded.update_asked_again_at,
 		update_left_round = excluded.update_left_round,
 		provider_error_run = excluded.provider_error_run,
 		serving_check_look = excluded.serving_check_look,
@@ -527,7 +529,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		instant(c.LastTurnStart), instant(c.LastTurnEnd),
 		c.LastDeathCause, c.LastStartFailure, instant(c.LastReady), outcomes, abandoned,
 		c.UpdateRound, c.UpdateReasons, c.UpdateOpenedAt, c.UpdateTaskedAt, c.UpdateSignalledAt,
-		c.UpdateHead, c.UpdateToldAt,
+		c.UpdateHead, c.UpdateToldAt, c.UpdateHoldToldAt, c.UpdateAskedAgainAt,
 		c.UpdateLeftRound, c.ProviderErrorRun, c.ServingCheckLook.Look, instant(c.ServingCheckLook.OpenedAt), c.DeathCharged,
 		c.PodEnd, string(c.FailureCause), instant(c.FailedAt), string(c.PendingCause), c.LeakCheckCause, endedWork,
 		c.Handshake.Entry, int64(c.Handshake.Generation), instant(c.Handshake.QueuedAt), instant(c.Handshake.ConfirmedAt),
@@ -913,6 +915,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		endedWork                   []byte
 		updateOpened, updateTasked  *time.Time
 		updateSignalled, updateTold *time.Time
+		updateHoldTold, askedAgain  *time.Time
 		kept, news, carried         []byte
 		ran, newsOnly               bool
 		retries                     *int64
@@ -937,7 +940,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&c.LastDeathCause, &deathAt, &deathDigest, &c.LastStartFailure, &startFailureAt, &failureDigest, &lastReady,
 		&outcomes, &abandoned, &endedWork,
 		&c.UpdateRound, &c.UpdateReasons, &updateOpened, &updateTasked, &updateSignalled,
-		&c.UpdateHead, &updateTold,
+		&c.UpdateHead, &updateTold, &updateHoldTold, &askedAgain,
 		&c.UpdateLeftRound, &c.ProviderErrorRun, &c.DeathCharged,
 		&stepAt, &turnStarted, &c.Step.Tool, &c.Step.CallID, &c.Step.ArgsBytes,
 		&c.Step.ArgsHash, &stepStarted, &stepEnded,
@@ -1001,6 +1004,11 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		c.LastStartFailureAt = time.Time{}
 	}
 	c.UpdateOpenedAt, c.UpdateTaskedAt, c.UpdateSignalledAt, c.UpdateToldAt = updateOpened, updateTasked, updateSignalled, updateTold
+	// A mark of the work hold's round is read back only beside the opening of the round it marks:
+	// the release before writes neither column, so a round it ended or opened over a row keeps a
+	// mark of an earlier round, which is older than the opening the row holds now
+	// (20261125105345_claim_round_hold_marks).
+	c.UpdateHoldToldAt, c.UpdateAskedAgainAt = sinceOpening(updateHoldTold, updateOpened), sinceOpening(askedAgain, updateOpened)
 	c.Step.At, c.Step.TurnStartedAt = orZero(stepAt), orZero(turnStarted)
 	c.Step.StartedAt, c.Step.EndedAt = orZero(stepStarted), orZero(stepEnded)
 	// Both activity moments are nullable (migration 20261101214123_claim_session_activity): a
@@ -1110,6 +1118,17 @@ func causeTime(cause string, at *time.Time, digest []byte) time.Time {
 		return time.Time{}
 	}
 	return *at
+}
+
+// sinceOpening is a mark of the claim's update round as the row holds it, or nil where the row
+// holds none, holds no opening, or holds a mark older than its opening: a mark of an earlier round,
+// which the release before left on the row as it ended that round or opened the next one, since it
+// writes neither mark (20261125105345_claim_round_hold_marks).
+func sinceOpening(mark, opened *time.Time) *time.Time {
+	if mark == nil || opened == nil || mark.Before(*opened) {
+		return nil
+	}
+	return mark
 }
 
 // causeDigest is the digest upsertClaim writes beside a cause's time, in the same statement: nil

@@ -729,8 +729,15 @@ func (m *Machine) supersedes(p Delivery, request RequestDeliver) bool {
 // its process may be replaced at any moment. The answer stands for the round, whatever turn
 // starts after it, so the hold does too until the round ends (dispatch://INFRA-2981 R5, R9).
 // sendPending hands such a claim nothing, and NewMachine reads it through openRoundHoldsTask.
+//
+// The one exception is a round whose pod the tree's work hold keeps (Claim.UpdateHoldToldAt): the
+// round's read of the workspace kept the pod for the work of a claim the hold stopped, so the
+// round cannot end before the hold's opening or a read that finds that work pushed, and a hold
+// on the claim's tasks until then would stop an architect for the whole work hold. Once the
+// claim's role is told that the round waits for the hold (PodUpdateHoldTold), its answer holds
+// nothing, and the round asks it again before it replaces the pod (PodUpdateAskedAgain).
 func (c Claim) answeredOpenRound() bool {
-	return c.UpdateRound != "" && c.UpdateSignalledAt != nil
+	return c.UpdateRound != "" && c.UpdateSignalledAt != nil && c.UpdateHoldToldAt == nil
 }
 
 // openRoundHoldsTask is whether the claim's open round holds the task the claim has pending: the

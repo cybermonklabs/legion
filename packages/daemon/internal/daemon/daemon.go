@@ -1803,6 +1803,39 @@ type supervision struct {
 	// a runtime call, because the hook runs on a launching machine's goroutine beside the sweep.
 	podUpdateLaunchMu       sync.Mutex
 	podUpdateLaunchReplaced map[string]*launchRound
+	// podUpdateWaitsMu guards podUpdateWaitsTold, what the update-round sweep keeps between ticks
+	// of the launches that wait on a pod the work hold keeps (tellWaitingLaunches): by claim, the
+	// start of the wait the operator's side was last told of (supervise.Claim.AwaitsPodSince), so
+	// each wait is told once, and not at each sweep or at each minute's retry of the launch. The
+	// entry of a claim whose launch waits on no pod goes at the next sweep of its issue that keeps
+	// the pod. Nothing of it is in the store: the start of the wait is the claim's machine's memory
+	// (supervise's startWaitsForPodRound), so a restart forgets both, and the first refusal of the
+	// restarted daemon begins a new wait, which is told. The sweep is its one goroutine.
+	podUpdateWaitsMu   sync.Mutex
+	podUpdateWaitsTold map[claim.Token]time.Time
+	// podUpdateHeldMu guards podUpdateHeld, what the update-round sweep keeps between ticks of the
+	// rounds whose pod the work hold keeps: by issue, the round whose last replacement attempt
+	// held work kept from its replacement (heldWorkKeepsPod: the read of the workspace found work
+	// that origin does not hold, failed, or could not be made). While the hold still stops a claim
+	// of that round, the walk lifts the hold of an answer given since on its claim's tasks at each
+	// sweep (liftAnswerHolds), and does not wait for the round to reach its replacement again.
+	//
+	// The walk reads the keep from the store where the store holds it: the marks of the answers
+	// the keep lifted (supervise.Claim.UpdateHoldToldAt). It is kept here for the one case the
+	// store cannot say: a keep that lifted no answer yet. The store holds the claims the hold
+	// stopped, but not what the read found, and the walk makes no read of the workspace; only the
+	// replacement makes one, through a role process in the pod (readRoundWorkspace). A round whose
+	// pod had no role process at its keep (replacementByIssue) is the case: a claim that answered
+	// before it was released and is woken into the kept pod holds its task behind its answer, and
+	// its process has sent no report yet, which holds the round from its replacement, and so from
+	// the read, until the bound. The entry goes where the round asks its claims again
+	// (askRoundAgain), where the sweep ends the round (endPodUpdates), and where the sweep finds the
+	// issue in another round or in none (forgetHeldWorks). A restart forgets it, and the walk reads
+	// the keep from the stored marks alone then: a round whose keep lifted an answer is read kept
+	// from them, and one that lifted none is kept again at its next replacement attempt, which
+	// writes the entry again. The sweep is its one goroutine.
+	podUpdateHeldMu sync.Mutex
+	podUpdateHeld   map[string]string
 	// reportStore persists each report as it arrives (store.Store), so a restart renders the
 	// sessions it re-adopts without waiting for them to report again.
 	reportStore capabilityReportStore
