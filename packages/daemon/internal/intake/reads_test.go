@@ -41,8 +41,8 @@ func (h *probeHandler) Apply(ctx context.Context, _ pgx.Tx, _ Fact) (Result, err
 	return Result{}, nil
 }
 
-// tryFactLock tries the lock every fact applies under (SerializeFacts) on a connection of raw of
-// its own, and lets it go again where it got it.
+// tryFactLock tries, on a connection of raw of its own, the lock every fact applies under
+// (SerializeFacts). It lets the lock go again where it got it.
 func tryFactLock(ctx context.Context, raw *pgxpool.Pool) (bool, error) {
 	conn, err := raw.Acquire(ctx)
 	if err != nil {
@@ -64,6 +64,17 @@ func tryFactLock(ctx context.Context, raw *pgxpool.Pool) (bool, error) {
 // turnGuard is how long a probe waits for the pool's turn before it gives up.
 const turnGuard = 500 * time.Millisecond
 
+// applyProbing applies one fact on pool with a handler that runs probe, in its Apply too where
+// inApply is set, and answers the handler.
+func applyProbing(t *testing.T, pool store.TxPool, eventID string, probe func(ctx context.Context) (bool, error), inApply bool) *probeHandler {
+	t.Helper()
+	handler := &probeHandler{probe: probe, inApply: inApply}
+	if _, err := ApplyFact(context.Background(), pool, "test", eventID, DispatchConsumerPosition{AckFloorStream: 1}, handler); err != nil {
+		t.Fatalf("ApplyFact: %v", err)
+	}
+	return handler
+}
+
 // A handler that reads before a fact's transaction (Reader) reads outside it. Its read holds no
 // fact lock, and no pool's turn, so a read that waits holds up no other fact.
 //   - The fact lock: inside ReadFact, another connection takes the fact lock and gets it. The
@@ -78,15 +89,8 @@ func TestApplyFactReadsBeforeItsTransaction(t *testing.T) {
 	t.Run("the fact lock", func(t *testing.T) {
 		t.Parallel()
 		raw := migratedPool(t)
-		apply := func(t *testing.T, eventID string, inApply bool) *probeHandler {
-			t.Helper()
-			handler := &probeHandler{probe: func(ctx context.Context) (bool, error) { return tryFactLock(ctx, raw) }, inApply: inApply}
-			if _, err := ApplyFact(ctx, raw, "test", eventID, DispatchConsumerPosition{AckFloorStream: 1}, handler); err != nil {
-				t.Fatalf("ApplyFact: %v", err)
-			}
-			return handler
-		}
-		handler := apply(t, "lock-in-read", false)
+		lock := func(ctx context.Context) (bool, error) { return tryFactLock(ctx, raw) }
+		handler := applyProbing(t, raw, "lock-in-read", lock, false)
 		if len(handler.read) != 1 {
 			t.Fatalf("ApplyFact ran ReadFact %d times, want once, before the fact's transaction", len(handler.read))
 		}
@@ -94,7 +98,7 @@ func TestApplyFactReadsBeforeItsTransaction(t *testing.T) {
 			t.Fatalf("inside ReadFact another connection got the fact lock %t (%v), want true: the read ran under the fact lock", got.got, got.err)
 		}
 		t.Run("control: the same probe inside the transaction", func(t *testing.T) {
-			handler := apply(t, "lock-in-apply", true)
+			handler := applyProbing(t, raw, "lock-in-apply", lock, true)
 			if len(handler.applied) != 1 || handler.applied[0].err != nil || handler.applied[0].got {
 				t.Fatalf("inside the fact's transaction the probe got %+v, want one run that did not get the fact lock", handler.applied)
 			}
@@ -113,15 +117,7 @@ func TestApplyFactReadsBeforeItsTransaction(t *testing.T) {
 			release()
 			return true, nil
 		}
-		apply := func(t *testing.T, eventID string, inApply bool) *probeHandler {
-			t.Helper()
-			handler := &probeHandler{probe: takeTurn, inApply: inApply}
-			if _, err := ApplyFact(ctx, pool, "test", eventID, DispatchConsumerPosition{AckFloorStream: 1}, handler); err != nil {
-				t.Fatalf("ApplyFact: %v", err)
-			}
-			return handler
-		}
-		handler := apply(t, "turn-in-read", false)
+		handler := applyProbing(t, pool, "turn-in-read", takeTurn, false)
 		if len(handler.read) != 1 {
 			t.Fatalf("ApplyFact ran ReadFact %d times, want once, before the fact took its pool's turn", len(handler.read))
 		}
@@ -129,7 +125,7 @@ func TestApplyFactReadsBeforeItsTransaction(t *testing.T) {
 			t.Fatalf("inside ReadFact the pool's turn was taken %t (%v), want true: the read ran while the fact held the turn", got.got, got.err)
 		}
 		t.Run("control: the same probe inside the transaction", func(t *testing.T) {
-			handler := apply(t, "turn-in-apply", true)
+			handler := applyProbing(t, pool, "turn-in-apply", takeTurn, true)
 			if len(handler.applied) != 1 || handler.applied[0].got || !errors.Is(handler.applied[0].err, context.DeadlineExceeded) {
 				t.Fatalf("inside the fact's transaction the probe got %+v, want one run that waited out its guard of %s for the turn", handler.applied, turnGuard)
 			}

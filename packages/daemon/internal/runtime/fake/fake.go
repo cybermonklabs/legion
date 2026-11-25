@@ -611,22 +611,16 @@ func (r *Runtime) Probe(_ context.Context, loc runtime.Locator) (runtime.Observa
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, Call{Method: "Probe", Locator: loc})
-	kind, detail, outOfMemory := runtime.Alive, "", false
-	var next *ProbeResult
+	next := ProbeResult{Kind: runtime.Alive}
 	if own := r.probesOf[loc.Claim]; len(own) > 0 {
-		first := own[0]
-		next, r.probesOf[loc.Claim] = &first, own[1:]
+		next, r.probesOf[loc.Claim] = own[0], own[1:]
 	} else if len(r.probes) > 0 {
-		first := r.probes[0]
-		next, r.probes = &first, r.probes[1:]
+		next, r.probes = r.probes[0], r.probes[1:]
 	}
-	if next != nil {
-		if next.Err != nil {
-			return runtime.Observation{}, next.Err
-		}
-		kind, detail, outOfMemory = next.Kind, next.Detail, next.OutOfMemory
+	if next.Err != nil {
+		return runtime.Observation{}, next.Err
 	}
-	return runtime.Observation{Locator: loc, Kind: kind, At: r.Now(), Detail: detail, OutOfMemory: outOfMemory}, nil
+	return runtime.Observation{Locator: loc, Kind: next.Kind, At: r.Now(), Detail: next.Detail, OutOfMemory: next.OutOfMemory}, nil
 }
 
 // Observe is the sweep. Every observation emitted, before or after this call, reaches the

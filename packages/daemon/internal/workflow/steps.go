@@ -224,8 +224,8 @@ func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, w 
 // end: endRun marks the run ended in the store, in its own transaction (record.Store.EndStepStart),
 // and an end of a run already marked writes nothing and answers false. The end carries that
 // identity, the moment the start wrote, the moment now, end's fields, and the session and the model
-// of one read of the start's agent now, the only write that names either (startStep). It also
-// carries the set model and the answers the reads of the run's agent give (writeCounts).
+// of one read of the start's agent now, the only write that names either (startStep).
+// It also carries the set model and the answers the reads of the run's agent give (writeCounts).
 func (e *Engine) endRun(ctx context.Context, tx pgx.Tx, issue string, place record.StepPlace, end StepEnd, identity func(start record.StepStart) record.StepRecord) (bool, error) {
 	start, ended, err := e.store.EndStepStart(ctx, tx, issue, place)
 	if err != nil || !ended {

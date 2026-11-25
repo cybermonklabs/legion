@@ -30,14 +30,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -70,7 +67,7 @@ func TestAStepRecordCountsTheCallsOfItsAgent(t *testing.T) {
 		if _, after := clock.armed(streamDrainBound); after <= before {
 			t.Fatalf("the planner's completion armed no bound for its read of the planner's calls: %d bounds armed before it, %d after", before, after)
 		}
-		if !testwait.Holds(stepRecordsWait, 20*time.Millisecond, func() bool { live, _ := clock.armed(streamDrainBound); return live == 0 }) {
+		if !testwait.Holds(stepRecordsWait, 20*time.Millisecond, func() bool { return readBoundsArmed(clock) == 0 }) {
 			live, total := clock.armed(streamDrainBound)
 			t.Fatalf("%d of the %d bounds armed for a read stay armed, want each stopped once its reads returned, with none fired", live, total)
 		}
@@ -139,16 +136,20 @@ func TestAStepRecordSaysWhenItDoesNotKnow(t *testing.T) {
 		r.waitModels(r.key, 2, 2, stepModels{result: "passed", setModel: stepRecordsModel, model: stepRecordsModel})
 	})
 	// The implementer's shim loses its connection in the second run while its process lives on.
-	// The architect's stop reads no totals of it, at once, with no bound fired.
+	// The architect's stop reads no totals of it, at once, with no bound fired. The stop answers
+	// although no bound ever fires on the held clock, and no bound stays armed after it.
 	t.Run("an agent with no connection when its step stops", func(t *testing.T) {
 		r := newStepRecordsRig(t, 1)
-		holdReadClock(r)
+		clock := holdReadClock(r)
 		implementer := implementAgain(r)
 		implementer.take()
 		implementer.disconnect()
 		stopTheTask(r)
+		if !testwait.Holds(stepRecordsWait, 20*time.Millisecond, func() bool { return readBoundsArmed(clock) == 0 }) {
+			t.Fatalf("%d bounds of a read stay armed after the stop, want none: a read of %s with no connection waits on no bound", readBoundsArmed(clock), implementer.token)
+		}
 		if read := r.waitEmptyRead(implementer.token, "no connection"); read.Waited != 0 {
-			t.Fatalf("the read of %s with no connection waited %s on the held clock, want 0: it failed at once", implementer.token, read.Waited)
+			t.Fatalf("the read of %s with no connection waited %s on the read's own held clock, want 0", implementer.token, read.Waited)
 		}
 		r.waitModels(r.key, 2, 2, stepModels{result: "stopped", setModel: stepRecordsModel, model: stepRecordsModel})
 	})
@@ -198,8 +199,7 @@ func TestAStepRecordSaysWhenItDoesNotKnow(t *testing.T) {
 	})
 	// The review that asks for changes reads the implementer's launch before its transaction. The
 	// launch then exits with no final totals and is made again. So the fact's only read of the
-	// implementer is of a launch that is gone by its transaction, and the second run's start has no
-	// usable read.
+	// implementer is of a launch gone by its transaction. The second run's start has no usable read.
 	t.Run("a launch that exited after the fact's read", func(t *testing.T) {
 		r := newStepRecordsRig(t, 1)
 		r.plan()
@@ -219,14 +219,11 @@ func TestAStepRecordSaysWhenItDoesNotKnow(t *testing.T) {
 		// before it closes reached.
 		var read uint64
 		r.onRead(func(_ []claim.Token, reads workflow.FactReads) {
-			if !readsClaim(reads, implementer.token) || !acted.CompareAndSwap(false, true) {
+			key, _, ok := readOf(reads, implementer.token)
+			if !ok || !acted.CompareAndSwap(false, true) {
 				return
 			}
-			for key := range reads {
-				if key.Claim == implementer.token {
-					read = key.Generation
-				}
-			}
+			read = key.Generation
 			close(reached)
 			<-done
 		})
@@ -283,7 +280,7 @@ func TestAStepRecordSaysWhenItDoesNotKnow(t *testing.T) {
 		r.publishReview(number, "CHANGES_REQUESTED")
 		r.waitPhaseOf(child, phase.Implementing)
 		childImpl.take()
-		closeTheRoot(r)
+		r.personMoves(record.DoneStatus, "issue.closed", r.title)
 		stopped := r.waitModels(child, 2, 1, stepModels{result: "stopped", setModel: stepRecordsModel, model: stepRecordsModel})
 		// The control: the step's start used a read of the child's implementer. So the log does name
 		// the record's id where the step used a read.
@@ -384,14 +381,11 @@ func TestAStoredReadNewerThanTheFactsReadIsTheOneUsed(t *testing.T) {
 		// before it closes reached.
 		var heldRead uint64
 		r.onRead(func(_ []claim.Token, reads workflow.FactReads) {
-			if !readsClaim(reads, architect.token) || !holding.CompareAndSwap(false, true) {
+			_, held, ok := readOf(reads, architect.token)
+			if !ok || !holding.CompareAndSwap(false, true) {
 				return
 			}
-			for key, read := range reads {
-				if key.Claim == architect.token {
-					heldRead = read.Totals.Read
-				}
-			}
+			heldRead = held.Totals.Read
 			close(reached)
 			<-release
 		})
@@ -567,11 +561,11 @@ func completeAtTheBound(r *stepRecordsRig, clock *heldClock, c *stepClaimant, wo
 	t.Helper()
 	req.HandoffID, req.HandoffVersion = r.writeHandoff(c.session, word)
 	req.GrantID = c.grant()
-	if !testwait.Holds(stepRecordsWait, 20*time.Millisecond, func() bool { live, _ := clock.armed(streamDrainBound); return live == 0 }) {
+	if !testwait.Holds(stepRecordsWait, 20*time.Millisecond, func() bool { return readBoundsArmed(clock) == 0 }) {
 		t.Fatalf("a bound of an earlier read stays armed before the %s's completion", c.role)
 	}
 	answered := postAside(r, "/legion/v1/handoff/complete", req)
-	if !testwait.Holds(stepRecordsWait, 20*time.Millisecond, func() bool { live, _ := clock.armed(streamDrainBound); return live > 0 }) {
+	if !testwait.Holds(stepRecordsWait, 20*time.Millisecond, func() bool { return readBoundsArmed(clock) > 0 }) {
 		t.Fatalf("the %s's completion armed no bound for its read of the %s's calls within %s", c.role, c.role, stepRecordsWait)
 	}
 	select {
@@ -629,59 +623,21 @@ func postAside(r *stepRecordsRig, path string, body any) <-chan asideAnswer {
 	return answered
 }
 
-// readsClaim says whether reads hold a read of a launch of token's claim.
-func readsClaim(reads workflow.FactReads, token claim.Token) bool {
-	for key := range reads {
+// readBoundsArmed is how many bounds of a read of an agent's calls stand armed on clock now.
+func readBoundsArmed(clock *heldClock) int {
+	live, _ := clock.armed(streamDrainBound)
+	return live
+}
+
+// readOf is the read reads hold of a launch of token's claim, and false where they hold none. A
+// fact reads one launch of each claim, the one its machine runs (readTotals).
+func readOf(reads workflow.FactReads, token claim.Token) (record.LaunchKey, record.LaunchRead, bool) {
+	for key, read := range reads {
 		if key.Claim == token {
-			return true
+			return key, read, true
 		}
 	}
-	return false
-}
-
-// closeTheRoot is a person moving the walk's issue to done in Dispatch, and the event Dispatch relays
-// for that write. The daemon's consumer reads it as it reads any issue event (todoAgain).
-func closeTheRoot(r *stepRecordsRig) {
-	t := r.t
-	t.Helper()
-	var moved createdIssue
-	r.person(http.MethodPatch, "/api/v1/issues/"+r.key, map[string]any{"status": record.DoneStatus}, http.StatusOK, &moved)
-	payload, err := json.Marshal(map[string]any{
-		"id": moved.LastSeq, "issue_key": r.key, "project": r.cfg.Project, "seq": moved.LastSeq, "type": "issue.closed",
-		"actor": map[string]string{"kind": "user", "id": "a-person"}, "notify": true, "created_at": time.Now().UTC().Format(time.RFC3339Nano),
-		"payload": map[string]any{
-			"key": r.key, "status": record.DoneStatus, "title": r.title, "parent": nil, "rank": moved.Rank,
-			"labels": liveDispatchLabels(true), "last_seq": moved.LastSeq, "project": r.cfg.Project, "resolved_repo": liveRepo,
-		},
-	})
-	if err != nil {
-		t.Fatalf("encode the Dispatch event of %s: %v", r.key, err)
-	}
-	r.publish("notifications.dispatch.issue."+r.key+".issue.closed", "dispatch", fmt.Sprintf("%s-done-%d", r.key, moved.LastSeq), string(payload))
-}
-
-// seedChildOn is seedChildInReviewing for a child titled title on pull request number. So two
-// children of one root can each stand on a pull request of its own. It answers the child's key.
-func (r *stepRecordsRig) seedChildOn(number int, title string) string {
-	t := r.t
-	t.Helper()
-	var created createdIssue
-	r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": title}, http.StatusCreated, &created)
-	parent := r.key
-	ctx := context.Background()
-	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		if err := r.records.PutIssue(ctx, tx, record.Issue{
-			Key: created.Key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: r.key, Parent: &parent, Project: r.cfg.Project,
-			Title: title, Phase: phase.Reviewing, Generation: 1, Status: "needs_review", DispatchStatus: "needs_review",
-			Rank: created.Rank, LastDispatchSeq: created.LastSeq, HandedOver: true,
-		}); err != nil {
-			return err
-		}
-		return r.records.PutPullRequest(ctx, tx, stepRecordsPullRequest(created.Key, number))
-	}); err != nil {
-		t.Fatalf("seed %s: %v", created.Key, err)
-	}
-	return created.Key
+	return record.LaunchKey{}, record.LaunchRead{}, false
 }
 
 // stepModels is what a record of a step must say of its models. It holds the record's result, its
@@ -755,22 +711,19 @@ func answerOf(model string, calls int64) stepAnswerRead {
 	return stepAnswerRead{Model: model, Calls: calls}
 }
 
-// waitUsedRead waits for the daemon's log to hold a line of a read a step used that satisfies holds,
-// and answers the first such line. The failure names what each of those lines says.
+// waitUsedRead waits for the daemon's log to hold a line of a read a step used that satisfies
+// holds, and answers the first such line. The failure names what each of those lines says.
 func (r *stepRecordsRig) waitUsedRead(what string, holds func(usedRead) bool) usedRead {
 	r.t.Helper()
 	var found usedRead
-	if !testwait.Holds(stepRecordsWait, 50*time.Millisecond, func() bool {
-		for _, line := range r.usedReads() {
-			if holds(line) {
-				found = line
-				return true
-			}
+	waitRead(r, what, "the daemon's log", 50*time.Millisecond, func() ([]usedRead, error) { return r.usedReads(), nil }, func(lines []usedRead) error {
+		i := slices.IndexFunc(lines, holds)
+		if i < 0 {
+			return fmt.Errorf("the reads its steps used are %+v", lines)
 		}
-		return false
-	}) {
-		r.t.Fatalf("the daemon's log never held %s, and the reads its steps used are %+v", what, r.usedReads())
-	}
+		found = lines[i]
+		return nil
+	})
 	return found
 }
 
@@ -779,16 +732,14 @@ func (r *stepRecordsRig) waitUsedRead(what string, holds func(usedRead) bool) us
 func (r *stepRecordsRig) waitEmptyRead(token claim.Token, reason string) emptyRead {
 	r.t.Helper()
 	var found emptyRead
-	if !testwait.Holds(stepRecordsWait, 50*time.Millisecond, func() bool {
-		for _, line := range r.emptyReads() {
-			if line.Claim == string(token) && line.Reason == reason {
-				found = line
-				return true
-			}
+	what := fmt.Sprintf("a read of %s that gave no totals for %q", token, reason)
+	waitRead(r, what, "the daemon's log", 50*time.Millisecond, func() ([]emptyRead, error) { return r.emptyReads(), nil }, func(lines []emptyRead) error {
+		i := slices.IndexFunc(lines, func(line emptyRead) bool { return line.Claim == string(token) && line.Reason == reason })
+		if i < 0 {
+			return fmt.Errorf("the reads that gave none are %+v", lines)
 		}
-		return false
-	}) {
-		r.t.Fatalf("the daemon's log never said a read of %s gave no totals for %q, and the reads that gave none are %+v", token, reason, r.emptyReads())
-	}
+		found = lines[i]
+		return nil
+	})
 	return found
 }
