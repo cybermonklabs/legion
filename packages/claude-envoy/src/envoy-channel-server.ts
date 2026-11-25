@@ -513,10 +513,12 @@ export async function postDispatchReply(
   delivery: DispatchDelivery,
   result: { readonly body?: string; readonly error?: string; readonly followUp?: boolean },
 ): Promise<void> {
-  const config = sessionDispatchSettings(configFile, process.env, {
-    cwd: identity.directory,
-    session: () => identity.id,
-  }).dispatch
+  const config = (
+    await sessionDispatchSettings(configFile, process.env, {
+      cwd: identity.directory,
+      session: () => identity.id,
+    })
+  ).dispatch
   if (!config.enabled) throw new Error(config.error ?? config.notice)
   await postDeliveryReply(config, identity.id, delivery, result)
 }
@@ -573,6 +575,13 @@ export function createChannelDelivery(input: {
     if (envelope === undefined) return
     const eventId = envelope.event_id
     if (eventId !== undefined && inbox.some((entry) => entry.event_id === eventId)) return
+    // A payload the card could not lay out is shown as the text its sender sent: said here, for
+    // the message the inbox lists the first time, so a copy Envoy sends again says nothing new.
+    if (rendered.payloadShownAsText !== undefined) {
+      process.stderr.write(
+        `envoy-channel: message ${eventId ?? "unknown"}'s payload is shown as its text; the card could not lay it out (${rendered.payloadShownAsText})\n`,
+      )
+    }
     inbox.unshift({
       event_id: eventId ?? "unknown",
       at: inboundTimestamp(envelope.issued_at),
@@ -635,12 +644,6 @@ export function createChannelDelivery(input: {
         return tail.then(() => false)
       }
       if (late === true && passOverLateBtw(rendered)) return tail.then(() => false)
-      // A payload the card could not lay out is shown as the text its sender sent, said once here.
-      if (rendered.payloadShownAsText !== undefined) {
-        process.stderr.write(
-          `envoy-channel: message ${rendered.envelope?.event_id ?? "unknown"}'s payload is shown as its text; the card could not lay it out (${rendered.payloadShownAsText})\n`,
-        )
-      }
       return queued(async () => {
         // A message Dispatch accepted as this session's own turn is never also a card. A failure
         // after that acceptance throws, so the frame is not answered and the listener sends it
@@ -2477,7 +2480,7 @@ function pluginStateDirectory(): string {
  * notifications (`./legion-inbox`). */
 export async function runEnvoyChannelServer(): Promise<void> {
   const directory = projectDirectory()
-  const pane = legionPane(process.env)
+  const pane = await legionPane(process.env)
   // The session's envoy.json, by Claude Code's rule (`$CLAUDE_CONFIG_DIR/envoy.json` when that is
   // set), worked out once as the server starts; Dispatch's URL and token are re-read from it on each
   // use, so a file that moved its server takes effect without a restart.
@@ -2485,7 +2488,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
   // The session this server drives, read at every broker trade: Claude Code mints a new id on
   // /clear and `identity` is set to it, so a token this session presents names this session.
   const currentSessionId = (): string => identity.id
-  const { dispatch, envoy, notice } = sessionSettings(configFile, process.env, {
+  const { dispatch, envoy, notice } = await sessionSettings(configFile, process.env, {
     cwd: directory,
     session: currentSessionId,
   })
@@ -2795,9 +2798,9 @@ export async function runEnvoyChannelServer(): Promise<void> {
    */
   const router = (state: UserTurnState): UserTurnRouter => {
     const options: UserTurnRouterOptions = {
-      dispatch: (ms) => {
+      dispatch: async (ms) => {
         const active = activeDispatchSettings(
-          sessionDispatchSettings(configFile, process.env, { cwd: directory }).dispatch,
+          (await sessionDispatchSettings(configFile, process.env, { cwd: directory })).dispatch,
         )
         return active === null
           ? undefined

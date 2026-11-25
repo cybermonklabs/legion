@@ -89,11 +89,11 @@ func TestTheFillContinuesFromItsCursorAfterARestart(t *testing.T) {
 
 // TestTheFillWritesANewEventWithinSixtySecondsOfTheHorizon holds the fill to 60 s from the moment
 // the horizon passes an event to the event's rows, where nothing announces the moment the horizon
-// moves: with the fill caught up, a transaction that holds a transaction id and writes no event
-// stays open while three events commit, so the horizon stands below them, and then ends with no
-// notification. The fill reads the horizon again on its own, 1 s and then up to 8 s apart, and
-// the three events have their rows within 60 s of the moment Horizon.Await answers an id at or
-// above them: under the fill's hold, and with no holder.
+// moves: with the fill caught up, an event write stays open while three events commit, so the
+// horizon stands below them, and then rolls back, which sends no notification. The fill reads the
+// horizon again on its own, 1 s and then up to 8 s apart, and the three events have their rows
+// within 60 s of the moment Horizon.Await answers an id at or above them: under the fill's hold,
+// and with no holder.
 func TestTheFillWritesANewEventWithinSixtySecondsOfTheHorizon(t *testing.T) {
 	for _, held := range []bool{true, false} {
 		name := "under its hold"
@@ -122,6 +122,9 @@ func TestTheFillWritesANewEventWithinSixtySecondsOfTheHorizon(t *testing.T) {
 			defer func() { _ = holding.Rollback(context.Background()) }()
 			if _, err := holding.Exec(ctx, `select pg_current_xact_id()`); err != nil {
 				t.Fatalf("take a transaction id: %v", err)
+			}
+			if _, err := holding.Exec(ctx, `insert into events (seq, type, actor, payload, notify) values (0, 'test.held', '{"kind":"system","id":"test"}', '{}', false)`); err != nil {
+				t.Fatalf("open an event write: %v", err)
 			}
 			var ids []int64
 			for range 3 {

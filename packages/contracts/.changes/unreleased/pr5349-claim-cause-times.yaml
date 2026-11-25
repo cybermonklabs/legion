@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+    The daemon API schemas describe contract 256: the claim view and `LegionOperatorClaimResponse`
+    carry `lastDeathAt` beside `lastDeathCause` and `lastStartFailureAt` beside `lastStartFailure`,
+    the time the daemon recorded each cause, absent when the cause is.

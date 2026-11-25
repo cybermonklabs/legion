@@ -2,18 +2,15 @@ import { afterAll, afterEach, beforeAll } from "bun:test";
 import { randomBytes } from "node:crypto";
 import {
   accessSync,
-  chmodSync,
   constants,
-  lstatSync,
   mkdirSync,
   mkdtempSync,
-  readdirSync,
   readFileSync,
   realpathSync,
-  rmSync,
   type Stats,
   statfsSync,
 } from "node:fs";
+import { chmod, lstat, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -130,12 +127,10 @@ export type TemporaryDirectoryMaker = (suffix?: string) => string;
  *
  * The `afterEach` attempts every directory even when one of them cannot be removed, since the
  * directories are independent and one refusal must not leave the rest on disk, and reports the
- * refusals together at the end.
- *
- * The `afterEach` carries an explicit hang guard — a limit of its own rather than Bun's
- * unwritten 5 s default, which has failed correct runs of the suites that call this fixture — so
- * a removal that never returns reddens with its test named; the comment beside the hook has the
- * measurements it is sized from.
+ * refusals together at the end. It removes them asynchronously, so a removal waiting on a loaded
+ * disk holds the hook alone, never the process's event loop. Like every hook, it states no bound of
+ * its own (`docs/testing.md`): its bound is the command's `--timeout`, or the default a file whose
+ * package sets no measured one takes from `@legion/test-fixtures/hang-guard` above its first row.
  */
 export function temporaryDirectories(
   prefix: string,
@@ -143,24 +138,9 @@ export function temporaryDirectories(
 ): TemporaryDirectoryMaker {
   const root = options.root ?? tmpdir();
   const made: string[] = [];
-  // A hang guard, not a bound on the work: what can hang is removing a tree on a loaded host's
-  // filesystem. Timed round the body on this two-CPU pod, and charged by Bun to within 0.3 ms of
-  // it: over the 1059 invocations of 3 idle runs of envoy-client's dispatch-execute.test.ts, the
-  // consumer with the most rows (353), 0.00 / 0.00 / 0.99 ms (min / median / max), and over the
-  // 3530 of 10 runs at that package's rung of 16 busy loops (8 per CPU) 0.00 / 0.01 / 6.81 ms;
-  // in pi-envoy's askgate.test.ts 0.01 / 0.31 / 0.74 ms over the 12 invocations of 3 idle runs
-  // and 0.02 / 0.36 / 1511.63 ms over the 40 of 10 runs at 240 busy loops (120 per CPU). Bun's
-  // unwritten 5 s default for a hook is what failed correct runs of these suites at 5015.84 ms,
-  // 11035.86 ms and 15887.94 ms — charges, not bodies, since a starved host charges a hook for
-  // the time it is not scheduled. 60_000 is 39 times the worst body measured here and 3.8 times
-  // the worst of those charges, and sits well inside every consumer job's `timeout-minutes`, 10
-  // for the tightest (600 s: `ci-job-broker-client.yaml`, `ci-job-claude-envoy.yaml`,
-  // `ci-job-envoy-client.yaml` and `ci-job-test-fixtures.yaml` in .github/workflows), so a
-  // removal that never returns reddens with its test named instead of cancelling the job, which
-  // names nothing.
-  afterEach(() => {
-    removeEvery(made.splice(0));
-  }, 60_000);
+  afterEach(async () => {
+    await removeEvery(made.splice(0));
+  });
   return (suffix) => {
     const directory = mkdtempSync(join(root, nameTemplate(prefix, suffix)));
     made.push(directory);
@@ -192,12 +172,6 @@ export function temporaryDirectories(
  * The name is the prefix, a dash and eight random hexadecimal characters, two more than
  * `mkdtemp` adds. The directory is made exclusively, so `mode` applies to it and a path that
  * somehow exists already fails the file rather than handing two suites one directory.
- *
- * Both hooks carry an explicit hang guard — a limit of their own rather than Bun's unwritten 5 s
- * default, which has failed correct runs of the suites that call this fixture — so a making or a
- * removal that never returns reddens with this file named rather than cancelling the job; Bun
- * reports a timed-out `beforeAll` or `afterAll` as `(unnamed)`, so the row itself is not named.
- * The comments beside them have the measurements they are sized from.
  */
 export function temporaryDirectory(
   prefix: string,
@@ -209,50 +183,12 @@ export function temporaryDirectory(
     parent,
     `${nameTemplate(prefix, undefined)}${randomBytes(4).toString("hex")}`
   );
-  // A hang guard, not a bound on the work: what can hang is making the directory on a loaded
-  // host's filesystem. Timed round the body on this two-CPU pod: in pi-envoy's askgate.test.ts
-  // 0.08 / 0.13 / 0.30 ms (min / median / max) over the 24 invocations of 3 idle runs and
-  // 0.12 / 0.26 / 1064.66 ms over the 80 of 10 runs at 240 busy loops (120 per CPU); in
-  // pi-legion's score.test.ts 0.15 / 0.27 / 0.28 ms over 3 idle runs and 0.12 / 0.30 / 157.22 ms
-  // over 10 runs at 96 busy loops (48 per CPU). Bun's unwritten 5 s default for a hook is what
-  // failed correct runs of these suites at 5015.84 ms, 11035.86 ms and 15887.94 ms — charges,
-  // not bodies, since a starved host charges a hook for the time it is not scheduled. 60_000 is
-  // 56 times the worst body measured here and 3.8 times the worst of those charges, and sits
-  // well inside every consumer job's `timeout-minutes`, 10 for the tightest (600 s:
-  // `ci-job-claude-envoy.yaml`, `ci-job-envoy-client.yaml` and `ci-job-test-fixtures.yaml` in
-  // .github/workflows), so a making that never returns reddens with this file named instead of
-  // cancelling the job, which names nothing. Bun reports a timed-out `beforeAll` as `(unnamed)`,
-  // so the file is as far as that naming goes.
   beforeAll(() => {
     mkdirSync(directory, { mode: 0o700 });
-  }, 60_000);
-  // A hang guard, not a bound on the work: what can hang is removing a tree on a loaded host's
-  // filesystem, which for a suite that points TMPDIR at this directory is every file that suite
-  // made. Timed round the body on this two-CPU pod, and charged by Bun to within 0.3 ms of it:
-  // in pi-envoy's askgate.test.ts 0.38 / 0.97 / 620.02 ms (min / median / max) over the 24
-  // invocations of 3 idle runs and 0.42 / 116.55 / 212482.46 ms over the 80 of 10 runs at 240
-  // busy loops (120 per CPU), where that suite's own TMPDIR root cost 588.79 / 619.88 /
-  // 620.02 ms idle and 42545.54 / 81877.79 / 212482.46 ms loaded; in pi-legion's score.test.ts
-  // 9.00 / 398.24 / 804.29 ms idle and 56.41 / 2447.13 / 46650.29 ms over 10 runs at 96 busy
-  // loops (48 per CPU). Bun's unwritten 5 s default for a hook is what failed correct runs of
-  // these suites at 5015.84 ms, 11035.86 ms and 15887.94 ms, and it failed this hook in 10 of
-  // those 10 askgate runs. Three times the worst, 212.5 s, is 637 s, past the 600 s the
-  // tightest consumer jobs' `timeout-minutes: 10` allows (`ci-job-claude-envoy.yaml`,
-  // `ci-job-envoy-client.yaml` and `ci-job-test-fixtures.yaml` in .github/workflows), so that
-  // ceiling rules and 300_000 is half of it, 1.4 times that worst. Half, not more, because the
-  // 600 s is the whole job and this guard is one removal inside it: the `claude-envoy` job, one
-  // of those, spent 82 s on its other steps and 193 s on its test step at 919ee888, so a removal
-  // that spends the whole 300 s there still leaves that job room to redden rather than to be
-  // cancelled. The `pi-envoy` job, whose askgate.test.ts points TMPDIR at this directory, has
-  // `timeout-minutes: 15` (`ci-job-pi-envoy.yaml`), and its suite is minutes of its own:
-  // `envoy.test.ts` alone is 58 s idle. Plainly: at 120 busy loops per CPU, a load far past
-  // anything CI applies, removing a large tree can cost minutes, so this guard catches a removal
-  // that never returns and nothing smaller, and leaves the job room to redden with this file
-  // named rather than cancelling, which names nothing. Bun reports a timed-out `afterAll` as
-  // `(unnamed)`, so the row itself is not named.
-  afterAll(() => {
-    removeTree(directory);
-  }, 300_000);
+  });
+  afterAll(async () => {
+    await removeTree(directory);
+  });
   return directory;
 }
 
@@ -283,11 +219,11 @@ function nameTemplate(prefix: string, suffix: string | undefined): string {
  * later directory behind and name only the one it stopped on (the behaviour
  * `packages/envoy-client/test/temp-dir.ts` had, which this fixture took over from it).
  */
-function removeEvery(directories: readonly string[]): void {
+async function removeEvery(directories: readonly string[]): Promise<void> {
   const failures: string[] = [];
   for (const directory of [...directories].reverse()) {
     try {
-      removeTree(directory);
+      await removeTree(directory);
     } catch (error) {
       failures.push(`${directory}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -299,27 +235,27 @@ function removeEvery(directories: readonly string[]): void {
 
 /**
  * Removes one tree, making every directory in it writable, searchable and readable first.
- * `rmSync` alone fails on a tree a test made read-only on purpose, and a test can make one
- * without meaning to: Go's module cache writes 0555 directories and 0444 files, so a suite that
- * runs `go` under its temporary directory leaves a tree nothing can unlink.
+ * `rm` alone fails on a tree a test made read-only on purpose, and a test can make one without
+ * meaning to: Go's module cache writes 0555 directories and 0444 files, so a suite that runs `go`
+ * under its temporary directory leaves a tree nothing can unlink.
  */
-function removeTree(directory: string): void {
-  makeWritable(directory);
-  rmSync(directory, { recursive: true, force: true });
+async function removeTree(directory: string): Promise<void> {
+  await makeWritable(directory);
+  await rm(directory, { recursive: true, force: true });
 }
 
 /** `chmod -R u+rwx` on a tree's directories, following no symlink. A path already gone is
  * nothing to do. */
-function makeWritable(path: string): void {
-  const entry = makeSelfWritable(path);
+async function makeWritable(path: string): Promise<void> {
+  const entry = await makeSelfWritable(path);
   if (entry === undefined || !entry.isDirectory()) return;
   let entries: string[];
   try {
-    entries = readdirSync(path);
+    entries = await readdir(path);
   } catch {
     return;
   }
-  for (const name of entries) makeWritable(join(path, name));
+  for (const name of entries) await makeWritable(join(path, name));
 }
 
 /**
@@ -330,10 +266,10 @@ function makeWritable(path: string): void {
  * holding it, never on the file, and a file in a temporary tree can be a hard link to one
  * outside it, whose mode is the same inode's.
  */
-function makeSelfWritable(path: string): Stats | undefined {
+async function makeSelfWritable(path: string): Promise<Stats | undefined> {
   let entry: Stats;
   try {
-    entry = lstatSync(path);
+    entry = await lstat(path);
   } catch {
     return undefined;
   }
@@ -343,9 +279,9 @@ function makeSelfWritable(path: string): Stats | undefined {
   const wanted = mode | 0o700;
   if (wanted !== mode) {
     try {
-      chmodSync(path, wanted);
+      await chmod(path, wanted);
     } catch {
-      // A mode this user cannot set is left to rmSync to report.
+      // A mode this user cannot set is left to rm to report.
     }
   }
   return entry;

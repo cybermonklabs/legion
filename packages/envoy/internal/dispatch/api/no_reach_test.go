@@ -643,8 +643,8 @@ func threeBadRequests(t *testing.T) {
 	// two reads (growingReads) is walked under a parameter it declares that holds it to the
 	// rows its plain read answered, so the two answers differ only where the walk did.
 	//
-	// The event log answers only the events at or below the server's safe horizon, which a
-	// transaction open anywhere on the Postgres instance holds back (events.Horizon): under
+	// The event log answers only the events at or below the server's safe horizon, which an
+	// event write of the server's database holds back while it is open (events.Horizon): under
 	// load its first read can answer none of the seeded events and its next read every one of
 	// them. Awaiting a horizon proven after the seed puts every seeded event at or below it
 	// before the log is read, and the horizon never falls, so its plain read answers them all
@@ -755,10 +755,10 @@ func routeProbeQueries(owned crossProject) map[string]string {
 // hold it to. All three read the event log. The server's own background work appends to it after
 // the request that caused the work has been answered (a document's settlement, a keyed write
 // whose client left), and the whole log is read only up to the safe horizon, which moves on
-// whenever a transaction open on the Postgres instance ends. Every other read the probe walks
-// either lists rows that only a write request adds - the inbox's open asks, an issue's comments,
-// messages and asks, the broadcasts - and the probe sends only reads, or answers an object,
-// whose shape is its keys (answerShape), which a row added beneath it leaves as they were:
+// whenever an event write of the server's database that held it ends. Every other read the probe
+// walks either lists rows that only a write request adds - the inbox's open asks, an issue's
+// comments, messages and asks, the broadcasts - and the probe sends only reads, or answers an
+// object, whose shape is its keys (answerShape), which a row added beneath it leaves as they were:
 // search, the replies, the answers, a person's nodes, the related checks.
 var growingReads = map[string]func(answered []byte) (string, bool){
 	"GET /api/v1/events/log":            eventLogBound,
