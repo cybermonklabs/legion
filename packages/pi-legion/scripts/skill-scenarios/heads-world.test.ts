@@ -9,6 +9,7 @@ import path from "node:path";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import type * as headsModule from "./heads-world";
+import { RIG_WORLD } from "./rig-world";
 import { TestHandoff } from "./score";
 import { fileRowLimit } from "./test-limit";
 
@@ -346,6 +347,10 @@ test("every run and reading of k1 the heads worlds record holds only words the p
     ].map((which): [string, string] => [which, "reviewer-own-head"]),
     [undefined, "reviewer-pass-and-fail"],
     [undefined, "architect-pass-and-fail"],
+    ...["unrelated-test", "touched-test", "tester-beside"].map((which): [string, string] => [
+      which,
+      "fix-judge",
+    ]),
   ];
   const dropped: string[] = [];
   let readings = 0;
@@ -360,4 +365,98 @@ test("every run and reading of k1 the heads worlds record holds only words the p
     }
   }
   expect({ dropped, recorded: readings > 0 }).toEqual({ dropped: [], recorded: true });
+});
+
+// Catches: a fix-judge world whose #702 is not on the issue's own branch (the branch of the task a
+// fix pushes once), whose k-ci is no check a CI job runs or whose job did not fail at the head, a
+// second pull request, records that do not match the role's task (the tester beside the fix starts
+// from the implementer's record alone), and a settlement that serves no second attempt or reaches
+// no Dispatch.
+test("fix-judge: #702 on legion/<issue>, k-ci's job failed at its head, each world's records, and the settlement of a re-run", async () => {
+  // The hook's ports and NATS, which restoreEnvironment puts back after each test.
+  process.env.DISPATCH_E2E_PORT = "18777";
+  process.env.FAKE_GITHUB_PORT = "18778";
+  process.env.DISPATCH_E2E_NATS_URLS = "nats://127.0.0.1:1";
+  const records: Record<string, string[]> = {};
+  for (const which of ["unrelated-test", "touched-test", "tester-beside"]) {
+    const job = Object.entries(RIG_WORLD.ciJobs).find(
+      ([name]) => name === `fix-judge-${which}`
+    )?.[1];
+    if (job?.rerun === undefined) throw new Error(`rig-world.json names no re-run of ${which}`);
+    const { calls } = await world(which, "fix-judge");
+    const content = String(
+      calls.find((call) => call.path === "/api/v1/issues/LWEVAL-7/artifacts")?.body.content
+    );
+    expect(content).toContain(
+      `:::check{#k-ci surface="cli" serves="dispatch://LWEVAL-7/spec#b-r1" ci_check="${job.name}" when="before_merge"`
+    );
+    const seeds = calls
+      .filter((call) => call.path === "/__fixture/repos")
+      .map((call) => call.body["example/widgets"]);
+    expect(seeds.at(-1)).toMatchObject({
+      pulls: { "702": { head_sha: "a".repeat(40), head_ref: "legion/LWEVAL-7" } },
+      check_runs: {
+        ["a".repeat(40)]: [{ id: job.checkRun, name: job.name, conclusion: "failure" }],
+      },
+    });
+    expect(seeds.at(-1)).toHaveProperty("pulls", { "702": expect.anything() });
+    expect(published).toEqual(["notifications.github.example.widgets.pr.702"]);
+    records[which] = calls
+      .filter((call) => call.path.includes("/handoffs/") || call.path.endsWith("/results"))
+      .map((call) =>
+        call.path.endsWith("/results")
+          ? `${String(call.body.check)} ${String(call.body.role)} ${String(call.body.verdict)}`
+          : `${call.path.split("/").at(-1)} by ${JSON.stringify(call.body.actor)}`
+      );
+    // The settlement once the job ran once more: its second attempt as it concluded, and #702's
+    // checks settled on the NATS.
+    published.length = 0;
+    const settled = stubFetch();
+    const dir = dirOf(`settle-${which}`);
+    const fixtureFile = path.join(dir, "fixture.json");
+    const headsFile = path.join(dir, "heads.json");
+    writeFileSync(
+      fixtureFile,
+      JSON.stringify({ issue: "LWEVAL-7", title: "t", verification: "v" })
+    );
+    writeFileSync(headsFile, JSON.stringify({ "702": "a".repeat(40) }));
+    await heads.headsSettle(fixtureFile, headsFile, `fix-judge-${which}`);
+    expect(settled.map((call) => call.path)).toEqual(["/__fixture/repos"]);
+    expect(settled[0]?.body["example/widgets"]).toMatchObject({
+      check_runs: {
+        ["a".repeat(40)]: [{ id: job.rerun.checkRun, conclusion: job.rerun.conclusion }],
+      },
+    });
+    expect(published).toEqual(["notifications.github.example.widgets.pr.702"]);
+  }
+  const by = (id: string) => JSON.stringify({ kind: "session", id });
+  const passed = (role: string) => `k1 ${role} pass`;
+  expect(records).toEqual({
+    "unrelated-test": [
+      passed("implementer"),
+      `implement by ${by("rig-implementer")}`,
+      passed("tester"),
+      `test by ${by("rig-tester")}`,
+    ],
+    "touched-test": [
+      passed("implementer"),
+      `implement by ${by("rig-implementer")}`,
+      passed("tester"),
+      `test by ${by("rig-tester")}`,
+    ],
+    "tester-beside": [passed("implementer"), `implement by ${by("rig-implementer")}`],
+  });
+  const dir = dirOf("settle-none");
+  writeFileSync(
+    path.join(dir, "fixture.json"),
+    JSON.stringify({ issue: "LWEVAL-7", title: "t", verification: "v" })
+  );
+  writeFileSync(path.join(dir, "heads.json"), JSON.stringify({ "702": "a".repeat(40) }));
+  await expect(
+    heads.headsSettle(
+      path.join(dir, "fixture.json"),
+      path.join(dir, "heads.json"),
+      "ci-pass-and-fail-tester"
+    )
+  ).rejects.toThrow("the world ci-pass-and-fail-tester runs no job once more");
 });

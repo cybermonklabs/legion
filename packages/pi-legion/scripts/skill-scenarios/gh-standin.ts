@@ -29,14 +29,20 @@
 //     write is answered with the object GitHub returns, and appended to each route that lists that
 //     pull request's reviews or comments (`list` and `pull`) and to the `reviews` or `comments` of
 //     each `gh pr view` object of that pull request. A route with `lookup: "review"` reads one review
-//     by its id from the pull request's list, and answers GitHub's 404 for an id it does not hold.
+//     by its id from the pull request's list, and answers GitHub's 404 for an id it does not hold;
+//   - a press that moves the world on (a route with `moves`, such as the re-run of a failed job):
+//     the world's `state` becomes the route's `moves`, and from then on a route with `when`
+//     answers only while the state is its `when` ("" before any press), as GitHub answers every
+//     read of the run after a re-run with the attempt it started. A route with no `when` answers
+//     in every state. The rig moves the state on between two turns of a run the same way, so a
+//     later turn reads the attempt as it settled.
 //   gh-standin.ts gh <args...>
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { z } from "zod";
 
 /** rig.sh (and heads-routes.ts, for a heads scenario) writes each route as {match, stdout?,
- * stderr?, exit?, status?, keep?, list?, lookup?, pull?}. `status` is the HTTP status `-i` prints
- * (200 for a route that exits 0). */
+ * stderr?, exit?, status?, keep?, list?, lookup?, pull?, when?, moves?}. `status` is the HTTP
+ * status `-i` prints (200 for a route that exits 0). */
 const Route = z.looseObject({
   match: z.string(),
   stdout: z.unknown().optional(),
@@ -47,15 +53,19 @@ const Route = z.looseObject({
   list: z.enum(["reviews", "comments"]).optional(),
   lookup: z.literal("review").optional(),
   pull: z.number().optional(),
+  when: z.string().optional(),
+  moves: z.string().optional(),
 });
 /** `current` is the pull request a call that names none is about (the workspace's branch); `login`
- * the account the run's token is; `kept` how many reviews and comments the run has written. */
+ * the account the run's token is; `kept` how many reviews and comments the run has written;
+ * `state` the world's state, which a route's `when` names ("" when it names none). */
 const Fixtures = z.looseObject({
   routes: z.array(Route),
   current: z.number().optional(),
   login: z.string().optional(),
   repo: z.string().optional(),
   kept: z.object({ reviews: z.number(), comments: z.number() }).optional(),
+  state: z.string().optional(),
 });
 
 /** The status every route of a world can give gh's `-i`. */
@@ -138,12 +148,18 @@ if (input !== undefined) {
 }
 if (prPatch && typeof sent?.body === "string") body = sent.body;
 const joined = `${as} ${args.join(" ")}`;
-const route = routes.find((candidate) => new RegExp(candidate.match, "s").test(joined));
-/** Records the call with the status it exits with, then exits. */
+/** The world's state as the call finds it: "" until a press moved it. */
+const state = fixtures.state ?? "";
+const route = routes.find(
+  (candidate) =>
+    (candidate.when === undefined || candidate.when === state) &&
+    new RegExp(candidate.match, "s").test(joined)
+);
+/** Records the call with the status it exits with and the world's state it found, then exits. */
 function exit(status: number, extra: Record<string, unknown> = {}): never {
   appendFileSync(
     `${run}/calls.jsonl`,
-    `${JSON.stringify({ at, as, argv: args, files, stdin, route: route?.match ?? null, body: kept, exit: status, ...extra })}\n`
+    `${JSON.stringify({ at, as, argv: args, files, stdin, route: route?.match ?? null, body: kept, exit: status, state, ...extra })}\n`
   );
   process.exit(status);
 }
@@ -316,8 +332,11 @@ if (route.keep === "comment") {
     list.push({ author: { login }, body: text, createdAt: at, url: made.html_url });
   output = args[0] === "pr" ? made.html_url : made;
 }
-if (body !== undefined || route.keep !== undefined)
-  writeFileSync(`${run}/fixtures.json`, JSON.stringify({ ...fixtures, routes, kept: counts }));
+if (body !== undefined || route.keep !== undefined || route.moves !== undefined)
+  writeFileSync(
+    `${run}/fixtures.json`,
+    JSON.stringify({ ...fixtures, routes, kept: counts, state: route.moves ?? state })
+  );
 
 /** Prints the status line and headers `gh api -i` prints, then nothing more. */
 function include(status: number) {

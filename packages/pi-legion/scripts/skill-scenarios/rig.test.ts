@@ -2738,6 +2738,103 @@ describe("heads_fixture", () => {
     expect(readFileSync(path.join(run, "pushes.log"), "utf8")).toBe("");
   });
 
+  /** fix_fixture's world of `world`, then `lines` run in it, with the capture functions loaded. */
+  function fixWorld(world: string, lines: string[] = []) {
+    const run = freshDir(`fix-fixture-${world}`);
+    const result = bash(
+      [
+        "set -euo pipefail",
+        ...[
+          "fail",
+          "g",
+          "fixture_repo",
+          "workspace_on",
+          "beside_branch",
+          "fix_fixture",
+          "workspace_state",
+          "fix_commits",
+        ].map(fn),
+        `R=$1 worker_key=LWEVAL-9 ${WORLD_VARS}`,
+        `fix_fixture 3 1700000000 ${world}`,
+        ...lines,
+      ].join("\n"),
+      [run]
+    );
+    return { ...result, run };
+  }
+  /** The commit the working copy at `dir` stands on, as jj reads it with the fixture's config. */
+  const parentIn = (run: string, dir: string) =>
+    spawnWithin(
+      { ...VCS_COMMAND, part: "jj log" },
+      ["jj", "log", "--no-graph", "-r", "@-", "-T", "commit_id"],
+      { cwd: path.join(run, dir), env: { ...childEnv, JJ_CONFIG: path.join(run, "jj-setup.toml") } }
+    )
+      .stdout.toString()
+      .trim();
+
+  // Catches: a fix's world whose change is not one commit on the issue's own branch over a base
+  // that holds the package it does not touch, a fix's own working copy that is missing or not at
+  // the head, a tester's world that gets one, and a world that names no branch for the role beside
+  // the fix.
+  test("fix_fixture: the change on legion/<issue> over a base with packages/notify, and the fix's own copy at the head", () => {
+    for (const [world, role] of [
+      ["unrelated-test", "implementer"],
+      ["touched-test", "implementer"],
+      ["tester-beside", "tester"],
+    ] as const) {
+      const { code, stderr, run } = fixWorld(world);
+      expect({ world, code, stderr }).toEqual({ world, code: 0, stderr: "" });
+      const remote = path.join(run, "remote.git");
+      const head = git(remote, "rev-parse", "legion/LWEVAL-9");
+      expect(git(remote, "rev-parse", `${head}^`)).toBe(git(remote, "rev-parse", "main"));
+      expect(git(remote, "diff", "--name-only", "main", head).split("\n")).toEqual([
+        "packages/greet/greet.test.ts",
+        "packages/greet/greet.ts",
+      ]);
+      expect(git(remote, "ls-tree", "-r", "--name-only", "main").split("\n")).toContain(
+        "packages/notify/notify.test.ts"
+      );
+      expect(JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"))).toEqual({
+        "702": head,
+      });
+      expect(JSON.parse(readFileSync(path.join(run, "world.json"), "utf8"))).toEqual({
+        key: "LWEVAL-9",
+        repo: "example/widgets",
+        pr: 702,
+        branch: "legion/LWEVAL-9",
+        head,
+        own: `legion-beside/LWEVAL-9/1/default/fix-1/${role}`,
+      });
+      expect(workspaceParent(run)).toBe(head);
+      if (role === "implementer") expect(parentIn(run, "ws-fix")).toBe(head);
+      else expect(existsSync(path.join(run, "ws-fix"))).toBe(false);
+      expect(readFileSync(path.join(run, "pushes.log"), "utf8")).toBe("");
+    }
+  });
+
+  // Catches: a record of the shared working copy that a write in it leaves unchanged, a read that
+  // itself changes it, and a list of the fix's commits that leaves out a commit made in its copy or
+  // counts its empty working copy.
+  test("workspace_state shows a write in the shared copy, and fix_commits each commit of the fix's copy", () => {
+    const { code, stderr, stdout, run } = fixWorld("touched-test", [
+      'head=$(jq -r .head "$R/world.json")',
+      'first=$(workspace_state) again=$(workspace_state) none=$(fix_commits "$head")',
+      'printf "fix\\n" >"$R/ws-fix/packages/greet/fix.txt"',
+      '(cd "$R/ws-fix" && JJ_CONFIG=$R/jj-setup.toml jj commit -m fix) >/dev/null 2>&1',
+      'made=$(fix_commits "$head")',
+      'printf "x\\n" >"$R/ws/scratch.txt"',
+      "written=$(workspace_state)",
+      'jq -cn --argjson first "$first" --argjson again "$again" --argjson none "$none" --argjson made "$made" --argjson written "$written" \'{$first, $again, $none, $made, $written}\'',
+    ]);
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    const read = JSON.parse(stdout);
+    expect(read.again).toEqual(read.first);
+    expect(read.none).toEqual([]);
+    expect(read.made).toEqual([parentIn(run, "ws-fix")]);
+    expect(read.written.commit).toBe(read.first.commit);
+    expect(read.written.files).not.toBe(read.first.files);
+  });
+
   // Catches: a ci-pass-and-fail world whose GitHub shows k1's job as passed (the agent would then
   // see CI green beside Dispatch's not_completed), a body line that is not the one Dispatch printed,
   // a second pull request, and an approval on #702 for any role but the architect.

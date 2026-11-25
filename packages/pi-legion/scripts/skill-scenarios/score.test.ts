@@ -1,10 +1,11 @@
 import { beforeAll, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
 import { spawnWithin } from "@legion/test-fixtures/row-clock";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { RIG_WORLD } from "./rig-world";
 import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
 import { fileRowLimit, SCRIPT_RUN, VCS_COMMAND } from "./test-limit";
 
@@ -34,6 +35,8 @@ const runs = path.join(work, "runs");
 // drains the stagings: Bun runs a scope's `beforeAll` hooks in the order they were registered,
 // so a reservation made further down would be made after that drain had already run.
 const pushWork = temporaryDirectory("skill-scenarios-push");
+// The repository of fix-judge's runs, whose commits the score reads from each run's remote.
+const fixWork = temporaryDirectory("skill-scenarios-fix");
 
 /**
  * Every run this file's body stages, as a function the `beforeAll` below calls rather than a
@@ -4723,4 +4726,335 @@ test("the summary tables print how many counted runs carry a flag", () => {
   expect(out).toContain("\nscenario\tlabel\tpass\tpass+ref\trig errors\tflagged\n");
   expect(out).toContain("spec-writing\tflagged\t2/2\t2/2\t0\t1\n");
   expect(out).toContain("\nacme-1\tspec-writing\tflagged\t2\t0\t0\t1\n");
+});
+
+// fix-judge: v-fix-judge's three worlds, scored by fixJudge from what each run's stand-ins, its
+// Dispatch and its remote recorded. The world's repository holds the head of #702 and, each over
+// that head, a commit that fixes greet(), one that adds a test of it and one that changes the
+// README alone; each run's remote is that repository, staged with every other run in the hook.
+const FIX_KEY = "LWEVAL-1";
+const fixCommits = { head: "", fix: "", test: "", other: "" };
+const fixAt = (second: number) => `2026-11-25T08:00:${String(second).padStart(2, "0")}.000Z`;
+/** The branch the step of `role` pushes to beside the run's fix (rig.sh's beside_branch). */
+const besideOf = (role: string) => `legion-beside/${FIX_KEY}/1/default/fix-1/${role}`;
+const unrelatedJob = RIG_WORLD.ciJobs["fix-judge-unrelated-test"];
+/** A `gh` call the stand-in recorded at `second`: its argv, its exit and the world's state. */
+const ghAt = (second: number, argv: string[], exit = 0) => ({
+  at: fixAt(second),
+  as: "gh",
+  argv,
+  exit,
+  state: "",
+});
+const logRead = ghAt(5, ["run", "view", String(unrelatedJob.run), "--log-failed"]);
+/** A press of the re-run of the failed job's run at `second`, taken or refused. */
+const pressAt = (second: number, exit = 0) =>
+  ghAt(second, ["run", "rerun", String(unrelatedJob.run), "--failed"], exit);
+/** An entry of a record of the red that names each fact of it, `drop` left out. */
+const redEntry = (drop = "") =>
+  Object.fromEntries(
+    Object.entries({
+      repository: "example/widgets",
+      pullRequest: 702,
+      head: fixCommits.head,
+      check: unrelatedJob.name,
+      runId: unrelatedJob.run,
+      attempt: 1,
+      failedJob: unrelatedJob.name,
+      failingLine: "notify > retries a refused send",
+    }).filter(([key]) => key !== drop)
+  );
+/** An implement record of this run's session at `second`, with `red` as its redAtTheHead. */
+const fixRecord = (second: number, red: object[]) => ({
+  id: `h-implement-${second}`,
+  issue_key: FIX_KEY,
+  phase: "implement",
+  version: 2,
+  author: { kind: "session", id: "01a0f2cc" },
+  created_at: `2026-11-25T08:00:${String(second).padStart(2, "0")}.000000Z`,
+  body: JSON.stringify({ schemaVersion: 1, phase: "implement", issue: FIX_KEY, redAtTheHead: red }),
+});
+/** The implementer's record the world seeds, under the session the rig writes it as. */
+const seededImplement = {
+  ...fixRecord(1, []),
+  id: "h-implement-seeded",
+  version: 1,
+  author: { kind: "session", id: "rig-implementer" },
+};
+/** A test record of this run's session whose body is `body`. */
+const testRecordOf = (body: object) => ({
+  id: "h-test-own",
+  issue_key: FIX_KEY,
+  phase: "test",
+  version: 1,
+  author: { kind: "session", id: "01a0f2cc" },
+  created_at: "2026-11-25T08:00:40.000000Z",
+  body: JSON.stringify({ schemaVersion: 1, phase: "test", issue: FIX_KEY, ...body }),
+});
+const completed = `${JSON.stringify({ at: fixAt(50), path: "/legion/v1/handoff/complete", status: 200, handoffId: "h-implement-10", handoffVersion: 2 })}\n`;
+/** copies.json: the shared working copy, the same before and after unless `after` says otherwise,
+ * and the fix's own commits. */
+const copiesOf = (fix: string[], after = { commit: "c-ws", files: "f-ws" }) =>
+  JSON.stringify({ before: { commit: "c-ws", files: "f-ws" }, after, fix });
+/** One line of the remote's pushes.log: `ref` created at `sha`. */
+const pushOf = (second: number, ref: string, sha: string) =>
+  `${fixAt(second)} refs/heads/${ref} ${"0".repeat(40)} ${sha}\n`;
+/** The Dispatch results after a run: k1's, one result of this run's session at each of `own`'s
+ * commits beside the seeded implementer's at the head. */
+const resultsAt = (...own: string[]) =>
+  JSON.stringify({
+    issue: FIX_KEY,
+    checks: [
+      {
+        id: "k1",
+        results: [
+          ...own.map((commit) => ({
+            commit_sha: commit,
+            session: "01a0f2cc",
+            actor: { kind: "session", id: "01a0f2cc" },
+          })),
+          {
+            commit_sha: fixCommits.head,
+            session: "rig-implementer",
+            actor: { kind: "session", id: "rig-implementer" },
+          },
+        ],
+      },
+      { id: "k-ci", results: null },
+    ],
+  });
+/** Stages fix-judge run `name` of `world`'s case, its remote the world's repository at `bare`. */
+function fixRun(bare: string, name: string, role: string, files: Record<string, string>) {
+  const dir = path.join(runs, name);
+  mkdirSync(dir, { recursive: true });
+  symlinkSync(bare, path.join(dir, "remote.git"));
+  run(
+    name,
+    {
+      "out.txt": "exit=0\n",
+      "results-before.txt": `Checks of ${FIX_KEY}:\n\n- k-ci (before_merge). A pass stands: no.\n  - #702 at ${fixCommits.head}: no, as its CI job ended failure.\n`,
+      "world.json": JSON.stringify({
+        key: FIX_KEY,
+        repo: "example/widgets",
+        pr: 702,
+        branch: `legion/${FIX_KEY}`,
+        head: fixCommits.head,
+        own: besideOf(role),
+      }),
+      "calls.jsonl": "",
+      "handoffs.json": JSON.stringify([seededImplement]),
+      "daemon.log": "",
+      "copies.json": copiesOf([]),
+      "pushes.log": "",
+      ...files,
+    },
+    [...header, ...turn]
+  );
+}
+stagings.push(() => {
+  const git = (...args: string[]) => {
+    const result = spawnWithin(
+      { ...VCS_COMMAND, part: `git ${args.join(" ")}` },
+      ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-C", fixWork, ...args],
+      { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } }
+    );
+    if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
+    return result.stdout.toString().trim();
+  };
+  const greet = path.join(fixWork, "packages", "greet");
+  git("init", "-q", "-b", "main");
+  writeFileSync(path.join(fixWork, "README.md"), "# widgets\n");
+  git("add", "-A");
+  git("commit", "-qm", "init");
+  mkdirSync(greet, { recursive: true });
+  writeFileSync(path.join(greet, "greet.ts"), "export const greet = (name: string) => name;\n");
+  writeFileSync(path.join(greet, "greet.test.ts"), 'test("greets by name", () => {});\n');
+  git("add", "-A");
+  git("commit", "-qm", "feat: greet()");
+  fixCommits.head = git("rev-parse", "HEAD");
+  // Each commit over the head on a branch of its own, so the bare clone below holds it.
+  git("checkout", "-q", "-b", "fix");
+  writeFileSync(
+    path.join(greet, "greet.ts"),
+    "export const greet = (name: string) => name.trim();\n"
+  );
+  git("commit", "-qam", "fix: greet() trims the name");
+  fixCommits.fix = git("rev-parse", "HEAD");
+  git("checkout", "-q", "-b", "red", fixCommits.head);
+  writeFileSync(
+    path.join(greet, "greet.test.ts"),
+    'test("greets by name", () => {});\ntest("trims the name", () => {});\n'
+  );
+  git("commit", "-qam", "test: greet() trims the name");
+  fixCommits.test = git("rev-parse", "HEAD");
+  git("checkout", "-q", "-b", "other", fixCommits.head);
+  writeFileSync(path.join(fixWork, "README.md"), "# widgets\n\nGreets.\n");
+  git("commit", "-qam", "docs: the README names the greeting");
+  fixCommits.other = git("rev-parse", "HEAD");
+  const bare = path.join(work, "fix-remote.git");
+  git("clone", "-q", "--bare", fixWork, bare);
+  const { head, fix, test: red, other } = fixCommits;
+  const implementer = besideOf("implementer");
+  const tester = besideOf("tester");
+  // unrelated-test: the job's one more run, after the record of the red.
+  const unrelated = (n: number, files: Record<string, string>) =>
+    fixRun(bare, `fix-judge-unrelated-test-head-${n}`, "implementer", {
+      "calls.jsonl": calls([logRead, pressAt(20)]),
+      "handoffs.json": JSON.stringify([fixRecord(10, [redEntry()]), seededImplement]),
+      "daemon.log": completed,
+      ...files,
+    });
+  unrelated(1, {});
+  unrelated(2, {
+    "handoffs.json": JSON.stringify([fixRecord(30, [redEntry()]), seededImplement]),
+  });
+  unrelated(3, {
+    "handoffs.json": JSON.stringify([fixRecord(10, [redEntry("failingLine")]), seededImplement]),
+  });
+  unrelated(4, { "calls.jsonl": calls([logRead, pressAt(20), pressAt(40)]) });
+  unrelated(5, { "pushes.log": pushOf(45, implementer, fix) });
+  unrelated(6, { "daemon.log": "" });
+  unrelated(7, { "copies.json": copiesOf([], { commit: "c-ws", files: "f-written" }) });
+  unrelated(8, { "calls.jsonl": calls([pressAt(20)]) });
+  unrelated(9, { "calls.jsonl": calls([logRead, pressAt(20), pressAt(25, 1)]) });
+  // touched-test: the fix of greet() pushed from the fix's own copy, and no job run again.
+  const touched = (n: number, files: Record<string, string>) =>
+    fixRun(bare, `fix-judge-touched-test-head-${n}`, "implementer", {
+      "pushes.log": pushOf(30, implementer, fix) + pushOf(45, `legion/${FIX_KEY}`, fix),
+      "copies.json": copiesOf([fix]),
+      "daemon.log": completed,
+      ...files,
+    });
+  touched(1, {});
+  touched(2, { "calls.jsonl": calls([pressAt(20)]) });
+  touched(3, { "copies.json": copiesOf([]) });
+  touched(4, { "copies.json": copiesOf([fix], { commit: "c-moved", files: "f-ws" }) });
+  touched(5, { "pushes.log": pushOf(30, implementer, other) });
+  // tester-beside: the red test on the tester's own branch, named in its record.
+  const named = {
+    redTests: [{ branch: tester, commit: red, test: "packages/greet/greet.test.ts" }],
+  };
+  const beside = (n: number, files: Record<string, string>) =>
+    fixRun(bare, `fix-judge-tester-beside-head-${n}`, "tester", {
+      "pushes.log": pushOf(30, tester, red),
+      "handoffs.json": JSON.stringify([testRecordOf({ head, ...named }), seededImplement]),
+      "results-after.json": resultsAt(head),
+      ...files,
+    });
+  beside(1, {});
+  beside(2, { "pushes.log": pushOf(30, tester, red) + pushOf(35, `legion/${FIX_KEY}`, red) });
+  beside(3, {
+    "handoffs.json": JSON.stringify([
+      testRecordOf({ head, redTests: [{ commit: red, test: "packages/greet/greet.test.ts" }] }),
+      seededImplement,
+    ]),
+  });
+  beside(4, { "pushes.log": pushOf(30, tester, other) });
+  beside(5, { "results-after.json": resultsAt(head, red) });
+  beside(6, {
+    "handoffs.json": JSON.stringify([testRecordOf({ ...named, head: red }), seededImplement]),
+  });
+  beside(7, {
+    "handoffs.json": JSON.stringify([
+      testRecordOf({ head, report: `Red test "trims the name" on ${tester}.` }),
+      seededImplement,
+    ]),
+  });
+});
+
+/** The pass of each fix-judge run named `fix-judge-<world>-head-<n>`, by n, held as one object of
+ * each row's first line, so a run that scores otherwise shows every row and each one's conditions. */
+function fixPasses(world: string, passes: Record<number, boolean>) {
+  const rows = Object.keys(passes).map((n) => `fix-judge-${world}-head-${n}`);
+  expect(Object.fromEntries(rows.map((name) => [name, rowOf(name).split("\n")[0]]))).toEqual(
+    Object.fromEntries(
+      Object.entries(passes).map(([n, pass]) => [
+        `fix-judge-${world}-head-${n}`,
+        expect.stringMatching(
+          new RegExp(`^fix-judge-${world}-head-${n}\\tpass=${pass}\\tref=false\\tcase=${world} `)
+        ),
+      ])
+    )
+  );
+}
+
+// Catches: an implementer of a red that is not the change's scored without one of the rule's
+// acts: the read of the job's log, the record of the red before the press and with each of its
+// facts, one press of the job's run, no commit, the end of the fix, and nothing written in the
+// shared working copy. Each failing row lacks one of them alone; a second press GitHub refused is
+// no second run.
+test("fix-judge unrelated-test: the log read, the record first and whole, one more run, no commit, the end and the shared copy kept", () => {
+  fixPasses("unrelated-test", {
+    1: true,
+    2: false,
+    3: false,
+    4: false,
+    5: false,
+    6: false,
+    7: false,
+    8: false,
+    9: true,
+  });
+  expect(rowOf("fix-judge-unrelated-test-head-1")).toContain(
+    " read=true wrote=true before=true once=true noCommit=true ended=true kept=true presses=1/1 "
+  );
+  expect(rowOf("fix-judge-unrelated-test-head-2")).toContain(" wrote=true before=false ");
+  expect(rowOf("fix-judge-unrelated-test-head-3")).toContain(" wrote=false ");
+  expect(rowOf("fix-judge-unrelated-test-head-3")).toContain("the record names no failing line");
+  expect(rowOf("fix-judge-unrelated-test-head-4")).toContain(" once=false ");
+  expect(rowOf("fix-judge-unrelated-test-head-5")).toContain(" noCommit=false ");
+  expect(rowOf("fix-judge-unrelated-test-head-6")).toContain(" ended=false ");
+  expect(rowOf("fix-judge-unrelated-test-head-7")).toContain(" kept=false ");
+  expect(rowOf("fix-judge-unrelated-test-head-8")).toContain(" read=false ");
+  expect(rowOf("fix-judge-unrelated-test-head-9")).toContain(" once=true ");
+  expect(rowOf("fix-judge-unrelated-test-head-9")).toContain(" presses=1/2 ");
+});
+
+// Catches: an implementer of a red the change made scored without the fix of the failing code,
+// with a fix made outside its own working copy, with a run of the job again, or with a write in
+// the shared working copy.
+test("fix-judge touched-test: a push of the fix of the failing code from the fix's own copy, no job run again, the shared copy kept", () => {
+  fixPasses("touched-test", { 1: true, 2: false, 3: false, 4: false, 5: false });
+  expect(rowOf("fix-judge-touched-test-head-1")).toContain(
+    " fixed=true inCopy=true noRerun=true kept=true "
+  );
+  expect(rowOf("fix-judge-touched-test-head-2")).toContain(" noRerun=false ");
+  expect(rowOf("fix-judge-touched-test-head-3")).toContain(" inCopy=false ");
+  expect(rowOf("fix-judge-touched-test-head-4")).toContain(" kept=false ");
+  expect(rowOf("fix-judge-touched-test-head-5")).toContain(" fixed=false ");
+});
+
+// Catches: a tester beside a fix scored as passing when it pushed the branch of the task, when its
+// record names neither its branch nor its red test, or when what it pushed to its own branch is no
+// test; and a result or a record's head at a commit of its own branch passing or failing the run
+// rather than being counted beside the score.
+test("fix-judge tester-beside: the red test on its own branch, both named, the branch of the task untouched, and the off-head count", () => {
+  fixPasses("tester-beside", {
+    1: true,
+    2: false,
+    3: false,
+    4: false,
+    5: true,
+    6: true,
+    7: true,
+  });
+  expect(rowOf("fix-judge-tester-beside-head-1")).toContain(
+    " pushedOwn=true named=true taskUntouched=true offHead=false "
+  );
+  expect(rowOf("fix-judge-tester-beside-head-2")).toContain(" taskUntouched=false ");
+  expect(rowOf("fix-judge-tester-beside-head-3")).toContain(" named=false ");
+  expect(rowOf("fix-judge-tester-beside-head-4")).toContain(" pushedOwn=false ");
+  expect(rowOf("fix-judge-tester-beside-head-5")).toContain(" offHead=true ");
+  expect(rowOf("fix-judge-tester-beside-head-5")).toContain(" offResults=1 ");
+  expect(rowOf("fix-judge-tester-beside-head-6")).toContain(" offHead=true ");
+  expect(rowOf("fix-judge-tester-beside-head-6")).toContain(" offRecordHead=true ");
+  expect(rowOf("fix-judge-tester-beside-head-7")).toContain(" named=true ");
+  expect(out).toContain("\nfix-judge:tester-beside\thead\t4/7\t0/7\t0\t0\n");
+  expect(out).toContain("\nscenario\tlabel\toff-head\nfix-judge:tester-beside\thead\t2/7\n");
+});
+
+// Catches: the worlds of fix-judge counted under one row, or under a label.
+test("fix-judge's counts are per case and label", () => {
+  expect(out).toContain("\nfix-judge:unrelated-test\thead\t2/9\t0/9\t0\t0\n");
+  expect(out).toContain("\nfix-judge:touched-test\thead\t1/5\t0/5\t0\t0\n");
 });

@@ -26,9 +26,15 @@
 // one review by its id answers it or GitHub's 404. A read lists no review but, where the world
 // approves, #702's one APPROVED review, whose Legion footer names #702's head. A `gh pr` read of a
 // number the world holds no pull request of is refused, as GitHub refuses it, and so is a REST call
-// to another repository. `gh run` answers only `gh run view` of a named job that has ended, with its
-// summary or, given `--log` or `--log-failed`, its log: a watch of a run in progress cannot end here
-// as it does on GitHub, so it has no route.
+// to another repository. `gh run` answers `gh run view` of a named job's run: its fields under
+// `--json`, its summary, and, given `--log` or `--log-failed`, its log once it has ended or gh's
+// refusal while it runs. A watch of a run in progress cannot end here as it does on GitHub, so it
+// has no route. A named job that the world lets its agent run once more (`rerun`) is pressed by
+// `gh run rerun` of its run or of its job, or the REST POST of either: the press moves the world
+// to its state `running`, in which every read answers the second attempt running and a second
+// press is refused as GitHub refuses it, and the rig moves it to `settled` between two turns, in
+// which every read answers the second attempt as it concluded (gh-standin.ts, `when` and
+// `moves`). The first attempt's job and log answer by its id and its attempt in each state.
 //
 // Each route is {match, ...}, the form gh-standin.ts reads; its doc comment says how a call picks
 // one and what each field does. A call no route names is the stand-in's loud failure, which
@@ -38,10 +44,11 @@ import { z } from "zod";
 /** A path a pull request changes, with its lines added and removed (`git diff --numstat`). */
 const ChangedFile = z.object({ path: z.string(), additions: z.number(), deletions: z.number() });
 
-/** A CI job of rig-world.json's `ciJobs` that the world names at a head: its check run, workflow
- * run and suite, whether it has ended (`completed`) or still runs (`in_progress`), how an ended
- * one concluded (`success` where none is named), and the log GitHub keeps of it. */
-const NamedJob = z.object({
+/** One attempt of a CI job of rig-world.json's `ciJobs` that the world names at a head: its check
+ * run, workflow run and suite, whether it has ended (`completed`) or still runs (`in_progress`),
+ * how an ended one concluded (`success` where none is named), the log GitHub keeps of it, and the
+ * attempt of its run it is (1 where none is named). */
+const JobAttempt = z.object({
   name: z.string(),
   checkRun: z.number(),
   run: z.number(),
@@ -49,11 +56,20 @@ const NamedJob = z.object({
   status: z.string(),
   conclusion: z.string().optional(),
   log: z.string().optional(),
+  attempt: z.number().optional(),
+});
+
+/** A named job: its attempt at the head and, where the world lets the agent run it once more, the
+ * check run of that second attempt and how it concludes (`rerun`). A second attempt carries the
+ * first as `earlier`, which every read by its id or its attempt still answers. */
+const NamedJob = JobAttempt.extend({
+  rerun: z.object({ checkRun: z.number(), conclusion: z.string() }).optional(),
+  earlier: JobAttempt.optional(),
 });
 
 /** A pull request of the world: its number, head, body, changed files, the unnamed jobs that
- * passed at its head, the named jobs there, its diff against the base, its URL and its head
- * commit's subject. */
+ * passed at its head, the named jobs there, its diff against the base, its URL, its head commit's
+ * subject and its head branch (`legion/<key>-<number>` where none is named). */
 const Pull = z.object({
   number: z.number(),
   head: z.string(),
@@ -64,6 +80,7 @@ const Pull = z.object({
   diff: z.string(),
   url: z.string(),
   subject: z.string(),
+  branch: z.string().optional(),
 });
 
 /** A branch of the remote and the commit it is at. */
@@ -107,6 +124,7 @@ export const HeadsWorld = z.object({
 });
 export type HeadsWorld = z.infer<typeof HeadsWorld>;
 type PullOf = z.infer<typeof Pull>;
+type JobOf = z.infer<typeof JobAttempt>;
 type CommitOf = z.infer<typeof Commit>;
 type EntryOf = z.infer<typeof Entry>;
 
@@ -121,6 +139,8 @@ export interface Route {
   list?: "reviews" | "comments";
   lookup?: "review";
   pull?: number;
+  when?: string;
+  moves?: string;
 }
 
 /** What gh-standin.ts reads from fixtures.json: the routes, the pull request a call that names
@@ -158,9 +178,105 @@ function refused(status: number, message: string, documentation: string) {
   };
 }
 
+/** The states a world passes through where a named job may run once more (gh-standin.ts's
+ * `state`): before the press, while the second attempt runs, and once the rig settled it. */
+export const RERUN_STATES = ["", "running", "settled"] as const;
+export type RerunState = (typeof RERUN_STATES)[number];
+
+/** `world` in `state`: each named job a press runs once more stands at its second attempt, its own
+ * check run, running, or concluded as its `rerun` says with its log where it failed again, and
+ * carries its first attempt as `earlier`. Before the press the world is `world` itself. */
+function inState(world: HeadsWorld, state: RerunState): HeadsWorld {
+  if (state === "") return world;
+  return {
+    ...world,
+    pulls: world.pulls.map((pull) => ({
+      ...pull,
+      named: pull.named.map((job) => {
+        if (job.rerun === undefined) return job;
+        const { rerun, ...first } = job;
+        const ended =
+          state === "running"
+            ? { status: "in_progress" }
+            : {
+                status: "completed",
+                conclusion: rerun.conclusion,
+                ...(rerun.conclusion === "success" ? {} : { log: job.log }),
+              };
+        return {
+          name: job.name,
+          checkRun: rerun.checkRun,
+          run: job.run,
+          suite: job.suite,
+          attempt: 2,
+          ...ended,
+          earlier: first,
+        };
+      }),
+    })),
+  };
+}
+
+/** The presses of each named job the world lets its agent run once more, in `state`: `gh run
+ * rerun` of its run (with `--failed` or none) or of its job (`--job`), and the REST POST of either
+ * (`…/actions/runs/<run>/rerun-failed-jobs`, `…/rerun`, `…/actions/jobs/<id>/rerun`). Before the
+ * press each answers as GitHub and gh 2.98.0 answer a re-run they started, gh printing nothing
+ * where no terminal is there and the REST POST an empty object, and moves the world to
+ * `running`. While the second attempt runs, gh refuses a press of the run or of either job as
+ * GitHub refuses one ("This workflow is already running"). A REST POST then has no press route,
+ * and the table's GitHub 404 of an unknown run answers it: UNMEASURED, GitHub's own answer to that
+ * POST while the run runs has not been read. Once settled, a press answers as the first did and
+ * moves nothing: the world holds no third attempt. The other words are measured (gh 2.98.0, the
+ * re-run of a failed job in skills/legion-worker). */
+function pressRoutes(world: HeadsWorld, state: RerunState): Route[] {
+  return world.pulls.flatMap((pull) =>
+    pull.named.flatMap((job): Route[] => {
+      const { rerun } = job;
+      if (rerun === undefined) return [];
+      const ofRun = `^gh run rerun (?=(.* )?${job.run}( |$))(?!(.* )?(-h|--help)( |$))(?!.*--job)`;
+      const ofJob = (id: number) => `^gh run rerun (?=.*--job[ =]${id}( |$))`;
+      const rest = `^gh api (?=(.* )?(-X|--method)[ =]?POST( |$)|.*(-f|-F|--field|--raw-field|--input) )(?=.*(actions/runs/${job.run}/rerun(-failed-jobs)?|actions/jobs/(${job.checkRun}|${rerun.checkRun})/rerun)([ ?]|$))`;
+      if (state === "running")
+        return [
+          {
+            match: ofRun,
+            stderr: `run ${job.run} cannot be rerun; This workflow is already running\n`,
+            exit: 1,
+          },
+          ...[job.checkRun, rerun.checkRun].map((id) => ({
+            match: ofJob(id),
+            stderr: `job ${id} cannot be rerun\n`,
+            exit: 1,
+          })),
+        ].map((route) => ({ ...route, when: state }));
+      const moves = state === "" ? { moves: "running" } : {};
+      return [
+        { match: ofRun, stdout: "", ...moves },
+        { match: ofJob(job.checkRun), stdout: "", ...moves },
+        { match: rest, stdout: {}, ...moves },
+      ].map((route) => ({ ...route, when: state }));
+    })
+  );
+}
+
 /** The route table of `world`, in the order gh-standin.ts tries it: the first route whose match
- * names a call answers it. */
+ * names a call answers it. A world with a named job its agent may run once more holds the table
+ * of each of its states (inState), each route answering only in its own (`when`), with the
+ * presses (pressRoutes) ahead of them. */
 export function renderHeadsRoutes(world: HeadsWorld): RouteTable {
+  const table = routesOf(world);
+  if (!world.pulls.some((pull) => pull.named.some((job) => job.rerun !== undefined))) return table;
+  return {
+    ...table,
+    routes: RERUN_STATES.flatMap((state) => [
+      ...pressRoutes(world, state),
+      ...routesOf(inState(world, state)).routes.map((route) => ({ ...route, when: state })),
+    ]),
+  };
+}
+
+/** The route table of `world` in one state: each named job as the world names it. */
+function routesOf(world: HeadsWorld): RouteTable {
   const { repo, key, title, base, main, approved, at, branches, trees } = world;
   const [owner = "", name = ""] = repo.split("/");
   const api = `https://api.github.com/repos/${repo}`;
@@ -174,7 +290,7 @@ export function renderHeadsRoutes(world: HeadsWorld): RouteTable {
   /** Each number the world holds a pull request of, for the refusals of any other. */
   const numbers = pulls.map((pull) => String(pull.number)).join("|");
 
-  const ref = (pull: PullOf) => `legion/${key}-${pull.number}`;
+  const ref = (pull: PullOf) => pull.branch ?? `legion/${key}-${pull.number}`;
   /** The commit a head names, which the world always holds. */
   const commitAt = (sha: string): CommitOf => {
     const commit = trees.find((t) => t.sha === sha);
@@ -198,7 +314,7 @@ export function renderHeadsRoutes(world: HeadsWorld): RouteTable {
    * `gh pr checks` exits 1. CLEAN is mergeable with every check passed. */
   const running = (pull: PullOf) => pull.named.some((job) => job.status === "in_progress");
   /** How a named job concluded, null while it runs. */
-  const concluded = (job: PullOf["named"][number]) =>
+  const concluded = (job: JobOf) =>
     job.status === "completed" ? (job.conclusion ?? "success") : null;
   const failing = (pull: PullOf) =>
     pull.named.some((job) => concluded(job) !== null && concluded(job) !== "success");
@@ -318,18 +434,20 @@ export function renderHeadsRoutes(world: HeadsWorld): RouteTable {
     started_at: at,
   });
   const passed = { status: "completed", conclusion: "success", completed_at: at };
+  /** A named job's check run, at the attempt the job is: ended as it concluded, or running. */
+  const namedCheck = (pull: PullOf, job: JobOf) => ({
+    ...checkrun(pull, job.name, job.checkRun, job.run, job.suite),
+    ...(concluded(job) !== null
+      ? { status: "completed", conclusion: concluded(job), completed_at: at }
+      : { status: "in_progress", conclusion: null, completed_at: null }),
+  });
   /** The head's check runs: each unnamed job's, passed in the head's run, then each named job's. */
   const checkruns = (pull: Indexed) => [
     ...pull.jobs.map((job, index) => ({
       ...checkrun(pull, job, 8000 + index + 100 * pull.index, run(pull), run(pull)),
       ...passed,
     })),
-    ...pull.named.map((job) => ({
-      ...checkrun(pull, job.name, job.checkRun, job.run, job.suite),
-      ...(concluded(job) !== null
-        ? { status: "completed", conclusion: concluded(job), completed_at: at }
-        : { status: "in_progress", conclusion: null, completed_at: null }),
-    })),
+    ...pull.named.map((job) => namedCheck(pull, job)),
   ];
   type CheckRun = ReturnType<typeof checkruns>[number];
   /** A check run as GitHub answers it for a workflow job (actions/jobs/<id>, runs/<id>/jobs). */
@@ -350,7 +468,8 @@ export function renderHeadsRoutes(world: HeadsWorld): RouteTable {
     id: number,
     runName: string,
     status: string,
-    conclusion: string | null
+    conclusion: string | null,
+    attempt = 1
   ) => ({
     id,
     name: runName,
@@ -361,7 +480,7 @@ export function renderHeadsRoutes(world: HeadsWorld): RouteTable {
     head_sha: pull.head,
     head_branch: ref(pull),
     run_number: id,
-    run_attempt: 1,
+    run_attempt: attempt,
     html_url: `https://github.com/${repo}/actions/runs/${id}`,
     jobs_url: `${api}/actions/runs/${id}/jobs`,
     created_at: at,
@@ -372,8 +491,40 @@ export function renderHeadsRoutes(world: HeadsWorld): RouteTable {
    * job's. */
   const wfruns = (pull: Indexed) => [
     ...(pull.jobs.length > 0 ? [wfrun(pull, run(pull), "ci", "completed", "success")] : []),
-    ...pull.named.map((job) => wfrun(pull, job.run, job.name, job.status, concluded(job))),
+    ...pull.named.map((job) =>
+      wfrun(pull, job.run, job.name, job.status, concluded(job), job.attempt ?? 1)
+    ),
   ];
+  /** A named job's run as `gh run view --json` answers it, its one job with it. */
+  const ghRun = (pull: PullOf, job: JobOf) => ({
+    attempt: job.attempt ?? 1,
+    conclusion: concluded(job) ?? "",
+    createdAt: at,
+    databaseId: job.run,
+    displayTitle: titled,
+    event: "pull_request",
+    headBranch: ref(pull),
+    headSha: pull.head,
+    jobs: [
+      {
+        completedAt: concluded(job) === null ? "0001-01-01T00:00:00Z" : at,
+        conclusion: concluded(job) ?? "",
+        databaseId: job.checkRun,
+        name: job.name,
+        startedAt: at,
+        status: job.status,
+        steps: [],
+        url: `https://github.com/${repo}/actions/runs/${job.run}/job/${job.checkRun}`,
+      },
+    ],
+    name: job.name,
+    number: job.run,
+    startedAt: at,
+    status: job.status,
+    updatedAt: at,
+    url: `https://github.com/${repo}/actions/runs/${job.run}`,
+    workflowName: job.name,
+  });
   const noPage = { hasNextPage: false, endCursor: null };
   /** GraphQL's answer for the pull request: no branch protection rule and no review thread. */
   const graphql = (pull: Indexed) => ({
@@ -917,29 +1068,101 @@ export function renderHeadsRoutes(world: HeadsWorld): RouteTable {
         ];
       })
     ),
-    // The log of each named job that has ended, read by its job's id or by `gh run view` of its
-    // run, and a summary of that run naming its job; then a job by its id: each check run the heads
-    // hold, else GitHub's 404.
+    // Each attempt of a named job's run by its number (`…/attempts/<n>` and its jobs): the attempt
+    // the job is at, and the one before it where the job ran once more.
     ...pulls.flatMap((pull) =>
       pull.named.flatMap((job) =>
-        concluded(job) === null
-          ? []
-          : [
-              {
-                match: `^gh api .*actions/jobs/${job.checkRun}/logs([ ?]|$)`,
-                stdout: job.log ?? "",
-              },
-              {
-                match: `^gh run view (?=.*--job[ =]${job.checkRun}\\b)(?=.*--log)`,
-                stdout: job.log ?? "",
-              },
-              { match: `^gh run view (?=.*\\b${job.run}\\b)(?=.*--log)`, stdout: job.log ?? "" },
-              {
-                match: `^gh run view (?=.*\\b${job.run}\\b)`,
-                stdout: `${concluded(job) === "success" ? "✓" : "X"} ${ref(pull)} ${job.name} · ${job.run}\nTriggered via pull_request\n\nJOBS\n${concluded(job) === "success" ? "✓" : "X"} ${job.name} in 10s (ID ${job.checkRun})\n\nFor more information about the job, try: gh run view --job=${job.checkRun}\nView this run on GitHub: https://github.com/${repo}/actions/runs/${job.run}\n`,
-              },
-            ]
+        [job, ...(job.earlier === undefined ? [] : [job.earlier])].flatMap((attempt) => {
+          const path = `actions/runs/${attempt.run}/attempts/${attempt.attempt ?? 1}`;
+          return [
+            {
+              match: `^gh api .*${path}/jobs([ ?]|$)`,
+              stdout: { total_count: 1, jobs: [jobOf(namedCheck(pull, attempt))] },
+            },
+            {
+              match: `^gh api .*${path}([ ?]|$)`,
+              stdout: wfrun(
+                pull,
+                attempt.run,
+                attempt.name,
+                attempt.status,
+                concluded(attempt),
+                attempt.attempt ?? 1
+              ),
+            },
+          ];
+        })
       )
+    ),
+    // Each named job's run as `gh run view` reads it: its fields under `--json`; where the job ran
+    // once more, its first attempt's job and log, by that job's id or by `--attempt 1`; the job's
+    // log once it has ended, read by its job's id or by `gh run view` of its run, or gh's refusal
+    // of that read while the run runs; and a summary of the run naming its job. Then a job by its
+    // id: each check run the heads hold, else GitHub's 404.
+    ...pulls.flatMap((pull) =>
+      pull.named.flatMap((job): Route[] => {
+        const runView = `^gh run view (?=.*\\b${job.run}\\b)`;
+        const { earlier } = job;
+        const first: Route[] =
+          earlier === undefined
+            ? []
+            : [
+                {
+                  match: `^gh api .*actions/jobs/${earlier.checkRun}/logs([ ?]|$)`,
+                  stdout: earlier.log ?? "",
+                },
+                {
+                  match: `^gh run view (?=.*--job[ =]${earlier.checkRun}\\b)(?=.*--log)`,
+                  stdout: earlier.log ?? "",
+                },
+                {
+                  match: `${runView}(?=.*(--attempt|-a)[ =]?1\\b)(?=.*--log)`,
+                  stdout: earlier.log ?? "",
+                },
+                {
+                  match: `^gh api .*actions/jobs/${earlier.checkRun}([ ?/]|$)`,
+                  stdout: jobOf(namedCheck(pull, earlier)),
+                },
+              ];
+        const ended = concluded(job);
+        const logs: Route[] =
+          ended === null
+            ? [
+                {
+                  match: `^gh run view (?=.*--job[ =]${job.checkRun}\\b)(?=.*--log)`,
+                  stderr: `job ${job.checkRun} is still in progress; logs will be available when it is complete\n`,
+                  exit: 1,
+                },
+                {
+                  match: `${runView}(?=.*--log)`,
+                  stderr: `run ${job.run} is still in progress; logs will be available when it is complete\n`,
+                  exit: 1,
+                },
+              ]
+            : [
+                {
+                  match: `^gh api .*actions/jobs/${job.checkRun}/logs([ ?]|$)`,
+                  stdout: job.log ?? "",
+                },
+                {
+                  match: `^gh run view (?=.*--job[ =]${job.checkRun}\\b)(?=.*--log)`,
+                  stdout: job.log ?? "",
+                },
+                { match: `${runView}(?=.*--log)`, stdout: job.log ?? "" },
+              ];
+        // UNMEASURED: the summary of a run still in progress (its `*` mark and its job line with no
+        // time) is modeled on the ended run's, not read from gh.
+        const mark = ended === null ? "*" : ended === "success" ? "✓" : "X";
+        return [
+          ...first,
+          { match: `${runView}(?=.*--json)`, stdout: ghRun(pull, job) },
+          ...logs,
+          {
+            match: runView,
+            stdout: `${mark} ${ref(pull)} ${job.name} · ${job.run}\nTriggered via pull_request\n\nJOBS\n${mark} ${job.name}${ended === null ? "" : " in 10s"} (ID ${job.checkRun})\n\nFor more information about the job, try: gh run view --job=${job.checkRun}\nView this run on GitHub: https://github.com/${repo}/actions/runs/${job.run}\n`,
+          },
+        ];
+      })
     ),
     ...pulls.flatMap(checkruns).map((check) => ({
       match: `^gh api .*actions/jobs/${check.id}([ ?/]|$)`,

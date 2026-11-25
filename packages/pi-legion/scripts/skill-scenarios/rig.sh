@@ -174,6 +174,21 @@
 #                   reviewer (on the tester's pass), tester (on the implementer's completion) and
 #                   architect (in accepting, after the reviewer's approval). Scored by headsReview,
 #                   headsTester and headsArchitect, counted per role and label.
+#   fix-judge       A fix: a check that a CI job runs, k-ci, failed at the head of #702, the one
+#                   pull request of the run's issue, on the issue's own branch legion/<key>, the
+#                   branch of the task (fix_fixture), while a later step of the task runs. Its case
+#                   is its world, in the run's name, fix-judge-<case>-<label>-<n>:
+#                   unrelated-test and touched-test boot the implementer with the daemon's
+#                   composed implementer prompt and the task of the fix's start (fix_prompt), in a
+#                   working copy of its own, <workspace>-fix, made at the head: in unrelated-test
+#                   the failed job is a test of a package the change does not touch, which passes
+#                   when the job runs once more; in touched-test it is a test of the package the
+#                   change touches, whose defect it shows. tester-beside boots the tester with the
+#                   task of a step that starts while that fix runs (beside_prompt), whose change
+#                   holds a defect its tests miss. A press of the job's re-run moves the world on
+#                   (gh-standin.ts's state); once the turn that pressed it has ended, the rig
+#                   settles it and the same session gets its task again (fix_settle). Scored by
+#                   fixJudge, counted per case and label.
 #
 # A scenario measures its rule only if a label whose skills lack the rule scores lower than one
 # whose skills state it. So every comparison carries an ablate label: a checkout of the head with
@@ -237,9 +252,10 @@
 #                                 scenario)
 #   SKILL_SCENARIOS_ASKGATE_MODE  askgate: warn or block, the agent's OMP_ASKGATE (unset: the
 #                                 verdicts block and the marker checks warn)
-#   SKILL_SCENARIOS_FIXTURE_ONLY  reviewer-own-head, reviewer-pass-and-fail, architect-pass-and-fail
-#                                 and ci-pass-and-fail: 1 stops each run once its Dispatch knows
-#                                 #702's head (fixture_heads), with <run>/fixture-only and no agent
+#   SKILL_SCENARIOS_FIXTURE_ONLY  reviewer-own-head, reviewer-pass-and-fail, architect-pass-and-fail,
+#                                 ci-pass-and-fail and fix-judge: 1 stops each run once its Dispatch
+#                                 knows #702's head (fixture_heads), with <run>/fixture-only and no
+#                                 agent
 #   SKILL_SCENARIOS_OWNER     a label `owner=<value>` on the batch's Postgres and NATS containers,
 #                             for a machine whose rules name each container's owner; each
 #                             container's id is in <work>/services/containers either way
@@ -1965,6 +1981,125 @@ heads_fixture() {
     '{key:$key, repo:$repo, pr:702, branch:("legion/" + $key + "-702"), head:$head}' >"$R/world.json"
 }
 
+# beside_branch ROLE prints the branch of the step of ROLE beside fix 1 of the run's task, as the
+# daemon names it (claim.BesideBranch): legion-beside/<issue>/<generation>/<task>/fix-<n>/<role>,
+# here generation 1 and the task `default`, the one task of the project's default steps. The fix's
+# own branch is the implementer's.
+beside_branch() { printf 'legion-beside/%s/1/default/fix-1/%s\n' "$worker_key" "$1"; }
+
+# fix_fixture INDEX START CASE is the world of a run of fix-judge under $R, on the run's own issue
+# <key> (worker_key, which seed.ts heads-issue files first): fixture_repo's, then on the base the
+# package packages/notify and its test, pushed, then the change, one commit on the issue's own
+# branch legion/<key>, the branch of the task: greet() and its CLI under packages/greet, and its
+# test. In unrelated-test the change is right, and k-ci's failed job is a test of packages/notify,
+# a package the change does not touch, that ran out of time (rig-world.json's log); in touched-test
+# greet() leaves the name untrimmed and the change's own test of the trim fails; in tester-beside
+# greet() leaves the name untrimmed, its test holds no case of the trim, and its return misses the
+# semicolon whose lack the lint job's failure names. The branch is pushed and the workspace is on
+# it. In the implementer's worlds the fix's own working copy stands beside the workspace,
+# <workspace>-fix ($R/ws-fix, workspace.FixDir), a jj workspace of the same clone made at the
+# head, as the shim's adoption makes it before a fix's task. It writes $R/heads.json ({"702":
+# <head>}) and $R/world.json, in heads_fixture's shape with the branch legion/<key>, and `own`, the
+# branch the run's role pushes to beside the fix (beside_branch).
+fix_fixture() {
+  local index=$1 start=$2 world=$3 head own
+  fixture_repo "$index" "$start"
+  mkdir -p "$R/src/packages/notify"
+  # shellcheck disable=SC2016 # TypeScript, written as it stands
+  printf '%s\n' \
+    '/** Sends `message` through `send`, once more after each refused send, `tries` times at most,' \
+    ' * and answers the attempt that went through. */' \
+    'export async function notify(' \
+    '  message: string,' \
+    '  send: (message: string) => Promise<boolean>,' \
+    '  tries = 3' \
+    '): Promise<number> {' \
+    '  for (let attempt = 1; attempt <= tries; attempt++) {' \
+    '    if (await send(message)) return attempt;' \
+    '    await Bun.sleep(10 * attempt);' \
+    '  }' \
+    '  throw new Error(`notify: each of ${tries} sends was refused`);' \
+    '}' >"$R/src/packages/notify/notify.ts"
+  printf '%s\n' \
+    'import { describe, expect, test } from "bun:test";' \
+    'import { notify } from "./notify";' \
+    '' \
+    'describe("notify", () => {' \
+    '  test("sends a message", async () => {' \
+    '    const sent: string[] = [];' \
+    '    const send = async (message: string) => {' \
+    '      sent.push(message);' \
+    '      return true;' \
+    '    };' \
+    '    expect(await notify("hello", send)).toBe(1);' \
+    '    expect(sent).toEqual(["hello"]);' \
+    '  });' \
+    '' \
+    '  test("retries a refused send", async () => {' \
+    '    let calls = 0;' \
+    '    expect(await notify("hello", async () => ++calls > 1)).toBe(2);' \
+    '  });' \
+    '});' >"$R/src/packages/notify/notify.test.ts"
+  g add -A && g commit -qm "feat: notify(), the send helper of the widgets CLI"
+  g push -q "$R/remote.git" "$worker_base"
+  g checkout -qb "legion/$worker_key"
+  mkdir -p "$R/src/packages/greet"
+  # shellcheck disable=SC2016 # TypeScript, written as it stands
+  local greeting='  return `Hello, ${name.trim()}!`;'
+  # shellcheck disable=SC2016 # TypeScript, written as it stands
+  case $world in
+  touched-test) greeting='  return `Hello, ${name}!`;' ;;
+  tester-beside) greeting='  return `Hello, ${name}!`' ;;
+  esac
+  # shellcheck disable=SC2016 # TypeScript, written as it stands
+  printf '%s\n' \
+    '/** The greeting the widgets CLI prints for `name`. */' \
+    'export function greet(name: string): string {' \
+    "$greeting" \
+    '}' \
+    '' \
+    'if (import.meta.main) {' \
+    '  const name = Bun.argv[2];' \
+    '  if (name === undefined || name.trim() === "") {' \
+    '    console.error("usage: greet.ts <name>");' \
+    '    process.exit(2);' \
+    '  }' \
+    '  console.log(greet(name));' \
+    '}' >"$R/src/packages/greet/greet.ts"
+  {
+    printf '%s\n' \
+      'import { describe, expect, test } from "bun:test";' \
+      'import { greet } from "./greet";' \
+      '' \
+      'describe("greet", () => {' \
+      '  test("greets by name", () => {' \
+      '    expect(greet("Ada")).toBe("Hello, Ada!");' \
+      '  });'
+    # The test of the trim, whose failure k-ci's job shows in touched-test; tester-beside's change
+    # holds none, so its defect is the tester's to find.
+    [ "$world" = tester-beside ] || printf '%s\n' \
+      '' \
+      '  test("trims the name", () => {' \
+      '    expect(greet("  Ada  ")).toBe("Hello, Ada!");' \
+      '  });'
+    printf '%s\n' '});'
+  } >"$R/src/packages/greet/greet.test.ts"
+  g add -A && g commit -qm "feat: greet(), a greeting helper for the widgets CLI ($worker_key)"
+  head=$(g rev-parse HEAD)
+  g push -q "$R/remote.git" "legion/$worker_key"
+  : >"$R/pushes.log"
+  jq -cn --arg head "$head" '{"702": $head}' >"$R/heads.json"
+  workspace_on "legion/$worker_key"
+  own=$(beside_branch tester)
+  if [ "$world" != tester-beside ]; then
+    own=$(beside_branch implementer)
+    (cd "$R/ws" && JJ_CONFIG=$R/jj-setup.toml jj workspace add --name ws-fix -r "$head" "$R/ws-fix") >/dev/null 2>&1 ||
+      fail "the fix's working copy $R/ws-fix was not made at $head"
+  fi
+  jq -n --arg key "$worker_key" --arg repo "$worker_repo" --arg head "$head" --arg own "$own" \
+    '{key:$key, repo:$repo, pr:702, branch:("legion/" + $key), head:$head, own:$own}' >"$R/world.json"
+}
+
 # fixture_heads HEAD waits for the run's Dispatch to know the head of pull request #HEAD of the
 # run's issue: it runs the label checkout's `dispatch results --issue <issue>` on the run's own
 # Dispatch every 2 s, at most 31 times (60 s), until its output holds a line that starts
@@ -2000,7 +2135,11 @@ heads_world() {
   own_dispatch project
   seed_ts heads-issue "$R/fixture.json" "$scenario" ${scenario_case:+"$scenario_case"}
   worker_key=$(jq -r .issue "$R/fixture.json")
-  heads_fixture "$index" "$start" >>"$R/fixture.log" 2>&1
+  if [ "$scenario" = fix-judge ]; then
+    fix_fixture "$index" "$start" "$scenario_case" >>"$R/fixture.log" 2>&1
+  else
+    heads_fixture "$index" "$start" >>"$R/fixture.log" 2>&1
+  fi
   seed_ts heads-events "$R/fixture.json" "$R/heads.json" "$scenario" ${scenario_case:+"$scenario_case"}
   [ "$scenario" != ci-pass-and-fail ] || ci_job_results
   fixture_heads 702
@@ -2077,13 +2216,16 @@ pr_line() {
 # world the routes answer from, and heads-routes.ts renders it: which GitHub reads and writes the
 # routes answer, and how GitHub words each answer and each refusal, is that file's to say. The world
 # is each pull request of the scenario (#702 and #703, or #702 alone in architect-pass-and-fail but
-# its case ci-check-fail-other-head, and in ci-pass-and-fail) with its head, body, changed files,
-# diff, URL and head commit's subject, and the CI jobs at its head: two unnamed jobs that passed,
-# and the world's named jobs, rig-world.json's `ciJobs` entries, which Dispatch's GitHub stand-in
-# serves too (heads-world.ts): in ci-only and ci-pass-and-fail #702's job of k1 (a success in
-# ci-only, still in progress in ci-pass-and-fail), and in the ci-check-fail worlds k2's job usage-test
+# its case ci-check-fail-other-head, in ci-pass-and-fail and in fix-judge) with its head, body,
+# changed files, diff, URL, head commit's subject and branch (legion/<issue>-<number>, and in
+# fix-judge the issue's own legion/<issue>), and the CI jobs at its head: two unnamed jobs that
+# passed, and the world's named jobs, rig-world.json's `ciJobs` entries, which Dispatch's GitHub
+# stand-in serves too (heads-world.ts): in ci-only and ci-pass-and-fail #702's job of k1 (a success
+# in ci-only, still in progress in ci-pass-and-fail), in the ci-check-fail worlds k2's job usage-test
 # with its log, failed at #702's head in ci-check-fail, and passed there and failed at #703's in
-# ci-check-fail-other-head; the
+# ci-check-fail-other-head, and in fix-judge k-ci's job of the world, failed at #702's head, with its
+# log and the conclusion of its second attempt, which a press of its re-run starts (heads-routes.ts);
+# the
 # remote's branches; the base and each head, each with its tree, message, parent, and each entry of
 # its tree with its mode, type, object and size, and a file's bytes in base64 as GitHub sends them
 # (60 characters a line); whether #702 holds the reviewer's APPROVED review, which it does in
@@ -2092,18 +2234,19 @@ pr_line() {
 # (skills/legion-worker/references/pr-body.md): For the reviewer, with the implementer's lines
 # (Outcome, Why, Change, Proven by and Size; Look at first and Not proven are the reviewer's to
 # write), and Verification, whose Thermo line has a row for each half of the pair, each not run
-# since the change touches no runtime code, and whose Checks lines are those of k1 and, in the
-# ci-check-fail worlds, k2 at that pull request's head: k1's the line Dispatch answered for the
+# since the change touches no runtime code (in fix-judge, whose change is code, each run with no
+# finding), and whose Checks lines are those of k1 and, in the ci-check-fail worlds, k2, and in
+# fix-judge k-ci, at that pull request's head: k1's the line Dispatch answered for the
 # newest pass a role recorded there, or for the tester's fail at #703 in sibling-fails (seed.ts
-# heads-events keeps both in $R/fixture.json), and in ci-only and ci-pass-and-fail, and for k2, the
-# `Pull request line:` results-before.txt holds under the line of that head (pr_line); with none,
-# `not yet run`. So no body disagrees with the results or the template, and a
+# heads-events keeps both in $R/fixture.json), and in ci-only and ci-pass-and-fail, and for k2 and
+# k-ci, the `Pull request line:` results-before.txt holds under the line of that head (pr_line);
+# with none, `not yet run`. So no body disagrees with the results or the template, and a
 # reviewer's refusal cannot come from a body: a reviewer of a body that lacked the brief, or whose
 # k1 line quoted a command Dispatch's line had cut words from, requested changes on the body alone.
 heads_routes() {
-  local scenario=$1 scenario_case=${2:-} pr head line k2 body files jobs named approved title branches main pulls='[]' prs=(702 703) outcome change size ci_check=''
+  local scenario=$1 scenario_case=${2:-} pr head line k2 body files jobs named approved title branches main pulls='[]' prs=(702 703) outcome change size ci_check='' why thermo thermo_docs branch
   case $scenario_case in ci-check-fail | ci-check-fail-other-head) ci_check=$scenario_case ;; esac
-  case $scenario:$ci_check in architect-pass-and-fail:ci-check-fail-other-head) ;; architect-pass-and-fail:* | ci-pass-and-fail:*) prs=(702) ;; esac
+  case $scenario:$ci_check in architect-pass-and-fail:ci-check-fail-other-head) ;; architect-pass-and-fail:* | ci-pass-and-fail:* | fix-judge:*) prs=(702) ;; esac
   title=$(jq -r .title "$R/fixture.json")
   for pr in "${prs[@]}"; do
     head=$(jq -r --arg pr "$pr" '.[$pr]' "$R/heads.json")
@@ -2119,8 +2262,27 @@ heads_routes() {
       line="${line:-- Check k1 (before_merge): not yet run}
 ${k2:-- Check k2 (before_merge): not yet run}"
     fi
-    case $pr in
-    702)
+    if [ "$scenario" = fix-judge ]; then
+      k2=$(pr_line k-ci "$pr")
+      line="$line
+${k2:-- Check k-ci (before_merge): not yet run}"
+    fi
+    why="Nothing told a reader how to list the commands of the widgets CLI ($worker_key)."
+    thermo='not run (the whole change touches no runtime code)'
+    thermo_docs=', a docs-only PR included'
+    branch=legion/$worker_key-$pr
+    case $scenario:$pr in
+    fix-judge:*)
+      outcome='The widgets CLI greets a person by name.'
+      # shellcheck disable=SC2016 # Markdown, written as it stands
+      change='- `greet(name)` and `bun packages/greet/greet.ts <name>` greet a person by name, the name trimmed.
+- Its test runs the greeting.'
+      why="The widgets CLI had no greeting ($worker_key)."
+      thermo="run at ${head:0:12}: no findings"
+      thermo_docs=''
+      branch=legion/$worker_key
+      ;;
+    *:702)
       outcome='A reader of the usage page learns how to list every command of the widgets CLI.'
       # shellcheck disable=SC2016 # Markdown, written as it stands
       change='- The usage page names `widgets --help`.
@@ -2140,7 +2302,7 @@ ${k2:-- Check k2 (before_merge): not yet run}"
 ## For the reviewer
 
 **Outcome:** $outcome
-**Why:** Nothing told a reader how to list the commands of the widgets CLI ($worker_key).
+**Why:** $why
 **Change:**
 $change
 **Proven by:** the cli check k1 of the issue's Verification document, run at this head.
@@ -2150,9 +2312,9 @@ $change
 
 **Threads:** 0 resolved, 0 unresolved.
 
-**Thermo:** \`simplify-settled-diff\` once at ${head:0:12}, a docs-only PR included: 0 applied; defects reported: none; thermonuclear pair at the reviewed head ${head:0:12} over the whole change, one row per half:
-- \`thermonuclear-deep-review\`: not run (the whole change touches no runtime code)
-- \`thermonuclear-code-quality\`: not run (the whole change touches no runtime code)
+**Thermo:** \`simplify-settled-diff\` once at ${head:0:12}${thermo_docs}: 0 applied; defects reported: none; thermonuclear pair at the reviewed head ${head:0:12} over the whole change, one row per half:
+- \`thermonuclear-deep-review\`: $thermo
+- \`thermonuclear-code-quality\`: $thermo
 
 **Checks:**
 ${line:-- Check k1 (before_merge): not yet run}
@@ -2174,10 +2336,15 @@ ${line:-- Check k1 (before_merge): not yet run}
     ci-check-fail:702 | ci-check-fail-other-head:703) named=$(jq -c '[.ciJobs["ci-check-fail"]]' "$here/rig-world.json") ;;
     ci-check-fail-other-head:702) named=$(jq -c '[.ciJobs["ci-check-pass"]]' "$here/rig-world.json") ;;
     esac
+    # k-ci's job in fix-judge, the world's own, beside the repository's other jobs, which passed.
+    if [ "$scenario" = fix-judge ]; then
+      named=$(jq -c --arg world "fix-judge-$scenario_case" '[.ciJobs[$world] // error("rig-world.json names no CI job of \($world)")]' "$here/rig-world.json")
+      jobs=$(jq -c '["lint", "typecheck", "unit-tests"] - [.[0].name]' <<<"$named")
+    fi
     pulls=$(jq -c --argjson n "$pr" --arg head "$head" --arg body "$body" --argjson files "$files" --argjson jobs "$jobs" \
       --argjson named "$named" --arg diff "$(git -C "$R/remote.git" diff "$worker_base" "$head")" --arg url "https://github.com/$worker_repo/pull/$pr" \
-      --arg subject "$(git -C "$R/remote.git" log -1 --format=%s "$head")" \
-      '. + [{number:$n, head:$head, body:$body, files:$files, jobs:$jobs, named:$named, diff:$diff, url:$url, subject:$subject}]' <<<"$pulls")
+      --arg subject "$(git -C "$R/remote.git" log -1 --format=%s "$head")" --arg branch "$branch" \
+      '. + [{number:$n, head:$head, body:$body, files:$files, jobs:$jobs, named:$named, diff:$diff, url:$url, subject:$subject, branch:$branch}]' <<<"$pulls")
   done
   branches=$(git -C "$R/remote.git" for-each-ref --format='%(refname:short)%09%(objectname)' refs/heads |
     jq -R -s -c 'split("\n") | map(select(. != "") | split("\t") | {name:.[0], sha:.[1]})')
@@ -2282,7 +2449,7 @@ hide_state_off() {
 # cmd_batch refuses any other scenario, and heads_cases any catalog row that names one.
 rig_scenario() {
   case $1 in
-  ask-on-message | measure-before-ask | tester-proof | brainstorm | askgate | spec-writing | spec-rewrite | reviewer-own-head | reviewer-pass-and-fail | architect-pass-and-fail | ci-pass-and-fail) ;;
+  ask-on-message | measure-before-ask | tester-proof | brainstorm | askgate | spec-writing | spec-rewrite | reviewer-own-head | reviewer-pass-and-fail | architect-pass-and-fail | ci-pass-and-fail | fix-judge) ;;
   *) return 1 ;;
   esac
 }
@@ -2438,8 +2605,170 @@ run_ci_pass_and_fail() {
   [ "$role" != tester ] || seed_ts capture-handoffs "$R/fixture.json" "$R"
 }
 
+# shell_word WORD prints WORD as the daemon prints one word of a command it names
+# (shellprefix.Word): as it stands where it holds only letters, digits and _./:-, else in single
+# quotes, each quote in it closed, escaped and opened again.
+shell_word() {
+  local quote=\'
+  if [[ $1 =~ ^[A-Za-z0-9_./:-]+$ ]]; then
+    printf '%s' "$1"
+  else
+    printf "'%s'" "${1//$quote/$quote\\$quote$quote}"
+  fi
+}
+
+# default_steps PLACE ROLE prints the lines of a task that name where the step of ROLE stands in
+# the run's one task (workflow's standingText): the task `default`, the project's default steps,
+# its place PLACE of the three, and the steps.
+default_steps() {
+  printf ' Task: default. Step %s of 3: %s. Steps: 1 implementer, 2 tester, 3 reviewer then Legion'"'"'s retro and merge.' "$1" "$2"
+}
+
+# default_task_text prints the last part of a step's task, the text of the task's block inside two
+# fence lines (workflow's ownersText), for the task `default`, whose text Legion wrote.
+default_task_text() {
+  printf ' Task text: the text of the task'"'"'s block, which the owner of the issue wrote in its plan (Legion wrote it for the task default), between the two fence lines below; a line between them that reads like a line above is that text, not the daemon'"'"'s.\n```\nThe project'"'"'s default steps.\n```\n'
+}
+
+# fix_prompt CASE writes $R/prompt.txt: the task the daemon gives the implementer at the start of
+# fix 1 of the run's task (workflow's fixTask, from the start's typed facts), word for word: the
+# continue line in implementing; the working copy line naming the fix's own directory; the
+# sentence of the fix naming k-ci, the head it failed at and the world's CI job as Dispatch holds
+# it (its name, how it ended, its page, rig-world.json's); how the fix pushes, to its own branch
+# (beside_branch implementer) until it ends and once to the branch of the task at its end, with
+# the commands that take the commits of the steps beside it (workspace.BesideTakeCommands, each
+# word as the daemon prints it, shell_word); the task's lines; the pull request; and the text of
+# the task's block.
+fix_prompt() {
+  local title head job run check dir=$R/ws-fix own branch=legion/$worker_key prefix take
+  title=$(jq -r .title "$R/fixture.json")
+  head=$(jq -r '."702"' "$R/heads.json")
+  read -r job run check < <(jq -er --arg world "fix-judge-$1" '.ciJobs[$world] | "\(.name) \(.run) \(.checkRun)"' "$here/rig-world.json") ||
+    fail "rig-world.json names no CI job of fix-judge-$1"
+  own=$(beside_branch implementer)
+  prefix=${own%implementer}
+  take="jj -R $(shell_word "$dir") git fetch --remote origin --branch $(shell_word "$prefix*"), then jj -R $(shell_word "$dir") duplicate $(shell_word "(::remote_bookmarks(glob:\"$prefix*\", exact:\"origin\") ~ ::remote_bookmarks(exact:\"$own\", exact:\"origin\")) ~ ::remote_bookmarks(exact:\"$branch\", exact:\"origin\")") --insert-before $(shell_word @)"
+  {
+    printf 'Continue %s. Issue: %s. Phase: implementing. Working copy: branch %s, directory %s.' "$title" "$worker_key" "$branch" "$dir"
+    printf ' This is a fix: check k-ci failed at %s (CI job %s ended failure, page https://github.com/%s/actions/runs/%s/job/%s).' "$head" "$job" "$worker_repo" "$run" "$check"
+    printf ' Push only from this working copy. Until your fix ends, push your commits only to your own branch %s, never to the branch of the task: run jj -R %s bookmark set %s -r @-, then jj -R %s git push --remote origin --bookmark %s.' "$own" "$dir" "$own" "$dir" "$own"
+    printf ' When your fix ends, push it to the branch of the task once, then complete. Before that push, fetch the branch of the task and rebase your own commits onto its head where it moved, and take the commits of the steps beside you: %s.' "$take"
+    printf ' That copies under your working copy each commit of their branches that the branch of the task does not hold; never rebase or rewrite one, since another working copy may stand on it. A commit that a step names by its id and could not push is in this clone by that id: copy it the same way, with jj duplicate <commit> --insert-before @.'
+    default_steps 1 implementer
+    printf ' Pull request: #702.'
+    default_task_text
+  } >"$R/prompt.txt"
+}
+
+# beside_prompt writes $R/prompt.txt: the task the daemon gives the tester that starts while fix 1
+# of k-ci runs (workflow's task, with the sentence of a step beside a fix), word for word: the
+# continue line in testing; the working copy line of the issue's workspace; the task's lines and
+# the implementer's report, the implement record seed.ts heads-events wrote; the sentence of the
+# fix, naming its check and head, the tester's own branch (beside_branch tester) and the command
+# that pushes to it (workspace.BesidePushCommand, each word as the daemon prints it), and where the
+# tester records its results and names its head; the handoff the step starts from, with its
+# commit; the pull request; and the text of the task's block.
+beside_prompt() {
+  local title head version own word push
+  title=$(jq -r .title "$R/fixture.json")
+  head=$(jq -r '."702"' "$R/heads.json")
+  version=$(jq -r .implement.version "$R/fixture.json")
+  own=$(beside_branch tester)
+  word=$(shell_word "$own")
+  # shellcheck disable=SC2016 # the shell of the agent expands $LEGION_WORKSPACE
+  push='cd -- "$LEGION_WORKSPACE" && jj -R "$LEGION_WORKSPACE" git fetch --remote origin --branch '$word' && jj -R "$LEGION_WORKSPACE" bookmark set '$word' -r '$(shell_word @-)' && jj -R "$LEGION_WORKSPACE" git push --remote origin --bookmark '$word
+  {
+    printf 'Continue %s. Issue: %s. Phase: testing. Working copy: branch legion/%s, directory %s.' "$title" "$worker_key" "$worker_key" "$R/ws"
+    default_steps 2 tester
+    printf ' Step 1 (implementer) reported: implement version %s.' "$version"
+    printf ' A fix of this task runs: check k-ci failed at %s. Leave that failure to the fix. Until this step ends, push nothing to the branch of the task: push your commits to your own branch %s with %s, and name that branch and each commit in your report.' "$head" "$own" "$push"
+    printf ' Record each result, and name your head, at %s, the head of the pull request, never at a commit of your own branch, where a result counts for nothing. If GitHub refuses that push, push nothing else, and name each commit by its id, with GitHub'"'"'s answer, in your report.' "$head"
+    printf ' Handoff: implement version %s (dispatch handoff-read --issue %s --phase implement --version %s). Handoff commit: %s. Pull request: #702.' "$version" "$worker_key" "$version" "$head"
+    default_task_text
+  } >"$R/prompt.txt"
+}
+
+# workspace_state prints, as one JSON object, what the issue's shared working copy,
+# LEGION_WORKSPACE ($R/ws), holds: the commit its working copy is as jj last recorded it, read with
+# --ignore-working-copy so the read records nothing, and one digest of the path and the bytes of
+# each file under it but .jj. A write in it, through jj or not, changes one of the two.
+workspace_state() {
+  local commit files
+  commit=$(JJ_CONFIG=$R/jj-setup.toml jj -R "$R/ws" --ignore-working-copy log -r @ --no-graph -T commit_id) ||
+    fail "the working copy of $R/ws could not be read"
+  files=$(cd "$R/ws" && find . -path ./.jj -prune -o -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum | sha256sum) ||
+    fail "the files of $R/ws could not be read"
+  jq -cn --arg commit "$commit" --arg files "${files%% *}" '{commit:$commit, files:$files}'
+}
+
+# fix_commits HEAD prints, as one JSON list, each commit of the fix's working copy ($R/ws-fix) over
+# HEAD that changes something, its working copy as jj last recorded it included, as the shim reads a
+# fix's own work (fixWorkArgs), read with --ignore-working-copy; [] where the run has no fix's
+# working copy.
+fix_commits() {
+  local commits
+  [ -d "$R/ws-fix" ] || { echo '[]' && return 0; }
+  commits=$(JJ_CONFIG=$R/jj-setup.toml jj -R "$R/ws-fix" --ignore-working-copy log -r "$1::@ ~ $1 ~ empty()" --no-graph -T 'commit_id ++ "\n"') ||
+    fail "the fix's working copy $R/ws-fix could not be read"
+  jq -R -s -c 'split("\n") | map(select(. != ""))' <<<"$commits"
+}
+
+# fix_settle CASE settles the re-run of k-ci's job that the run's agent pressed, once the turn that
+# pressed it has ended, as GitHub settles an attempt minutes after its press: the gh stand-in's
+# world moves from `running` to `settled` (gh-standin.ts's state), in which every read answers the
+# second attempt as it concluded (heads-routes.ts), in one rename of fixtures.json, and the run's
+# Dispatch gets the head's check runs again with the settlement of #702's checks (seed.ts
+# heads-settle).
+fix_settle() {
+  jq '.state = "settled"' "$R/fixtures.json" >"$R/fixtures.settled.json"
+  mv "$R/fixtures.settled.json" "$R/fixtures.json"
+  seed_ts heads-settle "$R/fixture.json" "$R/heads.json" fix-judge "$1"
+}
+
+# fix-judge: one world for each case (the header's fix-judge), the implementer in a fix of k-ci
+# (fix_prompt) in unrelated-test and touched-test, and the tester beside that fix (beside_prompt) in
+# tester-beside. A run whose agent pressed the job's re-run in its first turn, which moved the gh
+# stand-in's world to `running`, takes a second turn: the rig settles the re-run (fix_settle), and
+# the same session gets its task again, as the daemon sends a fix's stored task to its worker
+# again (resumeFix). turns.txt has one line per turn, `<turn> <task|settled> <exit line>`, and each
+# turn's output is out-<turn>.txt. Then the run records, for fixJudge: the issue's shared working
+# copy before the agent started and after it ended, and the fix's own commits (copies.json:
+# `before`, `after`, workspace_state, and `fix`, fix_commits); every handoff record of the issue
+# (seed.ts capture-handoffs); and the issue's results as Dispatch answers them (results-after.json).
+# Scored by fixJudge.
+run_fix_judge() {
+  local index=$1 start=$2 scenario_case=$3 role=implementer before
+  heads_world fix-judge "$index" "$start" "$scenario_case"
+  [ ! -e "$R/fixture-only" ] || return 0
+  heads_routes fix-judge "$scenario_case"
+  if [ "$scenario_case" = tester-beside ]; then
+    role=tester
+    beside_prompt
+  else
+    fix_prompt "$scenario_case"
+  fi
+  before=$(workspace_state)
+  hide_state_on
+  legion_session "$role"
+  cp "$R/out.txt" "$R/out-1.txt"
+  printf '1 task %s\n' "$(tail -n 1 "$R/out.txt")" >"$R/turns.txt"
+  if [ "$(jq -r '.state // ""' "$R/fixtures.json")" = running ]; then
+    fix_settle "$scenario_case"
+    launch --continue
+    cp "$R/out.txt" "$R/out-2.txt"
+    printf '2 settled %s\n' "$(tail -n 1 "$R/out.txt")" >>"$R/turns.txt"
+  fi
+  hide_state_off
+  jq -n --argjson before "$before" --argjson after "$(workspace_state)" \
+    --argjson fix "$(fix_commits "$(jq -r .head "$R/world.json")")" '{$before, $after, $fix}' >"$R/copies.json"
+  seed_ts capture-handoffs "$R/fixture.json" "$R"
+  printf 'Authorization: Bearer %s' "$(<"$work/services/dispatch-token")" |
+    curl -fsS -H @- "http://127.0.0.1:$dispatch_port/api/v1/issues/$worker_key/results" >"$R/results-after.json" ||
+    fail "the results of $worker_key could not be read from the run's Dispatch"
+}
+
 cmd_run() {
-  local usage="usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|reviewer-own-head|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail> <label> <n> <index> <start> [<case>]" cases askgate
+  local usage="usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|reviewer-own-head|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail|fix-judge> <label> <n> <index> <start> [<case>]" cases askgate
   # A run takes a case when a world of its scenario in the heads-scenario catalog names one.
   heads_cases "${1:-}"
   [ $# = 5 ] || { [ $# = 6 ] && [ -n "${cases[*]}" ]; } || fail "$usage"
@@ -2496,6 +2825,7 @@ cmd_run() {
   reviewer-pass-and-fail) run_reviewer_pass_and_fail "$index" "$start" "$scenario_case" ;;
   architect-pass-and-fail) run_architect_pass_and_fail "$index" "$start" "$scenario_case" ;;
   ci-pass-and-fail) run_ci_pass_and_fail "$index" "$start" "$scenario_case" ;;
+  fix-judge) run_fix_judge "$index" "$start" "$scenario_case" ;;
   *) fail "unknown scenario $scenario" ;;
   esac
   if [ -e "$R/fixture-only" ]; then echo "$name (${R##*/}): fixture only"; else echo "$name (${R##*/}): $(tail -n 1 "$R/out.txt")"; fi
@@ -2520,7 +2850,7 @@ stop_batch() {
 }
 
 cmd_batch() {
-  [ $# -ge 3 ] || fail "usage: rig.sh batch <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|reviewer-own-head|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail> <runs> <label>..."
+  [ $# -ge 3 ] || fail "usage: rig.sh batch <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|reviewer-own-head|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail|fix-judge> <runs> <label>..."
   local runs=$2 label n index=0 start scenario_case cases askgate
   batch_scenario=$1
   rig_scenario "$batch_scenario" || fail "unknown scenario $batch_scenario"

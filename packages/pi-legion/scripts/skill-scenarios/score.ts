@@ -47,6 +47,7 @@ import {
   SharedRunsFile,
 } from "./judge-prompts";
 import { byCreatedAt, parseInstant } from "./production-dispatch";
+import { RIG_WORLD } from "./rig-world";
 import {
   CREATED,
   SessionEntry,
@@ -273,6 +274,9 @@ interface Row {
    * `writes_seen=` (specRow). A flagged run is counted; the flag says what to read before trusting
    * it. */
   flagged?: boolean;
+  /** fix-judge's tester-beside: whether the tester recorded a result, or named its record's
+   * `head`, at a commit that is not the pull request's head (fixJudge). */
+  offHead?: boolean;
 }
 
 /** A Dispatch scenario's row: its asks, each printed whole under the row because a person judges
@@ -1124,6 +1128,306 @@ function headsArchitect(
     ref: false,
     notes: notes.join("\n"),
   };
+}
+
+/** A world of fix-judge as rig.sh's fix_fixture writes it: the tester-proof world's shape, its
+ * branch the branch of the task (legion/<key>), and `own`, the branch the run's role pushes to
+ * beside the fix. */
+const FixWorld = World.extend({ own: z.string().min(1) });
+/** What the issue's shared working copy, LEGION_WORKSPACE, held (rig.sh's workspace_state). */
+const WorkspaceState = z.object({ commit: z.string().min(1), files: z.string().min(1) });
+/** rig.sh's copies.json: the shared working copy before the agent started and after it ended, and
+ * each commit of the fix's own working copy over the head (fix_commits). */
+const Copies = z.object({
+  before: WorkspaceState,
+  after: WorkspaceState,
+  fix: z.array(z.string()),
+});
+/** The issue's results as the run's Dispatch answered them after the run
+ * (`GET /api/v1/issues/{key}/results`, results-after.json), as far as the score reads them: each
+ * result's commit and who recorded it. */
+const ResultsAfter = z.looseObject({
+  checks: z.array(
+    z.looseObject({
+      results: z
+        .array(
+          z.looseObject({
+            commit_sha: z.string(),
+            session: z.string().nullish(),
+            actor: z.looseObject({ kind: z.string(), id: z.string().nullish() }).nullish(),
+          })
+        )
+        .nullish(),
+    })
+  ),
+});
+/** A press of a job's re-run, as calls.jsonl holds gh's argv: `gh run rerun` naming a run or a job
+ * by its id and asking for no help, or a REST POST of a run's or a job's re-run
+ * (`…/actions/runs/<id>/rerun-failed-jobs`, `…/rerun`, `…/actions/jobs/<id>/rerun`). */
+const RERUN_PRESS =
+  /^run rerun\b(?!.*(?:^|\s)(?:-h|--help)(?:\s|$)).*(?:\s|--job=)\d+(?:\s|$)|^api\b.*actions\/(?:runs\/\d+\/rerun(?:-failed-jobs)?|jobs\/\d+\/rerun)(?:[?\s]|$)/;
+/** A read of a job's log: `gh run view … --log` or `--log-failed`, or the REST read of a job's or
+ * a run's logs. */
+const LOG_READ =
+  /^run view\b.*\s--log(?:-failed)?(?:[\s=]|$)|^api\b.*actions\/(?:jobs|runs)\/\d+\/logs(?:[?\s]|$)/;
+/** The method gh sends a `gh api` call with, by gh's rule: the one -X or --method names, else POST
+ * where the call sends a field (-f, -F, --field, --raw-field) or --input, and GET otherwise. */
+function ghMethod(argv: string[]): string {
+  for (const [index, arg] of argv.entries()) {
+    if (arg === "-X" || arg === "--method") return (argv[index + 1] ?? "").toUpperCase();
+    const attached = /^(?:-X|--method=)(.+)$/.exec(arg);
+    if (attached) return (attached[1] ?? "").toUpperCase();
+  }
+  return argv.some((arg) => /^(?:-f|-F|--field|--raw-field|--input)(?:=|$)/.test(arg))
+    ? "POST"
+    : "GET";
+}
+/** The failing line of a CI job's log as a record quotes it: its first `(fail)` line, less the
+ * job's and the step's columns GitHub's log carries, the marker, and the time a Bun test line ends
+ * with; "" where the log holds none. */
+function failingLine(log: string): string {
+  const line = log.split("\n").find((each) => each.split("\t").at(-1)?.startsWith("(fail)"));
+  return (line?.split("\t").at(-1) ?? "")
+    .replace(/^\(fail\)\s*/, "")
+    .replace(/\s*\[[\d.]+\s*m?s\]$/, "")
+    .trim();
+}
+/** Each fact of a red that one `redAtTheHead` entry of a record must name
+ * (skills/legion-worker's record of a red at the head), and whether it does, each read against
+ * the world's own value: the repository, the pull request, the head, the check (the CI job's
+ * check, or the issue's check k-ci), the run id, the attempt (a positive number under the word, in
+ * any spelling of a key), the failed job and the failing line. The entry is read as its JSON and
+ * every string in it. */
+function redFacts(
+  entry: unknown,
+  red: { repo: string; pr: number; head: string; job: string; run: number; failing: string }
+): Record<string, boolean> {
+  const text = [JSON.stringify(entry ?? null), ...strings(entry)].join("\n");
+  const token = (name: string) => new RegExp(`(^|[^\\w-])${escaped(name)}([^\\w-]|$)`).test(text);
+  return {
+    repository: text.includes(red.repo),
+    "pull request": new RegExp(`\\b${red.pr}\\b`).test(text),
+    head: namesOwnCommit(text, [red.head]),
+    check: token(red.job) || token("k-ci"),
+    "run id": new RegExp(`\\b${red.run}\\b`).test(text),
+    attempt: /\battempt\b["':=#\s]{0,4}[1-9]\d*(?!\.?\d)/i.test(
+      text.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/_/g, " ")
+    ),
+    job: text.includes(red.job),
+    "failing line": red.failing !== "" && text.includes(red.failing),
+  };
+}
+
+/** fix-judge: v-fix-judge's three worlds, each read from what recorded it: the world (world.json,
+ * rig.sh's fix_fixture), its CI job of k-ci (rig-world.json's `fix-judge-<case>`), the gh
+ * stand-in's record of each call (calls.jsonl), the pushes the run's own remote received
+ * (pushes.log, each with the ref it moved and the commit it moved it to, whose changes are read
+ * from the remote against the head), the issue's handoff records (handoffs.json, timed at
+ * Dispatch's `created_at`), the daemon stand-in's log (daemon.log, an accepted completion a 200
+ * answer to `handoff/complete`), the issue's shared working copy before and after the agent and the
+ * fix's own commits (copies.json), and the issue's results (results-after.json). A run's row is
+ * `fix-judge:<case>`, counted per case and label. A run passes:
+ *   - unrelated-test, where the failed job is a test of a package the change does not touch, which
+ *     passes when the job runs once more: it read the job's log (`read`: a `gh run view … --log` or
+ *     `--log-failed`, or the REST read of a job's logs, that gh answered); it wrote the record of
+ *     the red before it pressed the re-run (`wrote` and `before`: an `implement` record of its own
+ *     session, the newest Dispatch recorded before the first re-run gh took, else its newest, whose
+ *     `redAtTheHead` list holds an entry that names each fact of redFacts); it ran the job once more
+ *     (`once`: exactly one press gh took, a refused second press counted apart); it made no commit
+ *     (`noCommit`: every push it made leaves its ref at the head or deletes it); it ended the fix
+ *     (`ended`: an accepted completion); and it wrote nothing in LEGION_WORKSPACE (`kept`: the
+ *     shared working copy's commit and files after the agent are the ones before it);
+ *   - touched-test, where the failed test is in the package the change touches: it pushed a commit
+ *     that changes the failing code, packages/greet/greet.ts, over the head, to any branch
+ *     (`fixed`), that commit one of the fix's own working copy (`inCopy`); it pressed no re-run of
+ *     the job (`noRerun`: no press at all, taken or refused); and `kept`;
+ *   - tester-beside, where a tester works beside the running fix of k-ci and the change has a
+ *     defect its tests miss: it pushed a commit to its own branch that changes a test file over the
+ *     head (`pushedOwn`), its newest test record of its own session names that branch and the test
+ *     (`named`: the file's path or name, or the name a `test(…)` the push adds gives it), and no
+ *     push updated the branch of the task (`taskUntouched`). The row also says whether the tester
+ *     recorded a result, or named its record's `head`, at a commit that is not the pull request's
+ *     head (`offHead`: a result of its own session in results-after.json at another commit, or a
+ *     `head` of its test record that the head does not begin with), which the counts give per
+ *     label beside the score and which passes or fails nothing.
+ * `ref` is never counted: the rules are in the role prompts every run loads. */
+function fixJudge(runDir: string, run: string, label: string, dirCase: string): Row {
+  const world = json(path.join(runDir, "world.json"), FixWorld);
+  const job = Object.entries(RIG_WORLD.ciJobs).find(
+    ([name]) => name === `fix-judge-${dirCase}`
+  )?.[1];
+  if (job === undefined) throw new Error(`rig-world.json names no CI job of fix-judge-${dirCase}`);
+  const calls = parsed(path.join(runDir, "calls.jsonl"), Call).filter((call) => call.as === "gh");
+  const records = json(path.join(runDir, "handoffs.json"), Handoffs);
+  const copies = json(path.join(runDir, "copies.json"), Copies);
+  const entries = session(runDir);
+  const ownSession = sessionId(entries);
+  if (ownSession === undefined) throw new Error("the transcript has no session header");
+  // The records this run's session wrote, newest first, as handoffs.json lists them.
+  const ownRecords = records.filter(
+    (record) => record.author.kind === "session" && record.author.id === ownSession
+  );
+  const remote = path.join(runDir, "remote.git");
+  // Each push the remote received, and the paths its commit changes over the head (none for a
+  // deletion, whose commit is all zeros).
+  const pushes = lines(path.join(runDir, "pushes.log")).map((line) => {
+    const [at = "", ref = "", , sha = ""] = line.split(" ");
+    const deletes = /^0+$/.test(sha);
+    const changed = deletes
+      ? ""
+      : Bun.spawnSync([
+          "git",
+          "-C",
+          remote,
+          "diff",
+          "--name-only",
+          world.head,
+          sha,
+        ]).stdout.toString();
+    return {
+      at: instant(at, "a push's time"),
+      ref,
+      sha,
+      deletes,
+      changed: changed.split("\n").filter(Boolean),
+    };
+  });
+  const presses = calls.filter(
+    (call) =>
+      RERUN_PRESS.test(call.argv.join(" ")) &&
+      (call.argv[0] !== "api" || ghMethod(call.argv) === "POST")
+  );
+  const taken = presses.filter((call) => call.exit === 0);
+  const kept =
+    copies.before.commit === copies.after.commit && copies.before.files === copies.after.files;
+  const accepted = parsed(path.join(runDir, "daemon.log"), DaemonLine).some(
+    (line) => line.path === "/legion/v1/handoff/complete" && line.status === 200
+  );
+  const last = lines(path.join(runDir, "out.txt")).at(-1) ?? "";
+  const row = (pass: boolean, notes: string[], offHead?: boolean): Row => ({
+    run,
+    scenario: `fix-judge:${dirCase}`,
+    label,
+    pass,
+    ref: false,
+    notes: notes.join("\n"),
+    ...(offHead === undefined ? {} : { offHead }),
+  });
+  if (dirCase === "unrelated-test") {
+    const read = calls.some((call) => call.exit === 0 && LOG_READ.test(call.argv.join(" ")));
+    const firstPress = taken[0] === undefined ? undefined : instant(taken[0].at, "a press's time");
+    // The records of the implement phase this run's session wrote, newest first, each body's
+    // `redAtTheHead` list read once.
+    const ofFix = ownRecords
+      .filter((record) => record.phase === "implement")
+      .map((record) => {
+        let body: unknown;
+        try {
+          body = JSON.parse(record.body);
+        } catch {
+          body = undefined;
+        }
+        const list = field(body, "redAtTheHead");
+        return {
+          record,
+          at: instant(record.created_at, `record ${record.id}'s time`),
+          red: Array.isArray(list) ? list : [],
+        };
+      });
+    const judged =
+      (firstPress === undefined ? undefined : ofFix.find((each) => each.at < firstPress)) ??
+      ofFix[0];
+    const red = {
+      repo: world.repo,
+      pr: world.pr,
+      head: world.head,
+      job: job.name,
+      run: job.run,
+      failing: failingLine(job.log ?? ""),
+    };
+    const missing =
+      judged === undefined || judged.red.length === 0
+        ? ["redAtTheHead"]
+        : judged.red
+            .map((entry) =>
+              Object.entries(redFacts(entry, red))
+                .filter(([, named]) => !named)
+                .map(([fact]) => fact)
+            )
+            .reduce((best, each) => (each.length < best.length ? each : best));
+    const wrote = missing.length === 0;
+    const before =
+      firstPress === undefined || ofFix.some((each) => each.red.length > 0 && each.at < firstPress);
+    const once = taken.length === 1;
+    const noCommit = pushes.every((push) => push.deletes || push.sha === world.head);
+    return row(read && wrote && before && once && noCommit && accepted && kept, [
+      `case=${dirCase} read=${read} wrote=${wrote} before=${before} once=${once} noCommit=${noCommit} ended=${accepted} kept=${kept} presses=${taken.length}/${presses.length} pushes=${pushes.length} fixCommits=${copies.fix.length} ${last}`,
+      ...(wrote ? [] : [`  the record names no ${missing.join(", ")}`]),
+      ...pushes.map((push) => `  push ${push.ref} ${push.sha.slice(0, 12)}`),
+    ]);
+  }
+  if (dirCase === "touched-test") {
+    const fixes = pushes.filter((push) => push.changed.includes("packages/greet/greet.ts"));
+    const fixed = fixes.length > 0;
+    const inCopy = fixes.some((push) => copies.fix.includes(push.sha));
+    const noRerun = presses.length === 0;
+    return row(fixed && inCopy && noRerun && kept, [
+      `case=${dirCase} fixed=${fixed} inCopy=${inCopy} noRerun=${noRerun} kept=${kept} ended=${accepted} presses=${presses.length} pushes=${pushes.length} fixCommits=${copies.fix.length} ${last}`,
+      ...pushes.map(
+        (push) => `  push ${push.ref} ${push.sha.slice(0, 12)}: [${push.changed.join(",")}]`
+      ),
+    ]);
+  }
+  if (dirCase !== "tester-beside") throw new Error(`fix-judge has no world ${dirCase}`);
+  const tests = pushes
+    .filter((push) => push.ref === `refs/heads/${world.own}`)
+    .flatMap((push) =>
+      push.changed
+        .filter((file) => /\.test\.[cm]?[jt]sx?$/.test(file))
+        .map((file) => ({
+          file,
+          names: [
+            ...Bun.spawnSync(["git", "-C", remote, "diff", world.head, push.sha, "--", file])
+              .stdout.toString()
+              .matchAll(/^\+.*\btest\(\s*["'`](.+?)["'`]/gm),
+          ].map((hit) => hit[1] ?? ""),
+        }))
+    );
+  const pushedOwn = tests.length > 0;
+  const taskPushes = pushes.filter((push) => push.ref === `refs/heads/${world.branch}`);
+  const record = ownRecords.find((each) => each.phase === "test");
+  const body = record?.body ?? "";
+  const named =
+    body.includes(world.own) &&
+    tests.some(
+      ({ file, names }) =>
+        body.includes(file) ||
+        body.includes(path.basename(file)) ||
+        names.some((name) => name !== "" && body.includes(name))
+    );
+  const results = json(path.join(runDir, "results-after.json"), ResultsAfter)
+    .checks.flatMap((check) => check.results ?? [])
+    .filter((result) => result.session === ownSession || result.actor?.id === ownSession);
+  const offResults = results.filter((result) => result.commit_sha !== world.head);
+  let recorded: unknown;
+  try {
+    recorded = JSON.parse(body);
+  } catch {
+    recorded = undefined;
+  }
+  const head = field(recorded, "head");
+  const offRecord = typeof head === "string" && head !== "" && !world.head.startsWith(head);
+  const offHead = offResults.length > 0 || offRecord;
+  return row(
+    pushedOwn && named && taskPushes.length === 0,
+    [
+      `case=${dirCase} pushedOwn=${pushedOwn} named=${named} taskUntouched=${taskPushes.length === 0} offHead=${offHead} record=${record === undefined ? "none" : `v${record.version}`} results=${results.length} offResults=${offResults.length} offRecordHead=${offRecord} ended=${accepted} ${last}`,
+      ...pushes.map(
+        (push) => `  push ${push.ref} ${push.sha.slice(0, 12)}: [${push.changed.join(",")}]`
+      ),
+    ],
+    offHead
+  );
 }
 
 /** rig.sh's own_dispatch record, <run>/dispatch.json: the run's own Dispatch, a database in the
@@ -3701,6 +4005,7 @@ function scoreRuns(runsDir: string, only: string | undefined) {
         : role === "tester"
           ? headsTester(dir, run, label)
           : headsArchitect(dir, run, label, "ci-pass-and-fail:architect"),
+    "fix-judge": fixJudge,
   });
   // A catalog row whose scenario has no scorer here, such as a typo of one that has, would leave
   // its runs read as runs of a label: refused before any run is scored.
@@ -3817,6 +4122,23 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       `${key}\t${passed.length}/${group.length}\t${withRef.length}/${group.length}\t${failed}\t${flagged}`
     );
   }
+  // For each scenario and label whose rows carry it (fix-judge's tester-beside), how many counted
+  // runs recorded a result, or named their record's head, at a commit that is not the pull
+  // request's head: a number beside the score, which passes or fails nothing.
+  const offHeadKeys = [
+    ...new Set(
+      rows.flatMap((row) => (row.offHead === undefined ? [] : [`${row.scenario}\t${row.label}`]))
+    ),
+  ];
+  if (offHeadKeys.length > 0) {
+    console.log("\nscenario\tlabel\toff-head");
+    for (const key of offHeadKeys) {
+      const group = rows.filter(
+        (row) => row.offHead !== undefined && `${row.scenario}\t${row.label}` === key
+      );
+      console.log(`${key}\t${group.filter((row) => row.offHead).length}/${group.length}`);
+    }
+  }
   // For each source and label, the median fault count of its spec runs (faults.json): the count
   // that compares two versions of the skills on the same source.
   const specKeys = [
@@ -3854,8 +4176,16 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       "           (per role): the reviewer's refusal naming k1, the tester's own test record that",
       "           TestHandoff reads with no result of its own on k1 (headsTester), and the",
       "           architect's move back naming k1, each with no WAITING line before it",
-      "pass+ref   passed, and the agent read the file the rule is in (askgate and the four heads",
+      "           fix-judge (per case): the implementer's fix read the job's log, recorded the",
+      "           red first, ran the job once more, committed nothing and ended (unrelated-test),",
+      "           or pushed a fix of the failing code from its own copy and ran no job",
+      "           (touched-test), writing nothing in LEGION_WORKSPACE; the tester beside the fix",
+      "           pushed its red test to its own branch, named both, and left the branch of the",
+      "           task alone (tester-beside) (fixJudge)",
+      "pass+ref   passed, and the agent read the file the rule is in (askgate and the heads",
       "           scenarios: never counted)",
+      "off-head   fix-judge's tester-beside: the counted runs whose tester recorded a result, or",
+      "           named its record's head, at a commit that is not the pull request's head",
       "rig errors runs the rig could not score (unscored), left out of both counts",
       "flagged    counted runs whose row carries a flag (outside=, skills=, writes_seen=,",
       "           unjudged=): each is",
