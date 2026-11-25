@@ -300,8 +300,8 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 			narrowings, below, dropped)
 	}
 	want := narrowingsExpected(populatedState(t), below)
-	if len(want) != 2 {
-		t.Fatalf("a caller at %d expects the lines %v, want the cause times' row's and the roles' row's alone", below, want)
+	if len(want) != 3 {
+		t.Fatalf("a caller at %d expects the lines %v, want the cause times', deployment roles' and claim tokens' rows alone", below, want)
 	}
 	wantNarrowings(t, narrowings, below, want)
 }
