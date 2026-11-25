@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,10 +13,10 @@ import (
 	"sort"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // routeIndexGolden is the committed index of the table: one route per line, sorted by path then
@@ -486,10 +487,12 @@ func TestRoutesTableAuthCellsMatchHandlers(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	personal := personalTokenHolding(t, database, model.ScopePerson, model.ScopeApprove)
 	personOnly := personalTokenHolding(t, database, model.ScopePerson)
-	probe := func(route apiRoute, credential string) *httptest.ResponseRecorder {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		request := httptest.NewRequestWithContext(ctx, route.Method, routeProbePath(route.Pattern), bytes.NewReader([]byte(routeProbeBody(route))))
+	// A probe ends on its route's answer, waited for through the shared wait, whose one bound is
+	// the test binary's deadline: a fixed deadline on the request ended a probe whose token read a
+	// loaded machine held past it, and the route then answered 5xx where it would have refused.
+	probe := func(t *testing.T, route apiRoute, credential string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(route.Method, routeProbePath(route.Pattern), bytes.NewReader([]byte(routeProbeBody(route))))
 		request.Header.Set("Content-Type", "application/json")
 		switch credential {
 		case "cookie":
@@ -501,27 +504,31 @@ func TestRoutesTableAuthCellsMatchHandlers(t *testing.T) {
 			// A personal token's plaintext, presented as the person's own credential.
 			request.Header.Set("Authorization", "Bearer "+credential)
 		}
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, request)
-		return response
+		answered := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			answered <- response
+		}()
+		return testwait.Receive(t, fmt.Sprintf("the %s caller's probe of %s %s to answer", credential, route.Method, route.Pattern), answered)
 	}
 	expectAdmitted := func(t *testing.T, route apiRoute, credential string) {
 		t.Helper()
-		response := probe(route, credential)
+		response := probe(t, route, credential)
 		if refused, why := authRefusal(response); refused {
 			t.Fatalf("%s %s is %q but refuses a %s caller with %s: %s", route.Method, route.Pattern, route.Auth, credential, why, response.Body.String())
 		}
 	}
 	expectRefused := func(t *testing.T, route apiRoute, credential string) {
 		t.Helper()
-		response := probe(route, credential)
+		response := probe(t, route, credential)
 		if refused, _ := authRefusal(response); !refused {
 			t.Fatalf("%s %s is %q but admits a %s caller: %d %s", route.Method, route.Pattern, route.Auth, credential, response.Code, response.Body.String())
 		}
 	}
 	expectScopeRefusal := func(t *testing.T, route apiRoute, credential string) {
 		t.Helper()
-		response := probe(route, credential)
+		response := probe(t, route, credential)
 		refused, why := authRefusal(response)
 		if !refused || why != "403 "+codeScopeRequired {
 			t.Fatalf("%s %s needs %v but answers a %s caller %d %s", route.Method, route.Pattern, route.OAuthScopes, credential, response.Code, response.Body.String())
@@ -564,6 +571,10 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 	browserOnly := []string{
 		"GET /api/v1/settings/project-default-assignees",
 		"PUT /api/v1/projects/{key}/default-assignee",
+		// Turning a project's proven-sessions setting off is INFRA-4764's own row, and the
+		// person's as the default assignee above is: it weakens a check, which no credential the
+		// deployment configured may do.
+		"DELETE /api/v1/projects/{key}/proven-sessions",
 		"GET /api/v1/me/agent-tokens",
 		"POST /api/v1/me/agent-tokens",
 		"DELETE /api/v1/me/agent-tokens/{id}",

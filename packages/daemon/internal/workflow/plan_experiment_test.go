@@ -42,6 +42,7 @@ func inPlanningB(key string) string {
 // the plan carries that plan and is told nothing. A child of the group whose owner gave no plan
 // runs the default steps and is told nothing either.
 func TestAPlanGivenBeforeTheDrawIsPassedOver(t *testing.T) {
+	t.Parallel()
 	const child = "LEGION-209"
 	given := func(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 		t.Helper()
@@ -117,6 +118,7 @@ func TestAPlanGivenBeforeTheDrawIsPassedOver(t *testing.T) {
 // is its own architect. The fault caught is the notice of an earlier owner's plan alone
 // (tellPassedOver) written for an issue of the group, which offers register_plan.
 func TestAnEarlierOwnersPlanIsToldWithTheGroup(t *testing.T) {
+	t.Parallel()
 	const issue = "LEGION-209"
 	pool := migratedPool(t)
 	engine := returnEngine()
@@ -146,6 +148,7 @@ func TestAnEarlierOwnersPlanIsToldWithTheGroup(t *testing.T) {
 // generation that no owner gave, the default a hand-over carried: it stands as it was, and nothing
 // is told.
 func TestTheGroupDefaultPassesOverOnlyAnOwnersPlanOfTheRunsGeneration(t *testing.T) {
+	t.Parallel()
 	t.Run("an owner's plan of the run's generation is passed over and told", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
@@ -194,6 +197,7 @@ func TestTheGroupDefaultPassesOverOnlyAnOwnersPlanOfTheRunsGeneration(t *testing
 // step finds no plan of the owner and tells nothing. The fault caught is a pass-over of the newest
 // copy alone: the next run's first step then finds the copy left and tells the same version again.
 func TestTheGroupDefaultPassesOverEveryCopyOfItsOwnersPlanOnce(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)
@@ -245,6 +249,7 @@ func drawnForMemory(t *testing.T, pool *pgxpool.Pool, key string) {
 // issue drawn into the arm whose owner gives the plan, with its owner's plan stored: the plan is
 // taken and its first step is the implementer's.
 func TestTheGroupDefaultRunsTheDefaultSteps(t *testing.T) {
+	t.Parallel()
 	given := func(t *testing.T, key string, generation uint64) (string, intake.PlanGiven) {
 		return planID(key, generation, 1), ownersPlan(t, key, generation, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))
 	}
@@ -286,6 +291,7 @@ func TestTheGroupDefaultRunsTheDefaultSteps(t *testing.T) {
 // unspent, and nothing is recorded. The control is the same issue drawn into the arm whose owner
 // gives the plan: the plan is taken.
 func TestTheGroupDefaultTakesNoPlan(t *testing.T) {
+	t.Parallel()
 	t.Run("the group default takes no plan", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
@@ -319,6 +325,7 @@ func TestTheGroupDefaultTakesNoPlan(t *testing.T) {
 // duplicate, which the route would answer as the plan taken. Nothing is stored either time. The
 // control is the refusal returned spent: the second answer is then a duplicate with no refusal.
 func TestPlanNotTakenStaysUnspent(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)
@@ -344,6 +351,7 @@ func TestPlanNotTakenStaysUnspent(t *testing.T) {
 // otherwise wait at generation 0 for a first step that passes it over. The registration stays
 // unspent, as every refusal of a plan.
 func TestAPlanGivenAtGenerationZeroForARecordedIssueOfTheGroupDefaultIsNotTaken(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)
@@ -364,6 +372,7 @@ func TestAPlanGivenAtGenerationZeroForARecordedIssueOfTheGroupDefaultIsNotTaken(
 // plan its owner gives, a plan an earlier owner gave is told as it always was (tellPassedOver), and
 // its owner stops a task of it.
 func TestAnIssueWithNoGroupRunsAsBuilt(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		drawn func(t *testing.T, pool *pgxpool.Pool, key string)
@@ -412,6 +421,7 @@ func TestAnIssueWithNoGroupRunsAsBuilt(t *testing.T) {
 // same issue drawn into the arm whose owner gives the plan, whose owner gave none: it runs the
 // default task, which its owner did not write, and its owner's stop of that task is taken.
 func TestTheGroupDefaultStopsNoTask(t *testing.T) {
+	t.Parallel()
 	t.Run("the group default refuses the stop, and the task runs on", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()

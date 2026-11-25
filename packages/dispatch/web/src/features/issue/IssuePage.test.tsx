@@ -758,6 +758,56 @@ test("IssuePage creates a label from the multi-select and saves the final draft 
   }
 });
 
+test("IssuePage shows the labels the server stored after a save, so s and ſ show as one", async () => {
+  // Dispatch keeps two labels as one where Go's `strings.EqualFold` matches them, and it matches
+  // "ſ" (U+017F) with "s". The editor compares labels with `toLowerCase`, which keeps them apart,
+  // so it sends both. The page must then show the labels in Dispatch's answer, not its own draft.
+  const user = userEvent.setup();
+  const labeledIssue = { ...issue, labels: ["s"] };
+  const restore = stubIssuePage(labeledIssue);
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue([
+    { ...labeledIssue, open_asks: 0 },
+  ]);
+  // The test holds the answer until the save shows as in flight. Before the answer lands, the
+  // closed editor shows the issue's old labels. A check made then passes with any answer.
+  const save = Promise.withResolvers<IssueDetails>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const view = renderIssuePage();
+
+  try {
+    const trigger = await screen.findByRole("button", { name: "Edit labels" });
+    await user.click(trigger);
+    const input = await screen.findByRole("combobox", { name: "Search or create label" });
+    await user.click(input);
+    await user.paste("\u017f");
+    await user.keyboard("{Enter}");
+
+    expect(screen.getByRole("option", { name: "\u017f" })).toHaveAttribute("aria-selected", "true");
+    await user.click(trigger);
+
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { labels: ["s", "\u017f"] }, keyedAttempt)
+    );
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(trigger).toHaveTextContent("Saving labels…"));
+    await act(async () => {
+      save.resolve({ ...labeledIssue, labels: ["s"] });
+      await save.promise;
+    });
+    // The save ends only after its answer is in the issue's cache.
+    await waitFor(() => expect(trigger).not.toHaveTextContent("Saving labels…"));
+
+    const row = screen.getByTestId("issue-labels");
+    expect(within(row).getByText("s")).toBeDefined();
+    expect(within(row).queryByText("\u017f")).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    listIssues.mockRestore();
+    restore();
+  }
+});
+
 test("IssuePage does not save after a label is toggled off and back on", async () => {
   const user = userEvent.setup();
   const labeledIssue = { ...issue, labels: ["bug", "api"] };
@@ -2199,6 +2249,7 @@ test("IssuePage draws a gated root issue's steps where the header's one chip sat
     open_asks: 0,
     key: "CORE",
     name: "Core",
+    proven_sessions: false,
   };
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
   const view = renderIssuePage("/issues/CORE-1/conversation");
@@ -2241,6 +2292,7 @@ test("IssuePage draws the steps of a root whose parent is in another project", a
     open_asks: 0,
     key: "CORE",
     name: "Core",
+    proven_sessions: false,
   };
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
   const view = renderIssuePage("/issues/CORE-1/conversation");
@@ -2279,6 +2331,7 @@ test("IssuePage keeps the primary document's chip when no gated step reviews it"
     open_asks: 0,
     key: "CORE",
     name: "Core",
+    proven_sessions: false,
   };
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
   const view = renderIssuePage("/issues/CORE-1/conversation");

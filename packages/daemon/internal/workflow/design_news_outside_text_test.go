@@ -17,6 +17,7 @@ import (
 // read the top of the document for a change that stands lower down. The control is a named `##`
 // section in the same list, which the news names by its heading.
 func TestNewsNamesTheTextOutsideEverySectionWithoutPlacingItBeforeTheFirstSection(t *testing.T) {
+	t.Parallel()
 	for _, change := range []string{"moved", "changed"} {
 		t.Run(change, func(t *testing.T) {
 			text := RenderNews(News{

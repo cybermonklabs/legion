@@ -595,8 +595,9 @@ type PullRequestOpened struct {
 func (PullRequestOpened) namedIssue() (string, bool) { return "", false }
 
 // OpenedRead is the PullRequestOpened a read of GitHub that found pull open on branch of repo
-// stands for, as its webhook would have carried it - a reopen when recorded is the same pull
-// request - and the event id, under source "github", it is applied under: the project, the
+// stands for, as its webhook would have carried it - its base, which the reads of the merge state
+// follow on before any of them has answered, and a reopen when recorded is the same pull request -
+// and the event id, under source "github", it is applied under: the project, the
 // repository and number, what the read observed, the head and GitHub's updated_at, and what the
 // workflow decides an opened by beside it, the issue's generation and its pull request record as
 // the read found it (nil for none: its number, state and clock). The id holds no read time and no
@@ -606,7 +607,7 @@ func (PullRequestOpened) namedIssue() (string, bool) { return "", false }
 // or a record that changed since (a new generation removes a closed one the opened was declined
 // against), makes a new one.
 func OpenedRead(project, repo, branch string, pull githubrest.PullRequest, generation uint64, recorded *record.PullRequest) (PullRequestOpened, string) {
-	fact := PullRequestOpened{Repo: repo, Number: pull.Number, Branch: branch, HeadSHA: pull.Head.SHA, Body: pull.Body,
+	fact := PullRequestOpened{Repo: repo, Number: pull.Number, Branch: branch, Base: pull.Base.Ref, HeadSHA: pull.Head.SHA, Body: pull.Body,
 		URL: pull.HTMLURL, UpdatedAt: pull.UpdatedAt, Reopened: recorded != nil && recorded.Number == pull.Number}
 	against := "none"
 	if recorded != nil {
@@ -834,12 +835,20 @@ func (PullRequestChecks) namedIssue() (string, bool) { return "", false }
 // GitHub is still computing it, record.MergeabilityMergeable or record.MergeabilityConflicting
 // once it has. MergeState is
 // GitHub's own merge state for the head from the same answer's `mergeable_state`, and it is what
-// an approval standing on the head waits for: a state the issue may advance on
-// (record.MergeState.Mergeable) ends the round, and the issue moves on to its task's next step
-// (accepting, in the default steps); any other state leaves the
-// approval standing where it is and tells the architect and the reviewer so (workflow's
-// reviewRound). It tells a head GitHub holds on a check or a review the repository requires from
-// one GitHub would merge now, which Mergeable cannot.
+// an approval standing on the head waits for; what each state comes to for the round is
+// classify.MergeOutcomeOf, the one place the rule is written. It tells a head GitHub holds on a
+// check that is still running, a review, or a rule about the reader from one GitHub would merge
+// now, which Mergeable cannot.
+//
+// ReviewsRequested and HeadChecks are the rest of the answer MergeOutcomeOf reads for a `blocked`
+// head, written beside MergeState (record.PullRequest.ReviewsRequested and HeadChecks): how many
+// review requests GitHub holds open, people, Apps and teams alike, and whether a check or a
+// commit status of the head was still running. A REST read counts `requested_reviewers` and
+// `requested_teams` and reads the head's `statusCheckRollup` from GitHub's GraphQL API when it
+// answers `blocked` and MERGEABLE; a base's GraphQL batch reads `reviewRequests { totalCount }`
+// and the same rollup in its one query. A nil count and record.HeadChecksUnread are an answer that
+// gave neither, which the round does not end on. A fact minted by anything that did not read
+// GitHub states them as it states MergeState.
 //
 // HeadSHA is the head GitHub answered both of them for, from the same answer's `head.sha`. Every
 // read fills it, and the engine records the answer only while the record still stands at that
@@ -873,11 +882,41 @@ type PullRequestMergeability struct {
 	HeadSHA    string
 	Mergeable  record.Mergeability
 	MergeState record.MergeState
-	ReadAt     time.Time
-	Rules      *record.BaseRules
+	// ReviewsRequested and HeadChecks are the rest of a `blocked` answer (above).
+	ReviewsRequested *int
+	HeadChecks       record.HeadChecks
+	ReadAt           time.Time
+	Rules            *record.BaseRules
 }
 
 func (PullRequestMergeability) namedIssue() (string, bool) { return "", false }
+
+// PullRequestMergeStateUnread is the daemon's own fact that a read of GitHub's merge state for the
+// pull request at head HeadSHA failed - GitHub refused it, timed out or answered nothing - while
+// the record holds a `blocked` answer of that head with `mergeable` null. It carries no answer:
+// it asks the review round again at the moment it is applied (workflow's mergeStateUnread), since
+// a persistent null is told once classify.NullMergeableTellAfter has passed since its first read,
+// whatever the count of reads, and when every read fails no answer comes to ask the round.
+type PullRequestMergeStateUnread struct {
+	Repo    string
+	Number  int
+	HeadSHA string
+}
+
+func (PullRequestMergeStateUnread) namedIssue() (string, bool) { return "", false }
+
+// PullRequestReviewRequests is GitHub's pull_request action `review_requested` or
+// `review_request_removed`: the review requests GitHub holds open on the pull request changed, at
+// head HeadSHA. It carries no count: the read it asks for counts them (workflow's askMergeState),
+// since a request opened or withdrawn is what moves a `blocked` head's round between waiting for
+// a review and ending (classify.MergeOutcomeOf), and GitHub sends no other event of it.
+type PullRequestReviewRequests struct {
+	Repo    string
+	Number  int
+	HeadSHA string
+}
+
+func (PullRequestReviewRequests) namedIssue() (string, bool) { return "", false }
 
 // PullRequestMerged records GitHub's terminal merged observation: the merge commit, and HeadSHA,
 // the head the pull request merged at, "" when the observation names none.
@@ -1618,15 +1657,24 @@ func (f CheckReport) namedIssue() (string, bool) { return f.Issue, true }
 // look the check stood at when the wake was named, so a row of a look the check has since left
 // starts nothing, and OpenedAt the check instance it was named for, so a row of a check a later
 // merge of the same issue replaced — whose looks count from one again — starts nothing either; a
-// zero OpenedAt names none.
+// zero OpenedAt names none. WakeAt is the wake the row was queued for, so a row whose wake the
+// check no longer records — a failure between looks named the next look later — starts nothing;
+// a zero WakeAt, a row a release before the field queued, is not fenced.
 type CheckWakeDue struct {
 	Issue    string
 	Look     int
 	OpenedAt time.Time
+	WakeAt   time.Time
 	Reason   string
 }
 
 func (f CheckWakeDue) namedIssue() (string, bool) { return f.Issue, true }
+
+// CheckWakeOf is the fact a check_wake row of issue applies when it comes due (the daemon's
+// outbox), made here alone so that every field the row carries reaches the fact.
+func CheckWakeOf(issue string, wake record.CheckWakeDue) CheckWakeDue {
+	return CheckWakeDue{Issue: issue, Look: wake.Look, OpenedAt: wake.OpenedAt, WakeAt: wake.WakeAt, Reason: wake.Reason}
+}
 
 // CheckLookEnded is a look of issue Issue's production check ending with no report: Cause is
 // `look bound` (the check_look row due at the look's bound), `operator hold` (a check start the
