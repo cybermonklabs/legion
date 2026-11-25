@@ -674,7 +674,7 @@ func TestASiblingReadBetweenAMigratingLaunchsDeleteAndCreateIsDisplaced(t *testi
 			// The launch has seen the delete through and has yet to send its create. The probe's own
 			// confirming read comes through this hook too, so it is marked first.
 			probed.Store(true)
-			storeHeldIt = !testwait.Holds(time.Second, 5*time.Millisecond, func() bool {
+			storeHeldIt = !testwait.Holds(testwait.Remaining(t), testwait.Poll, func() bool {
 				s, _ := g.r.storedSandbox(name)
 				return s == nil
 			})
@@ -728,7 +728,7 @@ func TestAGapReadOfARoleOfAnotherPodThanTheReplacementEndedIsNotDisplaced(t *tes
 				return
 			}
 			probed.Store(true)
-			storeHeldIt = !testwait.Holds(time.Second, 5*time.Millisecond, func() bool {
+			storeHeldIt = !testwait.Holds(testwait.Remaining(t), testwait.Poll, func() bool {
 				s, _ := g.r.storedSandbox(name)
 				return s == nil
 			})
@@ -1231,13 +1231,10 @@ func TestAPodOfATreeLaunchesWhileAnotherIsStillInitializing(t *testing.T) {
 		_, err := g.r.Spawn(g.ctx, childSpec(t))
 		done <- err
 	}()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the child issue's launch waited on the root's workspace-init")
+	// A child launch that waited on the root's workspace-init would end at its own boot timeout with
+	// an error, the root's pod never leaving it: its answer is the verdict, whenever it comes.
+	if err := testwait.Receive(t, "the child issue's launch", done); err != nil {
+		t.Fatalf("the child issue's launch: %v; it may have waited on the root's workspace-init", err)
 	}
 	if pod := g.pod(root); pod == nil || pod.Status.Phase != corev1.PodPending {
 		t.Fatalf("the root's pod is %+v, want it still Pending in workspace-init", pod)
@@ -1518,20 +1515,22 @@ func TestAFailedStepOfAnIssuePodsProvisioningReleasesThePodsTurn(t *testing.T) {
 	}
 }
 
-// failedLaunch is a launch of spec expected to fail within a second, its panic turned into the
-// test's failure, so a launch that panics fails its own subtest by name rather than the binary.
+// failedLaunch is a launch of spec expected to fail, its panic turned into the test's failure, so a
+// launch that panics fails its own subtest by name rather than the binary. Its one bound is the
+// test binary's deadline (testwait.Context): a loaded machine may take a launch longer than any
+// fixed span to reach the failure its row plants, and a bound of its own that ran out first would
+// end the launch with that bound's error instead of the row's.
 func failedLaunch(t *testing.T, g *rig, spec runtime.SpawnSpec) error {
 	t.Helper()
-	launching, cancel := context.WithTimeout(g.ctx, time.Second)
+	launching, cancel := context.WithCancel(g.ctx)
 	defer cancel()
+	defer context.AfterFunc(testwait.Context(t), cancel)()
 	return failedLaunchOn(t, g, launching, spec)
 }
 
-// failedLaunchOn is failedLaunch for a row whose launch no wall clock bounds: it runs on
-// launching, the context the row cancels once what it waits on has happened, and turns a panic
-// into the test's failure the same way. A launch whose failure lies past the waits of a replacing
-// try — a suspend, a wait for the previous pod, provision, the wait for the new pod — takes a
-// loaded machine longer than failedLaunch's second, and is this helper's rather than its.
+// failedLaunchOn is failedLaunch for a row that bounds the launch itself: it runs on launching,
+// the context the row cancels once what it waits on has happened, and turns a panic into the
+// test's failure the same way.
 func failedLaunchOn(t *testing.T, g *rig, launching context.Context, spec runtime.SpawnSpec) error {
 	t.Helper()
 	defer func() {

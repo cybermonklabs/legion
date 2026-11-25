@@ -540,9 +540,9 @@ func (r *Runtime) start(ctx context.Context, c runtimeClients) error {
 
 // startInformers runs the three informers over c's informers' clients — the Sandboxes and pods
 // selected on the project label, every Service of the namespace — until ctx ends, and waits for the
-// three stores to sync; every other request of the runtime goes through c's requests' clients, each
-// read and write of them sent again while the API server answers a launch's overloaded
-// (patientDynamic, patientKube).
+// three stores to sync and for notify to have been handed every object of their first lists; every
+// other request of the runtime goes through c's requests' clients, each read and write of them sent
+// again while the API server answers a launch's overloaded (patientDynamic, patientKube).
 func (r *Runtime) startInformers(ctx context.Context, c runtimeClients) error {
 	r.dyn, r.kube, r.lifetime = patientDynamic{c.requests.dyn, r}, patientKube{c.requests.kube, r}, ctx
 	sandboxes := c.informers.dyn.Resource(sandboxGVR).Namespace(r.namespace)
@@ -567,14 +567,25 @@ func (r *Runtime) startInformers(ctx context.Context, c runtimeClients) error {
 		func(ctx context.Context, o metav1.ListOptions) (watch.Interface, error) {
 			return services.Watch(ctx, o)
 		})
+	// A store syncs once it holds its first list, but the informer hands that list's adds to its
+	// handler from another goroutine, which may run after: notify would then mark a claim the caller
+	// watched after start returned changed, and Observe would evaluate it again for no change, a
+	// second Alive before the one the change brings. So start waits for each handler to have been
+	// handed the whole first list (its registration's HasSynced, which implies its store's).
+	var handlers []cache.ResourceEventHandlerRegistration
 	for _, informer := range []cache.SharedIndexInformer{r.sandboxes, r.pods, r.services} {
-		if _, err := informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		handler, err := informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 			AddFunc:    func(obj any) { r.notify(obj) },
 			UpdateFunc: func(_, obj any) { r.notify(obj) },
 			DeleteFunc: func(obj any) { r.notify(obj) },
-		}); err != nil {
+		})
+		if err != nil {
 			return fmt.Errorf("sandbox runtime: %w", err)
 		}
+		handlers = append(handlers, handler)
+	}
+	synced := func() bool {
+		return !slices.ContainsFunc(handlers, func(h cache.ResourceEventHandlerRegistration) bool { return !h.HasSynced() })
 	}
 	running, stop := context.WithCancel(ctx)
 	go r.sandboxes.RunWithContext(running)
@@ -587,7 +598,7 @@ func (r *Runtime) startInformers(ctx context.Context, c runtimeClients) error {
 	// that waited on it sat until its own deadline with two stores nothing was filling. Each list
 	// and watch records its outcome in its feed, and a feed that is failing here refuses the boot
 	// naming the request that failed.
-	for !r.synced() {
+	for !synced() {
 		select {
 		case <-ctx.Done():
 			stop()
@@ -673,10 +684,6 @@ func (f *feed) check() error {
 // overloaded server out for no longer than this.
 func call(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, apiTimeout)
-}
-
-func (r *Runtime) synced() bool {
-	return r.sandboxes.HasSynced() && r.pods.HasSynced() && r.services.HasSynced()
 }
 
 // notify wakes every wait and marks every watched claim whose Sandbox or pod changed for the

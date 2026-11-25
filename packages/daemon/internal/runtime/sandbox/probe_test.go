@@ -254,7 +254,9 @@ func probeOptions(t *testing.T) ImageProbe {
 }
 
 // unfinishedBudget is the attempt budget of a test in which no pod ever answers, so the attempt
-// runs out.
+// runs out. A row whose probe is refused keeps probeOptions' budget, even beside rows of its test
+// that run out: a refusal ends its attempt as soon as the attempt reads the status the row
+// planted, and on a loaded machine this budget could run out before that read.
 const unfinishedBudget = 300 * time.Millisecond
 
 // probe runs the image probe through the rig's Prober when it has one, else its runtime.
@@ -621,7 +623,8 @@ func TestProbeImageHoldsTheProvidersSecretToTheDaemonsSeed(t *testing.T) {
 // A pod that never finished within the budget, or a Sandbox that never got one, says nothing
 // about the image: the probe runs again, and gives up only when its retry does.
 func TestProbeImageRetriesAProbeThatNeverFinished(t *testing.T) {
-	t.Parallel()
+	// Not parallel: each row's 300 ms attempts must read the status the row planted before they run
+	// out, and other tests' load could delay that read past them.
 	for _, testCase := range []struct {
 		name  string
 		setup func(*probeRig)
@@ -1026,7 +1029,9 @@ func TestProbeImageRefusesAProvidersSecretThePodCannotMount(t *testing.T) {
 				t.Fatal(err)
 			}
 			p := probeOptions(t)
-			p.Budget = unfinishedBudget
+			if !testCase.refused {
+				p.Budget = unfinishedBudget
+			}
 
 			err := g.probe(p)
 
@@ -1120,7 +1125,9 @@ func TestProbeImageRefusesAnOperatorVolumeThePodCannotMount(t *testing.T) {
 				t.Fatal(err)
 			}
 			p := probeOptions(t)
-			p.Budget = unfinishedBudget
+			if !testCase.refused {
+				p.Budget = unfinishedBudget
+			}
 
 			err := g.probe(p)
 
@@ -1212,7 +1219,8 @@ func TestProbeImageFindsAFailedMountOnTheRecheck(t *testing.T) {
 // message, given once rather than retried to the budget. A CreateContainerConfigError saying
 // anything else is left to the budget, whose detail quotes the waiting reason.
 func TestProbeImageRefusesAContainerTheKubeletCannotConfigure(t *testing.T) {
-	t.Parallel()
+	// Not parallel: its last row's 300 ms attempts must read the status the row planted before they
+	// run out, and other tests' load could delay that read past them.
 	for _, testCase := range []struct {
 		name, message string
 		refused       bool
@@ -1351,7 +1359,9 @@ Output: mount.nfs: Connection timed out for ` + export + ` on /var/lib/kubelet/p
 				}
 			}
 			p := probeOptions(t)
-			p.Budget = unfinishedBudget
+			if !testCase.refused {
+				p.Budget = unfinishedBudget
+			}
 
 			err := g.probe(p)
 
@@ -1411,7 +1421,9 @@ func TestProbeImageRefusesAClaimThatIsNotThere(t *testing.T) {
 			}))
 			g.finishes(unplaced(testCase.message, testCase.age))
 			p := probeOptions(t)
-			p.Budget = unfinishedBudget
+			if !testCase.refused {
+				p.Budget = unfinishedBudget
+			}
 
 			err := g.probe(p)
 
@@ -1464,7 +1476,9 @@ func TestProbeImageCountsACSIFailureBySeries(t *testing.T) {
 				t.Fatal(err)
 			}
 			p := probeOptions(t)
-			p.Budget = unfinishedBudget
+			if !testCase.refused {
+				p.Budget = unfinishedBudget
+			}
 
 			err := g.probe(p)
 
@@ -1495,7 +1509,6 @@ func TestProbeImageRefusesAReadWriteOncePodClaimInUse(t *testing.T) {
 		}}}
 	})
 	p := probeOptions(t)
-	p.Budget = unfinishedBudget
 
 	err := g.probe(p)
 
@@ -1606,7 +1619,8 @@ const unschedulableMessage = "0/83 nodes are available: 25 Insufficient cpu, 58 
 // wait with the scheduler's reason. A pod Unschedulable for less than the boot timeout is a pool
 // still adding a node: the attempt waits on it to its budget, as it does any Pending pod.
 func TestProbeImageWaitsOnAProbePodThePoolCannotPlace(t *testing.T) {
-	t.Parallel()
+	// Not parallel: its within-the-boot-timeout row's 300 ms attempts must read the pod's phase before
+	// they run out, and other tests' load could delay that read past them.
 	t.Run("unschedulable past the boot timeout, then placed", func(t *testing.T) {
 		logged := &lockedLog{}
 		g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged) }))
@@ -1678,7 +1692,8 @@ func TestProbeImageWaitsOnAProbePodThePoolCannotPlace(t *testing.T) {
 // jumps the rig's clock once and nudges the pod so the attempt's wait notices without waiting on
 // the recheck interval; a budget shorter than that delay can never observe the jump.
 func TestProbeImagesCapacityStopNeedsTheBudgetToOutliveTheBootTimeout(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it moves the rig's clock after 600 ms of wall clock against attempt budgets of
+	// 300 ms and 1.6 s, spans other tests' load would move.
 	const bootTimeout = 600 * time.Millisecond
 	ageOutAfter := func(t *testing.T, g *probeRig, delay time.Duration) {
 		t.Helper()

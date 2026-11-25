@@ -594,6 +594,28 @@ func TestALeakCheckHopThatRunsPastItsBoundRefusesTheStart(t *testing.T) {
 	}
 }
 
+// A hop that runs out while its slice is still being written, to a launcher that reads nothing,
+// names the bound as one that runs out waiting for the answer does: the write's deadline is the
+// hop's, and the write ends at it with the connection's timeout, before the hop's own timer may
+// have ended the hop. Under a loaded machine the same happens to a launcher that reads too slowly.
+func TestALeakCheckHopThatRunsOutInItsWriteRefusesTheStartNamingItsBound(t *testing.T) {
+	t.Parallel()
+	g := newRig(t, nil, withLeakCheckHello(testLeakCheckTag, false), withDeafLauncher(),
+		withOptions(func(o *Options) { o.LeakCheck = servedLeakCheck() }))
+	const bound = 50 * time.Millisecond
+	g.r.launchers.leakCheckHop = bound
+	spec := workerSpec(t)
+	g.launcher(spec.Claim)
+	_, err := g.r.Spawn(g.ctx, spec)
+	want := leakguard.Cause("the pod's launcher did not answer the install of "+testLeakCheckTag+" within 50ms", nil)
+	if cause := runtime.LeakCheckCause(err); cause != want {
+		t.Fatalf("the launch failed with %v carrying the cause %q, want %q", err, cause, want)
+	}
+	if frames := g.sent(spec.Claim); len(frames) != 0 {
+		t.Fatalf("the deaf launcher read %v, want nothing: the push never left its write", frameTypes(frames))
+	}
+}
+
 // A launcher that installed the check on this connection is pushed it no more: the next start
 // of its role sends the role's start alone.
 func TestTwoStartsOnOneConnectionPushTheLeakCheckOnce(t *testing.T) {

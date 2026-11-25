@@ -457,7 +457,8 @@ func TestALaunchThatGivesUpOnAFetchNamesTheRepositorysCache(t *testing.T) {
 // past the 5 s a cap from the wait's start would allow; its launcher connects then, and the launch
 // starts the role.
 func TestALaunchCountsItsProvisioningBoundFromTheFirstInitContainer(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it moves its pod into provisioning by the wall clock 500 ms before the 2 s boot
+	// timeout runs out, a window other tests' load could make the runtime miss.
 	g := newRig(t, nil)
 	g.autoStart.Store(false)
 	g.r.provisionBound = 3 * time.Second
@@ -512,7 +513,8 @@ const neverStartedWarning = "sandbox runtime: replacing a pod older than its sta
 // deadline that launcherDeadline sets, and the wait's backstop does not end it first. With
 // keep_volume on, the launch try's own bound (LaunchBound) counts a start of 7 minutes.
 func TestAKeptVolumePodWaitsOutADetach(t *testing.T) {
-	t.Parallel()
+	// Not parallel: a subtest moves its pod into provisioning by the wall clock 1 s before an 8 s
+	// start bound runs out, a window other tests' load could make the runtime miss.
 	const boot, infraBoot = 120 * time.Second, 600 * time.Second
 	for _, tc := range []struct {
 		name string

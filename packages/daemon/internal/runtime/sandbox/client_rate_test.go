@@ -309,7 +309,8 @@ func reconnectingPods(t *testing.T, pods int) ([]k8sruntime.Object, []shimwire.L
 // launches in flight, two roles of one issue and one of another, wait their turn on the limiter and
 // start their roles, charged no launch failure.
 func TestLaunchesInFlightAtARestartOutwaitTheReconnectingLaunchersReads(t *testing.T) {
-	t.Parallel()
+	// Not parallel: its rate limiter's clock runs at 100 times the wall clock, so a scheduling delay
+	// other tests' load makes drains the backlog the test must see form.
 	const pods, speedup = 25, 100
 	limit := newFakeLimiter(2, speedup)
 	objects, hellos := reconnectingPods(t, pods)
@@ -641,7 +642,9 @@ func TestTheInformersWatchOnTheirClientsAndALaunchsRequestsGoThroughTheRequests(
 // times the cores) can still spend a second on the round trip, which is outside what the row
 // claims rather than a mode it rules out.
 func TestARequestsTimeoutStartsOnceTheClientsLimiterLetsItGo(t *testing.T) {
-	t.Parallel()
+	// Not parallel: the limiter's 2 s queue must still hold more than the request's 1 s timeout when
+	// the request enters it, and the loopback answer must come within that second: spans other tests'
+	// load would move.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"apiVersion":"v1","kind":"Secret","metadata":{"name":"held","namespace":"legion"}}`)

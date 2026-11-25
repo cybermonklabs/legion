@@ -665,17 +665,17 @@ func TestIssueSandboxAnswersASandboxThatIsGoingAbsent(t *testing.T) {
 			t.Fatalf("IssueSandbox = %q, present, while the store still holds the deleted Sandbox; want it absent", got)
 		}
 		let()
-		g.eventually("the store to hold the Sandbox made again, and IssueSandbox to answer it present", func() bool {
+		// The informer writes its store before it hands the delete on to the runtime, which drops
+		// what it keeps of the release only then (notify), so the store may answer first: both are
+		// waited for.
+		g.eventually("the store to hold the Sandbox made again, IssueSandbox to answer it present, and the runtime to drop the release's delete", func() bool {
 			u, err := g.r.storedObject(name)
 			got, present := g.r.IssueSandbox(testTree)
-			return err == nil && u != nil && u.GetUID() == "uid-sandbox-made-again" && present && got == name
+			g.r.mu.Lock()
+			_, held := g.r.taken[name]
+			g.r.mu.Unlock()
+			return err == nil && u != nil && u.GetUID() == "uid-sandbox-made-again" && present && got == name && !held
 		})
-		g.r.mu.Lock()
-		kept, held := g.r.taken[name]
-		g.r.mu.Unlock()
-		if held {
-			t.Fatalf("the runtime still keeps the delete of %s (%+v) once the store let it go, want it dropped", name, kept)
-		}
 	})
 
 	t.Run("one whose stored object carries a deletionTimestamp", func(t *testing.T) {

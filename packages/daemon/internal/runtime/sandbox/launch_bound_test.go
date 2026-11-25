@@ -105,7 +105,8 @@ func awaitingItsRoleLauncher(t *testing.T, g *rig, spec runtime.SpawnSpec) {
 // launching. Each try runs out the same way here, so the launch budget runs out and the claim
 // fails, its last error naming the bound.
 func TestALaunchTryThatRunsOutIsChargedAndTheNextTryRuns(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it reads the second 500 ms try while that try runs, which other tests' load could
+	// make it read only after the try ran out.
 	g := newRig(t, nil)
 	g.autoStart.Store(false)
 	g.r.launchBound = 500 * time.Millisecond

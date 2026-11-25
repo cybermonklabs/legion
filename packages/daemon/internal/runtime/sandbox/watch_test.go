@@ -14,9 +14,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// next is the next observation, failing the test when none arrives within a second.
+// next is the next observation, failing the test when none arrives before the test binary's
+// deadline (testwait.Context): Observe evaluates on a goroutine of its own, which a loaded machine
+// may take longer than any fixed span to run.
 func next(t *testing.T, observations <-chan runtime.Observation) runtime.Observation {
 	t.Helper()
 	select {
@@ -25,8 +28,8 @@ func next(t *testing.T, observations <-chan runtime.Observation) runtime.Observa
 			t.Fatal("the observation channel closed")
 		}
 		return obs
-	case <-time.After(time.Second):
-		t.Fatal("no observation within a second")
+	case <-testwait.Context(t).Done():
+		t.Fatal("no observation before the test binary's deadline")
 	}
 	return runtime.Observation{}
 }
@@ -274,11 +277,7 @@ func TestAVerdictEvaluatedAcrossSuspendIsNotDelivered(t *testing.T) {
 	g.update(g.pod(SandboxName(workerToken)), func(p *corev1.Pod) {
 		p.Status = corev1.PodStatus{Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{terminated(workerContainer, 143, "Error")}}
 	})
-	select {
-	case <-reading:
-	case <-time.After(time.Second):
-		t.Fatal("Observe never began evaluating the ended pod")
-	}
+	testwait.Receive(t, "Observe to begin evaluating the ended pod", reading)
 	if err := g.r.Suspend(g.ctx, loc); err != nil {
 		t.Fatal(err)
 	}

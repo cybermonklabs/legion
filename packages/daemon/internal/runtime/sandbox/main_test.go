@@ -13,12 +13,13 @@ import (
 
 // sandboxTestParallelism is how many of this package's tests run at once when the command line
 // names no -parallel. Every test calls t.Parallel but those that change something the whole
-// process shares or hold a wall-clock span to a tight bound (each says what in a `Not parallel:`
-// comment), which run first, one at a time. Each test drives its own fake API server, launchers
-// and clock (newRig), and most of a test's time is a wait on the runtime's real timers rather than
-// CPU: run one at a time, the package kept under half of one core busy. So the default is twice
-// CI's four cores, rather than go test's GOMAXPROCS, which on a dev box would run hundreds at once.
-// go test parses its flags inside m.Run, so a -parallel on the command line still wins.
+// process shares, or that need a step to land inside a window of the wall clock (each says what in
+// a `Not parallel:` comment), which run first, one at a time. Each test drives its own fake API
+// server, launchers and store (newRig), while the runtime's waits run on the wall clock, so most of
+// a test's time is a wait rather than CPU: run one at a time, the package kept under half of one
+// core busy. So the default is twice CI's four cores, rather than go test's GOMAXPROCS, which on a
+// dev box would run hundreds at once. go test parses its flags inside m.Run, so a -parallel on the
+// command line still wins.
 const sandboxTestParallelism = 8
 
 // TestMain sets the package's default -parallel (sandboxTestParallelism), then takes out of the

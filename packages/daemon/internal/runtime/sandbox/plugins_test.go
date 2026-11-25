@@ -679,7 +679,8 @@ func overlapped(lines []string) (overlap bool, err error) {
 // a race it must win rather than a certainty, and a control that never interleaves is a broken
 // harness, failed here rather than reported green.
 func TestTwoRenderedInstallsSerialiseOnTheSharedBunCache(t *testing.T) {
-	t.Parallel()
+	// Not parallel: its unlocked control needs two shells' 300 ms stand-in installs to overlap, which
+	// other tests' load could keep apart.
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("no /bin/sh in this environment")
 	}
