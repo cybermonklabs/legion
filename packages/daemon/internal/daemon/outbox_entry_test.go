@@ -692,7 +692,7 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 	}
 	for _, want := range []string{
 		"HANDOFF_STALE_ENTRY",
-		fmt.Sprintf("this completion is of entry %d, which is %d behind the entry %d the phase is on", first, next-first, next),
+		fmt.Sprintf("this completion is of entry %d, not the phase's current entry %d", first, next),
 		"nothing was recorded",
 		"The task of the entry the phase is on is owed to this claim, and the daemon sends it by itself",
 	} {

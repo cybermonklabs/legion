@@ -93,8 +93,8 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 	before := recordedCompletions(t, h, claim.RoleTester)
 	message := complete()
 	for _, want := range []string{
-		fmt.Sprintf("LEGION-208 handed the tester phase testing again: this completion is of entry %d, which is %d behind the entry %d the phase is on",
-			firstTesting, secondStart.Entry-firstTesting, secondStart.Entry),
+		fmt.Sprintf("LEGION-208 handed the tester phase testing again: this completion is of entry %d, not the phase's current entry %d",
+			firstTesting, secondStart.Entry),
 		"nothing was recorded",
 		// The second entry's task is queued and no delivery has carried it to this claim, which
 		// is the state the daemon sends the row's own work in (workflow's SendOwedEntry).
@@ -182,7 +182,7 @@ func TestACompletionIsRefusedWhileTheNextEntrysTaskWaitsUnconfirmed(t *testing.T
 	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
 		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_STALE_ENTRY")
 	for _, want := range []string{
-		"LEGION-208 handed the tester phase testing again: this completion is of entry 1, which is 1 behind the entry 2 the phase is on",
+		"LEGION-208 handed the tester phase testing again: this completion is of entry 1, not the phase's current entry 2",
 		"nothing was recorded",
 		"your turn began before the daemon's task for entry 2 (outbox:78) reached this session",
 		"complete it with a handoff of its own, never this completion's record, commit or verdict",
@@ -249,7 +249,7 @@ func TestACompletionIsHeldToItsEntryOnlyWhenBothSidesNameOne(t *testing.T) {
 		{name: "both sides name the entry the phase is on", row: 1, serving: 1},
 		{
 			name: "the claim serves the entry before this phase's", row: 2, serving: 1, refused: true,
-			says: []string{"this completion is of entry 1, which is 1 behind the entry 2 the phase is on"},
+			says: []string{"this completion is of entry 1, not the phase's current entry 2"},
 		},
 		{
 			name: "the claim serves an entry the phase has not raised to", row: 1, serving: 2, refused: true,
@@ -419,7 +419,7 @@ func TestABehindCompletionWhoseEntryAMoveBackRaisedIsRefused(t *testing.T) {
 	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
 		Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_STALE_ENTRY")
 	for _, want := range []string{
-		"LEGION-208 handed the tester phase testing again: this completion is of entry 1, which is 1 behind the entry 2 the phase is on",
+		"LEGION-208 handed the tester phase testing again: this completion is of entry 1, not the phase's current entry 2",
 		"this completion is at commit " + headSHA + " while the pull request the record holds is at head " + headSHA,
 		"the move that handed the phase out again moved the issue back, which asks for this phase's work to be done again, so no verdict on either head answers for it",
 		"nothing was recorded",
@@ -470,7 +470,7 @@ func TestABehindCompletionAwayFromTheRecordedHeadIsRefused(t *testing.T) {
 			message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
 				Commit: tc.commit, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_STALE_ENTRY")
 			for _, want := range []string{
-				"LEGION-208 handed the tester phase testing again: this completion is of entry 1, which is 1 behind the entry 2 the phase is on",
+				"LEGION-208 handed the tester phase testing again: this completion is of entry 1, not the phase's current entry 2",
 				tc.says,
 				"nothing was recorded",
 			} {
@@ -515,7 +515,7 @@ func TestABehindCompletionOfAPhaseWithNoRecordIsRefused(t *testing.T) {
 			message := refused(t, h.complete(HandoffCompleteRequest{GrantID: worker.grant(t), Summary: "done", Commit: headSHA}),
 				http.StatusConflict, "HANDOFF_STALE_ENTRY")
 			for _, want := range []string{
-				fmt.Sprintf("LEGION-208 handed the %s phase %s again: this completion is of entry 1, which is 1 behind the entry 2 the phase is on", tc.role, tc.at),
+				fmt.Sprintf("LEGION-208 handed the %s phase %s again: this completion is of entry 1, not the phase's current entry 2", tc.role, tc.at),
 				"this phase ends with no handoff record this role writes, so nothing this completion names says which entry's work it is",
 				"nothing was recorded",
 			} {
