@@ -8,7 +8,6 @@ import (
 	"maps"
 	"slices"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -100,35 +99,35 @@ func TestVerifyMarkWaitsForTheBrowserUpdate(t *testing.T) {
 	seedServiceText(t, service, artifactID, "The quick brown fox")
 
 	// VerifyMark's wait for a browser's update is the row's own (markTimer): each arm hands the
-	// row the duration it was armed with and the channel that fires it. So the row writes the
-	// browser's mark only once the first call's wait is armed, and the second call's wait fires
-	// only when the row fires it: no verdict reads a wall clock or races a real timer. (A 1 s
-	// bound on the whole call failed under the package's parallel load in envoy-go-race-docs job
-	// 138998017546, and a browser write 100 ms after the call's start raced its real 300 ms timer.)
+	// row the duration it was armed with and the channel the row fires it on, unbuffered, so a
+	// fire goes through only to a call that is waiting on it. So the row writes the browser's mark
+	// only once the first call's wait is armed, and the second call's wait fires only when the row
+	// fires it: no verdict reads a wall clock or races a real timer. (A 1 s bound on the whole
+	// call failed under the package's parallel load in envoy-go-race-docs job 138998017546, and a
+	// browser write 100 ms after the call's start raced its real 300 ms timer.)
 	type armedWait struct {
 		d    time.Duration
-		fire func()
+		fire chan time.Time
 	}
 	arms := make(chan armedWait, 2)
-	var fires []func()
+	var armed []armedWait
 	service.markTimer = func(d time.Duration) (<-chan time.Time, func() bool) {
-		fired := make(chan time.Time)
-		var once sync.Once
-		fire := func() { once.Do(func() { close(fired) }) }
+		fire := make(chan time.Time)
 		arms <- armedWait{d: d, fire: fire}
-		return fired, func() bool { return true }
+		return fire, func() bool { return true }
 	}
-	// A row that fails before it fires a wait leaves no call waiting on it.
+	// A row that fails before it fires a wait leaves no call waiting on it: a closed channel
+	// fires every receive.
 	testcleanup.Add(t, func() {
-		for _, fire := range fires {
-			fire()
+		for _, wait := range armed {
+			close(wait.fire)
 		}
 	})
 	awaitArm := func(call string) armedWait {
 		t.Helper()
 		select {
 		case arm := <-arms:
-			fires = append(fires, arm.fire)
+			armed = append(armed, arm)
 			if arm.d != 300*time.Millisecond {
 				t.Errorf("VerifyMark of %s armed its wait for %v, want MarkWait, 300ms", call, arm.d)
 			}
@@ -160,19 +159,22 @@ func TestVerifyMarkWaitsForTheBrowserUpdate(t *testing.T) {
 		t.Fatal("VerifyMark did not answer the mark the browser wrote while it waited")
 	}
 
-	// A mark the document never takes is answered ErrAnchorMissing, and only once the wait fires.
-	var fired atomic.Bool
+	// A mark the document never takes is answered ErrAnchorMissing, and only once the wait fires:
+	// the fire goes through only once the call waits on it, and a call that answers without
+	// waiting answers first.
 	missing := make(chan error, 1)
 	go func() {
 		_, err := service.VerifyMark(context.Background(), artifactID, MarkComment, "never")
-		if !fired.Load() {
-			err = fmt.Errorf("answered %v before its wait fired", err)
-		}
 		missing <- err
 	}()
 	wait := awaitArm("a mark the document never takes")
-	fired.Store(true)
-	wait.fire()
+	select {
+	case wait.fire <- time.Now():
+	case err := <-missing:
+		t.Fatalf("VerifyMark of a mark the document never takes answered %v before its wait fired", err)
+	case <-time.After(roomWait(t)):
+		t.Fatal("VerifyMark of a mark the document never takes neither waited on its wait nor answered")
+	}
 	select {
 	case err := <-missing:
 		if !errors.Is(err, ErrAnchorMissing) {
