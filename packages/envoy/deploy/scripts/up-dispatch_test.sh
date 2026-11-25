@@ -155,4 +155,20 @@ output=$(test_real_docker="$root/docker-2.12" up_with "ENVOY_ACCOUNT_GOOGLE_AUDI
 [[ $(<"$log") == "$started" ]] || fail "did not start Dispatch through Compose 2.12.2"
 grep -q ' config --format json' "$root/compose-2.12.calls" || fail 'UNKNOWN: Compose 2.12.2 served no config read'
 
-printf 'up-dispatch: refusal and start for each spelling, the shell override, Compose'"'"'s refusal, no Compose and Compose 2.12.2: PASS\n'
+# The compose file hands Dispatch DISPATCH_VERDICT_APP_ID from compose/.env, the listener's
+# ENVOY_VERDICT_APP_ID, so its CI reconcile pass leaves out the suites the listener leaves out;
+# unset, Compose resolves it empty, which Dispatch reads as no verdict App. The value is read from
+# Compose's own resolution of the real compose file, with no shell value to override compose/.env,
+# and with the image tag up-dispatch.sh itself defaults.
+resolved_verdict_app_id() {
+  up_with "ENVOY_ACCOUNT_GOOGLE_AUDIENCE=envoy-listener${1:+$'\n'"DISPATCH_VERDICT_APP_ID=$1"}" >/dev/null ||
+    fail "refused to start Dispatch with DISPATCH_VERDICT_APP_ID=${1:-<unset>} in compose/.env"
+  (cd "$root/deploy" && env -u DISPATCH_VERDICT_APP_ID ENVOY_IMAGE_TAG=local "$real_docker" compose -f compose/dispatch.compose.yml config --format json) |
+    python3 -c 'import json, sys; print(json.load(sys.stdin)["services"]["dispatch"]["environment"].get("DISPATCH_VERDICT_APP_ID", "<absent>"))'
+}
+verdict=$(resolved_verdict_app_id 5341240)
+[[ "$verdict" == 5341240 ]] || fail "Compose gives Dispatch DISPATCH_VERDICT_APP_ID=$verdict from compose/.env's 5341240"
+verdict=$(resolved_verdict_app_id "")
+[[ -z "$verdict" ]] || fail "Compose gives Dispatch DISPATCH_VERDICT_APP_ID=$verdict with compose/.env setting none"
+
+printf 'up-dispatch: refusal and start for each spelling, the shell override, Compose'"'"'s refusal, no Compose, Compose 2.12.2 and the verdict App id: PASS\n'

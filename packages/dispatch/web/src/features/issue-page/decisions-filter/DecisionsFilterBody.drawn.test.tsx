@@ -23,6 +23,7 @@ import {
   pageOwnWordsRule,
   pageStateText,
 } from "../../../theme/classes";
+import { actorLabelText } from "../../refs/AgentName";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { useKeymapScope } from "../../shell/keymap";
 import type { OutlineRequest } from "../IssueTree";
@@ -30,7 +31,7 @@ import { artifactsBySlug } from "../issue-artifacts";
 import type { TreeNode } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
 import { OutlineRequestProvider } from "../outline-request";
-import { KEY_REPORTS } from "../page-structure";
+import { KEY_REPORTS, PAGE_CHROME_ATTRIBUTE } from "../page-structure";
 import {
   ANSWER_LINES,
   CONTROL_LABELS,
@@ -226,6 +227,7 @@ function changeOf(block: string, at: string, body: string): Comment {
     author: READER_ACTOR,
     body,
     created_at: at,
+    edited_at: null,
     id: `change-${block}`,
   } as Comment;
 }
@@ -1765,6 +1767,150 @@ test("an address that names a comment draws its row first and focuses it", async
   expect(view.getByText(EMPTY_LINE)).toBeTruthy();
 });
 
+/** A session nobody named, which the page calls by its word for an agent. */
+const UNTITLED: Actor = { id: "0f8e2c4a-1111-4222-8333-444455556666", kind: "session" };
+
+/** When the posts below were deleted, and when edited. */
+const DELETED_AT = "2026-11-12T10:00:00Z";
+const EDITED_AT = "2026-11-12T11:00:00Z";
+
+/** How the deleted line opens: the page's words, then the session nobody named as the page
+ *  names an author, never as the model's line holds it. */
+const DELETED_OPENING = `${CONTROL_LABELS.post_deleted_by} ${CONTROL_LABELS.unnamed_author} · `;
+
+/** A comment the session nobody named wrote and deleted, as the model holds it
+ *  (`tree-drafts.ts`'s `addTurns`): its delete, and the deleted line as its text, the actor
+ *  named as no registry knows it and the time as stored, with no reading. */
+function deletedComment(id: string, children: readonly TreeNode[] = []): TreeNode {
+  return node({
+    at: "2026-11-12T09:00:00Z",
+    author: UNTITLED,
+    children,
+    deletedAt: DELETED_AT,
+    deletedBy: UNTITLED,
+    id,
+    reference: `dispatch://${KEY}/comment/${id}`,
+    text: `${CONTROL_LABELS.post_deleted_by} ${actorLabelText(UNTITLED)} · ${DELETED_AT}`,
+    type: "comment",
+  });
+}
+
+// R2 and R3 of dispatch://INFRA-1523: a comment an address named is drawn with the marks the
+// outline's row draws it with once its author corrected it. One its author deleted draws the
+// deleted line in place of its words, in the page's words, its actor named as the page names an
+// author and never as the model's text holds it, and its time as the page draws a time.
+test("a deleted comment an address named draws its deleted line, never the model's line", () => {
+  const gone = deletedComment("c-gone");
+  const children = [statement("s1"), gone];
+  const view = renderBody(
+    { children },
+    {
+      reveal: gone.id,
+      view: presetView(issueTree(children), "decisions", "", new Set([gone.id])).root,
+    }
+  );
+  const row = rowOf(view, gone.id);
+  const deletedLine = row.querySelector("[data-node-words] [data-post-deleted]");
+  expect(deletedLine?.textContent?.slice(0, DELETED_OPENING.length)).toBe(DELETED_OPENING);
+  expect(deletedLine?.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
+  expect(row.textContent).not.toContain(actorLabelText(UNTITLED));
+  expect(row.textContent).not.toContain(DELETED_AT);
+});
+
+// R2 of dispatch://INFRA-1523: a message an address named that its author edited draws its
+// words as they read now, and says ` · edited` after its time, outside its words, in the page's
+// own words, as the outline's row says it in its margin.
+test("an edited message an address named draws its words and says · edited after them", () => {
+  const edited = node({
+    at: "2026-11-12T09:00:00Z",
+    author: READER_ACTOR,
+    editedAt: EDITED_AT,
+    id: "m-edited",
+    reference: `dispatch://${KEY}/message/m-edited`,
+    text: "The rail stays where it is, at 56 px.",
+    type: "message",
+  });
+  const children = [statement("s1"), edited];
+  const view = renderBody(
+    { children },
+    {
+      reveal: edited.id,
+      view: presetView(issueTree(children), "decisions", "", new Set([edited.id])).root,
+    }
+  );
+  const row = rowOf(view, edited.id);
+  expect(words(row.querySelector("[data-node-words]"))).toBe(edited.text);
+  const mark = row.querySelector("[data-node-edited]");
+  expect([mark?.textContent, mark?.hasAttribute(PAGE_CHROME_ATTRIBUTE)]).toEqual([
+    ` · ${CONTROL_LABELS.post_edited}`,
+    true,
+  ]);
+  expect(mark?.closest("[data-node-words]")).toBeNull();
+});
+
+// R2 and R3 of dispatch://INFRA-1523: an entry's parent line is the outline's own
+// (`NodeRow.tsx`'s `ParentLink`), so it carries a corrected post's marks. A comment its author
+// deleted is drawn as its deleted line, its actor named as the page names an author and never as
+// the model's line holds it, and it stays the link to the comment, out of the tab order as
+// everything inside a row is.
+test("an entry whose parent is a deleted comment draws the parent line as the deleted line", () => {
+  const view = renderBody({
+    children: [statement("s1"), deletedComment("c-gone", [decisionNode("under")])],
+    made: [decision("under", { links: [shaped(specRef("s1"))] })],
+  });
+  const line = rowOf(view, D("under")).querySelector("[data-node-parent-line]");
+  expect(line?.getAttribute("data-parent-id")).toBe("c-gone");
+  const deletedLine = line?.querySelector("a [data-post-deleted]");
+  expect(deletedLine?.textContent?.slice(0, DELETED_OPENING.length)).toBe(DELETED_OPENING);
+  expect(line?.textContent).not.toContain(actorLabelText(UNTITLED));
+  expect(line?.textContent).not.toContain(DELETED_AT);
+  expect(
+    [...(line?.querySelectorAll<HTMLAnchorElement>("a") ?? [])].map((link) => [
+      link.getAttribute("href"),
+      link.tabIndex,
+    ])
+  ).toEqual([[`/issues/${KEY}/comments/c-gone`, -1]]);
+});
+
+// R2 of dispatch://INFRA-1523: an entry whose parent is a comment its author edited says
+// ` · edited` after the parent's line, in the page's own words, inside the link to the comment;
+// a parent with no words of its own is named by its kind's word once, then the same mark.
+test("an entry whose parent is an edited comment draws · edited after the parent's line", () => {
+  const edited = node({
+    children: [decisionNode("under")],
+    editedAt: EDITED_AT,
+    id: "c-edited",
+    reference: `dispatch://${KEY}/comment/c-edited`,
+    text: "Where does the rail sit?",
+    type: "comment",
+  });
+  const wordless = node({
+    children: [decisionNode("bare")],
+    editedAt: EDITED_AT,
+    id: "c-wordless",
+    reference: `dispatch://${KEY}/comment/c-wordless`,
+    text: "",
+    type: "comment",
+  });
+  const view = renderBody({
+    children: [statement("s1"), edited, wordless],
+    made: [
+      decision("under", { links: [shaped(specRef("s1"))] }),
+      decision("bare", { links: [shaped(specRef("s1"))] }),
+    ],
+  });
+  const line = rowOf(view, D("under")).querySelector("[data-node-parent-line]");
+  const link = line?.querySelector("a");
+  expect(link?.textContent).toBe(`${edited.text} · ${CONTROL_LABELS.post_edited}`);
+  expect(link?.querySelector(`[${PAGE_CHROME_ATTRIBUTE}]`)?.textContent).toBe(
+    ` · ${CONTROL_LABELS.post_edited}`
+  );
+  expect(link?.getAttribute("href")).toBe(`/issues/${KEY}/comments/c-edited`);
+  expect(words(rowOf(view, D("bare")).querySelector("[data-node-parent-line]"))).toBe(
+    `${NODE_TYPE_NAMES.comment} · ${CONTROL_LABELS.post_edited}`
+  );
+});
+
 // R6: the page holds which of the Contents list's requests an outline or a view took
 // (`outline-request.tsx`), so a view drawn again, turned off and on, does not take the reader
 // back to the request it took before.
@@ -2000,6 +2146,27 @@ test("a decision the reader sent a Change on says so, leaves the review list and
     list.mockRestore();
     text.mockRestore();
   }
+});
+
+// INFRA-1523, R2: a Change its author edited says so after its words, as every surface marks an
+// edited post: the person's words as stored, then ` · edited` in the page's own words
+// (`EditedMark`). A Change nobody edited draws its words and nothing after them.
+test("a Change its author edited draws its words, then · edited, and one nobody edited no mark", async () => {
+  const edited: Comment = {
+    ...changeOf("second", "2026-11-16T09:00:00Z", "Name the read, please."),
+    edited_at: "2026-11-16T09:30:00Z",
+  };
+  const unedited = changeOf("first", "2026-11-16T10:00:00Z", "Keep it shorter.");
+  const view = renderBody({ ...wholeIssue(), comments: [edited, unedited] });
+  const changeWords = (block: string) => rowOf(view, D(block)).querySelector("[data-change-words]");
+  await waitFor(() =>
+    expect(changeWords("second")?.textContent).toBe("Name the read, please. · edited")
+  );
+  const mark = changeWords("second")?.lastElementChild;
+  expect(mark?.textContent).toBe(" · edited");
+  expect(mark?.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
+  expect(changeWords("first")?.textContent).toBe("Keep it shorter.");
+  expect(changeWords("first")?.querySelector(`[${PAGE_CHROME_ATTRIBUTE}]`)).toBeNull();
 });
 
 // R2: the view draws four parts. What another person answered is no part of its own: it stands

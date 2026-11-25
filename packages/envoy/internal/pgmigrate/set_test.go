@@ -15,6 +15,7 @@ func file(sql string) *fstest.MapFile { return &fstest.MapFile{Data: []byte(sql)
 // The runners apply what Load returns in the order it returns it, so the order is the versions'
 // even where the file names sort otherwise, and a rollback script is never among them.
 func TestLoadReturnsForwardMigrationsInVersionOrder(t *testing.T) {
+	t.Parallel()
 	set := fstest.MapFS{
 		"migrations/0002_second.up.sql":   file("select 2"),
 		"migrations/0002_second.down.sql": file("select -2"),
@@ -39,6 +40,7 @@ func TestLoadReturnsForwardMigrationsInVersionOrder(t *testing.T) {
 // numbered is named for the UTC moment it was created, 14 digits, which the runners' bigint
 // version column holds and which sorts after every number.
 func TestLoadAcceptsAVersionPastTheIntegerColumn(t *testing.T) {
+	t.Parallel()
 	set := fstest.MapFS{
 		"migrations/0140_last_numbered.up.sql":     file("select 140"),
 		"migrations/20261030120000_stamped.up.sql": file("select 1030"),
@@ -83,6 +85,7 @@ func (u unreadable) ReadFile(name string) ([]byte, error) {
 // Each shape Load refuses is refused whole, naming what it found, and returns no migration: a
 // runner that applied the rest would apply a set other than the one written.
 func TestLoadRefusesASetARunnerWouldApplyOtherThanAsWritten(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		set  fs.FS
@@ -205,6 +208,7 @@ func TestLoadRefusesASetARunnerWouldApplyOtherThanAsWritten(t *testing.T) {
 // A collision must not send a numbered set to a timestamp its guard refuses. A recorded closing
 // file still requires timestamps before the first timestamp exists, even when that file collides.
 func TestLoadCollisionRemedyMatchesTheSet(t *testing.T) {
+	t.Parallel()
 	cutover := fstest.MapFS{}
 	for version := 1; version < 161; version++ {
 		cutover[fmt.Sprintf("migrations/%04d_numbered.up.sql", version)] = file("select 1")
@@ -280,6 +284,7 @@ func TestLoadCollisionRemedyMatchesTheSet(t *testing.T) {
 // A census file beside its migration is read onto that migration, and a migration without one
 // carries none.
 func TestLoadReadsACensusBesideItsMigration(t *testing.T) {
+	t.Parallel()
 	set := fstest.MapFS{
 		"migrations/0001_first.up.sql":     {Data: []byte("create table a (id integer)")},
 		"migrations/0001_first.census.sql": {Data: []byte("-- rows the check would refuse\nselect count(*) from a where id < 0")},
@@ -306,6 +311,7 @@ func TestLoadReadsACensusBesideItsMigration(t *testing.T) {
 // which can spell any of them, is refused outright, and neither a string literal nor a comment
 // hides a call that Postgres would run.
 func TestLoadRefusesACensusWithNoMigrationOneThatIsNotASelectAndOneThatCallsAForbiddenFunction(t *testing.T) {
+	t.Parallel()
 	const first = "create table a (id integer)"
 	for name, tc := range map[string]struct {
 		set  fstest.MapFS
@@ -441,6 +447,7 @@ func TestLoadRefusesACensusWithNoMigrationOneThatIsNotASelectAndOneThatCallsAFor
 // A forbidden name or a U& inside a comment or a string literal is not a call: comments, nested
 // ones included, and literals in each quoting Postgres reads are passed over.
 func TestLoadAcceptsACensusWhoseCommentOrStringLiteralNamesAForbiddenFunction(t *testing.T) {
+	t.Parallel()
 	set := fstest.MapFS{
 		"migrations/0001_first.up.sql": {Data: []byte("create table a (id integer, note text)")},
 		"migrations/0001_first.census.sql": {Data: []byte("-- no pg_sleep here, nor U&\"pg_sleep\"\n" +
@@ -456,6 +463,7 @@ func TestLoadAcceptsACensusWhoseCommentOrStringLiteralNamesAForbiddenFunction(t 
 // Postgres 18 reads a vertical tab as space, so a census whose words vertical tabs separate, one
 // leading the file included, is one select.
 func TestLoadReadsAVerticalTabInACensusAsSpace(t *testing.T) {
+	t.Parallel()
 	set := fstest.MapFS{
 		"migrations/0001_first.up.sql":     {Data: []byte("create table a (id integer)")},
 		"migrations/0001_first.census.sql": {Data: []byte("\vselect\vcount(*)\vfrom\va\v")},
