@@ -64,8 +64,9 @@ func ruleOf(err error, rules ...error) string {
 }
 
 // tagNone is the value of --type, --github-owners, --requesters, --scopes, --admin, --project,
-// --project-channels, --max-grant, --default-grant, --judge and --guidance that removes the tag,
-// the one the broker refuses as a github-owners login (policy.TagRemoved).
+// --project-channels, --max-grant, --default-grant, --judge, --guidance, --proxy and
+// --proxy-narrowed that removes the tag, the one the broker refuses as a github-owners login
+// (policy.TagRemoved).
 const tagNone = policy.TagRemoved
 
 // checkType is --type's rule: a type the broker mints (policy.ValidType), or none.
@@ -469,7 +470,7 @@ func tagRefusal(reason string, set policy.TagSet, tags map[string]string) error 
 }
 
 // tagFlags is the value of each tag flag a create or a retag names, one field per flag. It is a
-// struct rather than eleven string parameters for the reason policy.TagSet is one: a caller
+// struct rather than thirteen string parameters for the reason policy.TagSet is one: a caller
 // passing that many values in order would transpose two of them, and every transposition
 // compiles and writes each value as another tag.
 type tagFlags struct {
@@ -484,17 +485,19 @@ type tagFlags struct {
 	DefaultGrant    string
 	Judge           string
 	Guidance        string
+	Proxy           string
+	ProxyNarrowed   string
 }
 
 // optionalTags is the type, github-owners, requesters, scopes, admin, dispatch-project,
-// project-channels, max-grant, default-grant, judge and guidance tags the flags set: each flag's
-// value when it names one, and nothing for one left unset or set to none. A type brings the
-// rollback guard with
-// it (policy.TagRollbackGuard), which only the brokers from legion-envoy-v13.19.0 to the release
-// before v16.0.0 read, and refuse: every broker from v16.0.0 to the release before the type tag
-// ignores it and serves a secret that carries type alone as a stored secret. What keeps a type
-// secret's key from such a broker is requireTypeTag, before this CLI writes, and a rollback floor
-// at the release that reads the type tag, which the deployment keeps.
+// project-channels, max-grant, default-grant, judge, guidance, proxy and proxy-narrowed tags the
+// flags set: each flag's value when it names one, and nothing for one left unset or set to none.
+// A type brings the rollback guard with it (policy.TagRollbackGuard), which only the brokers from
+// legion-envoy-v13.19.0 to the release before v16.0.0 read, and refuse: every broker from v16.0.0
+// to the release before the type tag ignores it and serves a secret that carries type alone as a
+// stored secret. What keeps a type secret's key from such a broker is requireTypeTag, before this
+// CLI writes, and a rollback floor at the release that reads the type tag, which the deployment
+// keeps.
 func optionalTags(f tagFlags) map[string]string {
 	named := func(value string) bool { return value != "" && value != tagNone }
 	tags := map[string]string{}
@@ -532,6 +535,12 @@ func optionalTags(f tagFlags) map[string]string {
 	if named(f.Guidance) {
 		tags[policy.TagGuidance] = f.Guidance
 	}
+	if named(f.Proxy) {
+		tags[policy.TagProxy] = f.Proxy
+	}
+	if named(f.ProxyNarrowed) {
+		tags[policy.TagProxyNarrowed] = f.ProxyNarrowed
+	}
 	return tags
 }
 
@@ -541,4 +550,44 @@ func checkDefaultGrant(value string, orNone bool) error {
 		return nil
 	}
 	return usageErr{fmt.Errorf("--default-grant is %s %s", policy.DefaultGrantSession, valueNotPrinted)}
+}
+
+// checkProxy is --proxy's rule: the name of a kind of the broker's profiles file, one lowercase
+// word (a-z alone), or none where orNone allows it (retag) to take the secret out from behind the
+// proxy. On create the word none is refused: it is a lowercase word, so the loop below would pass
+// it, and optionalTags writes no tag for it, so the create would succeed with the secret released
+// as its value and say nothing of the flag it dropped. Whether the deployment's file declares
+// the kind is the broker's to say at its next load (policy.ReasonProxyKindUnknown); this CLI holds
+// the name to its form, since a value of another form names no kind of any file. The value it
+// refuses is not printed (valueNotPrinted).
+func checkProxy(kind string, orNone bool) error {
+	switch {
+	case kind == "" || (orNone && kind == tagNone):
+		return nil
+	case kind == tagNone:
+		return usageErr{fmt.Errorf("--proxy %s removes the proxy tag, in a retag; leave --proxy off for a secret released as its value", tagNone)}
+	}
+	for i := range len(kind) {
+		if kind[i] >= 'a' && kind[i] <= 'z' {
+			continue
+		}
+		if orNone {
+			return usageErr{fmt.Errorf("--proxy is the name of a kind of the broker's profiles file, one lowercase word such as github or anthropic, or %s %s", tagNone, valueNotPrinted)}
+		}
+		return usageErr{fmt.Errorf("--proxy is the name of a kind of the broker's profiles file, one lowercase word such as github or anthropic %s", valueNotPrinted)}
+	}
+	return nil
+}
+
+// checkProxyNarrowed is --proxy-narrowed's rule: true, the one value the broker reads
+// (policy.ProxyNarrowedTrue), or none where orNone allows it (retag) to remove the mark. A secret
+// so marked is served through exactly one profile, and that profile has an allow of its own.
+func checkProxyNarrowed(value string, orNone bool) error {
+	if value == "" || value == policy.ProxyNarrowedTrue || (orNone && value == tagNone) {
+		return nil
+	}
+	if orNone {
+		return usageErr{fmt.Errorf("--proxy-narrowed is %s or %s %s", policy.ProxyNarrowedTrue, tagNone, valueNotPrinted)}
+	}
+	return usageErr{fmt.Errorf("--proxy-narrowed is %s %s", policy.ProxyNarrowedTrue, valueNotPrinted)}
 }

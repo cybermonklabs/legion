@@ -68,7 +68,7 @@ func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholde
 	// port is in it because every name the decision compares - the CONNECT host, the TLS name
 	// and the Host header - carries no port, so 443 is the only port an entry's hosts speak
 	// about and another port of one name is another service.
-	bound := len(s.candidates(grant, host, connectPort)) > 0
+	bound := len(candidates(s.grants.AirlockRules(), grant, host, connectPort)) > 0
 	// The addresses this name has, read and checked once: the tunnel below dials these and
 	// resolves nothing of its own, and a bound host's requests are checked and dialled the
 	// same way by the transport they go out on (dialChecked). A private destination's bound
@@ -121,7 +121,7 @@ func portNumber(port string) (uint16, bool) {
 // blocks nothing it does not bind. It is answered before anything is resolved or dialled, with
 // codeMintedHostOnly and the rule's words.
 func (s *Server) mintedHostOnly(w http.ResponseWriter, r *http.Request, grant requests.AirlockConnection, host string, port uint16) bool {
-	if !grant.Minted || len(s.candidates(grant, host, port)) > 0 {
+	if !grant.Minted || len(candidates(s.grants.AirlockRules(), grant, host, port)) > 0 {
 		return false
 	}
 	s.refuse(w, r, call{grant: grant, host: host}, http.StatusForbidden, codeMintedHostOnly,

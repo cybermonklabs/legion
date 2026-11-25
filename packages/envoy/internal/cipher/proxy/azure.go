@@ -1,5 +1,5 @@
 // packages/envoy/internal/cipher/proxy/azure.go
-// The azure kind: an azure-login secret, whose federated token is no credential a service takes
+// The exchange way: an azure-login secret, whose federated token is no credential a service takes
 // but an assertion that has to be exchanged at Microsoft's token endpoint for an access token.
 //
 // Two paths. The exchange: a token request whose client_assertion is the grant's placeholder is
@@ -16,13 +16,13 @@
 // (azureExchange.form), since the federated token is the broker's own and not the name's:
 // Entra takes it as the assertion of every application whose federated credential trusts the
 // broker, so an exchange made as whatever application the command named would sell the grant
-// of one name for a token of any of them, and one made at another host the entry binds would
+// of one name for a token of any of them, and one made at another host its kind binds would
 // hand that host the token itself. Nor does the federated token leave the broker any other way:
 // a request that is no token request and carries its placeholder in a header is refused before
 // anything is sent (serveBound), since the header swap would put the token itself in it, whether
-// it goes to the authority or to another host the entry binds, and whatever that entry's kind: an
-// azure-login name's value is the federated token under an entry of any kind, and only one of
-// kind azure exchanges a command's token request.
+// it goes to the authority or to another host its kind binds, and whatever way its binding takes:
+// an azure-login name's value is the federated token under any binding, and only the exchange
+// way exchanges a command's token request.
 //
 // The exchange is the one place the proxy writes an answer of its own. It still reads no answer
 // of any API service, which is what the design's rule is about: what it reads here is the
@@ -32,7 +32,9 @@ package proxy
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -323,6 +325,7 @@ func (s *Server) exchangeToken(w http.ResponseWriter, info connInfo, r *http.Req
 	}
 	token, expires := accessTokenOf(fields, s.now())
 	slot := azureAccessSlot(x)
+	s.logExchanged(info, chosen.name, slot, secret.Type, token)
 	// A read of this grant like any other, so it answers by the one rule (grantRefusal): a
 	// grant that ended while the exchange ran is the read's own answer, and a read that did
 	// not happen says nothing of the store it went to, which for Postgres would be the
@@ -366,10 +369,9 @@ func (s *Server) azureAccess(ctx context.Context, info connInfo, chosen pair, se
 	if err != nil || endpoint.Scheme != "https" {
 		return "", errors.New("the slot of this placeholder names no https token endpoint")
 	}
-	entry := s.rules.Lookup(chosen.name)
-	if entry == nil || !proxyrules.HostBound(entry.Hosts, fold.ASCII(endpoint.Hostname())) {
+	if !proxyrules.HostBound(s.grants.AirlockRules().HostsOf(chosen.name), fold.ASCII(endpoint.Hostname())) {
 		// The exchange is a call the broker makes with the real federated token, so where it
-		// is made is held to the same hosts as every other call of this name: the rules file's.
+		// is made is held to the same hosts as every other call of this name: its kind's.
 		return "", errors.New("the token endpoint this slot names is no host " + chosen.name + " is bound to")
 	}
 	if err := azureBound(chosen.name, s.azureAuthority, secret.Azure, fold.ASCII(endpoint.Host), []string{x.ClientID}, endpoint.Path); err != nil {
@@ -394,8 +396,18 @@ func (s *Server) azureAccess(ctx context.Context, info connInfo, chosen pair, se
 		return "", errors.New("the token endpoint's answer to this exchange " + err.Error())
 	}
 	token, expires := accessTokenOf(fields, s.now())
+	s.logExchanged(info, chosen.name, chosen.slot, secret.Type, token)
 	held.keep(token, expires)
 	return token, nil
+}
+
+// logExchanged writes the one line (requests.MintMessage) of an access token an exchange got for
+// a grant: the grant, the name, the way, the slot it fills and the SHA-256 of the token, and never
+// the token, so a scan that finds a token on a pod can be compared with what the broker got.
+func (s *Server) logExchanged(info connInfo, name, slot, secretType, token string) {
+	sum := sha256.Sum256([]byte(token))
+	s.log.Info(requests.MintMessage, "enrollment", info.grant.EnrollmentID, "grant", info.grant.GrantID, "secret", name,
+		"way", proxyrules.WayExchange, "type", secretType, "slot", slot, "sha256", hex.EncodeToString(sum[:]))
 }
 
 // exchangeAt makes one exchange: the broker's own POST to the token endpoint, on the transport

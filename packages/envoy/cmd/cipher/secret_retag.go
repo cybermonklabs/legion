@@ -86,16 +86,16 @@ func tagPairs(tags map[string]string) string {
 }
 
 // cmdSecretRetag changes a secret's owner, tier, type, GitHub owners, requesters, scopes, admin
-// mark, project, project channels, max grant, default grant, judge or guidance, in one cloud
-// write; a removal that moves the project tags' rollback guard writes the requesters tag in a
-// second write after it (guardRetag, writeGuardRewrite). A retag that names none (--type none,
-// --github-owners none, --requesters none, --scopes none, --admin none, --project none,
-// --project-channels none, --max-grant none, --default-grant none, --judge none, --guidance none)
-// removes those tags and sets none of the user's; --type
-// none also removes the old kind tag and the rollback guard written with the type. Any other retag
-// sets tags. A retag that does both is refused before anything is read or written: AWS removes
-// tags only with UntagResource, so it would be two calls, and a refused second call would leave it
-// half applied.
+// mark, project, project channels, max grant, default grant, judge, guidance, proxy kind or
+// proxy narrowing, in one cloud write; a removal that moves the project tags' rollback guard
+// writes the requesters tag in a second write after it (guardRetag, writeGuardRewrite). A retag
+// that names none (--type none, --github-owners none, --requesters none, --scopes none, --admin
+// none, --project none, --project-channels none, --max-grant none, --default-grant none, --judge
+// none, --guidance none, --proxy none, --proxy-narrowed none) removes those tags and sets none of
+// the user's; --type none also removes the old kind tag and the rollback guard written with the
+// type. Any other retag sets tags. A retag that does both is refused before anything is read or
+// written: AWS removes tags only with UntagResource, so it would be two calls, and a refused
+// second call would leave it half applied.
 //
 // Either kind of retag reads the tags the secret holds, builds from them the tags it will hold
 // once the write lands (after), and checks the github-owners rule and the broker's cross-tag
@@ -143,12 +143,14 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	newDefaultGrant := flags.String("default-grant", "", "session (no --ttl lasts until the session ends) or none (12 hours)")
 	newJudge := flags.String("judge", "", "whole seconds from 1 to 900, the longest grant the model judge makes of this secret when it decides a request for it against its guidance, or none: a person decides it")
 	newGuidance := flags.String("guidance", "", "the instruction the model judge follows when it decides a request for this secret, in at most 2000 characters (on AWS Secrets Manager at most 256, of letters, digits, spaces and _ . : / = + - @), or none")
+	newProxy := flags.String("proxy", "", "the kind of the broker's profiles file this secret is served behind, one lowercase word such as github or anthropic, or none: the secret is then released as its value")
+	newProxyNarrowed := flags.String("proxy-narrowed", "", "true (the secret is served only through its one profile, whose allow narrows its kind's) or none")
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
 	name, slug, err := secretName(positional)
-	if err == nil && *newOwner == "" && *newTier == "" && *newType == "" && *newGitHubOwners == "" && *newRequesters == "" && *newScopes == "" && *newAdmin == "" && *newProject == "" && *newProjectChannels == "" && *newMaxGrant == "" && *newDefaultGrant == "" && *newJudge == "" && *newGuidance == "" {
-		err = usageErr{errors.New("--owner, --tier, --type, --github-owners, --requesters, --scopes, --admin, --project, --project-channels, --max-grant, --default-grant, --judge, --guidance or a combination is required")}
+	if err == nil && *newOwner == "" && *newTier == "" && *newType == "" && *newGitHubOwners == "" && *newRequesters == "" && *newScopes == "" && *newAdmin == "" && *newProject == "" && *newProjectChannels == "" && *newMaxGrant == "" && *newDefaultGrant == "" && *newJudge == "" && *newGuidance == "" && *newProxy == "" && *newProxyNarrowed == "" {
+		err = usageErr{errors.New("--owner, --tier, --type, --github-owners, --requesters, --scopes, --admin, --project, --project-channels, --max-grant, --default-grant, --judge, --guidance, --proxy, --proxy-narrowed or a combination is required")}
 	}
 	if err == nil {
 		*newOwner, err = checkOwnerTier(*newOwner, *newTier)
@@ -186,6 +188,12 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	if err == nil {
 		err = checkGuidance(*newGuidance, true)
 	}
+	if err == nil {
+		err = checkProxy(*newProxy, true)
+	}
+	if err == nil {
+		err = checkProxyNarrowed(*newProxyNarrowed, true)
+	}
 	var remove []string
 	if *newType == tagNone {
 		// The rollback guard goes with the type: a stored secret is safe on every broker.
@@ -221,6 +229,12 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	if *newGuidance == tagNone {
 		remove = append(remove, policy.TagGuidance)
 	}
+	if *newProxy == tagNone {
+		remove = append(remove, policy.TagProxy)
+	}
+	if *newProxyNarrowed == tagNone {
+		remove = append(remove, policy.TagProxyNarrowed)
+	}
 	set := optionalTags(tagFlags{
 		Type:            *newType,
 		GitHubOwners:    *newGitHubOwners,
@@ -233,6 +247,8 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 		DefaultGrant:    *newDefaultGrant,
 		Judge:           *newJudge,
 		Guidance:        *newGuidance,
+		Proxy:           *newProxy,
+		ProxyNarrowed:   *newProxyNarrowed,
 	})
 	if err == nil && len(remove) > 0 && (*newOwner != "" || *newTier != "" || len(set) > 0) {
 		err = usageErr{errors.New("none removes a tag in a retag of its own: run the removal and the other changes as two retags")}

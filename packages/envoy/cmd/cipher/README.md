@@ -164,6 +164,24 @@ list without it and a `rollback_guard: yes|-` line, and `--json` a `rollback_gua
 written in the store's own console carries no guard: the rule for a rollback is in the broker's
 operate guide, "Rolling back past the project tags".
 
+A secret can be served behind the broker's proxy. Its `proxy` tag names a kind of the broker's
+profiles file, one lowercase word such as `github` or `anthropic`. A session then gets a
+placeholder in place of the value, and the broker's proxy puts the credential into the calls the
+kind allows. `agent-secrets secret create --proxy KIND` writes the tag, `secret retag --proxy
+KIND|none` changes it or removes it, `secret show` prints it as a `proxy:` line, and `--json`
+carries it as `proxy`, `""` for a secret without it. This CLI checks only the form of the name: a
+value that is not one lowercase word, and `none` on create, are refused before anything is
+written. Whether the profiles file declares that kind is the broker's to check, each time it loads
+the secret: it refuses a secret whose kind the file does not declare as `proxy-kind-unknown`,
+which the write's reread prints, exiting 1.
+
+`--proxy-narrowed true` marks a secret that is served only through its one profile, whose own
+`allow` narrows the kind's. `agent-secrets secret create --proxy-narrowed true` writes the
+`proxy-narrowed` tag, `secret retag --proxy-narrowed true|none` writes it or removes it, `secret
+show` prints it as a `proxy_narrowed:` line, and `--json` carries it as `proxy_narrowed`, `""`
+for a secret without it. Any other value, and `none` on create, is refused before anything is
+written.
+
 On a machine that runs agents directly, `agent-secrets-helper` (`../cipher-helper`) holds
 each session's key and signs for it; in a container or a Kubernetes pod, the session's key lives in
 `AGENT_SECRETS_KEY_DIR`.
