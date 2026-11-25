@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -448,17 +450,21 @@ func readsRelation(node documentSearchPlanNode, relation string) bool {
 func documentSearchRows(t *testing.T, ctx context.Context, database *store.Store, statement string, arguments []any, settings []string) []string {
 	t.Helper()
 	read := []string{}
-	for _, values := range runSearchStatementRows(t, ctx, database, statement, arguments, settings) {
+	runSearchStatement(t, ctx, database, statement, arguments, settings, func(row pgx.CollectableRow) error {
+		values, err := row.Values()
+		if err != nil {
+			return err
+		}
 		read = append(read, fmt.Sprint(values...))
-	}
+		return nil
+	})
 	return read
 }
 
-// runSearchStatementRows runs statement bound to arguments in a transaction of its own under
+// runSearchStatement runs statement bound to arguments in a transaction of its own under
 // settings, as the route runs a search's statement in the scan it opens (beginKeywordScan,
-// beginMeaningScan), and returns each row's values (rows.Values()), in the order the statement
-// answers them.
-func runSearchStatementRows(t *testing.T, ctx context.Context, database *store.Store, statement string, arguments []any, settings []string) [][]any {
+// beginMeaningScan), and hands each row to read, in the order the statement answers them.
+func runSearchStatement(t *testing.T, ctx context.Context, database *store.Store, statement string, arguments []any, settings []string, read func(pgx.CollectableRow) error) {
 	t.Helper()
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -475,16 +481,12 @@ func runSearchStatementRows(t *testing.T, ctx context.Context, database *store.S
 		t.Fatalf("run the statement: %v", err)
 	}
 	defer rows.Close()
-	var read [][]any
 	for rows.Next() {
-		values, err := rows.Values()
-		if err != nil {
+		if err := read(rows); err != nil {
 			t.Fatalf("read a row: %v", err)
 		}
-		read = append(read, values)
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read the statement's rows: %v", err)
 	}
-	return read
 }

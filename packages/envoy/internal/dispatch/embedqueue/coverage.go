@@ -723,14 +723,14 @@ var notIndexedPositions = func() map[string]int {
 	return positions
 }()
 
-// CoverageDeltaBound is how many delta rows (search_coverage_deltas) the report reads at most
+// coverageDeltaBound is how many delta rows (search_coverage_deltas) the report reads at most
 // before it refuses with ErrCoverageFoldBehind, and the number the route's message names: R7 of
 // dispatch://INFRA-4864's spec names 100,000. Delta rows build up only while no fold runs - during
 // a recount, which holds the counts lock for at most its statement bound (coverageRecountTimeout),
 // or while the fold fails - so the bound must be at least four times twice the most rows
 // production's counted tables changed in any span of one recount bound and one fold period, read
 // from pg_stat_user_tables over a weekday hour of the agents' peak load.
-const CoverageDeltaBound = 100000
+const coverageDeltaBound = 100000
 
 // ErrCoverageNotFilled is what Coverage answers while no fill of the coverage counts has ended
 // since the migration that made them (search_coverage_filled holds no row): the counts loop fills
@@ -738,12 +738,12 @@ const CoverageDeltaBound = 100000
 // hold nothing to answer. The route answers it 503 SEARCH_COVERAGE_NOT_FILLED.
 var ErrCoverageNotFilled = errors.New("the search coverage counts are not filled yet")
 
-// ErrCoverageFoldBehind is what Coverage answers when it read more than CoverageDeltaBound delta
+// ErrCoverageFoldBehind is what Coverage answers when it read more than coverageDeltaBound delta
 // rows: the counts are the base rows plus every delta row not yet folded into them, and the report
 // refuses rather than read more. The route answers it 503 SEARCH_COVERAGE_FOLD_BEHIND with its
 // text, which writes the bound with thousands separators ("100,000").
 var ErrCoverageFoldBehind = errors.New(message.NewPrinter(language.English).Sprintf(
-	"more than %d rows of writes are not folded into the search coverage counts yet", CoverageDeltaBound))
+	"more than %d rows of writes are not folded into the search coverage counts yet", coverageDeltaBound))
 
 // coverageReadStatement is the report's one statement (coverageRead), so one snapshot and one
 // now() answer every count and every age. $1 is the identity, the empty string when none is
@@ -751,7 +751,7 @@ var ErrCoverageFoldBehind = errors.New(message.NewPrinter(language.English).Spri
 //
 //   - search_coverage_filled's one row, by its key: whether a fill has ended
 //     (ErrCoverageNotFilled);
-//   - every base row (search_coverage_counts) and at most CoverageDeltaBound + 1 delta rows
+//   - every base row (search_coverage_counts) and at most coverageDeltaBound + 1 delta rows
 //     (search_coverage_deltas), with how many delta rows it read (ErrCoverageFoldBehind), summed by
 //     class: a class is (kind, model, matched, dead), as the counting triggers and the recount
 //     write it (migration 20261124011834_search_coverage_counts), model being the empty string
@@ -812,7 +812,7 @@ var coverageReadStatement = func() string {
 	}
 	return `
 		with deltas as (
-			select kind, model, matched, dead, items from search_coverage_deltas limit ` + strconv.Itoa(CoverageDeltaBound+1) + `
+			select kind, model, matched, dead, items from search_coverage_deltas limit ` + strconv.Itoa(coverageDeltaBound+1) + `
 		),
 		classes as (
 			select kind, model, matched, dead, sum(items)::bigint as items
@@ -966,7 +966,7 @@ func planCoverage(ctx context.Context, tx pgx.Tx) error {
 //
 // It reads the counts the writes keep (coverageRead), in one statement, and never counts an item's
 // rows: it answers ErrCoverageNotFilled while no fill has ended, ErrCoverageFoldBehind when more
-// than CoverageDeltaBound delta rows wait for the fold, and otherwise the counts.
+// than coverageDeltaBound delta rows wait for the fold, and otherwise the counts.
 //
 // It reads in a read-only transaction whose statement runs under coverageStatementTimeout, and a
 // statement Postgres ends at that bound while ctx is live answers ErrCoverageTimedOut
@@ -1007,7 +1007,7 @@ func Coverage(ctx context.Context, database *store.Store, identity string) (mode
 // transaction, once it has bounded the statement and planCoverage has set its settings, and the
 // repeatable-read transaction of a test that compares the answer with main's coverage statements
 // at one snapshot. It answers ErrCoverageNotFilled while no fill has ended, ErrCoverageFoldBehind
-// when the statement read more than CoverageDeltaBound delta rows, and otherwise the report: each
+// when the statement read more than coverageDeltaBound delta rows, and otherwise the report: each
 // covered kind's counts with lacking computed here, an oldest lacking age past the statement's
 // now() read as 0, each not-indexed kind's items, and the totals.
 func coverageRead(ctx context.Context, tx pgx.Tx, identity string) (model.SearchCoverage, error) {
@@ -1067,7 +1067,7 @@ func coverageRead(ctx context.Context, tx pgx.Tx, identity string) (model.Search
 	switch {
 	case !filled:
 		return model.SearchCoverage{}, ErrCoverageNotFilled
-	case deltaRows > CoverageDeltaBound:
+	case deltaRows > coverageDeltaBound:
 		return model.SearchCoverage{}, ErrCoverageFoldBehind
 	}
 	for _, counts := range kinds {

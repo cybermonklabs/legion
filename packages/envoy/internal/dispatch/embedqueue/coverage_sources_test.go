@@ -125,7 +125,7 @@ func TestTheRecordStepLeavesAStaleIssueUntilTheRepair(t *testing.T) {
 // spec version and a title edit, each with its trigger on and read at once, and the latest
 // version's markdown rewritten in place with the triggers off, once as it was (which changes the
 // row version alone) and once to a new text (which leaves the row stale, so the repair comes
-// before the record), each read after one recount (RecountCoverage). Before each edit the row is
+// before the record), each read after one recount (recountCoverage). Before each edit the row is
 // embedded at its current text, so a report that trusted the source past the edit would count a
 // vector of the old text current.
 func TestTheCountsFollowEachEditOfAnIssuesInputsByTheNextRecount(t *testing.T) {
@@ -173,7 +173,7 @@ func TestTheCountsFollowEachEditOfAnIssuesInputsByTheNextRecount(t *testing.T) {
 		}
 		stage := "after " + edit.name
 		if edit.triggersOff {
-			if err := RecountCoverage(context.Background(), database); err != nil {
+			if err := recountCoverage(context.Background(), database); err != nil {
 				t.Fatalf("recount %s: %v", stage, err)
 			}
 			stage += " and one recount"

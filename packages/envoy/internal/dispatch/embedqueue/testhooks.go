@@ -7,14 +7,14 @@ import (
 )
 
 // ShortenCoverageBoundForTest points the bound Coverage holds its statement to
-// (coverageStatementTimeout) at timeout as a statement_timeout holds it (store.StatementTimeout:
-// whole milliseconds, never under one), so that the message naming the bound names the one in
-// force, until restore is called. Tests in package api shorten it to see the search coverage
-// route answer a statement Postgres ended at its bound, without waiting production's ten seconds
-// out; they cannot reach the unexported var. It is set and restored while nothing else reads it:
-// no test of either package that reads the coverage report runs in parallel. cmd/dispatch calls
-// it too, only under DISPATCH_TEST_HOOKS=1 with DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT set,
-// before it serves, and never restores it.
+// (coverageStatementTimeout) at timeout until restore is called, rounded as a statement_timeout
+// holds it (store.StatementTimeout: whole milliseconds, never under one) so that the message
+// naming the bound names the one in force. Tests in package api shorten it to see the search
+// coverage route answer a statement Postgres ended at its bound, without waiting production's ten
+// seconds out; they cannot reach the unexported var. It is set and restored while nothing else
+// reads it: no test of either package that reads the coverage report runs in parallel.
+// cmd/dispatch calls it too, only under DISPATCH_TEST_HOOKS=1 with
+// DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT set, before it serves, and never restores it.
 func ShortenCoverageBoundForTest(timeout time.Duration) (restore func()) {
 	healthy := coverageStatementTimeout
 	coverageStatementTimeout = store.StatementTimeout(timeout)

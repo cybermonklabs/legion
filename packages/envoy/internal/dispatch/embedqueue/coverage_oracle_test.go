@@ -414,7 +414,7 @@ func trustedIssues(t *testing.T, database *store.Store, identity string) (truste
 // when every issue builds and hashes its text; once the record step has recorded every issue's
 // source, when main's route statement reads most issues' hashes from their rows; and once every
 // input an issue's text is built from has changed after its source was recorded
-// (changeInputsAfterRecording) and one recount (RecountCoverage) has run.
+// (changeInputsAfterRecording) and one recount (recountCoverage) has run.
 //
 // Two of those changes, a title and the latest version's markdown, are written with their tables'
 // triggers off, so no counting trigger fires for them, and the counts follow such a write at the
@@ -456,7 +456,7 @@ func TestCoverageAnswersWhatMainsStatementAnswers(t *testing.T) {
 	requireIssuesCurrent("after the record step", mains, heads, trusted)
 
 	changeInputsAfterRecording(t, database, states)
-	if err := RecountCoverage(ctx, database); err != nil {
+	if err := recountCoverage(ctx, database); err != nil {
 		t.Fatalf("recount after the inputs changed: %v", err)
 	}
 	mains, heads = requireMainsAnswer(t, database, "after the inputs changed and one recount")

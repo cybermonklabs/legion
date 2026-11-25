@@ -274,7 +274,7 @@ type coverageScalePoint struct {
 // the record step run to completion (recordSources) as the boot pass leaves a database; and the two
 // window indexes dropped and built again by their migrations' own statements, each build timed.
 // The fill (FillCoverage) is then timed once, before any count, so its refresh computes every
-// issue's state row. The recount (RecountCoverage) is timed in each state of scaleStates in turn:
+// issue's state row. The recount (recountCoverage) is timed in each state of scaleStates in turn:
 // freshly vacuumed; about a third of embeddings' pages not all-visible after an ANALYZE; every page
 // not all-visible after an ANALYZE; every page not all-visible while the statistics still record
 // about half of them all-visible from an earlier ANALYZE; and, once the configured embedder has
@@ -525,7 +525,7 @@ func measureCoverageAtScale(t *testing.T, admin *pgx.Conn, server string, scale 
 				stage, measured.share, laggingVisibleShare)
 		}
 
-		measured.recount = timeCountsRun(t, timer, stage+": the recount", func() error { return RecountCoverage(ctx, timed) })
+		measured.recount = timeCountsRun(t, timer, stage+": the recount", func() error { return recountCoverage(ctx, timed) })
 		t.Logf("%s: the whole recount took %s", stage, measured.recount)
 		_, heads := requireMainsAnswerFor(t, database, stage+", after the recount", state.identity)
 		// No state changes which items there are: updateOneRowOfPages changes no row's answer, and

@@ -44,12 +44,14 @@ const (
 	coverageBackoffCeiling = 10 * time.Minute
 )
 
-// coverageFillTimeoutSetting and coverageRecountTimeoutSetting are the fill's timeout and the
-// recount's bound. R7's design (dispatch://INFRA-4864/spec) sets each as the larger of two times.
-// The first is four times the fill's, or the recount's, own longest time in the coverage-scale
-// Job, rounded up to the next 10 s. The second is four times the longer of two production runs of
-// main's coverage statement, a first run and a second run right after it, through INFRA-4863's
-// read login; where that login's 30 s statement bound cut a run, the bound is at least 120 s.
+// The counts loop's settings a test sets, as identityRecheckInterval is a var for a test to shrink.
+//
+// coverageFillTimeout and coverageRecountTimeout are the fill's timeout and the recount's bound.
+// R7's design (dispatch://INFRA-4864/spec) sets each as the larger of two times. The first is four
+// times the fill's, or the recount's, own longest time in the coverage-scale Job, rounded up to
+// the next 10 s. The second is four times the longer of two production runs of main's coverage
+// statement, a first run and a second run right after it, through INFRA-4863's read login; where
+// that login's 30 s statement bound cut a run, the bound is at least 120 s.
 //
 // The Job is the builds Job infra-4864-coverage-scale-dgpdj at 4c73bcc9 (2026-11-24), at scale 3.6
 // of scripts/coverage-scale.sh's corpus: 3,582,232 items, 2.2 times production's 1,622,093 on
@@ -57,19 +59,13 @@ const (
 // test's fill took 19,212 ms. Four times 39,039 ms, rounded up, is 160 s. Its longest whole
 // recount took 18,167 ms, in the state where no page of embeddings is all-visible ("all"), and
 // the server's recount at its second start 8,472 ms. Four times 18,167 ms, rounded up, is 80 s.
-// A raise of the recount's bound lengthens the span CoverageDeltaBound is sized over, one
+// A raise of the recount's bound lengthens the span coverageDeltaBound is sized over, one
 // recount bound and one fold period.
-const (
-	coverageFillTimeoutSetting    = 160 * time.Second
-	coverageRecountTimeoutSetting = 80 * time.Second
-)
-
-// The counts loop's settings a test sets, as identityRecheckInterval is a var for a test to shrink.
 var (
 	// coverageFillTimeout bounds the whole fill (FillCoverage); a fill that reaches it fails.
-	coverageFillTimeout = coverageFillTimeoutSetting
-	// coverageRecountTimeout is T, the one deadline of a whole recount (RecountCoverage).
-	coverageRecountTimeout = coverageRecountTimeoutSetting
+	coverageFillTimeout = 160 * time.Second
+	// coverageRecountTimeout is T, the one deadline of a whole recount (recountCoverage).
+	coverageRecountTimeout = 80 * time.Second
 	// coverageRecountInterval and coverageRecountJitter space the recounts: each starts the interval
 	// plus up to the jitter after the one before started (recountGap). Both follow from T
 	// (recountSchedule).
@@ -389,11 +385,11 @@ func recountGroups(ctx context.Context, database *store.Store, fill bool) error 
 	return nil
 }
 
-// RecountCoverage counts every class of the coverage counts from its rows again, group by group
+// recountCoverage counts every class of the coverage counts from its rows again, group by group
 // (recountGroups), beside live writes: a write that commits while it runs keeps its delta row for
 // the next fold, and one that fired no trigger is counted. The whole recount runs under one
 // deadline, coverageRecountTimeout. It logs when it starts and, with its length, when it ends.
-func RecountCoverage(ctx context.Context, database *store.Store) error {
+func recountCoverage(ctx context.Context, database *store.Store) error {
 	ctx, cancel := context.WithTimeout(ctx, coverageRecountTimeout)
 	defer cancel()
 	started := time.Now()
@@ -443,7 +439,7 @@ type CountsDeps struct {
 // fill has ended (fillUnlessFilled), and a recount otherwise; then it folds every
 // coverageFoldInterval plus up to coverageFoldJitter (foldCoverage), and starts each recount
 // coverageRecountInterval plus up to coverageRecountJitter after the one before started
-// (RecountCoverage), one fold or one recount at a time.
+// (recountCoverage), one fold or one recount at a time.
 //
 // A fill that fails, or that reaches its timeout, is logged at ERROR and run again after a capped
 // exponential backoff with full jitter (backoffWait), until one ends; a stop that cuts a fill off
@@ -491,7 +487,7 @@ func RunCounts(ctx context.Context, deps CountsDeps) {
 			continue
 		}
 		begun := time.Now()
-		if err := RecountCoverage(ctx, deps.Store); err != nil {
+		if err := recountCoverage(ctx, deps.Store); err != nil {
 			if ctx.Err() != nil {
 				return
 			}

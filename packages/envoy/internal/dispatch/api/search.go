@@ -564,12 +564,12 @@ legs as (
 // caller's.
 var searchWindowLimit = "limit " + strconv.Itoa(searchWindowCandidates)
 
-// searchMeaningScan is what a meaning query's transaction sets before it runs, after the bound
-// beginSearchScan sets first, every statement local to that transaction and no other:
+// searchMeaningScan is what a meaning query's transaction sets before it runs, every statement
+// local to that transaction and no other. beginSearchScan sets the first setting below, the
+// server's bound, ahead of the list (searchScanSettings), and the list holds the rest:
 //
 //   - statement_timeout: the only bound the server itself holds on a meaning query,
-//     searchStatementBound, which beginSearchScan sets ahead of this list (the list does not hold
-//     it). The request's own context does reach the query - runMeaningSearch and
+//     searchStatementBound. The request's own context does reach the query - runMeaningSearch and
 //     relatedMeaningSearch each pass it to tx.Query - but pgx cancels out of band: a CancelRequest
 //     is a new connection of its own, and under saturation, which is exactly when meaning searches
 //     pile up, there is none to open, so the cancellation never arrives and a search whose caller

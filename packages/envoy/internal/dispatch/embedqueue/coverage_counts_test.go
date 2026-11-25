@@ -362,7 +362,7 @@ const writeTally = `
 // requireDeltaRowsBounded fails the test unless write inserted at most twice as many delta rows as
 // it changed rows of the counted tables: each write statement inserts one delta row for each class
 // it moved, and a write that passed twice its changed rows would build delta rows up faster than
-// the bound the route reads (CoverageDeltaBound) was sized for.
+// the bound the route reads (coverageDeltaBound) was sized for.
 func requireDeltaRowsBounded(t *testing.T, write string, deltas, changed int64) {
 	t.Helper()
 	if deltas > 2*changed {
@@ -835,7 +835,7 @@ func TestEveryWriteKeepsTheCounts(t *testing.T) {
 // another deleted, and a row of each not-indexed table a count keeps (components,
 // artifact_versions, check_results, handoffs), each inside withTableTriggersOff, and an issue
 // written under session_replication_role = replica (withTriggersOff) - are in the counts after one
-// recount (RecountCoverage), which the report's three sides then answer alike (requireMainsAnswerFor).
+// recount (recountCoverage), which the report's three sides then answer alike (requireMainsAnswerFor).
 // It runs once with an embedder configured, the queue having embedded every row it could with that
 // identity before the writes and the report read for it, and once with none, the report read for
 // no identity. Before the recount the counts miss the writes: the report counts one component fewer
@@ -907,7 +907,7 @@ func TestTheNextRecountFollowsEveryRowWrittenWithTriggersOff(t *testing.T) {
 				t.Fatalf("before the recount the counts hold %d components of the table's %d, want one fewer: the component written with its triggers off fired a trigger", kept, components)
 			}
 
-			if err := RecountCoverage(ctx, database); err != nil {
+			if err := recountCoverage(ctx, database); err != nil {
 				t.Fatalf("recount: %v", err)
 			}
 			requireMainsAnswerFor(t, database, "after one recount", configured.identity)
@@ -972,15 +972,12 @@ func TestTheRefreshAndTheRecountRenderAnIssuesInputsAlike(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read the stale issues' inputs: %v", err)
 		}
-		defer rows.Close()
-		for rows.Next() {
+		differences, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (string, error) {
 			var key, recorded, rendered string
-			if err := rows.Scan(&key, &recorded, &rendered); err != nil {
-				t.Fatalf("read a stale issue's inputs: %v", err)
-			}
-			differences = append(differences, fmt.Sprintf("%s: its state row records %q, staleIssueKeys renders %q", key, recorded, rendered))
-		}
-		if err := rows.Err(); err != nil {
+			err := row.Scan(&key, &recorded, &rendered)
+			return fmt.Sprintf("%s: its state row records %q, staleIssueKeys renders %q", key, recorded, rendered), err
+		})
+		if err != nil {
 			t.Fatalf("read the stale issues' inputs: %v", err)
 		}
 		return keys, differences
@@ -1405,7 +1402,6 @@ func requireCountsBesideLiveWritesHeld(t *testing.T, fill bool, run func(context
 
 	ran := make(chan error, 1)
 	go func() { ran <- run(ctx, database) }()
-	// Its one bound is the test binary's deadline (storetest.WaitForLockWaiters).
 	storetest.WaitForLockWaiters(t, hold, 1)
 	committed := make(chan error, 1)
 	go func() { committed <- open.Commit(ctx) }()
@@ -1443,7 +1439,7 @@ func requireCountsBesideLiveWritesHeld(t *testing.T, fill bool, run func(context
 // TestARecountBesideLiveWritesLosesAndDoublesNothing holds R7f for the recount
 // (requireCountsBesideLiveWrites).
 func TestARecountBesideLiveWritesLosesAndDoublesNothing(t *testing.T) {
-	requireCountsBesideLiveWrites(t, false, RecountCoverage)
+	requireCountsBesideLiveWrites(t, false, recountCoverage)
 }
 
 // TestAFillBesideLiveWritesLosesAndDoublesNothing holds R7f for the fill, on counts that hold
@@ -1479,7 +1475,7 @@ const countsLockWaits = `
 // session, the two pooled connections that ran them still open: the lock ended with each
 // transaction.
 func TestAFoldAndARecountTakeTurnsOnOneTransactionLock(t *testing.T) {
-	ops := map[string]func(context.Context, *store.Store) error{"fold": foldCoverage, "recount": RecountCoverage}
+	ops := map[string]func(context.Context, *store.Store) error{"fold": foldCoverage, "recount": recountCoverage}
 	for _, order := range [][2]string{{"recount", "fold"}, {"fold", "recount"}} {
 		t.Run("the "+order[1]+" waits for the "+order[0], func(t *testing.T) {
 			ctx := context.Background()

@@ -265,9 +265,9 @@ func searchSplitPrepared(side, shape string, rankFree bool) string {
 // its rank-free run. Each run is `explain (analyze, buffers, verbose, format json) execute` of the
 // prepared statement with its literals, in a read-only transaction that is rolled back, under
 // `plan_cache_mode = force_custom_plan`, as production's first runs of a statement plan it, and
-// searchMeaningScan's settings, which do not hold the bound beginSearchScan sets ahead of them
-// (the reason TestStatementTimings gives for leaving it out). Each run carries no statement bound
-// of its own. The seeded database bounds nothing. On production the read login holds every
+// searchMeaningScan's settings, not the bound beginSearchScan sets ahead of them
+// (TestStatementTimings says why a measurement leaves it out). Each run carries no statement
+// bound of its own. The seeded database bounds nothing. On production the read login holds every
 // statement to 30 s and refuses a `SET` of `statement_timeout` (dispatch://INFRA-4863, R1). psql
 // writes each plan under plans/ by the name split.json gives it.
 //

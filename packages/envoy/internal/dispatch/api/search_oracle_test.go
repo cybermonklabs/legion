@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -2049,40 +2049,31 @@ type searchAnswer struct {
 	items            []string
 }
 
-// readSearchAnswer runs statement bound to arguments under settings (runSearchStatementRows) and
+// readSearchAnswer runs statement bound to arguments under settings (runSearchStatement) and
 // reads its answer. A page past the last row is one row of totals and no item.
 func readSearchAnswer(t *testing.T, ctx context.Context, database *store.Store, statement string, arguments []any, settings []string) searchAnswer {
 	t.Helper()
 	answer := searchAnswer{rows: []string{}}
-	for _, values := range runSearchStatementRows(t, ctx, database, statement, arguments, settings) {
+	runSearchStatement(t, ctx, database, statement, arguments, settings, func(row pgx.CollectableRow) error {
+		values, err := row.Values()
+		if err != nil {
+			return err
+		}
 		answer.rows = append(answer.rows, fmt.Sprint(values...))
 		// The columns scanSearchRows reads: the totals first, the kind third and the id fifteenth.
-		// The kind and the id are text, and both are null on a page past the last row.
-		answer.total, answer.reachable = searchAnswerCount(t, values[0]), searchAnswerCount(t, values[1])
-		if kind := values[2]; kind != nil {
-			answer.items = append(answer.items, kind.(string)+"/"+values[14].(string))
+		// The kind and the id are null on a page past the last row.
+		var kind, id *string
+		columns := make([]any, len(values))
+		columns[0], columns[1], columns[2], columns[14] = &answer.total, &answer.reachable, &kind, &id
+		if err := row.Scan(columns...); err != nil {
+			return err
 		}
-	}
+		if kind != nil {
+			answer.items = append(answer.items, *kind+"/"+*id)
+		}
+		return nil
+	})
 	return answer
-}
-
-// searchAnswerCount is a total or a reachable as rows.Values() gives it: an int64 where the
-// statement counts with count(*), and a pgtype.Numeric where it sums counts, as the keyword
-// statement's total does (coalesce(sum(matches), 0)). Either is a whole number.
-func searchAnswerCount(t *testing.T, value any) int64 {
-	t.Helper()
-	switch count := value.(type) {
-	case int64:
-		return count
-	case pgtype.Numeric:
-		whole, err := count.Int64Value()
-		if err != nil || !whole.Valid {
-			t.Fatalf("read the count %v as a whole number: %v", value, err)
-		}
-		return whole.Int64
-	}
-	t.Fatalf("a count of type %T, neither bigint nor numeric", value)
-	return 0
 }
 
 // TestSearchAnswersMainsRowsOrderTotalAndReachable holds R3: each keyword arm ranks and counts

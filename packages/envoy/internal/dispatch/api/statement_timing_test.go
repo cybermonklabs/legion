@@ -140,11 +140,11 @@ func TestStatementTimings(t *testing.T) {
 	// hnsw.ef_search, hnsw.iterative_scan and client_connection_check_interval
 	// (searchMeaningScan), so a measurement without them would be of a statement production never
 	// runs. The server's own bound on the statement (searchStatementBound), which beginSearchScan
-	// sets ahead of that list and the list does not hold, is left out here and only here: a
-	// measurement has to read what a statement costs, and the before side of this pair is the
-	// release whose cost this change is measured against - on the 15 GB database its document
-	// arm alone spanned 8.8 s to 10.4 s - so a bound that ended it at 15 s would report a
-	// cancelled statement in place of the number the pair exists to compare.
+	// sets ahead of that list, is left out: a measurement has to read what a statement costs, and
+	// the before side of this pair is the release whose cost this change is measured against - on
+	// the 15 GB database its document arm alone spanned 8.8 s to 10.4 s - so a bound that ended it
+	// at 15 s would report a cancelled statement in place of the number the pair exists to
+	// compare.
 	meaningSetup := searchMeaningScan
 	searchMeaningArguments := slices.Concat(searchArguments, meaning)
 	// Search's own two statements bind the search bar's filters and the issues a query names by

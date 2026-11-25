@@ -1664,7 +1664,7 @@ word matches 1,000 or fewer items of every kind. The plans the parser was writte
 
 ## coverage-scale.sh
 
-Times the coverage counts' fill and recount (`FillCoverage` and `RecountCoverage`, the statements of the counts that read every row they count) at production's size and a larger scale,
+Times the coverage counts' fill and recount (`FillCoverage` and `recountCoverage`, the statements of the counts that read every row they count) at production's size and a larger scale,
 the recount in six states of `embeddings`, four of its visibility map and statistics and two after an embedder change,
 and judges them against the bounds the counts loop holds them to:
 four times the fill at the largest scale must stay within `coverageFillTimeout`, and four times the longest whole recount there within `coverageRecountTimeout`.

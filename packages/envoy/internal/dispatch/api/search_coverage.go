@@ -22,7 +22,7 @@ import (
 // counted nothing, and the route answers it 503 SEARCH_COVERAGE_TIMEOUT. Until the counts loop's
 // first fill ends (embedqueue.RunCounts) there are no counts to read, and the route answers 503
 // SEARCH_COVERAGE_NOT_FILLED; with more delta rows waiting for the fold than the read reads
-// (embedqueue.CoverageDeltaBound) it answers 503 SEARCH_COVERAGE_FOLD_BEHIND. Each tells a caller
+// (embedqueue's coverageDeltaBound) it answers 503 SEARCH_COVERAGE_FOLD_BEHIND. Each tells a caller
 // to ask again later rather than read a failure; every other error answers as the handler's errors
 // do.
 func (s *server) searchCoverage(w http.ResponseWriter, r *http.Request) {
@@ -40,7 +40,7 @@ func (s *server) searchCoverage(w http.ResponseWriter, r *http.Request) {
 			"the search coverage statement ran past its %s bound, so nothing was counted; try again later", embedqueue.CoverageStatementTimeout()))
 	case errors.Is(err, embedqueue.ErrCoverageNotFilled):
 		s.writeHandlerError(w, errorf(http.StatusServiceUnavailable, "SEARCH_COVERAGE_NOT_FILLED",
-			"the search coverage counts are not filled yet; try again later"))
+			"%s; try again later", embedqueue.ErrCoverageNotFilled))
 	case errors.Is(err, embedqueue.ErrCoverageFoldBehind):
 		s.writeHandlerError(w, errorf(http.StatusServiceUnavailable, "SEARCH_COVERAGE_FOLD_BEHIND",
 			"%s; try again later", embedqueue.ErrCoverageFoldBehind))

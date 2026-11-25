@@ -9,9 +9,9 @@ import (
 // StatementTimeoutSetting writes whole milliseconds, and 1 for a bound under a millisecond or of
 // none, since 0 would turn the bound off. Go's own text of a minute or more ("1m0s") and of less
 // than a millisecond ("500µs") is what Postgres refused, so the subtest sets both bounds in a
-// transaction on a test database, where one is set. The minute is set first and read back; the
-// millisecond is set last and not read back, since every later statement of the transaction
-// would run under it and could be ended by it.
+// transaction on the test database DISPATCH_TEST_DATABASE_URL names, and skips without one. The
+// minute is set first and read back; the millisecond is set last and not read back, since every
+// later statement of the transaction would run under it and could be ended by it.
 func TestStatementTimeoutSettingWritesWholeMilliseconds(t *testing.T) {
 	for bound, want := range map[time.Duration]string{
 		15 * time.Second:               "set local statement_timeout = 15000",
