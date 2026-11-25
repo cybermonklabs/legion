@@ -6066,8 +6066,9 @@ Each item below names a path with its method and identity, then its purpose.
       These are `POST /api/v1/artifacts/{id}/reviews`, `POST /api/v1/artifacts/{id}/versions/{number}/reviews` and `POST /api/v1/asks/{id}/answer`.
       That refusal also carries `changes_reason`, the text that a request for changes sends to the author.
       A request for changes is never refused.
-      When the document that a request names is covered, the answer carries `spec_form`, `{root, texts, terms, unread}`.
+      When the document that a request names is covered, the answer carries `spec_form`, `{root, texts, unread}`.
       `texts` counts each kind of text that Dispatch read in the documents it judged, and `unread` is `{document, artifact_id, issue, version, line}`.
+      It counts no terms: Dispatch reads no list of terms until form slice 2 reads it.
       A refusal writes each `unread` line in `refusal`, after the findings.
 
     A reopen and the repair pass judge a withdrawn request at the versions that it names when they end (`PATCH /api/v1/issues/{key}`, above).

@@ -173,12 +173,11 @@ type specFormUnread struct {
 
 // specFormSummary is what an approval request's answer says of the form of the documents it
 // handed the person, when the document it names is in scope: the root, the count of each kind of
-// text it read, and each approved document under the root that it could not read. Terms counts
-// the terms of the root's list.
+// text it read, and each approved document under the root that it could not read. It counts no
+// terms: Dispatch reads no list of terms until form slice 2 reads it.
 type specFormSummary struct {
 	Root   string                `json:"root"`
 	Texts  map[specform.Kind]int `json:"texts"`
-	Terms  int                   `json:"terms"`
 	Unread []specFormUnread      `json:"unread"`
 }
 

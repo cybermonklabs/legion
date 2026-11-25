@@ -398,7 +398,7 @@ describe("dispatch spec-form", () => {
     expect(stderr).toBe("");
     expect(code).toBe(0);
     expect(stdout).toBe(
-      "Dispatch read the form of 1 statement, 0 claims, 0 purposes and 0 definitions against 0 terms: no text breaks it.\n"
+      "Dispatch read the form of 1 statement, 0 claims, 0 purposes and 0 definitions: no text breaks it.\n"
     );
     expect(formReads()).toEqual(["/api/v1/artifacts/ACME-2-spec/spec-form"]);
   });
@@ -424,7 +424,7 @@ describe("dispatch spec-form", () => {
 
     expect(code).toBe(0);
     expect(stdout.split("\n")).toEqual([
-      "Dispatch read the form of 1 statement, 0 claims, 0 purposes and 0 definitions against 0 terms: no text breaks it.",
+      "Dispatch read the form of 1 statement, 0 claims, 0 purposes and 0 definitions: no text breaks it.",
       UNREAD.line,
       "",
     ]);
@@ -560,7 +560,7 @@ describe("dispatch spec-form", () => {
     expect(code).toBe(0);
     expect(stdout.split("\n")).toEqual([
       "This server names no root of The Spec, so Dispatch refuses no approval request for its form.",
-      "Dispatch read the form of 2 statements, 0 claims, 0 purposes and 0 definitions against 0 terms: no text breaks it.",
+      "Dispatch read the form of 2 statements, 0 claims, 0 purposes and 0 definitions: no text breaks it.",
       "",
     ]);
   });
@@ -638,7 +638,7 @@ describe("dispatch spec-form", () => {
     expect(code).toBe(0);
     expect(stdout.split("\n")).toEqual([
       "spec.md version 3:",
-      "Dispatch read the form of 2 statements, 0 claims, 1 purpose and 0 definitions against 0 terms: no text breaks it.",
+      "Dispatch read the form of 2 statements, 0 claims, 1 purpose and 0 definitions: no text breaks it.",
       "verification.md version 1:",
       "Dispatch refuses an approval request of verification.md version 1, because 1 text breaks the form of The Spec.",
       `- claim v-one: ${LONG_SENTENCE}.`,
@@ -665,7 +665,7 @@ describe("dispatch spec-form", () => {
     expect(stdout.split("\n")).toEqual([
       "spec.md has no version yet, so Dispatch read no text in it.",
       "verification.md version 1:",
-      "Dispatch read the form of 0 statements, 1 claim, 0 purposes and 0 definitions against 0 terms: no text breaks it.",
+      "Dispatch read the form of 0 statements, 1 claim, 0 purposes and 0 definitions: no text breaks it.",
       "",
     ]);
   });
@@ -793,7 +793,6 @@ describe("dispatch request-approval and the form of The Spec", () => {
       specForm: {
         root: "ACME-1",
         texts: { statement: 59, claim: 0, procedure: 0, purpose: 40, name: 40, definition: 0 },
-        terms: 48,
       },
     };
 
@@ -806,14 +805,14 @@ describe("dispatch request-approval and the form of The Spec", () => {
 
     expect(code).toBe(0);
     expect(stdout.split("\n")).toContain(
-      "Dispatch read the form of 59 statements, 0 claims, 40 purposes and 0 definitions against 48 terms: no text breaks it."
+      "Dispatch read the form of 59 statements, 0 claims, 40 purposes and 0 definitions: no text breaks it."
     );
   });
 
   test("a recorded request prints the line of each approved document that Dispatch could not read", async () => {
     approval = {
       kind: "recorded",
-      specForm: { root: "ACME-1", texts: { statement: 1 }, terms: 0, unread: [UNREAD] },
+      specForm: { root: "ACME-1", texts: { statement: 1 }, unread: [UNREAD] },
     };
 
     const { code, stdout } = await run([
@@ -828,7 +827,7 @@ describe("dispatch request-approval and the form of The Spec", () => {
   });
 
   test("a recorded request whose documents hold no text of The Spec says Dispatch decided nothing", async () => {
-    approval = { kind: "recorded", specForm: { root: "ACME-1", texts: {}, terms: 0 } };
+    approval = { kind: "recorded", specForm: { root: "ACME-1", texts: {} } };
 
     const { code, stdout } = await run([
       "request-approval",

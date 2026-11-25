@@ -29146,9 +29146,6 @@
           "root": {
             "type": "string"
           },
-          "terms": {
-            "type": "integer"
-          },
           "texts": {
             "additionalProperties": {
               "type": "integer"
@@ -29171,7 +29168,6 @@
         "required": [
           "root",
           "texts",
-          "terms",
           "unread"
         ],
         "type": "object"

@@ -6910,7 +6910,6 @@ export interface components {
     };
     SpecFormSummary: {
       root: string;
-      terms: number;
       texts: {
         [key: string]: number;
       } | null;

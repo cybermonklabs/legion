@@ -33,14 +33,15 @@ function textCounts(texts: TextCounts): string {
 }
 
 /**
- * What Dispatch read of a form no text breaks: the count of each kind of text against the terms,
- * or, when it read no text of any kind, that it decided nothing about the form of `name`.
+ * What Dispatch read of a form no text breaks: the count of each kind of text, or, when it read no
+ * text of any kind, that it decided nothing about the form of `name`. Dispatch reads no list of
+ * terms yet (form slice 2 reads it), so the line names no terms.
  */
-function readLine(texts: TextCounts, terms: number, name: string, version: number): string {
+function readLine(texts: TextCounts, name: string, version: number): string {
   const read = Object.values(texts ?? {}).reduce((sum, count) => sum + count, 0);
   return read === 0
     ? `Dispatch found no text of The Spec in ${name} version ${version}, so it decided nothing about its form.`
-    : `Dispatch read the form of ${textCounts(texts)} against ${counted(terms, "term")}: no text breaks it.`;
+    : `Dispatch read the form of ${textCounts(texts)}: no text breaks it.`;
 }
 
 /**
@@ -61,7 +62,7 @@ export function approvalFormLines(result: ApprovalRequestResponse, name: string)
   const form = result.spec_form;
   return form === undefined
     ? []
-    : [readLine(form.texts, form.terms, name, result.version), ...unreadLines(form.unread)];
+    : [readLine(form.texts, name, result.version), ...unreadLines(form.unread)];
 }
 
 /** Why Dispatch refuses no approval request of a document out of scope, by its `scope`. */
@@ -121,7 +122,7 @@ function documentLines(form: SpecFormRead): string[] {
       `Dispatch lists the first ${findings.length} of the ${form.findings_total} findings.`
     );
   }
-  const read = readLine(form.texts, (form.terms ?? []).length, form.name, form.version);
+  const read = readLine(form.texts, form.name, form.version);
   const unread = unreadLines(form.unread);
   if (!form.in_scope) {
     return findings.length === 0
