@@ -1,4 +1,4 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
   type ReactNode,
   type RefObject,
@@ -129,19 +129,34 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
   // the outline says in its place that it has no row for the block.
   // A node address (`?node=`), which the outline alone reads, goes to Graph's of that node
   // instead where Conversation's tree holds the node and draws no row of it, or where
-  // Conversation's read holds none of it and Graph's read, as the page holds it, does. A node no
-  // read holds opens the outline's own address, Conversation's or Graph's, with the same search
-  // less `node` and the same fragment, and no line (`addressView`); Graph's keeps the node it
-  // zooms to where the tree holds it (`/graph/<id>`). Graph's address zoomed to a node no read
-  // holds, once its reads have answered, opens as Graph's own address, with the same search and
-  // fragment.
-  const graphRead = useQueryClient().getQueryData<TreeAnswer>(outlineQuery(key, "graph").queryKey);
+  // Conversation's read holds none of it and Graph's read does. A node no read holds opens the
+  // outline's own address, Conversation's or Graph's, with the same search less `node` and the
+  // same fragment, and no line (`addressView`); Graph's keeps the node it zooms to where the tree
+  // holds it (`/graph/<id>`). Graph's address zoomed to a node no read holds, once its reads have
+  // answered, opens as Graph's own address, with the same search and fragment.
+  // A load of Conversation sends no Graph read, so where Conversation's read holds no node of the
+  // address's and the page holds no Graph read, the body sends Graph's read here, once, and
+  // decides once it has answered: Graph's `?node=` where its answer holds the node, else the
+  // issue's own address without it, as where Graph's read is refused. Until then the body draws
+  // what it draws while its own reads are out for an address, and the outline takes no first
+  // focus. It is the read Graph's slot reads, under the same key, which going there reads from the
+  // cache; a page that holds it already sends nothing.
+  const unheldNode =
+    address.preset === "conversation" &&
+    fallback?.kind === "absent" &&
+    fallback.target.kind === "node";
+  const graph = useQuery({
+    ...outlineQuery(key, "graph"),
+    enabled: (query) => unheldNode && query.state.status === "pending",
+  });
+  const graphOut = unheldNode && graph.status === "pending";
   const zoomed = address.zoom === undefined ? undefined : pathTo(root, address.zoom);
   const zoomUnheld =
     address.zoom !== undefined && readsHeld && !readingPages && zoomed === undefined;
-  const undrawn: AddressView | undefined =
-    addressView(address, addressed.reveal, root, fallback, graphRead) ??
-    (zoomUnheld ? { keepsNode: true, preset: "graph" } : undefined);
+  const undrawn: AddressView | undefined = graphOut
+    ? undefined
+    : (addressView(address, addressed.reveal, root, fallback, graph.data) ??
+      (zoomUnheld ? { keepsNode: true, preset: "graph" } : undefined));
   const keptZoom = zoomed === undefined ? undefined : address.zoom;
   const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
   const request = useOutlineRequest();
@@ -221,7 +236,7 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
             older={older}
             onEditing={onEditing}
             readsHeld={readsHeld}
-            readsSettled={readsSettled && !readingPages}
+            readsSettled={readsSettled && !readingPages && !graphOut}
             {...(request === undefined ? {} : { request })}
             // The children's own address lands on their section above the outline
             // (`children-section.tsx`), and on no row of the outline (R14).
@@ -250,18 +265,20 @@ export interface AddressView {
  * The view an address on the outline's own address, Conversation's or Graph's, opens in the
  * outline's place (`BodySlot`): `reveal` is the chain down to the node it names in the tree `root`
  * where the tree holds it, `fallback` where the address lands once the tree holds none of it
- * (`useAddressFallback`), and `graphRead` Graph's read as the page holds it. On Conversation's
- * address, a node the tree holds that Conversation draws no row of - a plan task, a result -
- * opens the filter of its kind (`filterOfUndrawn`), and a block Conversation's read holds no node
- * of the filter whose view answer holds it (`filterHolding`), else Graph where Graph's read
- * answers it (`answerHolds`). A node address (`?node=`) is read by the outline alone
- * (`issueAddress`): one whose node Conversation's tree holds and draws no row of opens Graph at
- * that node, since Graph's read is the whole read, which holds every node Conversation's does;
- * one whose node Conversation's read holds none of opens Graph at it where Graph's read answers a
- * node of its id, and else Conversation's own address without it. On Graph's address, a node its
- * read holds none of opens Graph's address without it, zoomed as the address zooms where the tree
- * holds that node (`viewPath`). No line is drawn for a node no read holds. Undefined for every
- * other address, and on every other preset.
+ * (`useAddressFallback`), and `graphRead` Graph's read as the page holds it: for a node address
+ * Conversation's read holds none of, the body sends Graph's read where the page holds none, and
+ * asks this once it has answered or been refused. On Conversation's address, a node the tree
+ * holds that Conversation draws no row of - a plan task, a result - opens the filter of its kind
+ * (`filterOfUndrawn`), and a block Conversation's read holds no node of the filter whose view
+ * answer holds it (`filterHolding`), else Graph where Graph's read answers it (`answerHolds`). A
+ * node address (`?node=`) is read by the outline alone (`issueAddress`): one whose node
+ * Conversation's tree holds and draws no row of opens Graph at that node, since Graph's read is
+ * the whole read, which holds every node Conversation's does; one whose node Conversation's read
+ * holds none of opens Graph at it where Graph's read answers a node of its id, and else - Graph's
+ * read lacking it, or refused - Conversation's own address without it. On Graph's address, a
+ * node its read holds none of opens Graph's address without it, zoomed as the address zooms where
+ * the tree holds that node (`viewPath`). No line is drawn for a node no read holds. Undefined for
+ * every other address, and on every other preset.
  */
 export function addressView(
   address: Pick<IssueAddress, "preset" | "target">,

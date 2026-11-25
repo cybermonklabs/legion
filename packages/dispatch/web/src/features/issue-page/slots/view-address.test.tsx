@@ -392,6 +392,8 @@ test("a node address whose node Conversation draws no row of opens Graph at that
   for (const conversationHolds of [true, false]) {
     answerVerificationReads();
     answerVerifiedTree([second]);
+    // Graph's reads, each with neither kinds nor view, where Conversation's read lacks the task.
+    const graphReads: unknown[] = [];
     if (!conversationHolds) {
       const whole = treeOf(verifiedTree([second]), SERVES);
       const conversation = treeOf(
@@ -401,12 +403,15 @@ test("a node address whose node Conversation draws no row of opens Graph at that
       spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
         const asked = query as { readonly kind?: unknown; readonly view?: string };
         if (asked.view !== undefined) return Promise.withResolvers<never>().promise;
-        return asked.kind === undefined ? whole : conversation;
+        if (asked.kind !== undefined) return conversation;
+        graphReads.push(query);
+        return whole;
       });
     }
     const what = `the task's node address, ${conversationHolds ? "" : "not "}held by Conversation`;
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     if (!conversationHolds) await client.prefetchQuery(outlineQuery(KEY, "graph"));
+    const earlier = graphReads.length;
     const view = drawStage(`?node=${encodeURIComponent(readId)}`, {
       client,
       issue: verifiedIssue(),
@@ -416,6 +421,8 @@ test("a node address whose node Conversation draws no row of opens Graph at that
     // Conversation draws the task too where the address names it, but no other task: the
     // second task's row is Graph's.
     expect(view.container.querySelector(secondRow), `${what} drew no Graph`).not.toBeNull();
+    // Graph's read the earlier visit brought is the one the address is decided by, and Graph draws.
+    expect(graphReads.length, `${what} sent a Graph read`).toBe(earlier);
     cleanup();
   }
 });
@@ -469,6 +476,61 @@ test("a node address no read holds opens the outline's own address without it, w
         `${from} drew no outline at ${to}`
       ).not.toBeNull()
     );
+    cleanup();
+  }
+});
+
+// R9: an address opens the view that draws its node, Conversation first, else Graph, and a load
+// of Conversation sends no Graph read: with the cache holding none, a node address Conversation's
+// read holds none of sends Graph's read once, and opens Graph's `?node=` where its answer holds
+// the node - a plan task, which Conversation's read leaves out - with the focus on its row, and
+// the issue's own address without the node, with no line, where it does not. Graph's slot draws
+// from the answer that read brought, and sends no second.
+test("a node address only Graph's read holds opens Graph at it on a cold load, and one no read holds opens the issue's own address once Graph's read has answered", async () => {
+  // The task's id in the tree read, which the tree draws by its block's node id.
+  const readId = `${KEY}/${PLAN_DOCUMENT.slug}#${PLAN_TASK}`;
+  const conversation = presetPath(KEY, "conversation");
+  for (const [node, to] of [
+    [readId, `${presetPath(KEY, "graph")}?node=${encodeURIComponent(readId)}`],
+    ["nobody", conversation],
+  ] as const) {
+    answerVerificationReads();
+    const whole = treeOf(verifiedTree(), SERVES);
+    const held = treeOf(
+      verifiedTree().filter((each) => each.id !== readId),
+      SERVES
+    );
+    // Graph's reads, each a read with neither kinds nor view.
+    const graphReads: unknown[] = [];
+    spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
+      const asked = query as { readonly kind?: unknown; readonly view?: string };
+      if (asked.view !== undefined) return Promise.withResolvers<never>().promise;
+      if (asked.kind !== undefined) return held;
+      graphReads.push(query);
+      return whole;
+    });
+    const from = `${conversation}?node=${encodeURIComponent(node)}`;
+    const view = render(
+      <MemoryRouter initialEntries={[from]}>
+        <AppProviders client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <SeenStage issue={verifiedIssue()} />
+        </AppProviders>
+      </MemoryRouter>
+    );
+    await waitFor(() => expect(seen.address, from).toBe(to));
+    if (node === readId) {
+      await rowTakesFocus(view, TASK_ROW, `${from} in Graph`);
+    } else {
+      await waitFor(() =>
+        expect(
+          view.container.querySelector(STATEMENT_ROW),
+          `${from} drew no outline at ${to}`
+        ).not.toBeNull()
+      );
+    }
+    expect(view.container.querySelector("[data-issue-body] h2"), `${from} drew a line`).toBeNull();
+    await waitInAct(50);
+    expect(graphReads.length, `${from} sent other than one Graph read`).toBe(1);
     cleanup();
   }
 });
