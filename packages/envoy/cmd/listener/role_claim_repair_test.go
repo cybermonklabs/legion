@@ -172,8 +172,8 @@ func loseRoleFromCopy(t *testing.T, registry *store.Registry, role string) {
 // repair, every other field kept and never 503; the scheduled read fired, it is healthy again, and
 // the report counts the claim the copy lost as put back and the two it held for no claim as taken
 // out.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestHealthzReportsTheRoleClaimRescanAndIsDegradedPastItsBound(t *testing.T) {
-	t.Parallel()
 	const (
 		machineID = "healthz-role-claim-repair"
 		holder    = "ses_healthz_role_claim_repair"

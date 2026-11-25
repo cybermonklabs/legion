@@ -725,8 +725,8 @@ func (rig *dispatchRig) claim(
 // registers again under that id is then handed the copy by its consumer. Before, the attempt
 // failed "no live session", nothing was stored or woken, and the person had to send the message
 // again once the pod was back.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestDispatchQueuesATargetedMessageForASessionNoStoreHolds(t *testing.T) {
-	t.Parallel()
 	rig := newDispatchRig(t)
 	const released = "ses_released"
 	subject := contracts.LegacyAgentSubject(released)

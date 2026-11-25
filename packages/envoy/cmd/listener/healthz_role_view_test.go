@@ -73,8 +73,8 @@ func breakRoleClaimView(t *testing.T, registry *store.Registry) {
 // own rescan - a 503 here would take a serving listener out of a load balancer for a state that
 // repairs itself. The answer keeps the fields the healthy one carries, so a reader of the session
 // counts or the durable's backlog loses none of them while the view fills.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestHealthzReportsARoleClaimViewThatCompletesNoScanDegraded(t *testing.T) {
-	t.Parallel()
 	get, registry, _, _ := healthzRoleViewRig(t, "healthz-role-view")
 	breakRoleClaimView(t, registry)
 
@@ -97,8 +97,8 @@ func TestHealthzReportsARoleClaimViewThatCompletesNoScanDegraded(t *testing.T) {
 // view is incomplete must still report the durable as unhealthy: a readiness check passes a 200,
 // so reporting that fault as the view's degraded 200 would leave a listener that receives nothing
 // in service. The view is therefore reported last, after every check that answers 503.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestHealthzStillReportsALostDurableWhileTheRoleClaimViewIsIncomplete(t *testing.T) {
-	t.Parallel()
 	get, registry, client, consumer := healthzRoleViewRig(t, "healthz-role-view-durable")
 	breakRoleClaimView(t, registry)
 	if err := client.JS().DeleteConsumer(bus.Stream, consumer); err != nil {

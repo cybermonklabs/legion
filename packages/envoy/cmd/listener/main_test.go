@@ -2379,8 +2379,8 @@ func TestIdempotencyKey_BackwardsCompat(t *testing.T) {
 
 // A pod that stops leaves the durable and its cursor, and the next pod to receive resumes from it:
 // the messages published while no pod received are delivered, and the one acked before is not.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestDurableConsumerRestart(t *testing.T) {
-	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "durable-restart"
 	handle, received := recordingHandler()
@@ -2628,8 +2628,8 @@ func TestADurableRefusedInTheMiddleOfATermStopsTheListener(t *testing.T) {
 // holder's subscription onto the new consumer's deliver inbox rather than adding one beside it.
 // The subscription on the lost consumer's inbox can never deliver again; left subscribed, each
 // rebuild adds one more SUB the connection carries until the process exits.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestRebuildingALostDurableConsumerReplacesItsSubscription(t *testing.T) {
-	t.Parallel()
 	handle, received := recordingHandler()
 	rig := startReceiverRig(t, testnats.URL(t), "rebuild-replaces-subscription", "pod-a", handle, testReceiveTiming(), testLeaseTiming())
 	rig.awaitState(t, receiveActive, 10*time.Second)
@@ -5093,8 +5093,8 @@ func TestSelfHealthRebuildsAnInterestWatcherThatEndedWhileConnected(t *testing.T
 // /healthz answers 503 unhealthy, naming the interest watcher, while that watcher is dead, as it
 // does for a dead session or CI watcher. Without that branch the registry's Ping reports the
 // watcher's error as a transient KV failure and /healthz answers 200 degraded over a frozen cache.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestHealthzAnswersUnhealthyWhileTheInterestWatcherIsDead(t *testing.T) {
-	t.Parallel()
 	client := setupTestNATS(t)
 	rig := startReceiverRig(t, client.Conn.ConnectedUrl(), "healthz-interest", "pod-a", func(_ context.Context, msg *natsgo.Msg) { _ = msg.Ack() }, testReceiveTiming(), testLeaseTiming())
 	rig.awaitState(t, receiveActive, 10*time.Second)

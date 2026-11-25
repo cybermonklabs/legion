@@ -174,7 +174,8 @@ func (r *subjectStallRelay) close() {
 // check (`curl -sf`) failed. Each must answer inside /healthz's 3 s budget instead, and still fail
 // that check: 503 unhealthy, naming the dependency and the context's deadline. The negative control
 // is /healthz on the same rig before the stall: 200 healthy.
-// It must not run in parallel: /healthz must answer within 3.5 s, 0.5 s past healthzBudget.
+// It must not run in parallel: /healthz must answer within 3.5 s, 0.5 s past healthzBudget, and its
+// test lease lapses if one renewal is 300 ms late.
 func TestHealthzAnswersAJetStreamThatStoppedAnsweringInsideItsBudget(t *testing.T) {
 	for _, stall := range []struct {
 		name      string
@@ -186,7 +187,6 @@ func TestHealthzAnswersAJetStreamThatStoppedAnsweringInsideItsBudget(t *testing.
 		{"the durable consumer's info read", "box-stall-info", []string{"$JS.API.CONSUMER.INFO."}, "durable consumer unavailable: context deadline exceeded"},
 	} {
 		t.Run(stall.name, func(t *testing.T) {
-			t.Parallel()
 			relay := startSubjectStallRelay(t, testnats.URL(t))
 			// The pod receiving the durable, through the relay: its bus client, its lease's bucket
 			// connection and its receive loop, which binds the durable as the lease holder.

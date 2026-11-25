@@ -72,8 +72,8 @@ func failReconnectHooks(t *testing.T, rig *receiverRig) {
 // request on the same rig after a connection event and a failed run, with the stall still under
 // the grace: the bus runs the hooks again within seconds, so that must stay 200 healthy rather
 // than report every reconnect. The other is a whole grace of clock before any reconnect, below.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestHealthzAnswersAHookStallPastTheRepairGrace(t *testing.T) {
-	t.Parallel()
 	rig, clock, get := hookStallFixture(t, "hook-stall")
 	if code, body := get(); code != http.StatusOK || body["status"] != "healthy" || body["role"] != "active" {
 		t.Fatalf("/healthz before any reconnect = %d %v, want 200 healthy, role active", code, body)
@@ -129,8 +129,8 @@ func hookStallFixture(t *testing.T, machineID string) (*receiverRig, *hookStallC
 // empty ones would lose - does not hold for a listener that is deaf. The regression this catches is
 // the stall deciding first and reporting such a listener as merely degraded, which every probe that
 // reads /healthz then leaves in service (INFRA-743).
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestHealthzReportsARecreatedDurableThroughAHookStall(t *testing.T) {
-	t.Parallel()
 	rig, clock, get := hookStallFixture(t, "hook-stall-unbound")
 
 	failReconnectHooks(t, rig)
