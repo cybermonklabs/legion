@@ -10,11 +10,23 @@ const (
 	// readWritesUnset is the zero value: an entry that decides nothing. It is never a class, so
 	// an entry that leaves Writes unset is a row nobody has read yet.
 	readWritesUnset readWrites = iota
-	// readWritesNothing is a read. Wherever its writes run, on the request's own context or on
-	// the server's context in work the request starts or waits on, the row writes nothing but
-	// what readClasses lists: the proof's spent row, a personal token's last use, the caches
-	// Dispatch rebuilds from what it holds, and the shared work the server does for every reader
-	// alike. A read that writes any of it on the server's context carries a WriteNote saying so.
+	// readWritesNothing is a read: a route a read-only credential may call. Wherever its writes
+	// run, on the request's own context or on the server's context in work the request starts or
+	// waits on, such a route writes nothing but these eight:
+	//
+	//   - the insert into dpop_proofs that spends a broker token's proof;
+	//   - the update of a personal token's last_used_at;
+	//   - the insert into text_trees that a read with Dispatch-Trees: 1 makes;
+	//   - the upsert of a stale route_roster;
+	//   - the event horizon's observer persisting event_horizon;
+	//   - a project's term statistics refresh, in search_term_stats, search_term_totals and
+	//     search_term_queue;
+	//   - the GitHub client recording GitHub's rate limit in github_rate_limits;
+	//   - a compaction's rewrite and delete in doc_updates and doc_compaction_owed.
+	//
+	// A read that writes any of them on the server's context carries a WriteNote saying so. Every
+	// other GET route is a GET that writes (readWritesState), which no read-only credential may
+	// call.
 	readWritesNothing
 	// readWritesState is a GET that writes: anything a read may not, wherever it runs. Its
 	// WriteNote names what it writes.
@@ -38,6 +50,9 @@ type readEntry struct {
 // TextWithTokenAndBlocks, Blocks and BlockPath, each through its readDocument).
 const docsCompactionNote = "Writes nothing itself. A cold read of a document whose stored history holds more than one doc_updates row queues the document on the document service's compaction queue (noteStoredUpdates), and the queue's worker compacts it later on its own context: it updates and deletes doc_updates and deletes doc_compaction_owed, as the hourly sweep does for every due document, whoever reads it. A compaction changes nothing a reader reads."
 
-// read_classes.go holds what a read class is. Which class each route has is the route's own
-// declaration (routeDecl.Read, one file per route), and register refuses to mount a table whose
-// GET routes are not all classed (readClassRefusals, routes_table.go).
+// read_classes.go holds what a read class is: the two classes, what each means, and the note a
+// class carries. Which class a route has is the route's own declaration (routeDecl.Read, one file
+// per route), which routes() answers as apiRoute.Read and the read-only gate reads
+// (refuseReadOnlyToken). register refuses to mount a table whose GET routes are not all classed,
+// or whose write states a class (readClassRefusals, routes_table.go), so a GET route added later
+// is served to no read-only credential until someone has read its handler and classed it.

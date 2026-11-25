@@ -140,17 +140,23 @@ func adopt(repo gitRepo) (*adoptReport, error) {
 	}
 	// The step runs once per merge, because it takes routes_table.go and routes_shapes.go whole
 	// from the new side and a second run would overwrite what the person carried into them by
-	// hand. "It has run" is read from the routes themselves, not from those two files: a person
-	// may resolve them before running this, and then the branch's routes are in no file yet. The
-	// run is needless only where every route the branch added or changed is already in the tree
-	// as the branch states it, or in conflict with main's.
-	missing, err := routesNotAdopted(filepath.Join(repo.root, apiDir), baseFiles, branchFiles, gitTree{repo, newRev})
+	// hand. It has not run while either of two things is true: one of those files still stands in
+	// conflict, which is how the merge leaves them and what the step resolves; or a route the
+	// branch adds, changes or removes is one the step would still write or delete
+	// (routesNotAdopted). Each is needed. A person may resolve the two files before running this,
+	// and the branch's routes are then in no file yet; and a branch whose every route change is
+	// one the step leaves alone still needs the two files taken from the new side.
+	unresolved, err := repo.sharedFilesInConflict()
 	if err != nil {
 		return nil, err
 	}
-	if len(missing) == 0 {
-		return nil, fmt.Errorf("every route %s adds or changes is already in its file: this merge needs no adoption, or the adopt step has run on it already, and a second run would overwrite what was carried into %s and %s by hand",
-			report.oldSide, tableFile, shapesFile)
+	pending, err := routesNotAdopted(filepath.Join(repo.root, apiDir), baseFiles, branchFiles, gitTree{repo, newRev})
+	if err != nil {
+		return nil, err
+	}
+	if !unresolved && len(pending) == 0 {
+		return nil, fmt.Errorf("%s and %s are resolved and every route %s adds or changes is already as the step would leave it: this merge needs no adoption, or the step has run on it already, and a second run would overwrite what was carried into those two files by hand",
+			tableFile, shapesFile, report.oldSide)
 	}
 	dir := filepath.Join(repo.root, apiDir)
 	var stage, remove []string

@@ -324,6 +324,104 @@ func TestTheAdoptStepIsNotRunTwiceOverOneMerge(t *testing.T) {
 	}
 }
 
+// Three states the step leaves alone, each of which once counted as a route waiting to be
+// written, so every run was a first run and a second would take routes_table.go and
+// routes_shapes.go from the new side again and throw away what was carried into them: a route
+// main removed and the branch changes, a route the branch adds exactly as main did, and a route
+// the branch removes that main has changed. The step reports each and writes nothing, so a run
+// after it must be refused.
+func TestARouteTheStepLeavesAloneIsNotPendingForEver(t *testing.T) {
+	limitsFile, _ := routeFileName("GET", "/api/v1/limits")
+	const limits = "The bounds a write is held to"
+	addedFile, _ := routeFileName("GET", "/api/v1/adopt-test-same")
+
+	t.Run("main removed the route the branch changes", func(t *testing.T) {
+		repo := newScratchRepo(t)
+		base := strings.TrimSpace(repo.git("rev-parse", "HEAD"))
+		repo.editOn("branch-a", base, func(table, shapes string) (string, string) {
+			return strings.Replace(table, limits, "The branch's bounds", 1), shapes
+		})
+		repo.moveMain()
+		repo.git("rm", "-q", "--", filepath.Join(apiDir, limitsFile))
+		repo.commit("main removes the limits route")
+		repo.refusesASecondRun(t, limitsFile, func(t *testing.T, report *adoptReport) {
+			if len(report.decide) != 1 || !strings.Contains(report.decide[0], limitsFile) {
+				t.Fatalf("the step reported %v, want one decide naming %s", report.decide, limitsFile)
+			}
+		})
+	})
+
+	t.Run("the branch adds the route main added", func(t *testing.T) {
+		repo := newScratchRepo(t)
+		base := strings.TrimSpace(repo.git("rev-parse", "HEAD"))
+		head := repo.addRouteOn("branch-a", base, "same")
+		// The branch's own route, as the splitter writes it, so main's file and the branch's
+		// split are the same bytes.
+		split, err := splitOldLayout(gitTree{gitRepo{root: repo.root}, head})
+		if err != nil {
+			t.Fatal(err)
+		}
+		repo.git("checkout", "-q", "main")
+		repo.moveMain()
+		repo.write(addedFile, string(split[addedFile]))
+		repo.commit("main adds the same route")
+		repo.refusesASecondRun(t, addedFile, func(t *testing.T, report *adoptReport) {
+			if written := len(report.written) + len(report.updated) + len(report.merged); written != 0 {
+				t.Fatalf("the step wrote %d routes, want none: main added the same one", written)
+			}
+		})
+	})
+
+	t.Run("the branch removes the route main changed", func(t *testing.T) {
+		repo := newScratchRepo(t)
+		base := strings.TrimSpace(repo.git("rev-parse", "HEAD"))
+		repo.editOn("branch-a", base, func(table, shapes string) (string, string) {
+			return cutLine(t, table, `{http.MethodGet, "/api/v1/limits"`), cutLine(t, shapes, "\t\"GET /api/v1/limits\":")
+		})
+		repo.moveMain()
+		repo.write(limitsFile, strings.Replace(repo.read(limitsFile), limits, "Main's bounds", 1))
+		repo.commit("main changes the limits route")
+		repo.refusesASecondRun(t, limitsFile, func(t *testing.T, report *adoptReport) {
+			if len(report.decide) != 1 || !strings.Contains(report.decide[0], limitsFile) {
+				t.Fatalf("the step reported %v, want one decide naming %s", report.decide, limitsFile)
+			}
+		})
+	})
+}
+
+// refusesASecondRun merges main into branch-a, runs the step, holds its report to expect, and
+// then holds a second run to being refused with nothing carried thrown away.
+func (r *scratchRepo) refusesASecondRun(t *testing.T, file string, expect func(*testing.T, *adoptReport)) {
+	t.Helper()
+	r.git("checkout", "-q", "branch-a")
+	report, err := r.mergeMainAndAdopt()
+	if err != nil {
+		t.Fatalf("adopt: %v", err)
+	}
+	expect(t, report)
+	kept, _, err := readFileIfPresent(r.path(file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	carried := r.read(tableFile) + "\n// carried by hand\n"
+	r.write(tableFile, carried)
+	found, err := findRepo(r.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adopt(found); err == nil || !strings.Contains(err.Error(), "has run on it already") {
+		t.Fatalf("a second run was not refused, so every run of the step is a first run: %v", err)
+	}
+	if r.read(tableFile) != carried {
+		t.Fatal("the second run threw away what was carried into routes_table.go")
+	}
+	if now, _, err := readFileIfPresent(r.path(file)); err != nil {
+		t.Fatal(err)
+	} else if string(now) != string(kept) {
+		t.Fatalf("the second run changed %s, which the first left alone", file)
+	}
+}
+
 // A person resolves the conflict this step left in a route file by hand, writing text that is
 // neither side's, and then carries an edit into routes_table.go. A second run must be refused:
 // the route is nobody's to write again, and the run would take routes_table.go from the new side

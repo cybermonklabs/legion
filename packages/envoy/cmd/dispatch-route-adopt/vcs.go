@@ -99,66 +99,98 @@ func prefixed(names []string) []string {
 	return paths
 }
 
-// routesNotAdopted names every route the branch adds, changes or removes that this step has not
-// touched yet, which is what "the step has not run on this merge" means. The question is not
-// whether a route's file holds the branch's text: a person may have resolved a conflict this step
-// left, writing text that is neither side's, and a second run would take routes_table.go and
-// routes_shapes.go from the new side again and throw away what they carried into them by hand.
+// routesNotAdopted names every route this step would still write or delete, which is what "the
+// step has not run on this merge" means. A route counts on two conditions together, and each is
+// needed:
 //
-// So a route counts only where the file still stands as the merge left it: the new side's text,
-// or absent where the new side has none. Every other state is a run's own work or a person's --
-// the branch's text this step wrote, the conflict markers it wrote, or a hand resolution -- and
-// none of them is a route waiting to be written.
+//   - its file still stands as the merge left it: the new side's bytes, or absent where the new
+//     side has none. Every other state is a run's own work (the branch's text it wrote, or the
+//     conflict markers it wrote) or a person's (a conflict resolved by hand, writing text that is
+//     neither side's). A second run over any of those would take routes_table.go and
+//     routes_shapes.go from the new side again and throw away whatever was carried into them.
+//   - the step would change that file. Three states it leaves alone would otherwise count for
+//     ever: a route main removed and the branch changes, which the step reports for the person to
+//     decide; a route the branch adds or changes exactly as main did, which is already what it
+//     would write; and a route the branch removes that main has changed, another decide.
+//
+// The conditions mirror the loop of adopt, which is why they are written beside its three cases
+// rather than as one predicate over them.
 func routesNotAdopted(dir string, baseFiles, branchFiles map[string][]byte, newSide tree) ([]string, error) {
-	// untouched reports whether name stands as the merge left it, and what the merge left.
-	untouched := func(name string) (bool, error) {
-		ours, err := newSide.read(name)
-		onNewSide := err == nil
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return false, err
-		}
-		current, err := os.ReadFile(filepath.Join(dir, name))
-		switch {
-		case errors.Is(err, os.ErrNotExist):
-			return !onNewSide, nil
-		case err != nil:
-			return false, err
-		}
-		return onNewSide && bytes.Equal(current, ours), nil
-	}
 	var pending []string
 	for _, name := range slices.Sorted(maps.Keys(baseFiles)) {
 		if _, inBranch := branchFiles[name]; inBranch {
 			continue
 		}
-		// The branch removed the route: the step removes its file, so it is pending while the
-		// file still stands as the merge left it.
-		stands, err := untouched(name)
+		// The branch removed the route. The step deletes the file where main left it as the merge
+		// base had it, and reports a decide where main changed it.
+		ours, onNewSide, err := readIfPresent(newSide, name)
 		if err != nil {
 			return nil, err
 		}
-		if stands {
-			if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
-				pending = append(pending, name)
-			} else if !errors.Is(err, os.ErrNotExist) {
-				return nil, err
-			}
+		current, inTree, err := readFileIfPresent(filepath.Join(dir, name))
+		if err != nil {
+			return nil, err
+		}
+		stands := onNewSide == inTree && (!inTree || bytes.Equal(current, ours))
+		if stands && onNewSide && bytes.Equal(ours, baseFiles[name]) {
+			pending = append(pending, name)
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(branchFiles)) {
-		if baseContent, inBase := baseFiles[name]; inBase && bytes.Equal(baseContent, branchFiles[name]) {
+		branchContent := branchFiles[name]
+		baseContent, inBase := baseFiles[name]
+		if inBase && bytes.Equal(baseContent, branchContent) {
 			continue
 		}
-		stands, err := untouched(name)
+		ours, onNewSide, err := readIfPresent(newSide, name)
 		if err != nil {
 			return nil, err
 		}
-		if stands {
+		current, inTree, err := readFileIfPresent(filepath.Join(dir, name))
+		if err != nil {
+			return nil, err
+		}
+		if stands := onNewSide == inTree && (!inTree || bytes.Equal(current, ours)); !stands {
+			continue
+		}
+		switch {
+		case !inBase:
+			// The branch added the route: the step writes it, unless main added the same bytes.
+			if !onNewSide || !bytes.Equal(branchContent, ours) {
+				pending = append(pending, name)
+			}
+		case onNewSide && !bytes.Equal(branchContent, ours):
+			// The branch changed the route and main still holds a version to write over. Where
+			// main removed the route (no file on the new side), the step reports a decide.
 			pending = append(pending, name)
 		}
 	}
 	slices.Sort(pending)
 	return slices.Compact(pending), nil
+}
+
+// readIfPresent is a file of one tree, and whether the tree holds it.
+func readIfPresent(src tree, name string) ([]byte, bool, error) {
+	content, err := src.read(name)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return nil, false, nil
+	case err != nil:
+		return nil, false, err
+	}
+	return content, true, nil
+}
+
+// readFileIfPresent is a file on disk, and whether it is there.
+func readFileIfPresent(path string) ([]byte, bool, error) {
+	content, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return nil, false, nil
+	case err != nil:
+		return nil, false, err
+	}
+	return content, true, nil
 }
 
 // recordConflict writes one path into git's index as a conflict: the merge base at stage 1, the
@@ -219,4 +251,28 @@ func hasConflictMarkers(content []byte) bool {
 		}
 	}
 	return false
+}
+
+// sharedFilesInConflict reports whether routes_table.go or routes_shapes.go still stands in
+// conflict, which is how a merge of the two layouts leaves them and what this step resolves by
+// taking them from the new side. A file a person has resolved is not in conflict, and the step's
+// own resolution is not either, so this answers false once either has happened.
+func (g gitRepo) sharedFilesInConflict() (bool, error) {
+	unmerged, err := g.unmerged()
+	if err != nil {
+		return false, err
+	}
+	for _, name := range []string{tableFile, shapesFile} {
+		if slices.Contains(unmerged, path.Join(apiDir, name)) {
+			return true, nil
+		}
+		content, _, err := readFileIfPresent(filepath.Join(g.root, apiDir, name))
+		if err != nil {
+			return false, err
+		}
+		if hasConflictMarkers(content) {
+			return true, nil
+		}
+	}
+	return false, nil
 }

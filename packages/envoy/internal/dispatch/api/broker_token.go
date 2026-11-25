@@ -116,7 +116,7 @@ var brokerPersonScopes = []string{model.ScopePerson}
 // account and writes nothing, as every read-only token does. Its credential is marked read-only
 // (model.Credential.ReadOnly), with the token's cut (model.Credential.Cut), and
 // refuseReadOnlyToken answers it 403 READ_ONLY_TOKEN on every route outside the read class
-// (readClasses) and on GET /ws/live, ahead of the scope gate, the sign-in check, an account
+// (routeDecl.Read) and on GET /ws/live, ahead of the scope gate, the sign-in check, an account
 // entry's write as its account and everything else the route does. While no build answers a read
 // at a past time, it answers one that carries a cut 403 AS_OF_TOKEN_NOT_SERVED on every read but
 // GET /api/v1/whoami. On a read it serves, it is the session it names, reading as that session

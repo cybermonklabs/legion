@@ -227,7 +227,7 @@ The broker also narrows any trade that asks for `read`: that token keeps the ses
 A `read-person` token that names its person holds the `person` scope alone, never `approve`, and every other read-only broker token holds no OAuth scope.
 A personal token minted with `read` is read-only too (`/api/v1/me/agent-tokens`, below).
 Dispatch serves a read-only token on the reads of its read class and on no other route.
-`readClasses` (`internal/dispatch/api/read_classes.go`) gives every GET row of the route table one class: a read, which writes nothing but the record of the token's use and caches Dispatch rebuilds from what it holds, or a GET that writes.
+Every GET route's declaration states one read class (`routeDecl.Read`, `internal/dispatch/api/read_classes.go` for what a class is): a read, which writes nothing but the record of the token's use and caches Dispatch rebuilds from what it holds, or a GET that writes.
 `register` refuses to mount a table with a GET row that has no class.
 Every other route of the table, and `GET /ws/live`, answers a read-only token `403 READ_ONLY_TOKEN` (`contracts.DispatchReadOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseReadOnlyToken`).
 Every read but `GET /api/v1/whoami` answers a read-only token that carries a cut `403 AS_OF_TOKEN_NOT_SERVED` (`contracts.DispatchAsOfTokenNotServed`), naming the cut: this build answers no read at a past time, and it does not answer one with the present.

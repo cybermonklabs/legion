@@ -2340,7 +2340,7 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 // It serves a read-only token (ciphertoken.Options.ServesReadOnly): one that holds read, which
 // the broker mints from a read entry or narrows when a trade asks for read. Dispatch is the one
 // service that asks for it, because its route table classes the GET rows such a token may call
-// (the read class, readClasses in internal/dispatch/api), and every other route answers it
+// (the read class its declaration states, internal/dispatch/api), and every other route answers it
 // 403 READ_ONLY_TOKEN before anything of the route runs.
 //
 // A deployment with no broker gets nil: Dispatch then has no such credential kind, and a DPoP
