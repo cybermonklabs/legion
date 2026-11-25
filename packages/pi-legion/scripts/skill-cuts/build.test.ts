@@ -5810,13 +5810,14 @@ test("build-tasks with no bound writes the pinned bytes: the tasks, the summary,
   // The profiles summary quotes LEGION_IMAGE_RULE, which now states the deployment-built image's
   // steps: the stage its final stage copies the worker's packages from (by COPY, an ADD into one
   // a write of it too, a later RUN that names one too unless readSteps lists its text's hash),
-  // else the base it is on.
+  // else the base it is on; the packages it names are those the profile uses (the prefix rows
+  // under /opt/legion/ that an Oh My Pi unit places), not a row only Claude Code units place.
   expect(digests).toEqual({
     "model tasks": "7065771b7768b39f531ae513e501837a0837349affe5672950558cdaf8230f9e",
     "model summary": "830ba5a3c2d161a489386c91ee25396de33d21df9deabfb10e8e915059c49c48",
     "model printed": "8d8a65fe70015b199ecc51a86a5803ef39c5cacbddbe124b22460e6d36a2971b",
     "profiles tasks": "c29cedaadf7a508a1449548b98da93ab14b079a002eb834365c81cc2f70e79f6",
-    "profiles summary": "47cf5c6c5585c8600223b79b06433b3caa9a33e88abc4479af6a0bcbbabde44b",
+    "profiles summary": "ff7c38df75e14f47f36df06b063050adfcc9a61995c9ddc87d2a718f20c83873",
     "profiles printed": "9ceae9fd265f889f404904ada8fe26a18ca2cbde3e9141337bd67b87b1aa1b0b",
     "profiles profiles": "26bf1079e50926d2c9e1bdc9482bca041b0a71392fb091f4352c437ab81932c4",
   });
@@ -7926,22 +7927,60 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
     "COPY --from=legion --chown=0:0 /opt/legion/pi-acme /opt/legion/pi-acme",
     "COPY --from=legion /opt/legion/bin/ /opt/legion/bin/",
   ];
-  /** The suite's copies output with one more prefix-table.tsv row under /opt/legion/, of a unit no
-   *  installer installs (a copy of alpha that no read of the suite is under): the profile's
-   *  packages in the worker image are pi-acme and pi-legion. */
+  /** The unit of the suite's prefix-table.tsv rows under /opt/legion/pi-acme/, an Oh My Pi unit:
+   *  installers.tsv installs it for host omp. */
+  const PI_ACME = "package:@acme/pi-acme (acme/skills:packages/pi-acme/package.json)";
+  /** The prefix-table.tsv row of pi-legion: a copy of alpha that no read of the suite is under,
+   *  placed by PI_ACME. */
+  const PI_LEGION_ROW = [
+    "/opt/legion/pi-legion/dist/skills/alpha/",
+    "acme/skills",
+    "skills/alpha",
+    "alpha",
+    PI_ACME,
+  ];
+  /** The suite's copies output with PI_LEGION_ROW added: the profile's packages in the worker
+   *  image are pi-acme and pi-legion. */
   const copies = path.join(scratch, "copies-pi-legion");
   beforeAll(() => {
     cpSync(copiesDir, copies, { recursive: true });
     const table = path.join(copies, "prefix-table.tsv");
-    const row = [
-      "/opt/legion/pi-legion/dist/skills/alpha/",
-      "acme/skills",
-      "skills/alpha",
-      "alpha",
-      "package:@acme/pi-legion (acme/skills:packages/pi-legion/package.json)",
-    ];
-    writeFileSync(table, `${readFileSync(table, "utf8")}${row.join("\t")}\n`);
+    writeFileSync(table, `${readFileSync(table, "utf8")}${PI_LEGION_ROW.join("\t")}\n`);
   });
+  /** A Claude Code plugin's unit, as copies.ts gives the plugin a build script generates from a
+   *  package's staged skills. */
+  const CLAUDE_ACME = "plugin:claude-acme (acme/skills:packages/claude-acme/scripts/build.ts)";
+  /** The copies output `copies-copied-<name>`: the suite's with PI_LEGION_ROW, a prefix-table.tsv
+   *  row under /opt/legion/claude-acme/ (a copy of alpha that no read of the suite is under)
+   *  placed by the units `via`, and the installers.tsv row by which CLAUDE_ACME ships alpha for
+   *  Claude Code (host claude-code). */
+  const withClaudeAcme = (name: string, via: string) =>
+    copiesWith(`copies-copied-${name}`, {
+      "prefix-table.tsv": [
+        PI_LEGION_ROW,
+        [
+          "/opt/legion/claude-acme/claude-acme/skills/alpha/",
+          "acme/skills",
+          "skills/alpha",
+          "alpha",
+          via,
+        ],
+      ],
+      "installers.tsv": [
+        [
+          "acme/skills",
+          "packages/claude-acme/scripts/build.ts",
+          "build-script",
+          "ships",
+          "plugin:claude-acme",
+          "claude-code",
+          "alpha",
+          "acme/skills",
+          "skills/alpha",
+          "",
+        ],
+      ],
+    });
   const imaged = [`alpha ${IMAGE_SHA}`, `beta ${IMAGE_SHA}`, `omicron ${IMAGE_SHA}`];
   /** The image's own step, whose labels (the version label `version`) name no commit of
    *  acme/skills. */
@@ -7970,8 +8009,9 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
    *  IMAGE's config (its version label `version`, none when undefined), WORKER's and OLDER's, each
    *  with the image's first 3 diff ids, and refusing TOOLCHAIN's read; WORKER's digest's build
    *  provenance naming IMAGE_SHA and OLDER's SHA; acme/infra holding REVISION and at it the
-   *  Dockerfile whose final stage is FROM `final` and holds `copyLines`, then `later`; and the
-   *  configuration's deploymentImages naming REPOSITORY, with `readSteps` where given. */
+   *  Dockerfile whose final stage is FROM `final` and holds `copyLines`, then `later`; the
+   *  configuration's deploymentImages naming REPOSITORY, with `readSteps` where given; and the
+   *  copies output `output` (`copies` when undefined). */
   const copied = (
     name: string,
     {
@@ -7981,6 +8021,7 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
       later = [],
       readSteps,
       refused,
+      output = copies,
     }: {
       version?: string;
       final?: string;
@@ -7988,6 +8029,7 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
       later?: readonly string[];
       readSteps?: readonly { readonly sha256: string; readonly reason: string }[];
       refused?: true;
+      output?: string;
     }
   ) =>
     reprofiledLegion(`copied-${name}`, {
@@ -8014,7 +8056,7 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
           ...(readSteps === undefined ? {} : { readSteps }),
         },
       ],
-      copies,
+      copies: output,
       gh: (route, args) => {
         const ok = (stdout: string): GhResult => ({ code: 0, stdout, stderr: "" });
         if (route.startsWith(`repos/acme/infra/commits?sha=${REVISION}&`))
@@ -8132,6 +8174,58 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
     },
     120_000
   );
+
+  // Catches: a package of the worker image that the profile does not use, one that only a Claude
+  // Code unit places (a Claude Code plugin's package, which installs nothing in a pod's Oh My Pi
+  // profile), required of the COPY step: an image whose final stage copies the Oh My Pi packages
+  // from the stage and the Claude Code plugin's package not at all was left out, naming it.
+  test("an image whose final stage copies the profile's packages from one stage and does not copy a package that only a Claude Code unit places takes that stage's commit: that package is no package of the profile", async () => {
+    const result = await copied("claude-only", {
+      version: "20.25.1",
+      output: withClaudeAcme("claude-only", CLAUDE_ACME),
+    });
+    expect(result.skills).toEqual(imaged);
+    expect(result.worker).toStartWith(`${own("20.25.1")}; ${labelled}`);
+    expect(result.worker).toContain(`${fromLegion()}; ${release("skills-v20.25.1")}`);
+    expect(result.worker).toContain(
+      ` is ${IMAGE_SHA}, so the label confirms the stage's commit: ${BY_LABEL}, so the image's units of acme/skills are read at ${IMAGE_SHA}${rule}`
+    );
+  }, 120_000);
+
+  test("a package that an Oh My Pi unit places as well as a Claude Code unit is one of the profile's: a final stage that does not copy it leaves the case out, naming it", async () => {
+    const result = await copied("claude-and-omp", {
+      version: "20.25.1",
+      output: withClaudeAcme("claude-and-omp", `${CLAUDE_ACME}; ${PI_ACME}`),
+      refused: true,
+    });
+    expect({ code: result.code, written: result.written }).toEqual({
+      code: EXIT.failed,
+      written: false,
+    });
+    expect(result.said).toContain(`${notKnown}${own("20.25.1")}; ${labelled}`);
+    expect(result.said).toContain(
+      `${copying()}the final stage does not copy each of ${packages} from one stage: /opt/legion/claude-acme not at all, /opt/legion/pi-acme from the stage legion, /opt/legion/pi-legion from the stage legion${rule}`
+    );
+  }, 120_000);
+
+  test("a package of the profile that the final stage copies from another stage leaves the case out beside a package that only a Claude Code unit places, naming the profile's packages alone", async () => {
+    const result = await copied("claude-only-another-stage", {
+      version: "20.25.1",
+      copyLines: COPIES.map((line) =>
+        line.includes("pi-acme") ? line.replace("--from=legion", "--from=chrome") : line
+      ),
+      output: withClaudeAcme("claude-only-another-stage", CLAUDE_ACME),
+      refused: true,
+    });
+    expect({ code: result.code, written: result.written }).toEqual({
+      code: EXIT.failed,
+      written: false,
+    });
+    expect(result.said).toContain(`${notKnown}${own("20.25.1")}; ${labelled}`);
+    expect(result.said).toContain(
+      `${copying()}the final stage does not copy each of ${packages} from one stage: /opt/legion/pi-acme from the stage chrome, /opt/legion/pi-legion from the stage legion${rule}`
+    );
+  }, 120_000);
 
   test("an image whose final stage is FROM an older worker image, which the image is built on, and copies the profile's packages from a stage FROM a newer one takes the newer one's commit: the COPY step decides, and the base is not read", async () => {
     const result = await copied("built-on-and-copied", { version: "20.25.1", final: OLDER });

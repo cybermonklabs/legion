@@ -1221,7 +1221,9 @@ Failing that, an image of a repository that the configuration's `deploymentImage
 Its `org.opencontainers.image.source` label must name the deployment, and its `org.opencontainers.image.revision` label a commit the deployment holds at or before its read.
 The Dockerfile the entry names, read at that commit, decides.
 A `COPY` writes the copied files over whatever the final stage's base holds at those paths.
-So where the final stage copies any `/opt/legion/<package>` of the prefix rows under `/opt/legion/` (a `COPY` or `ADD` line whose destination is the package, a path in it, or a directory above it), the stage it copies them from decides, and the base is not read.
+So where the final stage copies any `/opt/legion/<package>` the profile uses (a `COPY` or `ADD` line whose destination is the package, a path in it, or a directory above it), the stage it copies them from decides, and the base is not read.
+The profile uses the package of a prefix row under `/opt/legion/` where at least one unit of the row's `via` is an Oh My Pi unit, one that an `installers.tsv` row of host `omp` installs.
+A row that only Claude Code units place, such as one of a Claude Code plugin's package, installs nothing in the pod's Oh My Pi profile, so it adds no package.
 Each such package must be copied in the final stage from that one stage alone: every `COPY --from=<stage> <src>... <dest>` line (`--chown` and other flags allowed) that writes into the package must name that stage.
 An `ADD` that writes into the package adds it from the build context or a URL, not from the stage.
 A package copied from elsewhere, added by `ADD`, or not copied, leaves the image's commit not known, and the evidence names the package and where the final stage copies it from.
