@@ -186,9 +186,6 @@ func TestARepositoryGapOutlivesARelayRestart(t *testing.T) {
 	})
 	awaitConsumerSettled(t, rig, sessionID)
 	rig.repositories.failWith(0)
-	// The relay's restart at the ack floor under the new epoch below finds nothing awaiting an ack, which
-	// awaitConsumerSettled waited for, so it keeps this consumer and sends no delete and no create
-	// (bus.SessionConsumers.RestartAtFloor).
 	requireStatus(t, rig.call(t, http.MethodPost, token, "/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-2", "notifications.github.acme.pub.>")),
 		http.StatusOK, "the registration under a new delivery epoch")
 	next, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
@@ -241,9 +238,6 @@ func TestARepositoryGapOutlivesAMoveToAnotherListener(t *testing.T) {
 
 	awaitConsumerSettled(t, rig, sessionID)
 	rig.repositories.failWith(0)
-	// The relay's restart at the ack floor under the registration below finds nothing awaiting an ack,
-	// which awaitConsumerSettled waited for, so it keeps this consumer and sends no delete and no
-	// create (bus.SessionConsumers.RestartAtFloor).
 	requireStatus(t, rig.call(t, http.MethodPost, token, "/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-2", "notifications.github.acme.pub.>")),
 		http.StatusOK, "the registration that brings the session back to this listener")
 	next, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
@@ -297,10 +291,6 @@ func TestAReceiveTermsEndForgetsTheGapMarksItsRelaysNoted(t *testing.T) {
 		t.Fatalf("clear %s's mark %q as the next pod's relay does: %v", sessionID, mark, err)
 	}
 	rig.repositories.failWith(0)
-	// The wait is for the server to take every ack, the stand-in's done and the relay's own for the
-	// withheld event, so the relay's restart at the ack floor when the term begins again finds
-	// nothing awaiting one and keeps this consumer: it updates it in place and sends no delete and
-	// no create (bus.SessionConsumers.RestartAtFloor).
 	awaitConsumerSettled(t, rig, sessionID)
 	rig.relays.setOwned(endlessTerm())
 	if again := noted(); again != "" {
@@ -318,11 +308,13 @@ func TestAReceiveTermsEndForgetsTheGapMarksItsRelaysNoted(t *testing.T) {
 
 // awaitConsumerSettled waits for the server to take every ack of what sessionID's consumer has
 // delivered - the session's done for a frame, the relay's own for a GitHub event it withheld - and
-// then for the consumer's stored state (awaitSessionConsumerStored), before a row's registration
-// under a new delivery epoch restarts the relay at the ack floor. A restart that finds a delivery
-// still awaiting its ack deletes the consumer and creates it again at the floor, which sends the
-// withheld event once more, and a delete that soon after a delivery or an ack can meet the
-// consumer's state write still under way, which fails the create.
+// then for the consumer's stored state (awaitSessionConsumerStored), before a row restarts the
+// relay at the ack floor: a registration under a new delivery epoch, or a receive term that begins
+// again. That restart then finds nothing awaiting an ack, so it keeps the consumer: it updates it
+// in place and sends no delete and no create (bus.SessionConsumers.RestartAtFloor). A restart that
+// finds a delivery still awaiting its ack deletes the consumer and creates it again at the floor,
+// which sends the withheld event once more, and a delete that soon after a delivery or an ack can
+// meet the consumer's state write still under way, which fails the create.
 func awaitConsumerSettled(t *testing.T, rig *edgeRig, sessionID string) {
 	t.Helper()
 	info, err := rig.consumers.Info(t.Context(), sessionID)

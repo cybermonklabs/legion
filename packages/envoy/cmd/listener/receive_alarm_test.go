@@ -103,10 +103,10 @@ func durableReads(t *testing.T, uri, consumer string) *atomic.Int64 {
 
 // A pod waiting out a pre-lease build's binding reads the durable every bindPoll, so it receives
 // within one poll of that build's exit rather than at the end of a backoff that grows with each
-// read (TestBindListenerDurableBindsWithinOneIntervalOfRelease, before the lease). At a 50 ms poll
-// six of the pod's reads find the binding, counted as the server takes them (durableReads); then
-// the old build exits, and the pod receives within 500 ms of that. A receive.go whose wait between
-// reads doubles from bindPoll fails the row: its seventh read comes 3.2 s after its sixth.
+// read. At a 50 ms poll six of the pod's reads find the binding, counted as the server takes them
+// (durableReads); then the old build exits, and the pod receives within 500 ms of that. A
+// receive.go whose wait between reads doubles from bindPoll fails the row: its seventh read comes
+// 3.2 s after its sixth.
 func TestAHeldDurableIsTakenWithinOnePollOfItsRelease(t *testing.T) {
 	uri := testnats.URL(t)
 	const machineID = "box-poll-release"
@@ -143,9 +143,9 @@ func TestAHeldDurableIsTakenWithinOnePollOfItsRelease(t *testing.T) {
 
 // A stop ends a pod's wait for a pre-lease build's binding at once, not at the wait's next read of
 // the durable, so the listener's ordered shutdown goes on inside its budget, and the old build
-// keeps its binding (TestBindListenerDurableStopsWhenTheContextEnds, before the lease). At a 2 s
-// poll Stop returns within 500 ms of its call. A receive.go whose wait between reads is a plain
-// time.Sleep(bindPoll), deaf to the stop, fails the row: Stop returns only once that wait is out.
+// keeps its binding. At a 2 s poll Stop returns within 500 ms of its call. A receive.go whose wait
+// between reads is a plain time.Sleep(bindPoll), deaf to the stop, fails the row: Stop returns
+// only once that wait is out.
 func TestAStopEndsTheWaitForAHeldDurableAtOnce(t *testing.T) {
 	uri := testnats.URL(t)
 	const machineID = "box-stop-waiting"

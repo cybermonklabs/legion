@@ -60,9 +60,8 @@ func requireSet(t *testing.T, want set, got natsgrant.Permissions, name string) 
 // The fixture was written before that bucket joined the grant, and is never regenerated.
 func withListenerState(t *testing.T, want set, machineID string) set {
 	t.Helper()
-	purge := "$JS.API.STREAM.PURGE.KV_" + bus.InterestBucket
-	at := slices.Index(want.Publish, purge)
-	require.NotEqual(t, -1, at, "the fixture's publish list holds no %s", purge)
+	at := slices.Index(want.Publish, interestPurge)
+	require.NotEqual(t, -1, at, "the fixture's publish list holds no %s", interestPurge)
 	want.Publish = slices.Concat(want.Publish[:at], natsgrant.ListenerState(machineID), want.Publish[at:])
 	return want
 }

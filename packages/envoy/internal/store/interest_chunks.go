@@ -265,10 +265,11 @@ func (r *Registry) deleteChunks(ctx context.Context, kv bus.KeyValue, sessionID 
 // of a manifest left behind, which no write of this build deletes. It judges nothing while the
 // cache does not follow its bucket (kvwatch.Watcher.Following), since a copy behind the bucket
 // could lack the manifest that names a chunk. Each delete waits no longer than ctx.
-// The cache, not the bucket stream's leader, decides these deletes, the one exception to the rule
-// that a read deciding a delete is the leader's (internal/bus/kv_leader_read.go): it is safe only
-// while the copy is less than kvchunk.Grace behind the bucket, and Following proves only that a
-// full read completed since the copy last stopped following, not the live watch's lag.
+// The cache, not the bucket stream's leader, decides these deletes, which
+// internal/bus/kv_leader_read.go names among the deletes a copy decides, with why each is safe:
+// these are safe only while the copy is less than kvchunk.Grace behind the bucket, and Following
+// proves only that a full read completed since the copy last stopped following, not the live
+// watch's lag.
 func (r *Registry) collectInterestChunks(ctx context.Context) (int, error) {
 	if !r.watcher.Following() {
 		return 0, nil

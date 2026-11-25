@@ -26,13 +26,40 @@
 // sends to it or names it as a role's holder (cmd/listener's project_scope.go). The read of a key's
 // newest message they all make (newestMessage) is GetLatest's marker read too.
 //
-// One delete is decided from a copy and not from the leader: the collection of chunks no record
-// names (internal/kvchunk, store's collectInterestChunks and session's collectChunks). No read of
-// one key proves that no manifest of the bucket names a chunk, so the cache decides, and only for a
-// chunk its copy has held for kvchunk.Grace (10 minutes) while no record named it: that is safe
-// only while the copy is less than the grace behind the bucket. The collectors judge nothing while
-// kvwatch.Watcher.Following is false, which proves that a full read of the bucket completed since
-// the copy last stopped following, not how far behind the live watch is now.
+// Three deletes are decided from a copy - a store's cache, fed by its watcher of the bucket, or
+// the list of chunk markers that watcher delivered - and not from the leader, and no
+// compare-and-swap refuses them where that copy is behind:
+//   - The collection of chunks no record names (internal/kvchunk, store's collectInterestChunks
+//     and session's collectChunks). No read of one key proves that no manifest of the bucket
+//     names a chunk, so the cache decides, and only for a chunk its copy has held for
+//     kvchunk.Grace (10 minutes) while no record named it: that is safe only while the copy is
+//     less than the grace behind the bucket. The collectors judge nothing while
+//     kvwatch.Watcher.Following is false, which proves that a full read of the bucket completed
+//     since the copy last stopped following, not how far behind the live watch is now.
+//   - A known-session write's delete of the chunks of the record it replaces (session's
+//     KnownSessions.writeWithin, through kvchunk.Write), whose layout is this listener's copy of
+//     that record. Each write names its chunks by a generation of its own, and deletes the
+//     replaced layout's only once its own head has landed, so the key's head then names this
+//     write's generation and never the one deleted: a copy behind the bucket names a generation
+//     that a newer head already replaced, whose chunks that head's writer deleted or the
+//     collection sweeps. A generation another record of the copy names is left to the collection
+//     (session's ownLayout).
+//   - The known-session store's purge of the markers its chunk keys' deletes left (session's
+//     purgeChunkMarkers, kvchunk.PurgeMarkers), each one its watcher was delivered
+//     kvchunk.MarkerGrace (5 minutes) ago or more. A chunk key is never written again, since each
+//     write names a new generation, so the purge of a deleted chunk's subject takes no chunk a
+//     record names; and the grace is long enough that every running listener's watcher has been
+//     delivered the delete and dropped the chunk from its copy, so the purge takes nothing a copy
+//     still holds. A watcher that missed the delete drops the chunk at its next read of the bucket.
+//
+// A reaper's delete of a record its copy judged gone (session's SessionRegistry.deleteGone, store's
+// reapInterest) and an interest write's delete of the chunks of the row it replaced (store's
+// putInterestAt) are judged on a copy too, but the bucket decides each: the delete, or the write,
+// is a compare-and-swap at the revision the judgement read, which the bucket refuses once another
+// write has landed since, and the chunks it leaves unnamed are deleted only once it has landed.
+// The interest marker collector's purge is decided from the stream itself, its own scan of the
+// bucket and two reads of the stream's state, not from a store's cache (store's
+// interestMarkerCollector).
 
 package bus
 

@@ -33,12 +33,16 @@ import (
 // first (dispatchSlots, cmd/dispatch/process_slots_test.go, says how), and a test that asks for
 // more at once is refused by name.
 //
-// The peak of each binary of cmd/dispatch: 4 with no tag, in
-// TestEveryProcessAHundredConnectionServerRunsStaysWithinItsBudget (connection_budget_test.go),
-// which runs this many on purpose, and with the memory tag, and in both binaries parallel tests
-// share the slots; 3 with multiprocess (TestAProcessStoppedWhileWaitingForAdmissionReleasesItsDurables);
-// 2 with twobuild and with basebuild. A test that comes to need more is refused by name, and this
-// number is raised to what it runs.
+// Every binary of cmd/dispatch, each tagged one included, holds
+// TestEveryProcessAHundredConnectionServerRunsStaysWithinItsBudget (connection_budget_test.go has
+// no build tag), which runs this many on purpose, so every binary can reach 4. A tagged lane runs
+// only the rows its tag adds (.github/scripts/go-tagged-tests.sh), so that row runs in the no-tag
+// lane alone, and the peaks of the rows each lane runs are: 4 with no tag, in that row, and with
+// the memory tag, and in both lanes parallel tests share the slots; 3 with multiprocess
+// (TestAProcessStoppedWhileWaitingForAdmissionReleasesItsDurables); 2 with twobuild. No CI job
+// runs the basebuild rows (a pod runs them one at a time and by name, store_census_test.go), and
+// they peak at 2. A test that comes to need more is refused by name, and this number is raised to
+// what it runs.
 const MaxProcessesAtOnce = 4
 
 // RequiredConnections is what MaxProcessesAtOnce Dispatch processes would open together at

@@ -721,15 +721,18 @@ func (s *KnownSessions) Get(sessionID string) (KnownSession, bool) {
 }
 
 // cached is the row the copy holds for sessionID within the retention, whether or not the store
-// answers: what a write compares against, replaces and a clean stop rewrites. Callers hold no
-// lock.
+// answers (cachedKeeping, without the keys it keeps): the record Get answers and the one a clean
+// stop rewrites (TouchWithin). Callers hold no lock.
 func (s *KnownSessions) cached(sessionID string) (knownRow, bool) {
 	row, _, ok := s.cachedKeeping(sessionID)
 	return row, ok
 }
 
-// cachedKeeping is cached with the keys of the record this build does not name (unknown), which a
-// write carries onto the record it writes (writeWithin). Callers hold no lock.
+// cachedKeeping is the row the copy holds for sessionID within the retention, whether or not the
+// store answers, with the keys of its record this build does not name (unknown): what a write
+// (writeWithin) compares against for its throttle, replaces, deleting the chunks of its layout
+// that no other record names (ownLayout), and carries those keys onto the record it writes.
+// Callers hold no lock.
 func (s *KnownSessions) cachedKeeping(sessionID string) (knownRow, map[string]json.RawMessage, bool) {
 	cutoff := s.cutoff()
 	s.mu.RLock()
@@ -783,7 +786,8 @@ func (s *KnownSessions) eachMatch(topic string, visit func(KnownSession)) {
 // A record whose encoding is past one NATS message is written in chunks and a manifest naming
 // them (kvchunk.Write), and the chunks of the record it replaces, as this listener's copy holds
 // it, are deleted once it lands; the store's sweep collects what a write that stopped part way
-// left (collectChunks).
+// left (collectChunks). That copy, not the bucket stream's leader, decides the delete:
+// internal/bus/kv_leader_read.go names it among the deletes a copy decides, and why it is safe.
 //
 // A store whose bucket is not open writes nothing and answers nil, as a nil store does: its
 // reads answer no record either, so nothing it could write would be read.

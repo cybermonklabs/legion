@@ -93,14 +93,16 @@ func (c *Chunks) Join(value []byte) ([]byte, Layout, error) {
 // generations of the records the store's cache holds.
 //
 // The store judges with it only while its cache follows the bucket (kvwatch.Watcher.Following): a
-// copy that is behind could lack the manifest that names a chunk. A copy that follows holds every
-// manifest the bucket held a moment ago, and a manifest lands within WriteBound and one request of
-// its oldest chunk, so a chunk older than Grace that a manifest names is named by a record that
-// cache holds. A manifest the cache could not join names its chunks to no record either: that
-// record is damaged, which the store's next write of it replaces, and its chunks are collected like
-// any other. A key under Prefix not in the shape this build writes (wellFormed) is no chunk of this
-// build's and is left where it is: a key nats.go refuses would fail its delete at every pass, and
-// the collection stops at a failed delete.
+// copy that is behind could lack the manifest that names a chunk. Following proves only that a
+// full read of the bucket completed since the copy last stopped following, not how far behind the
+// live watch is now, so the judgement is safe only while the copy is less than Grace behind the
+// bucket: a manifest lands within WriteBound and one request of its oldest chunk, so while the
+// copy is no further behind than Grace less that, a chunk older than Grace that a manifest names
+// is named by a record that cache holds. A manifest the cache could not join names its chunks to
+// no record either: that record is damaged, which the store's next write of it replaces, and its
+// chunks are collected like any other. A key under Prefix not in the shape this build writes
+// (wellFormed) is no chunk of this build's and is left where it is: a key nats.go refuses would
+// fail its delete at every pass, and the collection stops at a failed delete.
 func (c *Chunks) Unnamed(named func(generation string) bool, cutoff time.Time) []string {
 	var unnamed []string
 	for key, held := range c.copy.All() {

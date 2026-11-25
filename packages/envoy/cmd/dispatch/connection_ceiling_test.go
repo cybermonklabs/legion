@@ -46,11 +46,11 @@ import (
 // naming the server's max_connections and the client backends open on it
 // (connectionRefusalCause).
 //
-// dispatchProcessesRunning is the count of Dispatch processes running in this test binary. It is
-// one count for the whole binary because one `go test` binary is what one lane's server serves,
-// and parallel root tests in it share that server. A process counts from its start until it exits,
-// which is what it holds connections for, so a row that restarts a process one after another asks
-// for one process's worth.
+// dispatchProcessesRunning is the count of this test binary's running Dispatch processes, which
+// connectionRefusalCause reports beside the server's open client backends. No check reads it:
+// dispatchSlots holds the processes under testlimits.MaxProcessesAtOnce, and serverPoolBudget
+// reads only the server's settings. A process counts from its start until it exits, which is what
+// it holds connections for.
 var dispatchProcessesRunning atomic.Int64
 
 // requireConnectionCeiling counts one more Dispatch process running in this test binary, refuses
@@ -201,9 +201,10 @@ func connectionRefusalCause(refused, databaseURL string, budget int) string {
 	}
 	return reason + fmt.Sprintf("The server allows max_connections=%d and has %d client backends open now "+
 		"(pg_stat_activity), while %d other Dispatch process(es) of this test binary run, each of which may "+
-		"open %s. The connection ceiling check counts only those processes; "+
-		"the rest are this binary's own pools and the server's other clients. Free the server's "+
-		"connections, or raise max_connections.",
+		"open %s. The start's guard counts only those processes, at most testlimits.MaxProcessesAtOnce of them "+
+		"(dispatchSlots), and reads only the server's max_connections and superuser reserve, not the slots in "+
+		"use; the rest of the backends are this binary's own pools and the server's other clients. Free the "+
+		"server's connections, or raise max_connections.",
 		allowed, open, dispatchProcessesRunning.Load(), opens)
 }
 

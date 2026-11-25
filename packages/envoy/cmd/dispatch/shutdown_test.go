@@ -1275,8 +1275,9 @@ func TestTheHealthWaitTakesNoAnswerOnThePortForAProcessThatLostIt(t *testing.T) 
 // failure, before the whole output. An exit for any reason quotes the output's last lines. An exit
 // on a connection Postgres refused for too many clients (SQLSTATE 53300) quotes that line instead
 // and names the server's max_connections and the client backends open on it then
-// (connectionRefusalCause): the connection ceiling check counts only this binary's Dispatch
-// processes, so a server whose slots other clients hold passes it, and the process fails later.
+// (connectionRefusalCause): the start's guard counts only this binary's Dispatch processes
+// (dispatchSlots) and reads only the server's settings, not the slots in use, so a server whose
+// slots other clients hold passes it, and the process fails later.
 func TestAProcessThatExitsBeforeItIsHealthySaysWhy(t *testing.T) {
 	// Not parallel: its verdict reads every client backend of the Postgres server.
 	exited := func(output, databaseURL string) error {
@@ -1549,8 +1550,8 @@ func startDispatchProcessWith(t *testing.T, databaseURL string, options dispatch
 	}
 	// The process leaves the count and gives back its slot once it has exited and before Exited
 	// closes, so a test that waits on Exited and starts another process is counted with this one
-	// gone: a row that restarts a process one after another asks the server for one process's
-	// worth, not one per start. A start that fails leaves both at the test's cleanup.
+	// gone: a row that restarts a process one after another holds one slot at a time, not one per
+	// start. A start that fails leaves both at the test's cleanup.
 	return &dispatchProcess{Process: cmdtest.StartThen(t, "Dispatch", cmd, func() {
 		releaseConnections()
 		releaseSlot()
