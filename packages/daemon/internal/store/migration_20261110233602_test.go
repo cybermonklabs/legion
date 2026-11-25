@@ -23,6 +23,7 @@ const pastReviewStartsVersion = 20261110233602
 // which still holds a slot and still waits for it; a supervise row that is no start; and a row
 // of another kind whose payload carries the same field name.
 func TestTheStartsPastReviewLoseTheSlotMarkAfter20261110233602(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, pastReviewStartsVersion-1)

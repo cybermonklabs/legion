@@ -44,6 +44,7 @@ const (
 // round's decision holds the body with U+FFFD where the NUL was, and the GitHub consumer
 // delivered the event once and acknowledged it.
 func TestAReviewWhoseBodyHoldsNULIsAppliedOnceWithAReplacementCharacter(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := testpg.ClonePool(t, "legion_intake_nul_test")
 	seedNULIssue(t, pool, phase.Reviewing, "needs_review", claim.RoleReviewer)
@@ -89,6 +90,7 @@ func TestAReviewWhoseBodyHoldsNULIsAppliedOnceWithAReplacementCharacter(t *testi
 // record's title holds U+FFFD where the NUL was, and the Dispatch consumer delivered the event
 // once and acknowledged it.
 func TestAnIssueEventWhoseTitleHoldsNULIsAppliedOnceWithAReplacementCharacter(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := testpg.ClonePool(t, "legion_intake_nul_test")
 	seedNULIssue(t, pool, phase.Implementing, "in_progress", claim.RoleImplementer)
