@@ -43,12 +43,27 @@
 #   APPROVAL_MESSAGE_OVERLAY    the pod's operator overlay (the overlay.yml PI_CONFIG_FILES names),
 #                               which each session reads through PI_CONFIG_FILES as the pod's do,
 #                               and whose modelRoles.default every case but the second pass runs
-#   APPROVAL_MESSAGE_ENTRIES    each-path: the first entry file of each path; every: all of them
+#   APPROVAL_MESSAGE_ENTRIES    each-path: the first entry file of each path; every: all of them;
+#                               top-level-capture: none of the cases, but the capture of the wire
+#                               bodies Oh My Pi itself sends to the models whose
+#                               supportsMidConversationSystem flag is off (below)
 #   APPROVAL_MESSAGE_OMP_ROOT   where the pinned build is installed ($TMPDIR/omp-pin); a build
 #                               already there at .omp-pin's version is used again
 #   APPROVAL_MESSAGE_EVIDENCE_DIR  a fresh directory under TMPDIR by default, kept and printed: the
 #                               transcript, the NATS server's and each pack's log, and in records/
 #                               every session's recorded requests, one file per case
+#
+# APPROVAL_MESSAGE_ENTRIES=top-level-capture runs one short session of the pinned build per body
+# on the pod's own models.yml and overlay, each with the recorder alone loaded and neither plugin,
+# so no approval handler touches a request; it starts no NATS server and packs nothing. The driver
+# writes each session's `before_provider_request` body of its second prompt, every local path
+# written over, under packages/pi-legion/test/fixtures/approval-context/top-level/, and prints
+# where: claude-sonnet-5 (anthropic-messages), gemini-4-neon and kimi-k3.1-pro
+# (openai-completions), and gpt-6.2-sol (openai-responses) twice, on the pod's own models.yml and
+# on a copy of it in the run's work directory, mode 0600, removed once that session ends, whose
+# gpt-6.2-sol entry flips compat.supportsDeveloperRole, so the two bodies hold the system prompt
+# as `instructions` and as leading `developer` items. It needs bash, bun, curl and tar, and ends
+# with `approval message capture: top-level capture PASS` or names the first session that failed.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -86,8 +101,9 @@ timeout_hook=
 . "$root/scripts/e2e/lib/rig.sh"
 
 # cleanup stops the NATS server this run started and removes the work directory (its store, the
-# packed plugins, a revision's tree); the sessions are the driver's own children, which it stops
-# itself. The evidence directory, the installed build and the built natsd stay.
+# packed plugins, a revision's tree, the top-level capture's copy of models.yml); the sessions are
+# the driver's own children, which it stops itself. The evidence directory, the installed build and
+# the built natsd stay.
 cleanup() {
   local rc=$1
   trap - EXIT INT TERM
@@ -104,10 +120,19 @@ trap 'cleanup 143' TERM
 
 begin prerequisites
 ref=${APPROVAL_MESSAGE_PLUGINS_REF:-}
+entry_files=${APPROVAL_MESSAGE_ENTRIES:-each-path}
+case "$entry_files" in
+each-path | every) ;;
+top-level-capture)
+  [ -z "$ref" ] || fail "APPROVAL_MESSAGE_PLUGINS_REF is set, but the top-level capture loads no plugin"
+  ;;
+*) fail "APPROVAL_MESSAGE_ENTRIES is '$entry_files'; it is each-path, every or top-level-capture" ;;
+esac
 # bun runs the driver and packs, go builds natsd and prints the daemon's words, curl and tar fetch
 # and unpack the pinned build, and lib/pack-plugin.sh rewrites the manifest with jq under a flock;
-# git takes a revision's tree.
-tools=(bun go curl tar jq flock)
+# git takes a revision's tree. The top-level capture builds, prints and packs nothing.
+tools=(bun curl tar)
+[ "$entry_files" = top-level-capture ] || tools+=(go jq flock)
 [ -z "$ref" ] || tools+=(git)
 for tool in "${tools[@]}"; do
   command -v "$tool" >/dev/null || fail "$tool is not on PATH"
@@ -116,8 +141,8 @@ driver=$root/packages/pi-legion/test/approval-message-capture.ts
 [ -f "$driver" ] || fail "$driver is missing"
 [ -d "$root/packages/pi-legion/node_modules/@legion/pi-shared" ] ||
   fail "packages/pi-legion/node_modules holds no @legion/pi-shared: run bun install in this checkout"
-# The driver reads the file's anthropic provider and checks the models the cases run before its
-# first case; nothing here prints a line of it.
+# The driver reads the file's providers and checks the models the run needs before its first case
+# or session; nothing here prints a line of it.
 models=${APPROVAL_MESSAGE_MODELS:-${PI_CODING_AGENT_DIR:-}/models.yml}
 [ -r "$models" ] || fail "no readable models.yml at '$models': set APPROVAL_MESSAGE_MODELS to the pod's own"
 overlay=${APPROVAL_MESSAGE_OVERLAY:-}
@@ -130,13 +155,12 @@ fi
 if [ -z "$overlay" ] || [ ! -r "$overlay" ]; then
   fail "no readable operator overlay ('$overlay'): set APPROVAL_MESSAGE_OVERLAY to the pod's own"
 fi
-entry_files=${APPROVAL_MESSAGE_ENTRIES:-each-path}
-case "$entry_files" in
-each-path | every) ;;
-*) fail "APPROVAL_MESSAGE_ENTRIES is '$entry_files'; it is each-path or every" ;;
-esac
 note "model route: $models and the overlay $overlay"
-note "entries: $entry_files; plugins: ${ref:-this checkout}"
+if [ "$entry_files" = top-level-capture ]; then
+  note "the top-level capture: the recorder alone, no plugin"
+else
+  note "entries: $entry_files; plugins: ${ref:-this checkout}"
+fi
 note "evidence directory $evidence"
 pass
 
@@ -175,6 +199,15 @@ else
 fi
 note "${version%%$'\n'*}"
 pass
+
+if [ "$entry_files" = top-level-capture ]; then
+  # The capture's sessions load no plugin, so they need no NATS server and no pack. The driver
+  # prints a section per session and the run's last line, its verdict.
+  driver_ran=1
+  bun "$driver" --entries top-level-capture --omp "$omp" --models "$models" --overlay "$overlay" \
+    --work "$work" --evidence "$evidence/records"
+  exit 0
+fi
 
 begin nats
 # A session whose Envoy plugin reaches no NATS server is given no consumer, and its claim boot then

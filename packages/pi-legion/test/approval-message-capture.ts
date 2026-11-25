@@ -35,6 +35,18 @@
 // `anthropic` provider offers claude-sonnet-5 and the overlay's `default` model.
 // `--negative-control` runs the same cases, whose placing ones fail by design, and then exits 0
 // exactly when the run sent requests and none of them holds an approval message.
+//
+//   bun packages/pi-legion/test/approval-message-capture.ts --entries top-level-capture \
+//     --omp <binary> --models <models.yml> --overlay <overlay.yml> --work <dir> [--evidence <dir>]
+//
+// runs none of the cases: it is the capture of fixture F4 of the approval message's plan
+// (`topLevelCapture`), the wire bodies Oh My Pi itself sends to the models whose
+// `compat.supportsMidConversationSystem` is off. Each of its sessions loads the recorder alone,
+// neither plugin, so no approval handler touches a request, on the pod's own models.yml and
+// overlay, and it writes one `before_provider_request` body per session under
+// fixtures/approval-context/top-level/. It prints `== <session>`, the file it wrote and
+// `ok <session>` or `FAIL <session>: <why>`, and ends with
+// `approval message capture: top-level capture PASS` or names the first session that failed.
 import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -45,7 +57,16 @@ import {
   readSync,
   statSync,
 } from "node:fs";
-import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { ROLE_TOPIC_PREFIX } from "@legion/contracts";
@@ -57,10 +78,12 @@ import {
   isSummarization,
   isTerminalEnd,
   messageStream,
+  ompRoot,
   type Request,
   type Rpc,
   runLegionPane,
   sendRelayFrame,
+  spawnRpc,
 } from "@legion/pi-shared/test/omp-harness";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { connect, headers as natsHeaders, StringCodec } from "nats";
@@ -1778,6 +1801,545 @@ export async function runCase(one: CaptureCase, setup: CaptureSetup): Promise<vo
   );
 }
 
+/** The checkout's root, written over in each body of the top-level capture. */
+const CHECKOUT = path.resolve(import.meta.dir, "../../..");
+
+/** Where the top-level capture writes its bodies: fixture F4 of the approval message's plan. */
+const TOP_LEVEL_FIXTURES = path.join(import.meta.dir, "fixtures", "approval-context", "top-level");
+
+/** What each body of the top-level capture says it was captured with. */
+const TOP_LEVEL_COMMAND =
+  "APPROVAL_MESSAGE_ENTRIES=top-level-capture bash scripts/e2e/approval-message.sh";
+
+/** The second prompt of a top-level capture's session, which asks for no tool call either
+ *  (`CONTRACT`'s rule 3). */
+const AGAIN = "Run no command: reply with the word again.";
+
+/** The wire APIs of the models the top-level capture runs. */
+type WireApi = "anthropic-messages" | "openai-completions" | "openai-responses";
+
+/** A model of the top-level capture, as the pod's models.yml names it, at the thinking level the
+ *  fallback chain of the pod's architect role runs it at; claude-sonnet-5, which the chain does
+ *  not name, at the level of the overlay's `per-call-claude-sonnet-5` role. */
+interface TopLevelModel {
+  readonly provider: string;
+  readonly id: string;
+  readonly api: WireApi;
+  readonly thinking: string;
+}
+
+/** The Responses model, whose body the capture takes twice: on the pod's own models.yml, and on a
+ *  copy whose entry for it flips `compat.supportsDeveloperRole`, the other form of its system
+ *  prompt (`openai-responses.ts`: `developer` items for a reasoning model with the flag on,
+ *  `instructions` otherwise). */
+const RESPONSES_MODEL: TopLevelModel = {
+  provider: "openai",
+  id: "gpt-6.2-sol",
+  api: "openai-responses",
+  thinking: "xhigh",
+};
+
+const TOP_LEVEL_MODELS: readonly TopLevelModel[] = [
+  { provider: "anthropic", id: "claude-sonnet-5", api: "anthropic-messages", thinking: "xhigh" },
+  { provider: "model-gateway", id: "gemini-4-neon", api: "openai-completions", thinking: "high" },
+  { provider: "model-gateway", id: "kimi-k3.1-pro", api: "openai-completions", thinking: "max" },
+  RESPONSES_MODEL,
+];
+
+/** What a placeholder in a body of the top-level capture stands for: each local path, written
+ *  over. */
+const TOP_LEVEL_PLACEHOLDERS: Readonly<Record<string, string>> = {
+  "<root>": "the session's scratch root, which holds its workspace and its transcripts",
+  "<home>": "the session's HOME, <root>/home",
+  "<checkout>": "the repository checkout the recorder loads from",
+  "<user-home>": "the home of the user who ran the capture",
+  "<tmp>": "the temporary directory",
+  "<work>": "the run's work directory",
+};
+
+/** What must not be left in a body once the placeholders are written: a local path, a private
+ *  host, a deployment key, a Dispatch link or a credential's field. */
+const TOP_LEVEL_LEAKS: readonly RegExp[] = [
+  /\/home\//,
+  /\/legion\/scratch/,
+  /\/legion\/workspaces/,
+  /cluster\.local/,
+  /\bINFRA-\d/,
+  /dispatch:\/\//,
+  /"(?:authorization|x-api-key|api-key|apiKey)"\s*:/i,
+];
+
+/** A models.yml, parsed: each provider's fields, its `api`, `apiKey` and `models` among them. */
+interface ModelsFile {
+  readonly providers?: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
+}
+
+/** `model`'s entry in `file`, which `name` names in a failure: it must be offered, on `model.api`
+ *  (its own `api`, else its provider's). */
+function modelEntry(file: ModelsFile, model: TopLevelModel, name: string): Record<string, unknown> {
+  const provider = file.providers?.[model.provider];
+  const listed = provider?.models;
+  const entry = (Array.isArray(listed) ? (listed as unknown[]) : []).find(
+    (one): one is Record<string, unknown> =>
+      typeof one === "object" && one !== null && "id" in one && one.id === model.id
+  );
+  if (entry === undefined) fail(`${name}'s ${model.provider} provider offers no model ${model.id}`);
+  const api = entry.api ?? provider?.api;
+  if (api !== model.api) {
+    fail(`${name} gives ${model.provider}/${model.id} the API ${String(api)}, not ${model.api}`);
+  }
+  return entry;
+}
+
+/** `file` with `model`'s entry setting `compat.supportsDeveloperRole` to `value`. */
+function withDeveloperRole(file: ModelsFile, model: TopLevelModel, value: boolean): ModelsFile {
+  const copy = structuredClone(file);
+  const entry = modelEntry(copy, model, "the copy of the pod's models.yml");
+  const compat = typeof entry.compat === "object" && entry.compat !== null ? entry.compat : {};
+  entry.compat = { ...compat, supportsDeveloperRole: value };
+  return copy;
+}
+
+/** The keys the providers of `file` resolve to, as Oh My Pi resolves an `apiKey`: a `!command`'s
+ *  output, an environment variable's value, or the literal. Read in this process alone and never
+ *  printed: no body may hold one. */
+function providerKeys(file: ModelsFile): string[] {
+  return Object.values(file.providers ?? {})
+    .flatMap(({ apiKey }) => {
+      if (typeof apiKey !== "string" || apiKey === "") return [];
+      if (!apiKey.startsWith("!")) return [process.env[apiKey] ?? apiKey];
+      const run = Bun.spawnSync(["sh", "-c", apiKey.slice(1)], {
+        stdout: "pipe",
+        stderr: "ignore",
+      });
+      return run.exitCode === 0 ? [run.stdout.toString().trim()] : [];
+    })
+    .filter((key) => key.length >= 8);
+}
+
+/** `text` with each of `keys` and each URL written over, for a line the run prints. */
+function masked(text: string, keys: readonly string[]): string {
+  return keys
+    .reduce((line, key) => line.replaceAll(key, "<key>"), text)
+    .replace(/https?:\/\/\S+/g, "<url>");
+}
+
+function roleName(item: unknown): string {
+  return typeof item === "object" && item !== null && "role" in item ? String(item.role) : "";
+}
+
+/** The items `items` starts with whose role is one of `roles`. */
+function leading(items: unknown, roles: readonly string[]): unknown[] {
+  const list: unknown[] = Array.isArray(items) ? items : [];
+  const end = list.findIndex((item) => !roles.includes(roleName(item)));
+  return end === -1 ? list : list.slice(0, end);
+}
+
+/** Where a body holds its top-level system prompt: the form `api` sends it in, and the JSON
+ *  paths of its parts. */
+interface SystemPromptAt {
+  readonly form: string;
+  readonly paths: readonly string[];
+}
+
+/** Where `payload`, a body sent on `api`, holds its top-level system prompt, or undefined where it
+ *  holds it in none of that API's forms. */
+function systemPromptAt(
+  api: WireApi,
+  payload: Record<string, unknown>
+): SystemPromptAt | undefined {
+  const paths = (parts: readonly unknown[], at: string): string[] =>
+    parts.map((_, index) => `${at}[${index}]`);
+  switch (api) {
+    case "anthropic-messages": {
+      const blocks: unknown[] = Array.isArray(payload.system) ? payload.system : [];
+      const text = blocks.every(
+        (block) =>
+          typeof block === "object" && block !== null && "type" in block && block.type === "text"
+      );
+      return blocks.length > 0 && text
+        ? { form: "text blocks of system", paths: paths(blocks, "payload.system") }
+        : undefined;
+    }
+    case "openai-completions": {
+      const parts = leading(payload.messages, ["system", "developer"]);
+      const roles = [...new Set(parts.map(roleName))].join(" and ");
+      return parts.length > 0
+        ? { form: `leading ${roles} messages`, paths: paths(parts, "payload.messages") }
+        : undefined;
+    }
+    case "openai-responses": {
+      const parts = leading(payload.input, ["developer"]);
+      if (typeof payload.instructions === "string" && parts.length === 0) {
+        return { form: "instructions", paths: ["payload.instructions"] };
+      }
+      return payload.instructions === undefined && parts.length > 0
+        ? { form: "leading developer items", paths: paths(parts, "payload.input") }
+        : undefined;
+    }
+  }
+}
+
+/** Whether `payload`'s conversation, its items with a user or an assistant role, is the
+ *  session's: the first prompt, an answer after it, and the second prompt last. */
+function holdsBothPrompts(payload: Record<string, unknown>): boolean {
+  const items: unknown[] = Array.isArray(payload.messages)
+    ? payload.messages
+    : Array.isArray(payload.input)
+      ? payload.input
+      : [];
+  const turns = items.filter((item) => ["user", "assistant"].includes(roleName(item)));
+  const first = turns.findIndex(
+    (item) => roleName(item) === "user" && JSON.stringify(item).includes(WARM_UP)
+  );
+  const last = turns.at(-1);
+  return (
+    first !== -1 &&
+    turns.slice(first + 1).some((item) => roleName(item) === "assistant") &&
+    roleName(last) === "user" &&
+    JSON.stringify(last).includes(AGAIN)
+  );
+}
+
+/** What every session of the top-level capture runs against. */
+interface TopLevelRun {
+  readonly binary: string;
+  readonly overlay: string;
+  readonly work: string;
+  readonly evidence: string | undefined;
+  /** What `omp --version` prints, and the build `.omp-pin` names, which it does not print. */
+  readonly omp: string;
+  readonly build: string;
+  /** The keys of the pod's models.yml (`providerKeys`). */
+  readonly keys: readonly string[];
+  readonly note: (line: string) => void;
+}
+
+/** One session of the top-level capture. */
+interface TopLevelSession {
+  readonly model: TopLevelModel;
+  /** The models.yml it reads: the pod's own, or the copy whose developer role is flipped. */
+  readonly models: string;
+  /** What its body says of that file. */
+  readonly modelsFile: string;
+  /** The name of its record in the evidence directory, `top-level-<stem>.jsonl`. */
+  readonly stem: string;
+  /** The form its body must hold the system prompt in, where the run expects one. */
+  readonly form?: string;
+}
+
+async function ompVersion(binary: string): Promise<string> {
+  const child = Bun.spawn([binary, "--version"], { stdout: "pipe", stderr: "pipe" });
+  const printed = (await new Response(child.stdout).text()).trim();
+  if ((await child.exited) !== 0) fail(`${binary} --version failed`);
+  return printed;
+}
+
+/**
+ * Runs `session`: the pinned Oh My Pi with the recorder alone, `--model` on the session's model
+ * and `CONTRACT` appended to its system prompt, given two prompts that ask for no tool call. Then
+ * writes the `before_provider_request` body of the second prompt, which holds the system prompt,
+ * the first prompt, its answer and the second prompt, as it was sent, every local path written
+ * over (`TOP_LEVEL_PLACEHOLDERS`). Answers where that body holds its system prompt.
+ */
+async function topLevelSession(
+  run: TopLevelRun,
+  session: TopLevelSession,
+  cleanup: Cleanup
+): Promise<SystemPromptAt> {
+  const { model } = session;
+  const date = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  const { root, home, workspace, sessions } = await ompRoot(
+    run.binary,
+    "approval-top-level-",
+    cleanup
+  );
+  await symlink(session.models, path.join(home, ".omp", "agent", "models.yml"));
+  const recordFile = path.join(root, "record.jsonl");
+  const contractFile = path.join(root, "contract.md");
+  await writeFile(contractFile, `${CONTRACT}\n`);
+  cleanup.push(async () => {
+    if (run.evidence === undefined || !existsSync(recordFile)) return;
+    await mkdir(run.evidence, { recursive: true });
+    await copyFile(recordFile, path.join(run.evidence, `top-level-${session.stem}.jsonl`));
+  });
+
+  let ends = 0;
+  let refusal: string | undefined;
+  let wake = (): void => undefined;
+  const rpc = spawnRpc(
+    run.binary,
+    {
+      extensions: [RECORDER],
+      home,
+      workspace,
+      sessions,
+      env: {
+        LEGION_CAPTURE_RECORD: recordFile,
+        PI_CONFIG_FILES: run.overlay,
+        ...(process.env.TMPDIR === undefined ? {} : { TMPDIR: process.env.TMPDIR }),
+      },
+      args: [
+        "--model",
+        `${model.provider}/${model.id}:${model.thinking}`,
+        "--append-system-prompt",
+        contractFile,
+      ],
+      onFrame: (frame) => {
+        const record = frame as Record<string, unknown>;
+        if (isTerminalEnd(record)) ends += 1;
+        if (record.type === "response" && record.command === "prompt" && record.success === false) {
+          refusal = String(record.error);
+        }
+        wake();
+      },
+    },
+    cleanup
+  );
+  const prompt = async (message: string): Promise<void> => {
+    const ended = ends;
+    const { promise, resolve, reject } = Promise.withResolvers<void>();
+    wake = () => {
+      if (refusal !== undefined) reject(new Error(`omp refused the prompt: ${refusal}`));
+      else if (ends > ended) resolve();
+    };
+    const timer = setTimeout(
+      () =>
+        reject(
+          new Error(`the run of the prompt ${JSON.stringify(message)} took over ${STEP_MS} ms`)
+        ),
+      STEP_MS
+    );
+    rpc.send({ type: "prompt", message });
+    try {
+      await Promise.race([promise, rpc.closed]);
+    } finally {
+      clearTimeout(timer);
+      wake = () => undefined;
+    }
+  };
+  await prompt(WARM_UP);
+  await prompt(AGAIN);
+  await rpc.end();
+
+  const events = (existsSync(recordFile) ? readFileSync(recordFile, "utf8") : "")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter((event) => (event.agent as { readonly kind?: unknown } | undefined)?.kind !== "sub");
+  const answer = events.findLast(
+    (event) => event.event === "message_end" && roleName(event.message) === "assistant"
+  )?.message as { readonly stopReason?: unknown; readonly errorMessage?: unknown } | undefined;
+  if (answer === undefined) fail("the session recorded no answer");
+  if (answer.stopReason === "error" || answer.stopReason === "aborted") {
+    fail(`the last answer ended with ${answer.stopReason}: ${String(answer.errorMessage ?? "")}`);
+  }
+  const requests = events
+    .filter((event) => event.event === "before_provider_request")
+    .map((event) => ({
+      event,
+      payload: (typeof event.payload === "object" && event.payload !== null
+        ? event.payload
+        : {}) as Record<string, unknown>,
+    }));
+  const sent = requests.findLast(({ payload }) => holdsBothPrompts(payload));
+  if (sent === undefined) {
+    fail(
+      `none of the session's ${requests.length} requests holds the first prompt, its answer and the second prompt last`
+    );
+  }
+  const recorded = (sent.event.model ?? {}) as {
+    readonly provider?: unknown;
+    readonly id?: unknown;
+    readonly input?: unknown;
+    readonly supportsMidConversationSystem?: unknown;
+  };
+  if (recorded.provider !== model.provider || recorded.id !== model.id) {
+    fail(
+      `the request went to ${String(recorded.provider)}/${String(recorded.id)}, not ${model.provider}/${model.id}`
+    );
+  }
+  if (recorded.supportsMidConversationSystem === true) {
+    fail(`${model.id} takes a system message inside the conversation`);
+  }
+  const { payload } = sent;
+  const at = systemPromptAt(model.api, payload);
+  if (at === undefined)
+    fail(`the body holds its system prompt in none of the forms of ${model.api}`);
+  if (session.form !== undefined && at.form !== session.form) {
+    fail(`the body holds its system prompt as ${at.form}, not as ${session.form}`);
+  }
+  const name =
+    model.api === "openai-responses"
+      ? `${model.id}-${at.form === "instructions" ? "instructions" : "developer"}`
+      : model.id;
+  const fixture = {
+    captured: { command: TOP_LEVEL_COMMAND, omp: run.omp, build: run.build, date },
+    shape: `top-level-${name}`,
+    how:
+      `The before_provider_request body of the second prompt of a session of the pinned Oh My Pi ` +
+      `that loads no plugin, only the recorder (approval-context-recorder.ts), on ${session.modelsFile} ` +
+      "and the pod's operator overlay, with `--model " +
+      `${model.provider}/${model.id}:${model.thinking}\` and the capture driver's CONTRACT ` +
+      "appended to its system prompt: a first prompt, its answer, then the second prompt. " +
+      "`payload` is that body as Oh My Pi built it, every local path written over.",
+    placeholders: TOP_LEVEL_PLACEHOLDERS,
+    model: {
+      provider: model.provider,
+      id: model.id,
+      api: model.api,
+      thinking: model.thinking,
+      input: recorded.input,
+      supportsMidConversationSystem: recorded.supportsMidConversationSystem ?? null,
+      modelsFile: session.modelsFile,
+    },
+    systemPrompt: at,
+    payload,
+  };
+  // Longest first, so a path under another is written over before the one it is under.
+  const written = [
+    [home, "<home>"],
+    [root, "<root>"],
+    [CHECKOUT, "<checkout>"],
+    [os.homedir(), "<user-home>"],
+    [os.tmpdir(), "<tmp>"],
+    [run.work, "<work>"],
+  ]
+    .filter(([local]) => local !== undefined && local !== "")
+    .sort(([left], [right]) => (right?.length ?? 0) - (left?.length ?? 0))
+    .reduce(
+      (json, [local, placeholder]) => json.replaceAll(local ?? "", placeholder ?? ""),
+      JSON.stringify(fixture, null, 2)
+    );
+  for (const leak of TOP_LEVEL_LEAKS) {
+    const found = leak.exec(written);
+    if (found !== null) fail(`the body still holds ${JSON.stringify(found[0])} at ${found.index}`);
+  }
+  if (run.keys.some((key) => written.includes(key))) fail("the body holds a key of the models.yml");
+  await mkdir(TOP_LEVEL_FIXTURES, { recursive: true });
+  const file = path.join(TOP_LEVEL_FIXTURES, `${name}.json`);
+  await writeFile(file, `${written}\n`);
+  run.note(
+    `wrote ${path.relative(CHECKOUT, file)}: request ${requests.indexOf(sent) + 1} of ${requests.length}, the system prompt as ${at.form} at ${at.paths.join(", ")}`
+  );
+  return at;
+}
+
+/**
+ * The top-level capture: one session on each model of `TOP_LEVEL_MODELS` on the pod's own
+ * models.yml, then one more on the Responses model from a copy of that file, mode 0600 in the
+ * run's work directory and removed once the session ends, whose entry for it flips
+ * `compat.supportsDeveloperRole` to the value that gives the other form of its system prompt
+ * than its first body showed. No case runs, and nothing is asserted of an approval message.
+ * Answers the exit status: 0 when every session wrote its body, and 1 otherwise.
+ */
+async function topLevelCapture(args: readonly string[]): Promise<number> {
+  const required = (name: string): string =>
+    flag(args, name) ?? fail(`--${name} is required by the top-level capture`);
+  if (args.includes("--negative-control")) {
+    fail("--negative-control reads the cases, and the top-level capture runs none");
+  }
+  const binary = required("omp");
+  const models = required("models");
+  const overlay = required("overlay");
+  const work = required("work");
+  const pod = (Bun.YAML.parse(readFileSync(models, "utf8")) ?? {}) as ModelsFile;
+  for (const model of TOP_LEVEL_MODELS) modelEntry(pod, model, models);
+  const keys = providerKeys(pod);
+  const run: TopLevelRun = {
+    binary,
+    overlay,
+    work,
+    evidence: flag(args, "evidence"),
+    omp: await ompVersion(binary),
+    build: readFileSync(path.join(CHECKOUT, ".omp-pin"), "utf8").trim(),
+    keys,
+    note: (line) => console.log(`   ${line}`),
+  };
+  console.log(
+    `   ${run.omp} (${run.build}) with the recorder alone, no plugin, on ${models} and the overlay ${overlay}`
+  );
+  const failed: string[] = [];
+  const started = Date.now();
+  const once = async (
+    session: TopLevelSession,
+    label: string
+  ): Promise<SystemPromptAt | undefined> => {
+    const { model } = session;
+    const name = `top-level capture: ${model.provider}/${model.id}:${model.thinking}${label}`;
+    console.log(`== ${name}`);
+    const began = Date.now();
+    const cleanup: Cleanup = [];
+    try {
+      const at = await topLevelSession(run, session, cleanup);
+      console.log(`ok ${name} (${Math.round((Date.now() - began) / 1000)}s)`);
+      return at;
+    } catch (error) {
+      failed.push(
+        `${name}: ${masked(error instanceof Error ? error.message : String(error), keys)}`
+      );
+      console.log(`FAIL ${failed.at(-1)}`);
+      return undefined;
+    } finally {
+      for (const step of cleanup.splice(0).reverse()) {
+        await step().catch((error: unknown) =>
+          console.log(`   cleanup: ${masked(String(error), keys)}`)
+        );
+      }
+    }
+  };
+  let own: SystemPromptAt | undefined;
+  for (const model of TOP_LEVEL_MODELS) {
+    const at = await once(
+      { model, models, modelsFile: "the pod's own models.yml", stem: model.id },
+      ""
+    );
+    if (model === RESPONSES_MODEL) own = at;
+  }
+  const flippedName = `top-level capture: ${RESPONSES_MODEL.provider}/${RESPONSES_MODEL.id}, its developer role flipped`;
+  if (own === undefined) {
+    failed.push(
+      `${flippedName}: not run, since the session on the pod's own models.yml wrote no body`
+    );
+    console.log(`FAIL ${failed.at(-1)}`);
+  } else {
+    const developerRole = own.form === "instructions";
+    const copy = path.join(work, "top-level-models.yml");
+    // JSON is YAML: the pod's file, its entry for the model flipped.
+    await writeFile(copy, JSON.stringify(withDeveloperRole(pod, RESPONSES_MODEL, developerRole)), {
+      mode: 0o600,
+    });
+    try {
+      await once(
+        {
+          model: RESPONSES_MODEL,
+          models: copy,
+          modelsFile: `a copy of the pod's models.yml whose ${RESPONSES_MODEL.id} entry sets compat.supportsDeveloperRole to ${developerRole}`,
+          stem: `${RESPONSES_MODEL.id}-developer-role-${developerRole}`,
+          form: developerRole ? "leading developer items" : "instructions",
+        },
+        `, compat.supportsDeveloperRole ${developerRole}`
+      );
+    } finally {
+      await rm(copy, { force: true });
+    }
+  }
+  const sessions = TOP_LEVEL_MODELS.length + 1;
+  console.log(
+    `${failed.length} of the ${sessions} sessions failed; the run took ${Math.round((Date.now() - started) / 1000)}s`
+  );
+  if (failed.length === 0) {
+    console.log(
+      `approval message capture: top-level capture PASS: ${sessions} bodies under ${path.relative(CHECKOUT, TOP_LEVEL_FIXTURES)}`
+    );
+    return 0;
+  }
+  console.log(
+    `approval message capture: top-level capture FAIL: the first session that failed is ${failed[0]}`
+  );
+  return 1;
+}
+
 /** The value of `--name` in `args`, or undefined. */
 function flag(args: readonly string[], name: string): string | undefined {
   const at = args.indexOf(`--${name}`);
@@ -1786,7 +2348,8 @@ function flag(args: readonly string[], name: string): string | undefined {
 
 /**
  * The script's run: the route's check, every case on the pod's own model route, then every case
- * again on claude-sonnet-5. Answers the exit status: 0 when every case passed, or under
+ * again on claude-sonnet-5; or, with `--entries top-level-capture`, the top-level capture alone
+ * (`topLevelCapture`). Answers the exit status: 0 when every case passed, or under
  * `--negative-control` when the run sent requests and none of them holds an approval message,
  * and 1 otherwise.
  */
@@ -1794,8 +2357,9 @@ async function main(args: readonly string[]): Promise<number> {
   const required = (name: string): string =>
     flag(args, name) ?? fail(`--${name} is required (see the head of this file)`);
   const entries = flag(args, "entries") ?? "each-path";
+  if (entries === "top-level-capture") return topLevelCapture(args);
   if (entries !== "every" && entries !== "each-path") {
-    fail(`--entries ${entries}: want every or each-path`);
+    fail(`--entries ${entries}: want every, each-path or top-level-capture`);
   }
   const negative = args.includes("--negative-control");
   const models = required("models");

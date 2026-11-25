@@ -410,6 +410,7 @@ Each item below names a script, then what it proves.
   two cards in one window, a people's-answers message, the reverse plugin order, two compactions, a fresh session, three relaunches around a changes request and a later approval, the date reminder, a task subagent, a side turn and the handoff prompt each hold the message where the check says;
   R1's words sent as a card go as a user message, and the whole list then runs again on claude-sonnet-5, where the message is a user message at the same place and pi-legion logs one line naming the model.
   `APPROVAL_MESSAGE_PLUGINS_REF=origin/main` packs main's plugins instead, the negative control, which passes exactly when its requests hold no approval message.
+  `APPROVAL_MESSAGE_ENTRIES=top-level-capture` runs none of the cases: it writes the wire bodies Oh My Pi itself sends to claude-sonnet-5, gemini-4-neon, kimi-k3.1-pro and gpt-6.2-sol (in both of its Responses forms), from sessions that load the recorder alone, under `packages/pi-legion/test/fixtures/approval-context/top-level/`.
   Legion pod only
 
 - `handoff-records.sh`
@@ -5123,6 +5124,7 @@ The run's own scratch directory, which holds the natsd it built and that server'
 ```sh
 bash scripts/e2e/approval-message.sh     # → "approval message capture: PASS", exit 0
 APPROVAL_MESSAGE_PLUGINS_REF=origin/main bash scripts/e2e/approval-message.sh     # the negative control → "approval message capture: negative control PASS", exit 0 when no request holds an approval message, else exit 1
+APPROVAL_MESSAGE_ENTRIES=top-level-capture bash scripts/e2e/approval-message.sh     # no case: the top-level capture → "approval message capture: top-level capture PASS: 5 bodies under …", exit 0
 ```
 
 The capture of check e4b07a29: while a person's approval of a root's spec stands, the root architect's model requests carry the approval message that `POST /legion/v1/claims/approval` answers, and Oh My Pi sends it as `system` to a model that takes a system message inside the conversation.
@@ -5132,13 +5134,13 @@ That model must take a system message inside the conversation: each case on it r
 The proxy is the session's stand-in server:
 the run's `models.yml` is the pod's `anthropic` provider with its `baseUrl` at the proxy and, where the pod's file holds a literal key, a placeholder key, and the proxy records each request body, forwards the request to the pod's own `baseUrl` with the headers Oh My Pi sent, the placeholder replaced by the real key, and streams the answer back.
 The driver reads the real `baseUrl` and key from the pod's `models.yml` in its own process alone; nothing the run prints or keeps holds either, or any header value.
-It needs `bash`, `bun` (after `bun install` at the checkout's root), `go`, `curl`, `tar`, `jq` and `flock` (for [`lib/pack-plugin.sh`](#libpack-pluginsh)), and `git` with `APPROVAL_MESSAGE_PLUGINS_REF`, and no PostgreSQL, Docker, kube context or tmux.
+It needs `bash`, `bun` (after `bun install` at the checkout's root), `go`, `curl`, `tar`, `jq` and `flock` (for [`lib/pack-plugin.sh`](#libpack-pluginsh)), and `git` with `APPROVAL_MESSAGE_PLUGINS_REF`, and no PostgreSQL, Docker, kube context or tmux; the top-level capture needs `bash`, `bun`, `curl` and `tar` alone.
 
 | input | default | what it is |
 | :--- | :--- | :--- |
 | `APPROVAL_MESSAGE_MODELS` | `$PI_CODING_AGENT_DIR/models.yml` | the pod's `models.yml`, whose `anthropic` provider must offer claude-sonnet-5 and the overlay's `default` model, since the run's own `models.yml` holds that provider alone |
 | `APPROVAL_MESSAGE_OVERLAY` | the `overlay.yml` that `PI_CONFIG_FILES` names | the pod's operator overlay, whose `modelRoles.default` every case but the claude-sonnet-5 pass runs |
-| `APPROVAL_MESSAGE_ENTRIES` | `each-path` | which entry files the entry cases send: the first of each of the six paths, or `every` file |
+| `APPROVAL_MESSAGE_ENTRIES` | `each-path` | which entry files the entry cases send: the first of each of the six paths, or `every` file; or `top-level-capture`, which runs no case but the top-level capture (below) |
 | `APPROVAL_MESSAGE_PLUGINS_REF` | unset: this checkout | a git revision whose two plugins the run packs and loads in place of this checkout's, and checks that no request holds an approval message |
 | `APPROVAL_MESSAGE_OMP_ROOT` | `$TMPDIR/omp-pin` | where the pinned build is installed; a build already there at `.omp-pin`'s version is used again |
 | `APPROVAL_MESSAGE_EVIDENCE_DIR` | a fresh directory under `TMPDIR` | kept and printed: the transcript, `logs/` (the NATS server, each pack, a revision's `bun install`) and `records/`, every session's recorded events, one file per case |
@@ -5192,6 +5194,22 @@ in each case the message is a user message at the same place, and each process t
 With `APPROVAL_MESSAGE_PLUGINS_REF`, the run then checks that no request of any case holds an approval message, which is the negative control's own check, and the only one its exit status reads: its placing cases fail at their first placement.
 It ends with `approval message capture: negative control PASS` and exit 0 when the run's sessions sent requests and none of them holds an approval message, and otherwise with `approval message capture: negative control FAIL: <why>` and exit 1.
 Each session's scratch root is under `TMPDIR`, removed with the session; the run's work directory (the NATS server's store, the packed plugins and a revision's tree) is removed at the end with the NATS server, however the run ended, and the evidence directory, the installed build and natsd stay.
+
+### The top-level capture
+
+`APPROVAL_MESSAGE_ENTRIES=top-level-capture` runs none of the cases.
+It captures the wire bodies Oh My Pi itself sends to the models whose `compat.supportsMidConversationSystem` is off, which pi-legion's unit tests of the approval message's place at the end of the top-level system prompt read.
+After the `prerequisites` and `omp` checks, which refuse `APPROVAL_MESSAGE_PLUGINS_REF` in this mode, it starts no NATS server and packs no plugin; the driver runs five short sessions of the pinned build, one after another, each on the pod's own operator overlay through `PI_CONFIG_FILES`, with the recorder alone loaded, neither plugin, so no approval handler touches a request, and `CONTRACT` appended to its system prompt.
+Each session's `models.yml` is the pod's own, linked into the session's profile, so every request is a real model call through the pod's gateway, two per session: a first prompt, its answer, and a second prompt, none of which asks for a tool call.
+The sessions run `anthropic/claude-sonnet-5:xhigh` (`anthropic-messages`), `model-gateway/gemini-4-neon:high` and `model-gateway/kimi-k3.1-pro:max` (`openai-completions`), `openai/gpt-6.2-sol:xhigh` (`openai-responses`), and `openai/gpt-6.2-sol:xhigh` once more from a copy of the pod's `models.yml`, mode 0600 in the run's work directory and removed once that session ends, whose `gpt-6.2-sol` entry sets `compat.supportsDeveloperRole` to the value that gives the other Responses form than the first body showed: Oh My Pi sends a reasoning model's system prompt as leading `developer` items when that flag is on, and as `instructions` otherwise.
+Before the first session the driver checks that the pod's `models.yml` offers each of those models on that API.
+
+From each session it writes the `before_provider_request` body of the second prompt, which holds the system prompt, the first prompt, its answer and the second prompt, to `packages/pi-legion/test/fixtures/approval-context/top-level/<model>.json` (`gpt-6.2-sol-instructions.json` and `gpt-6.2-sol-developer.json` for the two Responses forms), and prints where.
+Each file starts with `captured`: the command, what `omp --version` prints, the build `.omp-pin` names and the date (UTC, to the second); then `shape`, `how`, `placeholders`, `model` (the provider, id, API, thinking level, the flag as the request's model held it, and which `models.yml`), `systemPrompt` (the form and the JSON paths of the parts that hold the top-level system prompt), and `payload`, the body as Oh My Pi built it.
+Every local path is written over with a placeholder, and the driver refuses a body that still holds a local path, a private host, a deployment key, a Dispatch link, a credential's field or a key the pod's `models.yml` resolves to, which it reads in its own process alone and never prints.
+A session fails when its request went to another model, when that model takes a system message inside the conversation, when its last answer ended in an error, or when its body holds the system prompt in none of the forms of its API, or the second `gpt-6.2-sol` body in the same form as the first.
+It prints `== <session>`, the file it wrote and `ok <session>` or `FAIL <session>: <why>` for each session, and ends with `approval message capture: top-level capture PASS: 5 bodies under …` and exit 0, or with `approval message capture: top-level capture FAIL: <the first session that failed>` and exit 1.
+Each session's record goes to `records/top-level-<session>.jsonl` in the evidence directory.
 
 ## handoff-records.sh
 
