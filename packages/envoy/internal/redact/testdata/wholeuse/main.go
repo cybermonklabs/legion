@@ -261,10 +261,10 @@ func usedAt(stack []ast.Node) (ast.Node, []ast.Node) {
 }
 
 func classify(info *types.Info, stack []ast.Node, e ast.Expr, madeByRedact map[*types.Var]bool) (string, bool) {
+	parent, above := usedAt(stack)
 	// A read of a struct field that only redact.NewRetrieveError writes holds the rule's reading.
 	if sel, ok := e.(*ast.SelectorExpr); ok {
 		if field, ok := info.Uses[sel.Sel].(*types.Var); ok && madeByRedact[field] {
-			parent, _ := usedAt(stack)
 			return "whole value redact.NewRetrieveError made (" + describe(info, parent) + ")", false
 		}
 	}
@@ -273,7 +273,6 @@ func classify(info *types.Info, stack []ast.Node, e ast.Expr, madeByRedact map[*
 			return "made by redact.NewRetrieveError", false
 		}
 	}
-	parent, above := usedAt(stack)
 	switch p := parent.(type) {
 	case *ast.SelectorExpr:
 		sel := info.Selections[p]
