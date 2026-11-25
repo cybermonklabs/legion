@@ -3,8 +3,9 @@ body: |-
   `spec-check state --scenario <dir>` prints, at each subject of a scenario of The Spec, the state
   of each statement (not built, met, not met or unknown) and of each check (true, false or unknown,
   with its reason), whether each wait on a statement ends at the head of main, and the cycle of
-  waits; `--json` prints the states as JSON. A run of a check counts only at the commit that it
-  read, and a failing example, caught or missed, also at a commit where no file of the check's
+  waits; `--json` prints the states as JSON. A run of a check of the code counts only at the
+  commit that it read; a failing example, caught or missed, and a result of the test of a program
+  check of production or of the graph also count at another commit where no file of the check's
   tie changed. The command reads each file of the scenario strictly and refuses, with exit
   2 and a line that names the file, a member it does not know, a value of the wrong form, or spec
   files that `spec-check tree` refuses.

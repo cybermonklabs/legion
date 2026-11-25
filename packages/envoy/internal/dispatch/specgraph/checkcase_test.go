@@ -333,8 +333,9 @@ func (s *checkCase) codeResults(k Check, runCommit string) {
 }
 
 // runsAgainAt adds, for each run of the case at a commit, the same run at commit an hour later: CI
-// runs a check's job again at a new commit, and a run counts only at its own commit, while a
-// failing example that the test caught counts there too while no file of the check's tie changed.
+// runs a check's job again at a new commit, and a run of a check of the code counts only at its own
+// commit, while a failing example that the test caught counts there too while no file of the
+// check's tie changed.
 func (s *checkCase) runsAgainAt(commit string) {
 	for _, r := range slices.Clone(s.Results) {
 		if r.Kind == ResultRun && r.Commit != "" {

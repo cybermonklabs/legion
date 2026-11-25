@@ -749,12 +749,12 @@ func recordKinds() map[string][][]string {
 // out of a commit's tree is not there at that commit, so it changed, and a failing example planted
 // before it counts across it no more, a caught one as a missed one (the rule that replaces The
 // Spec's R8: "A failing example that a check's test caught (The Spec R9) counts at another commit
-// only while no file that the test reads changed"; a run counts only at the commit that it read),
-// as a changed label ends it: it moves a state away from true where a caught failing example
-// counted, and toward true where a missed one counted (a row of each), as a path of a tree written
-// " " does in TestNoInputThatSaysNothingMovesAStateTowardTrue. Each row derives the check at the
-// subject of its scenario with the record, and with the record taken out; setup makes the scenario
-// first.
+// only while no file that the test reads changed"; a run of a check of the code counts only at the
+// commit that it read), as a changed label ends it: it moves a state away from true where a caught
+// failing example counted, and toward true where a missed one counted (a row of each), as a path of
+// a tree written " " does in TestNoInputThatSaysNothingMovesAStateTowardTrue. Each row derives the
+// check at the subject of its scenario with the record, and with the record taken out; setup makes
+// the scenario first.
 func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 	t.Parallel()
 	const c = "a-restart-loses-no-message"

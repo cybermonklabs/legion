@@ -96,14 +96,14 @@ type builtBase struct {
 // and a failure on one such subject and one procedure make the state unknown"): a failure of c2 at
 // 10:03 on 12 November and later passes of c2, with a caught failing example planted on c2; and a
 // failure of m2 at 09:15 on 13 November and later passes of m2, with a caught failing example
-// planted on m2. A run counts only at the commit that it read (the rule that replaces The Spec's
-// R8), so each of the two reads unknown at its own commit alone. A refusal of CI at a commit makes
-// its check read unknown there and takes out, of the results of that commit, only those that
-// support true (R48: "At that commit, such a check reads unknown"), so a rule by which a refusal
-// took out a failure, or let newer evidence decide at the refused commit, would read the later
-// pass true. And carry with a
-// later failing example, planted on c1 in a fault of its own of two paths, carry's and a second
-// source file of the tie, on which the test missed its fault: the check reads unknown
+// planted on m2. A run of a check of the code counts only at the commit that it read (the rule that
+// replaces The Spec's R8), so each of the two reads unknown at its own commit alone. A refusal of CI
+// at a commit makes its check read unknown there and takes out, of the results of that commit, only
+// those that support true (R48: "At that commit, such a check reads unknown"), so a rule by which a
+// refusal took out a failure, or let newer evidence decide at the refused commit, would read the
+// later pass true. And carry with a later failing example, planted on c1 in a fault of its own of
+// two paths, carry's and a second source file of the tie, on which the test missed its fault: the
+// check reads unknown
 // (failing_example_missed) at c2 and at m2, and the member sweep takes out its planted_on and its
 // fault_paths, and the sweep writes each of its two fault paths as " ", a blank path beside a real
 // one, which leaves a record that does not say where its fault was planted or what it changed,

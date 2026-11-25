@@ -54,17 +54,12 @@ func subjectFault(p Point, now time.Time) string {
 // moves a state toward true, and a refusal by CI makes its check read unknown at its commit and
 // cancels the results of that commit that support true wherever they count (R48, deriveChecks step
 // 2), so each can move a state away from what the evidence without it gives, and never toward
-// true, and the caller gives JobRuns and Uncited, empty for none, and Input.check refuses nil. A run
-// counts only at its own commit, and a failing example also at another commit, by the ties and the
-// history (the rule that replaces The Spec's R8: "A result counts only at the commit that it read";
-// "A failing example that a check's test caught (The Spec R9) counts at another commit only while
-// no file that the test reads changed"). The derivation reads that rule for each failing example,
-// one whose test missed its fault as one whose test caught it: a missed one counts at another
-// commit by the same ties and history, and there, as the newest, it keeps the check from true
-// (deriveChecks, step 7), so it moves a state away from true and never toward it. With no tie, or
-// no history, no failing example counts at another commit, so a failing example at another commit,
-// caught or missed, then says nothing about this one. So a caller that gives no Ties or no History
-// is refused too, and one that states that it has none gives CommitTies{} or
+// true, and the caller gives JobRuns and Uncited, empty for none, and Input.check refuses nil.
+// Where a result counts is deriveChecks' steps 4 and 7: only by the ties and the history does one
+// count at another commit, a failing example, caught or missed, or a result of the test of a
+// program check of production or of the graph. With no tie, or no history, none counts at another
+// commit, so a result at another commit then says nothing about this one. So a caller that gives
+// no Ties or no History is refused too, and one that states that it has none gives CommitTies{} or
 // FixtureHistory{Commits: []FixtureCommit{}}, the empty values that are not nil. The command gives
 // the ties and the history of its scenario.
 type Input struct {
